@@ -1,0 +1,87 @@
+import { Pane, Row } from "pane.slint";
+import { Palette } from "std-widgets.slint";
+export { Row }
+
+export component App inherits Window {
+    title: "rustfm-proto";
+    preferred-width: 1200px;
+    preferred-height: 800px;
+    min-width: 400px;
+    min-height: 300px;
+
+    in property <[Row]> left-rows;
+    in property <[Row]> right-rows;
+    in-out property <string> left-path;
+    in-out property <string> right-path;
+    in property <string> left-status;
+    in property <string> right-status;
+    in property <int> left-sort-col;
+    in property <bool> left-sort-asc;
+    in property <int> right-sort-col;
+    in property <bool> right-sort-asc;
+    in-out property <bool> split: false;
+    in-out property <int> active-pane: 0;
+    in-out property <float> split-ratio: 0.5;
+
+    callback navigate(int, string);
+    callback open-row(int, int);
+    callback sort-by(int, int);
+    callback go-up(int);
+    callback toggle-split();
+
+    public function focus-pane(p: int) {
+        active-pane = p;
+        if (p == 0) { left.focus-list(); } else { right.focus-list(); }
+    }
+
+    forward-focus: outer;
+
+    outer := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.F3) { root.toggle-split(); return accept; }
+            if (e.text == Key.RightArrow && e.modifiers.control && e.modifiers.shift) {
+                if (split) { root.focus-pane(1 - active-pane); }
+                return accept;
+            }
+            return reject;
+        }
+        left := Pane {
+            x: 0; y: 0; height: parent.height;
+            width: split ? parent.width * split-ratio - 3px : parent.width;
+            rows: left-rows; path <=> left-path; status: left-status;
+            active: !split || active-pane == 0;
+            sort-col: left-sort-col; sort-asc: left-sort-asc;
+            navigate(p) => { root.navigate(0, p); }
+            open-row(i) => { root.open-row(0, i); }
+            sort-by(c) => { root.sort-by(0, c); }
+            go-up => { root.go-up(0); }
+            focus-requested => { active-pane = 0; }
+        }
+        right := Pane {
+            visible: split;
+            x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
+            width: split ? parent.width - self.x : 0px;
+            rows: right-rows; path <=> right-path; status: right-status;
+            active: split && active-pane == 1;
+            sort-col: right-sort-col; sort-asc: right-sort-asc;
+            navigate(p) => { root.navigate(1, p); }
+            open-row(i) => { root.open-row(1, i); }
+            sort-by(c) => { root.sort-by(1, c); }
+            go-up => { root.go-up(1); }
+            focus-requested => { active-pane = 1; }
+        }
+        splitter := Rectangle {
+            visible: split;
+            x: parent.width * split-ratio - 3px; y: 0; width: 6px; height: parent.height;
+            background: splitter-ta.has-hover || splitter-ta.pressed ? Palette.accent-background : Palette.border;
+            splitter-ta := TouchArea {
+                mouse-cursor: col-resize;
+                moved => {
+                    if (self.pressed) {
+                        split-ratio = max(0.15, min(0.85, (splitter.x + self.mouse-x) / root.width));
+                    }
+                }
+            }
+        }
+    }
+}

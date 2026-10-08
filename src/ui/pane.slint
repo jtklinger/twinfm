@@ -1,0 +1,91 @@
+import { ListView, LineEdit, Palette } from "std-widgets.slint";
+
+export struct Row {
+    name: string,
+    size: string,
+    modified: string,
+    is-dir: bool,
+}
+
+component HeaderCell inherits Rectangle {
+    in property <string> label;
+    in property <bool> sorted;
+    in property <bool> asc;
+    callback clicked();
+    background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        Text { text: label; vertical-alignment: center; font-weight: 600; }
+        Text { text: sorted ? (asc ? "\u{25b2}" : "\u{25bc}") : ""; vertical-alignment: center; }
+    }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component Pane inherits Rectangle {
+    in property <[Row]> rows;
+    in-out property <string> path;
+    in property <string> status;
+    in property <bool> active;
+    in property <int> sort-col: 0;
+    in property <bool> sort-asc: true;
+    in-out property <int> current-row: -1;
+
+    callback navigate(string);
+    callback open-row(int);
+    callback sort-by(int);
+    callback go-up();
+    callback focus-requested();
+
+    border-width: active ? 2px : 1px;
+    border-color: active ? Palette.accent-background : Palette.border;
+    background: Palette.background;
+
+    forward-focus: key-area;
+    public function focus-list() { key-area.focus(); }
+
+    VerticalLayout {
+        padding: 3px;
+        spacing: 2px;
+        path-edit := LineEdit {
+            text <=> root.path;
+            placeholder-text: "Path";
+            accepted(s) => { root.navigate(s); }
+        }
+        HorizontalLayout {
+            height: 24px;
+            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } }
+            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } }
+            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } }
+        }
+        key-area := FocusScope {
+            key-pressed(e) => {
+                if (e.text == Key.Backspace) { root.go-up(); return accept; }
+                if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return accept; }
+                if (e.text == Key.Return) { if (current-row >= 0) { root.open-row(current-row); } return accept; }
+                if (e.text == Key.UpArrow) { if (current-row > 0) { current-row -= 1; } return accept; }
+                if (e.text == Key.DownArrow) { if (current-row + 1 < rows.length) { current-row += 1; } return accept; }
+                return reject;
+            }
+            list := ListView {
+                for row[i] in rows: Rectangle {
+                    height: 22px;
+                    background: i == current-row ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        Text { text: row.is-dir ? "\u{1f4c1}" : "\u{1f4c4}"; width: 22px; vertical-alignment: center; }
+                        Text { text: row.name; vertical-alignment: center; overflow: elide; }
+                        Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; }
+                        Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; }
+                    }
+                    TouchArea {
+                        clicked => { current-row = i; key-area.focus(); root.focus-requested(); }
+                        double-clicked => { root.open-row(i); }
+                    }
+                }
+            }
+        }
+        Text { text: status; height: 18px; font-size: 11px; color: Palette.foreground; }
+    }
+}

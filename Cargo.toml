@@ -1,0 +1,16 @@
+[package]
+name = "rustfm-proto"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "One-week prototype: Rust + Slint dual-pane file manager for Windows 11"
+
+[dependencies]
+slint = "1.18"
+crossbeam-channel = "0.5"
+
+[build-dependencies]
+slint-build = "1.18"
+
+[profile.release]
+debug = 1
