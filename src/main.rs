@@ -1,111 +1,259 @@
-// Day 1 skeleton: two panes, splitter, path entry, synchronous read_dir load.
+// rustfm-proto: Slint bootstrap, wires model <-> UI, owns the two panes.
 slint::include_modules!();
 
-use slint::{ModelRc, SharedString, VecModel};
-use std::path::Path;
+mod fs {
+    pub mod enumerate;
+}
+mod auto;
+mod model;
+mod perf;
+
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use fs::enumerate::Msg;
+use model::{PaneModel, SortCol, sort_entries};
+use slint::{ComponentHandle, ModelRc, RenderingState, Weak};
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::Instant;
 
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
+/// Per-pane timing bookkeeping for the gate measurements.
+#[derive(Default)]
+struct PaneTiming {
+    requested: Option<Instant>,
+    first_batch: Option<Instant>,
+    first_frame_reported: bool,
 }
 
-fn format_time(secs: i64) -> String {
-    // Civil date from Unix seconds (Howard Hinnant's algorithm), local tz ignored for the prototype.
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", rem / 3600, (rem % 3600) / 60)
+struct State {
+    app: Weak<App>,
+    panes: [Rc<PaneModel>; 2],
+    rx: Receiver<Msg>,
+    tx: Sender<Msg>,
+    timing: [PaneTiming; 2],
+    split_requested: Option<Instant>,
 }
 
-fn load_sync(path: &Path) -> (Vec<Row>, String) {
-    let t0 = Instant::now();
-    let mut rows = Vec::new();
-    match std::fs::read_dir(path) {
-        Ok(rd) => {
-            for e in rd.flatten() {
-                let md = e.metadata().ok();
-                let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
-                let modified = md
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                rows.push(Row {
-                    name: SharedString::from(e.file_name().to_string_lossy().as_ref()),
-                    size: if is_dir { SharedString::default() } else { format_size(size).into() },
-                    modified: format_time(modified).into(),
-                    is_dir,
-                });
-            }
-            let n = rows.len();
-            (rows, format!("{n} items, loaded in {:?}", t0.elapsed()))
+thread_local! {
+    static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+}
+
+fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
+    STATE.with(|s| f(s.borrow_mut().as_mut().expect("state initialised")))
+}
+
+/// Wake the UI thread so it drains the channel. Called from worker threads.
+fn wake() {
+    let _ = slint::invoke_from_event_loop(drain);
+}
+
+fn navigate(pane: usize, path: PathBuf) {
+    with_state(|st| {
+        let app = st.app.unwrap();
+        let model = &st.panes[pane];
+        let generation = model.generation.get() + 1;
+        model.generation.set(generation);
+        model.clear();
+        st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
+        let shown = path.to_string_lossy().to_string();
+        if pane == 0 {
+            app.set_left_path(shown.as_str().into());
+            app.set_left_status("loading...".into());
+        } else {
+            app.set_right_path(shown.as_str().into());
+            app.set_right_status("loading...".into());
         }
-        Err(err) => (rows, format!("error: {err}")),
+        app.invoke_reset_scroll(pane as i32);
+        eprintln!("[nav] pane={pane} gen={generation} path={shown}");
+        let tx = st.tx.clone();
+        fs::enumerate::spawn(path, pane, generation, tx, wake);
+    });
+}
+
+fn set_status(app: &App, pane: usize, s: String) {
+    if pane == 0 { app.set_left_status(s.into()) } else { app.set_right_status(s.into()) }
+}
+
+fn drain() {
+    with_state(|st| {
+        let app = st.app.unwrap();
+        while let Ok(msg) = st.rx.try_recv() {
+            match msg {
+                Msg::Batch { pane, generation, entries } => {
+                    let model = &st.panes[pane];
+                    if model.generation.get() != generation {
+                        continue;
+                    }
+                    model.append(entries);
+                    let t = &mut st.timing[pane];
+                    if t.first_batch.is_none() {
+                        t.first_batch = Some(Instant::now());
+                        if let Some(r) = t.requested {
+                            eprintln!("[enum] pane={pane} first batch after {:.1} ms", perf::elapsed_ms(r));
+                        }
+                    }
+                    set_status(&app, pane, format!("{} items (loading...)", model.len()));
+                }
+                Msg::Done { pane, generation, total, elapsed, error } => {
+                    let model = &st.panes[pane];
+                    if model.generation.get() != generation {
+                        continue;
+                    }
+                    let wall = st.timing[pane].requested.map(perf::elapsed_ms).unwrap_or(0.0);
+                    match error {
+                        Some(e) => set_status(&app, pane, format!("error: {e}")),
+                        None => {
+                            eprintln!(
+                                "[enum] pane={pane} done: {total} entries, worker {:.1} ms, request-to-done {wall:.1} ms",
+                                elapsed.as_secs_f64() * 1e3
+                            );
+                            set_status(&app, pane, format!("{total} items, enumerated in {:.0} ms", wall));
+                            // Apply the pane's current sort once the listing is complete.
+                            request_sort(st, pane, model.sort_col.get(), model.sort_asc.get());
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Sort on a worker over a snapshot; swap the Vec in one step when it returns.
+fn request_sort(st: &mut State, pane: usize, col: SortCol, asc: bool) {
+    let model = &st.panes[pane];
+    model.sort_col.set(col);
+    model.sort_asc.set(asc);
+    let app = st.app.unwrap();
+    if pane == 0 {
+        app.set_left_sort_col(col as i32);
+        app.set_left_sort_asc(asc);
+    } else {
+        app.set_right_sort_col(col as i32);
+        app.set_right_sort_asc(asc);
     }
+    let generation = model.generation.get();
+    let mut snapshot = model.snapshot();
+    let t0 = Instant::now();
+    std::thread::spawn(move || {
+        sort_entries(&mut snapshot, col, asc);
+        let sort_ms = perf::elapsed_ms(t0);
+        let _ = slint::invoke_from_event_loop(move || {
+            with_state(|st| {
+                let model = &st.panes[pane];
+                if model.generation.get() != generation || model.len() != snapshot.len() {
+                    return; // listing changed underneath us; a newer sort or Done will follow
+                }
+                eprintln!("[sort] pane={pane} {} entries by {col:?} asc={asc} in {sort_ms:.1} ms", snapshot.len());
+                model.replace(snapshot);
+            });
+        });
+    });
+}
+
+fn on_frame_rendered() {
+    with_state(|st| {
+        for pane in 0..2 {
+            let t = &mut st.timing[pane];
+            if t.first_batch.is_some() && !t.first_frame_reported {
+                t.first_frame_reported = true;
+                if let Some(r) = t.requested {
+                    eprintln!("[enum] pane={pane} first screenful rendered {:.1} ms after request", perf::elapsed_ms(r));
+                }
+            }
+        }
+        if let Some(s) = st.split_requested {
+            if st.panes[1].len() > 0 {
+                st.split_requested = None;
+                eprintln!("[split] second pane rendered with rows {:.1} ms after F3", perf::elapsed_ms(s));
+            }
+        }
+    });
 }
 
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
-    let left: Rc<VecModel<Row>> = Rc::new(VecModel::default());
-    let right: Rc<VecModel<Row>> = Rc::new(VecModel::default());
-    app.set_left_rows(ModelRc::from(left.clone()));
-    app.set_right_rows(ModelRc::from(right.clone()));
+    let panes: [Rc<PaneModel>; 2] = [Rc::new(PaneModel::default()), Rc::new(PaneModel::default())];
+    app.set_left_rows(ModelRc::from(panes[0].clone()));
+    app.set_right_rows(ModelRc::from(panes[1].clone()));
+    let (tx, rx) = unbounded();
+    STATE.with(|s| {
+        *s.borrow_mut() = Some(State {
+            app: app.as_weak(),
+            panes,
+            rx,
+            tx,
+            timing: Default::default(),
+            split_requested: None,
+        })
+    });
 
-    let start = std::env::args().nth(1).unwrap_or_else(|| "C:\\".to_string());
-    app.set_left_path(start.clone().into());
-    app.set_right_path(start.clone().into());
-    let (rows, status) = load_sync(Path::new(&start));
-    left.set_vec(rows);
-    app.set_left_status(status.into());
-
-    {
-        let left = left.clone();
-        let right = right.clone();
-        let w = app.as_weak();
-        app.on_navigate(move |pane, path| {
-            let app = w.unwrap();
-            let (rows, status) = load_sync(Path::new(path.as_str()));
-            if pane == 0 {
-                left.set_vec(rows);
-                app.set_left_status(status.into());
-            } else {
-                right.set_vec(rows);
-                app.set_right_status(status.into());
-            }
-        });
+    match app.window().set_rendering_notifier(|state, _| match state {
+        RenderingState::BeforeRendering => perf::before_rendering(),
+        RenderingState::AfterRendering => {
+            perf::after_rendering();
+            on_frame_rendered();
+        }
+        _ => {}
+    }) {
+        Ok(()) => {}
+        Err(e) => eprintln!("[perf] rendering notifier unavailable: {e:?} (frame stats disabled)"),
     }
-    {
+    let report_timer = slint::Timer::default();
+    report_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(5), perf::report);
+
+    app.on_navigate(|pane, path| navigate(pane as usize, PathBuf::from(path.as_str())));
+    app.on_open_row(|pane, row| {
+        let target = with_state(|st| {
+            let e = st.panes[pane as usize].entry(row as usize)?;
+            if !e.is_dir {
+                return None;
+            }
+            let app = st.app.unwrap();
+            let base = if pane == 0 { app.get_left_path() } else { app.get_right_path() };
+            Some(Path::new(base.as_str()).join(e.name.as_str()))
+        });
+        if let Some(p) = target {
+            navigate(pane as usize, p);
+        }
+    });
+    app.on_go_up(|pane| {
+        let target = with_state(|st| {
+            let app = st.app.unwrap();
+            let base = if pane == 0 { app.get_left_path() } else { app.get_right_path() };
+            Path::new(base.as_str()).parent().map(|p| p.to_path_buf())
+        });
+        if let Some(p) = target {
+            navigate(pane as usize, p);
+        }
+    });
+    app.on_sort_by(|pane, col| {
+        with_state(|st| {
+            let model = &st.panes[pane as usize];
+            let col = SortCol::from_i32(col);
+            let asc = if model.sort_col.get() == col { !model.sort_asc.get() } else { true };
+            request_sort(st, pane as usize, col, asc);
+        });
+    });
+    app.on_toggle_split({
         let w = app.as_weak();
-        app.on_toggle_split(move || {
+        move || {
             let app = w.unwrap();
             let now = !app.get_split();
             app.set_split(now);
             if now {
-                let p = app.get_left_path();
-                app.set_right_path(p.clone());
-                app.invoke_navigate(1, p);
+                with_state(|st| st.split_requested = Some(perf::mark("F3: split requested")));
+                navigate(1, PathBuf::from(app.get_left_path().as_str()));
+                app.invoke_focus_pane(1);
+            } else {
+                app.invoke_focus_pane(0);
             }
-        });
-    }
+        }
+    });
+
+    let start = std::env::args().nth(1).unwrap_or_else(|| "C:\\".to_string());
+    app.set_right_path(start.as_str().into());
+    navigate(0, PathBuf::from(start));
+    auto::start(&app);
 
     app.run()
 }

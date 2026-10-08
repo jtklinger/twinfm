@@ -34,6 +34,10 @@ export component App inherits Window {
         if (p == 0) { left.focus-list(); } else { right.focus-list(); }
     }
 
+    public function reset-scroll(p: int) {
+        if (p == 0) { left.reset-scroll(); } else { right.reset-scroll(); }
+    }
+
     forward-focus: outer;
 
     outer := FocusScope {
