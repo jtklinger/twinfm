@@ -16,6 +16,8 @@ pub struct Perf {
     last_before: Option<Instant>,
     last_frame: Option<Instant>,
     frames: u64,
+    frames_at_report: u64,
+    cpu_at_report: f64,
 }
 
 thread_local! {
@@ -85,11 +87,18 @@ pub fn report() {
         if p.render.is_empty() && p.interval.is_empty() {
             return;
         }
+        let cpu_now = thread_cpu_secs();
+        let dframes = p.frames - p.frames_at_report;
+        let dcpu = cpu_now - p.cpu_at_report;
+        p.frames_at_report = p.frames;
+        p.cpu_at_report = cpu_now;
         eprintln!(
-            "[perf] frames_total={} render[{}] interval[{}]",
+            "[perf] frames_total={} render[{}] interval[{}] ui_cpu={:.0}ms over 5s = {:.2}ms/frame",
             p.frames,
             stats(&p.render),
-            stats(&p.interval)
+            stats(&p.interval),
+            dcpu * 1e3,
+            if dframes > 0 { dcpu * 1e3 / dframes as f64 } else { 0.0 }
         );
         p.render.clear();
         p.interval.clear();
@@ -104,4 +113,34 @@ pub fn mark(label: &str) -> Instant {
 
 pub fn elapsed_ms(since: Instant) -> f64 {
     since.elapsed().as_secs_f64() * 1e3
+}
+
+/// CPU time (user + kernel) consumed so far by the calling thread, in seconds.
+pub fn thread_cpu_secs() -> f64 {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut c, mut e, mut k, mut u) = (zero, zero, zero, zero);
+    // SAFETY: plain Win32 call on the current thread with valid out-pointers.
+    unsafe { GetThreadTimes(GetCurrentThread(), &mut c, &mut e, &mut k, &mut u) };
+    let ft = |f: FILETIME| ((f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64) as f64 * 100e-9;
+    ft(k) + ft(u)
+}
+
+/// Report UI-thread busy % over a window: call with the start sample after `secs` seconds.
+pub struct BusyWindow {
+    label: String,
+    cpu0: f64,
+    wall0: Instant,
+}
+
+impl BusyWindow {
+    pub fn start(label: &str) -> BusyWindow {
+        BusyWindow { label: label.to_string(), cpu0: thread_cpu_secs(), wall0: Instant::now() }
+    }
+    pub fn finish(&self) {
+        let cpu = thread_cpu_secs() - self.cpu0;
+        let wall = self.wall0.elapsed().as_secs_f64();
+        eprintln!("[busy] {}: UI thread {:.1}% busy over {:.1} s (cpu {:.3} s)", self.label, cpu / wall * 100.0, wall, cpu);
+    }
 }

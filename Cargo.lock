@@ -3724,6 +3724,7 @@ dependencies = [
  "crossbeam-channel",
  "slint",
  "slint-build",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

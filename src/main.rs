@@ -32,6 +32,7 @@ struct State {
     tx: Sender<Msg>,
     timing: [PaneTiming; 2],
     split_requested: Option<Instant>,
+    busy_timer: slint::Timer,
 }
 
 thread_local! {
@@ -184,6 +185,7 @@ fn main() -> Result<(), slint::PlatformError> {
             tx,
             timing: Default::default(),
             split_requested: None,
+            busy_timer: slint::Timer::default(),
         })
     });
 
@@ -242,6 +244,12 @@ fn main() -> Result<(), slint::PlatformError> {
             app.set_split(now);
             if now {
                 with_state(|st| st.split_requested = Some(perf::mark("F3: split requested")));
+                let busy = perf::BusyWindow::start("10 s after split");
+                with_state(|st| {
+                    st.busy_timer.start(slint::TimerMode::SingleShot, std::time::Duration::from_secs(10), move || {
+                        busy.finish();
+                    })
+                });
                 navigate(1, PathBuf::from(app.get_left_path().as_str()));
                 app.invoke_focus_pane(1);
             } else {
