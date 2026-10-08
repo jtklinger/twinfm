@@ -6,6 +6,8 @@
 //!   nav <pane> <path>                navigate a pane
 //!   up <pane>                        go to the parent directory
 //!   sort <pane> <0|1|2>              click a column header (name/size/modified)
+//!   key <F3|Backspace|AltUp|CtrlShiftRight|Return>   press a key through the Slint key path
+//!   dblclick <pane> <row>            double-click a visible row (enters the directory if it is one)
 //!   quit                             exit the event loop
 //! Events are dispatched with slint::Window::dispatch_event on the UI thread, so Slint's full
 //! input -> layout -> render path runs; only the OS WndProc hop is skipped.
@@ -26,6 +28,8 @@ enum Step {
     Nav { pane: usize, path: String },
     Up(usize),
     Sort { pane: usize, col: i32 },
+    Key(String),
+    DblClick { pane: usize, row: usize },
     Quit,
 }
 
@@ -43,6 +47,8 @@ fn parse(script: &str) -> Vec<Step> {
                 "nav" => Step::Nav { pane: num(1) as usize, path: a[2..].join(" ") },
                 "up" => Step::Up(num(1) as usize),
                 "sort" => Step::Sort { pane: num(1) as usize, col: num(2) as i32 },
+                "key" => Step::Key(a.get(1).unwrap_or(&"").to_string()),
+                "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("[auto] unknown step: {other}");
@@ -141,6 +147,40 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::Sort { pane, col } => {
             app.invoke_sort_by(pane as i32, col);
+            schedule(runner, 1);
+        }
+        Step::Key(name) => {
+            use slint::platform::Key;
+            let chord: Vec<Key> = match name.as_str() {
+                "F3" => vec![Key::F3],
+                "Backspace" => vec![Key::Backspace],
+                "Return" => vec![Key::Return],
+                "AltUp" => vec![Key::Alt, Key::UpArrow],
+                "CtrlShiftRight" => vec![Key::Control, Key::Shift, Key::RightArrow],
+                other => {
+                    eprintln!("[auto] unknown key {other}");
+                    vec![]
+                }
+            };
+            let win = app.window();
+            for k in &chord {
+                win.dispatch_event_with_result(WindowEvent::KeyPressed { text: (*k).into() }).ok();
+            }
+            for k in chord.iter().rev() {
+                win.dispatch_event_with_result(WindowEvent::KeyReleased { text: (*k).into() }).ok();
+            }
+            schedule(runner, 1);
+        }
+        Step::DblClick { pane, row } => {
+            // rows start under the 3 px padding, 32 px path entry, 2 px spacing, 24 px header, 2 px spacing
+            let (_, _, mid) = geometry(&app, pane);
+            let pos = LogicalPosition::new(mid.x, 63.0 + row as f32 * 22.0 + 11.0);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            for _ in 0..2 {
+                win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Left }).ok();
+                win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Left }).ok();
+            }
             schedule(runner, 1);
         }
         Step::Quit => {
