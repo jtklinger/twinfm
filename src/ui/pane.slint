@@ -49,6 +49,7 @@ export component Pane inherits Rectangle {
         padding: 3px;
         spacing: 2px;
         path-edit := LineEdit {
+            accessible-label: "Path";
             text <=> root.path;
             placeholder-text: "Path";
             accepted(s) => { root.navigate(s); }
@@ -60,6 +61,8 @@ export component Pane inherits Rectangle {
             HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } }
         }
         key-area := FocusScope {
+            accessible-role: AccessibleRole.list;
+            accessible-label: "Files";
             key-pressed(e) => {
                 if (e.text == Key.Backspace) { root.go-up(); return accept; }
                 if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return accept; }
@@ -71,6 +74,12 @@ export component Pane inherits Rectangle {
             list := ListView {
                 for row[i] in rows: Rectangle {
                     height: 22px;
+                    accessible-role: AccessibleRole.list-item;
+                    accessible-label: row.is-dir ? row.name + ", folder" : row.name + ", " + row.size + ", " + row.modified;
+                    accessible-item-selectable: true;
+                    accessible-item-selected: i == current-row;
+                    accessible-item-index: i;
+                    accessible-item-count: rows.length;
                     background: i == current-row ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
                     HorizontalLayout {
                         padding-left: 6px;
