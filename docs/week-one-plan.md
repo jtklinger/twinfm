@@ -198,3 +198,28 @@ Same, Narrator **on** (morning): patched 50 ms 25.6% (accessibility 663 ms), 0 m
 - Exit criterion 2 (accessibility under 10% of main-thread samples) is not met: 27% at 50 ms.
   The structural fix (node updates for moved rows instead of a full rebuild) is what would
   close it; coalescing is at its useful limit.
+
+### Day 4 (2026-10-09): verified baseline and upstream package
+
+Unpatched Slint master a1ce0d8, built by `tools/build-master.sh` (binary verified free of
+the patch string), rows exposed, Narrator off, same scenario: **31.9%** main-thread busy,
+accessibility 1,706 ms (full rebuild 741, UIA event raising 687), render 933 ms, ListView
+343 ms, frame interval p95 22.9 ms. It matches the 0 ms control (30.5%, 1,645 ms), which
+closes the question of whether the vendored build itself changed anything.
+
+Final week-1 table (console WPR, main thread, 10 s after the split, rows in the tree):
+
+| Variant | Narrator | Busy | Accessibility | Render | ListView | Interval p95 |
+|---|---|---|---|---|---|---|
+| Slint master a1ce0d8, unpatched | off | 31.9% | 1,706 ms | 933 ms | 343 ms | 22.9 ms |
+| master + patch, 0 ms (control) | off | 30.5% | 1,645 ms | 885 ms | 328 ms | 18.7 ms |
+| master + patch, 50 ms | off | **19.1%** | 507 ms | 893 ms | 329 ms | 18.0 ms |
+| master + patch, 50 ms | on | 25.6% | 663 ms | 1,195 ms | 485 ms | n/a |
+| master + patch, 0 ms | on | 40.6% | 2,135 ms | 1,223 ms | 516 ms | n/a |
+
+Upstream package: `docs/patches/0001-winit-accesskit-coalesce-accessibility-tree-updates-.patch`
+(format-patch against a1ce0d8, commit message carries the numbers) and
+`docs/upstream-issue-draft.md`. Jeremy posts both; this session is not allowed to.
+
+Remaining for the week: day 5, the renderer check (`renderer-skia` + `renderer-skia-d3d`)
+against the 893 ms render pass that is now the largest cost, and the real-input scroll check.

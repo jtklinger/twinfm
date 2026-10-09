@@ -69,13 +69,26 @@ view, in order of preference:
 
 Scheduling both update paths (`invoke_later` for `reload_tree`, and
 `AccessibilityPropertyDirtyHandler::notify` for the dirty-node rebuild) on a 50 ms
-single-shot timer instead of a zero-delay one, with no other change, took the same scenario
-on master (a1ce0d8) from 28.4% main-thread busy to 18.4%, and the accessibility share from
-1,201 ms to 349 ms per 10 s. A 0 ms control built from the same patched tree measured
-26.8%, so the gain is the coalescing. The trigger on this desktop is `TextInputHost.exe`
-(Windows text-input host), which attaches a UIA client to every focused window; closing
-third-party tools did not change the cost. The 17-line diff is attached; I would expect a
-proper fix to be structural (node updates for moved rows rather than a full rebuild), but
-coalescing alone clears the practical problem and is cheap to review.
+single-shot timer instead of a zero-delay one, with no other change, took the same
+scenario on master (a1ce0d8), with the rows carrying `accessible-role: list-item`,
+labels and `accessible-item-selected`, and focus delegated to the current row as
+StandardListView does:
+
+| Build | Main thread busy, 10 s after split | Accessibility | of which full rebuild / UIA events |
+|---|---|---|---|
+| master a1ce0d8, unpatched | 31.9% | 1,706 ms | 741 / 687 ms |
+| patched, delay forced to 0 ms (control) | 30.5% | 1,645 ms | 711 / 701 ms |
+| patched, 50 ms | 19.1% | 507 ms | 186 / 259 ms |
+
+Narrator still reads each row as the user arrows and announces rows after a wheel scroll
+with no perceptible lag at 50 ms or 100 ms. With Narrator attached the patched build
+measures 25.6% (unpatched 40.6%).
+
+The trigger on this desktop is `TextInputHost.exe` (the Windows text-input host), which
+attaches a UIA client to every focused window; closing third-party tools (PowerToys,
+Logi Options+) did not change the cost. The patch is attached as a format-patch against
+a1ce0d8. I would expect a proper fix to be structural (node updates for moved rows rather
+than a full rebuild, which would also cut the UIA event volume), but coalescing alone
+clears the practical problem and is small enough to review quickly.
 
 Happy to test a patch on this machine with the same WPR scenario.
