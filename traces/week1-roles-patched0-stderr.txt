@@ -1,0 +1,31 @@
+[nav] pane=0 gen=1 path=C:\traces\bigdir
+[auto] 13 steps
+[enum] pane=0 first batch after 289.9 ms
+[enum] pane=0 done: 40000 entries, worker 35.6 ms, request-to-done 292.1 ms
+[sort] pane=0 40000 entries by Name asc=true in 17.1 ms
+[enum] pane=0 first screenful rendered 330.8 ms after request
+[auto] Sleep(2000)
+[auto] Split
+[mark] F3: split requested
+[nav] pane=1 gen=1 path=C:\traces\bigdir
+[auto] Sleep(500)
+[enum] pane=1 first batch after 8.6 ms
+[enum] pane=1 first screenful rendered 25.2 ms after request
+[split] second pane rendered with rows 27.2 ms after F3
+[enum] pane=1 done: 40000 entries, worker 31.7 ms, request-to-done 36.6 ms
+[sort] pane=1 40000 entries by Name asc=true in 18.2 ms
+[auto] Wheel { pane: 1, ticks: -120, ms: 16 }
+[perf] frames_total=131 render[n=131 p50=2.54ms p95=2.82ms max=12.45ms] interval[n=127 p50=16.57ms p95=17.77ms max=43.86ms] ui_cpu=1453ms over 5s = 11.09ms/frame
+[auto] Wheel { pane: 0, ticks: -120, ms: 16 }
+[auto] Drag { pane: 1, dy: 400.0, ms: 1000 }
+[auto] Drag { pane: 0, dy: 400.0, ms: 1000 }
+[auto] Sleep(6000)
+[perf] frames_total=381 render[n=250 p50=2.68ms p95=3.60ms max=4.64ms] interval[n=250 p50=17.09ms p95=22.46ms max=34.54ms] ui_cpu=2969ms over 5s = 11.88ms/frame
+[busy] 10 s after split: UI thread 40.0% busy over 10.0 s (cpu 4.000 s)
+[auto] Sort { pane: 0, col: 1 }
+[auto] Sleep(1000)
+[sort] pane=0 40000 entries by Size asc=true in 2.7 ms
+[auto] Sort { pane: 1, col: 2 }
+[auto] Sleep(3000)
+[sort] pane=1 40000 entries by Modified asc=true in 2.8 ms
+[auto] Quit

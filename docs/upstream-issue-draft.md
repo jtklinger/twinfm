@@ -65,4 +65,40 @@ view, in order of preference:
 2. Coalesce rebuilds until input settles (one frame of quiet, or at most every 100 ms).
 3. At minimum, document that `accessibility` has this cost on large lists (the ask in #3867).
 
-Happy to test a patch on this machine with the same WPR scenario.
+## Measured fixes (two patches attached)
+
+Same scenario, master a1ce0d8, rows with `accessible-role: list-item`, labels and
+`accessible-item-selected`, focus delegated to the current row as StandardListView does,
+no screen reader attached. WPR, main thread, 10 s window:
+
+| Build | Main thread busy | Accessibility work | of which full rebuild / UIA event raising |
+|---|---|---|---|
+| master, unpatched | 31.7% | 1,747 ms | 772 / 737 ms |
+| patch 1 only: both update paths on a 50 ms timer instead of 0 ms | 19.1% | 507 ms | 186 / 259 ms |
+| patch 2 only: incremental reload, parked ids, Flickable content node (timers at 0 ms) | 21.7% | 721 ms | 432 / 197 ms |
+| patches 1 + 2 | 16.7% | 198 ms | 124 / 43 ms |
+
+Patch 2 (`0002-*.patch`, about 300 lines in `internal/backends/winit/accesskit.rs` plus
+`ItemRc::map_to_ancestor` made public):
+
+1. Freed component ids are parked (1,024 deep) before reuse. Reusing one immediately made a
+   row created in a frame look like an update of the row destroyed in the same frame, which
+   raised Name and PositionInSet property-changed events for it and its text children. This
+   alone is most of the 737 ms of `QueuedEvents::raise`.
+2. `build_new_tree` keeps the node cache across structural changes. Each cached node has a
+   content tracker and a geometry tracker and keeps its last-sent `Node`; a clean node is
+   skipped, a geometry-only change is recomputed and sent only when the bounds moved.
+3. Accessible children inside a Flickable are grouped under a synthetic `GenericContainer`
+   whose `transform` is the scroll offset, with the children's bounds relative to it. UI
+   Automation filters that node, so the exposed tree and screen rectangles are unchanged
+   (verified with a UIA tree dump before and after a scroll; Narrator reads rows).
+
+Patch 1 (`0001-*.patch`, 17 lines) adds the 50 ms coalescing with an environment-variable
+override for experiments. Narrator shows no perceptible announcement lag at 50 or 100 ms.
+
+The trigger on this desktop is `TextInputHost.exe` (the Windows text-input host), which
+attaches a UIA client to every focused window; closing third-party tools (PowerToys, Logi
+Options+) did not change the cost, so client gating is not a fix.
+
+Happy to rework either patch for review, or test an alternative on this machine with the
+same WPR scenario.
