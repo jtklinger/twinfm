@@ -72,3 +72,22 @@ target\release\rustfm-proto.exe C:\traces\bigdir
 For a WPR trace run `tools\wpr-gate.ps1` from an elevated PowerShell at the physical
 console. Over RDP the Remote Display Adapter presents at 32 Hz and the frame cadence will
 sit near 21 fps whatever the app does.
+
+## License
+
+The application's own files are MIT (see `LICENSE`). It links a modified Slint, used under
+the [Slint Royalty-free Desktop, Mobile, and Web Applications License 2.0](https://github.com/slint-ui/slint/blob/master/LICENSES/LicenseRef-Slint-Royalty-free-2.0.md),
+whose section 2 permits distributing Slint "as part of an Application, modified or
+unmodified" provided the Slint attribution is shown. This README is that attribution
+(option (b) of section 2); the `AboutSlint` widget goes into an About dialog once the
+product has menus.
+
+The modifications to Slint themselves are the two commits on the `rustfm` branch of
+[jtklinger/slint](https://github.com/jtklinger/slint), also carried as `docs/patches/`.
+Slint's licensing FAQ states that modifications may be released under any license of the
+modifier's choice, so those two commits are offered under MIT like the rest of this
+repository; the Slint code around them keeps Slint's own triple license (GPL-3.0-only,
+Royalty-free 2.0, or commercial), and the fork as a standalone copy of Slint is
+redistributed under Slint's GPL-3.0 option, as section 3 of the Royalty-free license directs.
+
+[![Made with Slint](https://github.com/slint-ui/slint/raw/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
