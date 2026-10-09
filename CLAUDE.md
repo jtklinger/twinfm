@@ -6,19 +6,20 @@ decision). Read both before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (3 tests)
-- `cargo build --release` (default = Slint master a1ce0d8 from `vendor/slint` via `[patch]`,
-  with the two accessibility patches in `docs/patches/`)
+- `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
+  pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
+  `docs/patches/`; a fresh clone builds with no manual steps)
 
 ## Build variants
-- `vendor/slint` is git-ignored: it is the Slint master checkout plus the commits in
-  `docs/patches/`. Recreate it from the patches if missing (clone slint-ui/slint at a1ce0d8,
-  `git am docs/patches/000*.patch`); regenerate the patches with `git format-patch` from
-  inside it after any change there.
+- The patched Slint lives at https://github.com/jtklinger/slint, branch `rustfm` (a1ce0d8 +
+  `git am docs/patches/000*.patch`). To change it: commit on that branch, push, regenerate
+  `docs/patches/` with `git format-patch a1ce0d8`, and bump the `rev` in both `Cargo.toml`
+  entries. Every git dependency is pinned by `rev`; never `branch = "master"`.
 - `target-*` directories are ignored. Never `git add -A` with an unignored target dir (a
   1.2 GB commit happened once).
-- Unpatched Slint for comparison: `tools/build-master.sh` only. Stripping `[patch]` from the
-  manifest is not enough while `Cargo.lock` holds the path sources; the script sets the
-  lockfile aside, pins the vendored rev, and fails if the binary contains the patch string.
+- Unpatched Slint for comparison: `tools/build-master.sh` only. It rewrites the fork
+  references to slint-ui/slint at a1ce0d8, builds with the lockfile set aside, restores both
+  files, and fails if the binary contains the patch string.
 - Accessibility off: `cargo build --release --no-default-features` (isolates the AccessKit cost).
 - Both renderers in one binary: `cargo build --release --features skia --target-dir target-skia`;
   select with `SLINT_BACKEND=winit-femtovg` or `winit-skia`. Skia D3D is slower here (22.2% vs
