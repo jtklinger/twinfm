@@ -15,7 +15,7 @@ trap 'cp "$TMP/Cargo.toml" Cargo.toml; cp "$TMP/Cargo.lock" Cargo.lock; rm -rf "
 cp Cargo.toml Cargo.lock "$TMP/"
 sed -E "s|git = \"https://github.com/jtklinger/slint\", rev = \"[0-9a-f]+\"|git = \"https://github.com/slint-ui/slint\", rev = \"$UPSTREAM_REV\"|g" \
     Cargo.toml > "$TMP/Cargo.master.toml"
-grep -q 'jtklinger/slint' "$TMP/Cargo.master.toml" && { echo "rewrite failed"; exit 1; }
+grep -q 'git = "https://github.com/jtklinger/slint"' "$TMP/Cargo.master.toml" && { echo "rewrite failed"; exit 1; }
 cp "$TMP/Cargo.master.toml" Cargo.toml
 rm -f Cargo.lock
 cargo build --release --target-dir target-master
