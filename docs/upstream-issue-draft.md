@@ -1,3 +1,5 @@
+**Deferred 2026-10-09: not posted; revisit when the product is solid.**
+
 # Draft upstream issue for slint-ui/slint (to be posted by Jeremy)
 
 Suggested title: **winit/accesskit: full tree rebuild on every scrolled frame makes
@@ -28,7 +30,7 @@ This is #3867 reproduced on 1.18.1 with numbers and stacks.
 
 ## Reproduction
 
-Repository: <private, Jeremy to decide whether to make it public or attach the files>.
+Repository: https://github.com/jtklinger/rustfm-proto (patched Slint: https://github.com/jtklinger/slint, branch `rustfm`).
 A `ListView` with `for row[i] in rows:` over a custom `slint::Model` of 40,000 rows, each
 row a `Rectangle` with four `Text` items. A scripted driver dispatches
 `WindowEvent::PointerScrolled` every 16 ms and a thumb drag via `PointerPressed` /
