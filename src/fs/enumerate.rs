@@ -42,7 +42,7 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        batch.push(Entry { name: de.file_name().to_string_lossy().as_ref().into(), size, modified, is_dir });
+        batch.push(Entry::new(de.file_name().to_string_lossy().as_ref().into(), size, modified, is_dir));
         if batch.len() >= BATCH_SIZE {
             total += batch.len();
             let full = std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
@@ -58,4 +58,76 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
     }
     let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None });
     wake();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+
+    fn collect(path: PathBuf) -> Vec<Msg> {
+        let (tx, rx) = unbounded();
+        spawn(path, 1, 7, tx, || {});
+        let mut out = Vec::new();
+        loop {
+            let m = rx.recv().expect("worker sends Done before exiting");
+            let done = matches!(m, Msg::Done { .. });
+            out.push(m);
+            if done {
+                return out;
+            }
+        }
+    }
+
+    fn describe(m: &Msg) -> String {
+        match m {
+            Msg::Batch { entries, .. } => format!("Batch of {}", entries.len()),
+            Msg::Done { total, error, .. } => format!("Done total={total} error={error:?}"),
+        }
+    }
+
+    #[test]
+    fn enumerates_files_and_a_subdirectory() {
+        let dir = std::env::temp_dir().join(format!("rustfm-enum-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for i in 0..3 {
+            std::fs::write(dir.join(format!("f{i}.txt")), vec![b'x'; i * 100]).unwrap();
+        }
+        let msgs = collect(dir.clone());
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let batches: Vec<&Vec<Entry>> = msgs
+            .iter()
+            .filter_map(|m| match m {
+                Msg::Batch { entries, pane: 1, generation: 7 } => Some(entries),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(batches.len(), 1, "4 entries fit in one batch of {BATCH_SIZE}");
+        let entries = batches[0];
+        assert_eq!(entries.len(), 4);
+        let sub = entries.iter().find(|e| e.name == "sub").expect("subdirectory listed");
+        assert!(sub.is_dir);
+        assert_eq!(sub.size_text, "");
+        let f2 = entries.iter().find(|e| e.name == "f2.txt").unwrap();
+        assert!(!f2.is_dir);
+        assert_eq!(f2.size, 200);
+        assert_eq!(f2.size_text, "200 B");
+        assert_eq!(f2.modified_text.len(), 16);
+        match msgs.last().unwrap() {
+            Msg::Done { pane: 1, generation: 7, total: 4, error: None, .. } => {}
+            other => panic!("unexpected final message: {}", describe(other)),
+        }
+    }
+
+    #[test]
+    fn bad_path_yields_done_with_error() {
+        let msgs = collect(PathBuf::from(r"C:\rustfm-enum-test-does-not-exist\nope"));
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            Msg::Done { total: 0, error: Some(e), .. } => assert!(!e.is_empty()),
+            other => panic!("unexpected message: {}", describe(other)),
+        }
+    }
 }
