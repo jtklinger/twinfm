@@ -41,7 +41,9 @@ splitting.
 ## Follow-up runs: isolating the accessibility cost
 
 Same elevated console, same script, same 10 s window after the split, main thread only.
-Traces `C:	racesustfm-noclients.etl` and `C:	racesustfm-noa11y.etl`; reports under
+Traces `C:	races
+ustfm-noclients.etl` and `C:	races
+ustfm-noa11y.etl`; reports under
 `traces/` in this repo.
 
 | Configuration | WPR main-thread busy | In-app (GetThreadTimes) | Frame interval p95 | Render pass p95 | Accessibility frames |
@@ -123,6 +125,17 @@ The gate scenario (`tools/wpr-gate.ps1`):
 sleep 2000; split; sleep 500; wheel 1 -120 16; wheel 0 -120 16; drag 1 400 1000;
 drag 0 400 1000; sleep 6000; sort 0 1; sleep 1000; sort 1 2; sleep 3000; quit
 ```
+
+## Upstream state (checked 2026-10-08)
+
+- [slint-ui/slint#3867](https://github.com/slint-ui/slint/issues/3867): the same symptom on
+  Slint 1.3.0 (accessibility dominating a big ListView), open since 2023-11, no fix, no
+  comments.
+- [slint-ui/slint#13676](https://github.com/slint-ui/slint/pull/13676): a memory-leak fix in
+  `build_new_tree` for repeated components while an accessibility client is active, merged
+  to master 2026-09-27, not in 1.18.1. Same code path, does not address the per-frame cost.
+- The issue draft to post is `docs/upstream-issue-draft.md`; the week-one plan that clears
+  the gate before any product work is `docs/week-one-plan.md`.
 
 ## Recommendation
 
