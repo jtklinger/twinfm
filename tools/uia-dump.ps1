@@ -13,7 +13,8 @@ function Dump($el, $depth) {
     $c = $el.Current
     $sel = ""
     try { $sp = $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern); if ($sp) { $sel = " selected=" + $sp.Current.IsSelected } } catch {}
-    "{0}{1} | name='{2}' | focusable={3} focused={4}{5}" -f ("  " * $depth), $c.ControlType.ProgrammaticName, $c.Name, $c.IsKeyboardFocusable, $c.HasKeyboardFocus, $sel
+    $r = $c.BoundingRectangle
+    "{0}{1} | name='{2}' | focusable={3} focused={4}{5} | rect={6},{7} {8}x{9}" -f ("  " * $depth), $c.ControlType.ProgrammaticName, $c.Name, $c.IsKeyboardFocusable, $c.HasKeyboardFocus, $sel, [int]$r.X, [int]$r.Y, [int]$r.Width, [int]$r.Height
     $child = $walker.GetFirstChild($el)
     while ($null -ne $child -and $script:n -lt $MaxNodes) { Dump $child ($depth + 1); $child = $walker.GetNextSibling($child) }
 }

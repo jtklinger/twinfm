@@ -223,3 +223,30 @@ Upstream package: `docs/patches/0001-winit-accesskit-coalesce-accessibility-tree
 
 Remaining for the week: day 5, the renderer check (`renderer-skia` + `renderer-skia-d3d`)
 against the 893 ms render pass that is now the largest cost, and the real-input scroll check.
+
+### Day 4, afternoon (2026-10-09): the structural fix
+
+Implemented in the vendored Slint (`docs/patches/0002-*.patch`, cumulative diff
+`docs/patches/accesskit-week1.diff`), three parts:
+
+1. **Parked component ids.** The backend reused a destroyed row's component id for the next
+   row created, so AccessKit saw an *updated* node (new name, new position in set) and the
+   Windows adapter raised a property-changed event per node, every frame. Freed ids now wait
+   behind 1,024 others before reuse.
+2. **Incremental reload.** `build_new_tree` keeps the node cache across structural changes;
+   a node whose place, content and geometry are unchanged is neither rebuilt nor re-sent.
+   Each cached node has a content tracker and a geometry tracker, and the last-sent node is
+   kept for a value compare.
+3. **A content node per Flickable.** Accessible children inside a Flickable are grouped
+   under a synthetic GenericContainer whose AccessKit transform is the scroll offset; row
+   bounds are relative to it. UI Automation filters that node, so the tree and the screen
+   rectangles are unchanged (verified with `tools/uia-dump.ps1` before and after a scroll).
+   The first version keyed this on the accessible item being a Flickable and did nothing,
+   because the item with the list role in a ScrollView is a Rectangle above the Flickable;
+   the fix looks for a Flickable on the path between an accessible item and each child.
+
+In-process counters (`SLINT_ACCESSKIT_STATS=1`): nodes sent per incremental update fell
+from ~168 (every row of the scrolling pane) to ~30 to 55 (rows entering the viewport plus
+the content node); backend CPU about 15 ms per second of scrolling. In-app busy numbers in
+this session stopped being comparable between runs (the presentation mode changed mid-way:
+250 frames per 5 s one minute, 160 the next), so the console WPR comparison decides.
