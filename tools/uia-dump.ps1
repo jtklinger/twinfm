@@ -1,9 +1,9 @@
-# Dump the UI Automation tree of the running rustfm-proto window (what a screen reader sees).
+# Dump the UI Automation tree of the running twinfm window (what a screen reader sees).
 # No elevation needed. Usage: uia-dump.ps1 [-MaxDepth 6] [-MaxNodes 80]
 param([int]$MaxDepth = 6, [int]$MaxNodes = 80)
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
-$p = Get-Process rustfm-proto -ErrorAction Stop | Select-Object -First 1
+$p = Get-Process twinfm -ErrorAction Stop | Select-Object -First 1
 $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
 $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
 $script:n = 0

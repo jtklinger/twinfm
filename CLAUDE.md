@@ -1,7 +1,8 @@
-# rustfm-proto
+# twinfm
 
-One-week Rust + Slint dual-pane file manager prototype for Windows 11, now the base of the
-real product (stack adopted 2026-10-09, see the recommendation in `PROTOTYPE-RESULT.md`).
+TwinFM: dual-pane file manager for Windows 11 in Rust + Slint. Started as the one-week
+prototype `rustfm-proto` (renamed 2026-10-09; stack adopted the same day, see the recommendation
+in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch keeps its `rustfm` name.
 `PROTOTYPE-RESULT.md` is the gate record, `docs/week-one-plan.md` the week-one record
 (accessibility fix, renderer decision). Read both before changing the list.
 
@@ -28,7 +29,7 @@ real product (stack adopted 2026-10-09, see the recommendation in `PROTOTYPE-RES
   is blank on that path. The renderer stays femtovg.
 
 ## Measuring
-- In-app: `RUSTFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
+- In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
   `[busy]`, `[split]`, `[enum]` lines. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
@@ -47,7 +48,7 @@ real product (stack adopted 2026-10-09, see the recommendation in `PROTOTYPE-RES
 The app is MIT. Slint is used under its Royalty-free 2.0 license, which allows a modified
 Slint inside an application with attribution (the badge in `README.md`; the `AboutSlint`
 widget once there is an About dialog). The patches and fork commits are offered under MIT;
-see README ง License before changing any of this.
+see README ยง License before changing any of this.
 
 ## Delivery
 Branch, PR, squash-merge on Jeremy's go-ahead, per the projects-root `CLAUDE.md`.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Main-thread analysis of a gate-run WPR trace, no elevation needed.
 
-    python tools/analyze-trace.py C:\\traces\\rustfm-<name>.etl [--symbols]
+    python tools/analyze-trace.py C:\\traces\\twinfm-<name>.etl [--symbols]
 
 Steps (all via xperf from the Windows Performance Toolkit, which must be on PATH):
   1. list the process's threads; the first thread is the main thread, and the right-pane
@@ -50,7 +50,7 @@ def main():
     run(base + ["-o", threads_txt, "-a", "process", "-thread"])
     procs, threads = [], []
     for line in open(threads_txt, encoding="utf-8", errors="replace"):
-        if "rustfm-proto.exe" not in line:
+        if not any(exe in line for exe in ("twinfm.exe", "rustfm-proto.exe")):  # old traces keep the old name
             continue
         f = [x.strip() for x in line.split(",")]
         start, end, kind = int(f[0]), int(f[1]), f[2]
@@ -59,7 +59,7 @@ def main():
         elif kind == "Thread":
             threads.append((start, end, int(f[5])))
     if not threads:
-        print("no rustfm-proto.exe threads found in", etl)
+        print("no twinfm.exe (or rustfm-proto.exe) threads found in", etl)
         return 1
     threads.sort()
     pstart = procs[0][0] if procs else threads[0][0]

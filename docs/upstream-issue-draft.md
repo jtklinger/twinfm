@@ -30,7 +30,7 @@ This is #3867 reproduced on 1.18.1 with numbers and stacks.
 
 ## Reproduction
 
-Repository: https://github.com/jtklinger/rustfm-proto (patched Slint: https://github.com/jtklinger/slint, branch `rustfm`).
+Repository: https://github.com/jtklinger/twinfm (patched Slint: https://github.com/jtklinger/slint, branch `rustfm`).
 A `ListView` with `for row[i] in rows:` over a custom `slint::Model` of 40,000 rows, each
 row a `Rectangle` with four `Text` items. A scripted driver dispatches
 `WindowEvent::PointerScrolled` every 16 ms and a thumb drag via `PointerPressed` /

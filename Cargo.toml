@@ -1,9 +1,9 @@
 [package]
-name = "rustfm-proto"
+name = "twinfm"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "One-week prototype: Rust + Slint dual-pane file manager for Windows 11"
+description = "TwinFM: a dual-pane file manager for Windows 11 in Rust and Slint, built to stay smooth on very large folders"
 
 [dependencies]
 # Slint master a1ce0d8 plus the two accessibility patches in docs/patches/, carried on the

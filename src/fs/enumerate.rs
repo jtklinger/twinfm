@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn enumerates_files_and_a_subdirectory() {
-        let dir = std::env::temp_dir().join(format!("rustfm-enum-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("twinfm-enum-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         for i in 0..3 {
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn bad_path_yields_done_with_error() {
-        let msgs = collect(PathBuf::from(r"C:\rustfm-enum-test-does-not-exist\nope"));
+        let msgs = collect(PathBuf::from(r"C:\twinfm-enum-test-does-not-exist\nope"));
         assert_eq!(msgs.len(), 1);
         match &msgs[0] {
             Msg::Done { total: 0, error: Some(e), .. } => assert!(!e.is_empty()),

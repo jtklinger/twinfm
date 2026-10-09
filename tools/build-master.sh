@@ -20,7 +20,7 @@ cp "$TMP/Cargo.master.toml" Cargo.toml
 rm -f Cargo.lock
 cargo build --release --target-dir target-master
 echo "resolved: $(cargo tree -p slint --depth 0 | tail -1)"
-if grep -q "SLINT_ACCESSKIT_UPDATE_DELAY_MS" target-master/release/rustfm-proto.exe; then
+if grep -q "SLINT_ACCESSKIT_UPDATE_DELAY_MS" target-master/release/twinfm.exe; then
   echo "ERROR: target-master binary contains the patch"; exit 1
 fi
-echo "ok: target-master/release/rustfm-proto.exe is unpatched Slint master at $UPSTREAM_REV"
+echo "ok: target-master/release/twinfm.exe is unpatched Slint master at $UPSTREAM_REV"
