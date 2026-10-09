@@ -4,15 +4,33 @@
 use crate::Row;
 use slint::{Model, ModelNotify, ModelTracker, SharedString};
 use std::cell::{Cell, RefCell};
+use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime, TIME_ZONE_INFORMATION};
 
 /// One directory entry. No handles, no callbacks, no per-row heap objects besides the
-/// refcounted name string (SharedString is a thin Arc-like handle, cheap to clone).
+/// refcounted strings (SharedString is a thin Arc-like handle, cheap to clone). The display
+/// strings are formatted once here, on the enumeration worker, so `row_data` only clones.
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub name: SharedString,
     pub size: u64,
     pub modified: i64, // unix seconds
     pub is_dir: bool,
+    pub size_text: SharedString,
+    pub modified_text: SharedString,
+}
+
+impl Entry {
+    pub fn new(name: SharedString, size: u64, modified: i64, is_dir: bool) -> Entry {
+        Entry {
+            size_text: if is_dir { SharedString::default() } else { format_size(size).into() },
+            modified_text: format_time(modified).into(),
+            name,
+            size,
+            modified,
+            is_dir,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,12 +114,7 @@ impl Model for PaneModel {
     fn row_data(&self, row: usize) -> Option<Row> {
         let entries = self.entries.borrow();
         let e = entries.get(row)?;
-        Some(Row {
-            name: e.name.clone(),
-            size: if e.is_dir { SharedString::default() } else { format_size(e.size).into() },
-            modified: format_time(e.modified).into(),
-            is_dir: e.is_dir,
-        })
+        Some(Row { name: e.name.clone(), size: e.size_text.clone(), modified: e.modified_text.clone(), is_dir: e.is_dir })
     }
 
     fn model_tracker(&self) -> &dyn ModelTracker {
@@ -176,21 +189,28 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Civil date from Unix seconds (Howard Hinnant's algorithm). UTC; local tz ignored for the prototype.
+/// Local date and time from Unix seconds, through the Win32 time-zone conversion
+/// (`FileTimeToSystemTime` + `SystemTimeToTzSpecificLocalTime`); no chrono dependency.
 pub fn format_time(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", rem / 3600, (rem % 3600) / 60)
+    format_time_in(secs, None)
+}
+
+/// `tz = None` uses the current time zone; tests pass a fixed one.
+fn format_time_in(secs: i64, tz: Option<&TIME_ZONE_INFORMATION>) -> String {
+    // FILETIME counts 100 ns ticks since 1601-01-01; the Unix epoch is 11,644,473,600 s later.
+    let ticks = (secs + 11_644_473_600).saturating_mul(10_000_000);
+    let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+    let mut utc: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    let mut local: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    let tz_ptr = tz.map_or(std::ptr::null(), |t| t as *const TIME_ZONE_INFORMATION);
+    // SAFETY: every pointer refers to a live stack value of the exact type the call expects.
+    let ok = unsafe {
+        FileTimeToSystemTime(&ft, &mut utc) != 0 && SystemTimeToTzSpecificLocalTime(tz_ptr, &utc, &mut local) != 0
+    };
+    if !ok {
+        return String::new();
+    }
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute)
 }
 
 #[cfg(test)]
@@ -198,7 +218,14 @@ mod tests {
     use super::*;
 
     fn e(name: &str, size: u64, is_dir: bool) -> Entry {
-        Entry { name: name.into(), size, modified: 0, is_dir }
+        Entry::new(name.into(), size, 0, is_dir)
+    }
+
+    /// A fixed UTC-5 zone with no daylight rule, so the test does not depend on the machine.
+    fn utc_minus_5() -> TIME_ZONE_INFORMATION {
+        let mut tz: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+        tz.Bias = 300;
+        tz
     }
 
     #[test]
@@ -214,8 +241,11 @@ mod tests {
 
     #[test]
     fn dates_and_sizes() {
-        assert_eq!(format_time(0), "1970-01-01 00:00");
-        assert_eq!(format_time(1_790_000_000), "2026-09-21 14:13");
+        assert_eq!(format_time_in(0, Some(&utc_minus_5())), "1969-12-31 19:00");
+        assert_eq!(format_time_in(1_790_000_000, Some(&utc_minus_5())), "2026-09-21 09:13");
+        assert_eq!(format_time(1_790_000_000).len(), 16); // current zone: shape only
+        assert_eq!(e("f", 1536, false).size_text.as_str(), "1.5 KB");
+        assert_eq!(e("d", 1536, true).size_text.as_str(), "");
         assert_eq!(format_size(1), "1 B");
         assert_eq!(format_size(1536), "1.5 KB");
     }
