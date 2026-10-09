@@ -2,7 +2,9 @@
 # Adapter presents at 32 Hz, which caps the frame cadence and hides the real 60 Hz behavior).
 #   Right-click PowerShell > Run as administrator, then:
 #   powershell -ExecutionPolicy Bypass -File C:\Users\jtkli\projects\rustfm-proto\tools\wpr-gate.ps1
-# Produces C:\traces\rustfm-proto.etl and C:\traces\rustfm-proto-stderr.txt (the in-app timers).
+# Produces <Etl> and <Etl basename>-stderr.txt (the in-app timers). Pass -Exe and -Etl to compare
+# variants, e.g. the accessibility-off build (cargo build --release --no-default-features --target-dir target-noa11y):
+#   ... wpr-gate.ps1 -Exe C:\Users\jtkli\projects\rustfm-proto\target-noa11y\release\rustfm-proto.exe -Etl C:\traces\rustfm-noa11y.etl
 # Open the .etl in WPA: CPU Usage (Sampled) > Utilization by Process, Thread, Stack; filter to
 # rustfm-proto.exe, main thread, and select the 10 s after the "[mark] F3: split requested" line.
 param(
@@ -10,6 +12,7 @@ param(
     [string]$Dir = "C:\traces\bigdir",
     [string]$Etl = "C:\traces\rustfm-proto.etl"
 )
+$Stderr = [System.IO.Path]::ChangeExtension($Etl, "stderr.txt")
 $elev = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $elev) { throw "Run this elevated (WPR needs administrator)." }
 if (-not $env:_NT_SYMBOL_PATH) { $env:_NT_SYMBOL_PATH = "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols" }
@@ -20,10 +23,10 @@ $env:RUSTFM_SCRIPT = "sleep 2000; split; sleep 500; wheel 1 -120 16; wheel 0 -12
 
 wpr -start CPU -filemode
 Start-Sleep -Seconds 1
-$p = Start-Process -FilePath $Exe -ArgumentList $Dir -PassThru -RedirectStandardError "C:\traces\rustfm-proto-stderr.txt"
+$p = Start-Process -FilePath $Exe -ArgumentList $Dir -PassThru -RedirectStandardError $Stderr
 $peak = 0
 while (-not $p.HasExited) { $p.Refresh(); if ($p.WorkingSet64 -gt $peak) { $peak = $p.WorkingSet64 }; Start-Sleep -Milliseconds 250 }
 wpr -stop $Etl
 "peak working set MB: $([int]($peak / 1MB))"
 "in-app timers:"
-Get-Content "C:\traces\rustfm-proto-stderr.txt"
+Get-Content $Stderr
