@@ -137,42 +137,21 @@ drag 0 400 1000; sleep 6000; sort 0 1; sleep 1000; sort 1 2; sleep 3000; quit
 - The issue draft to post is `docs/upstream-issue-draft.md`; the week-one plan that clears
   the gate before any product work is `docs/week-one-plan.md`.
 
+## Week one outcome (2026-10-09)
+
+The condition below was worked through in week one (`docs/week-one-plan.md`). The cause was
+confirmed (`TextInputHost.exe` keeps the adapter active on every Windows 11 desktop) and
+fixed in a vendored Slint (`docs/patches/`): parked component ids, incremental tree reload,
+and a scroll-offset transform node per Flickable, plus 50 ms coalescing. Console WPR, rows
+exposed to accessibility, Narrator off:
+
+| Build | Main thread busy, 10 s after split | Accessibility work |
+|---|---|---|
+| Slint master, unpatched | 31.7% | 1,747 ms |
+| Slint master + week-one patches | 16.7% | 198 ms |
+
+Criterion 3 of the gate now passes at a real 60 Hz display with accessibility on and a
+screen reader able to read the list. Criterion 2 (frame interval p95) is 18.9 ms, unchanged:
+pacing, not work. The render pass (948 ms, mostly text) is now the largest cost.
+
 ## Recommendation
-
-Proceed with the six-month build on this stack, with one condition. The hypothesis held
-where it mattered: with the toolkit owning its rendering and the list backed by a plain
-Vec, a 40,000-entry folder costs the UI thread about 30 ms in total, a second pane appears
-in under 40 ms, the process sits at 116 MB, and 73 minutes of abuse produced no crash. The
-code is about 900 lines and nothing in it is tuned.
-
-The condition: the two failed criteria have a single dominant cause, the per-frame
-accessibility tree rebuild, which is Slint backend code, not application code, and which the
-follow-up runs show is triggered on an ordinary desktop regardless of which utilities are
-running. Week one of the real build should establish, with upstream, how the AccessKit tree
-can be updated lazily (only the viewport's rows, only on settle, or only when a real
-assistive client is attached rather than any WM_GETOBJECT sender) and re-run this exact
-scenario. The accessibility-off run (15.2%) is the proof that nothing else in the design
-stands in the way. If that cannot be made to pass 20% with accessibility on, the stack
-decision should be revisited then, not six months later. Text rendering is the second cost
-and is the normal one.
-
-## Three things learned about Slint on Windows that change the plan
-
-1. **AccessKit is the scroll tax, not rendering.** With the default `accessibility`
-   feature the UI thread spends more per scrolled frame rebuilding and announcing the
-   accessibility tree than drawing. A screen-reader-capable product cannot turn it off, so
-   the plan needs a throttled or viewport-only accessibility update (and an upstream
-   issue or patch) before the file list is "done".
-2. **Presentation is vsync-bound and not tunable from app code.** The femtovg/OpenGL
-   backend blocks in present at the display's rate: 60 Hz at the console, 21 fps over RDP
-   regardless of a 1.5 ms render. Evaluate the Skia D3D renderer (`renderer-skia-d3d`) in
-   week one of the real build and treat frame pacing as a backend property.
-3. **The model boundary is cheap; the rest is plumbing.** `slint::Model` with
-   `row_added` per 2,000-entry batch, `row_data` building a four-field struct for visible
-   rows only, and `invoke_from_event_loop` for wakeups gave these numbers with no tuning.
-   Smaller lessons that cost time: colors must come from `Palette` or dark mode renders
-   white text on white; keyboard events need window focus before `forward-focus` applies;
-   `DirEntry::metadata()` is free on Windows (FindNextFile data); the window takes 200 to
-   400 ms to create before the event loop runs, which dominates first paint at startup; a
-   Windows environment variable caps at 32 KB; `xperf -a stack` needs `-event Prof` to
-   select sampled-profile stacks.

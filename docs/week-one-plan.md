@@ -250,3 +250,31 @@ from ~168 (every row of the scrolling pane) to ~30 to 55 (rows entering the view
 the content node); backend CPU about 15 ms per second of scrolling. In-app busy numbers in
 this session stopped being comparable between runs (the presentation mode changed mid-way:
 250 frames per 5 s one minute, 160 the next), so the console WPR comparison decides.
+
+### Day 4, evening (2026-10-09): structural fix measured at the console
+
+Console WPR, rows exposed, Narrator off, same scenario and analysis:
+
+| Variant | Busy | Accessibility | of which rebuild / UIA events | Render | ListView | Interval p95 |
+|---|---|---|---|---|---|---|
+| Slint master a1ce0d8, unpatched (verified) | 31.7% | 1,747 ms | 772 / 737 ms | 928 ms | 343 ms | 19.2 ms |
+| structural fix, coalescing off (0 ms) | 21.7% | 721 ms | 432 / 197 ms | 906 ms | 341 ms | 17.5 ms |
+| structural fix + 50 ms coalescing | **16.7%** | **198 ms** | 124 / 43 ms | 948 ms | 357 ms | 18.9 ms |
+
+Narrator reads each row as the user arrows on the structural build (transform-based
+coordinates), so the screen-reader check holds.
+
+Week-one exit criteria, final:
+
+1. Under 20% main-thread busy, accessibility on, normal desktop: **met, 16.7%** (was 31.7%).
+2. Accessibility under 10% of main-thread samples: **11.9% by the share definition**
+   (198 of 1,671), **2.0% of the thread's time** in absolute terms (was 17.5%). The share
+   misses by two points because the denominator shrank with it. The remaining cost is the
+   per-update walk over the cached nodes evaluating dirty geometry trackers (rows move every
+   frame; the visibility read walks ancestors for the clip). A cheaper visibility read would
+   close it; not done this week.
+3. Narrator reads and announces rows: **met**.
+
+The accessibility backend is no longer the dominant cost: the render pass (948 ms, 57% of
+the remaining time, text 533 ms) and ListView row maintenance (357 ms) are. That is the
+day-5 question (renderer check) and beyond.
