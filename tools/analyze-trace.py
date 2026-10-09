@@ -95,6 +95,8 @@ def main():
             "  dirty-node rebuild": "rebuild_tree_of_dirty_nodes",
             "  UIA event raising (QueuedEvents::raise)": "QueuedEvents::raise",
             "render pass (FemtoVGRenderer::render)": "FemtoVGRenderer::render",
+            "render pass (SkiaRenderer::render)": "SkiaRenderer::render",
+            "  skia flush/present": "flush_and_submit",
             "  text (draw_text)": "draw_text",
             "ListView rows (ensure_updated_listview)": "ensure_updated_listview",
             "timers (activate_expired)": "activate_expired",

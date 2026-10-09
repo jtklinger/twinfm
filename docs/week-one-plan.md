@@ -278,3 +278,41 @@ Week-one exit criteria, final:
 The accessibility backend is no longer the dominant cost: the render pass (948 ms, 57% of
 the remaining time, text 533 ms) and ListView row maintenance (357 ms) are. That is the
 day-5 question (renderer check) and beyond.
+
+### Day 5 (2026-10-09): renderer check and real-input scroll
+
+**Renderer.** One binary built with both renderers (`cargo build --release --features skia
+--target-dir target-skia`), the week-one patches in both, selected with `SLINT_BACKEND`.
+Console WPR, same scenario, Narrator off:
+
+| Renderer | Busy | Render pass | of which text | ListView rows | Accessibility |
+|---|---|---|---|---|---|
+| femtovg (OpenGL) | **17.2%** | 975 ms | 493 ms | 363 ms | 206 ms |
+| Skia (Direct3D) | 22.2% | 1,456 ms | 616 ms | 321 ms | 183 ms |
+
+Skia costs the main thread 50% more per frame than femtovg on this list: its command
+recording and text path are heavier CPU-side, and the Direct3D flush itself is only 56 ms.
+Decision: **stay on femtovg**. Two notes for later: under Skia Direct3D Slint does not fire
+the rendering notifier, so the in-app frame timer is blank on that path; and the Skia
+binary is 25 MB against 15 MB.
+
+**Real-input scroll check.** Jeremy scrolled both panes by wheel and by thumb drag for
+about 55 s on the patched femtovg build: 2,418 frames, interval p50 16.5 ms and p95 between
+17.9 and 19.6 ms in every 5 s window, render p95 under 2.8 ms, a handful of 50 to 85 ms
+outliers at drag starts and pane switches, UI thread 14.2% busy over the first 10 s. The
+motion looked smooth throughout. The 18 ms p95 that the original gate's criterion 2 trips
+on is scheduling jitter around vsync, not dropped frames, and it is not visible: recorded
+as such, not pursued further.
+
+### Week one: closed
+
+| Exit criterion | Target | Result |
+|---|---|---|
+| Main thread busy, accessibility on, normal desktop | under 20% | **16.7%** (from 31.7%) |
+| Accessibility share of main-thread samples | under 10% | 11.9% by share, 2.0% of the thread's time (from 17.5%) |
+| Narrator reads and announces rows | works | works, no lag at 50 or 100 ms |
+
+Deliverables: the two patches in `docs/patches/` with `docs/upstream-issue-draft.md`,
+posted by Jeremy; the tooling in `tools/`; this plan as the record. The renderer stays
+femtovg. Next largest costs, in order: the render pass (975 ms, text 493 ms), ListView row
+maintenance (363 ms), then the remaining accessibility walk (206 ms).

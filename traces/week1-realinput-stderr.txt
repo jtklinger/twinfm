@@ -1,0 +1,26 @@
+[enum] pane=0 first batch after 198.8 ms
+[enum] pane=0 done: 40000 entries, worker 41.8 ms, request-to-done 199.5 ms
+[enum] pane=0 first screenful rendered 223.4 ms after request
+[sort] pane=0 40000 entries by Name asc=true in 18.5 ms
+[mark] F3: split requested
+[nav] pane=1 gen=1 path=C:\traces\bigdir
+[enum] pane=1 first batch after 7.1 ms
+[enum] pane=1 first screenful rendered 22.4 ms after request
+[split] second pane rendered with rows 22.4 ms after F3
+[enum] pane=1 done: 40000 entries, worker 31.3 ms, request-to-done 31.6 ms
+[sort] pane=1 40000 entries by Name asc=true in 15.7 ms
+[perf] frames_total=17 render[n=17 p50=1.79ms p95=7.37ms max=13.93ms] interval[n=14 p50=16.50ms p95=19.09ms max=31.00ms] 
+[perf] frames_total=128 render[n=111 p50=1.69ms p95=2.79ms max=3.43ms] interval[n=108 p50=16.47ms p95=18.06ms max=20.93ms] 
+[busy] 10 s after split: UI thread 14.2% busy over 10.0 s (cpu 1.422 s)
+[perf] frames_total=403 render[n=275 p50=1.61ms p95=1.96ms max=2.93ms] interval[n=274 p50=16.48ms p95=18.03ms max=19.31ms] 
+[perf] frames_total=651 render[n=248 p50=1.64ms p95=1.98ms max=2.46ms] interval[n=244 p50=16.48ms p95=18.18ms max=85.81ms] 
+[perf] frames_total=882 render[n=231 p50=1.69ms p95=2.75ms max=4.59ms] interval[n=227 p50=16.46ms p95=18.20ms max=49.65ms] 
+[perf] frames_total=1182 render[n=300 p50=1.62ms p95=1.95ms max=2.38ms] interval[n=300 p50=16.46ms p95=18.28ms max=19.98ms] 
+[perf] frames_total=1387 render[n=205 p50=1.68ms p95=2.02ms max=2.58ms] interval[n=202 p50=16.49ms p95=18.18ms max=18.89ms] 
+[perf] frames_total=1641 render[n=254 p50=1.62ms p95=2.00ms max=2.70ms] interval[n=252 p50=16.47ms p95=18.29ms max=19.58ms] 
+[perf] frames_total=1892 render[n=251 p50=1.72ms p95=2.35ms max=2.80ms] interval[n=247 p50=16.41ms p95=17.90ms max=30.96ms] 
+[perf] frames_total=2058 render[n=166 p50=1.87ms p95=2.33ms max=3.08ms] interval[n=162 p50=16.44ms p95=18.52ms max=22.59ms] 
+[perf] frames_total=2161 render[n=103 p50=1.90ms p95=2.20ms max=3.17ms] interval[n=102 p50=16.46ms p95=19.29ms max=20.17ms] 
+[perf] frames_total=2296 render[n=135 p50=1.89ms p95=2.76ms max=4.09ms] interval[n=130 p50=16.47ms p95=18.92ms max=22.10ms] 
+[perf] frames_total=2415 render[n=119 p50=1.79ms p95=2.22ms max=3.38ms] interval[n=115 p50=16.39ms p95=19.64ms max=73.61ms] 
+[perf] frames_total=2418 render[n=3 p50=1.61ms p95=1.70ms max=1.70ms] interval[n=2 p50=16.60ms p95=16.60ms max=16.60ms] 

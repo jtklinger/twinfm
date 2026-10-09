@@ -151,7 +151,11 @@ exposed to accessibility, Narrator off:
 | Slint master + week-one patches | 16.7% | 198 ms |
 
 Criterion 3 of the gate now passes at a real 60 Hz display with accessibility on and a
-screen reader able to read the list. Criterion 2 (frame interval p95) is 18.9 ms, unchanged:
-pacing, not work. The render pass (948 ms, mostly text) is now the largest cost.
+screen reader able to read the list. Criterion 2 (frame interval p95) stays at about 18 ms
+under scripted and under real mouse input (2,418 frames, p95 17.9 to 19.6 ms, motion
+visibly smooth): scheduling jitter around vsync, not dropped frames. The Skia Direct3D
+renderer was measured and rejected (22.2% busy against femtovg's 17.2%, render pass
+1,456 ms against 975 ms). The render pass under femtovg (975 ms, half of it text) is now
+the largest cost.
 
 ## Recommendation
