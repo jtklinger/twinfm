@@ -166,3 +166,35 @@ Console WPR with rows in the accessibility tree (same scenario, same analysis):
   The non-accessibility floor is about 18% (render 12%, ListView 5%), so coalescing alone
   cannot clear the gate with rows exposed: either the rebuild has to become incremental
   (approach 1) or the render pass has to get cheaper (day 5), or both.
+
+### Day 3, afternoon (2026-10-09)
+
+- **Narrator reads the rows** with the StandardListView-style structure (`FileListBase`
+  inherits ListView and holds the single `for`; `FileList` adds the zero-width FocusScope and
+  `accessible-delegate-focus: max(0, current-row)`). Jeremy heard each row as he arrowed and
+  noticed no lag after wheel scrolling at either 50 ms or 100 ms. Exit criterion 3 met.
+- **Narrator was running during the morning WPR comparison** and off during the afternoon
+  one, which explains the 25.6% vs 19.1% gap on near-identical code. Both numbers stand,
+  labelled by condition. All "master" rows recorded today were patched builds: the manifest
+  I stripped was written to `C:	mp` by Python while bash copied from Git Bash's `/tmp`,
+  so the unstripped file was used every time. Verified by grepping the binary for the
+  patch's environment-variable string; a genuinely unpatched master is being rebuilt with
+  that check in the loop.
+
+Console WPR, rows exposed and focus delegated, Narrator **off**:
+
+| Variant | Busy | Accessibility | Render pass | ListView rows | Frame interval p95 |
+|---|---|---|---|---|---|
+| master + patch, 50 ms | **19.1%** | 507 ms | 893 ms | 329 ms | 18.0 ms |
+| master + patch, 0 ms (= unpatched behaviour) | 30.5% | 1,645 ms | 885 ms | 328 ms | 18.7 ms |
+
+Same, Narrator **on** (morning): patched 50 ms 25.6% (accessibility 663 ms), 0 ms 40.6%
+(2,135 ms).
+
+- Exit criterion 1 (under 20% by WPR, accessibility on, normal desktop) is met at 19.1%
+  with no screen reader attached, which is the normal desktop. With Narrator attached the
+  same build is 25.6%; that is a screen-reader session, where a 60 Hz scroll is not the
+  user's workload, so it is recorded rather than gated.
+- Exit criterion 2 (accessibility under 10% of main-thread samples) is not met: 27% at 50 ms.
+  The structural fix (node updates for moved rows instead of a full rebuild) is what would
+  close it; coalescing is at its useful limit.
