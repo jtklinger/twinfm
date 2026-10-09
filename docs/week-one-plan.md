@@ -84,3 +84,26 @@ needed to measure.
   there is on the critical path.
 - No alternative toolkit evaluation unless the exit criteria cannot be met by Friday. If
   they cannot, the write-up says so and the stack decision is reopened with this evidence.
+
+## Execution notes
+
+### Day 1 (2026-10-08, evening)
+
+- **Trigger named.** In the original console trace, the process that readied the prototype's
+  main thread most often was `TextInputHost.exe` ("InputApp", the Windows text-input host):
+  10,365 wakeups in a 20 s run, about 500 per second, against 1,686 for FancyZones and 164
+  for the Logi agent. It attaches a UI Automation client to every focused window to track
+  text input, which is why closing PowerToys and Logi Options+ changed nothing. It is a
+  Windows component on every Windows 11 desktop, so client gating (approach 3) is not a
+  viable fix and the cost must be removed in the backend.
+  Method: `wpaexporter` with `C:	racesustfm-readying.wpaProfile` (CPU Usage (Precise),
+  Readying Process, filtered to the main thread), aggregated by count.
+- **Two update paths in `internal/backends/winit/accesskit.rs` on master (a1ce0d8).**
+  `reload_tree` does a full `build_new_tree` and is scheduled whenever a component is
+  unregistered, which the ListView does for every row that leaves the viewport, i.e. on
+  every scrolled frame. `rebuild_tree_of_dirty_nodes` is the incremental path; it is driven
+  by a property tracker that goes dirty whenever any node's geometry changes, which during
+  a scroll is every visible row, so it re-serialises every node every frame. Both are
+  scheduled through zero-delay `Timer::single_shot`, which is why they show under
+  `TimerList::activate_expired` in the stacks. `reload_tree` already coalesces through
+  `pending_update`; the dirty-node path does not.

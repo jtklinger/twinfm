@@ -6,7 +6,7 @@ license = "MIT"
 description = "One-week prototype: Rust + Slint dual-pane file manager for Windows 11"
 
 [dependencies]
-slint = { version = "1.18", default-features = false, features = ["std", "backend-default", "renderer-femtovg", "renderer-software", "compat-1-2"] }
+slint = { git = "https://github.com/slint-ui/slint", branch = "master", default-features = false, features = ["std", "backend-default", "renderer-femtovg", "renderer-software", "compat-1-2"] }
 crossbeam-channel = "0.5"
 windows-sys = { version = "0.60", features = ["Win32_System_Threading", "Win32_Foundation"] }
 
@@ -17,7 +17,14 @@ default = ["accessibility"]
 accessibility = ["slint/accessibility"]
 
 [build-dependencies]
-slint-build = "1.18"
+slint-build = { git = "https://github.com/slint-ui/slint", branch = "master" }
 
 [profile.release]
 debug = 1
+
+# Day-2 experiment: Slint master with the accessibility update coalescing patch
+# (vendor/slint, ignored by git; the diff is docs/patches/accesskit-coalesce.diff).
+[patch."https://github.com/slint-ui/slint"]
+slint = { path = "vendor/slint/api/rs/slint" }
+slint-build = { path = "vendor/slint/api/rs/build" }
+i-slint-backend-winit = { path = "vendor/slint/internal/backends/winit" }
