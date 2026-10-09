@@ -22,6 +22,65 @@ component HeaderCell inherits Rectangle {
     ta := TouchArea { clicked => { root.clicked(); } }
 }
 
+// Same structure as Slint's StandardListView: a component inheriting ListView carries the list
+// role itself, a zero-width FocusScope inside it holds keyboard focus, and
+// accessible-delegate-focus makes assistive clients see focus on the current row.
+// The base holds the single `for` a ListView allows; the derived component adds the focus scope,
+// which is how StandardListView is layered too.
+component FileListBase inherits ListView {
+    in property <[Row]> rows;
+    in-out property <int> current-row: -1;
+    callback open-row(int);
+    callback focus-requested();
+    callback row-clicked(int);
+
+    accessible-label: "Files";
+    accessible-item-count: rows.length;
+    accessible-delegate-focus: max(0, current-row);
+
+    for row[i] in rows: Rectangle {
+        height: 22px;
+        accessible-role: AccessibleRole.list-item;
+        accessible-label: row.is-dir ? row.name + ", folder" : row.name + ", " + row.size + ", " + row.modified;
+        accessible-item-selectable: true;
+        accessible-item-selected: i == current-row;
+        accessible-item-index: i;
+        background: i == current-row ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
+        HorizontalLayout {
+            padding-left: 6px;
+            padding-right: 6px;
+            Text { text: row.is-dir ? "\u{25b8}" : ""; width: 22px; vertical-alignment: center; }
+            Text { text: row.name; vertical-alignment: center; overflow: elide; }
+            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; }
+            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; }
+        }
+        TouchArea {
+            clicked => { root.row-clicked(i); }
+            double-clicked => { root.open-row(i); }
+        }
+    }
+}
+
+component FileList inherits FileListBase {
+    callback go-up();
+    forward-focus: key-area;
+    public function focus-list() { key-area.focus(); }
+    row-clicked(i) => { root.current-row = i; key-area.focus(); root.focus-requested(); }
+
+    key-area := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(e) => {
+            if (e.text == Key.Backspace) { root.go-up(); return accept; }
+            if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return accept; }
+            if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return accept; }
+            if (e.text == Key.UpArrow) { if (root.current-row > 0) { root.current-row -= 1; } return accept; }
+            if (e.text == Key.DownArrow) { if (root.current-row + 1 < root.rows.length) { root.current-row += 1; } return accept; }
+            return reject;
+        }
+    }
+}
+
 export component Pane inherits Rectangle {
     in property <[Row]> rows;
     in-out property <string> path;
@@ -41,8 +100,8 @@ export component Pane inherits Rectangle {
     border-color: active ? Palette.accent-background : Palette.border;
     background: Palette.background;
 
-    forward-focus: key-area;
-    public function focus-list() { key-area.focus(); }
+    forward-focus: list;
+    public function focus-list() { list.focus-list(); }
     public function reset-scroll() { list.content-y = 0; current-row = -1; }
 
     VerticalLayout {
@@ -60,41 +119,12 @@ export component Pane inherits Rectangle {
             HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } }
             HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } }
         }
-        key-area := FocusScope {
-            accessible-role: AccessibleRole.list;
-            accessible-label: "Files";
-            key-pressed(e) => {
-                if (e.text == Key.Backspace) { root.go-up(); return accept; }
-                if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return accept; }
-                if (e.text == Key.Return) { if (current-row >= 0) { root.open-row(current-row); } return accept; }
-                if (e.text == Key.UpArrow) { if (current-row > 0) { current-row -= 1; } return accept; }
-                if (e.text == Key.DownArrow) { if (current-row + 1 < rows.length) { current-row += 1; } return accept; }
-                return reject;
-            }
-            list := ListView {
-                for row[i] in rows: Rectangle {
-                    height: 22px;
-                    accessible-role: AccessibleRole.list-item;
-                    accessible-label: row.is-dir ? row.name + ", folder" : row.name + ", " + row.size + ", " + row.modified;
-                    accessible-item-selectable: true;
-                    accessible-item-selected: i == current-row;
-                    accessible-item-index: i;
-                    accessible-item-count: rows.length;
-                    background: i == current-row ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        Text { text: row.is-dir ? "\u{25b8}" : ""; width: 22px; vertical-alignment: center; }
-                        Text { text: row.name; vertical-alignment: center; overflow: elide; }
-                        Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; }
-                        Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; }
-                    }
-                    TouchArea {
-                        clicked => { current-row = i; key-area.focus(); root.focus-requested(); }
-                        double-clicked => { root.open-row(i); }
-                    }
-                }
-            }
+        list := FileList {
+            rows: root.rows;
+            current-row <=> root.current-row;
+            go-up => { root.go-up(); }
+            open-row(i) => { root.open-row(i); }
+            focus-requested => { root.focus-requested(); }
         }
         Text { text: status; height: 18px; font-size: 11px; color: Palette.foreground; }
     }

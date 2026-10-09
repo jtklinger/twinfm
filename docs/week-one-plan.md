@@ -135,3 +135,34 @@ Main thread, 10 s after the split, same scrolling scenario, PowerToys and Logi r
 - Patch: `docs/patches/accesskit-coalesce.diff` (17 lines in
   `internal/backends/winit/accesskit.rs`). Both update paths use a configurable delay
   instead of a zero-delay single-shot timer.
+
+### Day 3 (2026-10-09, morning)
+
+- **Correction to the day-2 table.** The "Slint master, unpatched" row there is genuine: that
+  binary was built before the `[patch]` section existed. But the "master" binary in this
+  morning's rerun was built from the manifest of the commit that already carries the patch,
+  so it is a second patched-50 run. In the table below the 0 ms control is the honest
+  unpatched number. Fixed by building unpatched master from the branch manifest with the
+  `[patch]` section stripped rather than from an older commit.
+- **Narrator read nothing** because no element declared an `accessible-role`; every
+  day-2 accessibility measurement was on a tree with no row content. The rows, list and
+  path bar now carry roles, labels, selection state and item index (`src/ui/pane.slint`),
+  and `tools/uia-dump.ps1` confirms the UI Automation tree: a `List` named "Files" whose
+  children are `ListItem`s named "file_1.txt, 1 B, 2026-10-08 19:33" with a selection
+  pattern. Narrator still did not announce rows, because keyboard focus stayed on the list
+  container; the fix in progress mirrors StandardListView (zero-width FocusScope inside a
+  component inheriting ListView, `accessible-delegate-focus` on the current row).
+
+Console WPR with rows in the accessibility tree (same scenario, same analysis):
+
+| Variant | Busy | Accessibility | Render pass | ListView rows |
+|---|---|---|---|---|
+| master + patch, 0 ms (= unpatched behaviour) | **40.6%** | 2,135 ms | 1,223 ms | 516 ms |
+| master + patch, 50 ms (run 1) | 25.6% | 663 ms | 1,195 ms | 485 ms |
+| master + patch, 50 ms (run 2, mislabelled "master") | 26.2% | 706 ms | 1,220 ms | 462 ms |
+
+- Exposing the rows roughly doubles the unpatched accessibility cost (2,135 vs 1,147 ms)
+  and the patch now saves about 15 points, but 25.6% is still above the 20% exit criterion.
+  The non-accessibility floor is about 18% (render 12%, ListView 5%), so coalescing alone
+  cannot clear the gate with rows exposed: either the rebuild has to become incremental
+  (approach 1) or the render pass has to get cheaper (day 5), or both.
