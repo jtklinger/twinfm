@@ -1,4 +1,4 @@
-//! Scripted driver for unattended gate runs. Set RUSTFM_SCRIPT to a ';'-separated list
+//! Scripted driver for unattended gate runs. Set TWINFM_SCRIPT to a ';'-separated list
 //! (or to @<file> to read the list from a file; Windows caps an env var at 32 KB):
 //!   sleep <ms>                       wait
 //!   split                            toggle the second pane (same as F3)
@@ -73,7 +73,7 @@ thread_local! {
 }
 
 pub fn start(app: &App) {
-    let Ok(mut script) = std::env::var("RUSTFM_SCRIPT") else { return };
+    let Ok(mut script) = std::env::var("TWINFM_SCRIPT") else { return };
     if let Some(path) = script.strip_prefix('@') {
         script = std::fs::read_to_string(path).unwrap_or_else(|e| {
             eprintln!("[auto] cannot read {path}: {e}");

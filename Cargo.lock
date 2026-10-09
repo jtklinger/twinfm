@@ -3675,16 +3675,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustfm-proto"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "slint",
- "slint-build",
- "windows-sys 0.60.2",
-]
-
-[[package]]
 name = "rustix"
 version = "0.38.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4483,6 +4473,16 @@ name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+
+[[package]]
+name = "twinfm"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "slint",
+ "slint-build",
+ "windows-sys 0.60.2",
+]
 
 [[package]]
 name = "typed-index-collections"

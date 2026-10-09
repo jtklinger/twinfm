@@ -1,4 +1,4 @@
-# Capture the rustfm-proto window to a PNG via PrintWindow. Usage: shot.ps1 <out.png>
+# Capture the twinfm window to a PNG via PrintWindow. Usage: shot.ps1 <out.png>
 param([string]$Out = "shot.png")
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -9,7 +9,7 @@ public class W {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 "@
-$p = Get-Process rustfm-proto -ErrorAction Stop | Select-Object -First 1
+$p = Get-Process twinfm -ErrorAction Stop | Select-Object -First 1
 $h = $p.MainWindowHandle
 $r = New-Object W+RECT
 [W]::GetWindowRect($h, [ref]$r) | Out-Null

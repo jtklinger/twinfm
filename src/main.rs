@@ -1,4 +1,4 @@
-// rustfm-proto: Slint bootstrap, wires model <-> UI, owns the two panes.
+// twinfm: Slint bootstrap, wires model <-> UI, owns the two panes.
 slint::include_modules!();
 
 mod fs {

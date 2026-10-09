@@ -1,4 +1,6 @@
-# rustfm-proto
+# twinfm
+
+TwinFM, a dual-pane file manager for Windows 11 in Rust and Slint. Renamed from `rustfm-proto` on 2026-10-09; the prototype record below is unchanged.
 
 One-week prototype answering one question: can a Rust + Slint dual-pane file manager on
 Windows 11 beat the Files app (files-community/Files, WinUI 3) on the things that hurt,
@@ -13,7 +15,7 @@ Build Tools "Desktop development with C++" workload.
 
 ```
 cargo build --release
-target\release\rustfm-proto.exe C:\traces\bigdir
+target\release\twinfm.exe C:\traces\bigdir
 ```
 
 The one argument is the starting folder for the left pane (default `C:\`).
@@ -42,7 +44,7 @@ src/
   ui/app.slint     Window, two Pane components, splitter
   ui/pane.slint    Path bar, column header, ListView over the model, status line
   perf.rs          Frame-time ring buffer, UI-thread CPU time, printed to stderr every 5 s
-  auto.rs          Scripted driver for unattended runs (RUSTFM_SCRIPT, see its header)
+  auto.rs          Scripted driver for unattended runs (TWINFM_SCRIPT, see its header)
 tools/
   wpr-gate.ps1     The gate scenario under Windows Performance Recorder (run elevated)
   shot.ps1         Capture the window to a PNG (works with SLINT_BACKEND=winit-software)
@@ -60,13 +62,13 @@ Rules the prototype follows, because they are what makes the numbers possible:
 
 ## Measuring
 
-Run with `RUSTFM_SCRIPT` set to a scenario (or `@file`) and read stderr. Each 5 s the
+Run with `TWINFM_SCRIPT` set to a scenario (or `@file`) and read stderr. Each 5 s the
 `[perf]` line reports render-pass time, frame interval and UI-thread CPU per frame; the
 `[enum]`, `[split]`, `[sort]` and `[busy]` lines carry the one-shot timers. Example:
 
 ```
-set RUSTFM_SCRIPT=sleep 1500; split; wheel 1 -100 16; wheel 0 -100 16; sleep 8000; quit
-target\release\rustfm-proto.exe C:\traces\bigdir
+set TWINFM_SCRIPT=sleep 1500; split; wheel 1 -100 16; wheel 0 -100 16; sleep 8000; quit
+target\release\twinfm.exe C:\traces\bigdir
 ```
 
 For a WPR trace run `tools\wpr-gate.ps1` from an elevated PowerShell at the physical
