@@ -96,7 +96,8 @@ needed to measure.
   text input, which is why closing PowerToys and Logi Options+ changed nothing. It is a
   Windows component on every Windows 11 desktop, so client gating (approach 3) is not a
   viable fix and the cost must be removed in the backend.
-  Method: `wpaexporter` with `C:	racesustfm-readying.wpaProfile` (CPU Usage (Precise),
+  Method: `wpaexporter` with `C:	races
+ustfm-readying.wpaProfile` (CPU Usage (Precise),
   Readying Process, filtered to the main thread), aggregated by count.
 - **Two update paths in `internal/backends/winit/accesskit.rs` on master (a1ce0d8).**
   `reload_tree` does a full `build_new_tree` and is scheduled whenever a component is
@@ -107,3 +108,30 @@ needed to measure.
   scheduled through zero-delay `Timer::single_shot`, which is why they show under
   `TimerList::activate_expired` in the stacks. `reload_tree` already coalesces through
   `pending_update`; the dirty-node path does not.
+
+### Day 2 (2026-10-08, late evening)
+
+Console WPR runs via `tools/wpr-compare.ps1`, analysed with `tools/analyze-trace.py --symbols`.
+Main thread, 10 s after the split, same scrolling scenario, PowerToys and Logi running:
+
+| Variant | Busy | Accessibility | Render pass | ListView rows | Frame interval p95 |
+|---|---|---|---|---|---|
+| Slint 1.18.1 (gate run) | 33.6% | 1,428 ms | 1,163 ms | 500 ms | 19.6 to 25.8 ms |
+| Slint master a1ce0d8, unpatched | 28.4% | 1,201 ms | 987 ms | 385 ms | 17.7 to 31.5 ms |
+| master + patch, `SLINT_ACCESSKIT_UPDATE_DELAY_MS=0` (control) | 26.8% | 1,147 ms | 997 ms | 323 ms | 18.1 to 18.3 ms |
+| master + patch, 50 ms (default) | **18.4%** | **349 ms** | 959 ms | 344 ms | 18.6 to 19.4 ms |
+
+- Exit criterion 1 (under 20% by WPR, accessibility on, normal desktop) is met by the 50 ms
+  patch: 18.4%. The control at 0 ms sits with unpatched master, so the gain is the
+  coalescing, not the vendored build.
+- Exit criterion 2 (accessibility under 10% of main-thread samples) is not met: 349 of
+  1,839 samples is 19%, although in absolute terms it is 3.5% of the thread's time. A
+  100 ms delay would roughly halve it again; whether that latency is acceptable is a
+  Narrator question for day 3, not a performance one.
+- Master alone is worth about 5 points over 1.18.1 (render pass 987 vs 1,163 ms), which
+  the RDP session could not show.
+- The remaining floor with the patch is the render pass (52%, text drawing 28%) and
+  ListView row maintenance (19%). Those are the day-5 renderer question.
+- Patch: `docs/patches/accesskit-coalesce.diff` (17 lines in
+  `internal/backends/winit/accesskit.rs`). Both update paths use a configurable delay
+  instead of a zero-delay single-shot timer.

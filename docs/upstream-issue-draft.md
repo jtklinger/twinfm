@@ -65,4 +65,17 @@ view, in order of preference:
 2. Coalesce rebuilds until input settles (one frame of quiet, or at most every 100 ms).
 3. At minimum, document that `accessibility` has this cost on large lists (the ask in #3867).
 
+## A measured mitigation
+
+Scheduling both update paths (`invoke_later` for `reload_tree`, and
+`AccessibilityPropertyDirtyHandler::notify` for the dirty-node rebuild) on a 50 ms
+single-shot timer instead of a zero-delay one, with no other change, took the same scenario
+on master (a1ce0d8) from 28.4% main-thread busy to 18.4%, and the accessibility share from
+1,201 ms to 349 ms per 10 s. A 0 ms control built from the same patched tree measured
+26.8%, so the gain is the coalescing. The trigger on this desktop is `TextInputHost.exe`
+(Windows text-input host), which attaches a UIA client to every focused window; closing
+third-party tools did not change the cost. The 17-line diff is attached; I would expect a
+proper fix to be structural (node updates for moved rows rather than a full rebuild), but
+coalescing alone clears the practical problem and is cheap to review.
+
 Happy to test a patch on this machine with the same WPR scenario.
