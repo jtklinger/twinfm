@@ -1,8 +1,9 @@
 # rustfm-proto
 
-One-week Rust + Slint dual-pane file manager prototype for Windows 11. `PROTOTYPE-RESULT.md`
-is the gate record, `docs/week-one-plan.md` the week-one record (accessibility fix, renderer
-decision). Read both before changing the list.
+One-week Rust + Slint dual-pane file manager prototype for Windows 11, now the base of the
+real product (stack adopted 2026-10-09, see the recommendation in `PROTOTYPE-RESULT.md`).
+`PROTOTYPE-RESULT.md` is the gate record, `docs/week-one-plan.md` the week-one record
+(accessibility fix, renderer decision). Read both before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (3 tests)
@@ -42,6 +43,13 @@ decision). Read both before changing the list.
   layering (base component holds the single `for`, derived adds the zero-width FocusScope and
   `accessible-delegate-focus`).
 
+## License
+The app is MIT. Slint is used under its Royalty-free 2.0 license, which allows a modified
+Slint inside an application with attribution (the badge in `README.md`; the `AboutSlint`
+widget once there is an About dialog). The patches and fork commits are offered under MIT;
+see README § License before changing any of this.
+
 ## Delivery
-Branch, PR, squash-merge on Jeremy's go-ahead, per the projects-root `CLAUDE.md`. The
-upstream patches and issue text in `docs/` are posted by Jeremy, never from a session.
+Branch, PR, squash-merge on Jeremy's go-ahead, per the projects-root `CLAUDE.md`.
+**Upstreaming is deferred** (2026-10-09): `docs/upstream-issue-draft.md` and `docs/patches/`
+are the record. Do not post to slint-ui/slint from a session; Jeremy decides when.

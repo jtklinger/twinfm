@@ -96,8 +96,7 @@ needed to measure.
   text input, which is why closing PowerToys and Logi Options+ changed nothing. It is a
   Windows component on every Windows 11 desktop, so client gating (approach 3) is not a
   viable fix and the cost must be removed in the backend.
-  Method: `wpaexporter` with `C:	races
-ustfm-readying.wpaProfile` (CPU Usage (Precise),
+  Method: `wpaexporter` with `C:\traces\rustfm-readying.wpaProfile` (CPU Usage (Precise),
   Readying Process, filtered to the main thread), aggregated by count.
 - **Two update paths in `internal/backends/winit/accesskit.rs` on master (a1ce0d8).**
   `reload_tree` does a full `build_new_tree` and is scheduled whenever a component is
@@ -176,7 +175,7 @@ Console WPR with rows in the accessibility tree (same scenario, same analysis):
 - **Narrator was running during the morning WPR comparison** and off during the afternoon
   one, which explains the 25.6% vs 19.1% gap on near-identical code. Both numbers stand,
   labelled by condition. All "master" rows recorded today were patched builds: the manifest
-  I stripped was written to `C:	mp` by Python while bash copied from Git Bash's `/tmp`,
+  I stripped was written to `C:\tmp` by Python while bash copied from Git Bash's `/tmp`,
   so the unstripped file was used every time. Verified by grepping the binary for the
   patch's environment-variable string; a genuinely unpatched master is being rebuilt with
   that check in the loop.
