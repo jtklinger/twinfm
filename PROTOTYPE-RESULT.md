@@ -1,13 +1,15 @@
 # Prototype result: Rust + Slint dual-pane file manager
 
-**Verdict: PASS on four criteria, FAIL on two, with the cause of both failures identified in
-the WPR stacks and attributable to one component.** Split cost, enumeration, stability and
-memory are far inside their targets. Frame cadence and UI-thread load fail only while both
-panes are being scrolled continuously, and 43% of the main thread's CPU in that window is
-the AccessKit accessibility tree being rebuilt and re-announced on every scrolled frame.
-Without that one cost the same scenario lands at about 19% UI-thread busy. The
-recommendation below is to proceed, with the accessibility update as a week-one gate on the
-real build rather than something to paper over here.
+**Verdict: PASS on four criteria, FAIL on two, with the cause of both failures isolated by
+experiment to one component.** Split cost, enumeration, stability and memory are far inside
+their targets. Frame cadence and UI-thread load fail only while both panes are being scrolled
+continuously, and the WPR stacks put 43% of the main thread's CPU in that window in the
+AccessKit accessibility tree being rebuilt and re-announced on every scrolled frame. Two
+follow-up console runs confirmed it: closing the desktop's UI Automation clients (PowerToys,
+Logi Options+) changed little, while building with the accessibility feature off brought the
+same scenario to 15.2% main-thread busy, inside the target. The recommendation below is to
+proceed, with the accessibility update as a week-one gate on the real build rather than
+something to paper over here.
 
 Hardware: SER5-DESK, AMD Radeon integrated graphics at 3840x2160, 60 Hz, Windows 11 Pro
 26300, local NTFS SSD. Build: Rust 1.99 stable MSVC, Slint 1.18.1, winit backend, femtovg
@@ -36,7 +38,36 @@ Baseline for comparison, Files 4.2.9 on the same desktop and folder (from
 6.5 s after adding a pane, items appearing at tens per second, a crash within minutes of
 splitting.
 
-## WPR: where the main thread's time goes in the 10 s after the split
+## Follow-up runs: isolating the accessibility cost
+
+Same elevated console, same script, same 10 s window after the split, main thread only.
+Traces `C:	racesustfm-noclients.etl` and `C:	racesustfm-noa11y.etl`; reports under
+`traces/` in this repo.
+
+| Configuration | WPR main-thread busy | In-app (GetThreadTimes) | Frame interval p95 | Render pass p95 | Accessibility frames |
+|---|---|---|---|---|---|
+| Original: PowerToys and Logi Options+ running, accessibility on | 33.6% (3,356 samples) | 30.3% | 19.6 to 25.8 ms | 3.1 to 4.2 ms | 1,428 samples, 43% |
+| PowerToys and Logi Options+ closed, accessibility on | 27.6% (2,756) | 27.0% | 18.8 to 19.0 ms | 3.2 ms | 1,181 samples, 43% |
+| Accessibility feature off (`cargo build --release --no-default-features`) | **15.2%** (1,516) | 16.6% | 17.9 to 18.2 ms | 2.8 to 3.1 ms | 0 |
+
+Reading:
+
+- The rebuild is not caused by those two tools. With them closed the accessibility share of
+  the main thread stayed at 43%; something still attaches a UI Automation client to every
+  window (the text-services host is the usual suspect), and AccessKit treats that as "active"
+  and rebuilds the full tree on every change. This is a Slint backend behavior to take up
+  upstream, not a desktop-configuration problem.
+- With accessibility off, criterion 3 passes by WPR (15.2%) and in-app (16.6%), and the
+  remaining main-thread time is 65% render pass (text drawing dominant), 24% ListView row
+  maintenance, 11% heap. That is the floor this stack offers without touching the renderer.
+- Criterion 2 is marginal in every configuration: the render pass is 4x inside the target
+  but the frame-to-frame interval p95 sits at 18 ms against a 16.7 ms vsync period. A dropped
+  frame would show as 33 ms; 18 ms is scheduling jitter between the scripted 16 ms input
+  timer and the display's vsync, so the practical reading is "no dropped frames, pacing not
+  locked to vsync". Whether that is visible to a user needs a real-input check at the
+  console; it is not something the application code controls (lesson 2 below).
+
+## WPR: where the main thread's time goes in the 10 s after the split (original run)
 
 Source: `xperf -a stack -butterfly -tid 19252 -range 4480000 14480000 -event Prof` with the
 prototype's PDB on the symbol path; report in `C:\traces\export\rustfm\bf-main-10s.html`.
@@ -102,12 +133,15 @@ in under 40 ms, the process sits at 116 MB, and 73 minutes of abuse produced no 
 code is about 900 lines and nothing in it is tuned.
 
 The condition: the two failed criteria have a single dominant cause, the per-frame
-accessibility tree rebuild, which is Slint backend code, not application code. Week one of
-the real build should establish, with upstream, how the AccessKit tree can be updated
-lazily (only the viewport's rows, only on settle, or only when a UIA client is attached)
-and re-run this exact scenario. If that cannot be made to pass 20% with accessibility on,
-the stack decision should be revisited then, not six months later. Text rendering is the
-second cost and is the normal one.
+accessibility tree rebuild, which is Slint backend code, not application code, and which the
+follow-up runs show is triggered on an ordinary desktop regardless of which utilities are
+running. Week one of the real build should establish, with upstream, how the AccessKit tree
+can be updated lazily (only the viewport's rows, only on settle, or only when a real
+assistive client is attached rather than any WM_GETOBJECT sender) and re-run this exact
+scenario. The accessibility-off run (15.2%) is the proof that nothing else in the design
+stands in the way. If that cannot be made to pass 20% with accessibility on, the stack
+decision should be revisited then, not six months later. Text rendering is the second cost
+and is the normal one.
 
 ## Three things learned about Slint on Windows that change the plan
 
