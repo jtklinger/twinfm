@@ -8,7 +8,7 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
 milestones, gate re-run after each). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (55 tests; three touch the real shell and clipboard, see below)
+- `cargo test --release` (60 tests; three touch the real shell and clipboard, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -53,7 +53,15 @@ milestones, gate re-run after each). Read them before changing the list.
   clicks a breadcrumb button through its callback, `pathmode <pane> entry|crumb` switches the path
   bar; `[tab]`, `[crumb]` and `[open]` lines on stderr. `TWINFM_PERF_STATUS=1` adds the
   enumeration time to the status bar (the gate tools read `[enum]` on stderr, not the status
-  bar). `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  bar). Sidebar and dialogs: `sidebar toggle` (F9), `sidebar click <row>` (headers count),
+  `bookmark add` (Ctrl+D), `bookmark remove <index>`, `about open` (F1) and `about close`;
+  `[sidebar]` and `[settings]` lines on stderr.
+- Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
+  (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
+  soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
+  would make the gate's `split` step close the second pane). `TWINFM_CONFIG=<path>` points any run,
+  scripted or not, at another file; a test config used across runs is rewritten at exit (make it
+  read-only to keep it fixed). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -83,9 +91,9 @@ milestones, gate re-run after each). Read them before changing the list.
 
 ## License
 The app is MIT. Slint is used under its Royalty-free 2.0 license, which allows a modified
-Slint inside an application with attribution (the badge in `README.md`; the `AboutSlint`
-widget once there is an About dialog). The patches and fork commits are offered under MIT;
-see README § License before changing any of this.
+Slint inside an application with attribution (the badge in `README.md`, and since M6b the
+`AboutSlint` widget in the About dialog, F1 or "About TwinFM" at the foot of the sidebar). The
+patches and fork commits are offered under MIT; see README § License before changing any of this.
 
 ## Delivery
 Branch, PR, squash-merge on Jeremy's go-ahead, per the projects-root `CLAUDE.md`.
