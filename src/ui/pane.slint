@@ -54,13 +54,9 @@ component FileListBase inherits ListView {
         border-width: i == current-row ? 1px : 0px;
         border-color: Palette.accent-background;
         HorizontalLayout {
-            padding-left: 6px;
+            // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip.
+            padding-left: 28px;
             padding-right: 6px;
-            Text {
-                text: row.kind == 0 ? "\u{25b8}" : row.kind == 2 ? "\u{25a3}" : row.kind == 3 ? "\u{21aa}" : "";
-                width: 22px;
-                vertical-alignment: center;
-            }
             Text { text: row.name; vertical-alignment: center; overflow: elide; }
             Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; }
             Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; }
@@ -81,6 +77,13 @@ component FileList inherits FileListBase {
     callback go-up();
     // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
     callback select(int, int);
+    // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
+    // turns it into the visible row range and fetches icons for it.
+    callback viewport-changed(length, length);
+    private property <int> row-count: root.rows.length;
+    changed content-y => { root.viewport-changed(root.content-y, root.visible-height); }
+    changed visible-height => { root.viewport-changed(root.content-y, root.visible-height); }
+    changed row-count => { root.viewport-changed(root.content-y, root.visible-height); }
     forward-focus: key-area;
     public function focus-list() { key-area.focus(); }
 
@@ -145,6 +148,15 @@ export component Pane inherits Rectangle {
     callback go-up();
     callback focus-requested();
     callback select(int, int);
+    callback viewport-changed(length, length);
+
+    // The icon strip (`set-strip`): one image holding the icons of rows strip-first onwards,
+    // composed in Rust, at strip-width x strip-height logical px (its exact physical size).
+    private property <image> strip;
+    private property <int> strip-first;
+    private property <length> strip-width;
+    private property <length> strip-height;
+    private property <bool> strip-shown: false;
 
     border-width: active ? 2px : 1px;
     border-color: active ? Palette.accent-background : Palette.border;
@@ -155,6 +167,13 @@ export component Pane inherits Rectangle {
     public function reset-scroll() { list.content-y = 0; current-row = -1; }
     public function get-scroll() -> length { return list.content-y; }
     public function set-scroll(y: length) { list.content-y = y; }
+    public function set-strip(img: image, first: int, w: length, h: length, shown: bool) {
+        strip = img;
+        strip-first = first;
+        strip-width = w;
+        strip-height = h;
+        strip-shown = shown;
+    }
 
     VerticalLayout {
         padding: 3px;
@@ -179,7 +198,31 @@ export component Pane inherits Rectangle {
             open-row(i) => { root.open-row(i); }
             focus-requested => { root.focus-requested(); }
             select(op, i) => { root.select(op, i); }
+            viewport-changed(y, h) => { root.viewport-changed(y, h); }
         }
         Text { text: status; height: 18px; font-size: 11px; color: Palette.foreground; }
+    }
+
+    // Icons for every row in one image over the list's icon column (6 px in, as the rows'
+    // padding), moved with the list through content-y, so a scroll of less than the strip's
+    // margin repaints one image and recomposes nothing. Clipped to the list's viewport; no
+    // input handling and no accessibility node, so clicks and the list's tree are the rows'.
+    Rectangle {
+        x: list.x;
+        y: list.y;
+        width: list.visible-width;
+        height: list.visible-height;
+        clip: true;
+        visible: root.strip-shown;
+        Image {
+            x: 6px;
+            y: list.content-y + root.strip-first * 22px;
+            width: root.strip-width;
+            height: root.strip-height;
+            source: root.strip;
+            image-fit: fill;
+            image-rendering: pixelated;
+            accessible-role: none;
+        }
     }
 }

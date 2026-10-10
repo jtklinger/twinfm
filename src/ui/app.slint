@@ -34,6 +34,8 @@ export component App inherits Window {
     callback refresh(int);
     // select(pane, op, row): op 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
     callback select(int, int, int);
+    // viewport-changed(pane, content-y, visible-height)
+    callback viewport-changed(int, length, length);
 
     public function focus-pane(p: int) {
         active-pane = p;
@@ -50,6 +52,11 @@ export component App inherits Window {
 
     public function set-scroll(p: int, y: length) {
         if (p == 0) { left.set-scroll(y); } else { right.set-scroll(y); }
+    }
+
+    // set-strip(pane, image, first row, width, height, shown): the pane's icon strip.
+    public function set-strip(p: int, img: image, first: int, w: length, h: length, shown: bool) {
+        if (p == 0) { left.set-strip(img, first, w, h, shown); } else { right.set-strip(img, first, w, h, shown); }
     }
 
     forward-focus: outer;
@@ -77,6 +84,7 @@ export component App inherits Window {
             current-row <=> left-current-row;
             navigate(p) => { root.navigate(0, p); }
             select(op, i) => { root.select(0, op, i); }
+            viewport-changed(y, h) => { root.viewport-changed(0, y, h); }
             open-row(i) => { root.open-row(0, i); }
             sort-by(c) => { root.sort-by(0, c); }
             go-up => { root.go-up(0); }
@@ -92,6 +100,7 @@ export component App inherits Window {
             current-row <=> right-current-row;
             navigate(p) => { root.navigate(1, p); }
             select(op, i) => { root.select(1, op, i); }
+            viewport-changed(y, h) => { root.viewport-changed(1, y, h); }
             open-row(i) => { root.open-row(1, i); }
             sort-by(c) => { root.sort-by(1, c); }
             go-up => { root.go-up(1); }

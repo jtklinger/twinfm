@@ -57,6 +57,7 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         }
     };
     let mut types = TypeNames::default();
+    let mut icon_keys = crate::icons::IconKeys::new(path.clone());
     let zone = crate::model::LocalZone::current();
     let mut batch: Vec<Entry> = Vec::with_capacity(BATCH_SIZE);
     let mut total = 0usize;
@@ -74,7 +75,8 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         let name = de.file_name();
         let name = name.to_string_lossy();
         let type_text = types.for_entry(&name, attrs & FILE_ATTRIBUTE_DIRECTORY != 0);
-        batch.push(Entry::with_zone(name.as_ref().into(), size, modified, attrs, type_text, &zone));
+        let icon_key = icon_keys.for_entry(&name, attrs);
+        batch.push(Entry::with_zone(name.as_ref().into(), size, modified, attrs, type_text, icon_key, &zone));
         if batch.len() >= BATCH_SIZE {
             total += batch.len();
             let full = std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
