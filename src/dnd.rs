@@ -160,6 +160,8 @@ pub struct Layout {
     pub height: f32,
     pub split: bool,
     pub ratio: f32,
+    /// Whether each pane shows its tab strip (it has more than one tab), which moves its list down.
+    pub tabs: [bool; 2],
 }
 
 /// The list's top inside a pane (pane.slint): 3 px padding, 32 px path entry, 2 px spacing,
@@ -169,6 +171,14 @@ pub const LIST_TOP: f32 = 63.0;
 pub const LIST_BOTTOM_GAP: f32 = 23.0;
 pub const PANE_PAD: f32 = 3.0;
 pub const ROW_PX: f32 = crate::icons::ROW_PX;
+/// The tab strip above the path bar (26 px) and the layout spacing under it (2 px), present only
+/// when the pane has more than one tab.
+pub const TAB_STRIP: f32 = 28.0;
+
+/// The top of the pane's list, in window px.
+pub fn list_top(l: &Layout, pane: usize) -> f32 {
+    if l.tabs[pane] { LIST_TOP + TAB_STRIP } else { LIST_TOP }
+}
 
 /// Where a window point lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,11 +215,11 @@ pub fn hit(l: &Layout, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> 
         return Spot::Outside;
     };
     let (a, b) = pane_x(l, pane);
-    let in_list = x >= a + PANE_PAD && x < b - PANE_PAD && y >= LIST_TOP && y < l.height - LIST_BOTTOM_GAP;
+    let in_list = x >= a + PANE_PAD && x < b - PANE_PAD && y >= list_top(l, pane) && y < l.height - LIST_BOTTOM_GAP;
     if !in_list {
         return Spot::Pane(pane);
     }
-    let r = ((y - LIST_TOP - content_y[pane]) / ROW_PX).floor();
+    let r = ((y - list_top(l, pane) - content_y[pane]) / ROW_PX).floor();
     if r >= 0.0 && (r as usize) < len[pane] { Spot::Row(pane, r as usize) } else { Spot::Pane(pane) }
 }
 
@@ -1020,7 +1030,7 @@ mod tests {
 
     #[test]
     fn hit_testing_and_drop_folder() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2] };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
         // Rows start at y 63, 22 px each; the list ends 23 px above the bottom (y 577).
@@ -1049,6 +1059,13 @@ mod tests {
         let ratio = Layout { ratio: 0.25, ..two };
         assert_eq!(pane_x(&ratio, 0), (0.0, 247.0));
         assert_eq!(pane_x(&ratio, 1), (253.0, 1000.0));
+        // A tab strip moves that pane's rows down by 28 px; the other pane's stay.
+        let tabbed = Layout { tabs: [true, false], ..two };
+        assert_eq!(hit(&tabbed, 100.0, 70.0, none, [5, 7]), Spot::Pane(0), "the tab strip pushed row 0 down");
+        assert_eq!(hit(&tabbed, 100.0, 91.0, none, [5, 7]), Spot::Row(0, 0));
+        assert_eq!(hit(&tabbed, 100.0, 113.0, none, [5, 7]), Spot::Row(0, 1));
+        assert_eq!(hit(&tabbed, 700.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
+        assert_eq!((list_top(&tabbed, 0), list_top(&tabbed, 1)), (91.0, 63.0));
 
         // Drop folders.
         let f = p(r"C:\work");

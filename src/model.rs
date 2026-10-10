@@ -321,6 +321,21 @@ impl PaneModel {
         self.sel.borrow().set.len()
     }
 
+    /// For the status bar: the selected row count, the total size of the selected files
+    /// (folders and drives count no bytes), and whether any file is selected.
+    pub fn selection_summary(&self) -> (usize, u64, bool) {
+        let shown = self.shown.borrow();
+        let sel = self.sel.borrow();
+        let (mut bytes, mut any_file) = (0u64, false);
+        for e in sel.set.iter().filter_map(|&i| shown.get(i)) {
+            if !e.is_dir() {
+                bytes = bytes.saturating_add(e.size);
+                any_file = true;
+            }
+        }
+        (sel.set.len(), bytes, any_file)
+    }
+
     /// The cursor and selection by name, to carry across a pass or a refresh.
     pub fn capture(&self, cursor: i32) -> Restore {
         let shown = self.shown.borrow();
@@ -1132,6 +1147,17 @@ mod tests {
         assert_eq!(m.icon_indices(2, 2), [PLACEHOLDER_FILE]);
         assert!(m.resolve_icons(5, 9, |_| panic!("out of range")).is_empty());
         assert!(m.icon_indices(5, 9).is_empty());
+    }
+
+    #[test]
+    fn selection_summary_counts_file_bytes_only() {
+        let m = PaneModel::default();
+        m.append(vec![e("dir", 4096, true), e("a", 1000, false), e("b", 536, false)]);
+        assert_eq!(m.selection_summary(), (0, 0, false));
+        m.select(SelOp::Only, 0);
+        assert_eq!(m.selection_summary(), (1, 0, false), "a folder counts no bytes");
+        m.select(SelOp::All, 0);
+        assert_eq!(m.selection_summary(), (3, 1536, true));
     }
 
     #[test]

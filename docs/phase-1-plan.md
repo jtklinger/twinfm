@@ -1015,3 +1015,149 @@ min, back to 138 to 140 from 18 to 27 min, 154 at the end: the 10-minute run's a
 climb was the upswing of an oscillation, not growth. Samples: `%TEMP%/twinfm-m5/soak-m5-memory.csv`.
 
 Gate: pending Jeremy's console WPR run.
+
+## M6a: tabs, path bar, opening files, status bar
+
+M6 is split into two branches and two PRs: M6a (this section) and M6b (sidebar, settings, window
+icon and title, About dialog).
+
+### What landed (2026-10-10)
+
+- **Tabs per pane** (`src/tabs.rs`, `main.rs`). `Tabs<T>` is a pure list with an active index:
+  `open` inserts after the active tab and activates it, `close` refuses the last tab and moves to
+  the right neighbour (the left one when the closed tab was the rightmost), `next`/`prev` wrap,
+  `select` takes an index. Each pane keeps a `Tabs<Tab>`; a `Tab` owns its `PaneModel` (so its sort
+  column, direction and hidden filter), its folder, timing, note, pending focus name, free space,
+  and, while in the background, its cursor row and scroll offset. Switching saves the outgoing
+  tab's cursor and `content-y`, points the pane's `ListView` at the new tab's model
+  (`set_left_rows(ModelRc::from(tab.model.clone()))`), restores path, breadcrumb, sort indicators,
+  cursor and scroll, resets the drag gesture, hides the icon strip and marks it dirty, and resolves
+  the visible rows, so the strip is recomposed for the new rows before the next frame. Ctrl+T opens
+  a tab on the same folder with the same sort and hidden setting; Ctrl+W closes the active tab;
+  Ctrl+Tab and Ctrl+Shift+Tab (or Backtab) cycle; Ctrl+1 to Ctrl+9 pick by position. The keys sit
+  in the window's outer `FocusScope`; Slint's own Tab focus traversal runs only when no element
+  accepted the key, and it leaves Ctrl+Tab alone anyway.
+- **Tab strip**: `if tabs.length > 1` above the path bar, one `for` over a `[TabInfo]` (`title`,
+  `active`) `VecModel` per pane, rebuilt with `set_vec` on navigation, open, close and switch only.
+  Click switches; middle-click or the close glyph closes. Tabs are 60 to 180 px wide.
+- **Tab identity in every reply.** Enumeration generations now come from one counter for the whole
+  app (`State::generation`), so a generation names one tab: a batch or `Done` finds its tab by
+  generation among the pane's tabs, active or not, and a closed tab's model is set to generation 0
+  so its late replies find nothing. Filter and sort passes carry the tab id and land in that tab's
+  model; a background tab's restored cursor goes into the tab, not the list. The icon worker's
+  per-pane generation is the active tab's (set on navigate, refresh and switch); background tabs
+  never request icons. Every site that indexed `st.panes[pane]` goes through the active tab:
+  file operation sources, notes and the job table (job id to pane and tab id), clipboard cut marks
+  (cleared across all tabs, set on the source tab), the context menu, the drag source, the drop
+  target's `drop_spot`, refresh and its scroll restore, the icon strip, `ops_busy` and the
+  first-frame timing.
+- **Background tabs after an operation.** When a job ends or a shell verb is invoked, both panes'
+  active tabs refresh as before and every background tab is marked stale; a stale tab refreshes
+  when it comes to the front.
+- **Path bar** (`src/pathbar.rs`, `pane.slint`). Breadcrumb by default: one button per component
+  (This PC > C: > Users > x; a UNC path gives This PC > \\server\share > dir), built from the path
+  on navigation and tab switch; clicking button `i` navigates to the prefix it stands for. The row
+  is right-aligned inside a clip when it is wider than the bar, so the current folder stays in
+  view. Ctrl+L switches to the existing `LineEdit` with the folder selected; Return navigates and
+  switches back; Escape or focus loss switches back and restores the text. The "..." glyph at the
+  bar's right end makes the text entry permanent (`path-entry-sticky` on the window, both panes);
+  the chevron that replaces it brings the breadcrumb back. Both modes occupy the same 32 px, so the
+  list's top does not move.
+- **Opening files.** Return or a double-click on a non-directory calls `shellmenu::open_item`:
+  `ShellExecuteExW` with `SEE_MASK_NOASYNC | SEE_MASK_INVOKEIDLIST`, no verb, the folder as
+  `lpDirectory`, on the UI thread with no state borrow held (the shell can show "Open with" from
+  inside the call). A failure shows "could not open <name>: <system message>" in the status bar;
+  `ERROR_CANCELLED` counts as success. Directories, reparse directories and drives still navigate.
+  New `windows-sys` feature `Win32_System_Registry` (`SHELLEXECUTEINFOW` has an `HKEY` field).
+- **Status bar** (`src/statusbar.rs`): three texts per pane in place of the status line. Left "N
+  items (K hidden)", after the tab's note and with " (loading...)" while enumerating; middle "M
+  selected, <total size>" ("M selected" when only folders are selected, empty with no selection);
+  right "X free of Y" for the folder's volume. Composed from the active tab on navigation,
+  enumeration batches, `Done`, pass swaps, selection changes and notes, never from a scroll or
+  render path. The free space comes from `GetDiskFreeSpaceExW` on the enumeration worker, after
+  the listing (the `[enum]` worker time is taken before it), in a new `free` field of `Msg::Done`;
+  an operation's refresh brings a new figure. `TWINFM_PERF_STATUS=1` appends ", enumerated in X ms"
+  to the left text; no tool reads the status bar (`tools/*.ps1` and `tools/analyze-trace.py` read
+  `[enum]` and `[busy]` from stderr).
+- **Layout arithmetic.** `dnd::Layout` gained `tabs: [bool; 2]` and `dnd::list_top` (63 px, or
+  91 px under a tab strip: 26 px strip plus 2 px spacing). `main::window_layout` builds the layout
+  from the window and its properties with no state borrow, and the driver's row, thumb, empty-space
+  and drop points now use it, so scripts and drops stay right with a tab strip showing.
+- **Driver.** `tab <new|close|next|prev|N>` presses the keys through Slint's key path on the
+  active pane (`CtrlT`, `CtrlW`, `CtrlTab`, `CtrlShiftTab`, `Ctrl1` to `Ctrl9`; `CtrlL` too),
+  `crumb <pane> <index>` calls the breadcrumb callback, `pathmode <pane> entry|crumb` calls
+  `set-path-mode`. stderr has `[tab]` (open, close, switch with the restored cursor and scroll),
+  `[crumb]` and `[open]` lines.
+- **Tests**, 49 to 55: tab bookkeeping (open after the active tab, the last tab never closes,
+  next and previous wrap, closing the active tab moves right or, at the end, left, closing a tab
+  left of the active one keeps it active); breadcrumb splitting for This PC, `C:\`, `C:\Users\x`
+  (with a trailing separator too) and `\\server\share\dir`, with targets and tab titles; status
+  text composition (items, hidden, loading, timing, note, error, selection with and without
+  files); free-space formatting and a real `GetDiskFreeSpaceExW` on `C:\` and `C:\Windows`; the
+  selection summary counting file bytes only.
+
+### Decisions
+
+- **One generation counter for all tabs** rather than a (tab, generation) pair in every message:
+  the enumeration `Msg`, the icon `Request` and the worker threads stay as they were, and a
+  generation can only ever match one tab.
+- **Background tabs refresh when shown, not when the operation ends**: an operation can touch any
+  folder (a drop, a shell verb, the other pane), and re-enumerating every tab would cost a 40k
+  listing per hidden tab per job.
+- **A new tab opens after the active one** (browser order) and copies its sort and hidden setting.
+- **The free space is read on the enumeration worker**, so a navigation to a slow network share
+  costs no UI time, and it is refreshed after every operation through the refresh.
+- **`ShellExecuteExW` after all.** M4 avoided it because `windows-sys` gates
+  `SHELLEXECUTEINFOW` behind `Win32_System_Registry`; that is a feature flag of a crate already in
+  the build, not a new dependency, and the shell's own association handling (Open with, packaged
+  app handlers, `SEE_MASK_INVOKEIDLIST`) is what opening a file needs.
+- **The path-mode glyph is "..."**: U+270E (pencil) did not render with the software renderer
+  used for screenshots; the chevron U+203A does and is used for the way back.
+- **Tab titles** are the folder's own name, the drive (C:) at a root, the share at a UNC root,
+  and "This PC" for the drive list.
+
+### Deviations
+
+- The breadcrumb puts This PC at the head of UNC paths too, since Backspace from a share root
+  goes there.
+- `crumb` calls the callback instead of clicking the button: the button's x depends on text width.
+- `tab close` on a pane's last tab logs "the last tab stays" and does nothing.
+
+### Deferred
+
+- **Tab strip overflow**: no scrolling; tabs shrink to 60 px, then the strip clips.
+- **Tabs are not restored at start** and cannot be dragged, reordered or receive drops.
+- **Breadcrumb**: no sibling-folder dropdown on the separators, no drop onto a crumb.
+- **Middle-click on a folder row** does not open it in a new tab (M6b adds middle-click in the
+  sidebar).
+- **The status bar sums file sizes only**; folder sizes are not computed.
+- **Opening files is not scripted**: a scripted open would start a program in Jeremy's session
+  (and closing it by force could take an unrelated Notepad window with it). Needs a manual check:
+  Return on a `.txt` opens it, Return on a file of an unknown type shows "Open with", cancelling
+  it leaves no note.
+- **Focus loss in scripted runs.** During the scripted checks a 30-minute soak (another twinfm)
+  was running; the foreground window alternated between the two processes (`GetForegroundWindow`
+  polled every 30 ms changed eight times in five seconds), and each deactivation took the focus
+  from the path entry, which then switched back to the breadcrumb, as the focus-loss rule says.
+  The M3 rename editor behaves the same way (checked). With one TwinFM window this should not
+  happen; worth a check by hand.
+
+### Scripted checks
+
+RDP session, default features, M6a build in `target-m6`:
+
+- `sleep 1500; tab new; sleep 800; nav 0 C:\Windows; sleep 1200; click 0 2; wheel 0 -5 16; ...;
+  tab prev; tab next; tab 1; crumb 0 1; tab 2; pathmode 0 entry; pathmode 0 crumb; tab close;
+  tab close; quit` on `C:\Users`: tab 2 opened on `C:\Users` and navigated to `C:\Windows`,
+  switches back and forth by Ctrl+Shift+Tab, Ctrl+Tab and Ctrl+1, the breadcrumb's "C:" took tab 1
+  to `C:\`, Ctrl+2 went back, the path mode toggled, the first Ctrl+W closed tab 2, the second
+  logged "the last tab stays"; exit 0, no panic.
+- `C:\traces\bigdir`: scrolled 20 wheel ticks, clicked row 139, opened a tab (scroll 0, no
+  cursor), went back: `cursor 139 scroll -2400`; forward and back again: `cursor 139 scroll
+  -2398`. The screenshot shows rows 110 to 140 with row 139 selected and each row's icon beside it.
+- Screenshots (software renderer) of the split view with two tabs per pane: both tab strips, the
+  breadcrumbs This PC > C: > Users > jtkli and This PC > C: > Windows > System32, two rows
+  selected on the right, and status bars reading "85 items (17 hidden)" / "492.39 GB free of
+  930.47 GB" and "4904 items (8 hidden)" / "2 selected" / the same free space.
+
+Gate: pending Jeremy's console WPR run (full build, after M6b).
