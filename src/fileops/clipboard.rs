@@ -9,7 +9,8 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HWND};
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW,
+    SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows_sys::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT, DROPEFFECT_COPY, DROPEFFECT_MOVE};
@@ -178,6 +179,19 @@ pub fn write_text(hwnd: isize, text: &str) -> Result<(), String> {
     set(CF_UNICODETEXT as u32, &block)
 }
 
+/// The clipboard's sequence number (bumped by every change, by any program). TwinFM records it
+/// right after each of its own writes, so a `WM_CLIPBOARDUPDATE` it caused can be told apart.
+pub fn sequence() -> u32 {
+    // SAFETY: plain Win32 query, no clipboard access needed.
+    unsafe { GetClipboardSequenceNumber() }
+}
+
+/// On `WM_CLIPBOARDUPDATE`: another program took the clipboard while TwinFM's cut marks show,
+/// so they no longer mean anything. `own` is the sequence number after TwinFM's last write.
+pub fn taken_from_cut(now: u32, own: u32, has_cut: bool) -> bool {
+    has_cut && now != own
+}
+
 /// Empty the clipboard (after pasting a cut, as Explorer does).
 pub fn clear(hwnd: isize) -> Result<(), String> {
     let _open = Open::new(hwnd)?;
@@ -213,6 +227,13 @@ mod tests {
         ansi[16..20].copy_from_slice(&0u32.to_le_bytes());
         ansi.extend_from_slice(b"C:\\x\0D:\\y\0\0");
         assert_eq!(parse_dropfiles(&ansi).unwrap(), vec![PathBuf::from(r"C:\x"), PathBuf::from(r"D:\y")]);
+    }
+
+    #[test]
+    fn foreign_clipboard_change_clears_a_cut_only() {
+        assert!(taken_from_cut(8, 7, true), "another program wrote after our cut");
+        assert!(!taken_from_cut(7, 7, true), "the update our own write caused");
+        assert!(!taken_from_cut(8, 7, false), "no cut marks: nothing to clear");
     }
 
     #[test]

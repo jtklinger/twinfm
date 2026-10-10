@@ -141,6 +141,8 @@ struct State {
     jobs: HashMap<u64, JobInfo>,
     /// The pane and tab whose rows carry the cut marks (None: no cut on the clipboard).
     cut_source: Option<(usize, u64)>,
+    /// The clipboard's sequence number right after TwinFM's last copy or cut.
+    clip_seq: u32,
     /// The paste-of-a-cut job, if one is in flight: on success the clipboard is emptied.
     paste_move: Option<u64>,
     /// TWINFM_SOAK=1: no confirmations, and every path must lie inside one of these scratch
@@ -1018,7 +1020,9 @@ fn clipboard_put(pane: usize, cut: bool) {
     let effect = if cut { clipboard::EFFECT_MOVE } else { clipboard::EFFECT_COPY };
     // No state borrow across the clipboard calls (see fileops::clipboard).
     let res = clipboard::write(hwnd, &paths, effect);
+    let seq = clipboard::sequence();
     with_state(|st| {
+        st.clip_seq = seq;
         let Some(app) = st.app.upgrade() else { return };
         match res {
             Ok(()) => {
@@ -1710,6 +1714,17 @@ fn crumb_clicked(pane: usize, i: usize) {
     }
 }
 
+/// The clipboard changed (`WM_CLIPBOARDUPDATE`, posted by the `devices` subclass). If it was not
+/// TwinFM's own write and rows show as cut, the cut is no longer on the clipboard: clear them.
+pub fn clipboard_changed() {
+    with_state(|st| {
+        if clipboard::taken_from_cut(clipboard::sequence(), st.clip_seq, st.cut_source.is_some()) {
+            clear_cuts(st);
+            eprintln!("[clipboard] another program took the clipboard: cut marks cleared");
+        }
+    });
+}
+
 /// A volume arrived or went (posted by the `devices` subclass): wait 500 ms for the burst to end.
 pub fn volumes_changed() {
     with_state(|st| st.device_timer.start(slint::TimerMode::SingleShot, Duration::from_millis(500), devices_changed));
@@ -1844,6 +1859,7 @@ fn main() -> Result<(), slint::PlatformError> {
             next_job: 0,
             jobs: HashMap::new(),
             cut_source: None,
+            clip_seq: 0,
             paste_move: None,
             soak,
             strip: [None; 2],

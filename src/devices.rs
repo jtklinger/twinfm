@@ -3,13 +3,19 @@
 //! `crate::volumes_changed` to the event loop (which debounces, refreshes the drive lists and any
 //! tab showing This PC). Everything else goes down the subclass chain untouched.
 //!
+//! The same subclass also gets `WM_CLIPBOARDUPDATE` (the window is a clipboard format listener)
+//! and posts `crate::clipboard_changed`, which clears the cut marks when another program took
+//! the clipboard.
+//!
 //! The subclass procedure can run inside a modal loop (a context menu, a drag, a shell dialog),
 //! so it touches no app state: it only posts.
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::DataExchange::AddClipboardFormatListener;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_VOLUME, DEV_BROADCAST_HDR, DEV_BROADCAST_VOLUME, WM_DEVICECHANGE,
+    DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_VOLUME, DEV_BROADCAST_HDR, DEV_BROADCAST_VOLUME, WM_CLIPBOARDUPDATE,
+    WM_DEVICECHANGE,
 };
 
 /// Our permanent subclass id on the main window (shellmenu's temporary one is "twfm").
@@ -20,9 +26,15 @@ pub fn install(hwnd: isize) {
     // SAFETY: subclassing our own window on its own thread; the procedure needs no refdata.
     let ok = unsafe { SetWindowSubclass(hwnd as HWND, Some(subclass_proc), SUBCLASS_ID, 0) };
     eprintln!("[devices] WM_DEVICECHANGE subclass {}", if ok != 0 { "installed" } else { "failed" });
+    // SAFETY: our own window; the listener goes away with the window (no removal at exit).
+    let listening = unsafe { AddClipboardFormatListener(hwnd as HWND) };
+    eprintln!("[clipboard] format listener {}", if listening != 0 { "added" } else { "failed" });
 }
 
 unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    if msg == WM_CLIPBOARDUPDATE {
+        let _ = slint::invoke_from_event_loop(crate::clipboard_changed);
+    }
     let event = wp as u32;
     if msg == WM_DEVICECHANGE && (event == DBT_DEVICEARRIVAL || event == DBT_DEVICEREMOVECOMPLETE) && lp != 0 {
         // SAFETY: for these two events lParam points to a DEV_BROADCAST_HDR.
