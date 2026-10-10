@@ -3,6 +3,7 @@ slint::include_modules!();
 
 mod fs {
     pub mod enumerate;
+    pub mod watch;
 }
 mod auto;
 mod dnd;
@@ -85,9 +86,13 @@ struct Tab {
     /// Saved when the tab goes to the background, restored when it comes back.
     cursor: i32,
     scroll: f32,
-    /// A file operation or shell command finished while the tab was in the background: it
-    /// refreshes when it comes to the front.
+    /// A file operation or shell command finished while the tab was in the background, or the
+    /// tab left the foreground (its directory watch went with it): it refreshes when it comes to
+    /// the front.
     stale: bool,
+    /// The directory watch reported a change while the listing was still in flight: refresh again
+    /// when it is done.
+    refresh_pending: bool,
 }
 
 struct State {
@@ -146,6 +151,10 @@ struct State {
     places: Vec<(String, PathBuf)>,
     side: Vec<sidebar::Row>,
     side_model: Rc<VecModel<SideItem>>,
+    /// The directory watcher (one thread, at most one watch per pane: its active tab's folder)
+    /// and its events, drained with the enumeration messages.
+    watch: fs::watch::Watcher,
+    watch_rx: Receiver<fs::watch::Event>,
 }
 
 /// A tab with no folder yet, its model sharing the icon table.
@@ -162,6 +171,7 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         cursor: -1,
         scroll: 0.0,
         stale: false,
+        refresh_pending: false,
     }
 }
 
@@ -216,6 +226,16 @@ impl State {
     fn model(&self, pane: usize) -> &PaneModel {
         &self.panes[pane].active().model
     }
+
+    /// Point the pane's directory watch at its active tab's folder (a no-op when it already
+    /// watches it). The hidden second pane watches nothing.
+    fn watch_active(&self, app: &App, pane: usize) {
+        if pane == 1 && !app.get_split() {
+            return self.watch.unwatch(1);
+        }
+        let t = self.tab(pane);
+        self.watch.watch(pane, t.id, t.path.clone());
+    }
 }
 
 fn navigate(pane: usize, path: PathBuf) {
@@ -233,7 +253,11 @@ fn navigate(pane: usize, path: PathBuf) {
         t.focus_name = None;
         t.free = None;
         t.stale = false;
+        t.refresh_pending = false;
         st.icon_gens[pane].store(generation, Ordering::Relaxed);
+        // Watched from the start, so a change during the listing is not missed; dropped again if
+        // the listing fails (Msg::Done).
+        st.watch_active(&app, pane);
         hide_strip(st, &app, pane);
         let shown = path.to_string_lossy().to_string();
         set_path(st, &app, pane);
@@ -427,8 +451,10 @@ fn bookmark_remove(i: usize) {
 }
 
 fn drain() {
-    with_state(|st| {
-        let Some(app) = st.app.upgrade() else { return };
+    // Panes whose active tab refreshes once the state borrow is released.
+    let again = with_state(|st| {
+        let mut again: Vec<usize> = Vec::new();
+        let Some(app) = st.app.upgrade() else { return again };
         while let Ok(msg) = st.rx.try_recv() {
             match msg {
                 Msg::Batch { pane, generation, entries } => {
@@ -467,17 +493,64 @@ fn drain() {
                             t.timing.done_ms = Some(wall);
                         }
                     }
+                    let ok = t.timing.error.is_none();
+                    let pending = std::mem::take(&mut t.refresh_pending) && ok;
                     if st.is_active(pane, id) {
                         update_status(st, &app, pane);
+                        // A folder that cannot be listed is not watched.
+                        if ok { st.watch_active(&app, pane) } else { st.watch.unwatch(pane) }
+                        if pending {
+                            again.push(pane);
+                        }
                     }
-                    if st.find(pane, id).is_some_and(|t| t.timing.error.is_none()) {
+                    if ok {
                         // Apply the tab's current filter and sort once the listing is complete.
                         request_pass(st, pane, id);
                     }
                 }
             }
         }
+        while let Ok(ev) = st.watch_rx.try_recv() {
+            watch_event(st, ev, &mut again);
+        }
+        again
     });
+    for pane in again {
+        refresh(pane);
+    }
+}
+
+/// A directory watch event (on the UI thread, inside `drain`). A change to the active tab
+/// refreshes it (after the listing in flight, if there is one); a tab that is no longer active
+/// goes stale. A lost watch refreshes the active tab once, so its error shows.
+fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
+    let (pane, tab_id) = match &ev {
+        fs::watch::Event::Changed { pane, tab_id } | fs::watch::Event::Lost { pane, tab_id, .. } => (*pane, *tab_id),
+    };
+    let active = st.is_active(pane, tab_id);
+    let Some(t) = st.find(pane, tab_id) else { return };
+    match ev {
+        fs::watch::Event::Changed { .. } if !active => {
+            t.stale = true;
+            eprintln!("[watch] pane={pane} tab={tab_id} changed in the background: stale");
+        }
+        fs::watch::Event::Changed { .. } if t.timing.done_ms.is_none() && t.timing.error.is_none() => {
+            t.refresh_pending = true;
+            eprintln!("[watch] pane={pane} tab={tab_id} changed while listing: refresh after it");
+        }
+        fs::watch::Event::Changed { .. } => {
+            eprintln!("[watch] pane={pane} tab={tab_id} changed: refresh");
+            if !again.contains(&pane) {
+                again.push(pane);
+            }
+        }
+        fs::watch::Event::Lost { error, .. } => {
+            eprintln!("[watch] pane={pane} tab={tab_id} watch lost ({error}){}", if active { ": refresh" } else { "" });
+            if active && !again.contains(&pane) {
+                again.push(pane);
+            }
+        }
+    }
 }
 
 /// Filter and sort on a worker over a snapshot of the tab's full listing; swap the shown Vec in
@@ -1407,6 +1480,7 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
     update_tabs(st, pane);
     update_status(st, app, pane);
     resolve_view(st, app, pane);
+    st.watch_active(app, pane);
 }
 
 /// Remember the active tab's cursor and scroll before another tab takes the pane.
@@ -1426,6 +1500,10 @@ fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
         pick(&mut st.panes[pane]);
         if st.panes[pane].active_index() == before {
             return None;
+        }
+        // Its watch goes to the new tab, so what happens to its folder from now on is unknown.
+        if let Some(t) = st.panes[pane].iter_mut().nth(before) {
+            t.stale = true;
         }
         show_tab(st, &app, pane);
         let t = st.tab(pane);
@@ -1451,6 +1529,8 @@ fn open_tab(pane: usize, path: Option<PathBuf>) {
     let path = with_state(|st| {
         let app = st.app.upgrade()?;
         save_view(st, &app, pane);
+        // Leaves the foreground and loses its watch (see switch_tab).
+        st.tab_mut(pane).stale = true;
         let cur = st.tab(pane);
         let (col, asc, hidden) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get());
         let path = path.unwrap_or_else(|| cur.path.clone());
@@ -1537,6 +1617,8 @@ fn main() -> Result<(), slint::PlatformError> {
     icons::spawn(icon_requests, icon_replies, icon_gens.clone(), icon_stats.clone(), || {
         let _ = slint::invoke_from_event_loop(drain_icons);
     });
+    let (watch_tx, watch_rx) = unbounded();
+    let watch = fs::watch::Watcher::spawn(watch_tx, wake);
     let ops = fileops::Worker::spawn(|d| {
         let _ = slint::invoke_from_event_loop(move || job_done(d));
     });
@@ -1627,6 +1709,8 @@ fn main() -> Result<(), slint::PlatformError> {
             places: sidebar::known_folders(),
             side: Vec::new(),
             side_model,
+            watch,
+            watch_rx,
         })
     });
     with_state(rebuild_sidebar);
@@ -1783,6 +1867,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 navigate(1, left);
                 app.invoke_focus_pane(1);
             } else {
+                with_state(|st| st.watch.unwatch(1));
                 app.invoke_focus_pane(0);
             }
         }
@@ -1807,5 +1892,8 @@ fn main() -> Result<(), slint::PlatformError> {
     if with_state(|st| st.save_timer.running()) {
         save_now();
     }
+    // Stop the watcher thread now: at process exit Windows terminates it before the state's
+    // thread-local destructor runs.
+    with_state(|st| st.watch.stop());
     res
 }
