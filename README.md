@@ -35,10 +35,22 @@ The one argument is the starting folder for the left pane (default `C:\`).
 | Ctrl+A | Select all |
 | Ctrl+H | Show or hide hidden and system files in the active pane |
 | F5, Ctrl+R | Refresh the active pane (keeps cursor, selection and scroll) |
+| Shift+F5 | Copy the selection to the other pane's folder (needs the second pane) |
+| Shift+F6 | Move the selection to the other pane's folder (needs the second pane) |
+| Delete | Delete the selection to the Recycle Bin |
+| Shift+Delete | Delete the selection permanently (the shell asks first) |
+| F2 | Rename the cursor row in place (Return commits, Escape cancels) |
+| F7, Ctrl+Shift+N | New folder in the active pane (name it in place, Return creates it) |
+| Ctrl+C / Ctrl+X / Ctrl+V | Copy, cut, paste files through the Windows clipboard (works with Explorer) |
 | Click a column header | Sort by name, type, size or modified (click again to reverse) |
 | Type a path in the path bar and press Return | Navigate (empty or "This PC" lists the drives) |
 
 Drag the bar between the panes to resize them.
+
+File operations act on the selection, or on the cursor row when nothing is selected, and run
+through the Windows shell (`IFileOperation`), so progress, name conflicts and the Recycle Bin
+behave as in Explorer. Drives in the This PC list cannot be copied, moved, renamed or
+deleted.
 
 ## Layout
 
@@ -47,6 +59,8 @@ src/
   main.rs          Slint bootstrap, wires model <-> UI, owns the two panes
   fs/enumerate.rs  Worker thread: read_dir -> Vec<Entry> batches of 2000 -> channel; type names, icon keys, drive list
   icons.rs         Icon worker thread (COM): shell icon per type, extension or path -> RGBA pixels; UI-side icon table
+  fileops/mod.rs   File operation worker (COM STA + message loop): copy, move, delete, rename, new folder via IFileOperation
+  fileops/clipboard.rs  CF_HDROP + "Preferred DropEffect" on the real clipboard
   model.rs         PaneModel: full and filtered Vec<Entry>, selection, sort state; implements slint::Model
   ui/app.slint     Window, two Pane components, splitter
   ui/pane.slint    Path bar, column header, ListView over the model, status line
@@ -55,6 +69,7 @@ src/
 tools/
   wpr-gate.ps1     The gate scenario under Windows Performance Recorder (run elevated)
   shot.ps1         Capture the window to a PNG (works with SLINT_BACKEND=winit-software)
+  soak-m3.ps1      File operation soak in %TEMP%\twinfm-m3 (TWINFM_SOAK=1), working set sampled every 30 s
 ```
 
 Rules the prototype follows, because they are what makes the numbers possible:
@@ -69,6 +84,9 @@ Rules the prototype follows, because they are what makes the numbers possible:
 - Shell icons come from one COM worker thread, fetched only for the rows on screen and
   cached per extension (or per path for `.exe`, `.lnk`, drives and custom folders); rows show a
   placeholder until their icon arrives.
+- File operations run on their own single-threaded-apartment worker with a Win32 message loop
+  (the shell's dialogs need one); the UI thread never waits on a job, and both panes refresh
+  when it completes.
 
 ## Measuring
 

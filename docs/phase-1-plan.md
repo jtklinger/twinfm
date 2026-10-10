@@ -305,3 +305,185 @@ No panics in any run.
   Google Drive volume's own icon) and custom folder icons (OneDrive, Videos).
 
 Gate: pending Jeremy's console WPR run.
+
+## M3: file operations
+
+### What landed (2026-10-09)
+
+- **File operation worker** (`src/fileops/mod.rs`). One thread, started with the app,
+  `CoInitializeEx(COINIT_APARTMENTTHREADED)`, running a real `GetMessage`/`DispatchMessage`
+  loop, because the shell's progress, conflict and confirmation windows are created on the
+  calling thread and need a pump there. Jobs arrive over a crossbeam channel, each followed by
+  a `PostThreadMessage(WM_APP + 1)` nudge; the worker runs every queued job synchronously
+  (`PerformOperations` pumps its own dialogs), reads `GetAnyOperationsAborted`, releases every
+  interface on the same thread, and reports through a callback the app turns into
+  `invoke_from_event_loop`. COM is plain `windows-sys` with a 23-slot vtable struct for
+  `IFileOperation` (only the used slots typed) and an RAII `Com` wrapper that calls `Release`
+  on drop; the `windows` crate was not needed.
+- **Jobs**: `Copy { sources, dest_dir }`, `Move { sources, dest_dir }`,
+  `Delete { sources, permanent }`, `Rename { source, new_name }`, `NewFolder { parent, name }`,
+  wrapped in `Request { id, job, hwnd, no_confirm }`. Items come from
+  `SHCreateItemFromParsingName`, one `CopyItem`/`MoveItem`/`DeleteItem` call per source.
+  Flags: `FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOF_NOCONFIRMMKDIR | FOFX_SHOWELEVATIONPROMPT`;
+  a permanent delete drops `FOF_ALLOWUNDO` and adds `FOF_WANTNUKEWARNING`; a copy into the
+  sources' own folder and a new folder add `FOF_RENAMEONCOLLISION`; `no_confirm` adds
+  `FOF_NOCONFIRMATION` (and drops `FOF_WANTNUKEWARNING`). Outcome: `Done`, `Cancelled`
+  (aborted, `COPYENGINE_E_USER_CANCELLED` or `HRESULT_FROM_WIN32(ERROR_CANCELLED)`), or
+  `Failed(HRESULT)`.
+- **Owner window.** The slint feature `raw-window-handle-06` and the `raw-window-handle` 0.6
+  crate give `RawWindowHandle::Win32`; the HWND is fetched on first use and cached as an
+  `isize` in the app state, then passed with every job to `SetOwnerWindow`.
+- **Keys**, in the list's `FocusScope` (pane.slint), forwarded as `command(pane, name)`:
+  **Shift+F5** copy and **Shift+F6** move the selection to the other pane's folder (with the
+  split off the status reads "open the second pane (F3) first"); **Delete** to the Recycle
+  Bin, **Shift+Delete** permanent (the shell's "Delete File" confirmation shows); **F2**
+  rename; **F7** and **Ctrl+Shift+N** new folder; **Ctrl+C / Ctrl+X / Ctrl+V** through the
+  clipboard. Operations act on the selection, or the cursor row when nothing is selected.
+- **Inline name editor.** One per pane: a `LineEdit` in an opaque box over the cursor row's
+  name cell (rename, brought into view first) or over the top row (new folder, prefilled
+  "New folder"), text all selected. Return commits through `edit-commit(pane, mode, original,
+  typed)`, Escape cancels, focus loss cancels. Rust trims the name and refuses an empty name,
+  `< > : " / \ | ? *` and control characters, and a trailing dot or space with a status
+  message; an unchanged rename is a no-op.
+- **Clipboard** (`src/fileops/clipboard.rs`): `CF_HDROP` (a `DROPFILES` header, `pFiles = 20`,
+  `fWide = TRUE`, then the double-NUL-terminated wide path list, in a `GlobalAlloc(GMEM_MOVEABLE)`
+  block) plus the registered "Preferred DropEffect" DWORD. `OpenClipboard(hwnd)` is held by
+  an RAII guard, so every early return closes it; a block `SetClipboardData` refuses is freed.
+  Paste reads both formats (no Preferred DropEffect means copy), runs Copy or Move into the
+  active pane's folder, and empties the clipboard after a successful move.
+- **Cut rows render dimmed.** `cut: bool` on `Entry` and `Row`, set by name on the source pane
+  (`PaneModel::set_cut`) and carried across passes by name on the worker, like the selection.
+  The texts draw at 45% foreground; the icon is not dimmed.
+- **Results.** The source pane's status line shows a note before the item count ("copying
+  3 items...", then "Copied 3 items", "Moved 1 item", "Deleted 3 items to the Recycle Bin",
+  "Deleted 1 item permanently", "Renamed to X", "Created X", "Cancelled", "Failed: 0x%08X"),
+  cleared on navigate. Both panes refresh through the existing `refresh(pane)` path when a job
+  ends. Drives in the This PC list are refused with a status message, as are new folders and
+  pastes in This PC and copies or moves to a pane that shows it.
+- **Driver.** `src/auto.rs` gained `copy`, `move`, `delete`, `sdelete`, `cc`, `cx`, `cv`,
+  `newfolder <name>` and `rename <name>` (the key, then the name typed character by character
+  into the editor, then Return), `waitops <ms>` (until no job runs and no pane refreshes, plus
+  300 ms for the pass), and key names `ShiftF5`, `ShiftF6`, `Delete`, `ShiftDelete`, `F2`,
+  `F7`, `CtrlC`, `CtrlX`, `CtrlV`, `CtrlShiftN`, `Escape`. stderr has `[fileops]` lines
+  (submit, note, done).
+- **Soak tool** `tools/soak-m3.ps1 -Minutes N`: builds `%TEMP%\twinfm-m3\src\tree` (10 folders
+  x 20 files) and an empty `dst`, writes a script of up to 500 cycles, runs the app with
+  `TWINFM_SOAK=1`, samples working set and private bytes every 30 s into a CSV, closes the
+  window (`WM_CLOSE` to the window titled "twinfm") at the deadline, and reports exit code,
+  `panicked` lines, job outcomes and memory.
+- **Tests**, 25 to 32: flags per job (including rename-on-collision and the soak flags);
+  status texts for every outcome; name validation; the `DROPFILES` block layout (offsets,
+  `fWide`, NUL terminators, length) and its round trip, including an ANSI list; cut marks and
+  operation targets in the model; the real clipboard (a message-only window owns it: write a
+  move of two paths, read back paths and effect, write a copy, read, clear, read nothing);
+  and the real shell: the STA worker with no owner window and `no_confirm` runs NewFolder,
+  Copy, Rename, Move, a copy into its own folder ("a - Copy.txt"), a new folder over an
+  existing name ("made (2)") and a permanent Delete in `%TEMP%\twinfm-m3-test-<pid>\`,
+  checking the disk after each.
+
+### Decisions
+
+- **File operation keys live in the list's FocusScope, not the window's outer scope.** Keys
+  reach the focused element first and bubble up; in the outer scope a Delete or Ctrl+X that the
+  path bar or the name editor does not consume would act on files while the user is typing.
+  In the list they only fire while the list has focus. Shift+F5 is caught there before F5
+  bubbles to the outer refresh.
+- **Channel plus nudge, and drain until empty.** A nudge posted while a job's dialog is up is
+  eaten by the dialog's modal loop (it dispatches thread messages to no window). No job is
+  lost: the request is sent before the nudge is posted, and the worker drains the channel
+  until it is empty after every job, so a request whose nudge was eaten is found then.
+- **One call per source** (`CopyItem` in a loop) rather than an `IShellItemArray`; the shell
+  still treats them as one operation with one progress window.
+- **HWND on first use**, not in the rendering notifier or a one-shot timer: winit creates
+  the window lazily, and the first job or clipboard action is always after it exists.
+- **Selection after an operation comes from the existing by-name restore.** Moved and deleted
+  names no longer exist when the refresh lands, so they drop out; a copy's sources are still
+  there and stay selected. After a rename or a new folder the next pass puts the cursor and
+  the selection on the new name.
+- **Clipboard calls run on the UI thread with no app-state borrow held.** `EmptyClipboard`
+  sends `WM_DESTROYCLIPBOARD` to the previous owner, which can be our own window, so the
+  state is read, released, the clipboard touched, and the state borrowed again.
+- **A paste is a move only when Preferred DropEffect has MOVE without COPY**; a source that
+  offers both gets a copy, as Explorer does.
+- **Move to the same folder is refused** with a status message. **A copy into the sources'
+  own folder, and a new folder over an existing name, rename on collision** ("a - Copy.txt",
+  "New folder (2)"), as Explorer does. Without `FOF_RENAMEONCOLLISION` the copy engine stops
+  at a "1 Interrupted Action" window, even with `FOF_NOCONFIRMATION`; the first scripted
+  edge-case run found this (the worker sat in that window until the app quit). A rename onto
+  an existing name still asks, as in Explorer.
+- **`TWINFM_SOAK=1` also fences the paths**: every source and destination must lie inside
+  `%TEMP%\twinfm-m3`, or the job is refused with a status message. The soak script also
+  scrolls `C:\traces\bigdir` and System32, and a mis-clicked row there must never become a
+  permanent delete without confirmation. With `no_confirm`, `FOF_WANTNUKEWARNING` is dropped
+  too, because that flag partially overrides `FOF_NOCONFIRMATION`.
+- **No ".." row exists** in TwinFM (Backspace and Alt+Up go up), so the ".." case does not
+  arise; drive rows are the only refused rows.
+
+### Dialog parenting, checked from outside the process
+
+Run without `TWINFM_SOAK`, with a scratch file, a PowerShell `EnumWindows` probe listing the
+process's visible top-level windows, their class, owner (`GetWindow(GW_OWNER)`) and thread:
+
+- **Shift+Delete**: a "Delete File" dialog (`#32770`), **owned by the main window**, created on
+  the worker thread (not the UI thread), and the main window **disabled while it is up**
+  (modal, as in Explorer). `WM_CLOSE` to it: the job reported `Cancelled`, the file was still
+  there, the main window was enabled again. The UI thread kept rendering throughout.
+- **Delete** (Recycle Bin): no dialog; the file went to the Recycle Bin. Windows 11's default.
+- **Copy onto an existing name in another folder**: a "Replace or Skip Files" window of class
+  `OperationStatusWindow`, **unowned (owner 0) and modeless** (the main window stays enabled)
+  despite `SetOwnerWindow`. That is the copy engine's own progress window, which Explorer
+  shows the same way (its own taskbar button). `WM_CLOSE`: `Cancelled`, the destination
+  untouched.
+- So `SetOwnerWindow` parents the confirmation dialogs; the copy engine's progress and
+  conflict window stays top-level. While such a window waits for an answer, later jobs queue
+  behind it on the single worker.
+
+### Deviations
+
+- Status texts carry more than the brief's bare words: "Deleted N items to the Recycle Bin" or
+  "permanently", "Renamed to X", "Created X".
+- `Request` carries the test-only `no_confirm` beside the `Job`, rather than inside it.
+- Results come back through a `done` callback on the worker (the app wraps it in
+  `invoke_from_event_loop`; the test sends to a channel), not a second channel.
+- The HWND is fetched on first use (above).
+- A `waitops` step was added; no `select` alias (`click` already does it).
+- Rename-on-collision for a copy into its own folder and for a new folder (above).
+
+### Deferred
+
+- **The actual new name is not read back.** A new folder made as "New folder (2)" reports
+  "Created New folder" and the cursor looks for "New folder"; an
+  `IFileOperationProgressSink::PostNewItem` would give the real name.
+- **The cursor after a delete or move** goes nowhere (its name is gone); Explorer moves it to
+  the next row.
+- **Cut marks do not notice another program taking the clipboard**; they clear on the next
+  copy or cut, a cut-paste, or navigating away. `AddClipboardFormatListener` would fix it.
+- **No progress or queue in TwinFM itself**: the shell's window shows progress; the status line
+  shows only "copying N items..." and the result. Queued jobs cannot be cancelled from TwinFM.
+- **Undo**: `FOFX_ADDUNDORECORD` is set, but Explorer's Undo picking it up has not been
+  checked, and TwinFM has no Ctrl+Z of its own.
+- **The renamed or new row is not scrolled into view** after the pass.
+- The cut row's icon is not dimmed (only its text).
+- A Narrator check of the name editor and of the status notes.
+
+### Soak
+
+10 minutes, `tools/soak-m3.ps1 -Minutes 10`, RDP session, default features, on the build
+before the rename-on-collision change (the cycle never copies into its own folder or makes a
+folder over an existing name, so that change does not touch it):
+
+- exit code 0 (window closed by the script at 10.0 min), **0 `panicked` lines**;
+- 24 cycles started, **278 jobs, 0 failed, 0 cancelled**, 0 soak refusals, 0 `waitops`
+  timeouts; each cycle added one Recycle Bin entry (the 200-file tree);
+- working set 102.7 MB at 5 s (before the first cycle had loaded the shell and bigdir), then
+  140.9 MB at 35 s and 148.8 MB at 601 s, oscillating between 140.9 and 162.8 MB with the
+  scroll scenario and no upward trend; private bytes 113.1 MB at 35 s, 119.2 MB at the end,
+  range 113.1 to 136.8 MB.
+
+A 3-minute confirmation run on the final build: exit code 0, 0 `panicked` lines, 7 cycles,
+84 jobs, 0 failed or cancelled; working set 142.0 MB at 35 s, 160.3 MB at 181 s (peak 172.9 MB
+during the scroll scenario), private bytes 112.9 to 146.2 MB.
+
+Soak: 30 minutes pending.
+
+Gate: not required for M3 but re-run with M4.
