@@ -1186,7 +1186,10 @@ mod tests {
             assert!(hr >= 0 && !q.is_null(), "SHCreateDataObject 0x{:08X}", hr as u32);
             let data = Com(q);
             let got = read_hdrop(data.0).expect("CF_HDROP offered");
-            assert_eq!(got, vec![root.join("a.txt"), root.join("b c.txt")]);
+            // The shell returns long names; a runner's %TEMP% can be an 8.3 path (RUNNER~1).
+            let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+            let got: Vec<_> = got.iter().map(|p| canon(p)).collect();
+            assert_eq!(got, vec![canon(&root.join("a.txt")), canon(&root.join("b c.txt"))]);
             // The optimized-move notes are stored and read back.
             set_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT, MOVE);
             assert_eq!(read_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT), Some(MOVE));

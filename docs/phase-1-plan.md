@@ -1006,6 +1006,14 @@ Between the panes (the one path no script can drive): with `dnd-a` left and `dnd
 file from the left pane to the right one: it moves and both panes refresh. No highlight shows
 while this drag runs (Deferred).
 
+Soak, 30 minutes (2026-10-10, `tools/soak-m5.ps1 -Minutes 30`, merged M5 build 290f68f, RDP
+session): exit 0 with the window closed by the script, 0 panics, 58 cycles, 870 file operations
+with 0 failed or cancelled, 116 drops (58 copy, 58 move, all as expected), 116 menus opened and
+closed with 0 in-menu ticks finding state or driver borrowed. Working set 103.7 MB at 5 s, 193.7
+MB at 1800 s, range 103.7 to 203.5 MB. Private bytes 105 MB at start, 136 at 3 min, 162 at 12
+min, back to 138 to 140 from 18 to 27 min, 154 at the end: the 10-minute run's apparent 1 MB/min
+climb was the upswing of an oscillation, not growth. Samples: `%TEMP%/twinfm-m5/soak-m5-memory.csv`.
+
 Gate: pending Jeremy's console WPR run.
 
 ## M6a: tabs, path bar, opening files, status bar
