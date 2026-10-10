@@ -2,3 +2,5 @@ target/
 target-*/
 vendor/
 *.etl
+.claude/
+__pycache__/
