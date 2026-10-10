@@ -26,7 +26,7 @@ The one argument is the starting folder for the left pane (default `C:\`).
 |---|---|
 | F3 | Toggle the second pane (opens on the left pane's folder) |
 | Ctrl+Shift+Right | Focus the other pane |
-| Double-click, Return | Enter a directory |
+| Double-click, Return | Enter a directory; open a file with its default program (as Explorer's double-click) |
 | Backspace, Alt+Up | Go to the parent directory (from a drive root: This PC, the drive list) |
 | Up / Down, Home / End | Move the cursor and select that row; the list scrolls to keep it in view |
 | Click, Ctrl+click, Shift+click | Select a row, toggle a row, select a range |
@@ -47,9 +47,20 @@ The one argument is the starting folder for the left pane (default `C:\`).
 | Shift+F10, Menu key | The context menu for the selection or the cursor row, under the cursor row |
 | Drag rows | Drag the selection (pressing an unselected row selects it first) to the other pane, onto a folder row, or into Explorer and other programs; drop files from Explorer onto a pane (its folder) or a folder row. Same drive moves, another drive copies; hold Ctrl to copy, Shift to move; Escape cancels |
 | Click a column header | Sort by name, type, size or modified (click again to reverse) |
-| Type a path in the path bar and press Return | Navigate (empty or "This PC" lists the drives) |
+| Click a breadcrumb button | Go to that folder ("This PC" lists the drives) |
+| Ctrl+L | Type a path in the path bar; Return goes there (empty or "This PC" lists the drives), Escape goes back to the breadcrumb. The "..." button at the bar's right end keeps the text entry for good (the chevron there brings the breadcrumb back) |
+| Ctrl+T | New tab on the active pane's folder |
+| Ctrl+W | Close the tab (a pane's last tab stays) |
+| Ctrl+Tab, Ctrl+Shift+Tab | Next, previous tab (wraps around) |
+| Ctrl+1 to Ctrl+9 | Tab by position |
+| Click a tab; middle-click it or its close button | Switch to that tab; close it |
 
 Drag the bar between the panes to resize them.
+
+Each pane has its own tabs; each tab keeps its own folder, sort, hidden-files setting, selection
+and scroll position. The tab strip shows when a pane has more than one tab. Under each pane the
+status bar shows the item count (and how many are hidden), the selection's count and size, and
+the free space on the folder's drive.
 
 File operations act on the selection, or on the cursor row when nothing is selected, and run
 through the Windows shell (`IFileOperation`), so progress, name conflicts and the Recycle Bin
@@ -60,7 +71,7 @@ deleted.
 
 ```
 src/
-  main.rs          Slint bootstrap, wires model <-> UI, owns the two panes
+  main.rs          Slint bootstrap, wires model <-> UI, owns the two panes and their tabs
   fs/enumerate.rs  Worker thread: read_dir -> Vec<Entry> batches of 2000 -> channel; type names, icon keys, drive list
   icons.rs         Icon worker thread (COM): shell icon per type, extension or path -> RGBA pixels; UI-side icon table; per-pane icon strip
   fileops/mod.rs   File operation worker (COM STA + message loop): copy, move, delete, rename, new folder via IFileOperation
@@ -68,8 +79,11 @@ src/
   shellmenu.rs     Shell context menu (IContextMenu, on the UI thread) with TwinFM's own items; terminal launch
   dnd.rs           OLE drag and drop (UI thread): IDropTarget on the window, drag source via SHCreateDataObject + DoDragDrop, click/drag gesture rules
   model.rs         PaneModel: full and filtered Vec<Entry>, selection, sort state; implements slint::Model
+  tabs.rs          Tab bookkeeping per pane (open, close, next, previous, by index)
+  pathbar.rs       Breadcrumb buttons from a path
+  statusbar.rs     Status bar texts; free space (GetDiskFreeSpaceExW, on the enumeration worker)
   ui/app.slint     Window, two Pane components, splitter
-  ui/pane.slint    Path bar, column header, ListView over the model, status line
+  ui/pane.slint    Tab strip, path bar (breadcrumb or text entry), column header, ListView over the model, status bar
   perf.rs          Frame-time ring buffer, UI-thread CPU time, printed to stderr every 5 s
   auto.rs          Scripted driver for unattended runs (TWINFM_SCRIPT, see its header)
 tools/

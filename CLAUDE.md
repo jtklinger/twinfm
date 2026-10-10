@@ -8,7 +8,7 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
 milestones, gate re-run after each). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (49 tests; three touch the real shell and clipboard, see below)
+- `cargo test --release` (55 tests; three touch the real shell and clipboard, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -47,7 +47,13 @@ milestones, gate re-run after each). Read them before changing the list.
   drag followed by `sleep` and `dragcancel` steps, which run on a helper thread because OLE's drag
   loop runs no Win32 timer. A scripted drag can only be cancelled, never dropped (a scripted drop
   in an RDP session once landed on another program's window; see the M5 record). `[dnd]` lines on
-  stderr. `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  stderr. Tabs and path bar: `tab <new|close|next|prev|N>` presses Ctrl+T, Ctrl+W, Ctrl+Tab,
+  Ctrl+Shift+Tab or Ctrl+N on the active pane (key names `CtrlT`, `CtrlW`, `CtrlTab`,
+  `CtrlShiftTab`, `Ctrl1` to `Ctrl9`, and `CtrlL` for the path entry), `crumb <pane> <index>`
+  clicks a breadcrumb button through its callback, `pathmode <pane> entry|crumb` switches the path
+  bar; `[tab]`, `[crumb]` and `[open]` lines on stderr. `TWINFM_PERF_STATUS=1` adds the
+  enumeration time to the status bar (the gate tools read `[enum]` on stderr, not the status
+  bar). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
