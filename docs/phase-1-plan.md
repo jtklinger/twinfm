@@ -57,7 +57,8 @@ on the worker.
   reads "N items (K hidden), enumerated in X ms" while entries are filtered out.
 - **Selection.** A `BTreeSet<usize>` of indices into `shown` plus an anchor, UI thread only.
   Click selects only that row and moves the cursor; Ctrl+click toggles; Shift+click selects
-  anchor to row; Ctrl+A selects all; Space toggles the cursor row; Shift+Up/Down extend.
+  anchor to row; Ctrl+A selects all; Space toggles the cursor row; Shift+Up/Down extend;
+  Home/End jump to the first and last row. Arrowing scrolls the list to keep the cursor in view.
   Only rows whose membership changed get `row_changed`. Selection clears on navigate.
   `accessible-item-selected` now reflects selection membership, not the cursor.
   `PaneModel::selected_names()` is there for M3 to M5.

@@ -28,7 +28,7 @@ The one argument is the starting folder for the left pane (default `C:\`).
 | Ctrl+Shift+Right | Focus the other pane |
 | Double-click, Return | Enter a directory |
 | Backspace, Alt+Up | Go to the parent directory (from a drive root: This PC, the drive list) |
-| Up / Down | Move the cursor and select that row |
+| Up / Down, Home / End | Move the cursor and select that row; the list scrolls to keep it in view |
 | Click, Ctrl+click, Shift+click | Select a row, toggle a row, select a range |
 | Shift+Up / Shift+Down | Extend the selection |
 | Space | Toggle the selection of the cursor row |

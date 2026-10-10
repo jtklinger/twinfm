@@ -56,6 +56,7 @@ pub struct Entry {
 }
 
 impl Entry {
+    #[cfg(test)]
     pub fn new(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString) -> Entry {
         Entry::with_zone(name, size, modified, attrs, type_text, &LocalZone::current())
     }
