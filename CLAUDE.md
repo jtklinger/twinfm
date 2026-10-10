@@ -63,8 +63,8 @@ changing the list.
   listed its folder (at most `<ms>`), then 300 ms more for the pass, like `waitops`. `touch` and
   `rmfile` obey the `TWINFM_SOAK` fence as file operations do; outside a soak, point them at
   `%TEMP%` scratch folders only. `[watch]` lines on stderr: `watching <path>`, `no watch for <path>:
-  <reason>` (This PC, network drives and shares, a folder that cannot be opened; logged once per
-  pane and path), `changed: refresh`, `changed while listing: refresh after it`, `changed in the
+  <reason>` (This PC, network drives and shares, removable drives and discs, a folder that cannot
+  be opened; logged once per pane and path), `changed: refresh`, `changed while listing: refresh after it`, `changed in the
   background: stale`, `lost <path>: <error>`; `[devices]` lines for volume arrivals and removals.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,

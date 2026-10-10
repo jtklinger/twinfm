@@ -189,8 +189,9 @@ fn last_error() -> String {
     std::io::Error::from_raw_os_error(unsafe { GetLastError() } as i32).to_string()
 }
 
-/// Why `path` gets no watch, before any handle is opened: the drive list, or a network drive or
-/// share (ReadDirectoryChangesW over SMB is unreliable and can hang on a dead share).
+/// Why `path` gets no watch, before any handle is opened: the drive list; a network drive or
+/// share (ReadDirectoryChangesW over SMB is unreliable and can hang on a dead share); a removable
+/// drive or disc (an open directory handle makes Windows refuse to eject it; F5 still refreshes).
 fn unwatchable(path: &Path) -> Option<&'static str> {
     if crate::fs::enumerate::is_this_pc(&path.to_string_lossy()) {
         return Some("the drive list is not a folder");
@@ -202,7 +203,12 @@ fn unwatchable(path: &Path) -> Option<&'static str> {
             let root: Vec<u16> = [letter as u16, b':' as u16, b'\\' as u16, 0].to_vec();
             // SAFETY: `root` is a NUL-terminated wide string for the duration of the call.
             let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
-            (kind == crate::fs::enumerate::DRIVE_REMOTE).then_some("network drive")
+            use crate::fs::enumerate::{DRIVE_CDROM, DRIVE_REMOTE, DRIVE_REMOVABLE};
+            match kind {
+                DRIVE_REMOTE => Some("network drive"),
+                DRIVE_REMOVABLE | DRIVE_CDROM => Some("removable drive"),
+                _ => None,
+            }
         }
         _ => None,
     }

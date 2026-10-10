@@ -64,8 +64,9 @@ hand-written calls; nothing per frame or per row without a trace first.
 - **No watch, gracefully**: This PC (or an empty path), network drives (`GetDriveTypeW ==
   DRIVE_REMOTE`), UNC paths, and any failing `CreateFileW`, port association or first
   `ReadDirectoryChangesW` give no watch and one `[watch] pane=N no watch for <path>: <reason>`
-  line (once per pane and path). F5 works as before. Removable drives are watched like fixed
-  ones. The thread runs with `SEM_FAILCRITICALERRORS`.
+  line (once per pane and path). Removable drives and discs (`DRIVE_REMOVABLE`, `DRIVE_CDROM`)
+  are not watched either, so TwinFM never holds a directory handle that would make Windows refuse
+  to eject them. F5 works as before everywhere. The thread runs with `SEM_FAILCRITICALERRORS`.
 - **API**: `Watcher::spawn(tx, wake)`, `watch(pane, tab_id, path)` (at most one watch per pane;
   the same folder again only updates the tab id and keeps the handle), `unwatch(pane)`, `stop()`
   (also on drop), and `Event::{Changed, Lost}` with the pane and tab id, delivered over a channel
@@ -125,6 +126,11 @@ hand-written calls; nothing per frame or per row without a trace first.
   updates are deferred.
 - **Network drives and shares are not watched.** Change notification over SMB depends on the
   server, and a dead share can stall the calls; F5 still works there.
+- **Removable drives and discs are not watched**, as the kickoff brief specified. An open
+  directory handle on a USB drive makes "Safely remove" report the device as in use; the lead
+  reversed the implementer's choice to watch them before the PR went up. Watching them properly
+  means `RegisterDeviceNotification` with `DBT_DEVTYP_HANDLE` and closing the handle on
+  `DBT_DEVICEQUERYREMOVE` (Deferred).
 
 ### Deviations
 
@@ -157,11 +163,10 @@ hand-written calls; nothing per frame or per row without a trace first.
   count, and no refresh until shown).
 - **Subtree watches** (sizes or counts of subfolders), not needed until folder sizes exist.
 - **Network shares**: `ReadDirectoryChangesW` over SMB, with a timeout and a health check.
-- **Ejecting a removable drive while TwinFM shows a folder on it.** The watch's open directory
-  handle makes Windows report the drive as in use. Explorer avoids this by registering the handle
-  (`RegisterDeviceNotification` with `DBT_DEVTYP_HANDLE`) and closing it on
-  `DBT_DEVICEQUERYREMOVE`; TwinFM does not yet. Until then, navigate away (or close TwinFM) before
-  ejecting. Not checked with a real drive (none attached in the session).
+- **Watching removable drives.** They refresh with F5 only. Explorer watches them and still
+  allows ejection by registering the handle (`RegisterDeviceNotification` with
+  `DBT_DEVTYP_HANDLE`) and closing it on `DBT_DEVICEQUERYREMOVE`; TwinFM would need the same
+  before it can watch them. Not checked with a real drive (none attached in the session).
 - **Renaming or moving the watched folder itself** is not noticed: the handle follows the folder,
   so its changes keep arriving while the tab's path names a folder that no longer exists, until the
   next refresh shows the error.

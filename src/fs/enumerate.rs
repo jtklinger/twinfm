@@ -99,10 +99,10 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
 
 // GetDriveTypeW results (WinBase.h). Declared here rather than enabling windows-sys's large
 // Win32_System_WindowsProgramming feature for five constants.
-const DRIVE_REMOVABLE: u32 = 2;
+pub(crate) const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
 pub(crate) const DRIVE_REMOTE: u32 = 4;
-const DRIVE_CDROM: u32 = 5;
+pub(crate) const DRIVE_CDROM: u32 = 5;
 const DRIVE_RAMDISK: u32 = 6;
 
 /// One entry per logical drive: name "C:\", type "Local Disk" or "Label (C:)", free space.
