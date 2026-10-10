@@ -6,6 +6,7 @@ mod fs {
     pub mod watch;
 }
 mod auto;
+mod devices;
 mod dnd;
 mod fileops;
 mod icons;
@@ -155,6 +156,8 @@ struct State {
     /// and its events, drained with the enumeration messages.
     watch: fs::watch::Watcher,
     watch_rx: Receiver<fs::watch::Event>,
+    /// Debounces volume arrivals and removals (WM_DEVICECHANGE comes in bursts).
+    device_timer: slint::Timer,
 }
 
 /// A tab with no folder yet, its model sharing the icon table.
@@ -778,6 +781,7 @@ fn main_hwnd(st: &mut State, app: &App) -> isize {
         if let Ok(h) = handle.window_handle() {
             if let RawWindowHandle::Win32(w) = h.as_raw() {
                 st.hwnd = w.hwnd.get();
+                devices::install(st.hwnd);
             }
         }
     }
@@ -1606,6 +1610,24 @@ fn crumb_clicked(pane: usize, i: usize) {
     }
 }
 
+/// A volume arrived or went (posted by the `devices` subclass): wait 500 ms for the burst to end.
+pub fn volumes_changed() {
+    with_state(|st| st.device_timer.start(slint::TimerMode::SingleShot, Duration::from_millis(500), devices_changed));
+}
+
+/// The drives changed: re-read the sidebar's drive list and refresh every visible tab on This PC.
+fn devices_changed() {
+    let panes = with_state(|st| {
+        let split = st.app.upgrade().is_some_and(|a| a.get_split());
+        (0..2).filter(|&p| (p == 0 || split) && is_this_pc(&st.tab(p).path.to_string_lossy())).collect::<Vec<_>>()
+    });
+    eprintln!("[devices] drives changed: drive list re-read, This PC refreshed in {} pane(s)", panes.len());
+    refresh_drives();
+    for p in panes {
+        refresh(p);
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
     let icons = Rc::new(RefCell::new(IconTable::default()));
@@ -1711,6 +1733,7 @@ fn main() -> Result<(), slint::PlatformError> {
             side_model,
             watch,
             watch_rx,
+            device_timer: slint::Timer::default(),
         })
     });
     with_state(rebuild_sidebar);
