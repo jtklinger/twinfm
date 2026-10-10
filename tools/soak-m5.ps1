@@ -34,7 +34,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 # The copy engine's progress window is an unowned top-level window of the same process, so
-# Process.CloseMainWindow could pick it; close the app's own window (title "twinfm") instead.
+# Process.CloseMainWindow could pick it; close the app's own window (title "TwinFM - <folder>", "twinfm" before M6b) instead.
 Add-Type @"
 using System; using System.Text; using System.Runtime.InteropServices;
 public static class SoakWin5 {
@@ -48,7 +48,7 @@ public static class SoakWin5 {
     EnumWindows((h, l) => {
       uint p; GetWindowThreadProcessId(h, out p);
       var t = new StringBuilder(64); GetWindowText(h, t, 64);
-      if (p == pid && t.ToString() == "twinfm") { found = h; return false; }
+      if (p == pid && (t.ToString() == "twinfm" || t.ToString().StartsWith("TwinFM - "))) { found = h; return false; }
       return true;
     }, IntPtr.Zero);
     return found != IntPtr.Zero && PostMessage(found, 0x10, IntPtr.Zero, IntPtr.Zero);

@@ -162,6 +162,9 @@ pub struct Layout {
     pub ratio: f32,
     /// Whether each pane shows its tab strip (it has more than one tab), which moves its list down.
     pub tabs: [bool; 2],
+    /// Where the panes start: right of the sidebar and its 4 px resize edge, or of the 12 px
+    /// strip of a collapsed sidebar.
+    pub left: f32,
 }
 
 /// The list's top inside a pane (pane.slint): 3 px padding, 32 px path entry, 2 px spacing,
@@ -191,13 +194,15 @@ pub enum Spot {
     Row(usize, usize),
 }
 
-/// The pane's x range: the left pane is the whole window without the split, else up to 3 px left
-/// of the split line; the right pane starts 3 px right of it (the splitter is the 6 px between).
+/// The pane's x range: the left pane is the whole panes area without the split, else up to 3 px
+/// left of the split line; the right pane starts 3 px right of it (the splitter is the 6 px
+/// between). The ratio applies to the panes area, right of `left`.
 pub fn pane_x(l: &Layout, pane: usize) -> (f32, f32) {
+    let line = l.left + (l.width - l.left) * l.ratio;
     match (l.split, pane) {
-        (false, _) => (0.0, l.width),
-        (true, 0) => (0.0, l.width * l.ratio - 3.0),
-        (true, _) => (l.width * l.ratio + 3.0, l.width),
+        (false, _) => (l.left, l.width),
+        (true, 0) => (l.left, line - 3.0),
+        (true, _) => (line + 3.0, l.width),
     }
 }
 
@@ -1030,7 +1035,7 @@ mod tests {
 
     #[test]
     fn hit_testing_and_drop_folder() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2] };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0 };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
         // Rows start at y 63, 22 px each; the list ends 23 px above the bottom (y 577).
@@ -1066,6 +1071,15 @@ mod tests {
         assert_eq!(hit(&tabbed, 100.0, 113.0, none, [5, 7]), Spot::Row(0, 1));
         assert_eq!(hit(&tabbed, 700.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
         assert_eq!((list_top(&tabbed, 0), list_top(&tabbed, 1)), (91.0, 63.0));
+        // A sidebar 180 px wide (plus its 4 px edge): the panes start at 184 and split their own width.
+        let side = Layout { left: 184.0, ..two };
+        assert_eq!(pane_x(&side, 0), (184.0, 589.0));
+        assert_eq!(pane_x(&side, 1), (595.0, 1000.0));
+        assert_eq!(hit(&side, 100.0, 70.0, none, [5, 7]), Spot::Outside, "the sidebar");
+        assert_eq!(hit(&side, 200.0, 70.0, none, [5, 7]), Spot::Row(0, 0));
+        assert_eq!(hit(&side, 600.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
+        let single = Layout { left: 12.0, ..one };
+        assert_eq!(pane_x(&single, 0), (12.0, 1000.0), "a collapsed sidebar leaves a 12 px strip");
 
         // Drop folders.
         let f = p(r"C:\work");

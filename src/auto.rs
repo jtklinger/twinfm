@@ -13,7 +13,7 @@
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
 //!                                    CtrlV, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
 //!                                    the context menu and take in-menu steps like rclick); CtrlT,
-//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9
+//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9
 //!   copy | move                      Shift+F5 / Shift+F6: the active pane's selection to the other pane
 //!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
 //!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
@@ -53,6 +53,11 @@
 //!                                    Slint key path, on the active pane
 //!   crumb <pane> <index>             breadcrumb button <index> (0 is This PC), through its callback
 //!   pathmode <pane> <entry|crumb>    the path bar as text entry (as Ctrl+L) or back to the breadcrumb
+//!   sidebar toggle                   F9: show or hide the sidebar
+//!   sidebar click <row>              sidebar row <row> (headers count; 0 is "Drives"), through its callback
+//!   bookmark add                     Ctrl+D: bookmark the active tab's folder
+//!   bookmark remove <index>          the bookmark menu's "Remove bookmark" for bookmark <index>
+//!   about open | about close         F1 opens the About dialog; close closes it
 //!   quit                             exit the event loop
 //! Events are dispatched with slint::Window::dispatch_event on the UI thread, so Slint's full
 //! input -> layout -> render path runs; only the OS WndProc hop is skipped.
@@ -117,6 +122,9 @@ enum Step {
     DropFiles { pane: usize, row: i32, mode: String, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
     PathMode { pane: usize, entry: bool },
+    SideClick(i32),
+    BookmarkRemove(i32),
+    AboutClose,
     Quit,
 }
 
@@ -172,6 +180,12 @@ fn parse(script: &str) -> Vec<Step> {
                 }),
                 "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
                 "pathmode" => Step::PathMode { pane: num(1) as usize, entry: a.get(2) == Some(&"entry") },
+                "sidebar" if a.get(1) == Some(&"click") => Step::SideClick(num(2) as i32),
+                "sidebar" => Step::Key("F9".into()),
+                "bookmark" if a.get(1) == Some(&"remove") => Step::BookmarkRemove(num(2) as i32),
+                "bookmark" => Step::Key("CtrlD".into()),
+                "about" if a.get(1) == Some(&"close") => Step::AboutClose,
+                "about" => Step::Key("F1".into()),
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("[auto] unknown step: {other}");
@@ -517,6 +531,9 @@ fn chord(name: &str) -> Vec<SharedString> {
         "ShiftF10" => vec![k(Key::Shift), k(Key::F10)],
         "Menu" => vec![k(Key::Menu)],
         "CtrlT" => vec![k(Key::Control), "t".into()],
+        "CtrlD" => vec![k(Key::Control), "d".into()],
+        "F1" => vec![k(Key::F1)],
+        "F9" => vec![k(Key::F9)],
         "CtrlW" => vec![k(Key::Control), "w".into()],
         "CtrlL" => vec![k(Key::Control), "l".into()],
         "CtrlTab" => vec![k(Key::Control), k(Key::Tab)],
@@ -637,6 +654,18 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::PathMode { pane, entry } => {
             app.invoke_set_path_mode(pane as i32, entry);
+            schedule(runner, 1);
+        }
+        Step::SideClick(row) => {
+            app.invoke_side_clicked(row, false);
+            schedule(runner, 1);
+        }
+        Step::BookmarkRemove(i) => {
+            app.invoke_bookmark_remove(i);
+            schedule(runner, 1);
+        }
+        Step::AboutClose => {
+            app.invoke_close_about();
             schedule(runner, 1);
         }
         Step::Quit => {

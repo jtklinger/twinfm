@@ -11,7 +11,9 @@ mod icons;
 mod model;
 mod pathbar;
 mod perf;
+mod settings;
 mod shellmenu;
+mod sidebar;
 mod statusbar;
 mod tabs;
 
@@ -133,6 +135,17 @@ struct State {
     crumb_models: [Rc<VecModel<Crumb>>; 2],
     /// TWINFM_PERF_STATUS=1: the status bar also shows the enumeration time.
     perf_status: bool,
+    /// The settings as loaded and as changed since, and where they are saved (None: a scripted
+    /// run, nothing is saved). `save_timer` is the one debounce timer: restarted on every change,
+    /// it writes the file once, 500 ms after the last one.
+    config: settings::Config,
+    config_path: Option<PathBuf>,
+    save_timer: slint::Timer,
+    /// The sidebar's sections and the rows composed from them (the Slint model mirrors `side`).
+    drives: Vec<(String, PathBuf)>,
+    places: Vec<(String, PathBuf)>,
+    side: Vec<sidebar::Row>,
+    side_model: Rc<VecModel<SideItem>>,
 }
 
 /// A tab with no folder yet, its model sharing the icon table.
@@ -230,6 +243,7 @@ fn navigate(pane: usize, path: PathBuf) {
         eprintln!("[nav] pane={pane} gen={generation} path={shown}");
         let tx = st.tx.clone();
         fs::enumerate::spawn(path, pane, generation, tx, wake);
+        schedule_save(st);
     });
 }
 
@@ -287,7 +301,129 @@ fn set_path(st: &State, app: &App, pane: usize) {
     let path = st.tab(pane).path.to_string_lossy().to_string();
     let crumbs: Vec<Crumb> = pathbar::crumbs(&path).into_iter().map(|c| Crumb { label: c.label.into() }).collect();
     st.crumb_models[pane].set_vec(crumbs);
-    if pane == 0 { app.set_left_path(path.into()) } else { app.set_right_path(path.into()) }
+    // The window title reads the active pane's one ("TwinFM - <folder>", app.slint).
+    let title: SharedString = pathbar::title(&path).into();
+    if pane == 0 {
+        app.set_left_path(path.into());
+        app.set_left_title(title);
+    } else {
+        app.set_right_path(path.into());
+        app.set_right_title(title);
+    }
+}
+
+/// A setting changed: write the file 500 ms after the last change (restarting the one timer),
+/// so a splitter or sidebar drag writes once when it stops.
+fn schedule_save(st: &State) {
+    if st.config_path.is_some() {
+        st.save_timer.start(slint::TimerMode::SingleShot, Duration::from_millis(500), save_now);
+    }
+}
+
+/// Gather the settings from the window and the panes and write them (atomically).
+fn save_now() {
+    let Some((config, path)) = with_state(|st| {
+        st.save_timer.stop();
+        let app = st.app.upgrade()?;
+        let c = &mut st.config;
+        let left = st.panes[0].active().path.to_string_lossy().to_string();
+        let right = st.panes[1].active().path.to_string_lossy().to_string();
+        if !left.is_empty() {
+            c.start_left = left;
+        }
+        if !right.is_empty() {
+            c.start_right = right;
+        }
+        c.split = app.get_split();
+        c.split_ratio = app.get_split_ratio();
+        c.sidebar_visible = app.get_sidebar_visible();
+        c.sidebar_width = app.get_sidebar_width();
+        c.path_bar = if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into();
+        let w = app.window();
+        if !w.is_minimized() && !w.is_maximized() && w.is_visible() {
+            let size = w.size().to_logical(w.scale_factor());
+            let pos = w.position();
+            if size.width > 0.0 && size.height > 0.0 {
+                c.window = Some(settings::WindowGeom { x: pos.x, y: pos.y, width: size.width, height: size.height });
+            }
+        }
+        Some((c.clone(), st.config_path.clone()?))
+    }) else {
+        return;
+    };
+    match config.save(&path) {
+        Ok(()) => eprintln!("[settings] saved {}", path.display()),
+        Err(e) => eprintln!("[settings] could not save: {e}"),
+    }
+}
+
+/// Rebuild the sidebar's rows from its sections (on a change only).
+fn rebuild_sidebar(st: &mut State) {
+    st.side = sidebar::compose(&st.drives, &st.places, &st.config.bookmarks);
+    let items: Vec<SideItem> =
+        st.side.iter().map(|r| SideItem { label: r.label.as_str().into(), kind: r.kind as i32, index: r.index as i32 }).collect();
+    st.side_model.set_vec(items);
+}
+
+/// Re-read the drive list for the sidebar on a worker (labels and free space can stall on a slow
+/// drive); the rows are rebuilt when it arrives. When the sidebar is shown and on F5.
+fn refresh_drives() {
+    std::thread::spawn(|| {
+        let drives: Vec<(String, PathBuf)> =
+            fs::enumerate::drive_entries().iter().map(|e| (sidebar::drive_label(e), PathBuf::from(e.name.as_str()))).collect();
+        let _ = slint::invoke_from_event_loop(move || {
+            with_state(|st| {
+                eprintln!("[sidebar] {} drive(s)", drives.len());
+                st.drives = drives;
+                rebuild_sidebar(st);
+            })
+        });
+    });
+}
+
+/// The pane keyboard actions go to: the right one only while the split is on and it is active.
+fn active_pane(app: &App) -> usize {
+    if app.get_split() && app.get_active_pane() == 1 { 1 } else { 0 }
+}
+
+/// A sidebar row: open its folder in the active pane, or with the middle button in a new tab there.
+fn side_clicked(i: usize, middle: bool) {
+    let Some((app, path)) = with_state(|st| Some((st.app.upgrade()?, st.side.get(i)?.path.clone()?))) else { return };
+    let pane = active_pane(&app);
+    eprintln!("[sidebar] row {i} {}: {}", if middle { "middle-click, new tab" } else { "click" }, path.display());
+    if middle { open_tab(pane, Some(path)) } else { navigate(pane, path) }
+}
+
+/// Ctrl+D: bookmark the active tab's folder.
+fn bookmark_add() {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let pane = active_pane(&app);
+        let folder = st.tab(pane).path.to_string_lossy().to_string();
+        let text = if is_this_pc(&folder) {
+            "This PC cannot be bookmarked".to_string()
+        } else if sidebar::add_bookmark(&mut st.config.bookmarks, &folder) {
+            rebuild_sidebar(st);
+            schedule_save(st);
+            format!("Bookmarked {folder}")
+        } else {
+            format!("{folder} is bookmarked already")
+        };
+        eprintln!("[sidebar] {text}");
+        note(st, &app, pane, text);
+    });
+}
+
+/// The bookmark menu's "Remove bookmark".
+fn bookmark_remove(i: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let Some(gone) = sidebar::remove_bookmark(&mut st.config.bookmarks, i) else { return };
+        rebuild_sidebar(st);
+        schedule_save(st);
+        eprintln!("[sidebar] removed bookmark {i}: {gone}");
+        note(st, &app, active_pane(&app), format!("Removed the bookmark {gone}"));
+    });
 }
 
 fn drain() {
@@ -1144,6 +1280,7 @@ pub fn window_layout(app: &App) -> dnd::Layout {
         split: app.get_split(),
         ratio: app.get_split_ratio(),
         tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
+        left: if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 },
     }
 }
 
@@ -1415,9 +1552,44 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_right_tabs(ModelRc::from(tab_models[1].clone()));
     app.set_left_crumbs(ModelRc::from(crumb_models[0].clone()));
     app.set_right_crumbs(ModelRc::from(crumb_models[1].clone()));
+    // Settings before the first navigation: they decide the start folders, sort and hidden files,
+    // the split, the sidebar, the path bar and the window's placement.
+    let config_path = settings::config_path();
+    let config = match &config_path {
+        Some(p) => {
+            let c = settings::Config::load(p);
+            eprintln!("[settings] file {} ({})", p.display(), if p.exists() { "read" } else { "not there yet: defaults" });
+            c
+        }
+        None => {
+            eprintln!("[settings] scripted run: defaults, nothing saved (set TWINFM_CONFIG to use a file)");
+            settings::Config::default()
+        }
+    };
     let panes = [Tabs::new(blank_tab(1, &icons)), Tabs::new(blank_tab(2, &icons))];
+    for (tabs, hidden) in panes.iter().zip([config.show_hidden_left, config.show_hidden_right]) {
+        let m = &tabs.active().model;
+        m.sort_col.set(settings::sort_from_name(&config.sort_column));
+        m.sort_asc.set(config.sort_ascending);
+        m.show_hidden.set(hidden);
+    }
     app.set_left_rows(ModelRc::from(panes[0].active().model.clone()));
     app.set_right_rows(ModelRc::from(panes[1].active().model.clone()));
+    app.set_sidebar_visible(config.sidebar_visible);
+    app.set_sidebar_width(config.sidebar_width);
+    app.set_split_ratio(config.split_ratio);
+    app.set_path_entry_sticky(config.path_bar == "entry");
+    app.set_version(env!("CARGO_PKG_VERSION").into());
+    if let Some(g) = config.window {
+        app.window().set_size(slint::LogicalSize::new(g.width, g.height));
+        if settings::on_screen(g.x, g.y, g.width as i32, &settings::monitors()) {
+            app.window().set_position(slint::PhysicalPosition::new(g.x, g.y));
+        } else {
+            eprintln!("[settings] saved window position ({}, {}) is off screen; left to Windows", g.x, g.y);
+        }
+    }
+    let side_model = Rc::new(VecModel::default());
+    app.set_side_items(ModelRc::from(side_model.clone()));
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
             app: app.as_weak(),
@@ -1448,8 +1620,19 @@ fn main() -> Result<(), slint::PlatformError> {
             tab_models,
             crumb_models,
             perf_status: std::env::var("TWINFM_PERF_STATUS").as_deref() == Ok("1"),
+            config: config.clone(),
+            config_path,
+            save_timer: slint::Timer::default(),
+            drives: Vec::new(),
+            places: sidebar::known_folders(),
+            side: Vec::new(),
+            side_model,
         })
     });
+    with_state(rebuild_sidebar);
+    if config.sidebar_visible {
+        refresh_drives();
+    }
 
     match app.window().set_rendering_notifier(|state, _| match state {
         RenderingState::BeforeRendering => perf::before_rendering(),
@@ -1491,6 +1674,10 @@ fn main() -> Result<(), slint::PlatformError> {
             let asc = if model.sort_col.get() == col { !model.sort_asc.get() } else { true };
             model.sort_col.set(col);
             model.sort_asc.set(asc);
+            // The last sort chosen is what new tabs start with.
+            st.config.sort_column = settings::sort_name(col).into();
+            st.config.sort_ascending = asc;
+            schedule_save(st);
             let id = st.tab(pane as usize).id;
             request_pass(st, pane as usize, id);
         });
@@ -1509,7 +1696,39 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
     });
-    app.on_refresh(|pane| refresh(pane as usize));
+    app.on_refresh(|pane| {
+        refresh(pane as usize);
+        if with_state(|st| st.app.upgrade().is_some_and(|a| a.get_sidebar_visible())) {
+            refresh_drives();
+        }
+    });
+    app.on_side_clicked(|i, middle| {
+        if let Ok(i) = usize::try_from(i) {
+            side_clicked(i, middle);
+        }
+    });
+    app.on_bookmark_add(bookmark_add);
+    app.on_bookmark_remove(|i| {
+        if let Ok(i) = usize::try_from(i) {
+            bookmark_remove(i);
+        }
+    });
+    app.on_sidebar_toggled(|| {
+        let shown = with_state(|st| {
+            schedule_save(st);
+            st.app.upgrade().is_some_and(|a| a.get_sidebar_visible())
+        });
+        eprintln!("[sidebar] {}", if shown { "shown" } else { "hidden" });
+        if shown {
+            refresh_drives();
+        }
+    });
+    app.on_settings_changed(|| with_state(|st| schedule_save(st)));
+    // Closing the window writes the settings at once (the window's placement included).
+    app.window().on_close_requested(|| {
+        save_now();
+        slint::CloseRequestResponse::HideWindow
+    });
     app.on_context_menu(|pane, row, x, y, extended| context_menu(pane as usize, row, x, y, extended));
     app.on_context_key(|pane, row, lx, ly, cy, vh| context_key(pane as usize, row, lx, ly, cy, vh));
     app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
@@ -1535,8 +1754,12 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_toggle_hidden(|pane| {
         with_state(|st| {
             let model = st.model(pane as usize);
-            model.show_hidden.set(!model.show_hidden.get());
-            eprintln!("[hidden] pane={pane} show_hidden={}", model.show_hidden.get());
+            let shown = !model.show_hidden.get();
+            model.show_hidden.set(shown);
+            eprintln!("[hidden] pane={pane} show_hidden={shown}");
+            // The pane's new tabs follow its last Ctrl+H.
+            if pane == 0 { st.config.show_hidden_left = shown } else { st.config.show_hidden_right = shown }
+            schedule_save(st);
             let id = st.tab(pane as usize).id;
             request_pass(st, pane as usize, id);
         });
@@ -1547,6 +1770,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(app) = w.upgrade() else { return };
             let now = !app.get_split();
             app.set_split(now);
+            with_state(|st| schedule_save(st));
             if now {
                 with_state(|st| st.split_requested = Some(perf::mark("F3: split requested")));
                 let busy = perf::BusyWindow::start("10 s after split");
@@ -1564,13 +1788,24 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    let start = std::env::args().nth(1).unwrap_or_else(|| "C:\\".to_string());
-    navigate(0, PathBuf::from(start));
+    // A command-line folder overrides the saved left start folder.
+    let start = std::env::args().nth(1).unwrap_or_else(|| config.start_left.clone());
+    navigate(0, PathBuf::from(&start));
+    if config.split {
+        app.set_split(true);
+        let right = if config.start_right.is_empty() { start } else { config.start_right.clone() };
+        navigate(1, PathBuf::from(right));
+    }
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);
     auto::start(&app);
     // The drop target goes on the window once it exists (winit creates it lazily, in `run`).
     with_state(|st| st.dnd_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), register_dnd));
 
-    app.run()
+    let res = app.run();
+    // A change still waiting for its debounce (a scripted quit, say) is written now.
+    if with_state(|st| st.save_timer.running()) {
+        save_now();
+    }
+    res
 }
