@@ -386,7 +386,10 @@ some of its remaining difference is icon replies landing and recomposing. No pan
   the end show the icons aligned with their rows in both panes and the partly scrolled top
   row's icon clipped at the header.
 
-Gate: pending Jeremy's console WPR run.
+Gate (2026-10-10, Jeremy at the console, strip build `target-m2`, same conditions as the
+morning run): **19.3%** by WPR (1932 sampled ms in the 10 s after the split; in-app 20.5%).
+Passes the 20% bar; the per-row version read 22.3% and M1 19.9%. Compose cost in the run: 125
+strips at 24 us average. Trace `C:/traces/twinfm-p1-m2strip.etl`.
 
 ## M3: file operations
 
@@ -575,6 +578,10 @@ Samples: `%TEMP%/twinfm-m3/soak-m3-memory.csv`.
 
 Gate: not required for M3 but re-run with M4.
 
+Gate (2026-10-10, Jeremy at the console, `target-m3`, run right after the M2 strip run):
+**19.6%** by WPR (1957 sampled ms; in-app 19.4%). Within noise of M2's 19.3%, as expected for
+a milestone that adds no per-frame work. Trace `C:/traces/twinfm-p1-m3.etl`.
+
 ## M4: shell context menu
 
 ### What landed (2026-10-10)
@@ -760,7 +767,8 @@ Other scripted runs:
 
 Soak: with M5 (the M5 soak opens and closes 40 menus in 10 minutes; see there).
 
-Gate: pending Jeremy's console WPR run.
+Gate: not run separately; nothing here runs per frame. The full M6 build, which contains this
+milestone, read 19.8% by WPR on 2026-10-10 (see M6b).
 
 ## M5: drag and drop
 
@@ -1014,7 +1022,8 @@ MB at 1800 s, range 103.7 to 203.5 MB. Private bytes 105 MB at start, 136 at 3 m
 min, back to 138 to 140 from 18 to 27 min, 154 at the end: the 10-minute run's apparent 1 MB/min
 climb was the upswing of an oscillation, not growth. Samples: `%TEMP%/twinfm-m5/soak-m5-memory.csv`.
 
-Gate: pending Jeremy's console WPR run.
+Gate: not run separately; nothing here runs per frame. The full M6 build, which contains this
+milestone, read 19.8% by WPR on 2026-10-10 (see M6b).
 
 ## M6a: tabs, path bar, opening files, status bar
 
@@ -1160,7 +1169,10 @@ RDP session, default features, M6a build in `target-m6`:
   selected on the right, and status bars reading "85 items (17 hidden)" / "492.39 GB free of
   930.47 GB" and "4904 items (8 hidden)" / "2 selected" / the same free space.
 
-Gate: pending Jeremy's console WPR run (full build, after M6b).
+Gate (2026-10-10, Jeremy at the console, full M6b build `target-m6`, accessibility on, hidden
+off): **19.8%** by WPR (1980 sampled ms in the 10 s after the split; in-app 20.3%). Passes the
+20% bar with 0.2 point to spare; M3 on the same conditions read 19.6%, so M4 to M6 together
+cost about 0.2 point. Trace `C:/traces/twinfm-p1-m6.etl`.
 
 ## M6b: sidebar, settings, window icon and title, About dialog
 
@@ -1314,13 +1326,16 @@ build (15.5 to 17.3 for M4). No panics in any run. Nothing new runs per frame in
 sidebar, tab strip, breadcrumb, status bar and title change on navigation, selection, a tab
 switch or a sidebar change only.
 
-Gate: pending Jeremy's console WPR run on the full build.
+Gate (2026-10-10, Jeremy at the console, full M6b build `target-m6`, accessibility on, hidden
+off): **19.8%** by WPR (1980 sampled ms in the 10 s after the split; in-app 20.3%). Passes the
+20% bar with 0.2 point to spare; M3 on the same conditions read 19.6%, so M4 to M6 together
+cost about 0.2 point. Trace `C:/traces/twinfm-p1-m6.etl`.
 
 ## Phase 1 close
 
 M1 to M6 are in: real entries, icons, file operations, the shell context menu, drag and drop,
 and the shell around them (tabs, breadcrumb, status bar, sidebar, bookmarks, settings, About).
-The console WPR gate (main thread busy over the 10 s after the split, bar under 20%) is recorded for week-one main (16.5%), M1 (19.9%), M2 per-row (22.3%, failed and reworked), M2 strip (19.3%) and M3 (19.6%); M4 and M5 add nothing per frame and were not run separately; the full M6 build's run is pending. Deferred to Phase 2, pulled together from
+The console WPR gate (main thread busy over the 10 s after the split, bar under 20%) is recorded for week-one main (16.5%), M1 (19.9%), M2 per-row (22.3%, failed and reworked), M2 strip (19.3%) and M3 (19.6%); M4 and M5 add nothing per frame and were not run separately; the full M6 build read 19.8%. Deferred to Phase 2, pulled together from
 every milestone and deduplicated:
 
 - **Directory watching**, which several gaps share: changes made by shell verbs that finish
@@ -1351,4 +1366,4 @@ every milestone and deduplicated:
   screenshot of a menu (M4); the drag and drop manual check (M5); opening files, the bookmark menu
   and sidebar middle-click (M6a, M6b).
 
-Gate: pending Jeremy's console WPR run on the full build.
+Gate: the full M6 build read **19.8%** by WPR on 2026-10-10. Phase 1 closes under the bar.
