@@ -9,7 +9,7 @@ mod model;
 mod perf;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use fs::enumerate::Msg;
+use fs::enumerate::{Msg, THIS_PC, is_this_pc};
 use model::{PaneModel, SelOp, SortCol, filter_sort};
 use slint::{ComponentHandle, ModelRc, RenderingState, Weak};
 use std::cell::RefCell;
@@ -56,6 +56,7 @@ fn wake() {
 }
 
 fn navigate(pane: usize, path: PathBuf) {
+    let path = if is_this_pc(&path.to_string_lossy()) { PathBuf::from(THIS_PC) } else { path };
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let model = &st.panes[pane];
@@ -310,7 +311,12 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_go_up(|pane| {
         let target = with_state(|st| {
             let app = st.app.upgrade()?;
-            Path::new(pane_path(&app, pane as usize).as_str()).parent().map(|p| p.to_path_buf())
+            let base = pane_path(&app, pane as usize);
+            if is_this_pc(&base) {
+                return None;
+            }
+            // A drive root (or UNC share root) has no parent: go up to the drive list.
+            Some(Path::new(base.as_str()).parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf()))
         });
         if let Some(p) = target {
             navigate(pane as usize, p);

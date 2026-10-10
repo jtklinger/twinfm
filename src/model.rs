@@ -69,6 +69,21 @@ impl Entry {
         }
     }
 
+    /// A drive in the "This PC" listing: the size column carries the free space.
+    pub fn drive(name: SharedString, free: Option<u64>, type_text: SharedString) -> Entry {
+        Entry {
+            size: free.unwrap_or(0),
+            size_text: free.map(|f| format!("{} free", format_size(f)).into()).unwrap_or_default(),
+            modified: 0,
+            modified_text: SharedString::default(),
+            type_text,
+            name,
+            attrs: FILE_ATTRIBUTE_DIRECTORY,
+            kind: Kind::Drive,
+            selected: false,
+        }
+    }
+
     /// Opens by navigating into it: directories, reparse directories and drives.
     pub fn is_dir(&self) -> bool {
         self.kind == Kind::Drive || self.attrs & FILE_ATTRIBUTE_DIRECTORY != 0

@@ -1,5 +1,6 @@
 //! Worker-thread directory enumeration. read_dir -> Vec<Entry> batches -> channel.
 //! Never runs on the UI thread. The UI consumes batches via slint::invoke_from_event_loop.
+//! The pseudo-folder "This PC" (or an empty path) lists the drives instead.
 
 use crate::model::Entry;
 use crossbeam_channel::Sender;
@@ -8,7 +9,10 @@ use std::collections::HashMap;
 use std::os::windows::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, UNIX_EPOCH};
-use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_DIRECTORY, GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
+};
+use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
 use windows_sys::Win32::UI::Shell::{ASSOCF_NOTRUNCATE, ASSOCSTR_FRIENDLYDOCNAME, AssocQueryStringW};
 
 pub const BATCH_SIZE: usize = 2000;
@@ -25,8 +29,25 @@ pub fn spawn(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake:
         .expect("spawn enumeration thread");
 }
 
+/// The drive list's pseudo-path, shown in the path bar.
+pub const THIS_PC: &str = "This PC";
+
+/// An empty path or "This PC" (any case) means the drive list.
+pub fn is_this_pc(path: &str) -> bool {
+    let t = path.trim();
+    t.is_empty() || t.eq_ignore_ascii_case(THIS_PC)
+}
+
 fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl Fn()) {
     let t0 = Instant::now();
+    if is_this_pc(&path.to_string_lossy()) {
+        let entries = drive_entries();
+        let total = entries.len();
+        let _ = tx.send(Msg::Batch { pane, generation, entries });
+        let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None });
+        wake();
+        return;
+    }
     let rd = match std::fs::read_dir(&path) {
         Ok(rd) => rd,
         Err(e) => {
@@ -68,6 +89,77 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
     }
     let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None });
     wake();
+}
+
+// GetDriveTypeW results (WinBase.h). Declared here rather than enabling windows-sys's large
+// Win32_System_WindowsProgramming feature for five constants.
+const DRIVE_REMOVABLE: u32 = 2;
+const DRIVE_FIXED: u32 = 3;
+const DRIVE_REMOTE: u32 = 4;
+const DRIVE_CDROM: u32 = 5;
+const DRIVE_RAMDISK: u32 = 6;
+
+/// One entry per logical drive: name "C:\", type "Local Disk" or "Label (C:)", free space.
+/// Network drives are not queried for label or free space: a disconnected share can stall
+/// those calls for many seconds.
+pub fn drive_entries() -> Vec<Entry> {
+    // No "insert a disk" dialog for an empty card reader or optical drive.
+    // SAFETY: plain flag call on the current (worker) thread; the old mode is not needed.
+    unsafe { SetThreadErrorMode(SEM_FAILCRITICALERRORS, std::ptr::null_mut()) };
+    // SAFETY: no arguments.
+    let mask = unsafe { GetLogicalDrives() };
+    let mut out = Vec::new();
+    for i in 0..26u8 {
+        if mask & (1 << i) == 0 {
+            continue;
+        }
+        let letter = (b'A' + i) as char;
+        let root = format!("{letter}:\\");
+        let wroot: Vec<u16> = root.encode_utf16().chain([0]).collect();
+        // SAFETY: `wroot` is a NUL-terminated wide string for the duration of the call.
+        let dtype = unsafe { GetDriveTypeW(wroot.as_ptr()) };
+        let type_name = match dtype {
+            DRIVE_REMOVABLE => "Removable Disk",
+            DRIVE_FIXED => "Local Disk",
+            DRIVE_REMOTE => "Network Drive",
+            DRIVE_CDROM => "CD Drive",
+            DRIVE_RAMDISK => "RAM Disk",
+            _ => "Drive",
+        };
+        let (label, free) = if dtype == DRIVE_REMOTE { (String::new(), None) } else { (volume_label(&wroot), free_space(&wroot)) };
+        let type_text = if label.is_empty() { type_name.to_string() } else { format!("{label} ({letter}:)") };
+        out.push(Entry::drive(root.into(), free, type_text.into()));
+    }
+    out
+}
+
+fn volume_label(wroot: &[u16]) -> String {
+    let mut buf = [0u16; 261];
+    // SAFETY: `wroot` is NUL-terminated; `buf` holds the advertised length; other outputs are null.
+    let ok = unsafe {
+        GetVolumeInformationW(
+            wroot.as_ptr(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ok == 0 {
+        return String::new();
+    }
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..n])
+}
+
+fn free_space(wroot: &[u16]) -> Option<u64> {
+    let mut free = 0u64;
+    // SAFETY: `wroot` is NUL-terminated; `free` is a live u64; the other outputs are optional.
+    let ok = unsafe { GetDiskFreeSpaceExW(wroot.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(free)
 }
 
 /// Friendly type names ("Text Document") by extension, looked up once per extension per
@@ -167,6 +259,26 @@ mod tests {
         assert!(!by("plain.txt").is_hidden() && !by("plain.txt").is_system());
         assert!(by("hidden.txt").is_hidden() && !by("hidden.txt").is_system());
         assert!(by("system.txt").is_system() && !by("system.txt").is_hidden());
+    }
+
+    #[test]
+    fn this_pc_lists_drives() {
+        assert!(is_this_pc("") && is_this_pc("  this pc ") && is_this_pc("This PC"));
+        assert!(!is_this_pc("C:\\"));
+        for path in ["This PC", ""] {
+            let msgs = collect(PathBuf::from(path));
+            let entries = entries_of(&msgs);
+            let c = entries.iter().find(|e| e.name == "C:\\").expect("C:\\ is listed");
+            assert_eq!(c.kind, Kind::Drive);
+            assert!(c.is_dir());
+            assert!(!c.type_text.is_empty());
+            assert!(c.size > 0 && c.size_text.ends_with(" free"), "free space on C: ({})", c.size_text);
+            assert_eq!(c.modified_text, "");
+            match msgs.last().unwrap() {
+                Msg::Done { total, error: None, .. } => assert_eq!(*total, entries.len()),
+                other => panic!("unexpected final message: {}", describe(other)),
+            }
+        }
     }
 
     #[test]
