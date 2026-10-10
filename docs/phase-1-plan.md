@@ -304,6 +304,79 @@ No panics in any run.
   `C:\Users\jtkli` show per-type file icons, `.exe` icons, drive icons (including the
   Google Drive volume's own icon) and custom folder icons (OneDrive, Videos).
 
+### Rework (2026-10-10)
+
+**The failure.** Jeremy's console WPR gate (accessibility on, two panes scrolling the 40k
+folder for 10 s after the split), three clean builds back to back: week-one main 16.5%,
+M1 19.9%, M2 22.3% main-thread busy. The bar is under 20% with icons on, so M2 failed by
+2.3 points; the in-app RDP comparison above had not shown it. M2's 247 ms of extra samples
+over M1 (symbolized trace `C:/traces/export/twinfm-p1-m2/bf-main-10s-sym2.html` against the
+M1 one) split into: `ImageItemVTable::render` / `draw_image` 106 ms, of which
+`Texture::new_from_image` 29, femtovg `ImageStore::alloc` 29, `delete_image` 24 and
+`CachedGraphicsData::new` 34; plus `ensure_instantiated` 413 to 573 ms and `Property::get`
+302 to 435 ms. The Rust side (visible-range resolve, the `changed content-y` callback)
+stayed under 15 samples.
+
+**The mechanism.** `Image::from_rgba8_premultiplied` gives an image with
+`ImageCacheKey::Invalid`, and the femtovg renderer shares GPU textures only for keyed images
+(`TextureCacheKey::new` in `internal/renderers/femtovg/images.rs`, `itemrenderer.rs` around
+line 828). Every time a recycled row's `icon` property changed during a scroll, the renderer
+created a texture for that row and deleted the old one, although the 40k rows show one
+image. On top of that each of the about 70 visible rows in two panes had one more item
+(`Image`) and one more property (`icon`) to instantiate and evaluate as rows recycled. The
+per-row `Image` also carried Slint's default `accessible-role: image`, so it was not, as the
+Deferred list above assumed, invisible to the accessibility tree.
+
+**The strip design.** Rows carry no image and no icon column item: `Row` lost `icon`, the
+row's 22 px icon slot became 28 px of left padding (6 px plus 22 px, the same text position),
+and `row_data` no longer touches the icon table. Each pane has one `Image` over its list's
+icon column, inside a clipping `Rectangle` the size of the list's viewport, at x 6 px and
+`y: list.content-y + strip-first * 22px`, with `accessible-role: none` and no `TouchArea`,
+so clicks, wheel and the list's accessibility tree are the rows' as before. Its source is a
+`SharedPixelBuffer` composed on the UI thread (`icons::compose`) from the icons of the
+visible rows plus `STRIP_MARGIN_ROWS` (4) above and below: `icon_px` (16 x scale, rounded
+once) wide and `round(rows x 22 x scale)` tall, each icon copied scanline by scanline to
+`round((k x 22 + 3) x scale)`, shown at exactly its physical size (`image-fit: fill`,
+`image-rendering: pixelated`, width and height set from Rust as physical / scale). The
+table now holds pixel buffers instead of `slint::Image`s, and hands out each one resampled
+to the strip's icon size (box filter, cached per index for the current size), so buffers
+from `SIIGBF_BIGGERSIZEOK` and the 16 x 16 placeholders compose at any scale, and a scale
+change now recomposes from the fitted buffers rather than drawing stale sizes. The
+`changed content-y` callback still drives `resolve_view`, which now also decides
+(`icons::needs_recompose`) whether to recompose: when nothing is composed, the visible rows
+leave the composed ones, the list shrank under them, the scale changed, or the strip is
+dirty (an icon landed for a row in it, or a pass swap replaced the rows). A scroll that
+keeps the visible rows inside the strip moves the image through its `y` binding and
+recomposes nothing. Navigate and an empty list hide the strip; the second pane's strip is
+hidden with the pane when `split` is off. The `[icons]` line now ends with the strips
+composed and their average compose time. Tests 25 to 29: strip layout arithmetic (row to y
+offset, range to height, every icon inside its row band at 1, 1.25, 1.5, 1.75 and 2), a
+compose of three rows from 2 x 2 icons (pixels at the row offsets, the placeholder for a
+row with no icon, transparent elsewhere), the recompose decision, and the box-filter fit.
+
+**Measured in-app** (RDP session, so relative only; default features; script
+`sleep 2500;split;sleep 500;wheel 1 -120 16;wheel 0 -120 16;drag 1 400 1000;drag 0 400 1000;sleep 6000;quit`;
+builds run alternately; M1 is `target-m1`, unchanged code at 41304c6; "M2 before" is last
+night's per-row build in `target-m2`). UI-thread busy over the 10 s after the split:
+
+| Folder | M1 | M2 before | M2 strip |
+|---|---|---|---|
+| `C:\traces\bigdir` | 16.4, 16.9, 18.1, 16.6, 17.0, 17.0, 16.4, 16.7: **16.9%** | 18.3, 19.2, 18.7, 19.2: **18.9%** | 16.2, 14.8, 15.3, 18.4, 15.9, 16.4, 16.6, 16.7, 16.1, 16.6, 18.0, 16.1: **16.4%** |
+| `C:\Windows\System32` | 18.3, 18.6, 18.0, 17.2, 17.5, 18.9, 19.1, 18.0: **18.2%** | 19.4, 21.7, 21.4, 20.9: **20.8%** | 18.7, 18.9, 20.9, 19.2, 18.6, 16.4, 18.3, 18.6, 18.1, 17.7, 19.5, 18.7: **18.6%** |
+
+The strip build is at M1 on bigdir and 0.4 points above it on System32, inside the
+run-to-run spread (16.4 to 20.9 for the same build there); the per-row build sat 2 to 2.6
+points above M1 in the same session, which matches the size of the WPR failure. System32 is
+the case where icons actually load (555 requests and replies per run, table 558 images), so
+some of its remaining difference is icon replies landing and recomposing. No panics.
+
+- Compose cost: 21 to 25 us average per strip (two panes, about 40 visible rows plus the
+  margin each), 369 composes per bigdir run and 419 to 461 per System32 run, so 8 to 10 ms
+  of UI-thread time in a 10 s run.
+- Screenshots (software renderer, `tools/shot.ps1`) of System32 at the top and scrolled to
+  the end show the icons aligned with their rows in both panes and the partly scrolled top
+  row's icon clipped at the header.
+
 Gate: pending Jeremy's console WPR run.
 
 ## M3: file operations

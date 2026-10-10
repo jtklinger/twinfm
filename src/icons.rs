@@ -1,7 +1,8 @@
 //! Shell icons. One worker thread, initialised for COM (MTA), owns every shell call: it turns a
 //! path into a 32-bit HBITMAP through `IShellItemImageFactory::GetImage` and the bitmap into a
-//! premultiplied RGBA pixel buffer. The UI thread turns each buffer into a `slint::Image` once
-//! per cache key and keeps the images in an `IconTable` that both panes share.
+//! premultiplied RGBA pixel buffer. The UI thread keeps one buffer per cache key in an
+//! `IconTable` that both panes share, and composes the icons of the rows on screen into one
+//! strip image per pane (`compose`), so the list rows carry no image at all.
 //!
 //! Cache keys (`icon_key`): ordinary files share one key per lowercase extension (`ext:.txt`),
 //! plain directories share `dir`; files whose icon is their own (`.exe`, `.lnk`, `.ico`, `.url`,
@@ -9,7 +10,7 @@
 //! points and drives are keyed by full path.
 
 use crossbeam_channel::{Receiver, Sender};
-use slint::{Image, Rgba8Pixel, SharedPixelBuffer, SharedString};
+use slint::{Rgba8Pixel, SharedPixelBuffer, SharedString};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -160,6 +161,122 @@ pub fn visible_range(content_y: f32, height: f32, len: usize) -> Option<(usize, 
     let first = ((top / ROW_PX).floor() as usize).min(len - 1);
     let last = (((top + height.max(0.0)) / ROW_PX).ceil() as usize).clamp(first, len - 1);
     Some((first, last))
+}
+
+/// Rows composed into the strip above and below the visible range, so a scroll of less than
+/// this many rows moves the strip image without recomposing it.
+pub const STRIP_MARGIN_ROWS: usize = 4;
+
+/// Physical geometry of an icon strip at one window scale factor. Sizes are rounded once, so
+/// the strip is composed at integer pixels whatever the scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripGeom {
+    /// Icon edge in physical pixels (16 logical px times the scale factor, rounded).
+    pub icon_px: u32,
+    pub scale: f32,
+}
+
+impl StripGeom {
+    pub fn new(scale: f32) -> StripGeom {
+        StripGeom { icon_px: ((ICON_LOGICAL_PX * scale).round() as u32).max(1), scale }
+    }
+
+    /// Physical y of the icon of the k-th row of the strip: the row's top plus the centering
+    /// offset of a 16 px icon in a 22 px row.
+    pub fn icon_y(&self, k: usize) -> u32 {
+        ((k as f32 * ROW_PX + (ROW_PX - ICON_LOGICAL_PX) / 2.0) * self.scale).round() as u32
+    }
+
+    /// Physical height of a strip of `rows` rows.
+    pub fn height(&self, rows: usize) -> u32 {
+        (rows as f32 * ROW_PX * self.scale).round() as u32
+    }
+}
+
+/// The rows (inclusive) a strip covers for the visible range `(first, last)` of a list of `len`
+/// rows: the visible rows plus `STRIP_MARGIN_ROWS` each side, clamped to the list.
+pub fn strip_range((first, last): (usize, usize), len: usize) -> (usize, usize) {
+    (first.saturating_sub(STRIP_MARGIN_ROWS), (last + STRIP_MARGIN_ROWS).min(len.saturating_sub(1)))
+}
+
+/// What a pane's strip was last composed from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Composed {
+    pub first: usize,
+    pub last: usize,
+    pub icon_px: u32,
+}
+
+/// Whether a pane's strip must be recomposed: nothing composed yet, its content went stale
+/// (`dirty`: an icon landed for a row in it, or the rows changed), the scale changed, the
+/// visible range left the composed rows, or the list shrank under them. A scroll that keeps
+/// the visible rows inside the composed ones only moves the image.
+pub fn needs_recompose(c: Option<Composed>, visible: (usize, usize), len: usize, icon_px: u32, dirty: bool) -> bool {
+    match c {
+        None => true,
+        Some(c) => dirty || c.icon_px != icon_px || visible.0 < c.first || visible.1 > c.last || c.last >= len,
+    }
+}
+
+/// Compose a strip: `icons[k]` (each `g.icon_px` square, premultiplied) is copied, one scanline
+/// at a time, to `y = g.icon_y(k)` of a buffer `g.icon_px` wide and `g.height(icons.len())`
+/// tall. An icon of any other size is left out (the table hands out fitted buffers).
+pub fn compose(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &StripGeom) -> SharedPixelBuffer<Rgba8Pixel> {
+    let w = g.icon_px as usize;
+    let h = g.height(icons.len()) as usize;
+    let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(w as u32, h as u32);
+    let dst = buf.make_mut_slice();
+    for (k, icon) in icons.iter().enumerate() {
+        if icon.width() != g.icon_px || icon.height() != g.icon_px {
+            continue;
+        }
+        let y0 = g.icon_y(k) as usize;
+        for (r, line) in icon.as_slice().chunks_exact(w).enumerate() {
+            let at = (y0 + r) * w;
+            if at + w > dst.len() {
+                break;
+            }
+            dst[at..at + w].copy_from_slice(line);
+        }
+    }
+    buf
+}
+
+/// Box-filter resample of a premultiplied buffer to `px` square: each target pixel averages
+/// the source pixels its area covers (at least one). Used once per icon and size.
+pub fn fit(src: &SharedPixelBuffer<Rgba8Pixel>, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    let (sw, sh) = (src.width() as usize, src.height() as usize);
+    if sw == 0 || sh == 0 {
+        return SharedPixelBuffer::new(px, px);
+    }
+    if (sw, sh) == (px as usize, px as usize) {
+        return src.clone();
+    }
+    let n = px as usize;
+    let s = src.as_slice();
+    let mut out = SharedPixelBuffer::<Rgba8Pixel>::new(px, px);
+    let span = |i: usize, len: usize| {
+        let a = i * len / n;
+        (a, ((i + 1) * len / n).max(a + 1).min(len))
+    };
+    for (y, row) in out.make_mut_slice().chunks_exact_mut(n).enumerate() {
+        let (y0, y1) = span(y, sh);
+        for (x, d) in row.iter_mut().enumerate() {
+            let (x0, x1) = span(x, sw);
+            let mut acc = [0u32; 4];
+            for yy in y0..y1 {
+                for p in &s[yy * sw + x0..yy * sw + x1] {
+                    acc[0] += p.r as u32;
+                    acc[1] += p.g as u32;
+                    acc[2] += p.b as u32;
+                    acc[3] += p.a as u32;
+                }
+            }
+            let c = ((y1 - y0) * (x1 - x0)) as u32;
+            *d = Rgba8Pixel { r: (acc[0] / c) as u8, g: (acc[1] / c) as u8, b: (acc[2] / c) as u8, a: (acc[3] / c) as u8 };
+        }
+    }
+    out
 }
 
 /// Convert GetDIBits output (top-down, 32-bit BGRA, premultiplied) to RGBA. Bitmaps from icons
@@ -317,11 +434,14 @@ pub enum KeyState {
     Missing,
 }
 
-/// UI-thread icon table shared by both panes: images by index (the first `PLACEHOLDERS` are
-/// the placeholders), the key of every interned image, and the keys in flight or failed, so
-/// each key is requested once however many rows show it.
+/// UI-thread icon table shared by both panes: pixel buffers by index (the first
+/// `PLACEHOLDERS` are the placeholders), the key of every interned buffer, and the keys in
+/// flight or failed, so each key is requested once however many rows show it. `fitted` caches
+/// each buffer resampled to the strip's icon size, for the size last asked for.
 pub struct IconTable {
-    images: Vec<Image>,
+    bufs: Vec<SharedPixelBuffer<Rgba8Pixel>>,
+    fitted: Vec<Option<SharedPixelBuffer<Rgba8Pixel>>>,
+    fitted_px: u32,
     index: HashMap<SharedString, u16>,
     pending: HashSet<SharedString>,
     failed: HashSet<SharedString>,
@@ -330,7 +450,9 @@ pub struct IconTable {
 impl Default for IconTable {
     fn default() -> Self {
         IconTable {
-            images: vec![placeholder_file(), placeholder_folder(), placeholder_drive()],
+            bufs: vec![placeholder_file(), placeholder_folder(), placeholder_drive()],
+            fitted: Vec::new(),
+            fitted_px: 0,
             index: HashMap::new(),
             pending: HashSet::new(),
             failed: HashSet::new(),
@@ -339,13 +461,30 @@ impl Default for IconTable {
 }
 
 impl IconTable {
-    pub fn image(&self, i: u16) -> Image {
-        self.images.get(i as usize).cloned().unwrap_or_default()
+    /// The buffer at `i` as delivered (an out-of-range index reads as the file placeholder).
+    #[cfg(test)]
+    pub fn buffer(&self, i: u16) -> &SharedPixelBuffer<Rgba8Pixel> {
+        self.bufs.get(i as usize).unwrap_or(&self.bufs[PLACEHOLDER_FILE as usize])
     }
 
-    /// Images held, placeholders included.
+    /// The buffer at `i` resampled to `px` square, computed once per index and size (a
+    /// refcount bump after that). A new size drops the cache. An out-of-range index reads as
+    /// the file placeholder.
+    pub fn fitted(&mut self, i: u16, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+        if self.fitted_px != px {
+            self.fitted.clear();
+            self.fitted_px = px;
+        }
+        let i = if (i as usize) < self.bufs.len() { i as usize } else { PLACEHOLDER_FILE as usize };
+        if self.fitted.len() <= i {
+            self.fitted.resize(self.bufs.len(), None);
+        }
+        self.fitted[i].get_or_insert_with(|| fit(&self.bufs[i], px)).clone()
+    }
+
+    /// Buffers held, placeholders included.
     pub fn len(&self) -> usize {
-        self.images.len()
+        self.bufs.len()
     }
 
     pub fn state(&self, key: &SharedString) -> KeyState {
@@ -370,11 +509,11 @@ impl IconTable {
         self.pending.remove(&key);
         match outcome {
             Outcome::Pixels(p) => {
-                if self.index.contains_key(&key) || self.images.len() >= u16::MAX as usize {
+                if self.index.contains_key(&key) || self.bufs.len() >= u16::MAX as usize {
                     return false;
                 }
-                self.index.insert(key, self.images.len() as u16);
-                self.images.push(Image::from_rgba8_premultiplied(p));
+                self.index.insert(key, self.bufs.len() as u16);
+                self.bufs.push(p);
                 true
             }
             Outcome::Failed => {
@@ -387,7 +526,7 @@ impl IconTable {
 }
 
 /// A 16 x 16 opaque-on-transparent placeholder: `rects` are (x0, y0, x1, y1, rgb) filled in order.
-fn placeholder(rects: &[(u32, u32, u32, u32, [u8; 3])]) -> Image {
+fn placeholder(rects: &[(u32, u32, u32, u32, [u8; 3])]) -> SharedPixelBuffer<Rgba8Pixel> {
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(16, 16);
     let px = buf.make_mut_slice();
     for &(x0, y0, x1, y1, [r, g, b]) in rects {
@@ -397,18 +536,18 @@ fn placeholder(rects: &[(u32, u32, u32, u32, [u8; 3])]) -> Image {
             }
         }
     }
-    Image::from_rgba8_premultiplied(buf)
+    buf
 }
 
-fn placeholder_file() -> Image {
+fn placeholder_file() -> SharedPixelBuffer<Rgba8Pixel> {
     placeholder(&[(3, 1, 13, 15, [150, 150, 150]), (4, 2, 12, 14, [245, 245, 245])])
 }
 
-fn placeholder_folder() -> Image {
+fn placeholder_folder() -> SharedPixelBuffer<Rgba8Pixel> {
     placeholder(&[(1, 3, 7, 5, [214, 170, 60]), (1, 5, 15, 14, [232, 190, 80])])
 }
 
-fn placeholder_drive() -> Image {
+fn placeholder_drive() -> SharedPixelBuffer<Rgba8Pixel> {
     placeholder(&[(1, 5, 15, 12, [120, 120, 120]), (2, 6, 14, 11, [200, 200, 200]), (11, 8, 13, 10, [60, 160, 60])])
 }
 
@@ -512,8 +651,113 @@ mod tests {
         t.begin(&skip);
         t.complete(skip.clone(), Outcome::Skipped);
         assert_eq!(t.state(&skip), KeyState::Missing, "a skipped key may be requested again");
-        assert_eq!(t.image(PLACEHOLDERS).size().width, 2);
-        assert_eq!(t.image(PLACEHOLDER_FOLDER).size().width, 16);
+        assert_eq!(t.buffer(PLACEHOLDERS).width(), 2);
+        assert_eq!(t.buffer(PLACEHOLDER_FOLDER).width(), 16);
+        // Fitted to the strip's icon size, once per size.
+        assert_eq!(t.fitted(PLACEHOLDERS, 4).width(), 4);
+        assert_eq!(t.fitted(PLACEHOLDER_FOLDER, 24).height(), 24);
+        assert_eq!(t.fitted(PLACEHOLDER_FOLDER, 16).as_slice(), t.buffer(PLACEHOLDER_FOLDER).as_slice());
+        assert_eq!(t.fitted(999, 16).as_slice(), t.buffer(PLACEHOLDER_FILE).as_slice(), "out of range reads as the file placeholder");
+    }
+
+    #[test]
+    fn strip_layout_arithmetic() {
+        let g1 = StripGeom::new(1.0);
+        assert_eq!(g1.icon_px, 16);
+        assert_eq!((g1.icon_y(0), g1.icon_y(1), g1.icon_y(10)), (3, 25, 223), "row top plus (22 - 16) / 2");
+        assert_eq!((g1.height(0), g1.height(1), g1.height(50)), (0, 22, 1100));
+        let g15 = StripGeom::new(1.5);
+        assert_eq!(g15.icon_px, 24);
+        assert_eq!((g15.icon_y(0), g15.icon_y(1), g15.icon_y(3)), (5, 38, 104)); // 4.5 rounds to 5
+        assert_eq!(g15.height(3), 99);
+        let g125 = StripGeom::new(1.25);
+        assert_eq!(g125.icon_px, 20);
+        assert_eq!(g125.height(3), 83); // 82.5, rounded once for the whole strip
+        // Every icon lies inside its own row band at any of these scales.
+        for g in [g1, g15, g125, StripGeom::new(1.75), StripGeom::new(2.0)] {
+            for k in 0..200 {
+                assert!(g.icon_y(k) >= g.height(k), "scale {} row {k}", g.scale);
+                assert!(g.icon_y(k) + g.icon_px <= g.height(k + 1), "scale {} row {k}", g.scale);
+            }
+        }
+        // Range: the visible rows plus the margin, clamped to the list.
+        let m = STRIP_MARGIN_ROWS;
+        assert_eq!(strip_range((10, 40), 1000), (10 - m, 40 + m));
+        assert_eq!(strip_range((0, 30), 1000), (0, 30 + m));
+        assert_eq!(strip_range((0, 4), 5), (0, 4), "list shorter than the viewport");
+        assert_eq!(strip_range((990, 999), 1000), (990 - m, 999), "range at the end");
+    }
+
+    #[test]
+    fn recompose_decision() {
+        let c = Some(Composed { first: 6, last: 44, icon_px: 16 });
+        assert!(needs_recompose(None, (0, 30), 100, 16, false), "nothing composed yet");
+        assert!(!needs_recompose(c, (10, 40), 100, 16, false), "same range, no new key");
+        assert!(!needs_recompose(c, (6, 36), 100, 16, false), "scrolled inside the margin");
+        assert!(!needs_recompose(c, (14, 44), 100, 16, false), "scrolled inside the margin");
+        assert!(needs_recompose(c, (5, 35), 100, 16, false), "one row above the strip");
+        assert!(needs_recompose(c, (15, 45), 100, 16, false), "one row below the strip");
+        assert!(needs_recompose(c, (10, 40), 100, 16, true), "an icon landed or the rows changed");
+        assert!(needs_recompose(c, (10, 40), 100, 24, false), "scale changed");
+        assert!(needs_recompose(c, (10, 40), 44, 16, false), "list shrank under the strip");
+        assert!(needs_recompose(c, (10, 50), 100, 16, false), "viewport grew");
+        assert!(!needs_recompose(c, (10, 20), 100, 16, false), "viewport shrank");
+    }
+
+    #[test]
+    fn compose_places_icons_at_row_offsets() {
+        let solid = |v: u8| {
+            let mut b = SharedPixelBuffer::<Rgba8Pixel>::new(2, 2);
+            for (i, p) in b.make_mut_slice().iter_mut().enumerate() {
+                *p = Rgba8Pixel { r: v, g: i as u8, b: 0, a: 255 };
+            }
+            b
+        };
+        let mut t = IconTable::default();
+        t.complete("a".into(), Outcome::Pixels(solid(10)));
+        t.complete("b".into(), Outcome::Pixels(solid(20)));
+        // Three rows: key a, a row with no icon yet (the file placeholder), key b.
+        let g = StripGeom { icon_px: 2, scale: 1.0 };
+        let icons: Vec<_> = [PLACEHOLDERS, PLACEHOLDER_FILE, PLACEHOLDERS + 1].iter().map(|&i| t.fitted(i, 2)).collect();
+        let strip = compose(&icons, &g);
+        assert_eq!((strip.width(), strip.height()), (2, 66));
+        let px = strip.as_slice();
+        let at = |x: usize, y: usize| px[y * 2 + x];
+        // Row 0 at y 3..5 and row 2 at y 47..49, scanlines in order.
+        assert_eq!(at(0, 3), Rgba8Pixel { r: 10, g: 0, b: 0, a: 255 });
+        assert_eq!(at(1, 3), Rgba8Pixel { r: 10, g: 1, b: 0, a: 255 });
+        assert_eq!(at(0, 4), Rgba8Pixel { r: 10, g: 2, b: 0, a: 255 });
+        assert_eq!(at(1, 4), Rgba8Pixel { r: 10, g: 3, b: 0, a: 255 });
+        assert_eq!(at(0, 47), Rgba8Pixel { r: 20, g: 0, b: 0, a: 255 });
+        assert_eq!(at(1, 48), Rgba8Pixel { r: 20, g: 3, b: 0, a: 255 });
+        // Row 1 at y 25..27 holds the file placeholder fitted to 2 x 2.
+        assert_eq!(&px[25 * 2..27 * 2], t.fitted(PLACEHOLDER_FILE, 2).as_slice());
+        assert!(at(0, 25).a > 0, "the placeholder is visible");
+        // Everything else is transparent.
+        let filled: Vec<usize> = (0..66).filter(|&y| at(0, y).a != 0 || at(1, y).a != 0).collect();
+        assert_eq!(filled, [3, 4, 25, 26, 47, 48]);
+        // An empty strip, and an icon of the wrong size left out.
+        assert_eq!(compose(&[], &g).height(), 0);
+        assert!(compose(&[solid(1)], &StripGeom { icon_px: 4, scale: 1.0 }).as_slice().iter().all(|p| p.a == 0));
+    }
+
+    #[test]
+    fn fit_box_filters_premultiplied() {
+        // 4 x 4 of two colours in 2 x 2 blocks, down to 2 x 2: one pixel per block.
+        let red = Rgba8Pixel { r: 200, g: 0, b: 0, a: 255 };
+        let blue = Rgba8Pixel { r: 0, g: 0, b: 100, a: 100 };
+        let mut b = SharedPixelBuffer::<Rgba8Pixel>::new(4, 4);
+        for (i, p) in b.make_mut_slice().iter_mut().enumerate() {
+            *p = if (i % 4 < 2) == (i / 4 < 2) { red } else { blue };
+        }
+        let f = fit(&b, 2);
+        assert_eq!(f.as_slice(), [red, blue, blue, red]);
+        // Down to 1 x 1: the average of all sixteen.
+        assert_eq!(fit(&b, 1).as_slice()[0], Rgba8Pixel { r: 100, g: 0, b: 50, a: 177 });
+        // Up 2 to 3: every target pixel takes at least one source pixel.
+        let up = fit(&f, 3);
+        assert_eq!(up.as_slice().len(), 9);
+        assert!(up.as_slice().iter().all(|p| p.a != 0));
     }
 
     #[test]

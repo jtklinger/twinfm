@@ -58,7 +58,7 @@ deleted.
 src/
   main.rs          Slint bootstrap, wires model <-> UI, owns the two panes
   fs/enumerate.rs  Worker thread: read_dir -> Vec<Entry> batches of 2000 -> channel; type names, icon keys, drive list
-  icons.rs         Icon worker thread (COM): shell icon per type, extension or path -> RGBA pixels; UI-side icon table
+  icons.rs         Icon worker thread (COM): shell icon per type, extension or path -> RGBA pixels; UI-side icon table; per-pane icon strip
   fileops/mod.rs   File operation worker (COM STA + message loop): copy, move, delete, rename, new folder via IFileOperation
   fileops/clipboard.rs  CF_HDROP + "Preferred DropEffect" on the real clipboard
   model.rs         PaneModel: full and filtered Vec<Entry>, selection, sort state; implements slint::Model
@@ -83,7 +83,8 @@ Rules the prototype follows, because they are what makes the numbers possible:
   `slint::invoke_from_event_loop`.
 - Shell icons come from one COM worker thread, fetched only for the rows on screen and
   cached per extension (or per path for `.exe`, `.lnk`, drives and custom folders); rows show a
-  placeholder until their icon arrives.
+  placeholder until their icon arrives. The rows carry no image: each pane draws one strip
+  image, composed on the UI thread from the icons of the rows on screen, over the icon column.
 - File operations run on their own single-threaded-apartment worker with a Win32 message loop
   (the shell's dialogs need one); the UI thread never waits on a job, and both panes refresh
   when it completes.
