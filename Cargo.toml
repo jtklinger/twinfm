@@ -11,7 +11,7 @@ description = "TwinFM: a dual-pane file manager for Windows 11 in Rust and Slint
 slint = { git = "https://github.com/jtklinger/slint", rev = "c1d3a8d0aa2d61d72da6c11501060eb1650674b6", default-features = false, features = ["std", "backend-default", "renderer-femtovg", "renderer-software", "compat-1-2", "raw-window-handle-06"] }
 crossbeam-channel = "0.5"
 raw-window-handle = "0.6"
-windows-sys = { version = "0.60", features = ["Win32_System_Threading", "Win32_System_Time", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_System_Diagnostics_Debug", "Win32_System_Com", "Win32_Graphics_Gdi", "Win32_System_Ole", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.60", features = ["Win32_System_Threading", "Win32_System_Time", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Diagnostics_Debug", "Win32_System_Com", "Win32_Graphics_Gdi", "Win32_System_Ole", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging", "Win32_Security"] }
 
 [features]
 # Default build matches slint's defaults. `cargo build --release --no-default-features` builds the

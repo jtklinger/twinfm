@@ -9,6 +9,7 @@ mod fileops;
 mod icons;
 mod model;
 mod perf;
+mod shellmenu;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fileops::{Job, Outcome, clipboard, same_dir};
@@ -664,6 +665,144 @@ fn job_done(d: fileops::Done) {
     }
 }
 
+/// What `context_menu` needs after the menu closes, taken out of the state before it opens.
+struct MenuContext {
+    hwnd: isize,
+    /// The directory "Open in other pane" and "Open in terminal" use.
+    dir: PathBuf,
+    /// The full paths "Copy path" puts on the clipboard.
+    paths: Vec<PathBuf>,
+}
+
+/// The shell context menu: for the selection (`row` >= 0; a right press has already applied
+/// the right-click selection rule) or the folder background (`row` -1, or nothing to act on),
+/// at window position (`x`, `y`) in logical px. `extended`: Shift was held.
+fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
+    if shellmenu::is_open() {
+        eprintln!("[menu] pane={pane} a menu is already open; ignored");
+        return;
+    }
+    // Take everything the menu needs out of the state, then drop the borrow: the menu runs a
+    // modal message loop (see shellmenu), and no RefCell borrow may be held across it.
+    let taken = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let hwnd = main_hwnd(st, &app);
+        if hwnd == 0 {
+            note(st, &app, pane, "context menu: the window has no handle yet".into());
+            return None;
+        }
+        let folder = st.paths[pane].clone();
+        let this_pc = is_this_pc(&folder.to_string_lossy());
+        let targets = if row >= 0 { st.panes[pane].targets(current_row(&app, pane)) } else { Vec::new() };
+        let names: Vec<String> = targets.iter().map(|e| e.name.to_string()).collect();
+        let (own, dir, paths) = match targets.as_slice() {
+            [] if this_pc => (Vec::new(), folder.clone(), Vec::new()),
+            [] => (vec![shellmenu::OwnItem::OpenOther, shellmenu::OwnItem::Terminal, shellmenu::OwnItem::CopyPath], folder.clone(), vec![folder.clone()]),
+            [one] if one.is_dir() => {
+                let dir = folder.join(one.name.as_str());
+                (vec![shellmenu::OwnItem::OpenOther, shellmenu::OwnItem::Terminal, shellmenu::OwnItem::CopyPath], dir.clone(), vec![dir])
+            }
+            many => (
+                vec![shellmenu::OwnItem::Terminal, shellmenu::OwnItem::CopyPath],
+                folder.clone(),
+                many.iter().map(|e| folder.join(e.name.as_str())).collect(),
+            ),
+        };
+        let (sx, sy) = shellmenu::to_screen(hwnd, x, y, app.window().scale_factor());
+        eprintln!("[menu] pane={pane} row={row} {} target(s) at ({x:.0}, {y:.0}) -> screen ({sx}, {sy})", names.len());
+        let req = shellmenu::Request { hwnd, folder, names, own, x: sx, y: sy, extended };
+        Some((req, MenuContext { hwnd, dir, paths }))
+    });
+    let Some((req, ctx)) = taken else { return };
+    let picked = shellmenu::show(&req);
+    match picked {
+        Err(e) => with_state(|st| {
+            if let Some(app) = st.app.upgrade() {
+                note(st, &app, pane, format!("context menu: {e}"));
+            }
+        }),
+        Ok(shellmenu::Picked::Nothing) => {}
+        Ok(shellmenu::Picked::Rename) => command(pane, "rename"),
+        Ok(shellmenu::Picked::Own(item)) => own_item(pane, item, ctx),
+        Ok(shellmenu::Picked::Invoked { verb, hr }) => {
+            if hr < 0 && hr != fileops::HR_CANCELLED {
+                with_state(|st| {
+                    if let Some(app) = st.app.upgrade() {
+                        note(st, &app, pane, format!("\"{verb}\" failed: 0x{:08X}", hr as u32));
+                    }
+                });
+            }
+            // The shell may have created, renamed or deleted entries in either folder.
+            let split = with_state(|st| st.app.upgrade().is_some_and(|a| a.get_split()));
+            refresh(0);
+            if split {
+                refresh(1);
+            }
+        }
+    }
+}
+
+/// Shift+F10 or the Menu key in a pane's list: the menu for the cursor row's selection, under
+/// that row (already scrolled into view), or the background menu when there is no cursor row.
+fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, visible_h: f32) {
+    let len = with_state(|st| st.panes[pane].len());
+    match usize::try_from(row).ok().filter(|&r| r < len) {
+        Some(r) => {
+            let (x, y) = shellmenu::row_menu_point(list_x, list_y, content_y, visible_h, r);
+            context_menu(pane, row, x, y, false);
+        }
+        None => context_menu(pane, -1, list_x + 28.0, list_y, false),
+    }
+}
+
+/// One of TwinFM's own menu items, after the menu closed.
+fn own_item(pane: usize, item: shellmenu::OwnItem, ctx: MenuContext) {
+    match item {
+        shellmenu::OwnItem::OpenOther => {
+            let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+            if !app.get_split() {
+                app.invoke_toggle_split();
+            }
+            eprintln!("[menu] open in other pane: {}", ctx.dir.display());
+            navigate(1 - pane, ctx.dir);
+        }
+        shellmenu::OwnItem::Terminal => {
+            // CreateProcessW outside the state borrow, like every other call that can block.
+            let res = shellmenu::open_terminal(&ctx.dir);
+            with_state(|st| {
+                let Some(app) = st.app.upgrade() else { return };
+                match res {
+                    Ok(cmd) => note(st, &app, pane, format!("Opened a terminal: {cmd}")),
+                    Err(e) => note(st, &app, pane, format!("terminal: {e}")),
+                }
+            });
+        }
+        shellmenu::OwnItem::CopyPath => {
+            // No state borrow across the clipboard calls (see fileops::clipboard).
+            let res = clipboard::write_text(ctx.hwnd, &shellmenu::path_text(&ctx.paths));
+            with_state(|st| {
+                let Some(app) = st.app.upgrade() else { return };
+                match res {
+                    Ok(()) => {
+                        // The text replaced any cut on the clipboard.
+                        for m in &st.panes {
+                            m.set_cut(Vec::new());
+                        }
+                        let n = ctx.paths.len();
+                        note(st, &app, pane, format!("Copied {n} path{}", if n == 1 { "" } else { "s" }));
+                    }
+                    Err(e) => note(st, &app, pane, format!("clipboard: {e}")),
+                }
+            });
+        }
+    }
+}
+
+/// For the scripted driver's in-menu steps: no borrow of the app state is held right now.
+pub fn state_is_free() -> bool {
+    STATE.with(|s| s.try_borrow_mut().is_ok())
+}
+
 /// For the scripted driver: a job is in flight or a pane is still re-enumerating.
 pub fn ops_busy() -> bool {
     STATE.with(|s| match s.try_borrow() {
@@ -826,6 +965,8 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
     app.on_refresh(|pane| refresh(pane as usize));
+    app.on_context_menu(|pane, row, x, y, extended| context_menu(pane as usize, row, x, y, extended));
+    app.on_context_key(|pane, row, lx, ly, cy, vh| context_key(pane as usize, row, lx, ly, cy, vh));
     app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
     app.on_edit_commit(|pane, mode, original, typed| edit_commit(pane as usize, mode, original.as_str(), typed.as_str()));
     app.on_toggle_hidden(|pane| {
