@@ -27,10 +27,16 @@ The one argument is the starting folder for the left pane (default `C:\`).
 | F3 | Toggle the second pane (opens on the left pane's folder) |
 | Ctrl+Shift+Right | Focus the other pane |
 | Double-click, Return | Enter a directory |
-| Backspace, Alt+Up | Go to the parent directory |
-| Up / Down | Move the cursor |
-| Click a column header | Sort by name, size or modified (click again to reverse) |
-| Type a path in the path bar and press Return | Navigate |
+| Backspace, Alt+Up | Go to the parent directory (from a drive root: This PC, the drive list) |
+| Up / Down | Move the cursor and select that row |
+| Click, Ctrl+click, Shift+click | Select a row, toggle a row, select a range |
+| Shift+Up / Shift+Down | Extend the selection |
+| Space | Toggle the selection of the cursor row |
+| Ctrl+A | Select all |
+| Ctrl+H | Show or hide hidden and system files in the active pane |
+| F5, Ctrl+R | Refresh the active pane (keeps cursor, selection and scroll) |
+| Click a column header | Sort by name, type, size or modified (click again to reverse) |
+| Type a path in the path bar and press Return | Navigate (empty or "This PC" lists the drives) |
 
 Drag the bar between the panes to resize them.
 
@@ -39,8 +45,8 @@ Drag the bar between the panes to resize them.
 ```
 src/
   main.rs          Slint bootstrap, wires model <-> UI, owns the two panes
-  fs/enumerate.rs  Worker thread: read_dir -> Vec<Entry> batches of 2000 -> channel
-  model.rs         PaneModel: Vec<Entry>, sort state; implements slint::Model
+  fs/enumerate.rs  Worker thread: read_dir -> Vec<Entry> batches of 2000 -> channel; type names, drive list
+  model.rs         PaneModel: full and filtered Vec<Entry>, selection, sort state; implements slint::Model
   ui/app.slint     Window, two Pane components, splitter
   ui/pane.slint    Path bar, column header, ListView over the model, status line
   perf.rs          Frame-time ring buffer, UI-thread CPU time, printed to stderr every 5 s
