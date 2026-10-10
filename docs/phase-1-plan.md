@@ -155,7 +155,16 @@ on the worker.
 - In-app, RDP session, split-and-scroll scenario on bigdir: second pane rendered 23.9 ms after
   F3, UI thread 12.0% busy over the 10 s after the split. Not comparable with console WPR.
 
-Gate: pending Jeremy's console WPR run.
+Gate (2026-10-10, Jeremy at the console, `tools/wpr-gate.ps1`, accessibility on, hidden off,
+three builds back to back in one session): main thread busy over the 10 s after the split by
+WPR sampling, week-one main **16.5%**, M1 **19.9%**, M2 **22.3%** (in-app 18.3 / 19.7 / 23.6).
+M1 passes the 20% bar with 0.1 point to spare. Its 350 ms delta over main is text: the Type
+column is a fifth `Text` per row (draw_text 499 to 677 ms), plus the row's extra properties
+(ensure_updated_listview 333 to 412, Property::get 231 to 302). Accessibility is unchanged
+(199 to 224 ms). Traces: `C:/traces/twinfm-p1-{main,m1,m2}.etl`, symbolized reports under
+`C:/traces/export/twinfm-p1-*/bf-main-10s-sym2.html` (symbolize with the build's own
+`target-*/release` directory on `_NT_SYMBOL_PATH`; the pdb path embedded in the exe is not
+searched when that variable is set). M2's failure and the options are in the M2 section.
 
 ## M2: icons
 
