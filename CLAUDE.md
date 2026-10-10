@@ -7,7 +7,7 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
 (accessibility fix, renderer decision). Read both before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (3 tests)
+- `cargo test --release` (5 tests)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -18,7 +18,7 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
   `docs/patches/` with `git format-patch a1ce0d8`, and bump the `rev` in both `Cargo.toml`
   entries. Every git dependency is pinned by `rev`; never `branch = "master"`.
 - `target-*` directories are ignored. Never `git add -A` with an unignored target dir (a
-  1.2 GB commit happened once).
+  1.2 GB commit would be the result).
 - Unpatched Slint for comparison: `tools/build-master.sh` only. It rewrites the fork
   references to slint-ui/slint at a1ce0d8, builds with the lockfile set aside, restores both
   files, and fails if the binary contains the patch string.
