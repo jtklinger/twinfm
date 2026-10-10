@@ -377,6 +377,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let start = std::env::args().nth(1).unwrap_or_else(|| "C:\\".to_string());
     app.set_right_path(start.as_str().into());
     navigate(0, PathBuf::from(start));
+    // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
+    app.invoke_focus_pane(0);
     auto::start(&app);
 
     app.run()
