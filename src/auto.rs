@@ -35,6 +35,19 @@
 //!   menupick <text>                  inside the menu: choose one of TwinFM's own items ("Copy path",
 //!                                    "Open in other pane", "Open in terminal"); refuses shell items
 //!   menuclose                        inside the menu: close it (EndMenu)
+//!   dragrow <pane> <row> <dx> <dy>   drag a visible row: press, 60 ms, move <dx>,<dy> px, which
+//!                                    starts the OLE drag (DoDragDrop) if past the threshold; takes
+//!                                    in-drag steps (`sleep`, then `dragcancel`) like rclick takes
+//!                                    in-menu steps. A scripted drag can only be cancelled: it never
+//!                                    drops (dnd::script_begin says why)
+//!   dragcancel                       inside the drag: Escape (a WM_KEYDOWN posted to the window)
+//!   dropfiles <pane> <row> <copy|move|auto> <path|path|...>
+//!                                    drop files without OLE's drag loop: our drop target's
+//!                                    DragEnter then Drop, called directly with a data object
+//!                                    serving the paths as CF_HDROP, at the centre of a visible row
+//!                                    (or, with row -1, the pane's header: its folder). copy holds
+//!                                    Ctrl, move Shift, auto neither. Paths are separated by `|`
+//!                                    because `;` separates steps
 //!   quit                             exit the event loop
 //! Events are dispatched with slint::Window::dispatch_event on the UI thread, so Slint's full
 //! input -> layout -> render path runs; only the OS WndProc hop is skipped.
@@ -50,6 +63,14 @@
 //! script resumes with the step after `menuclose` once the menu has closed. Without a
 //! `menuclose` in that run of steps the menu stays open for a person to close. Example:
 //!   rclick 0 3; sleep 300; menuopen Send to; sleep 300; menuclose; sleep 300; quit
+//!
+//! In-drag steps: `DoDragDrop` is a modal loop inside the pointer move that crossed the
+//! threshold, so `dragrow` takes the `sleep` and `dragcancel` steps after it, up to
+//! the first `dragcancel`. Unlike the menu's loop, OLE's drag loop runs no Win32 timer callback,
+//! so these steps run on a helper thread (`spawn_drag_pump`), which also posts mouse moves to
+//! keep the loop turning. While a scripted drag runs, the drop source counts the left button as
+//! held (the real one is up), so only Escape ends it. Example:
+//!   dragrow 0 2 0 40; sleep 300; dragcancel; sleep 300; quit
 
 use crate::App;
 use slint::platform::{Key, PointerEventButton, WindowEvent};
@@ -60,8 +81,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_SHIFT};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP};
-use windows_sys::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, PostMessageW, SetTimer, WM_KEYDOWN};
+use windows_sys::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, PostMessageW, SetTimer, WM_KEYDOWN, WM_MOUSEMOVE};
 
 #[derive(Debug, Clone)]
 enum Step {
@@ -84,6 +106,10 @@ enum Step {
     MenuKey(String),
     MenuPick(String),
     MenuClose,
+    DragRow { pane: usize, row: usize, dx: f32, dy: f32 },
+    DragCancel,
+    /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
+    DropFiles { pane: usize, row: i32, mode: String, paths: Vec<String> },
     Quit,
 }
 
@@ -122,6 +148,14 @@ fn parse(script: &str) -> Vec<Step> {
                 "menukey" => Step::MenuKey(a.get(1).unwrap_or(&"").to_string()),
                 "menupick" => Step::MenuPick(a[1..].join(" ")),
                 "menuclose" => Step::MenuClose,
+                "dragrow" => Step::DragRow { pane: num(1) as usize, row: num(2) as usize, dx: num(3) as f32, dy: num(4) as f32 },
+                "dragcancel" => Step::DragCancel,
+                "dropfiles" => Step::DropFiles {
+                    pane: num(1) as usize,
+                    row: num(2) as i32,
+                    mode: a.get(3).unwrap_or(&"auto").to_string(),
+                    paths: a.get(4..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
+                },
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("[auto] unknown step: {other}");
@@ -230,17 +264,29 @@ fn empty_pos(app: &App, pane: usize) -> Option<LogicalPosition> {
     (end + 4.0 < bottom).then(|| LogicalPosition::new(mid.x, (end + bottom) * 0.5))
 }
 
-/// Take the in-menu steps that follow an `rclick`: the leading run of sleep/menuopen/menukey/
-/// menuclose steps up to and including the first menuclose (or menupick, which also closes the
-/// menu). None if that run has no menuclose.
+/// Take the in-loop steps that follow an `rclick` (or a `dragrow`): the leading run of sleep/
+/// menuopen/menukey/menupick/menuclose/dragcancel steps up to and including the first one that
+/// ends the loop (menuclose, menupick, dragcancel). None if that run has none.
 fn take_menu_steps(r: &mut Runner) -> Vec<Step> {
     let rest = &r.steps[r.idx..];
     let run = rest
         .iter()
-        .take_while(|s| matches!(s, Step::Sleep(_) | Step::MenuOpen(_) | Step::MenuKey(_) | Step::MenuPick(_) | Step::MenuClose))
+        .take_while(|s| {
+            matches!(
+                s,
+                Step::Sleep(_)
+                    | Step::MenuOpen(_)
+                    | Step::MenuKey(_)
+                    | Step::MenuPick(_)
+                    | Step::MenuClose
+                    | Step::DragCancel
+            )
+        })
         .count();
-    let Some(close) = rest[..run].iter().position(|s| matches!(s, Step::MenuClose | Step::MenuPick(_))) else {
-        eprintln!("[auto] no menuclose after the right-click: the menu stays open until closed by hand");
+    let Some(close) =
+        rest[..run].iter().position(|s| matches!(s, Step::MenuClose | Step::MenuPick(_) | Step::DragCancel))
+    else {
+        eprintln!("[auto] no menuclose/dragcancel after the step: the menu waits for a person (a scripted drag for its 20 s limit)");
         return Vec::new();
     };
     let taken = rest[..=close].to_vec();
@@ -251,11 +297,7 @@ fn take_menu_steps(r: &mut Runner) -> Vec<Step> {
 /// Queue the in-menu steps and start the first tick. Called just before the event that opens
 /// the menu; the ticks run from the menu's own message loop.
 fn arm_menu_steps(app: &App, steps: Vec<Step>) {
-    if let Ok(h) = app.window().window_handle().window_handle() {
-        if let RawWindowHandle::Win32(w) = h.as_raw() {
-            MENU_HWND.with(|c| c.set(w.hwnd.get()));
-        }
-    }
+    MENU_HWND.with(|c| c.set(hwnd_of(app)));
     let any = !steps.is_empty();
     IN_MENU.with(|q| *q.borrow_mut() = steps.into());
     if any {
@@ -267,6 +309,74 @@ fn arm_menu_steps(app: &App, steps: Vec<Step>) {
         // SAFETY: a plain Win32 timer on this thread; `menu_tick` touches no app state.
         let id = unsafe { SetTimer(std::ptr::null_mut(), 0, 10, Some(menu_tick)) };
         MENU_TIMER.with(|c| c.set(id));
+    }
+}
+
+/// Drive a scripted drag's in-drag steps from a helper thread while `DoDragDrop` runs on the UI
+/// thread. OLE's drag loop waits for mouse or keyboard input and dispatches nothing else: no
+/// Win32 timer callback (thread or window timer) ran inside it, and with the mouse untouched it
+/// never even called the drop source, so a scripted drag sat in `DoDragDrop` until killed. The
+/// pump posts a `WM_MOUSEMOVE` (at the real cursor position) to the main window every 20 ms so
+/// the loop turns and calls `QueryContinueDrag`, and posts Escape for `dragcancel`. After 20 s
+/// without `done` it posts Escape itself.
+fn spawn_drag_pump(hwnd: isize, steps: Vec<Step>, done: std::sync::Arc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<()> {
+    use std::sync::atomic::Ordering;
+    std::thread::spawn(move || {
+        let t0 = std::time::Instant::now();
+        let mut plan: VecDeque<Step> = steps.into();
+        let mut due = Duration::ZERO;
+        let mut gave_up = false;
+        while !done.load(Ordering::Acquire) {
+            let elapsed = t0.elapsed();
+            while elapsed >= due {
+                let Some(step) = plan.pop_front() else { break };
+                eprintln!("[auto] in drag (pump thread, t={} ms): {step:?}", elapsed.as_millis());
+                match step {
+                    Step::Sleep(ms) => due += Duration::from_millis(ms),
+                    // SAFETY: posting to our own window; the message carries no pointers.
+                    Step::DragCancel => unsafe {
+                        PostMessageW(hwnd as HWND, WM_KEYDOWN, VK_ESCAPE as usize, 1);
+                    },
+                    _ => {}
+                }
+            }
+            if elapsed > Duration::from_secs(20) && !gave_up {
+                gave_up = true;
+                eprintln!("[auto] the scripted drag is still running after 20 s: posting Escape");
+                // SAFETY: as above.
+                unsafe { PostMessageW(hwnd as HWND, WM_KEYDOWN, VK_ESCAPE as usize, 1) };
+            }
+            let mut p = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+            // SAFETY: plain Win32 queries and a post to our own window (thread-safe calls).
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p);
+                windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd as HWND, &mut p);
+                let lp = ((p.y as u16 as u32) << 16 | p.x as u16 as u32) as isize;
+                PostMessageW(hwnd as HWND, WM_MOUSEMOVE, 0, lp);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !plan.is_empty() {
+            eprintln!("[auto] the drag ended before {} in-drag step(s) ran: {plan:?}", plan.len());
+        }
+    })
+}
+
+/// Where `dropfiles` aims: the centre of a visible row, or with row -1 the pane's
+/// header (in the pane, over no row, so the drop goes to the pane's folder).
+fn drop_point(app: &App, pane: usize, row: i32) -> LogicalPosition {
+    let (_, _, mid) = geometry(app, pane);
+    match usize::try_from(row) {
+        Ok(r) => row_pos(app, pane, r),
+        Err(_) => LogicalPosition::new(mid.x, 49.0),
+    }
+}
+
+/// The main window's HWND (0 before the window exists).
+fn hwnd_of(app: &App) -> isize {
+    match app.window().window_handle().window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(w)) => w.hwnd.get(),
+        _ => 0,
     }
 }
 
@@ -507,8 +617,64 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         Step::Quit => {
             let _ = slint::quit_event_loop();
         }
-        Step::MenuOpen(_) | Step::MenuKey(_) | Step::MenuPick(_) | Step::MenuClose => {
-            eprintln!("[auto] {step:?} outside a menu (it belongs after rclick or rclickempty); skipped");
+        Step::MenuOpen(_)
+        | Step::MenuKey(_)
+        | Step::MenuPick(_)
+        | Step::MenuClose
+        | Step::DragCancel => {
+            eprintln!("[auto] {step:?} outside a menu or drag (it belongs after rclick, rclickempty or dragrow); skipped");
+            schedule(runner, 1);
+        }
+        Step::DragRow { pane, row, dx, dy } => {
+            let hwnd = hwnd_of(&app);
+            let mut drag_steps = take_menu_steps(&mut runner.borrow_mut());
+            let pos = row_pos(&app, pane, row);
+            let to = LogicalPosition::new(pos.x + dx, pos.y + dy);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Left }).ok();
+            // Move after a frame, so the pressed row is drawn selected before the drag loop.
+            let r2 = runner.clone();
+            let w = app.as_weak();
+            runner.borrow().sub.start(TimerMode::SingleShot, Duration::from_millis(60), move || {
+                let Some(app) = w.upgrade() else { return };
+                let before = crate::dnd::drags_started();
+                let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let pump = spawn_drag_pump(hwnd, std::mem::take(&mut drag_steps), done.clone());
+                crate::dnd::script_begin();
+                // The drag starts and runs inside this dispatch; it returns when the drag ends.
+                app.window().dispatch_event_with_result(WindowEvent::PointerMoved { position: to }).ok();
+                crate::dnd::script_end();
+                done.store(true, std::sync::atomic::Ordering::Release);
+                let _ = pump.join();
+                if crate::dnd::drags_started() == before {
+                    eprintln!("[auto] dragrow: no drag started (under the threshold?); releasing");
+                    app.window()
+                        .dispatch_event_with_result(WindowEvent::PointerReleased { position: to, button: PointerEventButton::Left })
+                        .ok();
+                }
+                // After a drag the app gives Slint the release it missed (main.rs).
+                schedule(r2.clone(), 1);
+            });
+        }
+        Step::DropFiles { pane, row, mode, paths } => {
+            let pos = drop_point(&app, pane, row);
+            let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), pos.x, pos.y, app.window().scale_factor());
+            let keys = match mode.as_str() {
+                "copy" => MK_CONTROL,
+                "move" => MK_SHIFT,
+                _ => 0,
+            };
+            let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+            match crate::dnd::drop_direct(&paths, keys, sx, sy) {
+                Some((enter, dropped)) => eprintln!(
+                    "[auto] dropfiles pane={pane} row={row} {mode}: {} path(s), DragEnter effect {}, Drop reported {}",
+                    paths.len(),
+                    crate::dnd::effect_name(enter),
+                    crate::dnd::effect_name(dropped)
+                ),
+                None => eprintln!("[auto] dropfiles: no drop target registered yet"),
+            }
             schedule(runner, 1);
         }
         Step::RClick { pane, row } => {

@@ -24,6 +24,13 @@ export component App inherits Window {
     in-out property <float> split-ratio: 0.5;
     in-out property <int> left-current-row: -1;
     in-out property <int> right-current-row: -1;
+    // A drag over the window would drop into pane `drop-pane` (-1: none), on row `drop-row` (-1:
+    // the pane's folder). Set by the drop target (dnd.rs).
+    in-out property <int> drop-pane: -1;
+    in-out property <int> drop-row: -1;
+    // The drag threshold in logical px (SM_CXDRAG / SM_CYDRAG over the scale factor).
+    in property <length> drag-dx: 4px;
+    in property <length> drag-dy: 4px;
 
     callback navigate(int, string);
     callback open-row(int, int);
@@ -45,6 +52,9 @@ export component App inherits Window {
     // visible-height): Shift+F10 or the Menu key.
     callback context-menu(int, int, length, length, bool);
     callback context-key(int, int, length, length, length, length);
+    // row-gesture(pane, row, what, ctrl, shift): left press (0), release (1), drag past the
+    // threshold (2) or double-click (3) on a row; see pane.slint FileListBase.
+    callback row-gesture(int, int, int, bool, bool);
 
     public function focus-pane(p: int) {
         active-pane = p;
@@ -102,6 +112,11 @@ export component App inherits Window {
             edit-commit(m, o, t) => { root.edit-commit(0, m, o, t); }
             context-menu(r, x, y, s) => { root.context-menu(0, r, x, y, s); }
             context-key(r, x, y, cy, h) => { root.context-key(0, r, x, y, cy, h); }
+            row-gesture(r, w, c, s) => { root.row-gesture(0, r, w, c, s); }
+            drag-dx: root.drag-dx;
+            drag-dy: root.drag-dy;
+            drop-here: root.drop-pane == 0;
+            drop-row: root.drop-row;
             open-row(i) => { root.open-row(0, i); }
             sort-by(c) => { root.sort-by(0, c); }
             go-up => { root.go-up(0); }
@@ -122,6 +137,11 @@ export component App inherits Window {
             edit-commit(m, o, t) => { root.edit-commit(1, m, o, t); }
             context-menu(r, x, y, s) => { root.context-menu(1, r, x, y, s); }
             context-key(r, x, y, cy, h) => { root.context-key(1, r, x, y, cy, h); }
+            row-gesture(r, w, c, s) => { root.row-gesture(1, r, w, c, s); }
+            drag-dx: root.drag-dx;
+            drag-dy: root.drag-dy;
+            drop-here: root.drop-pane == 1;
+            drop-row: root.drop-row;
             open-row(i) => { root.open-row(1, i); }
             sort-by(c) => { root.sort-by(1, c); }
             go-up => { root.go-up(1); }
