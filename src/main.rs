@@ -82,6 +82,9 @@ struct Tab {
     /// A name for the next pass to put the cursor and selection on (after a rename or a new
     /// folder).
     focus_name: Option<SharedString>,
+    /// Where the next pass puts the cursor if its row is gone (after a delete or a move out of
+    /// the folder): consumed by that pass, never set by a watch-driven refresh.
+    fallback_cursor: Option<usize>,
     /// Free and total bytes of the folder's volume, read by the enumeration worker.
     free: Option<(u64, u64)>,
     /// Saved when the tab goes to the background, restored when it comes back.
@@ -96,6 +99,17 @@ struct Tab {
     refresh_pending: bool,
     /// The refresh in flight was started by the directory watch (counted for `waitwatch`).
     watch_refresh: bool,
+}
+
+/// A job in flight, as the UI side remembers it.
+struct JobInfo {
+    /// The pane and tab that submitted it (its note goes there).
+    pane: usize,
+    tab: u64,
+    /// For a job that removes rows from a folder (delete, move out, cut-paste): the pane and tab
+    /// those rows were in and where its cursor falls back to if its row goes
+    /// (`PaneModel::cursor_after_removal`).
+    fallback: Option<(usize, u64, usize)>,
 }
 
 struct State {
@@ -123,8 +137,10 @@ struct State {
     /// the clipboard.
     hwnd: isize,
     next_job: u64,
-    /// Jobs in flight: id to (source pane, source tab id).
-    jobs: HashMap<u64, (usize, u64)>,
+    /// Jobs in flight.
+    jobs: HashMap<u64, JobInfo>,
+    /// The pane and tab whose rows carry the cut marks (None: no cut on the clipboard).
+    cut_source: Option<(usize, u64)>,
     /// The paste-of-a-cut job, if one is in flight: on success the clipboard is emptied.
     paste_move: Option<u64>,
     /// TWINFM_SOAK=1: no confirmations, and every path must lie inside one of these scratch
@@ -174,6 +190,7 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         keep_scroll: false,
         note: String::new(),
         focus_name: None,
+        fallback_cursor: None,
         free: None,
         cursor: -1,
         scroll: 0.0,
@@ -259,10 +276,16 @@ fn navigate(pane: usize, path: PathBuf) {
         t.keep_scroll = false;
         t.note.clear();
         t.focus_name = None;
+        t.fallback_cursor = None;
         t.free = None;
         t.stale = false;
         t.refresh_pending = false;
         t.watch_refresh = false;
+        let id = t.id;
+        // `model.clear` dropped the tab's cut marks.
+        if st.cut_source == Some((pane, id)) {
+            st.cut_source = None;
+        }
         st.icon_gens[pane].store(generation, Ordering::Relaxed);
         // Watched from the start, so a change during the listing is not missed; dropped again if
         // the listing fails (Msg::Done).
@@ -592,7 +615,12 @@ fn request_pass(st: &mut State, pane: usize, id: u64) {
     let snapshot = model.snapshot_all();
     let cursor = if active { current_row(&app, pane) } else { t.cursor };
     let mut restore = model.capture(cursor);
-    if let Some(name) = t.focus_name.take() {
+    let focus = t.focus_name.take();
+    restore.fallback_index = t.fallback_cursor.take();
+    // A cursor placed by an operation (a new or renamed row, the row after a removed one) is
+    // scrolled into view when the pass lands.
+    let reveal = focus.is_some() || restore.fallback_index.is_some();
+    if let Some(name) = focus {
         restore.cursor = Some(name.clone());
         restore.selected = vec![name];
     }
@@ -603,7 +631,7 @@ fn request_pass(st: &mut State, pane: usize, id: u64) {
         let out = filter_sort(snapshot, show_hidden, col, asc, &restore);
         let pass_ms = perf::elapsed_ms(t0);
         let _ = slint::invoke_from_event_loop(move || {
-            with_state(|st| land_pass(st, pane, id, (generation, pass, total, sel_version), out, (col, asc, pass_ms)));
+            with_state(|st| land_pass(st, pane, id, (generation, pass, total, sel_version), out, (col, asc, pass_ms), reveal));
         });
     });
 }
@@ -616,6 +644,7 @@ fn land_pass(
     (generation, pass, total, sel_version): (u64, u64, usize, u64),
     mut out: model::PassOutput,
     (col, asc, pass_ms): (SortCol, bool, f64),
+    reveal: bool,
 ) {
     let Some(app) = st.app.upgrade() else { return };
     let active = st.is_active(pane, id);
@@ -647,6 +676,14 @@ fn land_pass(
     if let (Some(y), Some(_)) = (scroll, cursor) {
         app.invoke_set_scroll(pane as i32, y);
         eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
+    }
+    // Once per pass swap, never per frame: bring an operation's cursor row into view.
+    if let (true, Some(row)) = (reveal, cursor) {
+        let y = app.invoke_get_scroll(pane as i32);
+        if let Some(to) = model::reveal_row(y, st.view[pane].1, row, icons::ROW_PX) {
+            app.invoke_set_scroll(pane as i32, to);
+            eprintln!("[refresh] pane={pane} cursor row {row} scrolled into view: {y:.0} -> {to:.0}");
+        }
     }
     update_status(st, &app, pane);
     st.strip_dirty[pane] = true;
@@ -849,8 +886,25 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
         return None;
     }
     let tab = st.tab(pane).id;
-    st.jobs.insert(id, (pane, tab));
+    st.jobs.insert(id, JobInfo { pane, tab, fallback: None });
     note(st, app, pane, running);
+    Some(id)
+}
+
+/// Before a job removes `names` from a pane's active tab: remember where its cursor falls back to
+/// (the row after it) if the cursor row goes. Attached to the job by `submit_removing`.
+fn removal_fallback(st: &State, app: &App, pane: usize, names: &[SharedString]) -> Option<(usize, u64, usize)> {
+    let idx = st.model(pane).cursor_after_removal(current_row(app, pane), names)?;
+    Some((pane, st.tab(pane).id, idx))
+}
+
+/// `submit` for a job that removes rows from a folder shown in a tab, with that tab's cursor
+/// fallback.
+fn submit_removing(st: &mut State, app: &App, pane: usize, job: Job, fallback: Option<(usize, u64, usize)>) -> Option<u64> {
+    let id = submit(st, app, pane, job)?;
+    if let Some(j) = st.jobs.get_mut(&id) {
+        j.fallback = fallback;
+    }
     Some(id)
 }
 
@@ -888,13 +942,18 @@ fn command(pane: usize, cmd: &str) {
                     note(st, &app, pane, "source and destination are the same folder".into());
                     return None;
                 }
-                let (sources, _) = sources(st, &app, pane)?;
-                let job = if cmd == "move" { Job::Move { sources, dest_dir: dest } } else { Job::Copy { sources, dest_dir: dest } };
-                submit(st, &app, pane, job);
+                let (sources, names) = sources(st, &app, pane)?;
+                if cmd == "move" {
+                    let fb = removal_fallback(st, &app, pane, &names);
+                    submit_removing(st, &app, pane, Job::Move { sources, dest_dir: dest }, fb);
+                } else {
+                    submit(st, &app, pane, Job::Copy { sources, dest_dir: dest });
+                }
             }
             "delete" | "sdelete" => {
-                let (sources, _) = sources(st, &app, pane)?;
-                submit(st, &app, pane, Job::Delete { sources, permanent: cmd == "sdelete" });
+                let (sources, names) = sources(st, &app, pane)?;
+                let fb = removal_fallback(st, &app, pane, &names);
+                submit_removing(st, &app, pane, Job::Delete { sources, permanent: cmd == "sdelete" }, fb);
             }
             _ => {}
         }
@@ -926,8 +985,19 @@ fn edit_commit(pane: usize, mode: i32, original: &str, typed: &str) {
     });
 }
 
+/// For a paste of a cut: the cut tab's cursor fallback, its cut names being what the move removes.
+fn cut_fallback(st: &mut State, app: &App) -> Option<(usize, u64, usize)> {
+    let (pane, tab) = st.cut_source?;
+    let active = st.is_active(pane, tab);
+    let row = if active { current_row(app, pane) } else { st.find(pane, tab)?.cursor };
+    let t = st.find(pane, tab)?;
+    let names = t.model.capture(-1).cut;
+    Some((pane, tab, t.model.cursor_after_removal(row, &names)?))
+}
+
 /// Clear the cut marks in every tab (the clipboard no longer holds a cut).
-fn clear_cuts(st: &State) {
+fn clear_cuts(st: &mut State) {
+    st.cut_source = None;
     for tabs in &st.panes {
         for t in tabs.iter() {
             t.model.set_cut(Vec::new());
@@ -958,6 +1028,7 @@ fn clipboard_put(pane: usize, cut: bool) {
                 clear_cuts(st);
                 if cut {
                     st.model(pane).set_cut(names);
+                    st.cut_source = Some((pane, st.tab(pane).id));
                 }
             }
             Err(e) => note(st, &app, pane, format!("clipboard: {e}")),
@@ -991,7 +1062,8 @@ fn clipboard_paste(pane: usize) {
             if sources.iter().all(|s| s.parent().is_some_and(|d| same_dir(d, &dest))) {
                 return note(st, &app, pane, "source and destination are the same folder".into());
             }
-            st.paste_move = submit(st, &app, pane, Job::Move { sources, dest_dir: dest });
+            let fb = cut_fallback(st, &app);
+            st.paste_move = submit_removing(st, &app, pane, Job::Move { sources, dest_dir: dest }, fb);
         } else {
             submit(st, &app, pane, Job::Copy { sources, dest_dir: dest });
         }
@@ -1018,7 +1090,15 @@ fn mark_background_stale(st: &mut State) {
 fn job_done(d: fileops::Done) {
     let mut clear_clipboard = None;
     let panes = with_state(|st| {
-        let (pane, tab) = st.jobs.remove(&d.id).unwrap_or((0, 0));
+        let info = st.jobs.remove(&d.id).unwrap_or(JobInfo { pane: 0, tab: 0, fallback: None });
+        let (pane, tab) = (info.pane, info.tab);
+        // Whatever the outcome (a cancel can come after some items went), the source tab's next
+        // pass puts a cursor whose row is gone on the row after it.
+        if let Some((p, id, idx)) = info.fallback {
+            if let Some(t) = st.find(p, id) {
+                t.fallback_cursor = Some(idx);
+            }
+        }
         let text = fileops::status_text(&d.job, &d.outcome, &d.results);
         eprintln!("[fileops] done id={} pane={pane} tab={tab} {:?}: {text}", d.id, d.outcome);
         for r in &d.results {
@@ -1763,6 +1843,7 @@ fn main() -> Result<(), slint::PlatformError> {
             hwnd: 0,
             next_job: 0,
             jobs: HashMap::new(),
+            cut_source: None,
             paste_move: None,
             soak,
             strip: [None; 2],

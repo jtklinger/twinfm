@@ -341,7 +341,20 @@ impl PaneModel {
         let shown = self.shown.borrow();
         let cursor = usize::try_from(cursor).ok().and_then(|i| shown.get(i)).map(|e| e.name.clone());
         drop(shown);
-        Restore { cursor, selected: self.selected_names(), cut: self.cut.borrow().clone() }
+        Restore { cursor, selected: self.selected_names(), cut: self.cut.borrow().clone(), fallback_index: None }
+    }
+
+    /// Before a job that removes `removed` from this folder (delete, move out): the index the
+    /// cursor should fall back to if its row goes, which is its row less the removed rows above
+    /// it (the row that followed it once they are gone). None without a cursor.
+    pub fn cursor_after_removal(&self, cursor: i32, removed: &[SharedString]) -> Option<usize> {
+        let c = usize::try_from(cursor).ok()?;
+        let shown = self.shown.borrow();
+        if c >= shown.len() {
+            return None;
+        }
+        let names: HashSet<&str> = removed.iter().map(|s| s.as_str()).collect();
+        Some(c - shown[..c].iter().filter(|e| names.contains(e.name.as_str())).count())
     }
 
     /// Append a batch; one row_added notification per batch, never per entry. The batch moves
@@ -508,11 +521,20 @@ pub struct Restore {
     pub selected: Vec<SharedString>,
     /// Names marked as cut (rarely non-empty; the pass marks them on the worker).
     pub cut: Vec<SharedString>,
+    /// Where the cursor goes when its row is gone (after a delete or a move out of the folder):
+    /// the old row's index, less the removed rows above it, so the cursor lands on the row that
+    /// followed it, as in Explorer. Clamped to the last row. Set once, by the refresh after a job.
+    pub fallback_index: Option<usize>,
 }
 
 /// Where the remembered names sit in a new listing; names that no longer exist are dropped.
+/// A cursor whose name is gone (or that had none) goes to `fallback_index`, clamped to the list.
 pub fn restore_by_name(r: &Restore, entries: &[Entry]) -> (Option<usize>, BTreeSet<usize>) {
-    let cursor = r.cursor.as_ref().and_then(|c| entries.iter().position(|e| &e.name == c));
+    let cursor = r
+        .cursor
+        .as_ref()
+        .and_then(|c| entries.iter().position(|e| &e.name == c))
+        .or_else(|| Some(r.fallback_index?.min(entries.len().checked_sub(1)?)));
     let mut selection = BTreeSet::new();
     if !r.selected.is_empty() {
         let names: HashSet<&str> = r.selected.iter().map(|s| s.as_str()).collect();
@@ -523,6 +545,26 @@ pub fn restore_by_name(r: &Restore, entries: &[Entry]) -> (Option<usize>, BTreeS
         }
     }
     (cursor, selection)
+}
+
+/// The list's content-y (0 or negative, as Slint's ListView keeps it) that brings `row` fully
+/// into a viewport `visible_h` high with the least movement, or None when it is already
+/// visible (or the viewport has no height yet). The same arithmetic as the pane's
+/// `bring-into-view`.
+pub fn reveal_row(content_y: f32, visible_h: f32, row: usize, row_px: f32) -> Option<f32> {
+    if visible_h <= 0.0 {
+        return None;
+    }
+    let top = row as f32 * row_px;
+    let target = if content_y + top < 0.0 {
+        -top
+    } else if content_y + top + row_px > visible_h {
+        // Bottom-aligned, but never past the row's top (a row taller than the viewport).
+        (visible_h - top - row_px).max(-top).min(0.0)
+    } else {
+        return None;
+    };
+    (target != content_y).then_some(target)
 }
 
 /// A selection gesture. The discriminants are the `op` int the Slint `select` callback passes.
@@ -980,7 +1022,7 @@ mod tests {
         // New listing: "b" is gone, "0" arrived first, "d" moved.
         let new = vec![e("0", 0, false), e("a", 0, false), e("c", 0, false), e("d", 0, false)];
         assert_eq!(restore_by_name(&r, &new), (Some(3), set(&[3])));
-        let gone = Restore { cursor: Some("zz".into()), selected: vec!["zz".into()], cut: vec![] };
+        let gone = Restore { cursor: Some("zz".into()), selected: vec!["zz".into()], cut: vec![], fallback_index: None };
         assert_eq!(restore_by_name(&gone, &new), (None, BTreeSet::new()));
         // A pass carries the selection over a re-sort, and marks the rows.
         let out = filter_sort(m.snapshot_all(), false, SortCol::Name, false, &r);
@@ -991,6 +1033,46 @@ mod tests {
         assert_eq!(cursor, Some(0));
         assert_eq!(m.selected_names(), ["d", "b"]);
         assert!(m.row_data(0).unwrap().selected && !m.row_data(1).unwrap().selected);
+    }
+
+    #[test]
+    fn cursor_falls_back_to_the_next_row() {
+        let m = PaneModel::default();
+        m.append(["a", "b", "c", "d", "e"].iter().map(|n| e(n, 0, false)).collect());
+        // Cursor on "c", deleting "b" and "c": "d" follows, at index 1 once both are gone.
+        let fb = m.cursor_after_removal(2, &["b".into(), "c".into()]);
+        assert_eq!(fb, Some(1));
+        assert_eq!(m.cursor_after_removal(-1, &["a".into()]), None, "no cursor, no fallback");
+        assert_eq!(m.cursor_after_removal(9, &["a".into()]), None);
+        let r = Restore { cursor: Some("c".into()), fallback_index: fb, ..Default::default() };
+        let after = vec![e("a", 0, false), e("d", 0, false), e("e", 0, false)];
+        assert_eq!(restore_by_name(&r, &after).0, Some(1), "the cursor row is gone: the next row");
+        // The cursor row still there (a delete of other rows, cancelled): by name wins.
+        let kept = vec![e("a", 0, false), e("c", 0, false), e("d", 0, false), e("e", 0, false)];
+        assert_eq!(restore_by_name(&r, &kept).0, Some(1));
+        let r2 = Restore { fallback_index: Some(3), ..r.clone() };
+        assert_eq!(restore_by_name(&r2, &kept).0, Some(1), "by name wins over the fallback");
+        // The last rows went: clamped to the new last row.
+        let r3 = Restore { cursor: Some("e".into()), fallback_index: Some(4), ..Default::default() };
+        assert_eq!(restore_by_name(&r3, &after[..2]).0, Some(1));
+        // Everything went: no cursor.
+        assert_eq!(restore_by_name(&r, &[]).0, None);
+        // No fallback: a gone cursor goes nowhere, as before.
+        let r4 = Restore { cursor: Some("zz".into()), ..Default::default() };
+        assert_eq!(restore_by_name(&r4, &after).0, None);
+    }
+
+    #[test]
+    fn reveal_row_moves_the_least() {
+        // 10 rows of 22 px visible (220 px), scrolled to the top.
+        assert_eq!(reveal_row(0.0, 220.0, 3, 22.0), None, "already visible");
+        assert_eq!(reveal_row(0.0, 220.0, 9, 22.0), None, "last fully visible row");
+        assert_eq!(reveal_row(0.0, 220.0, 10, 22.0), Some(-22.0), "one row below: scroll one row");
+        assert_eq!(reveal_row(0.0, 220.0, 50, 22.0), Some(220.0 - 51.0 * 22.0), "far below: lands at the bottom");
+        assert_eq!(reveal_row(-440.0, 220.0, 5, 22.0), Some(-110.0), "above: lands at the top");
+        assert_eq!(reveal_row(-440.0, 220.0, 20, 22.0), None);
+        assert_eq!(reveal_row(0.0, 0.0, 5, 22.0), None, "no viewport yet");
+        assert_eq!(reveal_row(0.0, 10.0, 0, 22.0), None, "a row taller than the viewport at the top stays put");
     }
 
     #[test]
