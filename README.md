@@ -42,6 +42,9 @@ The one argument is the starting folder for the left pane (default `C:\`).
 | F2 | Rename the cursor row in place (Return commits, Escape cancels) |
 | F7, Ctrl+Shift+N | New folder in the active pane (name it in place, Return creates it) |
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy, cut, paste files through the Windows clipboard (works with Explorer) |
+| Right-click a row | The Windows shell context menu for the selection (an unselected row is selected first), with "Open in other pane", "Open in terminal" and "Copy path" on top; Shift+right-click adds the extended verbs |
+| Right-click below the last row | The folder's background menu ("New", "Paste", "Properties") |
+| Shift+F10, Menu key | The context menu for the selection or the cursor row, under the cursor row |
 | Click a column header | Sort by name, type, size or modified (click again to reverse) |
 | Type a path in the path bar and press Return | Navigate (empty or "This PC" lists the drives) |
 
@@ -60,7 +63,8 @@ src/
   fs/enumerate.rs  Worker thread: read_dir -> Vec<Entry> batches of 2000 -> channel; type names, icon keys, drive list
   icons.rs         Icon worker thread (COM): shell icon per type, extension or path -> RGBA pixels; UI-side icon table; per-pane icon strip
   fileops/mod.rs   File operation worker (COM STA + message loop): copy, move, delete, rename, new folder via IFileOperation
-  fileops/clipboard.rs  CF_HDROP + "Preferred DropEffect" on the real clipboard
+  fileops/clipboard.rs  CF_HDROP + "Preferred DropEffect" on the real clipboard; CF_UNICODETEXT for Copy path
+  shellmenu.rs     Shell context menu (IContextMenu, on the UI thread) with TwinFM's own items; terminal launch
   model.rs         PaneModel: full and filtered Vec<Entry>, selection, sort state; implements slint::Model
   ui/app.slint     Window, two Pane components, splitter
   ui/pane.slint    Path bar, column header, ListView over the model, status line
