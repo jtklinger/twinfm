@@ -1,6 +1,6 @@
-import { Pane, Row } from "pane.slint";
+import { Pane, Row, TabInfo, Crumb, StatusInfo } from "pane.slint";
 import { Palette } from "std-widgets.slint";
-export { Row }
+export { Row, TabInfo, Crumb, StatusInfo }
 
 export component App inherits Window {
     title: "twinfm";
@@ -11,10 +11,16 @@ export component App inherits Window {
 
     in property <[Row]> left-rows;
     in property <[Row]> right-rows;
-    in-out property <string> left-path;
-    in-out property <string> right-path;
-    in property <string> left-status;
-    in property <string> right-status;
+    in property <string> left-path;
+    in property <string> right-path;
+    in property <StatusInfo> left-status;
+    in property <StatusInfo> right-status;
+    in property <[TabInfo]> left-tabs;
+    in property <[TabInfo]> right-tabs;
+    in property <[Crumb]> left-crumbs;
+    in property <[Crumb]> right-crumbs;
+    // The path bars show the text entry for good instead of the breadcrumb (the toggle glyph).
+    in-out property <bool> path-entry-sticky: false;
     in property <int> left-sort-col;
     in property <bool> left-sort-asc;
     in property <int> right-sort-col;
@@ -55,6 +61,23 @@ export component App inherits Window {
     // row-gesture(pane, row, what, ctrl, shift): left press (0), release (1), drag past the
     // threshold (2) or double-click (3) on a row; see pane.slint FileListBase.
     callback row-gesture(int, int, int, bool, bool);
+    // tab-select(pane, index), tab-close(pane, index): a click or middle-click in a tab strip.
+    callback tab-select(int, int);
+    callback tab-close(int, int);
+    // tab-key(pane, what): for the active pane, Ctrl+T "new", Ctrl+W "close", Ctrl+Tab "next",
+    // Ctrl+Shift+Tab "prev", Ctrl+1..9 "1".."9".
+    callback tab-key(int, string);
+    // crumb-clicked(pane, index): a breadcrumb button.
+    callback crumb-clicked(int, int);
+
+    // Ctrl+L, and the driver's `pathmode`: the pane's path bar as text entry or breadcrumb.
+    public function set-path-mode(p: int, entry: bool) {
+        if (entry) {
+            if (p == 0) { left.begin-path-entry(); } else { right.begin-path-entry(); }
+        } else {
+            if (p == 0) { left.end-path-entry(); } else { right.end-path-entry(); }
+        }
+    }
 
     public function focus-pane(p: int) {
         active-pane = p;
@@ -96,12 +119,28 @@ export component App inherits Window {
                 if (split) { root.focus-pane(1 - active-pane); }
                 return accept;
             }
+            if (e.modifiers.control && (e.text == Key.Tab || e.text == Key.Backtab)) {
+                root.tab-key(active-pane, e.modifiers.shift || e.text == Key.Backtab ? "prev" : "next");
+                return accept;
+            }
+            if (e.modifiers.control && !e.modifiers.shift && (e.text == "t" || e.text == "T")) { root.tab-key(active-pane, "new"); return accept; }
+            if (e.modifiers.control && !e.modifiers.shift && (e.text == "w" || e.text == "W")) { root.tab-key(active-pane, "close"); return accept; }
+            if (e.modifiers.control && !e.modifiers.shift && (e.text == "1" || e.text == "2" || e.text == "3" || e.text == "4" || e.text == "5" || e.text == "6" || e.text == "7" || e.text == "8" || e.text == "9")) {
+                root.tab-key(active-pane, e.text);
+                return accept;
+            }
+            if (e.modifiers.control && (e.text == "l" || e.text == "L")) { root.set-path-mode(active-pane, true); return accept; }
             return reject;
         }
         left := Pane {
             x: 0; y: 0; height: parent.height;
             width: split ? parent.width * split-ratio - 3px : parent.width;
-            rows: left-rows; path <=> left-path; status: left-status;
+            rows: left-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
+            entry-sticky: root.path-entry-sticky;
+            toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; }
+            tab-clicked(i) => { root.tab-select(0, i); }
+            tab-close(i) => { root.tab-close(0, i); }
+            crumb-clicked(i) => { root.crumb-clicked(0, i); }
             active: !split || active-pane == 0;
             sort-col: left-sort-col; sort-asc: left-sort-asc;
             current-row <=> left-current-row;
@@ -126,7 +165,12 @@ export component App inherits Window {
             visible: split;
             x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
             width: split ? parent.width - self.x : 0px;
-            rows: right-rows; path <=> right-path; status: right-status;
+            rows: right-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
+            entry-sticky: root.path-entry-sticky;
+            toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; }
+            tab-clicked(i) => { root.tab-select(1, i); }
+            tab-close(i) => { root.tab-close(1, i); }
+            crumb-clicked(i) => { root.crumb-clicked(1, i); }
             active: split && active-pane == 1;
             sort-col: right-sort-col; sort-asc: right-sort-asc;
             current-row <=> right-current-row;

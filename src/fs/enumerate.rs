@@ -19,7 +19,7 @@ pub const BATCH_SIZE: usize = 2000;
 
 pub enum Msg {
     Batch { pane: usize, generation: u64, entries: Vec<Entry> },
-    Done { pane: usize, generation: u64, total: usize, elapsed: Duration, error: Option<String> },
+    Done { pane: usize, generation: u64, total: usize, elapsed: Duration, error: Option<String>, free: Option<(u64, u64)> },
 }
 
 pub fn spawn(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl Fn() + Send + 'static) {
@@ -44,14 +44,14 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         let entries = drive_entries();
         let total = entries.len();
         let _ = tx.send(Msg::Batch { pane, generation, entries });
-        let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None });
+        let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None, free: None });
         wake();
         return;
     }
     let rd = match std::fs::read_dir(&path) {
         Ok(rd) => rd,
         Err(e) => {
-            let _ = tx.send(Msg::Done { pane, generation, total: 0, elapsed: t0.elapsed(), error: Some(e.to_string()) });
+            let _ = tx.send(Msg::Done { pane, generation, total: 0, elapsed: t0.elapsed(), error: Some(e.to_string()), free: None });
             wake();
             return;
         }
@@ -90,7 +90,10 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         total += batch.len();
         let _ = tx.send(Msg::Batch { pane, generation, entries: batch });
     }
-    let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None });
+    // Timed before the free-space query, so the [enum] worker time is the listing alone.
+    let elapsed = t0.elapsed();
+    let free = crate::statusbar::disk_free(&path);
+    let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error: None, free });
     wake();
 }
 

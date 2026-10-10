@@ -1,4 +1,4 @@
-// twinfm: Slint bootstrap, wires model <-> UI, owns the two panes.
+// twinfm: Slint bootstrap, wires model <-> UI, owns the two panes and their tabs.
 slint::include_modules!();
 
 mod fs {
@@ -9,8 +9,11 @@ mod dnd;
 mod fileops;
 mod icons;
 mod model;
+mod pathbar;
 mod perf;
 mod shellmenu;
+mod statusbar;
+mod tabs;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fileops::{Job, Outcome, clipboard, same_dir};
@@ -18,7 +21,7 @@ use fs::enumerate::{Msg, THIS_PC, is_this_pc};
 use icons::IconTable;
 use model::{Kind, PaneModel, SelOp, SortCol, filter_sort};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use slint::{ComponentHandle, Image, ModelRc, RenderingState, SharedString, Weak};
+use slint::{ComponentHandle, Image, Model, ModelRc, RenderingState, SharedString, VecModel, Weak};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,6 +29,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tabs::Tabs;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG};
 
@@ -46,7 +50,7 @@ struct IconCounts {
     reported: (u64, u64, u64, u64, u64),
 }
 
-/// Per-pane timing bookkeeping for the gate measurements.
+/// Per-tab timing bookkeeping for the gate measurements.
 #[derive(Default)]
 struct PaneTiming {
     requested: Option<Instant>,
@@ -57,22 +61,47 @@ struct PaneTiming {
     error: Option<String>,
 }
 
+/// One tab: its own listing (model, with its sort column, direction and hidden filter), folder,
+/// note, selection, cursor and scroll. A pane shows its active tab; the others keep their state.
+struct Tab {
+    /// Unique for the life of the process; workers' replies name their tab by it (passes) or by
+    /// the model's generation, which is unique across tabs too (`State::next_gen`).
+    id: u64,
+    model: Rc<PaneModel>,
+    /// The folder the tab last navigated to (the path bar may hold unsubmitted text).
+    path: PathBuf,
+    timing: PaneTiming,
+    /// Restore the list's scroll offset at the next pass swap (set when a refresh completes).
+    keep_scroll: bool,
+    /// The last file operation's message, shown before the item count.
+    note: String,
+    /// A name for the next pass to put the cursor and selection on (after a rename or a new
+    /// folder).
+    focus_name: Option<SharedString>,
+    /// Free and total bytes of the folder's volume, read by the enumeration worker.
+    free: Option<(u64, u64)>,
+    /// Saved when the tab goes to the background, restored when it comes back.
+    cursor: i32,
+    scroll: f32,
+    /// A file operation or shell command finished while the tab was in the background: it
+    /// refreshes when it comes to the front.
+    stale: bool,
+}
+
 struct State {
     app: Weak<App>,
-    panes: [Rc<PaneModel>; 2],
+    panes: [Tabs<Tab>; 2],
+    /// Last tab id and last enumeration generation handed out.
+    next_tab: u64,
+    next_gen: u64,
     rx: Receiver<Msg>,
     tx: Sender<Msg>,
-    timing: [PaneTiming; 2],
-    /// The folder each pane last navigated to (the path bar may hold unsubmitted text).
-    paths: [PathBuf; 2],
-    /// Restore the list's scroll offset at the next pass swap (set when a refresh completes).
-    keep_scroll: [bool; 2],
     split_requested: Option<Instant>,
     busy_timer: slint::Timer,
     icons: Rc<RefCell<IconTable>>,
     icon_tx: Sender<icons::Request>,
     icon_rx: Receiver<icons::Reply>,
-    /// Each pane's navigation generation, read by the icon worker to skip stale requests.
+    /// Each pane's active-tab generation, read by the icon worker to skip stale requests.
     icon_gens: Arc<[AtomicU64; 2]>,
     icon_stats: Arc<icons::Stats>,
     icon_counts: IconCounts,
@@ -84,15 +113,10 @@ struct State {
     /// the clipboard.
     hwnd: isize,
     next_job: u64,
-    /// Jobs in flight: id to source pane.
-    jobs: HashMap<u64, usize>,
+    /// Jobs in flight: id to (source pane, source tab id).
+    jobs: HashMap<u64, (usize, u64)>,
     /// The paste-of-a-cut job, if one is in flight: on success the clipboard is emptied.
     paste_move: Option<u64>,
-    /// Per pane, the last file operation's message, shown before the item count.
-    notes: [String; 2],
-    /// Per pane, a name for the next pass to put the cursor and selection on (after a rename or
-    /// a new folder).
-    focus_name: [Option<SharedString>; 2],
     /// TWINFM_SOAK=1: no confirmations, and every path must lie inside one of these scratch
     /// folders (`%TEMP%\twinfm-m3` for the M3 soak, `%TEMP%\twinfm-m5` for the M5 one).
     soak: Option<Vec<PathBuf>>,
@@ -104,6 +128,28 @@ struct State {
     gesture: [dnd::Gesture; 2],
     /// Retries the drop target registration until the window exists, then stops.
     dnd_timer: slint::Timer,
+    /// Each pane's tab strip and breadcrumb, rebuilt on change only.
+    tab_models: [Rc<VecModel<TabInfo>>; 2],
+    crumb_models: [Rc<VecModel<Crumb>>; 2],
+    /// TWINFM_PERF_STATUS=1: the status bar also shows the enumeration time.
+    perf_status: bool,
+}
+
+/// A tab with no folder yet, its model sharing the icon table.
+fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
+    Tab {
+        id,
+        model: Rc::new(PaneModel::with_icons(icons.clone())),
+        path: PathBuf::new(),
+        timing: PaneTiming::default(),
+        keep_scroll: false,
+        note: String::new(),
+        focus_name: None,
+        free: None,
+        cursor: -1,
+        scroll: 0.0,
+        stale: false,
+    }
 }
 
 thread_local! {
@@ -119,28 +165,67 @@ fn wake() {
     let _ = slint::invoke_from_event_loop(drain);
 }
 
+impl State {
+    /// A new enumeration generation, unique across every tab of both panes.
+    fn generation(&mut self) -> u64 {
+        self.next_gen += 1;
+        self.next_gen
+    }
+
+    /// A fresh tab on `path` (not yet enumerated) whose model shares the icon table.
+    fn new_tab(&mut self, path: PathBuf) -> Tab {
+        self.next_tab += 1;
+        Tab { path, ..blank_tab(self.next_tab, &self.icons) }
+    }
+
+    fn tab(&self, pane: usize) -> &Tab {
+        self.panes[pane].active()
+    }
+
+    fn tab_mut(&mut self, pane: usize) -> &mut Tab {
+        self.panes[pane].active_mut()
+    }
+
+    /// The tab with this id in the pane, active or not (None once it is closed).
+    fn find(&mut self, pane: usize, id: u64) -> Option<&mut Tab> {
+        self.panes[pane].iter_mut().find(|t| t.id == id)
+    }
+
+    /// The tab whose model is enumerating this generation.
+    fn by_generation(&mut self, pane: usize, generation: u64) -> Option<&mut Tab> {
+        self.panes[pane].iter_mut().find(|t| t.model.generation.get() == generation)
+    }
+
+    fn is_active(&self, pane: usize, id: u64) -> bool {
+        self.panes[pane].active().id == id
+    }
+
+    fn model(&self, pane: usize) -> &PaneModel {
+        &self.panes[pane].active().model
+    }
+}
+
 fn navigate(pane: usize, path: PathBuf) {
     let path = if is_this_pc(&path.to_string_lossy()) { PathBuf::from(THIS_PC) } else { path };
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
-        let model = &st.panes[pane];
-        let generation = model.generation.get() + 1;
-        model.generation.set(generation);
-        model.clear();
+        let generation = st.generation();
+        let t = st.tab_mut(pane);
+        t.model.generation.set(generation);
+        t.model.clear();
+        t.timing = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
+        t.path = path.clone();
+        t.keep_scroll = false;
+        t.note.clear();
+        t.focus_name = None;
+        t.free = None;
+        t.stale = false;
         st.icon_gens[pane].store(generation, Ordering::Relaxed);
-        st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
-        st.paths[pane] = path.clone();
-        st.keep_scroll[pane] = false;
-        st.notes[pane].clear();
-        st.focus_name[pane] = None;
         hide_strip(st, &app, pane);
         let shown = path.to_string_lossy().to_string();
-        if pane == 0 {
-            app.set_left_path(shown.as_str().into());
-        } else {
-            app.set_right_path(shown.as_str().into());
-        }
-        set_status(&app, pane, "loading...".into());
+        set_path(st, &app, pane);
+        update_tabs(st, pane);
+        update_status(st, &app, pane);
         app.invoke_reset_scroll(pane as i32);
         eprintln!("[nav] pane={pane} gen={generation} path={shown}");
         let tx = st.tx.clone();
@@ -148,45 +233,61 @@ fn navigate(pane: usize, path: PathBuf) {
     });
 }
 
-/// Re-enumerate the pane's folder in place (F5, Ctrl+R). The old rows stay on screen until the
-/// new listing has been filtered and sorted; cursor, selection and scroll come back by name.
+/// Re-enumerate the active tab's folder in place (F5, Ctrl+R). The old rows stay on screen until
+/// the new listing has been filtered and sorted; cursor, selection and scroll come back by name.
 fn refresh(pane: usize) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
-        let model = &st.panes[pane];
-        let generation = model.generation.get() + 1;
-        model.generation.set(generation);
-        model.begin_refresh();
+        let generation = st.generation();
+        let t = st.tab_mut(pane);
+        t.model.generation.set(generation);
+        t.model.begin_refresh();
+        t.timing = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
+        t.stale = false;
+        let path = t.path.clone();
         st.icon_gens[pane].store(generation, Ordering::Relaxed);
-        st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
-        set_status(&app, pane, "refreshing...".into());
-        let path = st.paths[pane].clone();
+        update_status(st, &app, pane);
         eprintln!("[refresh] pane={pane} gen={generation} path={}", path.display());
         fs::enumerate::spawn(path, pane, generation, st.tx.clone(), wake);
     });
 }
 
-fn set_status(app: &App, pane: usize, s: String) {
-    if pane == 0 { app.set_left_status(s.into()) } else { app.set_right_status(s.into()) }
+/// The pane's status bar from its active tab: items, hidden, note and error on the left, the
+/// selection in the middle, free space on the right. Called on navigation, enumeration
+/// progress, pass swaps, selection changes and notes; never from a scroll or render path.
+fn update_status(st: &State, app: &App, pane: usize) {
+    let t = st.tab(pane);
+    let m = &t.model;
+    let loading = t.timing.done_ms.is_none() && t.timing.error.is_none();
+    let enum_ms = if st.perf_status { t.timing.done_ms } else { None };
+    let left = statusbar::left_text(&t.note, m.len(), m.hidden_count(), loading, enum_ms, t.timing.error.as_deref());
+    let (n, bytes, any_file) = m.selection_summary();
+    let s = StatusInfo {
+        left: left.into(),
+        mid: statusbar::mid_text(n, bytes, any_file).into(),
+        right: statusbar::free_text(t.free).into(),
+    };
+    if pane == 0 { app.set_left_status(s) } else { app.set_right_status(s) }
 }
 
-/// The status line for a pane: loading, complete, or failed, after the pane's note (the last
-/// file operation's result) when there is one.
-fn status_text(model: &PaneModel, t: &PaneTiming, note: &str) -> String {
-    if !note.is_empty() {
-        return format!("{note} | {}", status_text(model, t, ""));
-    }
-    if let Some(e) = &t.error {
-        return format!("error: {e}");
-    }
-    let hidden = match model.hidden_count() {
-        0 => String::new(),
-        n => format!(" ({n} hidden)"),
-    };
-    match t.done_ms {
-        Some(ms) => format!("{} items{hidden}, enumerated in {ms:.0} ms", model.len()),
-        None => format!("{} items{hidden} (loading...)", model.len()),
-    }
+/// The pane's tab strip: one entry per tab, titled by its folder. Hidden by the UI with one tab.
+fn update_tabs(st: &State, pane: usize) {
+    let tabs = &st.panes[pane];
+    let active = tabs.active_index();
+    let v: Vec<TabInfo> = tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| TabInfo { title: pathbar::title(&t.path.to_string_lossy()).into(), active: i == active })
+        .collect();
+    st.tab_models[pane].set_vec(v);
+}
+
+/// The path bar (text and breadcrumb) from the active tab's folder.
+fn set_path(st: &State, app: &App, pane: usize) {
+    let path = st.tab(pane).path.to_string_lossy().to_string();
+    let crumbs: Vec<Crumb> = pathbar::crumbs(&path).into_iter().map(|c| Crumb { label: c.label.into() }).collect();
+    st.crumb_models[pane].set_vec(crumbs);
+    if pane == 0 { app.set_left_path(path.into()) } else { app.set_right_path(path.into()) }
 }
 
 fn drain() {
@@ -195,48 +296,47 @@ fn drain() {
         while let Ok(msg) = st.rx.try_recv() {
             match msg {
                 Msg::Batch { pane, generation, entries } => {
-                    let model = &st.panes[pane];
-                    if model.generation.get() != generation {
-                        continue;
-                    }
-                    model.append(entries);
-                    if model.is_refreshing() {
+                    let Some(t) = st.by_generation(pane, generation) else { continue };
+                    t.model.append(entries);
+                    if t.model.is_refreshing() {
                         continue; // staged; the old rows and status stay until the pass
                     }
-                    let t = &mut st.timing[pane];
-                    if t.first_batch.is_none() {
-                        t.first_batch = Some(Instant::now());
-                        if let Some(r) = t.requested {
+                    let id = t.id;
+                    if t.timing.first_batch.is_none() {
+                        t.timing.first_batch = Some(Instant::now());
+                        if let Some(r) = t.timing.requested {
                             eprintln!("[enum] pane={pane} first batch after {:.1} ms", perf::elapsed_ms(r));
                         }
                     }
-                    set_status(&app, pane, status_text(model, t, &st.notes[pane]));
+                    if st.is_active(pane, id) {
+                        update_status(st, &app, pane);
+                    }
                 }
-                Msg::Done { pane, generation, total, elapsed, error } => {
-                    let model = &st.panes[pane];
-                    if model.generation.get() != generation {
-                        continue;
+                Msg::Done { pane, generation, total, elapsed, error, free } => {
+                    let Some(t) = st.by_generation(pane, generation) else { continue };
+                    let wall = t.timing.requested.map(perf::elapsed_ms).unwrap_or(0.0);
+                    if t.model.is_refreshing() {
+                        t.model.finish_refresh();
+                        t.keep_scroll = true;
                     }
-                    let wall = st.timing[pane].requested.map(perf::elapsed_ms).unwrap_or(0.0);
-                    if model.is_refreshing() {
-                        model.finish_refresh();
-                        st.keep_scroll[pane] = true;
-                    }
+                    t.free = free;
+                    let id = t.id;
                     match error {
-                        Some(e) => {
-                            st.timing[pane].error = Some(e);
-                            set_status(&app, pane, status_text(model, &st.timing[pane], &st.notes[pane]));
-                        }
+                        Some(e) => t.timing.error = Some(e),
                         None => {
                             eprintln!(
                                 "[enum] pane={pane} done: {total} entries, worker {:.1} ms, request-to-done {wall:.1} ms",
                                 elapsed.as_secs_f64() * 1e3
                             );
-                            st.timing[pane].done_ms = Some(wall);
-                            set_status(&app, pane, status_text(model, &st.timing[pane], &st.notes[pane]));
-                            // Apply the pane's current filter and sort once the listing is complete.
-                            request_pass(st, pane);
+                            t.timing.done_ms = Some(wall);
                         }
+                    }
+                    if st.is_active(pane, id) {
+                        update_status(st, &app, pane);
+                    }
+                    if st.find(pane, id).is_some_and(|t| t.timing.error.is_none()) {
+                        // Apply the tab's current filter and sort once the listing is complete.
+                        request_pass(st, pane, id);
                     }
                 }
             }
@@ -244,25 +344,31 @@ fn drain() {
     });
 }
 
-/// Filter and sort on a worker over a snapshot of the full listing; swap the shown Vec in one
-/// step when it returns. Uses the pane's current sort column, direction and hidden filter.
-fn request_pass(st: &mut State, pane: usize) {
+/// Filter and sort on a worker over a snapshot of the tab's full listing; swap the shown Vec in
+/// one step when it returns. Uses the tab's current sort column, direction and hidden filter.
+/// The tab may be in the background by then: the result lands in its model all the same.
+fn request_pass(st: &mut State, pane: usize, id: u64) {
     let Some(app) = st.app.upgrade() else { return };
-    let model = &st.panes[pane];
+    let active = st.is_active(pane, id);
+    let Some(t) = st.find(pane, id) else { return };
+    let model = t.model.clone();
     let (col, asc, show_hidden) = (model.sort_col.get(), model.sort_asc.get(), model.show_hidden.get());
-    if pane == 0 {
-        app.set_left_sort_col(col as i32);
-        app.set_left_sort_asc(asc);
-    } else {
-        app.set_right_sort_col(col as i32);
-        app.set_right_sort_asc(asc);
+    if active {
+        if pane == 0 {
+            app.set_left_sort_col(col as i32);
+            app.set_left_sort_asc(asc);
+        } else {
+            app.set_right_sort_col(col as i32);
+            app.set_right_sort_asc(asc);
+        }
     }
     let generation = model.generation.get();
     let pass = model.pass.get() + 1;
     model.pass.set(pass);
     let snapshot = model.snapshot_all();
-    let mut restore = model.capture(current_row(&app, pane));
-    if let Some(name) = st.focus_name[pane].take() {
+    let cursor = if active { current_row(&app, pane) } else { t.cursor };
+    let mut restore = model.capture(cursor);
+    if let Some(name) = t.focus_name.take() {
         restore.cursor = Some(name.clone());
         restore.selected = vec![name];
     }
@@ -270,39 +376,57 @@ fn request_pass(st: &mut State, pane: usize) {
     let t0 = Instant::now();
     std::thread::spawn(move || {
         let total = snapshot.len();
-        let mut out = filter_sort(snapshot, show_hidden, col, asc, &restore);
+        let out = filter_sort(snapshot, show_hidden, col, asc, &restore);
         let pass_ms = perf::elapsed_ms(t0);
         let _ = slint::invoke_from_event_loop(move || {
-            with_state(|st| {
-                let Some(app) = st.app.upgrade() else { return };
-                let model = &st.panes[pane];
-                if model.generation.get() != generation || model.pass.get() != pass || model.total() != total {
-                    return; // listing or request changed underneath us; a newer pass or Done follows
-                }
-                if model.sel_version.get() != sel_version {
-                    // The user changed the selection while the pass ran; carry the current one.
-                    out.restore(&model.capture(current_row(&app, pane)));
-                }
-                eprintln!(
-                    "[sort] pane={pane} {} of {total} entries by {col:?} asc={asc} hidden={} cursor={:?} selected={} in {pass_ms:.1} ms",
-                    out.shown.len(),
-                    out.hidden,
-                    out.cursor,
-                    out.selection.len()
-                );
-                let scroll = std::mem::take(&mut st.keep_scroll[pane]).then(|| app.invoke_get_scroll(pane as i32));
-                let cursor = model.replace(out);
-                set_current_row(&app, pane, cursor);
-                if let (Some(y), Some(_)) = (scroll, cursor) {
-                    app.invoke_set_scroll(pane as i32, y);
-                    eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
-                }
-                set_status(&app, pane, status_text(model, &st.timing[pane], &st.notes[pane]));
-                st.strip_dirty[pane] = true;
-                resolve_view(st, &app, pane);
-            });
+            with_state(|st| land_pass(st, pane, id, (generation, pass, total, sel_version), out, (col, asc, pass_ms)));
         });
     });
+}
+
+/// A pass came back: swap it into its tab's model if nothing changed underneath it.
+fn land_pass(
+    st: &mut State,
+    pane: usize,
+    id: u64,
+    (generation, pass, total, sel_version): (u64, u64, usize, u64),
+    mut out: model::PassOutput,
+    (col, asc, pass_ms): (SortCol, bool, f64),
+) {
+    let Some(app) = st.app.upgrade() else { return };
+    let active = st.is_active(pane, id);
+    let Some(t) = st.find(pane, id) else { return }; // the tab was closed
+    let model = t.model.clone();
+    if model.generation.get() != generation || model.pass.get() != pass || model.total() != total {
+        return; // listing or request changed underneath us; a newer pass or Done follows
+    }
+    let cursor_now = if active { current_row(&app, pane) } else { t.cursor };
+    if model.sel_version.get() != sel_version {
+        // The user changed the selection while the pass ran; carry the current one.
+        out.restore(&model.capture(cursor_now));
+    }
+    eprintln!(
+        "[sort] pane={pane} {} of {total} entries by {col:?} asc={asc} hidden={} cursor={:?} selected={} in {pass_ms:.1} ms",
+        out.shown.len(),
+        out.hidden,
+        out.cursor,
+        out.selection.len()
+    );
+    let keep = std::mem::take(&mut t.keep_scroll);
+    let scroll = (keep && active).then(|| app.invoke_get_scroll(pane as i32));
+    let cursor = model.replace(out);
+    if !active {
+        t.cursor = cursor.map_or(-1, |c| c as i32);
+        return;
+    }
+    set_current_row(&app, pane, cursor);
+    if let (Some(y), Some(_)) = (scroll, cursor) {
+        app.invoke_set_scroll(pane as i32, y);
+        eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
+    }
+    update_status(st, &app, pane);
+    st.strip_dirty[pane] = true;
+    resolve_view(st, &app, pane);
 }
 
 /// Fetch or apply icons for the rows on screen (plus a margin) in one pane, then recompose
@@ -311,7 +435,8 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     if pane == 1 && !app.get_split() {
         return;
     }
-    let model = &st.panes[pane];
+    let t = st.panes[pane].active();
+    let model = t.model.clone();
     let (y, h) = st.view[pane];
     let Some(visible) = icons::visible_range(y, h, model.len()) else {
         hide_strip(st, app, pane);
@@ -322,7 +447,7 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let geom = icons::StripGeom::new(app.window().scale_factor());
     let size_px = geom.icon_px;
     let generation = model.generation.get();
-    let (folder, tx) = (&st.paths[pane], &st.icon_tx);
+    let (folder, tx) = (&t.path, &st.icon_tx);
     let mut sent = 0;
     let changed = model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, |e| {
         let path = if e.kind == Kind::Drive { PathBuf::from(e.name.as_str()) } else { folder.join(e.name.as_str()) };
@@ -346,7 +471,7 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
 /// Compose the pane's icon strip for the visible rows plus the strip margin and hand it to
 /// the pane, which places it at its first row.
 fn compose_strip(st: &mut State, app: &App, pane: usize, visible: (usize, usize), geom: &icons::StripGeom) {
-    let model = &st.panes[pane];
+    let model = st.model(pane);
     let (first, last) = icons::strip_range(visible, model.len());
     let t0 = Instant::now();
     let bufs: Vec<_> = {
@@ -450,11 +575,11 @@ fn main_hwnd(st: &mut State, app: &App) -> isize {
     st.hwnd
 }
 
-/// Show `text` as the pane's note now.
+/// Show `text` as the active tab's note now.
 fn note(st: &mut State, app: &App, pane: usize, text: String) {
     eprintln!("[fileops] pane={pane} note: {text}");
-    st.notes[pane] = text;
-    set_status(app, pane, status_text(&st.panes[pane], &st.timing[pane], &st.notes[pane]));
+    st.tab_mut(pane).note = text;
+    update_status(st, app, pane);
 }
 
 /// `p` is `root` or lies under it (case-insensitive, whole components).
@@ -465,7 +590,7 @@ fn inside(p: &Path, root: &Path) -> bool {
 
 /// Full paths of the selection (or the cursor row) in a pane, or a note saying why there are none.
 fn sources(st: &mut State, app: &App, pane: usize) -> Option<(Vec<PathBuf>, Vec<SharedString>)> {
-    let targets = st.panes[pane].targets(current_row(app, pane));
+    let targets = st.model(pane).targets(current_row(app, pane));
     if targets.is_empty() {
         note(st, app, pane, "nothing selected".into());
         return None;
@@ -474,11 +599,12 @@ fn sources(st: &mut State, app: &App, pane: usize) -> Option<(Vec<PathBuf>, Vec<
         note(st, app, pane, "drives cannot be copied, moved, renamed or deleted".into());
         return None;
     }
-    let folder = &st.paths[pane];
+    let folder = &st.tab(pane).path;
     Some((targets.iter().map(|e| folder.join(e.name.as_str())).collect(), targets.into_iter().map(|e| e.name).collect()))
 }
 
-/// Queue a job on the worker; the source pane shows its progress note. Returns the job id.
+/// Queue a job on the worker; the source pane's active tab shows its progress note. Returns the
+/// job id.
 fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
     if let Some(roots) = &st.soak {
         if let Some(p) = job.paths().into_iter().find(|p| !roots.iter().any(|r| inside(p, r))) {
@@ -497,7 +623,8 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
         note(st, app, pane, "the file operation worker has stopped".into());
         return None;
     }
-    st.jobs.insert(id, pane);
+    let tab = st.tab(pane).id;
+    st.jobs.insert(id, (pane, tab));
     note(st, app, pane, running);
     Some(id)
 }
@@ -512,12 +639,12 @@ fn command(pane: usize, cmd: &str) {
     }
     let edit = with_state(|st| {
         let app = st.app.upgrade()?;
-        let folder = st.paths[pane].clone();
+        let folder = st.tab(pane).path.clone();
         let at_drives = is_this_pc(&folder.to_string_lossy());
         match cmd {
             "newfolder" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
             "newfolder" => return Some((app, 2, SharedString::from("New folder"))),
-            "rename" => match usize::try_from(current_row(&app, pane)).ok().and_then(|r| st.panes[pane].entry(r)) {
+            "rename" => match usize::try_from(current_row(&app, pane)).ok().and_then(|r| st.model(pane).entry(r)) {
                 None => note(st, &app, pane, "nothing to rename".into()),
                 Some(e) if e.kind == Kind::Drive => note(st, &app, pane, "drives cannot be renamed here".into()),
                 Some(e) => return Some((app, 1, e.name)),
@@ -527,7 +654,7 @@ fn command(pane: usize, cmd: &str) {
                     note(st, &app, pane, "open the second pane (F3) first".into());
                     return None;
                 }
-                let dest = st.paths[1 - pane].clone();
+                let dest = st.tab(1 - pane).path.clone();
                 if is_this_pc(&dest.to_string_lossy()) {
                     note(st, &app, pane, "the other pane lists drives; open a folder there first".into());
                     return None;
@@ -563,7 +690,7 @@ fn edit_commit(pane: usize, mode: i32, original: &str, typed: &str) {
             note(st, &app, pane, why.into());
             return;
         }
-        let folder = st.paths[pane].clone();
+        let folder = st.tab(pane).path.clone();
         let job = match mode {
             1 if name == original => return,
             1 => Job::Rename { source: folder.join(original), new_name: name.into() },
@@ -572,6 +699,15 @@ fn edit_commit(pane: usize, mode: i32, original: &str, typed: &str) {
         };
         submit(st, &app, pane, job);
     });
+}
+
+/// Clear the cut marks in every tab (the clipboard no longer holds a cut).
+fn clear_cuts(st: &State) {
+    for tabs in &st.panes {
+        for t in tabs.iter() {
+            t.model.set_cut(Vec::new());
+        }
+    }
 }
 
 /// Ctrl+C / Ctrl+X: the selection onto the real clipboard, as Explorer writes it. A cut dims
@@ -594,8 +730,9 @@ fn clipboard_put(pane: usize, cut: bool) {
                 let n = paths.len();
                 let what = if cut { "Cut" } else { "Copied" };
                 note(st, &app, pane, format!("{what} {n} item{} to the clipboard", if n == 1 { "" } else { "s" }));
-                for p in 0..2 {
-                    st.panes[p].set_cut(if cut && p == pane { names.clone() } else { Vec::new() });
+                clear_cuts(st);
+                if cut {
+                    st.model(pane).set_cut(names);
                 }
             }
             Err(e) => note(st, &app, pane, format!("clipboard: {e}")),
@@ -608,7 +745,7 @@ fn clipboard_put(pane: usize, cut: bool) {
 fn clipboard_paste(pane: usize) {
     let Some(hwnd) = with_state(|st| {
         let app = st.app.upgrade()?;
-        if is_this_pc(&st.paths[pane].to_string_lossy()) {
+        if is_this_pc(&st.tab(pane).path.to_string_lossy()) {
             note(st, &app, pane, "This PC lists drives; open a folder first".into());
             return None;
         }
@@ -624,7 +761,7 @@ fn clipboard_paste(pane: usize) {
             Ok(_) => return note(st, &app, pane, "no files on the clipboard".into()),
             Err(e) => return note(st, &app, pane, format!("clipboard: {e}")),
         };
-        let dest = st.paths[pane].clone();
+        let dest = st.tab(pane).path.clone();
         if effect == clipboard::EFFECT_MOVE {
             if sources.iter().all(|s| s.parent().is_some_and(|d| same_dir(d, &dest))) {
                 return note(st, &app, pane, "source and destination are the same folder".into());
@@ -636,31 +773,46 @@ fn clipboard_paste(pane: usize) {
     });
 }
 
+/// Every tab not on screen goes stale: it refreshes when it comes to the front. After a file
+/// operation or shell command, any folder may have changed.
+fn mark_background_stale(st: &mut State) {
+    for tabs in st.panes.iter_mut() {
+        let active = tabs.active_index();
+        for (i, t) in tabs.iter_mut().enumerate() {
+            if i != active {
+                t.stale = true;
+            }
+        }
+    }
+}
+
 /// A job finished (on the UI thread, from the worker's wake-up): show the result on the source
-/// pane and refresh both panes. Moved and deleted rows drop out of the selection because the
-/// refresh restores it by name; a copy keeps it.
+/// tab and refresh both panes' active tabs (the others refresh when they come to the front).
+/// Moved and deleted rows drop out of the selection because the refresh restores it by name; a
+/// copy keeps it.
 fn job_done(d: fileops::Done) {
     let mut clear_clipboard = None;
     let panes = with_state(|st| {
-        let pane = st.jobs.remove(&d.id).unwrap_or(0);
+        let (pane, tab) = st.jobs.remove(&d.id).unwrap_or((0, 0));
         let text = fileops::status_text(&d.job, &d.outcome);
-        eprintln!("[fileops] done id={} pane={pane} {:?}: {text}", d.id, d.outcome);
-        if d.outcome == Outcome::Done {
-            match &d.job {
-                Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } => st.focus_name[pane] = Some(n.as_str().into()),
-                _ => {}
+        eprintln!("[fileops] done id={} pane={pane} tab={tab} {:?}: {text}", d.id, d.outcome);
+        if let Some(t) = st.find(pane, tab) {
+            if d.outcome == Outcome::Done {
+                match &d.job {
+                    Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } => t.focus_name = Some(n.as_str().into()),
+                    _ => {}
+                }
             }
+            t.note = text;
         }
         if st.paste_move == Some(d.id) {
             st.paste_move = None;
             if d.outcome == Outcome::Done {
                 clear_clipboard = Some(st.hwnd);
-                for m in &st.panes {
-                    m.set_cut(Vec::new());
-                }
+                clear_cuts(st);
             }
         }
-        st.notes[pane] = text;
+        mark_background_stale(st);
         let split = st.app.upgrade().is_some_and(|a| a.get_split());
         if split { vec![0, 1] } else { vec![0] }
     });
@@ -700,9 +852,9 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
             note(st, &app, pane, "context menu: the window has no handle yet".into());
             return None;
         }
-        let folder = st.paths[pane].clone();
+        let folder = st.tab(pane).path.clone();
         let this_pc = is_this_pc(&folder.to_string_lossy());
-        let targets = if row >= 0 { st.panes[pane].targets(current_row(&app, pane)) } else { Vec::new() };
+        let targets = if row >= 0 { st.model(pane).targets(current_row(&app, pane)) } else { Vec::new() };
         let names: Vec<String> = targets.iter().map(|e| e.name.to_string()).collect();
         let (own, dir, paths) = match targets.as_slice() {
             [] if this_pc => (Vec::new(), folder.clone(), Vec::new()),
@@ -742,7 +894,10 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
                 });
             }
             // The shell may have created, renamed or deleted entries in either folder.
-            let split = with_state(|st| st.app.upgrade().is_some_and(|a| a.get_split()));
+            let split = with_state(|st| {
+                mark_background_stale(st);
+                st.app.upgrade().is_some_and(|a| a.get_split())
+            });
             refresh(0);
             if split {
                 refresh(1);
@@ -754,7 +909,7 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
 /// Shift+F10 or the Menu key in a pane's list: the menu for the cursor row's selection, under
 /// that row (already scrolled into view), or the background menu when there is no cursor row.
 fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, visible_h: f32) {
-    let len = with_state(|st| st.panes[pane].len());
+    let len = with_state(|st| st.model(pane).len());
     match usize::try_from(row).ok().filter(|&r| r < len) {
         Some(r) => {
             let (x, y) = shellmenu::row_menu_point(list_x, list_y, content_y, visible_h, r);
@@ -794,9 +949,7 @@ fn own_item(pane: usize, item: shellmenu::OwnItem, ctx: MenuContext) {
                 match res {
                     Ok(()) => {
                         // The text replaced any cut on the clipboard.
-                        for m in &st.panes {
-                            m.set_cut(Vec::new());
-                        }
+                        clear_cuts(st);
                         let n = ctx.paths.len();
                         note(st, &app, pane, format!("Copied {n} path{}", if n == 1 { "" } else { "s" }));
                     }
@@ -807,18 +960,32 @@ fn own_item(pane: usize, item: shellmenu::OwnItem, ctx: MenuContext) {
     }
 }
 
-/// Enter the row's directory (Return, or a double-click that was not the tail of a drag).
+/// Return, or a double-click that was not the tail of a drag: enter the row's directory (also a
+/// reparse directory or a drive), or open the file with its default program.
 fn open_row(pane: usize, row: i32) {
     let target = with_state(|st| {
-        let e = st.panes[pane].entry(usize::try_from(row).ok()?)?;
-        if !e.is_dir() {
-            return None;
-        }
+        let e = st.model(pane).entry(usize::try_from(row).ok()?)?;
         let app = st.app.upgrade()?;
-        Some(Path::new(pane_path(&app, pane).as_str()).join(e.name.as_str()))
+        let folder = st.tab(pane).path.clone();
+        let hwnd = main_hwnd(st, &app);
+        Some((e.is_dir(), folder.join(e.name.as_str()), folder, hwnd))
     });
-    if let Some(p) = target {
-        navigate(pane, p);
+    match target {
+        Some((true, p, _, _)) => navigate(pane, p),
+        Some((false, file, folder, hwnd)) => {
+            // No state borrow across ShellExecuteExW: the shell can show a dialog from inside it.
+            let res = shellmenu::open_item(hwnd, &file, &folder);
+            eprintln!("[open] pane={pane} {}: {res:?}", file.display());
+            if let Err(code) = res {
+                with_state(|st| {
+                    if let Some(app) = st.app.upgrade() {
+                        let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        note(st, &app, pane, format!("could not open {name}: {}", std::io::Error::from_raw_os_error(code as i32)));
+                    }
+                });
+            }
+        }
+        None => {}
     }
 }
 
@@ -832,17 +999,23 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
     let Ok(row) = usize::try_from(row) else { return };
     match what {
         0 => with_state(|st| {
-            let model = &st.panes[pane];
+            let model = st.panes[pane].active().model.clone();
             let selected = model.entry(row).is_some_and(|e| e.selected);
             if let Some(op) = st.gesture[pane].press(row, selected, ctrl, shift) {
                 model.select(op, row);
-                log_select(model, pane, op, row);
+                log_select(&model, pane, op, row);
+                if let Some(app) = st.app.upgrade() {
+                    update_status(st, &app, pane);
+                }
             }
         }),
         1 => with_state(|st| {
             if let Some((r, op)) = st.gesture[pane].release() {
-                st.panes[pane].select(op, r);
-                log_select(&st.panes[pane], pane, op, r);
+                st.model(pane).select(op, r);
+                log_select(st.model(pane), pane, op, r);
+                if let Some(app) = st.app.upgrade() {
+                    update_status(st, &app, pane);
+                }
             }
         }),
         2 => drag_start(pane, row),
@@ -875,8 +1048,8 @@ fn drag_start(pane: usize, row: usize) {
         if !st.gesture[pane].drag(row) {
             return None;
         }
-        let folder = st.paths[pane].clone();
-        let targets = st.panes[pane].targets(current_row(&app, pane));
+        let folder = st.tab(pane).path.clone();
+        let targets = st.model(pane).targets(current_row(&app, pane));
         if targets.is_empty() || targets.iter().any(|e| e.kind == Kind::Drive) {
             note(st, &app, pane, "drives cannot be dragged".into());
             st.gesture[pane].drag_ended();
@@ -961,6 +1134,19 @@ fn register_dnd() {
     eprintln!("[dnd] drag threshold {cx} x {cy} px (scale {scale})");
 }
 
+/// The window's layout as `dnd::hit` and the driver's geometry need it (logical px), read from
+/// the window and its properties, so it needs no app-state borrow.
+pub fn window_layout(app: &App) -> dnd::Layout {
+    let size = app.window().size().to_logical(app.window().scale_factor());
+    dnd::Layout {
+        width: size.width,
+        height: size.height,
+        split: app.get_split(),
+        ratio: app.get_split_ratio(),
+        tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
+    }
+}
+
 /// For the drop target: where a drop at client point (`px`, `py`, physical px) goes. A short
 /// borrow of the state, never held past this function; None off the panes, over the drive
 /// list's empty space, or if the state is busy (not expected: no borrow is held across a drag
@@ -974,17 +1160,16 @@ pub fn drop_spot(px: i32, py: i32) -> Option<dnd::DropSpot> {
         let st = guard.as_ref()?;
         let app = st.app.upgrade()?;
         let scale = app.window().scale_factor();
-        let size = app.window().size().to_logical(scale);
-        let layout = dnd::Layout { width: size.width, height: size.height, split: app.get_split(), ratio: app.get_split_ratio() };
+        let layout = window_layout(&app);
         let content_y = [app.invoke_get_scroll(0), app.invoke_get_scroll(1)];
-        let len = [st.panes[0].len(), st.panes[1].len()];
+        let len = [st.model(0).len(), st.model(1).len()];
         let (pane, row) = match dnd::hit(&layout, px as f32 / scale, py as f32 / scale, content_y, len) {
             dnd::Spot::Outside => return None,
             dnd::Spot::Pane(p) => (p, None),
             dnd::Spot::Row(p, r) => (p, Some(r)),
         };
-        let folder = &st.paths[pane];
-        let entry = row.and_then(|r| st.panes[pane].entry(r));
+        let folder = &st.tab(pane).path;
+        let entry = row.and_then(|r| st.model(pane).entry(r));
         let this_pc = is_this_pc(&folder.to_string_lossy());
         let (dest, on_row) = dnd::drop_folder(folder, this_pc, entry.as_ref().map(|e| (e.name.as_str(), e.is_dir())))?;
         let row = if on_row { row.map_or(-1, |r| r as i32) } else { -1 };
@@ -1022,10 +1207,10 @@ pub fn state_is_free() -> bool {
     STATE.with(|s| s.try_borrow_mut().is_ok())
 }
 
-/// For the scripted driver: a job is in flight or a pane is still re-enumerating.
+/// For the scripted driver: a job is in flight or a tab is still re-enumerating.
 pub fn ops_busy() -> bool {
     STATE.with(|s| match s.try_borrow() {
-        Ok(g) => g.as_ref().is_some_and(|st| !st.jobs.is_empty() || st.panes.iter().any(|m| m.is_refreshing())),
+        Ok(g) => g.as_ref().is_some_and(|st| !st.jobs.is_empty() || st.panes.iter().any(|p| p.iter().any(|t| t.model.is_refreshing()))),
         Err(_) => true,
     })
 }
@@ -1033,7 +1218,7 @@ pub fn ops_busy() -> bool {
 fn on_frame_rendered() {
     with_state(|st| {
         for pane in 0..2 {
-            let t = &mut st.timing[pane];
+            let t = &mut st.panes[pane].active_mut().timing;
             if t.first_batch.is_some() && !t.first_frame_reported {
                 t.first_frame_reported = true;
                 if let Some(r) = t.requested {
@@ -1042,7 +1227,7 @@ fn on_frame_rendered() {
             }
         }
         if let Some(s) = st.split_requested {
-            if st.panes[1].len() > 0 {
+            if st.model(1).len() > 0 {
                 st.split_requested = None;
                 eprintln!("[split] second pane rendered with rows {:.1} ms after F3", perf::elapsed_ms(s));
             }
@@ -1059,18 +1244,154 @@ fn set_current_row(app: &App, pane: usize, row: Option<usize>) {
     if pane == 0 { app.set_left_current_row(row) } else { app.set_right_current_row(row) }
 }
 
-/// The path shown in a pane's path bar.
-fn pane_path(app: &App, pane: usize) -> slint::SharedString {
-    if pane == 0 { app.get_left_path() } else { app.get_right_path() }
+/// Put the pane's active tab on screen: its rows (the list re-points at its model), folder,
+/// breadcrumb, sort indicators, cursor, scroll, status and icons.
+fn show_tab(st: &mut State, app: &App, pane: usize) {
+    let t = st.tab(pane);
+    let (model, cursor, scroll) = (t.model.clone(), t.cursor, t.scroll);
+    let rows = ModelRc::from(model.clone());
+    if pane == 0 { app.set_left_rows(rows) } else { app.set_right_rows(rows) }
+    let (col, asc) = (model.sort_col.get() as i32, model.sort_asc.get());
+    if pane == 0 {
+        app.set_left_sort_col(col);
+        app.set_left_sort_asc(asc);
+    } else {
+        app.set_right_sort_col(col);
+        app.set_right_sort_asc(asc);
+    }
+    set_path(st, app, pane);
+    set_current_row(app, pane, usize::try_from(cursor).ok());
+    app.invoke_set_scroll(pane as i32, scroll);
+    st.view[pane].0 = app.invoke_get_scroll(pane as i32);
+    st.icon_gens[pane].store(model.generation.get(), Ordering::Relaxed);
+    st.gesture[pane] = dnd::Gesture::Idle;
+    hide_strip(st, app, pane);
+    st.strip_dirty[pane] = true;
+    update_tabs(st, pane);
+    update_status(st, app, pane);
+    resolve_view(st, app, pane);
+}
+
+/// Remember the active tab's cursor and scroll before another tab takes the pane.
+fn save_view(st: &mut State, app: &App, pane: usize) {
+    let (cursor, scroll) = (current_row(app, pane), app.invoke_get_scroll(pane as i32));
+    let t = st.tab_mut(pane);
+    t.cursor = cursor;
+    t.scroll = scroll;
+}
+
+/// Switch the pane to another tab (`pick` changes the active index); a stale tab refreshes.
+fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
+    let stale = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let before = st.panes[pane].active_index();
+        save_view(st, &app, pane);
+        pick(&mut st.panes[pane]);
+        if st.panes[pane].active_index() == before {
+            return None;
+        }
+        show_tab(st, &app, pane);
+        let t = st.tab(pane);
+        eprintln!(
+            "[tab] pane={pane} switched to {} of {} (id {}, {}), cursor {} scroll {:.0}",
+            st.panes[pane].active_index() + 1,
+            st.panes[pane].len(),
+            t.id,
+            t.path.display(),
+            current_row(&app, pane),
+            app.invoke_get_scroll(pane as i32)
+        );
+        Some(t.stale)
+    });
+    if stale == Some(true) {
+        refresh(pane);
+    }
+}
+
+/// Ctrl+T: a new tab after the active one, on the same folder (or `path`), sorted and filtered
+/// like it.
+fn open_tab(pane: usize, path: Option<PathBuf>) {
+    let path = with_state(|st| {
+        let app = st.app.upgrade()?;
+        save_view(st, &app, pane);
+        let cur = st.tab(pane);
+        let (col, asc, hidden) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get());
+        let path = path.unwrap_or_else(|| cur.path.clone());
+        let t = st.new_tab(path.clone());
+        t.model.sort_col.set(col);
+        t.model.sort_asc.set(asc);
+        t.model.show_hidden.set(hidden);
+        let id = t.id;
+        st.panes[pane].open(t);
+        show_tab(st, &app, pane);
+        eprintln!("[tab] pane={pane} opened tab {} of {} (id {id}) on {}", st.panes[pane].active_index() + 1, st.panes[pane].len(), path.display());
+        Some(path)
+    });
+    if let Some(p) = path {
+        navigate(pane, p);
+    }
+}
+
+/// Ctrl+W, a tab's close glyph or a middle-click: close tab `i`; never the pane's last one.
+fn close_tab(pane: usize, i: usize) {
+    let stale = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let was_active = st.panes[pane].active_index() == i;
+        if was_active {
+            save_view(st, &app, pane);
+        }
+        let Some(closed) = st.panes[pane].close(i) else {
+            eprintln!("[tab] pane={pane} close tab {}: the last tab stays", i + 1);
+            return None;
+        };
+        // Late batches and passes for it find no tab with its generation or id, and are dropped.
+        closed.model.generation.set(0);
+        eprintln!("[tab] pane={pane} closed tab {} (id {}), {} left", i + 1, closed.id, st.panes[pane].len());
+        if was_active {
+            show_tab(st, &app, pane);
+            Some(st.tab(pane).stale)
+        } else {
+            update_tabs(st, pane);
+            Some(false)
+        }
+    });
+    if stale == Some(true) {
+        refresh(pane);
+    }
+}
+
+/// Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+1..9 on the active pane.
+fn tab_key(pane: usize, what: &str) {
+    match what {
+        "new" => open_tab(pane, None),
+        "close" => {
+            let i = with_state(|st| st.panes[pane].active_index());
+            close_tab(pane, i);
+        }
+        "next" => switch_tab(pane, |t| t.next()),
+        "prev" => switch_tab(pane, |t| t.prev()),
+        n => {
+            if let Ok(n @ 1..=9) = n.parse::<usize>() {
+                switch_tab(pane, |t| {
+                    t.select(n - 1);
+                });
+            }
+        }
+    }
+}
+
+/// A breadcrumb button: navigate the active tab to the path up to that component.
+fn crumb_clicked(pane: usize, i: usize) {
+    let target = with_state(|st| pathbar::crumbs(&st.tab(pane).path.to_string_lossy()).into_iter().nth(i).map(|c| c.target));
+    if let Some(p) = target {
+        eprintln!("[crumb] pane={pane} index {i}: {}", p.display());
+        navigate(pane, p);
+    }
 }
 
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
     let icons = Rc::new(RefCell::new(IconTable::default()));
-    let panes: [Rc<PaneModel>; 2] =
-        [Rc::new(PaneModel::with_icons(icons.clone())), Rc::new(PaneModel::with_icons(icons.clone()))];
-    app.set_left_rows(ModelRc::from(panes[0].clone()));
-    app.set_right_rows(ModelRc::from(panes[1].clone()));
     let (tx, rx) = unbounded();
     let (icon_tx, icon_requests) = unbounded();
     let (icon_replies, icon_rx) = unbounded();
@@ -1088,15 +1409,23 @@ fn main() -> Result<(), slint::PlatformError> {
         let roots: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
         eprintln!("[fileops] TWINFM_SOAK=1: no confirmations, paths confined to {}", roots.join(" or "));
     }
+    let tab_models = [Rc::new(VecModel::default()), Rc::new(VecModel::default())];
+    let crumb_models = [Rc::new(VecModel::default()), Rc::new(VecModel::default())];
+    app.set_left_tabs(ModelRc::from(tab_models[0].clone()));
+    app.set_right_tabs(ModelRc::from(tab_models[1].clone()));
+    app.set_left_crumbs(ModelRc::from(crumb_models[0].clone()));
+    app.set_right_crumbs(ModelRc::from(crumb_models[1].clone()));
+    let panes = [Tabs::new(blank_tab(1, &icons)), Tabs::new(blank_tab(2, &icons))];
+    app.set_left_rows(ModelRc::from(panes[0].active().model.clone()));
+    app.set_right_rows(ModelRc::from(panes[1].active().model.clone()));
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
             app: app.as_weak(),
             panes,
+            next_tab: 2,
+            next_gen: 0,
             rx,
             tx,
-            timing: Default::default(),
-            paths: Default::default(),
-            keep_scroll: [false; 2],
             split_requested: None,
             busy_timer: slint::Timer::default(),
             icons,
@@ -1111,13 +1440,14 @@ fn main() -> Result<(), slint::PlatformError> {
             next_job: 0,
             jobs: HashMap::new(),
             paste_move: None,
-            notes: Default::default(),
-            focus_name: Default::default(),
             soak,
             strip: [None; 2],
             strip_dirty: [false; 2],
             gesture: Default::default(),
             dnd_timer: slint::Timer::default(),
+            tab_models,
+            crumb_models,
+            perf_status: std::env::var("TWINFM_PERF_STATUS").as_deref() == Ok("1"),
         })
     });
 
@@ -1143,13 +1473,12 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_row_gesture(|pane, row, what, ctrl, shift| row_gesture(pane as usize, row, what, ctrl, shift));
     app.on_go_up(|pane| {
         let target = with_state(|st| {
-            let app = st.app.upgrade()?;
-            let base = pane_path(&app, pane as usize);
-            if is_this_pc(&base) {
+            let base = st.tab(pane as usize).path.clone();
+            if is_this_pc(&base.to_string_lossy()) {
                 return None;
             }
             // A drive root (or UNC share root) has no parent: go up to the drive list.
-            Some(Path::new(base.as_str()).parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf()))
+            Some(base.parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf()))
         });
         if let Some(p) = target {
             navigate(pane as usize, p);
@@ -1157,12 +1486,13 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_sort_by(|pane, col| {
         with_state(|st| {
-            let model = &st.panes[pane as usize];
+            let model = st.model(pane as usize);
             let col = SortCol::from_i32(col);
             let asc = if model.sort_col.get() == col { !model.sort_asc.get() } else { true };
             model.sort_col.set(col);
             model.sort_asc.set(asc);
-            request_pass(st, pane as usize);
+            let id = st.tab(pane as usize).id;
+            request_pass(st, pane as usize, id);
         });
     });
     app.on_select(|pane, op, row| {
@@ -1171,9 +1501,12 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         }
         with_state(|st| {
-            let model = &st.panes[pane as usize];
+            let model = st.model(pane as usize);
             model.select(op, row.max(0) as usize);
             eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
+            if let Some(app) = st.app.upgrade() {
+                update_status(st, &app, pane as usize);
+            }
         });
     });
     app.on_refresh(|pane| refresh(pane as usize));
@@ -1181,12 +1514,31 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_context_key(|pane, row, lx, ly, cy, vh| context_key(pane as usize, row, lx, ly, cy, vh));
     app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
     app.on_edit_commit(|pane, mode, original, typed| edit_commit(pane as usize, mode, original.as_str(), typed.as_str()));
+    app.on_tab_select(|pane, i| {
+        if let Ok(i) = usize::try_from(i) {
+            switch_tab(pane as usize, |t| {
+                t.select(i);
+            });
+        }
+    });
+    app.on_tab_close(|pane, i| {
+        if let Ok(i) = usize::try_from(i) {
+            close_tab(pane as usize, i);
+        }
+    });
+    app.on_tab_key(|pane, what| tab_key(pane as usize, what.as_str()));
+    app.on_crumb_clicked(|pane, i| {
+        if let Ok(i) = usize::try_from(i) {
+            crumb_clicked(pane as usize, i);
+        }
+    });
     app.on_toggle_hidden(|pane| {
         with_state(|st| {
-            let model = &st.panes[pane as usize];
+            let model = st.model(pane as usize);
             model.show_hidden.set(!model.show_hidden.get());
             eprintln!("[hidden] pane={pane} show_hidden={}", model.show_hidden.get());
-            request_pass(st, pane as usize);
+            let id = st.tab(pane as usize).id;
+            request_pass(st, pane as usize, id);
         });
     });
     app.on_toggle_split({
@@ -1203,7 +1555,8 @@ fn main() -> Result<(), slint::PlatformError> {
                         busy.finish();
                     })
                 });
-                navigate(1, PathBuf::from(app.get_left_path().as_str()));
+                let left = with_state(|st| st.tab(0).path.clone());
+                navigate(1, left);
                 app.invoke_focus_pane(1);
             } else {
                 app.invoke_focus_pane(0);
@@ -1212,7 +1565,6 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let start = std::env::args().nth(1).unwrap_or_else(|| "C:\\".to_string());
-    app.set_right_path(start.as_str().into());
     navigate(0, PathBuf::from(start));
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);

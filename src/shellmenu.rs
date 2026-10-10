@@ -256,6 +256,37 @@ pub fn open_terminal(folder: &Path) -> Result<String, String> {
     Err(format!("no terminal could be started (error {last})"))
 }
 
+/// Open a file the way Explorer's double-click does: `ShellExecuteExW` with no verb (the
+/// default one) and `SEE_MASK_INVOKEIDLIST`, so the shell's own association and context-menu
+/// handlers decide; `SEE_MASK_NOASYNC` so the call does not return before a DDE conversation the
+/// handler starts has finished. On the UI thread, with no app-state borrow held: the shell can
+/// show its "Open with" dialog from inside the call. Err is the Win32 error code;
+/// `ERROR_CANCELLED` (that dialog dismissed) counts as Ok.
+pub fn open_item(hwnd: isize, file: &Path, dir: &Path) -> Result<(), u32> {
+    use windows_sys::Win32::UI::Shell::{SEE_MASK_INVOKEIDLIST, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
+    let (file_w, dir_w) = (wide(file.as_os_str()), wide(dir.as_os_str()));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOASYNC | SEE_MASK_INVOKEIDLIST,
+        hwnd: hwnd as HWND,
+        lpFile: file_w.as_ptr(),
+        lpDirectory: dir_w.as_ptr(),
+        nShow: windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+        ..Default::default()
+    };
+    // SAFETY: `info` is a sized, zero-initialised SHELLEXECUTEINFOW whose strings are
+    // NUL-terminated buffers that outlive the call; no process handle is requested.
+    let ok = unsafe { ShellExecuteExW(&mut info) };
+    if ok != 0 {
+        return Ok(());
+    }
+    // SAFETY: plain Win32 query.
+    match unsafe { windows_sys::Win32::Foundation::GetLastError() } {
+        windows_sys::Win32::Foundation::ERROR_CANCELLED => Ok(()),
+        e => Err(e),
+    }
+}
+
 pub(crate) fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain([0]).collect()
 }

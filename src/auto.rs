@@ -12,7 +12,8 @@
 //!                                    (hidden files), CtrlR (refresh), CtrlA, ShiftUp, ShiftDown,
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
 //!                                    CtrlV, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
-//!                                    the context menu and take in-menu steps like rclick)
+//!                                    the context menu and take in-menu steps like rclick); CtrlT,
+//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9
 //!   copy | move                      Shift+F5 / Shift+F6: the active pane's selection to the other pane
 //!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
 //!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
@@ -48,6 +49,10 @@
 //!                                    (or, with row -1, the pane's header: its folder). copy holds
 //!                                    Ctrl, move Shift, auto neither. Paths are separated by `|`
 //!                                    because `;` separates steps
+//!   tab <new|close|next|prev|N>      Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+N (1..9) through the
+//!                                    Slint key path, on the active pane
+//!   crumb <pane> <index>             breadcrumb button <index> (0 is This PC), through its callback
+//!   pathmode <pane> <entry|crumb>    the path bar as text entry (as Ctrl+L) or back to the breadcrumb
 //!   quit                             exit the event loop
 //! Events are dispatched with slint::Window::dispatch_event on the UI thread, so Slint's full
 //! input -> layout -> render path runs; only the OS WndProc hop is skipped.
@@ -110,6 +115,8 @@ enum Step {
     DragCancel,
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
     DropFiles { pane: usize, row: i32, mode: String, paths: Vec<String> },
+    Crumb { pane: usize, index: i32 },
+    PathMode { pane: usize, entry: bool },
     Quit,
 }
 
@@ -156,6 +163,15 @@ fn parse(script: &str) -> Vec<Step> {
                     mode: a.get(3).unwrap_or(&"auto").to_string(),
                     paths: a.get(4..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                 },
+                "tab" => Step::Key(match a.get(1).copied().unwrap_or("") {
+                    "new" => "CtrlT".into(),
+                    "close" => "CtrlW".into(),
+                    "next" => "CtrlTab".into(),
+                    "prev" => "CtrlShiftTab".into(),
+                    n => format!("Ctrl{n}"),
+                }),
+                "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
+                "pathmode" => Step::PathMode { pane: num(1) as usize, entry: a.get(2) == Some(&"entry") },
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("[auto] unknown step: {other}");
@@ -221,45 +237,38 @@ fn schedule(runner: Rc<RefCell<Runner>>, delay_ms: u64) {
 
 /// Logical window size and a point inside the given pane's list.
 fn geometry(app: &App, pane: usize) -> (f32, f32, LogicalPosition) {
-    let size = app.window().size().to_logical(app.window().scale_factor());
-    let (w, h) = (size.width, size.height);
-    let split = app.get_split();
-    let ratio = app.get_split_ratio();
-    let x = if !split {
-        w * 0.5
-    } else if pane == 0 {
-        w * ratio * 0.5
-    } else {
-        w * ratio + (w - w * ratio) * 0.5
-    };
-    (w, h, LogicalPosition::new(x, h * 0.5))
+    let l = crate::window_layout(app);
+    let (a, b) = crate::dnd::pane_x(&l, pane);
+    (l.width, l.height, LogicalPosition::new((a + b) * 0.5, l.height * 0.5))
+}
+
+/// The top of the pane's list (63 px, or 91 px under a tab strip).
+fn list_top(app: &App, pane: usize) -> f32 {
+    crate::dnd::list_top(&crate::window_layout(app), pane)
 }
 
 /// Where the pane's vertical scrollbar thumb sits with content-y = 0 (right edge of the list,
-/// just under the path entry and column header).
+/// just under the path bar and column header).
 fn thumb(app: &App, pane: usize) -> LogicalPosition {
-    let (w, _h, _) = geometry(app, pane);
-    let split = app.get_split();
-    let ratio = app.get_split_ratio();
-    let right_edge = if !split { w } else if pane == 0 { w * ratio - 3.0 } else { w };
-    LogicalPosition::new(right_edge - 10.0, 80.0)
+    let (_, right_edge) = crate::dnd::pane_x(&crate::window_layout(app), pane);
+    LogicalPosition::new(right_edge - 10.0, list_top(app, pane) + 17.0)
 }
 
-/// Centre of a visible row: rows start under the 3 px padding, 32 px path entry, 2 px spacing,
-/// 24 px header, 2 px spacing.
+/// Centre of a visible row: rows start under the 3 px padding, the tab strip when there is one,
+/// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing.
 fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
     let (_, _, mid) = geometry(app, pane);
-    LogicalPosition::new(mid.x, 63.0 + row as f32 * 22.0 + 11.0)
+    LogicalPosition::new(mid.x, list_top(app, pane) + row as f32 * 22.0 + 11.0)
 }
 
 /// Where an `rclickempty` lands: halfway down the empty space below the last row, or None when
-/// the rows fill the list (rows start at y 63; the list ends 23 px above the window bottom,
+/// the rows fill the list (rows start at `list_top`; the list ends 23 px above the window bottom,
 /// over the 18 px status line, 2 px spacing and 3 px padding).
 fn empty_pos(app: &App, pane: usize) -> Option<LogicalPosition> {
     use slint::Model;
     let (_, h, mid) = geometry(app, pane);
     let rows = if pane == 0 { app.get_left_rows().row_count() } else { app.get_right_rows().row_count() };
-    let end = 63.0 + app.invoke_get_scroll(pane as i32) + rows as f32 * 22.0;
+    let end = list_top(app, pane) + app.invoke_get_scroll(pane as i32) + rows as f32 * 22.0;
     let bottom = h - 23.0;
     (end + 4.0 < bottom).then(|| LogicalPosition::new(mid.x, (end + bottom) * 0.5))
 }
@@ -368,7 +377,7 @@ fn drop_point(app: &App, pane: usize, row: i32) -> LogicalPosition {
     let (_, _, mid) = geometry(app, pane);
     match usize::try_from(row) {
         Ok(r) => row_pos(app, pane, r),
-        Err(_) => LogicalPosition::new(mid.x, 49.0),
+        Err(_) => LogicalPosition::new(mid.x, list_top(app, pane) - 14.0),
     }
 }
 
@@ -507,6 +516,14 @@ fn chord(name: &str) -> Vec<SharedString> {
         "ShiftDelete" => vec![k(Key::Shift), k(Key::Delete)],
         "ShiftF10" => vec![k(Key::Shift), k(Key::F10)],
         "Menu" => vec![k(Key::Menu)],
+        "CtrlT" => vec![k(Key::Control), "t".into()],
+        "CtrlW" => vec![k(Key::Control), "w".into()],
+        "CtrlL" => vec![k(Key::Control), "l".into()],
+        "CtrlTab" => vec![k(Key::Control), k(Key::Tab)],
+        "CtrlShiftTab" => vec![k(Key::Control), k(Key::Shift), k(Key::Tab)],
+        n if n.len() == 5 && n.starts_with("Ctrl") && n.as_bytes()[4].is_ascii_digit() && n.as_bytes()[4] != b'0' => {
+            vec![k(Key::Control), n[4..].into()]
+        }
         other => {
             eprintln!("[auto] unknown key {other}");
             vec![]
@@ -614,6 +631,14 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             }
             schedule(runner, 1);
         }
+        Step::Crumb { pane, index } => {
+            app.invoke_crumb_clicked(pane as i32, index);
+            schedule(runner, 1);
+        }
+        Step::PathMode { pane, entry } => {
+            app.invoke_set_path_mode(pane as i32, entry);
+            schedule(runner, 1);
+        }
         Step::Quit => {
             let _ = slint::quit_event_loop();
         }
@@ -689,7 +714,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 eprintln!("[auto] rclickempty: no empty space below the last row; calling context-menu(-1) directly");
                 let (_, _, mid) = geometry(&app, pane);
                 arm_menu_steps(&app, menu_steps);
-                app.invoke_context_menu(pane as i32, -1, mid.x, 63.0 + 11.0, false);
+                app.invoke_context_menu(pane as i32, -1, mid.x, list_top(&app, pane) + 11.0, false);
                 disarm_menu_steps();
                 schedule(runner, 1);
                 return;
