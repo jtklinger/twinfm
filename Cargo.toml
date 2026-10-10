@@ -10,7 +10,7 @@ description = "TwinFM: a dual-pane file manager for Windows 11 in Rust and Slint
 # `rustfm` branch of the jtklinger/slint fork and pinned by rev (never by branch).
 slint = { git = "https://github.com/jtklinger/slint", rev = "c1d3a8d0aa2d61d72da6c11501060eb1650674b6", default-features = false, features = ["std", "backend-default", "renderer-femtovg", "renderer-software", "compat-1-2"] }
 crossbeam-channel = "0.5"
-windows-sys = { version = "0.60", features = ["Win32_System_Threading", "Win32_System_Time", "Win32_Foundation"] }
+windows-sys = { version = "0.60", features = ["Win32_System_Threading", "Win32_System_Time", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell"] }
 
 [features]
 # Default build matches slint's defaults. `cargo build --release --no-default-features` builds the

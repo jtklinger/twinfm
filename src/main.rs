@@ -207,7 +207,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_open_row(|pane, row| {
         let target = with_state(|st| {
             let e = st.panes[pane as usize].entry(row as usize)?;
-            if !e.is_dir {
+            if !e.is_dir() {
                 return None;
             }
             let app = st.app.unwrap();

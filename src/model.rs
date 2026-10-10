@@ -5,7 +5,33 @@ use crate::Row;
 use slint::{Model, ModelNotify, ModelTracker, SharedString};
 use std::cell::{Cell, RefCell};
 use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM,
+};
 use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime, TIME_ZONE_INFORMATION};
+
+/// What a row is, for display. A reparse point (junction, symlink, cloud placeholder) shows as
+/// `Reparse` even when it is a directory; it still opens like one (see `Entry::is_dir`).
+/// The discriminants are the `kind` int the Slint `Row` carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Directory = 0,
+    File = 1,
+    Drive = 2,
+    Reparse = 3,
+}
+
+impl Kind {
+    pub fn from_attrs(attrs: u32) -> Kind {
+        if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            Kind::Reparse
+        } else if attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            Kind::Directory
+        } else {
+            Kind::File
+        }
+    }
+}
 
 /// One directory entry. No handles, no callbacks, no per-row heap objects besides the
 /// refcounted strings (SharedString is a thin Arc-like handle, cheap to clone). The display
@@ -15,21 +41,40 @@ pub struct Entry {
     pub name: SharedString,
     pub size: u64,
     pub modified: i64, // unix seconds
-    pub is_dir: bool,
+    /// Win32 FILE_ATTRIBUTE_* bits as FindNextFile reported them (reparse points not followed).
+    pub attrs: u32,
+    pub kind: Kind,
     pub size_text: SharedString,
     pub modified_text: SharedString,
+    pub type_text: SharedString,
 }
 
 impl Entry {
-    pub fn new(name: SharedString, size: u64, modified: i64, is_dir: bool) -> Entry {
+    pub fn new(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString) -> Entry {
+        let is_dir = attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
         Entry {
             size_text: if is_dir { SharedString::default() } else { format_size(size).into() },
             modified_text: format_time(modified).into(),
+            type_text,
             name,
             size,
             modified,
-            is_dir,
+            attrs,
+            kind: Kind::from_attrs(attrs),
         }
+    }
+
+    /// Opens by navigating into it: directories, reparse directories and drives.
+    pub fn is_dir(&self) -> bool {
+        self.kind == Kind::Drive || self.attrs & FILE_ATTRIBUTE_DIRECTORY != 0
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.attrs & FILE_ATTRIBUTE_HIDDEN != 0
+    }
+
+    pub fn is_system(&self) -> bool {
+        self.attrs & FILE_ATTRIBUTE_SYSTEM != 0
     }
 }
 
@@ -114,7 +159,13 @@ impl Model for PaneModel {
     fn row_data(&self, row: usize) -> Option<Row> {
         let entries = self.entries.borrow();
         let e = entries.get(row)?;
-        Some(Row { name: e.name.clone(), size: e.size_text.clone(), modified: e.modified_text.clone(), is_dir: e.is_dir })
+        Some(Row {
+            name: e.name.clone(),
+            type_text: e.type_text.clone(),
+            size: e.size_text.clone(),
+            modified: e.modified_text.clone(),
+            kind: e.kind as i32,
+        })
     }
 
     fn model_tracker(&self) -> &dyn ModelTracker {
@@ -129,7 +180,7 @@ impl Model for PaneModel {
 /// Sort in place: directories first, then by the chosen column. Runs on a worker.
 pub fn sort_entries(entries: &mut [Entry], col: SortCol, asc: bool) {
     entries.sort_unstable_by(|a, b| {
-        let dir_order = b.is_dir.cmp(&a.is_dir);
+        let dir_order = b.is_dir().cmp(&a.is_dir());
         if dir_order != std::cmp::Ordering::Equal {
             return dir_order;
         }
@@ -218,7 +269,8 @@ mod tests {
     use super::*;
 
     fn e(name: &str, size: u64, is_dir: bool) -> Entry {
-        Entry::new(name.into(), size, 0, is_dir)
+        let attrs = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { 0 };
+        Entry::new(name.into(), size, 0, attrs, SharedString::default())
     }
 
     /// A fixed UTC-5 zone with no daylight rule, so the test does not depend on the machine.
@@ -240,6 +292,18 @@ mod tests {
     }
 
     #[test]
+    fn kind_from_attributes() {
+        assert_eq!(Kind::from_attrs(0), Kind::File);
+        assert_eq!(Kind::from_attrs(FILE_ATTRIBUTE_DIRECTORY), Kind::Directory);
+        let junction = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        assert_eq!(Kind::from_attrs(junction), Kind::Reparse);
+        let j = Entry::new("j".into(), 0, 0, junction, "File folder".into());
+        assert!(j.is_dir(), "a reparse directory still opens like a directory");
+        let h = Entry::new("h".into(), 0, 0, FILE_ATTRIBUTE_HIDDEN, "".into());
+        assert!(h.is_hidden() && !h.is_system());
+    }
+
+    #[test]
     fn dates_and_sizes() {
         assert_eq!(format_time_in(0, Some(&utc_minus_5())), "1969-12-31 19:00");
         assert_eq!(format_time_in(1_790_000_000, Some(&utc_minus_5())), "2026-09-21 09:13");
@@ -258,7 +322,7 @@ mod tests {
         assert_eq!(m.row_data(1).unwrap().size.as_str(), "2 B");
         m.replace(vec![e("c", 3, true)]);
         assert_eq!(m.row_count(), 1);
-        assert!(m.row_data(0).unwrap().is_dir);
+        assert_eq!(m.row_data(0).unwrap().kind, Kind::Directory as i32);
         assert_eq!(m.row_data(0).unwrap().size.as_str(), "");
     }
 }

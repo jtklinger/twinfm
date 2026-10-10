@@ -1,10 +1,12 @@
 import { ListView, LineEdit, Palette } from "std-widgets.slint";
 
+// kind: 0 directory, 1 file, 2 drive, 3 reparse point (model::Kind)
 export struct Row {
     name: string,
+    type-text: string,
     size: string,
     modified: string,
-    is-dir: bool,
+    kind: int,
 }
 
 component HeaderCell inherits Rectangle {
@@ -41,7 +43,8 @@ component FileListBase inherits ListView {
     for row[i] in rows: Rectangle {
         height: 22px;
         accessible-role: AccessibleRole.list-item;
-        accessible-label: row.is-dir ? row.name + ", folder" : row.name + ", " + row.size + ", " + row.modified;
+        accessible-label: row.kind == 1 ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
+            : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
         accessible-item-selectable: true;
         accessible-item-selected: i == current-row;
         accessible-item-index: i;
@@ -49,7 +52,11 @@ component FileListBase inherits ListView {
         HorizontalLayout {
             padding-left: 6px;
             padding-right: 6px;
-            Text { text: row.is-dir ? "\u{25b8}" : ""; width: 22px; vertical-alignment: center; }
+            Text {
+                text: row.kind == 0 ? "\u{25b8}" : row.kind == 2 ? "\u{25a3}" : row.kind == 3 ? "\u{21aa}" : "";
+                width: 22px;
+                vertical-alignment: center;
+            }
             Text { text: row.name; vertical-alignment: center; overflow: elide; }
             Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; }
             Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; }
