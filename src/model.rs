@@ -9,7 +9,9 @@ use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM,
 };
-use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime, TIME_ZONE_INFORMATION};
+use windows_sys::Win32::System::Time::{
+    FileTimeToSystemTime, GetTimeZoneInformation, SystemTimeToTzSpecificLocalTime, TIME_ZONE_INFORMATION,
+};
 
 /// What a row is, for display. A reparse point (junction, symlink, cloud placeholder) shows as
 /// `Reparse` even when it is a directory; it still opens like one (see `Entry::is_dir`).
@@ -55,10 +57,16 @@ pub struct Entry {
 
 impl Entry {
     pub fn new(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString) -> Entry {
+        Entry::with_tz(name, size, modified, attrs, type_text, &current_tz())
+    }
+
+    /// `tz` is the zone fetched once per enumeration; `SystemTimeToTzSpecificLocalTime` with a
+    /// null zone re-reads the registry on every call, which doubled the 40k worker time.
+    pub fn with_tz(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString, tz: &TIME_ZONE_INFORMATION) -> Entry {
         let is_dir = attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
         Entry {
             size_text: if is_dir { SharedString::default() } else { format_size(size).into() },
-            modified_text: format_time(modified).into(),
+            modified_text: format_time_in(modified, Some(tz)).into(),
             type_text,
             name,
             size,
@@ -520,6 +528,16 @@ pub fn format_size(bytes: u64) -> String {
 /// (`FileTimeToSystemTime` + `SystemTimeToTzSpecificLocalTime`); no chrono dependency.
 pub fn format_time(secs: i64) -> String {
     format_time_in(secs, None)
+}
+
+/// The current zone, with its daylight rules, so the conversion stays correct across a DST
+/// boundary even though it is fetched once per enumeration rather than per entry.
+pub fn current_tz() -> TIME_ZONE_INFORMATION {
+    let mut tz: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: tz is a live, writable TIME_ZONE_INFORMATION. The return code only tells whether
+    // DST is in effect; on failure the zeroed struct means UTC, which is a visible but harmless result.
+    unsafe { GetTimeZoneInformation(&mut tz) };
+    tz
 }
 
 /// `tz = None` uses the current time zone; tests pass a fixed one.
