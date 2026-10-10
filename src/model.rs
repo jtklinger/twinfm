@@ -4,6 +4,7 @@
 use crate::Row;
 use slint::{Model, ModelNotify, ModelTracker, SharedString};
 use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashSet};
 use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM,
@@ -47,6 +48,9 @@ pub struct Entry {
     pub size_text: SharedString,
     pub modified_text: SharedString,
     pub type_text: SharedString,
+    /// Mirror of selection membership, kept true only in the pane's `shown` Vec so that
+    /// `row_data` stays a plain clone (no set lookup per row).
+    pub selected: bool,
 }
 
 impl Entry {
@@ -61,6 +65,7 @@ impl Entry {
             modified,
             attrs,
             kind: Kind::from_attrs(attrs),
+            selected: false,
         }
     }
 
@@ -105,6 +110,11 @@ pub struct PaneModel {
     shown: RefCell<Vec<Entry>>,
     /// How many entries of `all` the filter currently keeps out of `shown`.
     hidden: Cell<usize>,
+    /// Selected rows, as indices into `shown`. UI thread only.
+    sel: RefCell<Selection>,
+    /// Bumped on every selection change, so a worker pass can tell whether the selection it
+    /// carried over is still the current one when it lands.
+    pub sel_version: Cell<u64>,
     notify: ModelNotify,
     /// Generation of the enumeration whose batches we accept; stale workers are ignored.
     pub generation: Cell<u64>,
@@ -121,6 +131,8 @@ impl Default for PaneModel {
             all: RefCell::new(Vec::new()),
             shown: RefCell::new(Vec::new()),
             hidden: Cell::new(0),
+            sel: RefCell::new(Selection::default()),
+            sel_version: Cell::new(0),
             notify: ModelNotify::default(),
             generation: Cell::new(0),
             pass: Cell::new(0),
@@ -136,7 +148,43 @@ impl PaneModel {
         self.all.borrow_mut().clear();
         self.shown.borrow_mut().clear();
         self.hidden.set(0);
+        *self.sel.borrow_mut() = Selection::default();
+        self.sel_version.set(self.sel_version.get() + 1);
         self.notify.reset();
+    }
+
+    /// Apply a selection gesture; only rows whose membership changed are notified.
+    pub fn select(&self, op: SelOp, row: usize) {
+        let len = self.shown.borrow().len();
+        let changed = self.sel.borrow_mut().apply(op, row, len);
+        if changed.is_empty() {
+            return;
+        }
+        {
+            let sel = self.sel.borrow();
+            let mut shown = self.shown.borrow_mut();
+            for &i in &changed {
+                shown[i].selected = sel.set.contains(&i);
+            }
+        }
+        for &i in &changed {
+            self.notify.row_changed(i);
+        }
+        self.sel_version.set(self.sel_version.get() + 1);
+    }
+
+    /// Names of the selected rows, in display order.
+    pub fn selected_names(&self) -> Vec<SharedString> {
+        let shown = self.shown.borrow();
+        self.sel.borrow().set.iter().filter_map(|&i| shown.get(i).map(|e| e.name.clone())).collect()
+    }
+
+    /// The cursor and selection by name, to carry across a pass or a refresh.
+    pub fn capture(&self, cursor: i32) -> Restore {
+        let shown = self.shown.borrow();
+        let cursor = usize::try_from(cursor).ok().and_then(|i| shown.get(i)).map(|e| e.name.clone());
+        drop(shown);
+        Restore { cursor, selected: self.selected_names() }
     }
 
     /// Append a batch; one row_added notification per batch, never per entry. The batch moves
@@ -156,11 +204,15 @@ impl PaneModel {
         }
     }
 
-    /// Swap the shown Vec in one step (the result of a worker-side filter and sort pass).
-    pub fn replace(&self, out: PassOutput) {
+    /// Swap the shown Vec in one step (the result of a worker-side filter and sort pass) and
+    /// adopt the selection the pass restored. Returns the restored cursor row.
+    pub fn replace(&self, out: PassOutput) -> Option<usize> {
         *self.shown.borrow_mut() = out.shown;
         self.hidden.set(out.hidden);
+        *self.sel.borrow_mut() = Selection { set: out.selection, anchor: out.cursor };
+        self.sel_version.set(self.sel_version.get() + 1);
         self.notify.reset();
+        out.cursor
     }
 
     /// Copy of the full listing for a worker pass.
@@ -204,6 +256,7 @@ impl Model for PaneModel {
             size: e.size_text.clone(),
             modified: e.modified_text.clone(),
             kind: e.kind as i32,
+            selected: e.selected,
         })
     }
 
@@ -225,15 +278,130 @@ pub fn visible(e: &Entry, show_hidden: bool) -> bool {
 pub struct PassOutput {
     pub shown: Vec<Entry>,
     pub hidden: usize,
+    pub cursor: Option<usize>,
+    pub selection: BTreeSet<usize>,
 }
 
-/// The worker pass: filter a snapshot of `all`, then sort it. Pure, runs off the UI thread.
-pub fn filter_sort(mut all: Vec<Entry>, show_hidden: bool, col: SortCol, asc: bool) -> PassOutput {
+impl PassOutput {
+    /// Re-derive cursor and selection from `r` (the UI thread does this when the selection
+    /// changed while the pass was on the worker).
+    pub fn restore(&mut self, r: &Restore) {
+        for &i in &self.selection {
+            self.shown[i].selected = false;
+        }
+        let (cursor, selection) = restore_by_name(r, &self.shown);
+        for &i in &selection {
+            self.shown[i].selected = true;
+        }
+        self.cursor = cursor;
+        self.selection = selection;
+    }
+}
+
+/// The worker pass: filter a snapshot of `all`, sort it, and carry the cursor and selection
+/// over by name. Pure, runs off the UI thread.
+pub fn filter_sort(mut all: Vec<Entry>, show_hidden: bool, col: SortCol, asc: bool, r: &Restore) -> PassOutput {
     let before = all.len();
     all.retain(|e| visible(e, show_hidden));
     let hidden = before - all.len();
     sort_entries(&mut all, col, asc);
-    PassOutput { shown: all, hidden }
+    for e in all.iter_mut() {
+        e.selected = false;
+    }
+    let mut out = PassOutput { shown: all, hidden, cursor: None, selection: BTreeSet::new() };
+    out.restore(r);
+    out
+}
+
+/// Cursor and selection remembered by name across a re-sort, a filter change or a refresh.
+#[derive(Clone, Debug, Default)]
+pub struct Restore {
+    pub cursor: Option<SharedString>,
+    pub selected: Vec<SharedString>,
+}
+
+/// Where the remembered names sit in a new listing; names that no longer exist are dropped.
+pub fn restore_by_name(r: &Restore, entries: &[Entry]) -> (Option<usize>, BTreeSet<usize>) {
+    let cursor = r.cursor.as_ref().and_then(|c| entries.iter().position(|e| &e.name == c));
+    let mut selection = BTreeSet::new();
+    if !r.selected.is_empty() {
+        let names: HashSet<&str> = r.selected.iter().map(|s| s.as_str()).collect();
+        for (i, e) in entries.iter().enumerate() {
+            if names.contains(e.name.as_str()) {
+                selection.insert(i);
+            }
+        }
+    }
+    (cursor, selection)
+}
+
+/// A selection gesture. The discriminants are the `op` int the Slint `select` callback passes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelOp {
+    /// Click or plain arrow: select only this row.
+    Only = 0,
+    /// Ctrl+click or Space: toggle this row.
+    Toggle = 1,
+    /// Shift+click or Shift+arrow: select from the anchor to this row.
+    Range = 2,
+    /// Ctrl+A.
+    All = 3,
+}
+
+impl SelOp {
+    pub fn from_i32(op: i32) -> SelOp {
+        match op {
+            1 => SelOp::Toggle,
+            2 => SelOp::Range,
+            3 => SelOp::All,
+            _ => SelOp::Only,
+        }
+    }
+}
+
+/// The selected rows (indices into the shown list) and the anchor a range extends from.
+#[derive(Clone, Debug, Default)]
+pub struct Selection {
+    pub set: BTreeSet<usize>,
+    pub anchor: Option<usize>,
+}
+
+impl Selection {
+    /// Apply a gesture over a list of `len` rows; returns the rows whose membership changed.
+    pub fn apply(&mut self, op: SelOp, row: usize, len: usize) -> Vec<usize> {
+        if op != SelOp::All && row >= len {
+            return Vec::new();
+        }
+        match op {
+            SelOp::Toggle => {
+                if !self.set.remove(&row) {
+                    self.set.insert(row);
+                }
+                self.anchor = Some(row);
+                vec![row]
+            }
+            SelOp::Only => {
+                self.anchor = Some(row);
+                let mut changed: Vec<usize> = self.set.iter().copied().filter(|&i| i != row).collect();
+                if !self.set.contains(&row) {
+                    changed.push(row);
+                }
+                self.set = BTreeSet::from([row]);
+                changed
+            }
+            SelOp::Range | SelOp::All => {
+                let new: BTreeSet<usize> = if op == SelOp::All {
+                    (0..len).collect()
+                } else {
+                    let a = *self.anchor.get_or_insert(row);
+                    (a.min(row)..=a.max(row)).collect()
+                };
+                let changed = self.set.symmetric_difference(&new).copied().collect();
+                self.set = new;
+                changed
+            }
+        }
+    }
 }
 
 /// Sort in place: directories first, then by the chosen column. Runs on a worker.
@@ -361,11 +529,11 @@ mod tests {
             a("a", 0),
             a("both", FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM),
         ];
-        let off = filter_sort(all.clone(), false, SortCol::Name, true);
+        let off = filter_sort(all.clone(), false, SortCol::Name, true, &Restore::default());
         let names: Vec<&str> = off.shown.iter().map(|x| x.name.as_str()).collect();
         assert_eq!(names, ["a", "b"]);
         assert_eq!(off.hidden, 3);
-        let on = filter_sort(all.clone(), true, SortCol::Name, true);
+        let on = filter_sort(all.clone(), true, SortCol::Name, true, &Restore::default());
         assert_eq!(on.shown.len(), 5);
         assert_eq!(on.hidden, 0);
 
@@ -376,8 +544,84 @@ mod tests {
         assert_eq!((m.total(), m.row_count(), m.hidden_count()), (5, 2, 3));
         assert_eq!(m.row_data(1).unwrap().name.as_str(), "a");
         m.show_hidden.set(true);
-        m.replace(filter_sort(m.snapshot_all(), true, SortCol::Name, true));
+        m.replace(filter_sort(m.snapshot_all(), true, SortCol::Name, true, &Restore::default()));
         assert_eq!((m.row_count(), m.hidden_count()), (5, 0));
+    }
+
+    fn set(v: &[usize]) -> BTreeSet<usize> {
+        v.iter().copied().collect()
+    }
+
+    #[test]
+    fn selection_gestures() {
+        let mut s = Selection::default();
+        assert_eq!(s.apply(SelOp::Only, 3, 10), vec![3]);
+        assert_eq!(s.set, set(&[3]));
+        assert_eq!(s.apply(SelOp::Toggle, 5, 10), vec![5]);
+        assert_eq!(s.set, set(&[3, 5]));
+        assert_eq!(s.apply(SelOp::Toggle, 3, 10), vec![3]);
+        assert_eq!(s.set, set(&[5]));
+        // Range runs from the anchor (3, set by the last toggle) and replaces the set.
+        let mut changed = s.apply(SelOp::Range, 2, 10);
+        changed.sort();
+        assert_eq!(changed, vec![2, 3, 5]);
+        assert_eq!(s.set, set(&[2, 3]));
+        assert_eq!(s.apply(SelOp::Range, 7, 10).len(), 5); // 2 leaves, 4..=7 join
+        assert_eq!(s.set, set(&[3, 4, 5, 6, 7]));
+        assert_eq!(s.apply(SelOp::All, 0, 10).len(), 5);
+        assert_eq!(s.set.len(), 10);
+        let mut changed = s.apply(SelOp::Only, 9, 10);
+        changed.sort();
+        assert_eq!(changed, (0..9).collect::<Vec<_>>());
+        assert_eq!(s.set, set(&[9]));
+        assert!(s.apply(SelOp::Toggle, 10, 10).is_empty(), "out of range is ignored");
+        // Range with no anchor selects just the row and anchors there.
+        let mut fresh = Selection::default();
+        fresh.apply(SelOp::Range, 4, 10);
+        assert_eq!((fresh.set.clone(), fresh.anchor), (set(&[4]), Some(4)));
+    }
+
+    #[test]
+    fn model_selection_mirrors_rows_and_clears_on_navigate() {
+        let m = PaneModel::default();
+        m.append(vec![e("a", 0, false), e("b", 0, false), e("c", 0, false)]);
+        m.select(SelOp::Only, 1);
+        assert!(m.row_data(1).unwrap().selected);
+        m.select(SelOp::Toggle, 2);
+        assert_eq!(m.selected_names(), ["b", "c"]);
+        m.select(SelOp::All, 0);
+        assert!((0..3).all(|i| m.row_data(i).unwrap().selected));
+        let v = m.sel_version.get();
+        m.clear(); // what navigate does
+        assert!(m.selected_names().is_empty());
+        assert!(m.sel_version.get() > v);
+        m.append(vec![e("a", 0, false)]);
+        assert!(!m.row_data(0).unwrap().selected);
+    }
+
+    #[test]
+    fn restore_by_name_after_relisting() {
+        let old = vec![e("a", 0, false), e("b", 0, false), e("c", 0, false), e("d", 0, false)];
+        let m = PaneModel::default();
+        m.append(old);
+        m.select(SelOp::Only, 1);
+        m.select(SelOp::Toggle, 3);
+        let r = m.capture(3); // cursor on "d", selection {b, d}
+        assert_eq!(r.cursor.as_deref(), Some("d"));
+        // New listing: "b" is gone, "0" arrived first, "d" moved.
+        let new = vec![e("0", 0, false), e("a", 0, false), e("c", 0, false), e("d", 0, false)];
+        assert_eq!(restore_by_name(&r, &new), (Some(3), set(&[3])));
+        let gone = Restore { cursor: Some("zz".into()), selected: vec!["zz".into()] };
+        assert_eq!(restore_by_name(&gone, &new), (None, BTreeSet::new()));
+        // A pass carries the selection over a re-sort, and marks the rows.
+        let out = filter_sort(m.snapshot_all(), false, SortCol::Name, false, &r);
+        let names: Vec<&str> = out.shown.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["d", "c", "b", "a"]);
+        assert_eq!((out.cursor, out.selection.clone()), (Some(0), set(&[0, 2])));
+        let cursor = m.replace(out);
+        assert_eq!(cursor, Some(0));
+        assert_eq!(m.selected_names(), ["d", "b"]);
+        assert!(m.row_data(0).unwrap().selected && !m.row_data(1).unwrap().selected);
     }
 
     #[test]
@@ -422,7 +666,7 @@ mod tests {
         m.append(vec![e("a", 1, false), e("b", 2, false)]);
         assert_eq!(m.row_count(), 2);
         assert_eq!(m.row_data(1).unwrap().size.as_str(), "2 B");
-        m.replace(PassOutput { shown: vec![e("c", 3, true)], hidden: 0 });
+        m.replace(PassOutput { shown: vec![e("c", 3, true)], hidden: 0, cursor: None, selection: BTreeSet::new() });
         assert_eq!(m.row_count(), 1);
         assert_eq!(m.row_data(0).unwrap().kind, Kind::Directory as i32);
         assert_eq!(m.row_data(0).unwrap().size.as_str(), "");

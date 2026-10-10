@@ -10,7 +10,7 @@ mod perf;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fs::enumerate::Msg;
-use model::{PaneModel, SortCol, filter_sort};
+use model::{PaneModel, SelOp, SortCol, filter_sort};
 use slint::{ComponentHandle, ModelRc, RenderingState, Weak};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -157,10 +157,12 @@ fn request_pass(st: &mut State, pane: usize) {
     let pass = model.pass.get() + 1;
     model.pass.set(pass);
     let snapshot = model.snapshot_all();
+    let restore = model.capture(current_row(&app, pane));
+    let sel_version = model.sel_version.get();
     let t0 = Instant::now();
     std::thread::spawn(move || {
         let total = snapshot.len();
-        let out = filter_sort(snapshot, show_hidden, col, asc);
+        let mut out = filter_sort(snapshot, show_hidden, col, asc, &restore);
         let pass_ms = perf::elapsed_ms(t0);
         let _ = slint::invoke_from_event_loop(move || {
             with_state(|st| {
@@ -169,12 +171,17 @@ fn request_pass(st: &mut State, pane: usize) {
                 if model.generation.get() != generation || model.pass.get() != pass || model.total() != total {
                     return; // listing or request changed underneath us; a newer pass or Done follows
                 }
+                if model.sel_version.get() != sel_version {
+                    // The user changed the selection while the pass ran; carry the current one.
+                    out.restore(&model.capture(current_row(&app, pane)));
+                }
                 eprintln!(
                     "[sort] pane={pane} {} of {total} entries by {col:?} asc={asc} hidden={} in {pass_ms:.1} ms",
                     out.shown.len(),
                     out.hidden
                 );
-                model.replace(out);
+                let cursor = model.replace(out);
+                set_current_row(&app, pane, cursor);
                 set_status(&app, pane, status_text(model, &st.timing[pane]));
             });
         });
@@ -199,6 +206,15 @@ fn on_frame_rendered() {
             }
         }
     });
+}
+
+fn current_row(app: &App, pane: usize) -> i32 {
+    if pane == 0 { app.get_left_current_row() } else { app.get_right_current_row() }
+}
+
+fn set_current_row(app: &App, pane: usize, row: Option<usize>) {
+    let row = row.map_or(-1, |r| r as i32);
+    if pane == 0 { app.set_left_current_row(row) } else { app.set_right_current_row(row) }
 }
 
 /// The path shown in a pane's path bar.
@@ -270,6 +286,13 @@ fn main() -> Result<(), slint::PlatformError> {
             model.sort_asc.set(asc);
             request_pass(st, pane as usize);
         });
+    });
+    app.on_select(|pane, op, row| {
+        let op = SelOp::from_i32(op);
+        if row < 0 && op != SelOp::All {
+            return;
+        }
+        with_state(|st| st.panes[pane as usize].select(op, row.max(0) as usize));
     });
     app.on_toggle_hidden(|pane| {
         with_state(|st| {

@@ -7,6 +7,7 @@ export struct Row {
     size: string,
     modified: string,
     kind: int,
+    selected: bool,
 }
 
 component HeaderCell inherits Rectangle {
@@ -34,7 +35,7 @@ component FileListBase inherits ListView {
     in-out property <int> current-row: -1;
     callback open-row(int);
     callback focus-requested();
-    callback row-clicked(int);
+    callback row-clicked(int, bool /* ctrl */, bool /* shift */);
 
     accessible-label: "Files";
     accessible-item-count: rows.length;
@@ -46,9 +47,12 @@ component FileListBase inherits ListView {
         accessible-label: row.kind == 1 ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
             : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
         accessible-item-selectable: true;
-        accessible-item-selected: i == current-row;
+        accessible-item-selected: row.selected;
         accessible-item-index: i;
-        background: i == current-row ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
+        background: row.selected ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
+        // The cursor is an outline, so it stays visible on selected and unselected rows alike.
+        border-width: i == current-row ? 1px : 0px;
+        border-color: Palette.accent-background;
         HorizontalLayout {
             padding-left: 6px;
             padding-right: 6px;
@@ -63,7 +67,11 @@ component FileListBase inherits ListView {
             Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; }
         }
         TouchArea {
-            clicked => { root.row-clicked(i); }
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                    root.row-clicked(i, ev.modifiers.control, ev.modifiers.shift);
+                }
+            }
             double-clicked => { root.open-row(i); }
         }
     }
@@ -71,9 +79,16 @@ component FileListBase inherits ListView {
 
 component FileList inherits FileListBase {
     callback go-up();
+    // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
+    callback select(int, int);
     forward-focus: key-area;
     public function focus-list() { key-area.focus(); }
-    row-clicked(i) => { root.current-row = i; key-area.focus(); root.focus-requested(); }
+    row-clicked(i, ctrl, shift) => {
+        root.current-row = i;
+        key-area.focus();
+        root.focus-requested();
+        root.select(ctrl ? 1 : shift ? 2 : 0, i);
+    }
 
     key-area := FocusScope {
         x: 0;
@@ -82,8 +97,18 @@ component FileList inherits FileListBase {
             if (e.text == Key.Backspace && !e.modifiers.control) { root.go-up(); return accept; }
             if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return accept; }
             if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return accept; }
-            if (e.text == Key.UpArrow) { if (root.current-row > 0) { root.current-row -= 1; } return accept; }
-            if (e.text == Key.DownArrow) { if (root.current-row + 1 < root.rows.length) { root.current-row += 1; } return accept; }
+            if (e.text == Key.UpArrow) {
+                if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }
+                if (root.current-row >= 0) { root.select(e.modifiers.shift ? 2 : 0, root.current-row); }
+                return accept;
+            }
+            if (e.text == Key.DownArrow) {
+                if (root.current-row + 1 < root.rows.length) { root.current-row += 1; }
+                if (root.current-row >= 0) { root.select(e.modifiers.shift ? 2 : 0, root.current-row); }
+                return accept;
+            }
+            if (e.text == " ") { if (root.current-row >= 0) { root.select(1, root.current-row); } return accept; }
+            if (e.modifiers.control && (e.text == "a" || e.text == "A")) { root.select(3, root.current-row); return accept; }
             return reject;
         }
     }
@@ -103,6 +128,7 @@ export component Pane inherits Rectangle {
     callback sort-by(int);
     callback go-up();
     callback focus-requested();
+    callback select(int, int);
 
     border-width: active ? 2px : 1px;
     border-color: active ? Palette.accent-background : Palette.border;
@@ -134,6 +160,7 @@ export component Pane inherits Rectangle {
             go-up => { root.go-up(); }
             open-row(i) => { root.open-row(i); }
             focus-requested => { root.focus-requested(); }
+            select(op, i) => { root.select(op, i); }
         }
         Text { text: status; height: 18px; font-size: 11px; color: Palette.foreground; }
     }
