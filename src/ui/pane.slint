@@ -8,6 +8,7 @@ export struct Row {
     modified: string,
     kind: int,
     selected: bool,
+    icon: image,
 }
 
 component HeaderCell inherits Rectangle {
@@ -56,10 +57,10 @@ component FileListBase inherits ListView {
         HorizontalLayout {
             padding-left: 6px;
             padding-right: 6px;
-            Text {
-                text: row.kind == 0 ? "\u{25b8}" : row.kind == 2 ? "\u{25a3}" : row.kind == 3 ? "\u{21aa}" : "";
+            Rectangle {
                 width: 22px;
-                vertical-alignment: center;
+                // Drawn at 16 logical px; the buffer is 16 x the scale factor, so it stays crisp.
+                Image { x: 0; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: row.icon; image-fit: contain; }
             }
             Text { text: row.name; vertical-alignment: center; overflow: elide; }
             Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; }
@@ -81,6 +82,13 @@ component FileList inherits FileListBase {
     callback go-up();
     // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
     callback select(int, int);
+    // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
+    // turns it into the visible row range and fetches icons for it.
+    callback viewport-changed(length, length);
+    private property <int> row-count: root.rows.length;
+    changed content-y => { root.viewport-changed(root.content-y, root.visible-height); }
+    changed visible-height => { root.viewport-changed(root.content-y, root.visible-height); }
+    changed row-count => { root.viewport-changed(root.content-y, root.visible-height); }
     forward-focus: key-area;
     public function focus-list() { key-area.focus(); }
 
@@ -145,6 +153,7 @@ export component Pane inherits Rectangle {
     callback go-up();
     callback focus-requested();
     callback select(int, int);
+    callback viewport-changed(length, length);
 
     border-width: active ? 2px : 1px;
     border-color: active ? Palette.accent-background : Palette.border;
@@ -179,6 +188,7 @@ export component Pane inherits Rectangle {
             open-row(i) => { root.open-row(i); }
             focus-requested => { root.focus-requested(); }
             select(op, i) => { root.select(op, i); }
+            viewport-changed(y, h) => { root.viewport-changed(y, h); }
         }
         Text { text: status; height: 18px; font-size: 11px; color: Palette.foreground; }
     }

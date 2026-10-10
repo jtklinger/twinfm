@@ -5,17 +5,35 @@ mod fs {
     pub mod enumerate;
 }
 mod auto;
+mod icons;
 mod model;
 mod perf;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fs::enumerate::{Msg, THIS_PC, is_this_pc};
-use model::{PaneModel, SelOp, SortCol, filter_sort};
+use icons::IconTable;
+use model::{Kind, PaneModel, SelOp, SortCol, filter_sort};
 use slint::{ComponentHandle, ModelRc, RenderingState, Weak};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Instant;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+/// Rows above and below the viewport whose icons are fetched ahead of a scroll.
+const ICON_MARGIN_ROWS: usize = 10;
+
+/// UI-side icon counters for the `[icons]` line.
+#[derive(Default)]
+struct IconCounts {
+    requests: u64,
+    replies: u64,
+    resolves: u64,
+    resolve_ns: u64,
+    /// (requests, replies, worker renders, worker ns) at the last report.
+    reported: (u64, u64, u64, u64),
+}
 
 /// Per-pane timing bookkeeping for the gate measurements.
 #[derive(Default)]
@@ -40,6 +58,15 @@ struct State {
     keep_scroll: [bool; 2],
     split_requested: Option<Instant>,
     busy_timer: slint::Timer,
+    icons: Rc<RefCell<IconTable>>,
+    icon_tx: Sender<icons::Request>,
+    icon_rx: Receiver<icons::Reply>,
+    /// Each pane's navigation generation, read by the icon worker to skip stale requests.
+    icon_gens: Arc<[AtomicU64; 2]>,
+    icon_stats: Arc<icons::Stats>,
+    icon_counts: IconCounts,
+    /// The (content-y, visible-height) each list last reported, in logical px.
+    view: [(f32, f32); 2],
 }
 
 thread_local! {
@@ -63,6 +90,7 @@ fn navigate(pane: usize, path: PathBuf) {
         let generation = model.generation.get() + 1;
         model.generation.set(generation);
         model.clear();
+        st.icon_gens[pane].store(generation, Ordering::Relaxed);
         st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
         st.paths[pane] = path.clone();
         st.keep_scroll[pane] = false;
@@ -89,6 +117,7 @@ fn refresh(pane: usize) {
         let generation = model.generation.get() + 1;
         model.generation.set(generation);
         model.begin_refresh();
+        st.icon_gens[pane].store(generation, Ordering::Relaxed);
         st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
         set_status(&app, pane, "refreshing...".into());
         let path = st.paths[pane].clone();
@@ -221,8 +250,98 @@ fn request_pass(st: &mut State, pane: usize) {
                     eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
                 }
                 set_status(&app, pane, status_text(model, &st.timing[pane]));
+                resolve_view(st, &app, pane);
             });
         });
+    });
+}
+
+/// Fetch or apply icons for the rows on screen (plus a margin) in one pane.
+fn resolve_view(st: &mut State, app: &App, pane: usize) {
+    if pane == 1 && !app.get_split() {
+        return;
+    }
+    let model = &st.panes[pane];
+    let (y, h) = st.view[pane];
+    let Some((first, last)) = icons::visible_range(y, h, model.len()) else { return };
+    let t0 = Instant::now();
+    let size_px = (icons::ICON_LOGICAL_PX * app.window().scale_factor()).round() as u32;
+    let generation = model.generation.get();
+    let (folder, tx) = (&st.paths[pane], &st.icon_tx);
+    let mut sent = 0;
+    model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, |e| {
+        let path = if e.kind == Kind::Drive { PathBuf::from(e.name.as_str()) } else { folder.join(e.name.as_str()) };
+        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px });
+        sent += 1;
+    });
+    let c = &mut st.icon_counts;
+    c.requests += sent;
+    c.resolves += 1;
+    c.resolve_ns += t0.elapsed().as_nanos() as u64;
+}
+
+/// A list scrolled, resized or changed length. Called from Slint `changed` handlers; if the
+/// state is borrowed at that moment, retry from the event loop rather than drop the update.
+fn on_viewport(pane: usize, y: f32, h: f32) {
+    let busy = STATE.with(|s| {
+        let Ok(mut guard) = s.try_borrow_mut() else { return true };
+        let Some(st) = guard.as_mut() else { return false };
+        st.view[pane] = (y, h);
+        if let Some(app) = st.app.upgrade() {
+            resolve_view(st, &app, pane);
+        }
+        false
+    });
+    if busy {
+        slint::Timer::single_shot(Duration::ZERO, move || on_viewport(pane, y, h));
+    }
+}
+
+/// Take every icon reply the worker has sent, intern the images, then re-resolve both panes'
+/// visible rows once (one walk over a screenful per pane, however many replies arrived).
+fn drain_icons() {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let mut any = false;
+        {
+            let mut table = st.icons.borrow_mut();
+            while let Ok(r) = st.icon_rx.try_recv() {
+                table.complete(r.key, r.outcome);
+                st.icon_counts.replies += 1;
+                any = true;
+            }
+        }
+        if any {
+            resolve_view(st, &app, 0);
+            resolve_view(st, &app, 1);
+        }
+    });
+}
+
+/// Once a second, when icon work happened: requests sent, replies received, table size, the
+/// worker's average time per icon and the UI's average resolve time.
+fn report_icons() {
+    with_state(|st| {
+        let c = &mut st.icon_counts;
+        let rendered = st.icon_stats.rendered.load(Ordering::Relaxed);
+        let render_ns = st.icon_stats.render_ns.load(Ordering::Relaxed);
+        let (req0, rep0, ren0, ns0) = c.reported;
+        if c.requests == req0 && c.replies == rep0 {
+            return;
+        }
+        let n = rendered - ren0;
+        eprintln!(
+            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, resolve {} calls avg {:.1} us",
+            c.requests - req0,
+            c.replies - rep0,
+            c.requests,
+            c.replies,
+            st.icons.borrow().len(),
+            if n > 0 { (render_ns - ns0) as f64 / n as f64 / 1e6 } else { 0.0 },
+            c.resolves,
+            if c.resolves > 0 { c.resolve_ns as f64 / c.resolves as f64 / 1e3 } else { 0.0 },
+        );
+        c.reported = (c.requests, c.replies, rendered, render_ns);
     });
 }
 
@@ -262,10 +381,19 @@ fn pane_path(app: &App, pane: usize) -> slint::SharedString {
 
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
-    let panes: [Rc<PaneModel>; 2] = [Rc::new(PaneModel::default()), Rc::new(PaneModel::default())];
+    let icons = Rc::new(RefCell::new(IconTable::default()));
+    let panes: [Rc<PaneModel>; 2] =
+        [Rc::new(PaneModel::with_icons(icons.clone())), Rc::new(PaneModel::with_icons(icons.clone()))];
     app.set_left_rows(ModelRc::from(panes[0].clone()));
     app.set_right_rows(ModelRc::from(panes[1].clone()));
     let (tx, rx) = unbounded();
+    let (icon_tx, icon_requests) = unbounded();
+    let (icon_replies, icon_rx) = unbounded();
+    let icon_gens = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
+    let icon_stats = Arc::new(icons::Stats::default());
+    icons::spawn(icon_requests, icon_replies, icon_gens.clone(), icon_stats.clone(), || {
+        let _ = slint::invoke_from_event_loop(drain_icons);
+    });
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
             app: app.as_weak(),
@@ -277,6 +405,13 @@ fn main() -> Result<(), slint::PlatformError> {
             keep_scroll: [false; 2],
             split_requested: None,
             busy_timer: slint::Timer::default(),
+            icons,
+            icon_tx,
+            icon_rx,
+            icon_gens,
+            icon_stats,
+            icon_counts: IconCounts::default(),
+            view: [(0.0, 0.0); 2],
         })
     });
 
@@ -293,6 +428,9 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     let report_timer = slint::Timer::default();
     report_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(5), perf::report);
+    let icon_timer = slint::Timer::default();
+    icon_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), report_icons);
+    app.on_viewport_changed(|pane, y, h| on_viewport(pane as usize, y, h));
 
     app.on_navigate(|pane, path| navigate(pane as usize, PathBuf::from(path.as_str())));
     app.on_open_row(|pane, row| {

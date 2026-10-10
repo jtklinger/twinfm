@@ -2,8 +2,10 @@
 //! Only the UI thread touches it. Workers hand over whole Vec<Entry> batches.
 
 use crate::Row;
+use crate::icons::{IconTable, KeyState, PLACEHOLDER_DRIVE, PLACEHOLDER_FILE, PLACEHOLDER_FOLDER, PLACEHOLDERS};
 use slint::{Model, ModelNotify, ModelTracker, SharedString};
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::collections::{BTreeSet, HashSet};
 use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -53,19 +55,34 @@ pub struct Entry {
     /// Mirror of selection membership, kept true only in the pane's `shown` Vec so that
     /// `row_data` stays a plain clone (no set lookup per row).
     pub selected: bool,
+    /// Index into the shared `IconTable`: a placeholder until the shell icon for `icon_key`
+    /// has arrived and the row has been on screen (`PaneModel::resolve_icons`).
+    pub icon: u16,
+    /// Icon cache key (`icons::icon_key`), set on the enumeration worker.
+    pub icon_key: SharedString,
 }
 
 impl Entry {
     #[cfg(test)]
     pub fn new(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString) -> Entry {
-        Entry::with_zone(name, size, modified, attrs, type_text, &LocalZone::current())
+        Entry::with_zone(name, size, modified, attrs, type_text, SharedString::default(), &LocalZone::current())
     }
 
     /// `zone` is built once per enumeration; per-entry Win32 time conversion cost about 60 ms
     /// per 40k entries (see `LocalZone`).
-    pub fn with_zone(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString, zone: &LocalZone) -> Entry {
+    pub fn with_zone(
+        name: SharedString,
+        size: u64,
+        modified: i64,
+        attrs: u32,
+        type_text: SharedString,
+        icon_key: SharedString,
+        zone: &LocalZone,
+    ) -> Entry {
         let is_dir = attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
         Entry {
+            icon: if is_dir { PLACEHOLDER_FOLDER } else { PLACEHOLDER_FILE },
+            icon_key,
             size_text: if is_dir { SharedString::default() } else { format_size(size).into() },
             modified_text: zone.format(modified),
             type_text,
@@ -86,6 +103,8 @@ impl Entry {
             modified: 0,
             modified_text: SharedString::default(),
             type_text,
+            icon: PLACEHOLDER_DRIVE,
+            icon_key: name.clone(),
             name,
             attrs: FILE_ATTRIBUTE_DIRECTORY,
             kind: Kind::Drive,
@@ -151,11 +170,20 @@ pub struct PaneModel {
     pub sort_col: Cell<SortCol>,
     pub sort_asc: Cell<bool>,
     pub show_hidden: Cell<bool>,
+    /// Shell icons, shared by both panes; `row_data` indexes it with `Entry::icon`.
+    icons: Rc<RefCell<IconTable>>,
 }
 
 impl Default for PaneModel {
     fn default() -> Self {
+        PaneModel::with_icons(Rc::new(RefCell::new(IconTable::default())))
+    }
+}
+
+impl PaneModel {
+    pub fn with_icons(icons: Rc<RefCell<IconTable>>) -> Self {
         PaneModel {
+            icons,
             all: RefCell::new(Vec::new()),
             shown: RefCell::new(Vec::new()),
             hidden: Cell::new(0),
@@ -171,9 +199,41 @@ impl Default for PaneModel {
             show_hidden: Cell::new(false),
         }
     }
-}
 
-impl PaneModel {
+    /// Give the rows in `first..=last` (clamped to the list) their shell icon where the table
+    /// has it, and call `request` once for each key it has not seen. Only placeholder rows are
+    /// looked at, so a screenful that is already resolved costs a few dozen integer compares.
+    /// Returns how many rows changed.
+    pub fn resolve_icons(&self, first: usize, last: usize, mut request: impl FnMut(&Entry)) -> usize {
+        let mut changed = Vec::new();
+        {
+            let mut table = self.icons.borrow_mut();
+            let mut shown = self.shown.borrow_mut();
+            let Some(end) = shown.len().checked_sub(1).map(|n| n.min(last)) else { return 0 };
+            for i in first..=end {
+                let e = &mut shown[i];
+                if e.icon >= PLACEHOLDERS || e.icon_key.is_empty() {
+                    continue;
+                }
+                match table.state(&e.icon_key) {
+                    KeyState::Ready(idx) => {
+                        e.icon = idx;
+                        changed.push(i);
+                    }
+                    KeyState::Missing => {
+                        table.begin(&e.icon_key);
+                        request(e);
+                    }
+                    KeyState::Pending | KeyState::Failed => {}
+                }
+            }
+        }
+        for &i in &changed {
+            self.notify.row_changed(i);
+        }
+        changed.len()
+    }
+
     pub fn clear(&self) {
         self.all.borrow_mut().clear();
         self.shown.borrow_mut().clear();
@@ -314,6 +374,7 @@ impl Model for PaneModel {
             modified: e.modified_text.clone(),
             kind: e.kind as i32,
             selected: e.selected,
+            icon: self.icons.borrow().image(e.icon),
         })
     }
 
@@ -963,6 +1024,32 @@ mod tests {
         }
         assert_eq!(LocalZone::from_tzi(&utc_minus_5()).format(0), "1969-12-31 19:00");
         assert_eq!(LocalZone::from_tzi(&utc_minus_5()).format(1_790_000_000), "2026-09-21 09:13");
+    }
+
+    #[test]
+    fn resolve_icons_requests_each_key_once_and_applies_replies() {
+        use crate::icons::Outcome;
+        let keyed = |name: &str, key: &str| Entry { icon_key: key.into(), ..e(name, 0, false) };
+        let m = PaneModel::default();
+        m.append(vec![keyed("a.txt", "ext:.txt"), keyed("b.txt", "ext:.txt"), keyed("c.png", "ext:.png"), keyed("d.txt", "ext:.txt")]);
+        let mut asked = Vec::new();
+        // Rows 0..=2 are on screen: two keys, each requested once.
+        assert_eq!(m.resolve_icons(0, 2, |e| asked.push(e.icon_key.to_string())), 0);
+        assert_eq!(asked, ["ext:.txt", "ext:.png"]);
+        // Scrolling over a pending key asks nothing more.
+        m.resolve_icons(0, 3, |e| asked.push(e.icon_key.to_string()));
+        assert_eq!(asked.len(), 2);
+        m.icons.borrow_mut().complete("ext:.txt".into(), Outcome::Pixels(slint::SharedPixelBuffer::new(1, 1)));
+        // The reply lands: the visible .txt rows switch; row 3 is off screen and keeps its placeholder.
+        assert_eq!(m.resolve_icons(0, 2, |_| panic!("nothing new to request")), 2);
+        let icons: Vec<u16> = m.shown.borrow().iter().map(|e| e.icon).collect();
+        assert_eq!(icons, [PLACEHOLDERS, PLACEHOLDERS, PLACEHOLDER_FILE, PLACEHOLDER_FILE]);
+        assert_eq!(m.row_data(0).unwrap().icon.size().width, 1);
+        // A failed key is not asked for again and keeps its placeholder.
+        m.icons.borrow_mut().complete("ext:.png".into(), Outcome::Failed);
+        assert_eq!(m.resolve_icons(0, 99, |_| panic!("failed keys are not retried")), 1);
+        assert_eq!(m.row_data(2).unwrap().icon.size().width, 16);
+        assert_eq!(m.resolve_icons(5, 9, |_| panic!("out of range")), 0);
     }
 
     #[test]
