@@ -176,8 +176,6 @@ hand-written calls; nothing per frame or per row without a trace first.
 - **No back-off for folders that change continuously** (a log folder, `%TEMP%`): they refresh up to
   four times a second for as long as they are shown. No measurement of what that costs the UI
   thread on a 40k folder yet.
-- **`WM_DEVICECHANGE` is unverified with real hardware**: no USB drive was inserted or removed in
-  the session; the code path (subclass, debounce, drive list re-read, This PC refresh) is untested.
 
 ### Scripted checks
 
@@ -246,8 +244,9 @@ USB check below did).
   `DBT_DEVTYP_VOLUME`, unit mask for Z:) sent to the window of the merged build: `[devices]
   volume arrived`, 500 ms later `drives changed: drive list re-read, This PC refreshed in 1
   pane(s)`, `[refresh]`, `[sidebar] 2 drive(s)`, and the same for the removal. That proves the
-  subclass, the debounce and the refresh; it does not prove that the shell's broadcast reaches
-  the window. Re-test with a real drive on the rebuilt binary is pending.
+  subclass, the debounce and the refresh. Jeremy then repeated the real-drive test on the
+  rebuilt binary (`target\release` from ff594d4): insert and remove both refreshed the sidebar
+  and This PC without F5. **Passed.**
 - **30-minute soak**: pending (not yet run; the 2-minute run is under Scripted checks).
 
 ## Open questions
