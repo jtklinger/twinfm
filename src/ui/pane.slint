@@ -83,6 +83,20 @@ component FileList inherits FileListBase {
     callback select(int, int);
     forward-focus: key-area;
     public function focus-list() { key-area.focus(); }
+
+    // Same arithmetic as StandardListView's bring-into-view, for our 22px rows: scroll just far
+    // enough that the cursor row is fully inside the viewport, then apply the selection gesture.
+    function cursor-moved(shift: bool) {
+        if (root.current-row < 0) { return; }
+        if (root.content-y + root.current-row * 22px < 0px) {
+            root.content-y = -root.current-row * 22px;
+        }
+        if (root.content-y + (root.current-row + 1) * 22px > root.visible-height) {
+            root.content-y = root.visible-height - (root.current-row + 1) * 22px;
+        }
+        root.select(shift ? 2 : 0, root.current-row);
+    }
+
     row-clicked(i, ctrl, shift) => {
         root.current-row = i;
         key-area.focus();
@@ -99,14 +113,16 @@ component FileList inherits FileListBase {
             if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return accept; }
             if (e.text == Key.UpArrow) {
                 if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }
-                if (root.current-row >= 0) { root.select(e.modifiers.shift ? 2 : 0, root.current-row); }
+                root.cursor-moved(e.modifiers.shift);
                 return accept;
             }
             if (e.text == Key.DownArrow) {
                 if (root.current-row + 1 < root.rows.length) { root.current-row += 1; }
-                if (root.current-row >= 0) { root.select(e.modifiers.shift ? 2 : 0, root.current-row); }
+                root.cursor-moved(e.modifiers.shift);
                 return accept;
             }
+            if (e.text == Key.Home) { if (root.rows.length > 0) { root.current-row = 0; root.cursor-moved(e.modifiers.shift); } return accept; }
+            if (e.text == Key.End) { if (root.rows.length > 0) { root.current-row = root.rows.length - 1; root.cursor-moved(e.modifiers.shift); } return accept; }
             if (e.text == " ") { if (root.current-row >= 0) { root.select(1, root.current-row); } return accept; }
             if (e.modifiers.control && (e.text == "a" || e.text == "A")) { root.select(3, root.current-row); return accept; }
             return reject;
