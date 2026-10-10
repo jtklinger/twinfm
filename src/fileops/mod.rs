@@ -24,7 +24,8 @@ use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
 use windows_sys::Win32::System::Com::{CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Shell::{
-    COPYENGINE_E_USER_CANCELLED, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_WANTNUKEWARNING,
+    COPYENGINE_E_USER_CANCELLED, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
+    FOF_WANTNUKEWARNING,
     FOFX_ADDUNDORECORD, FOFX_SHOWELEVATIONPROMPT, FileOperation, SHCreateItemFromParsingName,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -93,16 +94,34 @@ pub struct Done {
     pub outcome: Outcome,
 }
 
+/// Same folder, ignoring case and a trailing separator.
+pub fn same_dir(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    norm(a) == norm(b)
+}
+
 /// `SetOperationFlags` for a job. A permanent delete drops `FOF_ALLOWUNDO` (which is what
 /// recycles) and asks for the shell's own "permanently delete?" confirmation; `no_confirm`
-/// suppresses every confirmation, that one included.
+/// suppresses every confirmation, that one included. A copy into the sources' own folder and a
+/// new folder over an existing name get `FOF_RENAMEONCOLLISION` ("a - Copy.txt",
+/// "New folder (2)", as Explorer does); without it the shell stops at an "Interrupted Action"
+/// window, even with `FOF_NOCONFIRMATION`.
 pub fn flags(job: &Job, no_confirm: bool) -> u32 {
     let mut f = FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOF_NOCONFIRMMKDIR | FOFX_SHOWELEVATIONPROMPT;
-    if let Job::Delete { permanent: true, .. } = job {
-        f &= !FOF_ALLOWUNDO;
-        if !no_confirm {
-            f |= FOF_WANTNUKEWARNING;
+    match job {
+        Job::Delete { permanent: true, .. } => {
+            f &= !FOF_ALLOWUNDO;
+            if !no_confirm {
+                f |= FOF_WANTNUKEWARNING;
+            }
         }
+        Job::Copy { sources, dest_dir }
+            if !sources.is_empty() && sources.iter().all(|s| s.parent().is_some_and(|d| same_dir(d, dest_dir))) =>
+        {
+            f |= FOF_RENAMEONCOLLISION;
+        }
+        Job::NewFolder { .. } => f |= FOF_RENAMEONCOLLISION,
+        _ => {}
     }
     if no_confirm {
         f |= FOF_NOCONFIRMATION;
@@ -392,7 +411,13 @@ mod tests {
         assert_eq!(quiet & (FOF_ALLOWUNDO | FOF_WANTNUKEWARNING), 0);
         assert_ne!(quiet & FOF_NOCONFIRMATION, 0);
         let rename = Job::Rename { source: PathBuf::new(), new_name: "x".into() };
-        assert_eq!(flags(&rename, false), base);
+        assert_eq!(flags(&rename, false), base, "a rename onto an existing name asks, as in Explorer");
+        let here = Job::Copy { sources: vec![PathBuf::from(r"C:\d\a.txt")], dest_dir: PathBuf::from(r"c:\D\") };
+        assert_eq!(flags(&here, false), base | FOF_RENAMEONCOLLISION, "a copy into its own folder makes a copy");
+        let there = Job::Copy { sources: vec![PathBuf::from(r"C:\d\a.txt")], dest_dir: PathBuf::from(r"C:\e") };
+        assert_eq!(flags(&there, false), base, "a conflict elsewhere asks");
+        let nf = Job::NewFolder { parent: PathBuf::from(r"C:\d"), name: "New folder".into() };
+        assert_eq!(flags(&nf, false), base | FOF_RENAMEONCOLLISION);
     }
 
     #[test]
@@ -465,9 +490,18 @@ mod tests {
         assert!(root.join("b.txt").exists());
         assert!(!root.join("made").join("b.txt").exists());
 
-        run(Job::Delete { sources: vec![root.join("b.txt"), root.join("made")], permanent: true });
+        run(Job::Copy { sources: vec![root.join("a.txt")], dest_dir: root.clone() });
+        assert!(root.join("a - Copy.txt").exists(), "a copy into its own folder is renamed, not stopped");
+        run(Job::NewFolder { parent: root.clone(), name: "made".into() });
+        assert!(root.join("made (2)").is_dir(), "a new folder over an existing name is numbered");
+
+        run(Job::Delete {
+            sources: vec![root.join("b.txt"), root.join("made"), root.join("made (2)"), root.join("a - Copy.txt")],
+            permanent: true,
+        });
         assert!(!root.join("b.txt").exists());
         assert!(!root.join("made").exists());
+        assert!(!root.join("made (2)").exists());
         assert!(root.join("a.txt").exists());
 
         drop(run);

@@ -11,7 +11,7 @@ mod model;
 mod perf;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use fileops::{Job, Outcome, clipboard};
+use fileops::{Job, Outcome, clipboard, same_dir};
 use fs::enumerate::{Msg, THIS_PC, is_this_pc};
 use icons::IconTable;
 use model::{Kind, PaneModel, SelOp, SortCol, filter_sort};
@@ -394,12 +394,6 @@ fn note(st: &mut State, app: &App, pane: usize, text: String) {
     eprintln!("[fileops] pane={pane} note: {text}");
     st.notes[pane] = text;
     set_status(app, pane, status_text(&st.panes[pane], &st.timing[pane], &st.notes[pane]));
-}
-
-/// Same folder, ignoring case and a trailing separator.
-fn same_dir(a: &Path, b: &Path) -> bool {
-    let norm = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
-    norm(a) == norm(b)
 }
 
 /// `p` is `root` or lies under it (case-insensitive, whole components).
