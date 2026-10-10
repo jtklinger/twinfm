@@ -55,6 +55,8 @@ pub struct Entry {
     /// Mirror of selection membership, kept true only in the pane's `shown` Vec so that
     /// `row_data` stays a plain clone (no set lookup per row).
     pub selected: bool,
+    /// On the clipboard as a cut (drawn dimmed); mirrored like `selected`, from `PaneModel::cut`.
+    pub cut: bool,
     /// Index into the shared `IconTable`: a placeholder until the shell icon for `icon_key`
     /// has arrived and the row has been on screen (`PaneModel::resolve_icons`).
     pub icon: u16,
@@ -92,6 +94,7 @@ impl Entry {
             attrs,
             kind: Kind::from_attrs(attrs),
             selected: false,
+            cut: false,
         }
     }
 
@@ -109,6 +112,7 @@ impl Entry {
             attrs: FILE_ATTRIBUTE_DIRECTORY,
             kind: Kind::Drive,
             selected: false,
+            cut: false,
         }
     }
 
@@ -162,6 +166,8 @@ pub struct PaneModel {
     /// Bumped on every selection change, so a worker pass can tell whether the selection it
     /// carried over is still the current one when it lands.
     pub sel_version: Cell<u64>,
+    /// Names on the clipboard as a cut from this pane's folder; carried across passes by name.
+    cut: RefCell<Vec<SharedString>>,
     notify: ModelNotify,
     /// Generation of the enumeration whose batches we accept; stale workers are ignored.
     pub generation: Cell<u64>,
@@ -191,6 +197,7 @@ impl PaneModel {
             refreshing: Cell::new(false),
             sel: RefCell::new(Selection::default()),
             sel_version: Cell::new(0),
+            cut: RefCell::new(Vec::new()),
             notify: ModelNotify::default(),
             generation: Cell::new(0),
             pass: Cell::new(0),
@@ -242,7 +249,42 @@ impl PaneModel {
         self.refreshing.set(false);
         *self.sel.borrow_mut() = Selection::default();
         self.sel_version.set(self.sel_version.get() + 1);
+        self.cut.borrow_mut().clear();
         self.notify.reset();
+    }
+
+    /// Mark `names` as cut (empty: none); only rows whose mark changed are notified.
+    pub fn set_cut(&self, names: Vec<SharedString>) {
+        let set: HashSet<&str> = names.iter().map(|n| n.as_str()).collect();
+        let mut changed = Vec::new();
+        {
+            let mut shown = self.shown.borrow_mut();
+            for (i, e) in shown.iter_mut().enumerate() {
+                let cut = set.contains(e.name.as_str());
+                if e.cut != cut {
+                    e.cut = cut;
+                    changed.push(i);
+                }
+            }
+        }
+        drop(set);
+        *self.cut.borrow_mut() = names;
+        // A pass already on the worker carries the old marks; this makes the swap re-derive them.
+        self.sel_version.set(self.sel_version.get() + 1);
+        for i in changed {
+            self.notify.row_changed(i);
+        }
+    }
+
+    /// The entries a file operation acts on: the selection, or the cursor row when nothing is
+    /// selected.
+    pub fn targets(&self, cursor: i32) -> Vec<Entry> {
+        let shown = self.shown.borrow();
+        let sel = self.sel.borrow();
+        if sel.set.is_empty() {
+            return usize::try_from(cursor).ok().and_then(|i| shown.get(i)).cloned().into_iter().collect();
+        }
+        sel.set.iter().filter_map(|&i| shown.get(i).cloned()).collect()
     }
 
     /// Apply a selection gesture; only rows whose membership changed are notified.
@@ -280,7 +322,7 @@ impl PaneModel {
         let shown = self.shown.borrow();
         let cursor = usize::try_from(cursor).ok().and_then(|i| shown.get(i)).map(|e| e.name.clone());
         drop(shown);
-        Restore { cursor, selected: self.selected_names() }
+        Restore { cursor, selected: self.selected_names(), cut: self.cut.borrow().clone() }
     }
 
     /// Append a batch; one row_added notification per batch, never per entry. The batch moves
@@ -374,6 +416,7 @@ impl Model for PaneModel {
             modified: e.modified_text.clone(),
             kind: e.kind as i32,
             selected: e.selected,
+            cut: e.cut,
             icon: self.icons.borrow().image(e.icon),
         })
     }
@@ -398,6 +441,8 @@ pub struct PassOutput {
     pub hidden: usize,
     pub cursor: Option<usize>,
     pub selection: BTreeSet<usize>,
+    /// Whether `restore` marked any entry as cut (so a later restore knows to clear them).
+    pub cut_marked: bool,
 }
 
 impl PassOutput {
@@ -413,6 +458,13 @@ impl PassOutput {
         }
         self.cursor = cursor;
         self.selection = selection;
+        if !r.cut.is_empty() || self.cut_marked {
+            let names: HashSet<&str> = r.cut.iter().map(|s| s.as_str()).collect();
+            for e in self.shown.iter_mut() {
+                e.cut = names.contains(e.name.as_str());
+            }
+            self.cut_marked = !r.cut.is_empty();
+        }
     }
 }
 
@@ -426,7 +478,7 @@ pub fn filter_sort(mut all: Vec<Entry>, show_hidden: bool, col: SortCol, asc: bo
     for e in all.iter_mut() {
         e.selected = false;
     }
-    let mut out = PassOutput { shown: all, hidden, cursor: None, selection: BTreeSet::new() };
+    let mut out = PassOutput { shown: all, hidden, cursor: None, selection: BTreeSet::new(), cut_marked: false };
     out.restore(r);
     out
 }
@@ -436,6 +488,8 @@ pub fn filter_sort(mut all: Vec<Entry>, show_hidden: bool, col: SortCol, asc: bo
 pub struct Restore {
     pub cursor: Option<SharedString>,
     pub selected: Vec<SharedString>,
+    /// Names marked as cut (rarely non-empty; the pass marks them on the worker).
+    pub cut: Vec<SharedString>,
 }
 
 /// Where the remembered names sit in a new listing; names that no longer exist are dropped.
@@ -883,7 +937,7 @@ mod tests {
         // New listing: "b" is gone, "0" arrived first, "d" moved.
         let new = vec![e("0", 0, false), e("a", 0, false), e("c", 0, false), e("d", 0, false)];
         assert_eq!(restore_by_name(&r, &new), (Some(3), set(&[3])));
-        let gone = Restore { cursor: Some("zz".into()), selected: vec!["zz".into()] };
+        let gone = Restore { cursor: Some("zz".into()), selected: vec!["zz".into()], cut: vec![] };
         assert_eq!(restore_by_name(&gone, &new), (None, BTreeSet::new()));
         // A pass carries the selection over a re-sort, and marks the rows.
         let out = filter_sort(m.snapshot_all(), false, SortCol::Name, false, &r);
@@ -1058,9 +1112,39 @@ mod tests {
         m.append(vec![e("a", 1, false), e("b", 2, false)]);
         assert_eq!(m.row_count(), 2);
         assert_eq!(m.row_data(1).unwrap().size.as_str(), "2 B");
-        m.replace(PassOutput { shown: vec![e("c", 3, true)], hidden: 0, cursor: None, selection: BTreeSet::new() });
+        m.replace(PassOutput { shown: vec![e("c", 3, true)], hidden: 0, cursor: None, selection: BTreeSet::new(), cut_marked: false });
         assert_eq!(m.row_count(), 1);
         assert_eq!(m.row_data(0).unwrap().kind, Kind::Directory as i32);
         assert_eq!(m.row_data(0).unwrap().size.as_str(), "");
+    }
+
+    #[test]
+    fn cut_marks_follow_names_and_targets_fall_back_to_the_cursor() {
+        let m = PaneModel::default();
+        m.append(vec![e("a", 0, false), e("b", 0, false), e("c", 0, false)]);
+        // Nothing selected: the cursor row is the target; no cursor, no target.
+        assert_eq!(m.targets(2).iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["c"]);
+        assert!(m.targets(-1).is_empty());
+        m.select(SelOp::Only, 0);
+        m.select(SelOp::Toggle, 1);
+        assert_eq!(m.targets(2).iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["a", "b"], "selection wins");
+        m.set_cut(vec!["b".into(), "c".into()]);
+        let cut: Vec<bool> = (0..3).map(|i| m.row_data(i).unwrap().cut).collect();
+        assert_eq!(cut, [false, true, true]);
+        // A re-sort pass carries the marks by name.
+        let out = filter_sort(m.snapshot_all(), false, SortCol::Name, false, &m.capture(0));
+        m.replace(out);
+        let cut: Vec<(String, bool)> = (0..3).map(|i| m.row_data(i).unwrap()).map(|r| (r.name.to_string(), r.cut)).collect();
+        assert_eq!(cut, [("c".into(), true), ("b".into(), true), ("a".into(), false)]);
+        // Clearing the cut while a pass is out: the swap re-derives the marks (none).
+        let mut out = filter_sort(m.snapshot_all(), false, SortCol::Name, true, &m.capture(0));
+        m.set_cut(vec![]);
+        out.restore(&m.capture(0));
+        m.replace(out);
+        assert!((0..3).all(|i| !m.row_data(i).unwrap().cut));
+        m.set_cut(vec!["a".into()]);
+        m.clear();
+        m.append(vec![e("a", 0, false)]);
+        assert!(!m.row_data(0).unwrap().cut, "navigating away forgets the cut");
     }
 }

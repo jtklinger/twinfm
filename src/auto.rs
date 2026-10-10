@@ -9,7 +9,16 @@
 //!   sort <pane> <0|1|2|3>            click a column header (name/size/modified/type)
 //!   key <name>                       press a key through the Slint key path; names: F3, F5,
 //!                                    Backspace, Return, Space, AltUp, CtrlShiftRight, CtrlH
-//!                                    (hidden files), CtrlR (refresh), CtrlA, ShiftUp, ShiftDown
+//!                                    (hidden files), CtrlR (refresh), CtrlA, ShiftUp, ShiftDown,
+//!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
+//!                                    CtrlV, CtrlShiftN, Escape
+//!   copy | move                      Shift+F5 / Shift+F6: the active pane's selection to the other pane
+//!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
+//!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
+//!   newfolder <name>                 F7, type the name into the editor, Return
+//!   rename <name>                    F2 on the cursor row, type the new name, Return
+//!   waitops <ms>                     wait until no file operation runs and no pane refreshes
+//!                                    (at most <ms>), then 300 ms more for the pass to land
 //!   click <pane> <row>               click a visible row (selects only it, moves the cursor)
 //!   ctrlclick <pane> <row>           Ctrl+click a visible row (toggles it)
 //!   shiftclick <pane> <row>          Shift+click a visible row (selects anchor..row)
@@ -37,6 +46,9 @@ enum Step {
     Key(String),
     Click { pane: usize, row: usize, modifier: Option<Key> },
     DblClick { pane: usize, row: usize },
+    /// Press `lead`, type `text` into whatever then has focus, press Return.
+    Type { lead: String, text: String },
+    WaitOps(u64),
     Quit,
 }
 
@@ -59,6 +71,16 @@ fn parse(script: &str) -> Vec<Step> {
                 "ctrlclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Control) },
                 "shiftclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Shift) },
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
+                "copy" => Step::Key("ShiftF5".into()),
+                "move" => Step::Key("ShiftF6".into()),
+                "delete" => Step::Key("Delete".into()),
+                "sdelete" => Step::Key("ShiftDelete".into()),
+                "cc" => Step::Key("CtrlC".into()),
+                "cx" => Step::Key("CtrlX".into()),
+                "cv" => Step::Key("CtrlV".into()),
+                "newfolder" => Step::Type { lead: "F7".into(), text: a[1..].join(" ") },
+                "rename" => Step::Type { lead: "F2".into(), text: a[1..].join(" ") },
+                "waitops" => Step::WaitOps(num(1).max(1) as u64),
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("[auto] unknown step: {other}");
@@ -143,6 +165,51 @@ fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
     LogicalPosition::new(mid.x, 63.0 + row as f32 * 22.0 + 11.0)
 }
 
+/// The key sequence for a `key` step name (modifiers first).
+fn chord(name: &str) -> Vec<SharedString> {
+    let k = |k: Key| SharedString::from(k);
+    match name {
+        "F2" => vec![k(Key::F2)],
+        "F3" => vec![k(Key::F3)],
+        "F5" => vec![k(Key::F5)],
+        "F7" => vec![k(Key::F7)],
+        "Backspace" => vec![k(Key::Backspace)],
+        "Return" => vec![k(Key::Return)],
+        "Escape" => vec![k(Key::Escape)],
+        "Delete" => vec![k(Key::Delete)],
+        "Space" => vec![" ".into()],
+        "AltUp" => vec![k(Key::Alt), k(Key::UpArrow)],
+        "CtrlShiftRight" => vec![k(Key::Control), k(Key::Shift), k(Key::RightArrow)],
+        "CtrlH" => vec![k(Key::Control), "h".into()],
+        "CtrlR" => vec![k(Key::Control), "r".into()],
+        "CtrlA" => vec![k(Key::Control), "a".into()],
+        "CtrlC" => vec![k(Key::Control), "c".into()],
+        "CtrlX" => vec![k(Key::Control), "x".into()],
+        "CtrlV" => vec![k(Key::Control), "v".into()],
+        "CtrlShiftN" => vec![k(Key::Control), k(Key::Shift), "N".into()],
+        "ShiftUp" => vec![k(Key::Shift), k(Key::UpArrow)],
+        "ShiftDown" => vec![k(Key::Shift), k(Key::DownArrow)],
+        "ShiftF5" => vec![k(Key::Shift), k(Key::F5)],
+        "ShiftF6" => vec![k(Key::Shift), k(Key::F6)],
+        "ShiftDelete" => vec![k(Key::Shift), k(Key::Delete)],
+        other => {
+            eprintln!("[auto] unknown key {other}");
+            vec![]
+        }
+    }
+}
+
+/// Press the keys in order and release them in reverse.
+fn press(app: &App, keys: &[SharedString]) {
+    let win = app.window();
+    for t in keys {
+        win.dispatch_event_with_result(WindowEvent::KeyPressed { text: t.clone() }).ok();
+    }
+    for t in keys.iter().rev() {
+        win.dispatch_event_with_result(WindowEvent::KeyReleased { text: t.clone() }).ok();
+    }
+}
+
 fn run_step(runner: Rc<RefCell<Runner>>) {
     let (step, app) = {
         let r = runner.borrow();
@@ -174,33 +241,30 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             schedule(runner, 1);
         }
         Step::Key(name) => {
-            let k = |k: Key| SharedString::from(k);
-            let chord: Vec<SharedString> = match name.as_str() {
-                "F3" => vec![k(Key::F3)],
-                "F5" => vec![k(Key::F5)],
-                "Backspace" => vec![k(Key::Backspace)],
-                "Return" => vec![k(Key::Return)],
-                "Space" => vec![" ".into()],
-                "AltUp" => vec![k(Key::Alt), k(Key::UpArrow)],
-                "CtrlShiftRight" => vec![k(Key::Control), k(Key::Shift), k(Key::RightArrow)],
-                "CtrlH" => vec![k(Key::Control), "h".into()],
-                "CtrlR" => vec![k(Key::Control), "r".into()],
-                "CtrlA" => vec![k(Key::Control), "a".into()],
-                "ShiftUp" => vec![k(Key::Shift), k(Key::UpArrow)],
-                "ShiftDown" => vec![k(Key::Shift), k(Key::DownArrow)],
-                other => {
-                    eprintln!("[auto] unknown key {other}");
-                    vec![]
-                }
-            };
-            let win = app.window();
-            for t in &chord {
-                win.dispatch_event_with_result(WindowEvent::KeyPressed { text: t.clone() }).ok();
-            }
-            for t in chord.iter().rev() {
-                win.dispatch_event_with_result(WindowEvent::KeyReleased { text: t.clone() }).ok();
-            }
+            press(&app, &chord(&name));
             schedule(runner, 1);
+        }
+        Step::Type { lead, text } => {
+            press(&app, &chord(&lead));
+            for c in text.chars() {
+                press(&app, &[c.to_string().into()]);
+            }
+            press(&app, &chord("Return"));
+            schedule(runner, 1);
+        }
+        Step::WaitOps(max_ms) => {
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                let busy = crate::ops_busy();
+                if !busy || std::time::Instant::now() >= deadline {
+                    if busy {
+                        eprintln!("[auto] waitops: still busy after {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 300);
+                }
+            });
         }
         Step::Click { pane, row, modifier } => {
             let pos = row_pos(&app, pane, row);
