@@ -81,6 +81,12 @@ milestones, gate re-run after each). Read them before changing the list.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols`.
+- Gate binaries are built into their own `--target-dir target-<name>` from a detached
+  `git worktree add` checkout, so an agent's builds in `target` do not confound them, and a
+  running soak locks `target\release\twinfm.exe`. `analyze-trace.py --symbols` resolves twinfm
+  frames only if the build's `target-<name>\release` is on `_NT_SYMBOL_PATH` (the exe's embedded
+  pdb path is not searched once that variable is set); until the script adds it itself, set it by
+  hand.
 - Harness-launched runs flip between RDP 32 Hz and console 60 Hz presentation without notice,
   so in-app busy numbers taken minutes apart are not comparable. Record Narrator on/off with
   every run (it adds about 6 points of busy).
