@@ -10,7 +10,7 @@ mod perf;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fs::enumerate::Msg;
-use model::{PaneModel, SortCol, sort_entries};
+use model::{PaneModel, SortCol, filter_sort};
 use slint::{ComponentHandle, ModelRc, RenderingState, Weak};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,9 @@ struct PaneTiming {
     requested: Option<Instant>,
     first_batch: Option<Instant>,
     first_frame_reported: bool,
+    /// Request-to-done wall time once the listing is complete.
+    done_ms: Option<f64>,
+    error: Option<String>,
 }
 
 struct State {
@@ -50,7 +53,7 @@ fn wake() {
 
 fn navigate(pane: usize, path: PathBuf) {
     with_state(|st| {
-        let app = st.app.unwrap();
+        let Some(app) = st.app.upgrade() else { return };
         let model = &st.panes[pane];
         let generation = model.generation.get() + 1;
         model.generation.set(generation);
@@ -59,11 +62,10 @@ fn navigate(pane: usize, path: PathBuf) {
         let shown = path.to_string_lossy().to_string();
         if pane == 0 {
             app.set_left_path(shown.as_str().into());
-            app.set_left_status("loading...".into());
         } else {
             app.set_right_path(shown.as_str().into());
-            app.set_right_status("loading...".into());
         }
+        set_status(&app, pane, "loading...".into());
         app.invoke_reset_scroll(pane as i32);
         eprintln!("[nav] pane={pane} gen={generation} path={shown}");
         let tx = st.tx.clone();
@@ -75,9 +77,24 @@ fn set_status(app: &App, pane: usize, s: String) {
     if pane == 0 { app.set_left_status(s.into()) } else { app.set_right_status(s.into()) }
 }
 
+/// The status line for a pane: loading, complete, or failed.
+fn status_text(model: &PaneModel, t: &PaneTiming) -> String {
+    if let Some(e) = &t.error {
+        return format!("error: {e}");
+    }
+    let hidden = match model.hidden_count() {
+        0 => String::new(),
+        n => format!(" ({n} hidden)"),
+    };
+    match t.done_ms {
+        Some(ms) => format!("{} items{hidden}, enumerated in {ms:.0} ms", model.len()),
+        None => format!("{} items{hidden} (loading...)", model.len()),
+    }
+}
+
 fn drain() {
     with_state(|st| {
-        let app = st.app.unwrap();
+        let Some(app) = st.app.upgrade() else { return };
         while let Ok(msg) = st.rx.try_recv() {
             match msg {
                 Msg::Batch { pane, generation, entries } => {
@@ -93,7 +110,7 @@ fn drain() {
                             eprintln!("[enum] pane={pane} first batch after {:.1} ms", perf::elapsed_ms(r));
                         }
                     }
-                    set_status(&app, pane, format!("{} items (loading...)", model.len()));
+                    set_status(&app, pane, status_text(model, t));
                 }
                 Msg::Done { pane, generation, total, elapsed, error } => {
                     let model = &st.panes[pane];
@@ -102,15 +119,19 @@ fn drain() {
                     }
                     let wall = st.timing[pane].requested.map(perf::elapsed_ms).unwrap_or(0.0);
                     match error {
-                        Some(e) => set_status(&app, pane, format!("error: {e}")),
+                        Some(e) => {
+                            st.timing[pane].error = Some(e);
+                            set_status(&app, pane, status_text(model, &st.timing[pane]));
+                        }
                         None => {
                             eprintln!(
                                 "[enum] pane={pane} done: {total} entries, worker {:.1} ms, request-to-done {wall:.1} ms",
                                 elapsed.as_secs_f64() * 1e3
                             );
-                            set_status(&app, pane, format!("{total} items, enumerated in {:.0} ms", wall));
-                            // Apply the pane's current sort once the listing is complete.
-                            request_sort(st, pane, model.sort_col.get(), model.sort_asc.get());
+                            st.timing[pane].done_ms = Some(wall);
+                            set_status(&app, pane, status_text(model, &st.timing[pane]));
+                            // Apply the pane's current filter and sort once the listing is complete.
+                            request_pass(st, pane);
                         }
                     }
                 }
@@ -119,12 +140,12 @@ fn drain() {
     });
 }
 
-/// Sort on a worker over a snapshot; swap the Vec in one step when it returns.
-fn request_sort(st: &mut State, pane: usize, col: SortCol, asc: bool) {
+/// Filter and sort on a worker over a snapshot of the full listing; swap the shown Vec in one
+/// step when it returns. Uses the pane's current sort column, direction and hidden filter.
+fn request_pass(st: &mut State, pane: usize) {
+    let Some(app) = st.app.upgrade() else { return };
     let model = &st.panes[pane];
-    model.sort_col.set(col);
-    model.sort_asc.set(asc);
-    let app = st.app.unwrap();
+    let (col, asc, show_hidden) = (model.sort_col.get(), model.sort_asc.get(), model.show_hidden.get());
     if pane == 0 {
         app.set_left_sort_col(col as i32);
         app.set_left_sort_asc(asc);
@@ -133,19 +154,28 @@ fn request_sort(st: &mut State, pane: usize, col: SortCol, asc: bool) {
         app.set_right_sort_asc(asc);
     }
     let generation = model.generation.get();
-    let mut snapshot = model.snapshot();
+    let pass = model.pass.get() + 1;
+    model.pass.set(pass);
+    let snapshot = model.snapshot_all();
     let t0 = Instant::now();
     std::thread::spawn(move || {
-        sort_entries(&mut snapshot, col, asc);
-        let sort_ms = perf::elapsed_ms(t0);
+        let total = snapshot.len();
+        let out = filter_sort(snapshot, show_hidden, col, asc);
+        let pass_ms = perf::elapsed_ms(t0);
         let _ = slint::invoke_from_event_loop(move || {
             with_state(|st| {
+                let Some(app) = st.app.upgrade() else { return };
                 let model = &st.panes[pane];
-                if model.generation.get() != generation || model.len() != snapshot.len() {
-                    return; // listing changed underneath us; a newer sort or Done will follow
+                if model.generation.get() != generation || model.pass.get() != pass || model.total() != total {
+                    return; // listing or request changed underneath us; a newer pass or Done follows
                 }
-                eprintln!("[sort] pane={pane} {} entries by {col:?} asc={asc} in {sort_ms:.1} ms", snapshot.len());
-                model.replace(snapshot);
+                eprintln!(
+                    "[sort] pane={pane} {} of {total} entries by {col:?} asc={asc} hidden={} in {pass_ms:.1} ms",
+                    out.shown.len(),
+                    out.hidden
+                );
+                model.replace(out);
+                set_status(&app, pane, status_text(model, &st.timing[pane]));
             });
         });
     });
@@ -169,6 +199,11 @@ fn on_frame_rendered() {
             }
         }
     });
+}
+
+/// The path shown in a pane's path bar.
+fn pane_path(app: &App, pane: usize) -> slint::SharedString {
+    if pane == 0 { app.get_left_path() } else { app.get_right_path() }
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -210,9 +245,8 @@ fn main() -> Result<(), slint::PlatformError> {
             if !e.is_dir() {
                 return None;
             }
-            let app = st.app.unwrap();
-            let base = if pane == 0 { app.get_left_path() } else { app.get_right_path() };
-            Some(Path::new(base.as_str()).join(e.name.as_str()))
+            let app = st.app.upgrade()?;
+            Some(Path::new(pane_path(&app, pane as usize).as_str()).join(e.name.as_str()))
         });
         if let Some(p) = target {
             navigate(pane as usize, p);
@@ -220,9 +254,8 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_go_up(|pane| {
         let target = with_state(|st| {
-            let app = st.app.unwrap();
-            let base = if pane == 0 { app.get_left_path() } else { app.get_right_path() };
-            Path::new(base.as_str()).parent().map(|p| p.to_path_buf())
+            let app = st.app.upgrade()?;
+            Path::new(pane_path(&app, pane as usize).as_str()).parent().map(|p| p.to_path_buf())
         });
         if let Some(p) = target {
             navigate(pane as usize, p);
@@ -233,13 +266,23 @@ fn main() -> Result<(), slint::PlatformError> {
             let model = &st.panes[pane as usize];
             let col = SortCol::from_i32(col);
             let asc = if model.sort_col.get() == col { !model.sort_asc.get() } else { true };
-            request_sort(st, pane as usize, col, asc);
+            model.sort_col.set(col);
+            model.sort_asc.set(asc);
+            request_pass(st, pane as usize);
+        });
+    });
+    app.on_toggle_hidden(|pane| {
+        with_state(|st| {
+            let model = &st.panes[pane as usize];
+            model.show_hidden.set(!model.show_hidden.get());
+            eprintln!("[hidden] pane={pane} show_hidden={}", model.show_hidden.get());
+            request_pass(st, pane as usize);
         });
     });
     app.on_toggle_split({
         let w = app.as_weak();
         move || {
-            let app = w.unwrap();
+            let Some(app) = w.upgrade() else { return };
             let now = !app.get_split();
             app.set_split(now);
             if now {

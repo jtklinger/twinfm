@@ -79,7 +79,7 @@ component FileList inherits FileListBase {
         x: 0;
         width: 0;
         key-pressed(e) => {
-            if (e.text == Key.Backspace) { root.go-up(); return accept; }
+            if (e.text == Key.Backspace && !e.modifiers.control) { root.go-up(); return accept; }
             if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return accept; }
             if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return accept; }
             if (e.text == Key.UpArrow) { if (root.current-row > 0) { root.current-row -= 1; } return accept; }

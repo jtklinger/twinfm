@@ -28,6 +28,7 @@ export component App inherits Window {
     callback sort-by(int, int);
     callback go-up(int);
     callback toggle-split();
+    callback toggle-hidden(int);
 
     public function focus-pane(p: int) {
         active-pane = p;
@@ -43,6 +44,7 @@ export component App inherits Window {
     outer := FocusScope {
         key-pressed(e) => {
             if (e.text == Key.F3) { root.toggle-split(); return accept; }
+            if (e.modifiers.control && (e.text == "h" || e.text == "H")) { root.toggle-hidden(active-pane); return accept; }
             if (e.text == Key.RightArrow && e.modifiers.control && e.modifiers.shift) {
                 if (split) { root.focus-pane(1 - active-pane); }
                 return accept;

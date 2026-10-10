@@ -98,56 +98,93 @@ impl SortCol {
 }
 
 pub struct PaneModel {
-    entries: RefCell<Vec<Entry>>,
+    /// Every entry of the listing, unfiltered, in enumeration order.
+    all: RefCell<Vec<Entry>>,
+    /// What the list shows: `all` without hidden/system entries (unless `show_hidden`), sorted
+    /// by the last worker pass. `row_count` and `row_data` read only this.
+    shown: RefCell<Vec<Entry>>,
+    /// How many entries of `all` the filter currently keeps out of `shown`.
+    hidden: Cell<usize>,
     notify: ModelNotify,
     /// Generation of the enumeration whose batches we accept; stale workers are ignored.
     pub generation: Cell<u64>,
+    /// Bumped by every filter/sort request; only the newest pass may swap `shown`.
+    pub pass: Cell<u64>,
     pub sort_col: Cell<SortCol>,
     pub sort_asc: Cell<bool>,
+    pub show_hidden: Cell<bool>,
 }
 
 impl Default for PaneModel {
     fn default() -> Self {
         PaneModel {
-            entries: RefCell::new(Vec::new()),
+            all: RefCell::new(Vec::new()),
+            shown: RefCell::new(Vec::new()),
+            hidden: Cell::new(0),
             notify: ModelNotify::default(),
             generation: Cell::new(0),
+            pass: Cell::new(0),
             sort_col: Cell::new(SortCol::Name),
             sort_asc: Cell::new(true),
+            show_hidden: Cell::new(false),
         }
     }
 }
 
 impl PaneModel {
     pub fn clear(&self) {
-        self.entries.borrow_mut().clear();
+        self.all.borrow_mut().clear();
+        self.shown.borrow_mut().clear();
+        self.hidden.set(0);
         self.notify.reset();
     }
 
-    /// Append a batch; one row_added notification per batch, never per entry.
+    /// Append a batch; one row_added notification per batch, never per entry. The batch moves
+    /// into `all`; `shown` gets clones of the entries the filter keeps (refcount bumps only).
     pub fn append(&self, mut batch: Vec<Entry>) {
-        let start = self.entries.borrow().len();
-        let n = batch.len();
-        self.entries.borrow_mut().append(&mut batch);
-        self.notify.row_added(start, n);
+        let show_hidden = self.show_hidden.get();
+        let start = self.shown.borrow().len();
+        {
+            let mut shown = self.shown.borrow_mut();
+            shown.extend(batch.iter().filter(|e| visible(e, show_hidden)).cloned());
+        }
+        let added = self.shown.borrow().len() - start;
+        self.hidden.set(self.hidden.get() + batch.len() - added);
+        self.all.borrow_mut().append(&mut batch);
+        if added > 0 {
+            self.notify.row_added(start, added);
+        }
     }
 
-    /// Swap the whole Vec in one step (used after a worker-side sort).
-    pub fn replace(&self, entries: Vec<Entry>) {
-        *self.entries.borrow_mut() = entries;
+    /// Swap the shown Vec in one step (the result of a worker-side filter and sort pass).
+    pub fn replace(&self, out: PassOutput) {
+        *self.shown.borrow_mut() = out.shown;
+        self.hidden.set(out.hidden);
         self.notify.reset();
     }
 
-    pub fn snapshot(&self) -> Vec<Entry> {
-        self.entries.borrow().clone()
+    /// Copy of the full listing for a worker pass.
+    pub fn snapshot_all(&self) -> Vec<Entry> {
+        self.all.borrow().clone()
     }
 
+    /// Rows shown.
     pub fn len(&self) -> usize {
-        self.entries.borrow().len()
+        self.shown.borrow().len()
+    }
+
+    /// Entries enumerated, shown or not.
+    pub fn total(&self) -> usize {
+        self.all.borrow().len()
+    }
+
+    /// Entries the filter keeps out of view.
+    pub fn hidden_count(&self) -> usize {
+        self.hidden.get()
     }
 
     pub fn entry(&self, i: usize) -> Option<Entry> {
-        self.entries.borrow().get(i).cloned()
+        self.shown.borrow().get(i).cloned()
     }
 }
 
@@ -155,12 +192,12 @@ impl Model for PaneModel {
     type Data = Row;
 
     fn row_count(&self) -> usize {
-        self.entries.borrow().len()
+        self.shown.borrow().len()
     }
 
     fn row_data(&self, row: usize) -> Option<Row> {
-        let entries = self.entries.borrow();
-        let e = entries.get(row)?;
+        let shown = self.shown.borrow();
+        let e = shown.get(row)?;
         Some(Row {
             name: e.name.clone(),
             type_text: e.type_text.clone(),
@@ -177,6 +214,26 @@ impl Model for PaneModel {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+/// Whether the hidden/system filter lets an entry through.
+pub fn visible(e: &Entry, show_hidden: bool) -> bool {
+    show_hidden || !(e.is_hidden() || e.is_system())
+}
+
+/// What a worker pass hands back to the UI thread.
+pub struct PassOutput {
+    pub shown: Vec<Entry>,
+    pub hidden: usize,
+}
+
+/// The worker pass: filter a snapshot of `all`, then sort it. Pure, runs off the UI thread.
+pub fn filter_sort(mut all: Vec<Entry>, show_hidden: bool, col: SortCol, asc: bool) -> PassOutput {
+    let before = all.len();
+    all.retain(|e| visible(e, show_hidden));
+    let hidden = before - all.len();
+    sort_entries(&mut all, col, asc);
+    PassOutput { shown: all, hidden }
 }
 
 /// Sort in place: directories first, then by the chosen column. Runs on a worker.
@@ -295,6 +352,35 @@ mod tests {
     }
 
     #[test]
+    fn filter_hides_hidden_and_system_unless_shown() {
+        let a = |name: &str, attrs: u32| Entry::new(name.into(), 0, 0, attrs, "".into());
+        let all = vec![
+            a("b", 0),
+            a("hid", FILE_ATTRIBUTE_HIDDEN),
+            a("sys", FILE_ATTRIBUTE_SYSTEM),
+            a("a", 0),
+            a("both", FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM),
+        ];
+        let off = filter_sort(all.clone(), false, SortCol::Name, true);
+        let names: Vec<&str> = off.shown.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+        assert_eq!(off.hidden, 3);
+        let on = filter_sort(all.clone(), true, SortCol::Name, true);
+        assert_eq!(on.shown.len(), 5);
+        assert_eq!(on.hidden, 0);
+
+        // Batches during enumeration: `all` keeps everything, `shown` only what passes.
+        let m = PaneModel::default();
+        m.append(all[..3].to_vec());
+        m.append(all[3..].to_vec());
+        assert_eq!((m.total(), m.row_count(), m.hidden_count()), (5, 2, 3));
+        assert_eq!(m.row_data(1).unwrap().name.as_str(), "a");
+        m.show_hidden.set(true);
+        m.replace(filter_sort(m.snapshot_all(), true, SortCol::Name, true));
+        assert_eq!((m.row_count(), m.hidden_count()), (5, 0));
+    }
+
+    #[test]
     fn sort_by_type_then_name() {
         let t = |name: &str, ty: &str| Entry::new(name.into(), 0, 0, 0, ty.into());
         let mut v = vec![t("b.txt", "Text Document"), t("z.png", "PNG File"), t("a.txt", "Text Document"), e("dir", 0, true)];
@@ -336,7 +422,7 @@ mod tests {
         m.append(vec![e("a", 1, false), e("b", 2, false)]);
         assert_eq!(m.row_count(), 2);
         assert_eq!(m.row_data(1).unwrap().size.as_str(), "2 B");
-        m.replace(vec![e("c", 3, true)]);
+        m.replace(PassOutput { shown: vec![e("c", 3, true)], hidden: 0 });
         assert_eq!(m.row_count(), 1);
         assert_eq!(m.row_data(0).unwrap().kind, Kind::Directory as i32);
         assert_eq!(m.row_data(0).unwrap().size.as_str(), "");
