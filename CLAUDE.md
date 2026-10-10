@@ -8,7 +8,7 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
 milestones, gate re-run after each). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (42 tests; two touch the real shell and clipboard, see below)
+- `cargo test --release` (49 tests; three touch the real shell and clipboard, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -41,7 +41,13 @@ milestones, gate re-run after each). Read them before changing the list.
   `menukey <key>`, `menupick <own item>`, `menuclose`) that run from a Win32 timer inside the
   menu's modal loop, because no Slint timer fires while it runs (`src/auto.rs` header);
   `[menu]` lines on stderr. A script must end every menu with `menuclose` or `menupick`, or the
-  run waits for a person. `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  run waits for a person. Drag and drop steps: `dropfiles <pane> <row> <copy|move|auto>
+  <path|path>` calls the drop target's DragEnter and Drop directly (no OLE loop; row -1 is the
+  pane's folder; `|` separates paths), and `dragrow <pane> <row> <dx> <dy>` starts a real OLE
+  drag followed by `sleep` and `dragcancel` steps, which run on a helper thread because OLE's drag
+  loop runs no Win32 timer. A scripted drag can only be cancelled, never dropped (a scripted drop
+  in an RDP session once landed on another program's window; see the M5 record). `[dnd]` lines on
+  stderr. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -49,12 +55,15 @@ milestones, gate re-run after each). Read them before changing the list.
   cycles between the panes with the bigdir/System32/Manifests scroll scenario in between, and
   reports exit code, `panicked` count and working set (CSV every 30 s). It runs the app with
   `TWINFM_SOAK=1`, which adds `FOF_NOCONFIRMATION` to every job and refuses any file operation
-  outside `%TEMP%\twinfm-m3`. Never set `TWINFM_SOAK` otherwise. Each cycle adds one Recycle Bin
-  entry and overwrites the clipboard.
+  outside `%TEMP%\twinfm-m3` and `%TEMP%\twinfm-m5`. Never set `TWINFM_SOAK` otherwise. Each cycle
+  adds one Recycle Bin entry and overwrites the clipboard. `tools/soak-m5.ps1 -Minutes N` does the
+  same in `%TEMP%\twinfm-m5\` and adds, per cycle, a `dropfiles` copy and move and a scripted
+  context menu on a row and on empty space; it also reports drops, menus and in-menu ticks.
 - Tests that touch the desktop: `fileops::tests::worker_runs_real_shell_operations` runs real
   `IFileOperation` jobs in `%TEMP%\twinfm-m3-test-<pid>\`, and
   `clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` replaces the clipboard's
-  contents and leaves it empty.
+  contents and leaves it empty, and `dnd::tests::shell_data_object_offers_hdrop` asks the shell
+  for a data object over two files in `%TEMP%\twinfm-m5-test-<pid>\`.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols`.

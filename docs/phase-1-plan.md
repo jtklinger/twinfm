@@ -758,6 +758,252 @@ Other scripted runs:
 - UI-thread CPU while a menu is open: 0 ms for an idle 6-second menu, 16 to 156 ms for menus
   whose submenus the shell filled.
 
-Soak: with M5.
+Soak: with M5 (the M5 soak opens and closes 40 menus in 10 minutes; see there).
+
+Gate: pending Jeremy's console WPR run.
+
+## M5: drag and drop
+
+### What landed (2026-10-10)
+
+- **Drop target** (`src/dnd.rs`), on the UI thread. winit registers its own `IDropTarget` on the
+  window, so `register` calls `RevokeDragDrop(hwnd)` once and then `RegisterDragDrop(hwnd, ours)`;
+  both return `S_OK` (`[dnd] registered: RevokeDragDrop (winit's target) = 0x00000000,
+  RegisterDragDrop (ours) = 0x00000000` on every run). The window handle is not there before
+  `run` (winit creates the window lazily), so a 50 ms Slint timer started in `main` retries until
+  `main_hwnd` has it, registers, and stops; the same step sets the drag threshold from
+  `SM_CXDRAG`/`SM_CYDRAG` over the scale factor (4 x 4 px here). winit revokes whatever is
+  registered when it destroys the window, which releases ours. The object is a `#[repr(C)]`
+  struct with a hand-written vtable and an atomic reference count, as in `fileops` and `shellmenu`.
+- **DragEnter / DragOver / DragLeave / Drop.** DragEnter reads the data object's `CF_HDROP`
+  (`QueryGetData`, `GetData`, `ReleaseStgMedium`, parsed by `clipboard::parse_dropfiles`) and
+  keeps the paths in the target; a data object without `CF_HDROP` is refused everywhere. Each
+  call turns the screen point into client px (`ScreenToClient`), then `main::drop_spot` divides by
+  the scale factor and hit-tests (`dnd::hit`) with the layout arithmetic of `app.slint` and
+  `pane.slint`: pane x ranges from the split ratio (the 6 px splitter between them is no target),
+  the list from y 63 to 23 px above the bottom and 3 px in from the pane's sides, 22 px rows from
+  `content-y`. A directory row (including a drive row in This PC and a reparse directory) is the
+  drop folder; any other point in a pane (a file row, empty space, the header, the path bar, the
+  status line) is the pane's folder; This PC itself is no folder. The effect (`dnd::effect_for`):
+  `DROPEFFECT_MOVE` when the first source and the folder share a volume (`c:` or
+  `\\server\share`, `\\?\` prefixes removed), else `DROPEFFECT_COPY`; Ctrl forces copy, Shift
+  move; Ctrl+Shift and Alt (a shortcut in Explorer) copy; an effect the source does not allow
+  falls back to the other one it allows. `DROPEFFECT_NONE` for a drop into a source's own folder,
+  onto a dragged item, or into a folder inside a dragged folder.
+- **Drop** reads `CF_HDROP` again from the data object it is handed, decides as above, clears the
+  highlight, and hands the job to `slint::invoke_from_event_loop` (`main::drop_files`, which
+  submits a `Copy` or `Move` to the M3 worker; the shell shows its own progress, both panes
+  refresh when it ends, the drop pane shows the note). A move is reported to the source as an
+  optimized move (Decisions).
+- **Highlight.** `drop-pane` and `drop-row` on `App` (-1 none; row -1 the pane's folder), set by
+  the target through `main::drop_highlight` only when they change, cleared on DragLeave and Drop.
+  `Pane` draws them as two overlays over the list viewport: the row as a 22 px band
+  (accent at 35%, 2 px accent border) at `content-y + row * 22px`, the folder as a tint over the
+  whole list with a 3 px accent border. No per-row binding was added.
+- **Drag source.** The row's `TouchArea` reports the left button to Rust as `row-gesture(row,
+  what, ctrl, shift)`: 0 press, 1 release, 2 the first move past the threshold with the button
+  down (`self.pressed`, `abs(mouse - pressed) > drag-dx / drag-dy`, once per press), 3
+  double-click. `dnd::Gesture`, one per pane in the app state, decides: pressing an unselected row
+  selects it at once (Only, or Toggle with Ctrl, Range with Shift); pressing a row that is
+  already selected changes nothing until the release, so a drag carries the whole selection and
+  a click without a drag still selects only that row (Explorer). A drag (`main::drag_start`)
+  checks that the left button is really down (`GetKeyState`), takes the selection's names and the
+  folder out of the state, drops the borrow, and calls `dnd::drag`: `shellmenu::parse_items` (the
+  context menu's PIDL code, now shared) for the folder and child PIDLs,
+  `SHCreateDataObject(pidlFolder, n, apidl, NULL, IID_IDataObject)`, our `IDropSource`
+  (`QueryContinueDrag`: Escape or the right button cancels, releasing the left button drops;
+  `GiveFeedback`: `DRAGDROP_S_USEDEFAULTCURSORS`) and `DoDragDrop(data, source, COPY | MOVE)`. Drives
+  are not dragged (a note says so). After `DRAGDROP_S_DROP` the source pane refreshes.
+- **The release after a drag.** OLE's loop consumes the button-up, so Slint never sees it and
+  keeps the row's `TouchArea` grabbed. `drag_start` ends with a `Timer::single_shot(0)` that
+  dispatches a `PointerReleased` at the cursor, after the pointer event that started the drag has
+  finished dispatching. The gesture is `Dragged` by then, so that release selects nothing, and the
+  double-click Slint may derive from it (it fires before the release's pointer event) opens
+  nothing (`[dnd] pane=N double-click at the end of a drag: not opened`).
+- **Driver** (`src/auto.rs`): `dropfiles <pane> <row> <copy|move|auto> <path|path...>` builds a
+  data object that serves only `CF_HDROP` (`dnd::hdrop_data`, a `GlobalAlloc` block per `GetData`)
+  and calls our registered target's DragEnter then Drop through its vtable, at the screen point of
+  a row's centre (row -1: the pane's header, so its folder), with Ctrl for copy, Shift for move,
+  nothing for auto. `dragrow <pane> <row> <dx> <dy>` presses a row, waits 60 ms, and moves the
+  pointer, which starts a real OLE drag; the `sleep` and `dragcancel` steps after it run on a
+  helper thread (Decisions). stderr has `[dnd]` lines: registration, DragEnter, each change of
+  spot or effect, Drop with the effect and what was reported, the job, `DoDragDrop`'s start and
+  result, the first `QueryContinueDrag` of each drag with whether the app state is free, and the
+  release after the drag.
+- **Soak tool** `tools/soak-m5.ps1` (`soak-m3.ps1` untouched): the M3 cycle in
+  `%TEMP%\twinfm-m5\`, plus per cycle a `dropfiles` copy of two files into the right pane, a
+  `dropfiles` move of those copies back into the left pane, their permanent delete, and
+  `rclick 0 0; sleep 300; menuclose` and `rclickempty 1; sleep 300; menuclose`. `TWINFM_SOAK=1` now
+  fences paths to `%TEMP%\twinfm-m3` or `%TEMP%\twinfm-m5`; drops go through the same `submit`, so
+  the fence and `FOF_NOCONFIRMATION` apply to them.
+- **Tests**, 42 to 49: the `QueryContinueDrag` decision over (Escape, left, right); volume keys
+  (drive, `\\?\`, UNC, `\\?\UNC\`); the effect decision (same and other volume, every modifier,
+  what the source allows, every refused drop, the optimized-move report); hit-testing (rows,
+  below the last row, header, status line, padding, splitter, a scrolled list, each pane's own
+  scroll, another split ratio) and the drop folder (directory row, file row, empty space, a drive
+  row, This PC); the gesture rules (click on unselected and selected rows, Ctrl and Shift, a drag
+  that keeps the selection, the release and double-click after a drag, a real double-click that
+  drops its deferred selection); the synthetic data object round-tripping three paths through
+  `GetData` twice, refusing other formats and media, and its `QueryInterface`; and the shell's own
+  data object over two real files offering `CF_HDROP` with both paths and storing a "Logical
+  Performed DropEffect" written with `SetData`.
+
+### Decisions
+
+- **A move dropped on TwinFM is an optimized move.** The worker moves the files later, so `Drop`
+  returns `DROPEFFECT_NONE` and sets "Performed DropEffect" `DROPEFFECT_NONE` and "Logical
+  Performed DropEffect" `DROPEFFECT_MOVE` on the data object, the protocol Explorer uses as a
+  target. Returning `DROPEFFECT_MOVE`, as the brief has it, invites a source to delete the
+  originals (delete-on-paste) before the worker has moved them. A copy returns `DROPEFFECT_COPY`.
+- **`Drop` posts the job through `invoke_from_event_loop`**, not straight to the worker. A job
+  needs an id, the source-pane entry and the note, all in the app state; the closure runs after
+  our own `DoDragDrop` has returned (a pane-to-pane drag) or at the next turn of the event loop
+  (another program's drag). The target methods themselves read the state only under a short
+  `try_borrow` in `drop_spot` (pane folders, row counts, the hovered entry), set the two
+  highlight properties, and never submit.
+- **The source pane refreshes after any `DRAGDROP_S_DROP`**, not only after `DROPEFFECT_MOVE`:
+  Explorer reports its own optimized moves as `DROPEFFECT_NONE`.
+- **Refused drops** include a folder inside a dragged folder, beyond the brief's own-folder and
+  onto-a-dragged-item cases.
+- **The drag starts inside the pointer move** that crossed the threshold, as the context menu
+  opens inside the right release: no deferral, so the button is still down when OLE starts. The
+  `RefCell` rule holds: `drag_start` takes everything out of the state and drops the borrow before
+  `DoDragDrop`. The first `QueryContinueDrag` inside every drag logged `app state free=true`.
+- **Scripted drags run their in-drag steps on a helper thread.** OLE's drag loop does not
+  dispatch Win32 timer callbacks: a thread timer (M4's mechanism) and then a timer on the main
+  window both sat silent, and with the mouse untouched the loop never even called
+  `QueryContinueDrag`, so the first scripted drags hung in `DoDragDrop` until killed. The pump
+  thread posts a `WM_MOUSEMOVE` to the main window every 20 ms (at the real cursor position) so
+  the loop turns, and posts `WM_KEYDOWN VK_ESCAPE` for `dragcancel`; OLE then calls
+  `QueryContinueDrag` with `fEscapePressed` set (the real Escape path). It posts Escape on its own
+  after 20 s. While a scripted drag runs, the drop source counts the left button as held.
+- **No scripted drop.** A `dragdrop` step (release the scripted button) and a `dragto` step
+  (`SetCursorPos` onto a row) were built and tried twice, then removed. In this RDP session the
+  cursor kept snapping back to the client's mouse position between ticks, so OLE alternated
+  DragEnter and DragLeave on our target, and at the release it dropped on whatever window it had
+  last hit-tested. The first try reported `DoDragDrop` dropped with effect move from an unknown
+  window of another program (the scratch file `d.txt` stayed in `src`; no `d.txt` appeared on the
+  desktop or elsewhere in the profile; what that window did with it is not known); the second
+  dropped with effect none. A scripted drag can now only be cancelled.
+- **Highlight as overlays**, two `Rectangle`s in `Pane` with no input and no accessibility role,
+  rather than a binding on every row: the rows carry nothing new for the gate scenario.
+- **Pressing a selected row defers its selection to the release** (Only, or Toggle with Ctrl),
+  so dragging a multi-selection by any of its rows carries all of it. Ctrl still wins over Shift,
+  as in M1's click handler.
+- **Alt drags copy.** Explorer makes a shortcut; TwinFM makes none (recorded deviation, below).
+- **The soak fence has two roots**, `twinfm-m3` and `twinfm-m5`, so each soak keeps its own
+  scratch folder.
+
+### Deviations
+
+- `Drop` reports `DROPEFFECT_NONE` for a move (optimized move, above), not the effect performed.
+- The job is posted from `Drop` through the event loop, not to the worker directly (above).
+- `dragrow`'s in-drag steps run on a helper thread, not a Win32 timer; there is no scripted
+  release (above).
+- `dropfiles` takes a mode (`copy`, `move`, `auto`) before the paths and separates paths with `|`,
+  because `;` separates script steps.
+- Ctrl+Shift and Alt copy (no links).
+- `TWINFM_SOAK=1` fences two roots.
+- `shellmenu`'s PIDL parsing moved into `parse_items`, shared with the drag source; `Com`, `Pidl`,
+  `wide` and `ensure_com` became `pub(crate)`.
+
+### Deferred
+
+- **The highlight of a drag we started does not repaint while the drag runs.** Our own
+  `DoDragDrop` runs inside a winit handler, so (as with the M4 menu) nothing of Slint renders until
+  it returns; the properties are set, and drawn once the drag is over (then cleared). A drag from
+  Explorer or another program is not affected: its target calls arrive through winit's ordinary
+  loop. No fix was attempted; rendering from inside the loop would mean driving the renderer
+  outside winit.
+- **No drag image.** The cursor shows the effect only; `IDragSourceHelper` (our drags) and
+  `IDropTargetHelper` (Explorer's image over our window) would add one.
+- **Right-button drag** (Explorer's "Copy here / Move here / Create shortcuts here" menu) is not
+  supported: a right-drag from TwinFM never starts, and a right-drag from Explorer drops with the
+  default effect and no menu.
+- **No auto-scroll** near the list's top and bottom edges, and no spring-loaded folders.
+- **After a drag into Explorer moves the files,** the source pane refreshes when `DoDragDrop`
+  returns; Explorer may still be moving them, and the pane shows them until the next F5
+  (directory watching would fix it).
+- **Virtual files** (`CFSTR_FILEDESCRIPTOR`: items from a zip folder, an Outlook attachment) and
+  asynchronous data objects are refused: only `CF_HDROP` is read.
+- **Mounted folders** count as the drive that holds them when choosing move or copy.
+- **The OLE path of a pane-to-pane drop is not scripted** (no scripted drop, above): `Drop`'s
+  code runs in every `dropfiles` and the soak, and DragEnter and DragOver ran inside our own
+  `DoDragDrop` in the scripted drags, but a real `Drop` delivered from inside our own drag loop
+  needs the manual check.
+
+### Scripted checks
+
+All in `%TEMP%\twinfm-m5\` (src: `sub\`, `a.txt`, `b.txt`, `c.txt`; dst empty), RDP session,
+default features:
+
+- `dropfiles 1 -1 copy src\a.txt|src\b.txt`: DragEnter effect copy (keys Ctrl), Drop reported copy,
+  job "Copied 2 items"; both in `dst`, both still in `src`.
+- `dropfiles 1 -1 move src\c.txt`: effect move (Shift), Drop reported none, "Moved 1 item";
+  `c.txt` left `src`.
+- `dropfiles 1 -1 auto src\sub\x.txt`: no modifier, same volume, so move; `x.txt` moved.
+- `dropfiles 0 0 copy dst\a.txt` onto row 0 of the left pane (`sub`): the target named
+  `pane 0 row 0 (...\src\sub)`, copied into `src\sub`.
+- `dropfiles 0 -1 auto src\b.txt` (its own folder) and `dropfiles 0 1 copy src\a.txt` (a file row,
+  so its pane's folder, the source's own): effect none, no job.
+- `click 0 1; ctrlclick 0 2; dragrow 0 1 0 60; sleep 400; dragcancel`: dragged 2 items (the
+  pressed row was selected, so the selection stayed), `QueryContinueDrag escape=true (scripted):
+  cancel`, `DoDragDrop returned 0x00040101 (cancelled)` after 406 ms, the release after the drag
+  selected nothing (no `[select]` line), files unchanged.
+- `dragrow 0 1 1 1` (under the threshold): no drag; the release selected only row 1, the click a
+  selected row gets.
+- Regression: `click`, `shiftclick`, `ctrlclick`, a `click` on a row of a three-row selection
+  (Only on the release), `dblclick` on a folder (opened), `rclick` and `rclickempty` with
+  `menuclose` (in-menu ticks with state and driver free), then a `dragrow` and `dragcancel`, then a
+  `click`: all as before. In that run the real cursor happened to be over the window, so OLE
+  called our DragEnter from inside our own `DoDragDrop` (`over pane 0 (...\src) -> effect none`,
+  its own folder) and DragLeave at the cancel.
+
+### Soak
+
+10 minutes, `tools/soak-m5.ps1 -Minutes 10`, RDP session, default features, build f819d8a:
+
+- exit code 0 (window closed by the script at 10.0 min), **0 `panicked` lines**;
+- 20 cycles started, **300 jobs, 0 failed, 0 cancelled**, 0 soak refusals, 0 `waitops` timeouts;
+- **40 drops** through the drop target (20 copies reported as copy, 20 moves reported as none, the
+  optimized move), 40 drop jobs submitted, all among the 300 done;
+- **40 menus** opened and closed (20 on a row, 20 on the right pane's empty space), 80 in-menu
+  ticks, none with the app state or the driver borrowed;
+- working set 102.9 MB at 5 s, 172.4 MB at 35 s, then 175.2 to 184.3 MB from 66 s to 576 s and
+  201.2 MB in the last sample at 601 s; private bytes 134.7 MB at 35 s, 136.1 to 145.7 MB to
+  576 s, 161.2 MB at 601 s. The plateau sits about 20 MB above M3's (140.9 to 162.8 MB), which
+  the shell extensions the context menus load (7-Zip, PowerRename, File Locksmith and others,
+  which stay loaded) can account for. Over the plateau private bytes rose about 1 MB a minute
+  with the scroll scenario's swings on top, and the last sample is the highest; ten minutes do
+  not settle whether that is growth or swing. A 30-minute run (as M3 had) is the next check.
+
+Samples: `%TEMP%/twinfm-m5/soak-m5-memory.csv`. This also closes M4's "Soak: with M5".
+
+### Manual check
+
+Jeremy, at the console, with two scratch folders (for example `C:\Temp\dnd-a` with a few files
+and a subfolder, and an empty `C:\Temp\dnd-b`):
+
+From Explorer into TwinFM:
+
+1. Open `dnd-a` in Explorer and `dnd-b` in TwinFM's left pane. Drag one file from Explorer onto
+   the empty part of TwinFM's list: the list gets a tinted border while the cursor is over it, the
+   cursor says Move, and on release the file leaves `dnd-a` and appears in TwinFM.
+2. Drag another file with Ctrl held: the cursor says Copy, and it stays in `dnd-a` too.
+3. Drag a file onto a folder row in TwinFM: only that row is highlighted, and the file lands
+   inside that folder.
+
+From TwinFM into Explorer:
+
+1. Open `dnd-a` in TwinFM and `dnd-b` in Explorer. Ctrl+click two files in TwinFM, then drag one
+   of them into the Explorer window: both go (Move) and leave TwinFM's list (if they still show,
+   Explorer was still moving them when TwinFM refreshed: F5, see Deferred).
+2. Drag a file with Ctrl into Explorer: it is copied and stays in TwinFM.
+3. Start a drag from TwinFM and press Escape before releasing: nothing happens, the selection is
+   unchanged, and clicking a row afterwards behaves normally (no folder opens on the release).
+
+Between the panes (the one path no script can drive): with `dnd-a` left and `dnd-b` right, drag a
+file from the left pane to the right one: it moves and both panes refresh. No highlight shows
+while this drag runs (Deferred).
 
 Gate: pending Jeremy's console WPR run.
