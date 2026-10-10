@@ -444,7 +444,7 @@ Gate: pending Jeremy's console WPR run.
   `TWINFM_SOAK=1`, samples working set and private bytes every 30 s into a CSV, closes the
   window (`WM_CLOSE` to the window titled "twinfm") at the deadline, and reports exit code,
   `panicked` lines, job outcomes and memory.
-- **Tests**, 25 to 32: flags per job (including rename-on-collision and the soak flags);
+- **Tests**, 25 to 32 (36 after the icon-strip merge): flags per job (including rename-on-collision and the soak flags);
   status texts for every outcome; name validation; the `DROPFILES` block layout (offsets,
   `fWide`, NUL terminators, length) and its round trip, including an ANSI list; cut marks and
   operation targets in the model; the real clipboard (a message-only window owns it: write a
@@ -557,6 +557,11 @@ A 3-minute confirmation run on the final build: exit code 0, 0 `panicked` lines,
 84 jobs, 0 failed or cancelled; working set 142.0 MB at 35 s, 160.3 MB at 181 s (peak 172.9 MB
 during the scroll scenario), private bytes 112.9 to 146.2 MB.
 
-Soak: 30 minutes pending.
+Soak, 30 minutes (2026-10-10, `tools/soak-m3.ps1 -Minutes 30`, M3 build eb2c2df, RDP session):
+exit 0 with the window closed by the script, 0 panics, 70 cycles, 832 file operations with 0
+failed, 0 cancelled, 0 soak refusals, 0 `waitops` timeouts. Working set 102.7 MB at 5 s, 135.9 MB
+at 1801 s, range 102.7 to 173.4 MB; private bytes 102.9 to 125.9 MB. The end point sits below the
+10-minute soak's 148.8 MB, so the swings follow the scroll scenario and there is no growth trend.
+Samples: `%TEMP%/twinfm-m3/soak-m3-memory.csv`.
 
 Gate: not required for M3 but re-run with M4.
