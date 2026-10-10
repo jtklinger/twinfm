@@ -54,6 +54,11 @@ The one argument is the starting folder for the left pane (default `C:\`).
 | Ctrl+Tab, Ctrl+Shift+Tab | Next, previous tab (wraps around) |
 | Ctrl+1 to Ctrl+9 | Tab by position |
 | Click a tab; middle-click it or its close button | Switch to that tab; close it |
+| F9 | Show or hide the sidebar (also the arrows at its foot and on the collapsed strip) |
+| Click, middle-click a sidebar row | Open that drive, place or bookmark in the active pane; in a new tab there |
+| Ctrl+D | Bookmark the active tab's folder |
+| Right-click a bookmark | "Remove bookmark" |
+| F1 | About TwinFM (version, license, Slint attribution) |
 
 Drag the bar between the panes to resize them.
 
@@ -61,6 +66,22 @@ Each pane has its own tabs; each tab keeps its own folder, sort, hidden-files se
 and scroll position. The tab strip shows when a pane has more than one tab. Under each pane the
 status bar shows the item count (and how many are hidden), the selection's count and size, and
 the free space on the folder's drive.
+
+The sidebar on the left lists the drives, the usual places (Home, Desktop, Documents,
+Downloads, Pictures, Music, Videos) and your bookmarks; drag its right edge to resize it.
+
+## Settings
+
+TwinFM keeps its settings in `%APPDATA%\twinfm\config.toml` and writes them half a second after
+a change and when the window closes: the folders each pane had open (they reopen at the next
+start; a folder on the command line wins for the left pane), whether the second pane is open
+and where the split line is, the window's size and position (restored only when its title bar
+would be on a screen), the sort new tabs start with (the last column header clicked), whether
+new tabs in each pane show hidden files (the last Ctrl+H there), the sidebar's visibility and
+width, the bookmarks, and whether the path bar shows the breadcrumb or the text entry. The file
+is plain TOML and can be edited while TwinFM is closed; a file that does not parse is copied to
+`config.toml.bad` and TwinFM starts with the defaults. Runs driven by `TWINFM_SCRIPT` neither
+read nor write it; `TWINFM_CONFIG=<path>` uses another file.
 
 File operations act on the selection, or on the cursor row when nothing is selected, and run
 through the Windows shell (`IFileOperation`), so progress, name conflicts and the Recycle Bin
@@ -82,7 +103,10 @@ src/
   tabs.rs          Tab bookkeeping per pane (open, close, next, previous, by index)
   pathbar.rs       Breadcrumb buttons from a path
   statusbar.rs     Status bar texts; free space (GetDiskFreeSpaceExW, on the enumeration worker)
-  ui/app.slint     Window, two Pane components, splitter
+  sidebar.rs       Sidebar rows: drives, known folders (SHGetKnownFolderPath), bookmarks
+  settings.rs      config.toml: load, defaults, atomic save, window placement check
+  ui/app.slint     Window, sidebar, two Pane components, splitter, bookmark menu, About dialog
+  ui/icon.svg      Placeholder window icon
   ui/pane.slint    Tab strip, path bar (breadcrumb or text entry), column header, ListView over the model, status bar
   perf.rs          Frame-time ring buffer, UI-thread CPU time, printed to stderr every 5 s
   auto.rs          Scripted driver for unattended runs (TWINFM_SCRIPT, see its header)
@@ -131,8 +155,8 @@ The application's own files are MIT (see `LICENSE`). It links a modified Slint, 
 the [Slint Royalty-free Desktop, Mobile, and Web Applications License 2.0](https://github.com/slint-ui/slint/blob/master/LICENSES/LicenseRef-Slint-Royalty-free-2.0.md),
 whose section 2 permits distributing Slint "as part of an Application, modified or
 unmodified" provided the Slint attribution is shown. This README is that attribution
-(option (b) of section 2); the `AboutSlint` widget goes into an About dialog once the
-product has menus.
+(option (b) of section 2), and so is the About dialog (F1, or "About TwinFM" at the foot of
+the sidebar), which shows Slint's `AboutSlint` widget.
 
 The modifications to Slint themselves are the two commits on the `rustfm` branch of
 [jtklinger/slint](https://github.com/jtklinger/slint), also carried as `docs/patches/`.

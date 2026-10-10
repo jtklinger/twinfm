@@ -4481,8 +4481,10 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "raw-window-handle",
+ "serde",
  "slint",
  "slint-build",
+ "toml",
  "windows-sys 0.60.2",
 ]
 

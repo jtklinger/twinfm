@@ -386,7 +386,10 @@ some of its remaining difference is icon replies landing and recomposing. No pan
   the end show the icons aligned with their rows in both panes and the partly scrolled top
   row's icon clipped at the header.
 
-Gate: pending Jeremy's console WPR run.
+Gate (2026-10-10, Jeremy at the console, strip build `target-m2`, same conditions as the
+morning run): **19.3%** by WPR (1932 sampled ms in the 10 s after the split; in-app 20.5%).
+Passes the 20% bar; the per-row version read 22.3% and M1 19.9%. Compose cost in the run: 125
+strips at 24 us average. Trace `C:/traces/twinfm-p1-m2strip.etl`.
 
 ## M3: file operations
 
@@ -573,7 +576,9 @@ at 1801 s, range 102.7 to 173.4 MB; private bytes 102.9 to 125.9 MB. The end poi
 10-minute soak's 148.8 MB, so the swings follow the scroll scenario and there is no growth trend.
 Samples: `%TEMP%/twinfm-m3/soak-m3-memory.csv`.
 
-Gate: not required for M3 but re-run with M4.
+Gate (2026-10-10, Jeremy at the console, `target-m3`, run right after the M2 strip run):
+**19.6%** by WPR (1957 sampled ms; in-app 19.4%). Within noise of M2's 19.3%, as expected for
+a milestone that adds no per-frame work. Trace `C:/traces/twinfm-p1-m3.etl`.
 
 ## M4: shell context menu
 
@@ -760,7 +765,8 @@ Other scripted runs:
 
 Soak: with M5 (the M5 soak opens and closes 40 menus in 10 minutes; see there).
 
-Gate: pending Jeremy's console WPR run.
+Gate: not run separately; nothing here runs per frame. The full M6 build, which contains this
+milestone, read 19.8% by WPR on 2026-10-10 (see M6b).
 
 ## M5: drag and drop
 
@@ -1014,7 +1020,8 @@ MB at 1800 s, range 103.7 to 203.5 MB. Private bytes 105 MB at start, 136 at 3 m
 min, back to 138 to 140 from 18 to 27 min, 154 at the end: the 10-minute run's apparent 1 MB/min
 climb was the upswing of an oscillation, not growth. Samples: `%TEMP%/twinfm-m5/soak-m5-memory.csv`.
 
-Gate: pending Jeremy's console WPR run.
+Gate: not run separately; nothing here runs per frame. The full M6 build, which contains this
+milestone, read 19.8% by WPR on 2026-10-10 (see M6b).
 
 ## M6a: tabs, path bar, opening files, status bar
 
@@ -1160,4 +1167,201 @@ RDP session, default features, M6a build in `target-m6`:
   selected on the right, and status bars reading "85 items (17 hidden)" / "492.39 GB free of
   930.47 GB" and "4904 items (8 hidden)" / "2 selected" / the same free space.
 
-Gate: pending Jeremy's console WPR run (full build, after M6b).
+Gate (2026-10-10, Jeremy at the console, full M6b build `target-m6`, accessibility on, hidden
+off): **19.8%** by WPR (1980 sampled ms in the 10 s after the split; in-app 20.3%). Passes the
+20% bar with 0.2 point to spare; M3 on the same conditions read 19.6%, so M4 to M6 together
+cost about 0.2 point. Trace `C:/traces/twinfm-p1-m6.etl`.
+
+## M6b: sidebar, settings, window icon and title, About dialog
+
+### What landed (2026-10-10)
+
+- **Sidebar** (`src/sidebar.rs`, `app.slint`), left of the panes, 180 px by default, resizable
+  from 120 to 400 px by dragging its 4 px right edge, hidden and shown by F9 or the arrows at its
+  foot and on the 12 px strip it collapses to. Three sections in one Slint `ListView` over a
+  `[SideItem]` (`label`, `kind`, `index`) `VecModel`, rebuilt with `set_vec` only when something
+  in it changes: **Drives** from the existing `drive_entries()` on a worker thread (labels and free
+  space can stall), refreshed when the sidebar is shown and on F5; **Places** from
+  `SHGetKnownFolderPath` (`FOLDERID_Profile` as "Home", Desktop, Documents, Downloads, Pictures,
+  Music, Videos), read once at start, a folder the shell does not resolve left out; **Bookmarks**
+  in the order added, titled like tabs. A click opens the row in the active pane, a middle-click in
+  a new tab there; headers do nothing. Ctrl+D bookmarks the active tab's folder (not This PC;
+  duplicates are refused case-insensitively and with or without a trailing separator), with a
+  status note either way. Right-click on a bookmark opens a one-item "Remove bookmark" menu.
+- **The sidebar is cached as a rendering layer** (`cache-rendering-hint: true`). femtovg draws the
+  whole window every frame, so without it the sidebar's dozen texts were redrawn on every scroll
+  frame; with it the sidebar is one texture blit until one of its own properties changes (hover,
+  a new row). See Measurement.
+- **Settings** (`src/settings.rs`): `%APPDATA%\twinfm\config.toml`, serde + toml (the two new
+  crates; both were already in the lock file as Slint dependencies, so `Cargo.lock` gained two
+  lines). Fields: the start folders of both panes (the active tabs' folders when last saved),
+  hidden files per pane for new tabs (the last Ctrl+H there), split on/off and ratio, sort column
+  and direction for new tabs (the last header click), sidebar visibility and width, bookmarks,
+  path bar mode (`breadcrumb` or `entry`), and the window's position (physical px) and size
+  (logical px). `#[serde(default)]` on the struct, so missing keys take defaults and unknown keys
+  are ignored; out-of-range ratio and width are clamped. Loaded before the first navigation;
+  a command-line folder still overrides the left start folder; a saved split reopens the second
+  pane on its folder. Saved through one single-shot 500 ms `slint::Timer`, restarted by every
+  change (splitter drag, sidebar resize, path bar mode, sidebar toggle, split toggle, Ctrl+H, a
+  header click, a bookmark, a navigation), so a drag writes once after it stops; also at once on
+  the window's close request, and after `run` returns if a save is still pending. Writes go to
+  `config.toml.tmp`, then `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`.
+  A missing file gives the defaults quietly; an unreadable or malformed one gives the defaults
+  and a `[settings]` line, and a malformed one is copied to `config.toml.bad` first because the
+  next save replaces it. The window's placement is restored only when at least 100 px across and
+  16 px down of its title bar would land on a monitor's work area (`EnumDisplayMonitors` +
+  `GetMonitorInfoW`), and is not recorded while the window is minimised or maximised.
+- **Scripted runs leave the settings alone.** With `TWINFM_SCRIPT` set no file is read or
+  written and the defaults apply, so the gate, soak and check scripts stay deterministic (a saved
+  `split = true` would make the gate's `split` step close the second pane) and never touch
+  Jeremy's file. `TWINFM_CONFIG=<path>` points any run, scripted or not, at another file.
+- **Window title and icon.** The title is "TwinFM - " plus the active pane's folder name (a Slint
+  binding on `left-title`/`right-title`, which Rust sets on navigation and tab switch, and on
+  `active-pane`). The icon is a small embedded SVG (`src/ui/icon.svg`: a blue frame with two
+  panes) on `Window.icon`; a designed icon is deferred. `tools/soak-m3.ps1` and `soak-m5.ps1` find
+  the window by a title starting with "TwinFM - " (or the old "twinfm").
+- **About dialog**: F1 or "About TwinFM" at the foot of the sidebar opens a `PopupWindow` with the
+  name, the version (`env!("CARGO_PKG_VERSION")`), the MIT line, the Slint license line and
+  Slint's `AboutSlint` widget, which is the attribution README section License and CLAUDE.md
+  section License call for; CLAUDE.md now says the dialog exists.
+- **Driver**: `sidebar toggle` (F9), `sidebar click <row>` (the row's callback; headers count),
+  `bookmark add` (Ctrl+D), `bookmark remove <index>` (the menu's callback), `about open` (F1),
+  `about close`. stderr has `[sidebar]` and `[settings]` lines.
+- **Tests**, 55 to 60: the config round trip (defaults and a full config through TOML and back,
+  unknown keys and tables ignored, missing keys defaulted, clamping, malformed text and a wrong
+  type rejected, `load` of a malformed file giving the defaults and leaving the `.bad` copy, a
+  missing file giving the defaults, the sort-column names); the atomic write (creates the folder,
+  replaces an existing file, leaves no `.tmp`); the on-screen check (one monitor, a monitor at
+  negative coordinates, partly off every edge, no monitors, and the real monitor list); bookmark
+  add, remove and dedupe; the sidebar composition with real `SHGetKnownFolderPath` results (every
+  resolved place is an existing folder, Home first) and drive labels; plus the hit-test with a
+  sidebar and a collapsed sidebar in `dnd`.
+
+### Decisions
+
+- **The bookmark menu is a Slint `PopupWindow`**, not the shell menu machinery's own-items path:
+  `shellmenu::show` needs a folder and items to build an `IContextMenu` for, and a bookmark is
+  neither; the popup also runs no modal loop, so the modal-loop rule does not come into it.
+- **Start folders are the last ones open**, not fixed settings: with no settings dialog, a field
+  that only changes by hand-editing the file would rarely be right. Same reasoning for the sort
+  and hidden-file defaults (the last choice made).
+- **Scripted runs ignore the settings file** (above).
+- **`layout.left`** joined `dnd::Layout`: the panes start right of the sidebar and its edge (or
+  of the collapsed strip); the split ratio applies to the panes' own width; the drop target and
+  the driver's geometry both use it.
+- **The drive list in the sidebar refreshes when the sidebar is shown and on F5**, not on
+  `WM_DEVICECHANGE` (Phase 2).
+- **"Home"** labels the profile folder.
+
+### Deviations
+
+- The icon is an SVG through `@image-url` (winit and femtovg already enable Slint's `svg`
+  feature), not a PNG or ICO.
+- `cache-rendering-hint` on the sidebar, which the brief did not ask for (Measurement).
+- A malformed settings file is also copied to `.bad`.
+- Settings are saved after every navigation too (the start folders changed), debounced like the
+  rest.
+- The soak scripts' window lookup changed with the title.
+
+### Deferred
+
+- **No settings dialog**: everything is chosen by using the app or by editing `config.toml`.
+- **The window's maximised state** is not saved; a window closed maximised reopens at its last
+  normal placement.
+- **The sidebar is no drop target**, and bookmarks cannot be reordered, renamed or dragged.
+- **No device-change refresh** of the drive list.
+- **Right-click on a bookmark and middle-click in the sidebar are not scripted**: the driver
+  calls `bookmark-remove` and `side-clicked` directly. Manual check: right-click a bookmark,
+  choose "Remove bookmark"; middle-click a place, a tab opens on it.
+- **A designed icon**; the SVG is a placeholder.
+- **The toolbar** from the original M6 line and Explorer's separate "protected operating system
+  files" switch (M1 Decisions) were not built.
+
+### Scripted checks
+
+RDP session, default features, M6b build in `target-m6`, soak finished:
+
+- With a scratch `TWINFM_CONFIG`: `sidebar click 4` opened Home (`C:\Users\jtkli`), `bookmark add`
+  bookmarked it, `split`, two more `bookmark add` on the same folder reported "is bookmarked
+  already", `about open` and `about close`, `bookmark remove 0`, `sidebar toggle` twice (hidden,
+  shown, drives re-read); exit 0, no panic. The file then held both start folders, `split = true`
+  and the window at 104, 104, 1200 x 800. Screenshots show the sidebar (Local Disk (C:), Google
+  Drive (G:), the seven places, the bookmark), the title "TwinFM - jtkli", the window icon, the
+  About dialog with the `AboutSlint` logo, and the collapsed strip.
+- Restore: the same file edited to `split_ratio = 0.35`, `show_hidden_right = true`,
+  `path_bar = "entry"` and a bookmark: the next start opened both panes at 0.35, the right one
+  with hidden files (102 entries against 85), both path bars as text, the bookmark in the
+  sidebar.
+- Malformed (`split = [`): `[settings] ... is malformed, using the defaults (copied to
+  ...config.toml.bad): TOML parse error at line 2, column 9`, defaults, exit 0, then a fresh
+  file written.
+- A read-only test config is left alone (`could not save: ... Access is denied.`), which is how
+  a fixed config can be used across scripted runs.
+- Ctrl+L with no other TwinFM running: the path entry still had the focus about 2 s later, at
+  the screenshot, which confirms the M6a note that the earlier focus loss came from the soak's
+  window taking the foreground.
+
+### Measurement
+
+In-app, RDP session, default features, standard gate script
+(`sleep 2500;split;sleep 500;wheel 1 -120 16;wheel 0 -120 16;drag 1 400 1000;drag 0 400 1000;sleep 6000;quit`)
+on `C:\traces\bigdir`, builds run alternately, defaults (sidebar shown). M4 is `target-m4`
+(main before M5), M6a is the M6a commit 539ee1a built into `target-m6a`. UI-thread busy over the
+10 s after the split:
+
+| Build | Runs | Mean |
+|---|---|---|
+| M6b, sidebar not cached (two rounds) | 16.6, 18.0, 19.1, 18.4, 18.1, 16.1, 17.2, 18.1 | 17.7% |
+| M4, same rounds | 17.2, 15.5, 17.3, 15.0, 16.6, 16.1, 17.0, 14.8 | 16.2% |
+| M6a, second round | 15.5, 18.0, 16.2, 16.7 | 16.6% |
+| M6b, sidebar cached | 16.9, 17.0, 16.1, 18.4, 15.9 | **16.9%** |
+| M4, same round | 17.2, 16.6, 17.3, 16.6, 15.5 | **16.6%** |
+| M6a, same round | 16.1, 16.6, 16.4, 16.4, 17.0 | 16.5% |
+
+The uncached sidebar put M6b 1.5 points above M4 (higher in six of eight pairs); M6a sat 0.4 above.
+With the cached layer M6b is 0.3 points above M4 and 0.4 above M6a, inside the spread of either
+build (15.5 to 17.3 for M4). No panics in any run. Nothing new runs per frame in Rust: the
+sidebar, tab strip, breadcrumb, status bar and title change on navigation, selection, a tab
+switch or a sidebar change only.
+
+Gate (2026-10-10, Jeremy at the console, full M6b build `target-m6`, accessibility on, hidden
+off): **19.8%** by WPR (1980 sampled ms in the 10 s after the split; in-app 20.3%). Passes the
+20% bar with 0.2 point to spare; M3 on the same conditions read 19.6%, so M4 to M6 together
+cost about 0.2 point. Trace `C:/traces/twinfm-p1-m6.etl`.
+
+## Phase 1 close
+
+M1 to M6 are in: real entries, icons, file operations, the shell context menu, drag and drop,
+and the shell around them (tabs, breadcrumb, status bar, sidebar, bookmarks, settings, About).
+The console WPR gate (main thread busy over the 10 s after the split, bar under 20%) is recorded for week-one main (16.5%), M1 (19.9%), M2 per-row (22.3%, failed and reworked), M2 strip (19.3%) and M3 (19.6%); M4 and M5 add nothing per frame and were not run separately; the full M6 build read 19.8%. Deferred to Phase 2, pulled together from
+every milestone and deduplicated:
+
+- **Directory watching**, which several gaps share: changes made by shell verbs that finish
+  late (M4), by Explorer after a drag out (M5), by other programs, and background tabs (M6a,
+  which refresh when shown instead).
+- **File operations**: read back the real new name (`PostNewItem`), move the cursor after a
+  delete or move, scroll a renamed or new row into view, notice another program taking the
+  clipboard (cut marks), progress and a queue inside TwinFM with cancel, Undo (Ctrl+Z), dim the
+  cut row's icon (M3).
+- **Context menu**: Windows 11's compact menu (`IExplorerCommand`), icons on TwinFM's own items,
+  clearing the selection on a right-click in empty space, a scripted check of shell verbs and of
+  the rename interception, `;` in wt.exe paths and the PowerShell fallback run live (M4).
+- **Drag and drop**: highlight during our own drag, drag images (`IDragSourceHelper`,
+  `IDropTargetHelper`), right-button drags, auto-scroll and spring-loaded folders, virtual files
+  (`CFSTR_FILEDESCRIPTOR`), mounted folders, a scripted pane-to-pane OLE drop, the sidebar and
+  tabs as drop targets (M5, M6a, M6b).
+- **Icons and entries**: 32 px icons for a large-icon view, overlays (shortcut and link arrows),
+  telling reparse tags apart (OneDrive placeholders against junctions), a timeout or second
+  worker for slow icons, not rendering icons for rows scrolled past, free space for network
+  drives (M1, M2).
+- **Shell and settings**: a settings dialog, tab overflow scrolling, tab drag and reorder and
+  restoring tabs at start, a breadcrumb sibling dropdown, middle-click a folder row into a new
+  tab, folder sizes in the status bar, the maximised state, bookmark reorder and rename,
+  `WM_DEVICECHANGE` drive refresh, a toolbar, Explorer's protected-system-files switch, a designed
+  icon (M1, M6a, M6b).
+- **Checks that need Jeremy at the console**: the WPR gate runs above; Narrator on selection, the
+  icon strip, the name editor and the status notes, menus and the sidebar (M1 to M6); a
+  screenshot of a menu (M4); the drag and drop manual check (M5); opening files, the bookmark menu
+  and sidebar middle-click (M6a, M6b).
+
+Gate: the full M6 build read **19.8%** by WPR on 2026-10-10. Phase 1 closes under the bar.

@@ -1,9 +1,53 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo } from "pane.slint";
-import { Palette } from "std-widgets.slint";
+import { Palette, ListView, AboutSlint, Button } from "std-widgets.slint";
 export { Row, TabInfo, Crumb, StatusInfo }
 
+// One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
+// the bookmark's index in the bookmark list.
+export struct SideItem {
+    label: string,
+    kind: int,
+    index: int,
+}
+
+component SideRow inherits Rectangle {
+    in property <SideItem> item;
+    // clicked(middle): the left or the middle button released over the row.
+    callback clicked(bool);
+    // menu(x, y): the right button released over a bookmark, at window coordinates.
+    callback menu(length, length);
+    height: item.kind == 0 ? 26px : 24px;
+    background: item.kind != 0 && ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+    accessible-role: list-item;
+    accessible-label: item.label;
+    HorizontalLayout {
+        padding-left: item.kind == 0 ? 8px : 16px;
+        padding-right: 6px;
+        Text {
+            text: item.label;
+            vertical-alignment: item.kind == 0 ? bottom : center;
+            overflow: elide;
+            font-weight: item.kind == 0 ? 600 : 400;
+            font-size: item.kind == 0 ? 11px : 13px;
+            color: item.kind == 0 ? Palette.foreground.transparentize(35%) : Palette.foreground;
+        }
+    }
+    ta := TouchArea {
+        enabled: item.kind != 0;
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) { root.clicked(false); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) { root.clicked(true); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right && item.kind == 3) {
+                root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
+}
+
 export component App inherits Window {
-    title: "twinfm";
+    // "TwinFM - <folder>" for the active pane's active tab.
+    title: "TwinFM - " + (split && active-pane == 1 ? right-title : left-title);
+    icon: @image-url("icon.svg");
     preferred-width: 1200px;
     preferred-height: 800px;
     min-width: 400px;
@@ -21,6 +65,15 @@ export component App inherits Window {
     in property <[Crumb]> right-crumbs;
     // The path bars show the text entry for good instead of the breadcrumb (the toggle glyph).
     in-out property <bool> path-entry-sticky: false;
+    // The window title's folder name for each pane (its active tab's).
+    in property <string> left-title;
+    in property <string> right-title;
+    // The sidebar: its rows, shown or collapsed to a strip, and its width.
+    in property <[SideItem]> side-items;
+    in-out property <bool> sidebar-visible: true;
+    in-out property <length> sidebar-width: 180px;
+    // For the About dialog (CARGO_PKG_VERSION).
+    in property <string> version;
     in property <int> left-sort-col;
     in property <bool> left-sort-asc;
     in property <int> right-sort-col;
@@ -69,6 +122,24 @@ export component App inherits Window {
     callback tab-key(int, string);
     // crumb-clicked(pane, index): a breadcrumb button.
     callback crumb-clicked(int, int);
+    // side-clicked(row, middle): a sidebar row; the middle button opens it in a new tab.
+    callback side-clicked(int, bool);
+    // bookmark-add(): Ctrl+D. bookmark-remove(index): the bookmark menu's "Remove bookmark".
+    callback bookmark-add();
+    callback bookmark-remove(int);
+    // sidebar-toggled(): F9 or a sidebar glyph changed sidebar-visible.
+    callback sidebar-toggled();
+    // settings-changed(): the split line, the sidebar width or the path bar mode moved; Rust
+    // saves the settings 500 ms after the last call.
+    callback settings-changed();
+
+    public function toggle-sidebar() {
+        sidebar-visible = !sidebar-visible;
+        root.sidebar-toggled();
+    }
+
+    public function show-about() { about.show(); }
+    public function close-about() { about.close(); }
 
     // Ctrl+L, and the driver's `pathmode`: the pane's path bar as text entry or breadcrumb.
     public function set-path-mode(p: int, entry: bool) {
@@ -130,76 +201,222 @@ export component App inherits Window {
                 return accept;
             }
             if (e.modifiers.control && (e.text == "l" || e.text == "L")) { root.set-path-mode(active-pane, true); return accept; }
+            if (e.text == Key.F9) { root.toggle-sidebar(); return accept; }
+            if (e.text == Key.F1) { root.show-about(); return accept; }
+            if (e.modifiers.control && !e.modifiers.shift && (e.text == "d" || e.text == "D")) { root.bookmark-add(); return accept; }
             return reject;
         }
-        left := Pane {
-            x: 0; y: 0; height: parent.height;
-            width: split ? parent.width * split-ratio - 3px : parent.width;
-            rows: left-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
-            entry-sticky: root.path-entry-sticky;
-            toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; }
-            tab-clicked(i) => { root.tab-select(0, i); }
-            tab-close(i) => { root.tab-close(0, i); }
-            crumb-clicked(i) => { root.crumb-clicked(0, i); }
-            active: !split || active-pane == 0;
-            sort-col: left-sort-col; sort-asc: left-sort-asc;
-            current-row <=> left-current-row;
-            navigate(p) => { root.navigate(0, p); }
-            select(op, i) => { root.select(0, op, i); }
-            viewport-changed(y, h) => { root.viewport-changed(0, y, h); }
-            command(c) => { root.command(0, c); }
-            edit-commit(m, o, t) => { root.edit-commit(0, m, o, t); }
-            context-menu(r, x, y, s) => { root.context-menu(0, r, x, y, s); }
-            context-key(r, x, y, cy, h) => { root.context-key(0, r, x, y, cy, h); }
-            row-gesture(r, w, c, s) => { root.row-gesture(0, r, w, c, s); }
-            drag-dx: root.drag-dx;
-            drag-dy: root.drag-dy;
-            drop-here: root.drop-pane == 0;
-            drop-row: root.drop-row;
-            open-row(i) => { root.open-row(0, i); }
-            sort-by(c) => { root.sort-by(0, c); }
-            go-up => { root.go-up(0); }
-            focus-requested => { active-pane = 0; }
+        sidebar := Rectangle {
+            visible: sidebar-visible;
+            x: 0; y: 0; width: sidebar-width; height: parent.height;
+            background: Palette.alternate-background;
+            // The renderer draws the whole window every frame; cached as one texture, the sidebar
+            // costs a blit while the panes scroll and is redrawn only when its own properties change.
+            cache-rendering-hint: true;
+            VerticalLayout {
+                padding-top: 3px;
+                ListView {
+                    accessible-label: "Places";
+                    for item[i] in root.side-items: SideRow {
+                        item: item;
+                        clicked(middle) => { root.side-clicked(i, middle); }
+                        menu(x, y) => {
+                            root.menu-index = item.index;
+                            root.menu-x = x;
+                            root.menu-y = y;
+                            bookmark-menu.show();
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    height: 26px;
+                    padding-left: 8px;
+                    padding-right: 4px;
+                    about-ta := TouchArea {
+                        clicked => { root.show-about(); }
+                        Text {
+                            text: "About TwinFM";
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            color: about-ta.has-hover ? Palette.accent-background : Palette.foreground;
+                        }
+                    }
+                    hide-ta := TouchArea {
+                        width: 24px;
+                        clicked => { root.toggle-sidebar(); }
+                        Text {
+                            text: "\u{00ab}";
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            color: hide-ta.has-hover ? Palette.accent-background : Palette.foreground;
+                        }
+                    }
+                }
+            }
         }
-        right := Pane {
-            visible: split;
-            x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
-            width: split ? parent.width - self.x : 0px;
-            rows: right-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
-            entry-sticky: root.path-entry-sticky;
-            toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; }
-            tab-clicked(i) => { root.tab-select(1, i); }
-            tab-close(i) => { root.tab-close(1, i); }
-            crumb-clicked(i) => { root.crumb-clicked(1, i); }
-            active: split && active-pane == 1;
-            sort-col: right-sort-col; sort-asc: right-sort-asc;
-            current-row <=> right-current-row;
-            navigate(p) => { root.navigate(1, p); }
-            select(op, i) => { root.select(1, op, i); }
-            viewport-changed(y, h) => { root.viewport-changed(1, y, h); }
-            command(c) => { root.command(1, c); }
-            edit-commit(m, o, t) => { root.edit-commit(1, m, o, t); }
-            context-menu(r, x, y, s) => { root.context-menu(1, r, x, y, s); }
-            context-key(r, x, y, cy, h) => { root.context-key(1, r, x, y, cy, h); }
-            row-gesture(r, w, c, s) => { root.row-gesture(1, r, w, c, s); }
-            drag-dx: root.drag-dx;
-            drag-dy: root.drag-dy;
-            drop-here: root.drop-pane == 1;
-            drop-row: root.drop-row;
-            open-row(i) => { root.open-row(1, i); }
-            sort-by(c) => { root.sort-by(1, c); }
-            go-up => { root.go-up(1); }
-            focus-requested => { active-pane = 1; }
-        }
-        splitter := Rectangle {
-            visible: split;
-            x: parent.width * split-ratio - 3px; y: 0; width: 6px; height: parent.height;
-            background: splitter-ta.has-hover || splitter-ta.pressed ? Palette.accent-background : Palette.border;
-            splitter-ta := TouchArea {
+        // Drag the sidebar's right edge to resize it.
+        Rectangle {
+            visible: sidebar-visible;
+            x: sidebar-width; y: 0; width: 4px; height: parent.height;
+            background: side-ta.has-hover || side-ta.pressed ? Palette.accent-background : Palette.border;
+            side-ta := TouchArea {
                 mouse-cursor: col-resize;
                 moved => {
                     if (self.pressed) {
-                        split-ratio = max(0.15, min(0.85, (splitter.x + self.mouse-x) / root.width));
+                        root.sidebar-width = max(120px, min(400px, root.sidebar-width + self.mouse-x - self.pressed-x));
+                        root.settings-changed();
+                    }
+                }
+            }
+        }
+        // The collapsed sidebar: a strip that brings it back.
+        Rectangle {
+            visible: !sidebar-visible;
+            x: 0; y: 0; width: 12px; height: parent.height;
+            background: show-ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background;
+            Text { y: 6px; text: "\u{00bb}"; horizontal-alignment: center; }
+            show-ta := TouchArea { clicked => { root.toggle-sidebar(); } }
+        }
+        // The two panes and the split line, right of the sidebar (dnd.rs Layout.left).
+        panes := Rectangle {
+            x: sidebar-visible ? sidebar-width + 4px : 12px; y: 0;
+            width: parent.width - self.x; height: parent.height;
+            left := Pane {
+                x: 0; y: 0; height: parent.height;
+                width: split ? parent.width * split-ratio - 3px : parent.width;
+                rows: left-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
+                entry-sticky: root.path-entry-sticky;
+                toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
+                tab-clicked(i) => { root.tab-select(0, i); }
+                tab-close(i) => { root.tab-close(0, i); }
+                crumb-clicked(i) => { root.crumb-clicked(0, i); }
+                active: !split || active-pane == 0;
+                sort-col: left-sort-col; sort-asc: left-sort-asc;
+                current-row <=> left-current-row;
+                navigate(p) => { root.navigate(0, p); }
+                select(op, i) => { root.select(0, op, i); }
+                viewport-changed(y, h) => { root.viewport-changed(0, y, h); }
+                command(c) => { root.command(0, c); }
+                edit-commit(m, o, t) => { root.edit-commit(0, m, o, t); }
+                context-menu(r, x, y, s) => { root.context-menu(0, r, x, y, s); }
+                context-key(r, x, y, cy, h) => { root.context-key(0, r, x, y, cy, h); }
+                row-gesture(r, w, c, s) => { root.row-gesture(0, r, w, c, s); }
+                drag-dx: root.drag-dx;
+                drag-dy: root.drag-dy;
+                drop-here: root.drop-pane == 0;
+                drop-row: root.drop-row;
+                open-row(i) => { root.open-row(0, i); }
+                sort-by(c) => { root.sort-by(0, c); }
+                go-up => { root.go-up(0); }
+                focus-requested => { active-pane = 0; }
+            }
+            right := Pane {
+                visible: split;
+                x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
+                width: split ? parent.width - self.x : 0px;
+                rows: right-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
+                entry-sticky: root.path-entry-sticky;
+                toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
+                tab-clicked(i) => { root.tab-select(1, i); }
+                tab-close(i) => { root.tab-close(1, i); }
+                crumb-clicked(i) => { root.crumb-clicked(1, i); }
+                active: split && active-pane == 1;
+                sort-col: right-sort-col; sort-asc: right-sort-asc;
+                current-row <=> right-current-row;
+                navigate(p) => { root.navigate(1, p); }
+                select(op, i) => { root.select(1, op, i); }
+                viewport-changed(y, h) => { root.viewport-changed(1, y, h); }
+                command(c) => { root.command(1, c); }
+                edit-commit(m, o, t) => { root.edit-commit(1, m, o, t); }
+                context-menu(r, x, y, s) => { root.context-menu(1, r, x, y, s); }
+                context-key(r, x, y, cy, h) => { root.context-key(1, r, x, y, cy, h); }
+                row-gesture(r, w, c, s) => { root.row-gesture(1, r, w, c, s); }
+                drag-dx: root.drag-dx;
+                drag-dy: root.drag-dy;
+                drop-here: root.drop-pane == 1;
+                drop-row: root.drop-row;
+                open-row(i) => { root.open-row(1, i); }
+                sort-by(c) => { root.sort-by(1, c); }
+                go-up => { root.go-up(1); }
+                focus-requested => { active-pane = 1; }
+            }
+            splitter := Rectangle {
+                visible: split;
+                x: parent.width * split-ratio - 3px; y: 0; width: 6px; height: parent.height;
+                background: splitter-ta.has-hover || splitter-ta.pressed ? Palette.accent-background : Palette.border;
+                splitter-ta := TouchArea {
+                    mouse-cursor: col-resize;
+                    moved => {
+                        if (self.pressed) {
+                            split-ratio = max(0.15, min(0.85, (splitter.x + self.mouse-x) / panes.width));
+                            root.settings-changed();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private property <int> menu-index;
+    private property <length> menu-x;
+    private property <length> menu-y;
+    // Right-click on a bookmark: TwinFM's own one-item menu (a Slint popup, not the shell's).
+    bookmark-menu := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 150px;
+        height: 30px;
+        Rectangle {
+            background: Palette.background;
+            border-width: 1px;
+            border-color: Palette.border;
+            remove-ta := TouchArea {
+                clicked => {
+                    root.bookmark-remove(root.menu-index);
+                    bookmark-menu.close();
+                }
+            }
+            Rectangle {
+                x: 2px;
+                y: 2px;
+                width: parent.width - 4px;
+                height: parent.height - 4px;
+                background: remove-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+                Text { x: 10px; text: "Remove bookmark"; vertical-alignment: center; }
+            }
+        }
+    }
+
+    // F1 or "About TwinFM": name, version, license, and Slint's attribution (the AboutSlint
+    // widget), which the Slint Royalty-free license asks for (README, License).
+    about := PopupWindow {
+        x: (root.width - 460px) / 2;
+        y: max(10px, (root.height - 380px) / 2);
+        width: 460px;
+        height: 380px;
+        Rectangle {
+            background: Palette.background;
+            border-width: 1px;
+            border-color: Palette.border;
+            border-radius: 6px;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 6px;
+                Text { text: "TwinFM"; font-size: 22px; font-weight: 700; }
+                Text { text: "Version " + root.version; }
+                Text { text: "A dual-pane file manager for Windows 11."; wrap: word-wrap; }
+                Text { text: "MIT License. Copyright (c) 2026 Jeremy Klinger."; wrap: word-wrap; }
+                Text {
+                    text: "Built with a modified Slint, used under the Slint Royalty-free Desktop, Mobile, and Web Applications License 2.0.";
+                    wrap: word-wrap;
+                    font-size: 11px;
+                }
+                AboutSlint { }
+                HorizontalLayout {
+                    alignment: end;
+                    Button {
+                        text: "Close";
+                        clicked => { about.close(); }
                     }
                 }
             }
