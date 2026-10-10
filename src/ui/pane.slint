@@ -137,6 +137,8 @@ export component Pane inherits Rectangle {
     forward-focus: list;
     public function focus-list() { list.focus-list(); }
     public function reset-scroll() { list.content-y = 0; current-row = -1; }
+    public function get-scroll() -> length { return list.content-y; }
+    public function set-scroll(y: length) { list.content-y = y; }
 
     VerticalLayout {
         padding: 3px;

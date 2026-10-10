@@ -34,6 +34,10 @@ struct State {
     rx: Receiver<Msg>,
     tx: Sender<Msg>,
     timing: [PaneTiming; 2],
+    /// The folder each pane last navigated to (the path bar may hold unsubmitted text).
+    paths: [PathBuf; 2],
+    /// Restore the list's scroll offset at the next pass swap (set when a refresh completes).
+    keep_scroll: [bool; 2],
     split_requested: Option<Instant>,
     busy_timer: slint::Timer,
 }
@@ -59,6 +63,8 @@ fn navigate(pane: usize, path: PathBuf) {
         model.generation.set(generation);
         model.clear();
         st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
+        st.paths[pane] = path.clone();
+        st.keep_scroll[pane] = false;
         let shown = path.to_string_lossy().to_string();
         if pane == 0 {
             app.set_left_path(shown.as_str().into());
@@ -70,6 +76,23 @@ fn navigate(pane: usize, path: PathBuf) {
         eprintln!("[nav] pane={pane} gen={generation} path={shown}");
         let tx = st.tx.clone();
         fs::enumerate::spawn(path, pane, generation, tx, wake);
+    });
+}
+
+/// Re-enumerate the pane's folder in place (F5, Ctrl+R). The old rows stay on screen until the
+/// new listing has been filtered and sorted; cursor, selection and scroll come back by name.
+fn refresh(pane: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let model = &st.panes[pane];
+        let generation = model.generation.get() + 1;
+        model.generation.set(generation);
+        model.begin_refresh();
+        st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
+        set_status(&app, pane, "refreshing...".into());
+        let path = st.paths[pane].clone();
+        eprintln!("[refresh] pane={pane} gen={generation} path={}", path.display());
+        fs::enumerate::spawn(path, pane, generation, st.tx.clone(), wake);
     });
 }
 
@@ -103,6 +126,9 @@ fn drain() {
                         continue;
                     }
                     model.append(entries);
+                    if model.is_refreshing() {
+                        continue; // staged; the old rows and status stay until the pass
+                    }
                     let t = &mut st.timing[pane];
                     if t.first_batch.is_none() {
                         t.first_batch = Some(Instant::now());
@@ -118,6 +144,10 @@ fn drain() {
                         continue;
                     }
                     let wall = st.timing[pane].requested.map(perf::elapsed_ms).unwrap_or(0.0);
+                    if model.is_refreshing() {
+                        model.finish_refresh();
+                        st.keep_scroll[pane] = true;
+                    }
                     match error {
                         Some(e) => {
                             st.timing[pane].error = Some(e);
@@ -180,8 +210,12 @@ fn request_pass(st: &mut State, pane: usize) {
                     out.shown.len(),
                     out.hidden
                 );
+                let scroll = std::mem::take(&mut st.keep_scroll[pane]).then(|| app.invoke_get_scroll(pane as i32));
                 let cursor = model.replace(out);
                 set_current_row(&app, pane, cursor);
+                if let (Some(y), Some(_)) = (scroll, cursor) {
+                    app.invoke_set_scroll(pane as i32, y);
+                }
                 set_status(&app, pane, status_text(model, &st.timing[pane]));
             });
         });
@@ -235,6 +269,8 @@ fn main() -> Result<(), slint::PlatformError> {
             rx,
             tx,
             timing: Default::default(),
+            paths: Default::default(),
+            keep_scroll: [false; 2],
             split_requested: None,
             busy_timer: slint::Timer::default(),
         })
@@ -294,6 +330,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         with_state(|st| st.panes[pane as usize].select(op, row.max(0) as usize));
     });
+    app.on_refresh(|pane| refresh(pane as usize));
     app.on_toggle_hidden(|pane| {
         with_state(|st| {
             let model = &st.panes[pane as usize];

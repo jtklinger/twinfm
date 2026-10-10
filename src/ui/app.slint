@@ -31,6 +31,7 @@ export component App inherits Window {
     callback go-up(int);
     callback toggle-split();
     callback toggle-hidden(int);
+    callback refresh(int);
     // select(pane, op, row): op 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
     callback select(int, int, int);
 
@@ -43,12 +44,24 @@ export component App inherits Window {
         if (p == 0) { left.reset-scroll(); } else { right.reset-scroll(); }
     }
 
+    public function get-scroll(p: int) -> length {
+        return p == 0 ? left.get-scroll() : right.get-scroll();
+    }
+
+    public function set-scroll(p: int, y: length) {
+        if (p == 0) { left.set-scroll(y); } else { right.set-scroll(y); }
+    }
+
     forward-focus: outer;
 
     outer := FocusScope {
         key-pressed(e) => {
             if (e.text == Key.F3) { root.toggle-split(); return accept; }
             if (e.modifiers.control && (e.text == "h" || e.text == "H")) { root.toggle-hidden(active-pane); return accept; }
+            if (e.text == Key.F5 || (e.modifiers.control && (e.text == "r" || e.text == "R"))) {
+                root.refresh(active-pane);
+                return accept;
+            }
             if (e.text == Key.RightArrow && e.modifiers.control && e.modifiers.shift) {
                 if (split) { root.focus-pane(1 - active-pane); }
                 return accept;

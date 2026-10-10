@@ -110,6 +110,10 @@ pub struct PaneModel {
     shown: RefCell<Vec<Entry>>,
     /// How many entries of `all` the filter currently keeps out of `shown`.
     hidden: Cell<usize>,
+    /// While a refresh enumerates, its batches collect here and the old listing stays on
+    /// screen; `finish_refresh` swaps them into `all` and the next pass replaces `shown`.
+    incoming: RefCell<Vec<Entry>>,
+    refreshing: Cell<bool>,
     /// Selected rows, as indices into `shown`. UI thread only.
     sel: RefCell<Selection>,
     /// Bumped on every selection change, so a worker pass can tell whether the selection it
@@ -131,6 +135,8 @@ impl Default for PaneModel {
             all: RefCell::new(Vec::new()),
             shown: RefCell::new(Vec::new()),
             hidden: Cell::new(0),
+            incoming: RefCell::new(Vec::new()),
+            refreshing: Cell::new(false),
             sel: RefCell::new(Selection::default()),
             sel_version: Cell::new(0),
             notify: ModelNotify::default(),
@@ -148,6 +154,8 @@ impl PaneModel {
         self.all.borrow_mut().clear();
         self.shown.borrow_mut().clear();
         self.hidden.set(0);
+        self.incoming.borrow_mut().clear();
+        self.refreshing.set(false);
         *self.sel.borrow_mut() = Selection::default();
         self.sel_version.set(self.sel_version.get() + 1);
         self.notify.reset();
@@ -190,6 +198,10 @@ impl PaneModel {
     /// Append a batch; one row_added notification per batch, never per entry. The batch moves
     /// into `all`; `shown` gets clones of the entries the filter keeps (refcount bumps only).
     pub fn append(&self, mut batch: Vec<Entry>) {
+        if self.refreshing.get() {
+            self.incoming.borrow_mut().append(&mut batch);
+            return;
+        }
         let show_hidden = self.show_hidden.get();
         let start = self.shown.borrow().len();
         {
@@ -213,6 +225,23 @@ impl PaneModel {
         self.sel_version.set(self.sel_version.get() + 1);
         self.notify.reset();
         out.cursor
+    }
+
+    /// Start re-enumerating in place: batches are staged, the current rows stay shown.
+    pub fn begin_refresh(&self) {
+        self.incoming.borrow_mut().clear();
+        self.refreshing.set(true);
+    }
+
+    pub fn is_refreshing(&self) -> bool {
+        self.refreshing.get()
+    }
+
+    /// The refresh listing is complete: it becomes `all`. `shown` (and the selection indices
+    /// into it) stay valid until the following pass swaps in the new rows.
+    pub fn finish_refresh(&self) {
+        *self.all.borrow_mut() = std::mem::take(&mut *self.incoming.borrow_mut());
+        self.refreshing.set(false);
     }
 
     /// Copy of the full listing for a worker pass.
@@ -622,6 +651,24 @@ mod tests {
         assert_eq!(cursor, Some(0));
         assert_eq!(m.selected_names(), ["d", "b"]);
         assert!(m.row_data(0).unwrap().selected && !m.row_data(1).unwrap().selected);
+    }
+
+    #[test]
+    fn refresh_keeps_old_rows_until_the_pass() {
+        let m = PaneModel::default();
+        m.append(vec![e("a", 0, false), e("b", 0, false)]);
+        m.select(SelOp::Only, 1);
+        let r = m.capture(1);
+        m.begin_refresh();
+        m.append(vec![e("b", 0, false), e("c", 0, false), e("0", 0, false)]);
+        assert_eq!((m.row_count(), m.total()), (2, 2), "old rows stay until the swap");
+        m.finish_refresh();
+        assert!(!m.is_refreshing());
+        assert_eq!((m.row_count(), m.total()), (2, 3));
+        let cursor = m.replace(filter_sort(m.snapshot_all(), false, SortCol::Name, true, &r));
+        assert_eq!(cursor, Some(1)); // new order "0", "b", "c"
+        assert_eq!(m.selected_names(), ["b"]);
+        assert_eq!(m.row_count(), 3);
     }
 
     #[test]
