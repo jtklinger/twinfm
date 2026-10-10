@@ -13,7 +13,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use fs::enumerate::{Msg, THIS_PC, is_this_pc};
 use icons::IconTable;
 use model::{Kind, PaneModel, SelOp, SortCol, filter_sort};
-use slint::{ComponentHandle, ModelRc, RenderingState, Weak};
+use slint::{ComponentHandle, Image, ModelRc, RenderingState, Weak};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -31,8 +31,11 @@ struct IconCounts {
     replies: u64,
     resolves: u64,
     resolve_ns: u64,
-    /// (requests, replies, worker renders, worker ns) at the last report.
-    reported: (u64, u64, u64, u64),
+    /// Icon strips composed, and the time spent composing them (fitted buffers plus copies).
+    composes: u64,
+    compose_ns: u64,
+    /// (requests, replies, worker renders, worker ns, composes) at the last report.
+    reported: (u64, u64, u64, u64, u64),
 }
 
 /// Per-pane timing bookkeeping for the gate measurements.
@@ -67,6 +70,10 @@ struct State {
     icon_counts: IconCounts,
     /// The (content-y, visible-height) each list last reported, in logical px.
     view: [(f32, f32); 2],
+    /// What each pane's icon strip was last composed from (None: hidden), and whether its
+    /// rows changed since, so the next resolve recomposes it.
+    strip: [Option<icons::Composed>; 2],
+    strip_dirty: [bool; 2],
 }
 
 thread_local! {
@@ -94,6 +101,7 @@ fn navigate(pane: usize, path: PathBuf) {
         st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
         st.paths[pane] = path.clone();
         st.keep_scroll[pane] = false;
+        hide_strip(st, &app, pane);
         let shown = path.to_string_lossy().to_string();
         if pane == 0 {
             app.set_left_path(shown.as_str().into());
@@ -250,34 +258,75 @@ fn request_pass(st: &mut State, pane: usize) {
                     eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
                 }
                 set_status(&app, pane, status_text(model, &st.timing[pane]));
+                st.strip_dirty[pane] = true;
                 resolve_view(st, &app, pane);
             });
         });
     });
 }
 
-/// Fetch or apply icons for the rows on screen (plus a margin) in one pane.
+/// Fetch or apply icons for the rows on screen (plus a margin) in one pane, then recompose
+/// its icon strip if the visible rows left it or an icon in it changed.
 fn resolve_view(st: &mut State, app: &App, pane: usize) {
     if pane == 1 && !app.get_split() {
         return;
     }
     let model = &st.panes[pane];
     let (y, h) = st.view[pane];
-    let Some((first, last)) = icons::visible_range(y, h, model.len()) else { return };
+    let Some(visible) = icons::visible_range(y, h, model.len()) else {
+        hide_strip(st, app, pane);
+        return;
+    };
+    let (first, last) = visible;
     let t0 = Instant::now();
-    let size_px = (icons::ICON_LOGICAL_PX * app.window().scale_factor()).round() as u32;
+    let geom = icons::StripGeom::new(app.window().scale_factor());
+    let size_px = geom.icon_px;
     let generation = model.generation.get();
     let (folder, tx) = (&st.paths[pane], &st.icon_tx);
     let mut sent = 0;
-    model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, |e| {
+    let changed = model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, |e| {
         let path = if e.kind == Kind::Drive { PathBuf::from(e.name.as_str()) } else { folder.join(e.name.as_str()) };
         let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px });
         sent += 1;
     });
+    if let Some(c) = st.strip[pane] {
+        if changed.iter().any(|&i| (c.first..=c.last).contains(&i)) {
+            st.strip_dirty[pane] = true;
+        }
+    }
     let c = &mut st.icon_counts;
     c.requests += sent;
     c.resolves += 1;
     c.resolve_ns += t0.elapsed().as_nanos() as u64;
+    if icons::needs_recompose(st.strip[pane], visible, model.len(), geom.icon_px, st.strip_dirty[pane]) {
+        compose_strip(st, app, pane, visible, &geom);
+    }
+}
+
+/// Compose the pane's icon strip for the visible rows plus the strip margin and hand it to
+/// the pane, which places it at its first row.
+fn compose_strip(st: &mut State, app: &App, pane: usize, visible: (usize, usize), geom: &icons::StripGeom) {
+    let model = &st.panes[pane];
+    let (first, last) = icons::strip_range(visible, model.len());
+    let t0 = Instant::now();
+    let bufs: Vec<_> = {
+        let mut table = st.icons.borrow_mut();
+        model.icon_indices(first, last).into_iter().map(|i| table.fitted(i, geom.icon_px)).collect()
+    };
+    let strip = icons::compose(&bufs, geom);
+    st.icon_counts.composes += 1;
+    st.icon_counts.compose_ns += t0.elapsed().as_nanos() as u64;
+    let (w, h) = (strip.width() as f32 / geom.scale, strip.height() as f32 / geom.scale);
+    app.invoke_set_strip(pane as i32, Image::from_rgba8_premultiplied(strip), first as i32, w, h, true);
+    st.strip[pane] = Some(icons::Composed { first, last, icon_px: geom.icon_px });
+    st.strip_dirty[pane] = false;
+}
+
+/// Hide the pane's icon strip (empty list, or a navigation under way).
+fn hide_strip(st: &mut State, app: &App, pane: usize) {
+    if st.strip[pane].take().is_some() {
+        app.invoke_set_strip(pane as i32, Image::default(), 0, 0.0, 0.0, false);
+    }
 }
 
 /// A list scrolled, resized or changed length. Called from Slint `changed` handlers; if the
@@ -319,19 +368,20 @@ fn drain_icons() {
 }
 
 /// Once a second, when icon work happened: requests sent, replies received, table size, the
-/// worker's average time per icon and the UI's average resolve time.
+/// worker's average time per icon, the UI's average resolve time, and the strips composed
+/// (in total) with their average compose time.
 fn report_icons() {
     with_state(|st| {
         let c = &mut st.icon_counts;
         let rendered = st.icon_stats.rendered.load(Ordering::Relaxed);
         let render_ns = st.icon_stats.render_ns.load(Ordering::Relaxed);
-        let (req0, rep0, ren0, ns0) = c.reported;
-        if c.requests == req0 && c.replies == rep0 {
+        let (req0, rep0, ren0, ns0, comp0) = c.reported;
+        if c.requests == req0 && c.replies == rep0 && c.composes == comp0 {
             return;
         }
         let n = rendered - ren0;
         eprintln!(
-            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, resolve {} calls avg {:.1} us",
+            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
             c.requests - req0,
             c.replies - rep0,
             c.requests,
@@ -340,8 +390,10 @@ fn report_icons() {
             if n > 0 { (render_ns - ns0) as f64 / n as f64 / 1e6 } else { 0.0 },
             c.resolves,
             if c.resolves > 0 { c.resolve_ns as f64 / c.resolves as f64 / 1e3 } else { 0.0 },
+            c.composes,
+            if c.composes > 0 { c.compose_ns as f64 / c.composes as f64 / 1e3 } else { 0.0 },
         );
-        c.reported = (c.requests, c.replies, rendered, render_ns);
+        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes);
     });
 }
 
@@ -412,6 +464,8 @@ fn main() -> Result<(), slint::PlatformError> {
             icon_stats,
             icon_counts: IconCounts::default(),
             view: [(0.0, 0.0); 2],
+            strip: [None; 2],
+            strip_dirty: [false; 2],
         })
     });
 

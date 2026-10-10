@@ -8,7 +8,7 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
 milestones, gate re-run after each). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (25 tests)
+- `cargo test --release` (29 tests)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)

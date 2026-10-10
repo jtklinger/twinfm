@@ -54,6 +54,11 @@ export component App inherits Window {
         if (p == 0) { left.set-scroll(y); } else { right.set-scroll(y); }
     }
 
+    // set-strip(pane, image, first row, width, height, shown): the pane's icon strip.
+    public function set-strip(p: int, img: image, first: int, w: length, h: length, shown: bool) {
+        if (p == 0) { left.set-strip(img, first, w, h, shown); } else { right.set-strip(img, first, w, h, shown); }
+    }
+
     forward-focus: outer;
 
     outer := FocusScope {
