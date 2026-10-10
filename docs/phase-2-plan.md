@@ -247,7 +247,13 @@ USB check below did).
   subclass, the debounce and the refresh. Jeremy then repeated the real-drive test on the
   rebuilt binary (`target\release` from ff594d4): insert and remove both refreshed the sidebar
   and This PC without F5. **Passed.**
-- **30-minute soak**: pending (not yet run; the 2-minute run is under Scripted checks).
+- **30-minute soak (2026-10-10 15:58 to 16:28, `tools/soak-p2m1.ps1 -Minutes 30`, Jeremy's
+  console, `target\release` from ff594d4)**: exit clean, **0 `panicked` lines**, 4,785 `[watch]`
+  lines (4,760 changes refreshed, 18 deferred behind a listing in flight, 0 lost, 0 refused),
+  5,110 `[refresh]` lines, 0 `waitwatch` timeouts, 0 soak refusals. Private memory 117.6 MB at 6 s,
+  119.6 at 5 min, 121.7 from 15 min on, 121.9 at the end: flat after the caches fill, no trend.
+  Working set 130.7 MB to 115.2 MB. **Passed.** P2-M1 is closed: gate, soak and the real-drive
+  check all recorded.
 
 ## Open questions
 
