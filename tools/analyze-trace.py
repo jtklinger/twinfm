@@ -1,23 +1,35 @@
 #!/usr/bin/env python3
 """Main-thread analysis of a gate-run WPR trace, no elevation needed.
 
-    python tools/analyze-trace.py C:\\traces\\twinfm-<name>.etl [--symbols]
+    python tools/analyze-trace.py C:\\traces\\twinfm-<name>.etl [--symbols] [--exe <twinfm.exe>]
 
-Steps (all via xperf from the Windows Performance Toolkit, which must be on PATH):
+Steps (all via xperf from the Windows Performance Toolkit: on PATH, or at its default install
+location under "Windows Kits\\10"):
   1. list the process's threads; the first thread is the main thread, and the right-pane
      enumeration worker (a 20 to 60 ms thread starting 2 s or more after the process) marks
      the split: the F3 mark is ~12 ms before it;
   2. count main-thread sampled-profile hits over the 10 s after the split (1 ms sampling,
      so hits ~= milliseconds busy) and over the whole run;
   3. with --symbols, write a symbolized butterfly report for that window and print the
-     accessibility / render / ListView shares.
+     accessibility / render / ListView shares. Pass --exe <path> to the binary that was traced:
+     its directory goes on _NT_SYMBOL_PATH, because once that variable is set xperf does not
+     search the pdb path embedded in the exe, and twinfm's own frames stay unresolved.
 Outputs land next to the trace under <trace dir>\\export\\<name>\\.
 """
 import html
 import os
 import re
+import shutil
 import subprocess
 import sys
+
+WPT_DEFAULT = r"C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\xperf.exe"
+
+def xperf():
+    found = shutil.which("xperf") or (WPT_DEFAULT if os.path.exists(WPT_DEFAULT) else None)
+    if not found:
+        sys.exit("xperf not found: install the Windows Performance Toolkit (Windows SDK) or put it on PATH")
+    return found
 
 def run(args):
     r = subprocess.run(args, capture_output=True, text=True, errors="replace")
@@ -41,10 +53,11 @@ def main():
         return 2
     etl = os.path.abspath(sys.argv[1])
     symbols = "--symbols" in sys.argv
+    exe = sys.argv[sys.argv.index("--exe") + 1] if "--exe" in sys.argv[:-1] else None
     name = os.path.splitext(os.path.basename(etl))[0]
     outdir = os.path.join(os.path.dirname(etl), "export", name)
     os.makedirs(outdir, exist_ok=True)
-    base = ["xperf", "-tle", "-tti", "-i", etl]
+    base = [xperf(), "-tle", "-tti", "-i", etl]
 
     threads_txt = os.path.join(outdir, "threads.txt")
     run(base + ["-o", threads_txt, "-a", "process", "-thread"])
@@ -86,6 +99,10 @@ def main():
         out = os.path.join(outdir, "bf-main-10s.html")
         env = dict(os.environ)
         env.setdefault("_NT_SYMBOL_PATH", "srv*C:\\Symbols*https://msdl.microsoft.com/download/symbols")
+        if exe:
+            env["_NT_SYMBOL_PATH"] += ";" + os.path.dirname(os.path.abspath(exe))
+        else:
+            print("  (no --exe: twinfm frames resolve only if the build's release directory is on _NT_SYMBOL_PATH)")
         subprocess.run(base + ["-symbols", "-o", out, "-a", "stack", "-butterfly", "20", "-tid", str(main_tid), "-range", str(lo), str(hi), "-event", "Prof"], capture_output=True, env=env)
         t = tables(out)
         funcs = t[3][1:] if len(t) > 3 else []
