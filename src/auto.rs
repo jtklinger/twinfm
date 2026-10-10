@@ -7,15 +7,20 @@
 //!   nav <pane> <path>                navigate a pane
 //!   up <pane>                        go to the parent directory
 //!   sort <pane> <0|1|2|3>            click a column header (name/size/modified/type)
-//!   key <F3|Backspace|AltUp|CtrlShiftRight|Return>   press a key through the Slint key path
+//!   key <name>                       press a key through the Slint key path; names: F3, F5,
+//!                                    Backspace, Return, Space, AltUp, CtrlShiftRight, CtrlH
+//!                                    (hidden files), CtrlR (refresh), CtrlA, ShiftUp, ShiftDown
+//!   click <pane> <row>               click a visible row (selects only it, moves the cursor)
+//!   ctrlclick <pane> <row>           Ctrl+click a visible row (toggles it)
+//!   shiftclick <pane> <row>          Shift+click a visible row (selects anchor..row)
 //!   dblclick <pane> <row>            double-click a visible row (enters the directory if it is one)
 //!   quit                             exit the event loop
 //! Events are dispatched with slint::Window::dispatch_event on the UI thread, so Slint's full
 //! input -> layout -> render path runs; only the OS WndProc hop is skipped.
 
 use crate::App;
-use slint::platform::{PointerEventButton, WindowEvent};
-use slint::{ComponentHandle, LogicalPosition, Timer, TimerMode};
+use slint::platform::{Key, PointerEventButton, WindowEvent};
+use slint::{ComponentHandle, LogicalPosition, SharedString, Timer, TimerMode};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -30,6 +35,7 @@ enum Step {
     Up(usize),
     Sort { pane: usize, col: i32 },
     Key(String),
+    Click { pane: usize, row: usize, modifier: Option<Key> },
     DblClick { pane: usize, row: usize },
     Quit,
 }
@@ -49,6 +55,9 @@ fn parse(script: &str) -> Vec<Step> {
                 "up" => Step::Up(num(1) as usize),
                 "sort" => Step::Sort { pane: num(1) as usize, col: num(2) as i32 },
                 "key" => Step::Key(a.get(1).unwrap_or(&"").to_string()),
+                "click" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: None },
+                "ctrlclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Control) },
+                "shiftclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Shift) },
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "quit" => Step::Quit,
                 other => {
@@ -127,6 +136,13 @@ fn thumb(app: &App, pane: usize) -> LogicalPosition {
     LogicalPosition::new(right_edge - 10.0, 80.0)
 }
 
+/// Centre of a visible row: rows start under the 3 px padding, 32 px path entry, 2 px spacing,
+/// 24 px header, 2 px spacing.
+fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
+    let (_, _, mid) = geometry(app, pane);
+    LogicalPosition::new(mid.x, 63.0 + row as f32 * 22.0 + 11.0)
+}
+
 fn run_step(runner: Rc<RefCell<Runner>>) {
     let (step, app) = {
         let r = runner.borrow();
@@ -134,7 +150,8 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             eprintln!("[auto] script finished");
             return;
         };
-        (step, r.app.unwrap())
+        let Some(app) = r.app.upgrade() else { return };
+        (step, app)
     };
     runner.borrow_mut().idx += 1;
     eprintln!("[auto] {step:?}");
@@ -157,31 +174,51 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             schedule(runner, 1);
         }
         Step::Key(name) => {
-            use slint::platform::Key;
-            let chord: Vec<Key> = match name.as_str() {
-                "F3" => vec![Key::F3],
-                "Backspace" => vec![Key::Backspace],
-                "Return" => vec![Key::Return],
-                "AltUp" => vec![Key::Alt, Key::UpArrow],
-                "CtrlShiftRight" => vec![Key::Control, Key::Shift, Key::RightArrow],
+            let k = |k: Key| SharedString::from(k);
+            let chord: Vec<SharedString> = match name.as_str() {
+                "F3" => vec![k(Key::F3)],
+                "F5" => vec![k(Key::F5)],
+                "Backspace" => vec![k(Key::Backspace)],
+                "Return" => vec![k(Key::Return)],
+                "Space" => vec![" ".into()],
+                "AltUp" => vec![k(Key::Alt), k(Key::UpArrow)],
+                "CtrlShiftRight" => vec![k(Key::Control), k(Key::Shift), k(Key::RightArrow)],
+                "CtrlH" => vec![k(Key::Control), "h".into()],
+                "CtrlR" => vec![k(Key::Control), "r".into()],
+                "CtrlA" => vec![k(Key::Control), "a".into()],
+                "ShiftUp" => vec![k(Key::Shift), k(Key::UpArrow)],
+                "ShiftDown" => vec![k(Key::Shift), k(Key::DownArrow)],
                 other => {
                     eprintln!("[auto] unknown key {other}");
                     vec![]
                 }
             };
             let win = app.window();
-            for k in &chord {
-                win.dispatch_event_with_result(WindowEvent::KeyPressed { text: (*k).into() }).ok();
+            for t in &chord {
+                win.dispatch_event_with_result(WindowEvent::KeyPressed { text: t.clone() }).ok();
             }
-            for k in chord.iter().rev() {
-                win.dispatch_event_with_result(WindowEvent::KeyReleased { text: (*k).into() }).ok();
+            for t in chord.iter().rev() {
+                win.dispatch_event_with_result(WindowEvent::KeyReleased { text: t.clone() }).ok();
             }
             schedule(runner, 1);
         }
+        Step::Click { pane, row, modifier } => {
+            let pos = row_pos(&app, pane, row);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            if let Some(m) = modifier {
+                win.dispatch_event_with_result(WindowEvent::KeyPressed { text: m.into() }).ok();
+            }
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Left }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Left }).ok();
+            if let Some(m) = modifier {
+                win.dispatch_event_with_result(WindowEvent::KeyReleased { text: m.into() }).ok();
+            }
+            // Space consecutive clicks out so the next one is not taken as a double-click.
+            schedule(runner, 600);
+        }
         Step::DblClick { pane, row } => {
-            // rows start under the 3 px padding, 32 px path entry, 2 px spacing, 24 px header, 2 px spacing
-            let (_, _, mid) = geometry(&app, pane);
-            let pos = LogicalPosition::new(mid.x, 63.0 + row as f32 * 22.0 + 11.0);
+            let pos = row_pos(&app, pane, row);
             let win = app.window();
             win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
             for _ in 0..2 {
@@ -201,7 +238,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             let r2 = runner.clone();
             let w = app.as_weak();
             runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(ms), move || {
-                let app = w.unwrap();
+                let Some(app) = w.upgrade() else { return };
                 let mut n = remaining.borrow_mut();
                 if *n == 0 {
                     r2.borrow().sub.stop();
@@ -224,7 +261,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             let r2 = runner.clone();
             let w = app.as_weak();
             runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(16), move || {
-                let app = w.unwrap();
+                let Some(app) = w.upgrade() else { return };
                 let mut k = i.borrow_mut();
                 *k += 1;
                 let pos = LogicalPosition::new(start.x, start.y + dy * (*k as f32) / steps as f32);

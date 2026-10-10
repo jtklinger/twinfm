@@ -206,15 +206,18 @@ fn request_pass(st: &mut State, pane: usize) {
                     out.restore(&model.capture(current_row(&app, pane)));
                 }
                 eprintln!(
-                    "[sort] pane={pane} {} of {total} entries by {col:?} asc={asc} hidden={} in {pass_ms:.1} ms",
+                    "[sort] pane={pane} {} of {total} entries by {col:?} asc={asc} hidden={} cursor={:?} selected={} in {pass_ms:.1} ms",
                     out.shown.len(),
-                    out.hidden
+                    out.hidden,
+                    out.cursor,
+                    out.selection.len()
                 );
                 let scroll = std::mem::take(&mut st.keep_scroll[pane]).then(|| app.invoke_get_scroll(pane as i32));
                 let cursor = model.replace(out);
                 set_current_row(&app, pane, cursor);
                 if let (Some(y), Some(_)) = (scroll, cursor) {
                     app.invoke_set_scroll(pane as i32, y);
+                    eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
                 }
                 set_status(&app, pane, status_text(model, &st.timing[pane]));
             });
@@ -328,7 +331,11 @@ fn main() -> Result<(), slint::PlatformError> {
         if row < 0 && op != SelOp::All {
             return;
         }
-        with_state(|st| st.panes[pane as usize].select(op, row.max(0) as usize));
+        with_state(|st| {
+            let model = &st.panes[pane as usize];
+            model.select(op, row.max(0) as usize);
+            eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
+        });
     });
     app.on_refresh(|pane| refresh(pane as usize));
     app.on_toggle_hidden(|pane| {

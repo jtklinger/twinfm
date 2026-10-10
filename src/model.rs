@@ -187,6 +187,10 @@ impl PaneModel {
         self.sel.borrow().set.iter().filter_map(|&i| shown.get(i).map(|e| e.name.clone())).collect()
     }
 
+    pub fn selected_count(&self) -> usize {
+        self.sel.borrow().set.len()
+    }
+
     /// The cursor and selection by name, to carry across a pass or a refresh.
     pub fn capture(&self, cursor: i32) -> Restore {
         let shown = self.shown.borrow();
