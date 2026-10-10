@@ -386,7 +386,10 @@ some of its remaining difference is icon replies landing and recomposing. No pan
   the end show the icons aligned with their rows in both panes and the partly scrolled top
   row's icon clipped at the header.
 
-Gate: pending Jeremy's console WPR run.
+Gate (2026-10-10, Jeremy at the console, strip build `target-m2`, same conditions as the
+morning run): **19.3%** by WPR (1932 sampled ms in the 10 s after the split; in-app 20.5%).
+Passes the 20% bar; the per-row version read 22.3% and M1 19.9%. Compose cost in the run: 125
+strips at 24 us average. Trace `C:/traces/twinfm-p1-m2strip.etl`.
 
 ## M3: file operations
 
