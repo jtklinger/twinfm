@@ -36,6 +36,10 @@ export component App inherits Window {
     callback select(int, int, int);
     // viewport-changed(pane, content-y, visible-height)
     callback viewport-changed(int, length, length);
+    // command(pane, name): a file operation key in that pane's list (pane.slint FileList).
+    callback command(int, string);
+    // edit-commit(pane, mode, original, typed): the inline name editor's Return.
+    callback edit-commit(int, int, string, string);
 
     public function focus-pane(p: int) {
         active-pane = p;
@@ -52,6 +56,10 @@ export component App inherits Window {
 
     public function set-scroll(p: int, y: length) {
         if (p == 0) { left.set-scroll(y); } else { right.set-scroll(y); }
+    }
+
+    public function begin-edit(p: int, mode: int, text: string) {
+        if (p == 0) { left.begin-edit(mode, text); } else { right.begin-edit(mode, text); }
     }
 
     // set-strip(pane, image, first row, width, height, shown): the pane's icon strip.
@@ -85,6 +93,8 @@ export component App inherits Window {
             navigate(p) => { root.navigate(0, p); }
             select(op, i) => { root.select(0, op, i); }
             viewport-changed(y, h) => { root.viewport-changed(0, y, h); }
+            command(c) => { root.command(0, c); }
+            edit-commit(m, o, t) => { root.edit-commit(0, m, o, t); }
             open-row(i) => { root.open-row(0, i); }
             sort-by(c) => { root.sort-by(0, c); }
             go-up => { root.go-up(0); }
@@ -101,6 +111,8 @@ export component App inherits Window {
             navigate(p) => { root.navigate(1, p); }
             select(op, i) => { root.select(1, op, i); }
             viewport-changed(y, h) => { root.viewport-changed(1, y, h); }
+            command(c) => { root.command(1, c); }
+            edit-commit(m, o, t) => { root.edit-commit(1, m, o, t); }
             open-row(i) => { root.open-row(1, i); }
             sort-by(c) => { root.sort-by(1, c); }
             go-up => { root.go-up(1); }

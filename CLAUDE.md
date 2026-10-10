@@ -8,7 +8,7 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
 milestones, gate re-run after each). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (29 tests)
+- `cargo test --release` (36 tests; two touch the real shell and clipboard, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -33,9 +33,23 @@ milestones, gate re-run after each). Read them before changing the list.
 - In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
   `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]` lines. Driver
   keys include `CtrlH` (hidden files), `F5`/`CtrlR` (refresh), `CtrlA`, `Space`,
-  `ShiftUp`/`ShiftDown`; `click`/`ctrlclick`/`shiftclick <pane> <row>` select rows. `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  `ShiftUp`/`ShiftDown`; `click`/`ctrlclick`/`shiftclick <pane> <row>` select rows; file
+  operation steps `copy`, `move`, `delete`, `sdelete`, `newfolder <name>`, `rename <name>`,
+  `cc`, `cx`, `cv`, and `waitops <ms>` to wait for a job and the refresh after it; `[fileops]`
+  lines on stderr. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
+- File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
+  `%TEMP%\twinfm-m3\`, loops copy/rename/move/recycle/permanent delete/new folder/clipboard
+  cycles between the panes with the bigdir/System32/Manifests scroll scenario in between, and
+  reports exit code, `panicked` count and working set (CSV every 30 s). It runs the app with
+  `TWINFM_SOAK=1`, which adds `FOF_NOCONFIRMATION` to every job and refuses any file operation
+  outside `%TEMP%\twinfm-m3`. Never set `TWINFM_SOAK` otherwise. Each cycle adds one Recycle Bin
+  entry and overwrites the clipboard.
+- Tests that touch the desktop: `fileops::tests::worker_runs_real_shell_operations` runs real
+  `IFileOperation` jobs in `%TEMP%\twinfm-m3-test-<pid>\`, and
+  `clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` replaces the clipboard's
+  contents and leaves it empty.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols`.

@@ -8,6 +8,8 @@ export struct Row {
     modified: string,
     kind: int,
     selected: bool,
+    // On the clipboard as a cut: the row's text is drawn dimmed.
+    cut: bool,
 }
 
 component HeaderCell inherits Rectangle {
@@ -57,10 +59,10 @@ component FileListBase inherits ListView {
             // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip.
             padding-left: 28px;
             padding-right: 6px;
-            Text { text: row.name; vertical-alignment: center; overflow: elide; }
-            Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; }
-            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; }
-            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; }
+            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
         }
         TouchArea {
             pointer-event(ev) => {
@@ -80,6 +82,8 @@ component FileList inherits FileListBase {
     // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
     // turns it into the visible row range and fetches icons for it.
     callback viewport-changed(length, length);
+    // File operations on the active pane: copy, move, delete, sdelete, rename, newfolder, cc, cx, cv.
+    callback command(string);
     private property <int> row-count: root.rows.length;
     changed content-y => { root.viewport-changed(root.content-y, root.visible-height); }
     changed visible-height => { root.viewport-changed(root.content-y, root.visible-height); }
@@ -89,7 +93,7 @@ component FileList inherits FileListBase {
 
     // Same arithmetic as StandardListView's bring-into-view, for our 22px rows: scroll just far
     // enough that the cursor row is fully inside the viewport, then apply the selection gesture.
-    function cursor-moved(shift: bool) {
+    public function bring-into-view() {
         if (root.current-row < 0) { return; }
         if (root.content-y + root.current-row * 22px < 0px) {
             root.content-y = -root.current-row * 22px;
@@ -97,6 +101,11 @@ component FileList inherits FileListBase {
         if (root.content-y + (root.current-row + 1) * 22px > root.visible-height) {
             root.content-y = root.visible-height - (root.current-row + 1) * 22px;
         }
+    }
+
+    function cursor-moved(shift: bool) {
+        if (root.current-row < 0) { return; }
+        root.bring-into-view();
         root.select(shift ? 2 : 0, root.current-row);
     }
 
@@ -126,6 +135,19 @@ component FileList inherits FileListBase {
             }
             if (e.text == Key.Home) { if (root.rows.length > 0) { root.current-row = 0; root.cursor-moved(e.modifiers.shift); } return accept; }
             if (e.text == Key.End) { if (root.rows.length > 0) { root.current-row = root.rows.length - 1; root.cursor-moved(e.modifiers.shift); } return accept; }
+            // File operations live here, not in the window's outer scope, so they only fire while
+            // the list has focus: a Delete typed into the path bar or the rename box stays text.
+            if (e.text == Key.F5 && e.modifiers.shift) { root.command("copy"); return accept; }
+            if (e.text == Key.F6 && e.modifiers.shift) { root.command("move"); return accept; }
+            if (e.text == Key.Delete) { root.command(e.modifiers.shift ? "sdelete" : "delete"); return accept; }
+            if (e.text == Key.F2) { root.command("rename"); return accept; }
+            if (e.text == Key.F7 || (e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N"))) {
+                root.command("newfolder");
+                return accept;
+            }
+            if (e.modifiers.control && !e.modifiers.shift && (e.text == "c" || e.text == "C")) { root.command("cc"); return accept; }
+            if (e.modifiers.control && !e.modifiers.shift && (e.text == "x" || e.text == "X")) { root.command("cx"); return accept; }
+            if (e.modifiers.control && !e.modifiers.shift && (e.text == "v" || e.text == "V")) { root.command("cv"); return accept; }
             if (e.text == " ") { if (root.current-row >= 0) { root.select(1, root.current-row); } return accept; }
             if (e.modifiers.control && (e.text == "a" || e.text == "A")) { root.select(3, root.current-row); return accept; }
             return reject;
@@ -149,6 +171,13 @@ export component Pane inherits Rectangle {
     callback focus-requested();
     callback select(int, int);
     callback viewport-changed(length, length);
+    callback command(string);
+    // edit-commit(mode, original name, typed name): mode 1 rename, 2 new folder.
+    callback edit-commit(int, string, string);
+
+    // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder.
+    in-out property <int> edit-mode: 0;
+    private property <string> edit-original;
 
     // The icon strip (`set-strip`): one image holding the icons of rows strip-first onwards,
     // composed in Rust, at strip-width x strip-height logical px (its exact physical size).
@@ -175,6 +204,22 @@ export component Pane inherits Rectangle {
         strip-shown = shown;
     }
 
+    // Open the name editor over the cursor row's name (rename) or the top row (new folder),
+    // prefilled with `text` and all of it selected.
+    public function begin-edit(mode: int, text: string) {
+        if (mode == 1) { list.bring-into-view(); }
+        root.edit-original = text;
+        root.edit-mode = mode;
+        edit.text = text;
+        edit.focus();
+        edit.select-all();
+    }
+
+    function end-edit() {
+        root.edit-mode = 0;
+        list.focus-list();
+    }
+
     VerticalLayout {
         padding: 3px;
         spacing: 2px;
@@ -199,6 +244,7 @@ export component Pane inherits Rectangle {
             focus-requested => { root.focus-requested(); }
             select(op, i) => { root.select(op, i); }
             viewport-changed(y, h) => { root.viewport-changed(y, h); }
+            command(c) => { root.command(c); }
         }
         Text { text: status; height: 18px; font-size: 11px; color: Palette.foreground; }
     }
@@ -223,6 +269,34 @@ export component Pane inherits Rectangle {
             image-fit: fill;
             image-rendering: pixelated;
             accessible-role: none;
+        }
+    }
+
+    // Return commits, Escape cancels, focus loss cancels. Over the name cell: 6 px row padding
+    // plus the 22 px icon slot from the left, the three fixed columns (350 px) from the right.
+    // The opaque box hides the row text behind Fluent's translucent LineEdit background.
+    Rectangle {
+        visible: root.edit-mode != 0;
+        x: list.x + 24px;
+        y: list.y - 3px + (root.edit-mode == 1 ? list.content-y + list.current-row * 22px : 0px);
+        width: max(160px, list.width - 24px - 350px - 12px);
+        height: 28px;
+        background: Palette.background;
+        edit := LineEdit {
+            width: 100%;
+            height: 100%;
+            accessible-label: root.edit-mode == 1 ? "Rename" : "New folder name";
+            accepted(t) => {
+                root.edit-commit(root.edit-mode, root.edit-original, t);
+                root.end-edit();
+            }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) { root.end-edit(); return accept; }
+                return reject;
+            }
+            changed has-focus => {
+                if (!self.has-focus && root.edit-mode != 0) { root.edit-mode = 0; }
+            }
         }
     }
 }

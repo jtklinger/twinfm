@@ -5,16 +5,20 @@ mod fs {
     pub mod enumerate;
 }
 mod auto;
+mod fileops;
 mod icons;
 mod model;
 mod perf;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
+use fileops::{Job, Outcome, clipboard, same_dir};
 use fs::enumerate::{Msg, THIS_PC, is_this_pc};
 use icons::IconTable;
 use model::{Kind, PaneModel, SelOp, SortCol, filter_sort};
-use slint::{ComponentHandle, Image, ModelRc, RenderingState, Weak};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use slint::{ComponentHandle, Image, ModelRc, RenderingState, SharedString, Weak};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -70,6 +74,23 @@ struct State {
     icon_counts: IconCounts,
     /// The (content-y, visible-height) each list last reported, in logical px.
     view: [(f32, f32); 2],
+    /// The file operation worker (STA thread, owns every IFileOperation).
+    ops: fileops::Worker,
+    /// The main window's HWND once it exists (0 before): owner of the shell's dialogs and of
+    /// the clipboard.
+    hwnd: isize,
+    next_job: u64,
+    /// Jobs in flight: id to source pane.
+    jobs: HashMap<u64, usize>,
+    /// The paste-of-a-cut job, if one is in flight: on success the clipboard is emptied.
+    paste_move: Option<u64>,
+    /// Per pane, the last file operation's message, shown before the item count.
+    notes: [String; 2],
+    /// Per pane, a name for the next pass to put the cursor and selection on (after a rename or
+    /// a new folder).
+    focus_name: [Option<SharedString>; 2],
+    /// TWINFM_SOAK=1: no confirmations, and every path must lie inside this scratch folder.
+    soak: Option<PathBuf>,
     /// What each pane's icon strip was last composed from (None: hidden), and whether its
     /// rows changed since, so the next resolve recomposes it.
     strip: [Option<icons::Composed>; 2],
@@ -101,6 +122,8 @@ fn navigate(pane: usize, path: PathBuf) {
         st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
         st.paths[pane] = path.clone();
         st.keep_scroll[pane] = false;
+        st.notes[pane].clear();
+        st.focus_name[pane] = None;
         hide_strip(st, &app, pane);
         let shown = path.to_string_lossy().to_string();
         if pane == 0 {
@@ -138,8 +161,12 @@ fn set_status(app: &App, pane: usize, s: String) {
     if pane == 0 { app.set_left_status(s.into()) } else { app.set_right_status(s.into()) }
 }
 
-/// The status line for a pane: loading, complete, or failed.
-fn status_text(model: &PaneModel, t: &PaneTiming) -> String {
+/// The status line for a pane: loading, complete, or failed, after the pane's note (the last
+/// file operation's result) when there is one.
+fn status_text(model: &PaneModel, t: &PaneTiming, note: &str) -> String {
+    if !note.is_empty() {
+        return format!("{note} | {}", status_text(model, t, ""));
+    }
     if let Some(e) = &t.error {
         return format!("error: {e}");
     }
@@ -174,7 +201,7 @@ fn drain() {
                             eprintln!("[enum] pane={pane} first batch after {:.1} ms", perf::elapsed_ms(r));
                         }
                     }
-                    set_status(&app, pane, status_text(model, t));
+                    set_status(&app, pane, status_text(model, t, &st.notes[pane]));
                 }
                 Msg::Done { pane, generation, total, elapsed, error } => {
                     let model = &st.panes[pane];
@@ -189,7 +216,7 @@ fn drain() {
                     match error {
                         Some(e) => {
                             st.timing[pane].error = Some(e);
-                            set_status(&app, pane, status_text(model, &st.timing[pane]));
+                            set_status(&app, pane, status_text(model, &st.timing[pane], &st.notes[pane]));
                         }
                         None => {
                             eprintln!(
@@ -197,7 +224,7 @@ fn drain() {
                                 elapsed.as_secs_f64() * 1e3
                             );
                             st.timing[pane].done_ms = Some(wall);
-                            set_status(&app, pane, status_text(model, &st.timing[pane]));
+                            set_status(&app, pane, status_text(model, &st.timing[pane], &st.notes[pane]));
                             // Apply the pane's current filter and sort once the listing is complete.
                             request_pass(st, pane);
                         }
@@ -225,7 +252,11 @@ fn request_pass(st: &mut State, pane: usize) {
     let pass = model.pass.get() + 1;
     model.pass.set(pass);
     let snapshot = model.snapshot_all();
-    let restore = model.capture(current_row(&app, pane));
+    let mut restore = model.capture(current_row(&app, pane));
+    if let Some(name) = st.focus_name[pane].take() {
+        restore.cursor = Some(name.clone());
+        restore.selected = vec![name];
+    }
     let sel_version = model.sel_version.get();
     let t0 = Instant::now();
     std::thread::spawn(move || {
@@ -257,7 +288,7 @@ fn request_pass(st: &mut State, pane: usize) {
                     app.invoke_set_scroll(pane as i32, y);
                     eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
                 }
-                set_status(&app, pane, status_text(model, &st.timing[pane]));
+                set_status(&app, pane, status_text(model, &st.timing[pane], &st.notes[pane]));
                 st.strip_dirty[pane] = true;
                 resolve_view(st, &app, pane);
             });
@@ -397,6 +428,250 @@ fn report_icons() {
     });
 }
 
+/// The main window's HWND, fetched once the window exists.
+fn main_hwnd(st: &mut State, app: &App) -> isize {
+    if st.hwnd == 0 {
+        let handle = app.window().window_handle();
+        if let Ok(h) = handle.window_handle() {
+            if let RawWindowHandle::Win32(w) = h.as_raw() {
+                st.hwnd = w.hwnd.get();
+            }
+        }
+    }
+    st.hwnd
+}
+
+/// Show `text` as the pane's note now.
+fn note(st: &mut State, app: &App, pane: usize, text: String) {
+    eprintln!("[fileops] pane={pane} note: {text}");
+    st.notes[pane] = text;
+    set_status(app, pane, status_text(&st.panes[pane], &st.timing[pane], &st.notes[pane]));
+}
+
+/// `p` is `root` or lies under it (case-insensitive, whole components).
+fn inside(p: &Path, root: &Path) -> bool {
+    let (p, r) = (p.to_string_lossy().to_lowercase(), root.to_string_lossy().trim_end_matches('\\').to_lowercase());
+    p == r || p.strip_prefix(&r).is_some_and(|rest| rest.starts_with('\\'))
+}
+
+/// Full paths of the selection (or the cursor row) in a pane, or a note saying why there are none.
+fn sources(st: &mut State, app: &App, pane: usize) -> Option<(Vec<PathBuf>, Vec<SharedString>)> {
+    let targets = st.panes[pane].targets(current_row(app, pane));
+    if targets.is_empty() {
+        note(st, app, pane, "nothing selected".into());
+        return None;
+    }
+    if targets.iter().any(|e| e.kind == Kind::Drive) {
+        note(st, app, pane, "drives cannot be copied, moved, renamed or deleted".into());
+        return None;
+    }
+    let folder = &st.paths[pane];
+    Some((targets.iter().map(|e| folder.join(e.name.as_str())).collect(), targets.into_iter().map(|e| e.name).collect()))
+}
+
+/// Queue a job on the worker; the source pane shows its progress note. Returns the job id.
+fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
+    if let Some(root) = &st.soak {
+        if let Some(p) = job.paths().into_iter().find(|p| !inside(p, root)) {
+            let text = format!("soak: refused {} (outside {})", p.display(), root.display());
+            note(st, app, pane, text);
+            return None;
+        }
+    }
+    st.next_job += 1;
+    let id = st.next_job;
+    let hwnd = main_hwnd(st, app);
+    let running = fileops::running_text(&job);
+    eprintln!("[fileops] submit id={id} pane={pane} hwnd={hwnd:#x} {job:?}");
+    if !st.ops.submit(fileops::Request { id, job, hwnd, no_confirm: st.soak.is_some() }) {
+        note(st, app, pane, "the file operation worker has stopped".into());
+        return None;
+    }
+    st.jobs.insert(id, pane);
+    note(st, app, pane, running);
+    Some(id)
+}
+
+/// A file operation key in a pane's list. Copy and move go to the other pane's folder; rename
+/// and new folder open the inline name editor, which commits through `edit_commit`.
+fn command(pane: usize, cmd: &str) {
+    match cmd {
+        "cc" | "cx" => return clipboard_put(pane, cmd == "cx"),
+        "cv" => return clipboard_paste(pane),
+        _ => {}
+    }
+    let edit = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let folder = st.paths[pane].clone();
+        let at_drives = is_this_pc(&folder.to_string_lossy());
+        match cmd {
+            "newfolder" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
+            "newfolder" => return Some((app, 2, SharedString::from("New folder"))),
+            "rename" => match usize::try_from(current_row(&app, pane)).ok().and_then(|r| st.panes[pane].entry(r)) {
+                None => note(st, &app, pane, "nothing to rename".into()),
+                Some(e) if e.kind == Kind::Drive => note(st, &app, pane, "drives cannot be renamed here".into()),
+                Some(e) => return Some((app, 1, e.name)),
+            },
+            "copy" | "move" => {
+                if !app.get_split() {
+                    note(st, &app, pane, "open the second pane (F3) first".into());
+                    return None;
+                }
+                let dest = st.paths[1 - pane].clone();
+                if is_this_pc(&dest.to_string_lossy()) {
+                    note(st, &app, pane, "the other pane lists drives; open a folder there first".into());
+                    return None;
+                }
+                if cmd == "move" && same_dir(&folder, &dest) {
+                    note(st, &app, pane, "source and destination are the same folder".into());
+                    return None;
+                }
+                let (sources, _) = sources(st, &app, pane)?;
+                let job = if cmd == "move" { Job::Move { sources, dest_dir: dest } } else { Job::Copy { sources, dest_dir: dest } };
+                submit(st, &app, pane, job);
+            }
+            "delete" | "sdelete" => {
+                let (sources, _) = sources(st, &app, pane)?;
+                submit(st, &app, pane, Job::Delete { sources, permanent: cmd == "sdelete" });
+            }
+            _ => {}
+        }
+        None
+    });
+    // Outside the state borrow: opening the editor moves keyboard focus.
+    if let Some((app, mode, text)) = edit {
+        app.invoke_begin_edit(pane as i32, mode, text);
+    }
+}
+
+/// The inline name editor's Return: rename the row or create the folder.
+fn edit_commit(pane: usize, mode: i32, original: &str, typed: &str) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let name = typed.trim();
+        if let Some(why) = fileops::invalid_name(name) {
+            note(st, &app, pane, why.into());
+            return;
+        }
+        let folder = st.paths[pane].clone();
+        let job = match mode {
+            1 if name == original => return,
+            1 => Job::Rename { source: folder.join(original), new_name: name.into() },
+            2 => Job::NewFolder { parent: folder, name: name.into() },
+            _ => return,
+        };
+        submit(st, &app, pane, job);
+    });
+}
+
+/// Ctrl+C / Ctrl+X: the selection onto the real clipboard, as Explorer writes it. A cut dims
+/// its rows until the paste (or the next copy or cut).
+fn clipboard_put(pane: usize, cut: bool) {
+    let Some((hwnd, paths, names)) = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let (paths, names) = sources(st, &app, pane)?;
+        Some((main_hwnd(st, &app), paths, names))
+    }) else {
+        return;
+    };
+    let effect = if cut { clipboard::EFFECT_MOVE } else { clipboard::EFFECT_COPY };
+    // No state borrow across the clipboard calls (see fileops::clipboard).
+    let res = clipboard::write(hwnd, &paths, effect);
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        match res {
+            Ok(()) => {
+                let n = paths.len();
+                let what = if cut { "Cut" } else { "Copied" };
+                note(st, &app, pane, format!("{what} {n} item{} to the clipboard", if n == 1 { "" } else { "s" }));
+                for p in 0..2 {
+                    st.panes[p].set_cut(if cut && p == pane { names.clone() } else { Vec::new() });
+                }
+            }
+            Err(e) => note(st, &app, pane, format!("clipboard: {e}")),
+        }
+    });
+}
+
+/// Ctrl+V: copy or move the clipboard's files into the pane's folder ("Preferred DropEffect"
+/// decides; copy when absent).
+fn clipboard_paste(pane: usize) {
+    let Some(hwnd) = with_state(|st| {
+        let app = st.app.upgrade()?;
+        if is_this_pc(&st.paths[pane].to_string_lossy()) {
+            note(st, &app, pane, "This PC lists drives; open a folder first".into());
+            return None;
+        }
+        Some(main_hwnd(st, &app))
+    }) else {
+        return;
+    };
+    let res = clipboard::read(hwnd);
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let (sources, effect) = match res {
+            Ok(Some((s, e))) if !s.is_empty() => (s, e),
+            Ok(_) => return note(st, &app, pane, "no files on the clipboard".into()),
+            Err(e) => return note(st, &app, pane, format!("clipboard: {e}")),
+        };
+        let dest = st.paths[pane].clone();
+        if effect == clipboard::EFFECT_MOVE {
+            if sources.iter().all(|s| s.parent().is_some_and(|d| same_dir(d, &dest))) {
+                return note(st, &app, pane, "source and destination are the same folder".into());
+            }
+            st.paste_move = submit(st, &app, pane, Job::Move { sources, dest_dir: dest });
+        } else {
+            submit(st, &app, pane, Job::Copy { sources, dest_dir: dest });
+        }
+    });
+}
+
+/// A job finished (on the UI thread, from the worker's wake-up): show the result on the source
+/// pane and refresh both panes. Moved and deleted rows drop out of the selection because the
+/// refresh restores it by name; a copy keeps it.
+fn job_done(d: fileops::Done) {
+    let mut clear_clipboard = None;
+    let panes = with_state(|st| {
+        let pane = st.jobs.remove(&d.id).unwrap_or(0);
+        let text = fileops::status_text(&d.job, &d.outcome);
+        eprintln!("[fileops] done id={} pane={pane} {:?}: {text}", d.id, d.outcome);
+        if d.outcome == Outcome::Done {
+            match &d.job {
+                Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } => st.focus_name[pane] = Some(n.as_str().into()),
+                _ => {}
+            }
+        }
+        if st.paste_move == Some(d.id) {
+            st.paste_move = None;
+            if d.outcome == Outcome::Done {
+                clear_clipboard = Some(st.hwnd);
+                for m in &st.panes {
+                    m.set_cut(Vec::new());
+                }
+            }
+        }
+        st.notes[pane] = text;
+        let split = st.app.upgrade().is_some_and(|a| a.get_split());
+        if split { vec![0, 1] } else { vec![0] }
+    });
+    if let Some(hwnd) = clear_clipboard {
+        if let Err(e) = clipboard::clear(hwnd) {
+            eprintln!("[fileops] clearing the clipboard after a cut-paste failed: {e}");
+        }
+    }
+    for p in panes {
+        refresh(p);
+    }
+}
+
+/// For the scripted driver: a job is in flight or a pane is still re-enumerating.
+pub fn ops_busy() -> bool {
+    STATE.with(|s| match s.try_borrow() {
+        Ok(g) => g.as_ref().is_some_and(|st| !st.jobs.is_empty() || st.panes.iter().any(|m| m.is_refreshing())),
+        Err(_) => true,
+    })
+}
+
 fn on_frame_rendered() {
     with_state(|st| {
         for pane in 0..2 {
@@ -446,6 +721,13 @@ fn main() -> Result<(), slint::PlatformError> {
     icons::spawn(icon_requests, icon_replies, icon_gens.clone(), icon_stats.clone(), || {
         let _ = slint::invoke_from_event_loop(drain_icons);
     });
+    let ops = fileops::Worker::spawn(|d| {
+        let _ = slint::invoke_from_event_loop(move || job_done(d));
+    });
+    let soak = (std::env::var("TWINFM_SOAK").as_deref() == Ok("1")).then(|| std::env::temp_dir().join("twinfm-m3"));
+    if let Some(root) = &soak {
+        eprintln!("[fileops] TWINFM_SOAK=1: no confirmations, paths confined to {}", root.display());
+    }
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
             app: app.as_weak(),
@@ -464,6 +746,14 @@ fn main() -> Result<(), slint::PlatformError> {
             icon_stats,
             icon_counts: IconCounts::default(),
             view: [(0.0, 0.0); 2],
+            ops,
+            hwnd: 0,
+            next_job: 0,
+            jobs: HashMap::new(),
+            paste_move: None,
+            notes: Default::default(),
+            focus_name: Default::default(),
+            soak,
             strip: [None; 2],
             strip_dirty: [false; 2],
         })
@@ -536,6 +826,8 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
     app.on_refresh(|pane| refresh(pane as usize));
+    app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
+    app.on_edit_commit(|pane, mode, original, typed| edit_commit(pane as usize, mode, original.as_str(), typed.as_str()));
     app.on_toggle_hidden(|pane| {
         with_state(|st| {
             let model = &st.panes[pane as usize];
