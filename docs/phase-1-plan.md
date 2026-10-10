@@ -1320,8 +1320,7 @@ Gate: pending Jeremy's console WPR run on the full build.
 
 M1 to M6 are in: real entries, icons, file operations, the shell context menu, drag and drop,
 and the shell around them (tabs, breadcrumb, status bar, sidebar, bookmarks, settings, About).
-The console WPR gate is recorded for M1 (19.9%) and M2 before its rework (22.3%); the runs for
-the M2 strip, M4, M5 and the full M6 build are pending. Deferred to Phase 2, pulled together from
+The console WPR gate (main thread busy over the 10 s after the split, bar under 20%) is recorded for week-one main (16.5%), M1 (19.9%), M2 per-row (22.3%, failed and reworked), M2 strip (19.3%) and M3 (19.6%); M4 and M5 add nothing per frame and were not run separately; the full M6 build's run is pending. Deferred to Phase 2, pulled together from
 every milestone and deduplicated:
 
 - **Directory watching**, which several gaps share: changes made by shell verbs that finish
