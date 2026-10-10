@@ -40,6 +40,11 @@ export component App inherits Window {
     callback command(int, string);
     // edit-commit(pane, mode, original, typed): the inline name editor's Return.
     callback edit-commit(int, int, string, string);
+    // context-menu(pane, row, x, y, shift): right-click on a row (row >= 0) or below the last row
+    // (-1), window-relative logical coordinates. context-key(pane, row, list x, list y, content-y,
+    // visible-height): Shift+F10 or the Menu key.
+    callback context-menu(int, int, length, length, bool);
+    callback context-key(int, int, length, length, length, length);
 
     public function focus-pane(p: int) {
         active-pane = p;
@@ -95,6 +100,8 @@ export component App inherits Window {
             viewport-changed(y, h) => { root.viewport-changed(0, y, h); }
             command(c) => { root.command(0, c); }
             edit-commit(m, o, t) => { root.edit-commit(0, m, o, t); }
+            context-menu(r, x, y, s) => { root.context-menu(0, r, x, y, s); }
+            context-key(r, x, y, cy, h) => { root.context-key(0, r, x, y, cy, h); }
             open-row(i) => { root.open-row(0, i); }
             sort-by(c) => { root.sort-by(0, c); }
             go-up => { root.go-up(0); }
@@ -113,6 +120,8 @@ export component App inherits Window {
             viewport-changed(y, h) => { root.viewport-changed(1, y, h); }
             command(c) => { root.command(1, c); }
             edit-commit(m, o, t) => { root.edit-commit(1, m, o, t); }
+            context-menu(r, x, y, s) => { root.context-menu(1, r, x, y, s); }
+            context-key(r, x, y, cy, h) => { root.context-key(1, r, x, y, cy, h); }
             open-row(i) => { root.open-row(1, i); }
             sort-by(c) => { root.sort-by(1, c); }
             go-up => { root.go-up(1); }

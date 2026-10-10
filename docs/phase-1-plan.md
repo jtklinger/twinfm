@@ -580,3 +580,190 @@ Gate (2026-10-10, Jeremy at the console, `target-m3`, run right after the M2 str
 **19.6%** by WPR (1957 sampled ms; in-app 19.4%). Within noise of M2's 19.3%, as expected for
 a milestone that adds no per-frame work. Trace `C:/traces/twinfm-p1-m3.etl`. Headroom to the
 bar is now under one point: M4 to M6 must add nothing to the per-frame path.
+
+## M4: shell context menu
+
+### What landed (2026-10-10)
+
+- **Shell menu** (`src/shellmenu.rs`), on the UI thread. `SHParseDisplayName` turns the pane's
+  folder into a PIDL (the drive list uses This PC's parsing name, so drives get their own
+  menus), `SHBindToObject` gives the folder's `IShellFolder`, `IShellFolder::ParseDisplayName`
+  gives a child PIDL per selected name, and `GetUIObjectOf(hwnd, n, apidl, IID_IContextMenu)`
+  gives the menu. Empty space gets `CreateViewObject(hwnd, IID_IContextMenu)`, the folder
+  background menu ("New", "Paste", "Properties" and the installed handlers). Then
+  `QueryContextMenu(hmenu, <after our items>, 100, 0x7FFF, CMF_NORMAL | CMF_EXPLORE | (Shift ?
+  CMF_EXTENDEDVERBS : 0))` and `TrackPopupMenuEx(TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN |
+  TPM_TOPALIGN)` at the click's screen point (the logical point times the scale factor, through
+  `ClientToScreen` on the main HWND). A shell id goes to `InvokeCommand` with a
+  `CMINVOKECOMMANDINFOEX`: `lpVerb` and `lpVerbW` are `MAKEINTRESOURCE(id - 100)`, `fMask` is
+  `CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE` with the point, `nShow` is `SW_SHOWNORMAL`, and item
+  menus get the folder as `lpDirectoryW`. RAII wrappers release the interfaces, free the PIDLs
+  with `CoTaskMemFree` and destroy the menu, in reverse creation order. COM is plain
+  `windows-sys` vtables, as in `icons.rs` and `fileops`. New `windows-sys` features:
+  `Win32_UI_Shell_Common` (`ITEMIDLIST`), `Win32_UI_Input_KeyboardAndMouse` (virtual-key codes
+  for the driver) and `Win32_Security` (only because `windows-sys` gates `CreateProcessW` behind
+  it).
+- **COM on the UI thread.** `CoInitializeEx(COINIT_APARTMENTTHREADED)` once, at the first menu,
+  logged as `[menu] UI thread CoInitializeEx`. It returned `S_FALSE` on every run: winit's
+  `OleInitialize` (for drag and drop) had already made the thread an STA. `RPC_E_CHANGED_MODE`
+  would refuse the menu with a status note. It is never uninitialised (see Decisions).
+- **IContextMenu2/3 routing.** The menu is queried for `IContextMenu3`, then `IContextMenu2`.
+  While `TrackPopupMenuEx` runs, a comctl32 subclass (`SetWindowSubclass`) on the main window
+  forwards `WM_INITMENUPOPUP`, `WM_DRAWITEM`, `WM_MEASUREITEM` and `WM_MENUCHAR` to
+  `HandleMenuMsg2` (or `HandleMenuMsg`; `WM_MENUCHAR` only with 3) and returns its result.
+  Everything else goes to `DefSubclassProc`, which is winit's window procedure. The routing data
+  is a `Box` that lives until `RemoveWindowSubclass`, which runs before the menu interfaces are
+  released. A `[menu] popup` line logs each submenu's name and item count after the shell
+  filled it.
+- **TwinFM's own items** above a separator, with ids 1 to 3 (1..=20 reserved, the shell starts at
+  100), inserted with `InsertMenuW` before `QueryContextMenu`:
+  - "Open in other pane": for a single directory or drive, or the pane's own folder on the
+    background menu. Turns the split on if needed.
+  - "Open in terminal": `wt.exe -d "<dir>"` through `CreateProcessW`, or, if that does not
+    start, `powershell.exe -NoExit -Command "Set-Location -LiteralPath '<dir>'"`. Each gets a
+    new console and the folder as its working directory, and inherits no handles. The directory
+    is the selected one when the selection is exactly one directory, else the pane's folder.
+  - "Copy path": `CF_UNICODETEXT`, one full path per line, CRLF between lines. It clears the cut
+    marks, since the cut is no longer on the clipboard.
+
+  The This PC background menu has no own items.
+- **Right-click** (pane.slint). On a row, the right press selects (new `SelOp::Context = 4`:
+  an unselected row becomes the only selection, a selected row keeps the selection) and moves
+  the cursor and focus there. The right release fires `context-menu(row, x, y, shift)` with
+  window coordinates from `absolute-position` plus the mouse position. A `TouchArea` over the
+  list's empty space below the last row (zero height when the rows fill the viewport) fires
+  `context-menu(-1, ...)`.
+- **Keyboard.** Shift+F10 and the Menu key (Slint has `Key.Menu`; winit maps the Apps key to it)
+  in the list's `FocusScope` scroll the cursor row into view, then call `context-key(row, list
+  position, content-y, visible-height)`. Rust places the menu at the name column under that row
+  (`shellmenu::row_menu_point`, kept inside the viewport), or at the list's top as the
+  background menu when there is no cursor row. As with the file operations, the menu acts on
+  the selection, or on the cursor row when nothing is selected.
+- **After `InvokeCommand`**, both panes refresh through the existing path. A failed command
+  (anything but a cancel) shows its HRESULT in the status line. The shell's "rename" verb (read
+  with `GetCommandString(GCS_VERBW)`) is not invoked: it opens TwinFM's own name editor,
+  because the shell's rename needs an `IShellView` site and does nothing without one.
+- **Driver.** `rclick <pane> <row>` (press, 60 ms for a frame so the row is drawn selected,
+  then release) and `rclickempty <pane>` (the real empty space when there is some on screen,
+  else the `context-menu` callback called directly, which the log says). After them come the
+  in-menu steps: `menuopen <text>` (Down presses, skipping separators, then Right),
+  `menukey <Down|Up|Right|Left|Escape>`, `menupick <own item>` (refuses shell items, so a
+  script can never run Delete) and `menuclose` (`EndMenu`). The `key` names `ShiftF10` and
+  `Menu` take in-menu steps too. stderr has `[menu]` lines: the target, the full item list, each
+  submenu as it fills, the close with its duration and UI-thread CPU, and the invoked verb.
+- **Tests**, 36 to 42: menu id partitioning (own range, gap, shell range, out of range); the
+  terminal command lines and the PowerShell fallback (a trailing backslash, `;`, `'`, `$`);
+  the Copy path text; the `CF_UNICODETEXT` block; the right-click selection rule; and the
+  keyboard menu point (row to screen position, scrolled, clamped above and below, a collapsed
+  list).
+
+### Decisions
+
+- **Slint does not run inside the menu's modal loop.** The brief expected the loop to dispatch
+  Slint timers, paint and the driver, so that a held borrow would panic. With winit 0.30 it does
+  not. The menu runs inside winit's event handler (from the release event), and
+  `EventLoopRunner::send_event` buffers every event that arrives while the handler runs: Slint's
+  timers (driven by winit's own wait), `invoke_from_event_loop` wake-ups, input. winit's
+  `WM_PAINT` handler sees `should_buffer` and only validates the window. Measured: a 6-second
+  menu held the 5-second `[perf]` report until just after it closed. During a 1.5-second menu, a
+  refresh's filter and sort result arrived and was applied right after the menu closed, cursor
+  and selection restored. So the `[perf]`-during-a-menu proof cannot exist. What runs inside the
+  loop is Win32: the subclass, Win32 timers, and the shell's code. The rule stays: `show` is
+  called with no `RefCell` borrow held. It is commented at the call site and in the module
+  docs, because a winit change or a shell extension pumping messages could make re-entry
+  possible, and the driver checks it on every in-menu tick.
+- **No paint spin while a menu is up.** A 6-second idle menu cost 0 ms of UI-thread CPU.
+- **In-menu driver steps run from a Win32 thread timer** (`SetTimer` with a `TIMERPROC`, which
+  `DispatchMessage` calls inside the menu's loop), since a `slint::Timer` would only fire after
+  the menu closed. It is one repeating 10 ms timer per menu with a due time. The first version
+  re-set a one-shot timer from its own callback: Windows gave the new timer the old id, and the
+  menu loop dispatched the `WM_TIMER` it had already generated for that id again at once, so a
+  6000 ms `sleep` ended after 3 ms. Menu keys are posted as `WM_KEYDOWN` to the main window; the
+  menu's loop reads keyboard input from the thread's queue.
+- **Own items above the shell's**: `QueryContextMenu` gets `indexMenu` = the number of our items
+  plus the separator. The brief's `indexMenu` 0 would have put the shell items above ours.
+- **Select on the right press, open on the release**, as Explorer does. Nothing renders while
+  the menu is up, so selecting on the release would leave the row undrawn behind the menu.
+- **"Open in terminal" through `CreateProcessW`, not `std::process::Command`.** Command always
+  passes `STARTF_USESTDHANDLES` with our standard handles, so PowerShell in its new console would
+  read and write the console TwinFM was started from. `ShellExecuteExW` would need
+  `Win32_System_Registry`. "wt.exe not on PATH" is detected by `CreateProcessW` failing rather
+  than by a PATH search: same outcome, and wt.exe is an app execution alias (a reparse point)
+  that a hand-written PATH search can get wrong.
+- **`CoInitializeEx` once, never `CoUninitialize`.** `S_FALSE` also takes a reference that should
+  strictly be balanced, but a `CoUninitialize` at the end of each menu could tear down an
+  apartment a shell extension's object still uses. One reference held for the life of a
+  thread that lives as long as the process costs nothing.
+- **The drive list's menus come from the This PC shell folder**, so a drive gets its real menu
+  (Properties, Eject, Format). The This PC background menu gets no own items.
+- **The background menu has "Open in other pane"** too: it opens the pane's own folder there.
+
+### Deviations
+
+- `QueryContextMenu`'s `indexMenu` is after our items, not 0 (above).
+- `CoUninitialize` is never called, including after `S_OK` (above).
+- `menuclose` calls `EndMenu` instead of posting `WM_CANCELMODE` or Escape (Escape closes only
+  the innermost open submenu). `menuopen`, `menukey` and `menupick` were added to open and
+  check submenus and to drive the own items.
+- `rclickempty` calls the callback directly when no empty space is on screen. `C:\Windows` and
+  bigdir fill the list, so the proof runs use that path; the real pointer path was checked in a
+  four-entry folder.
+- The `[perf]`-during-a-menu check was replaced by the in-menu tick check (above).
+- The shell's "rename" verb goes to TwinFM's editor.
+- New feature `Win32_Security`, for `CreateProcessW`.
+
+### Deferred
+
+- **Refresh after `InvokeCommand` only catches what the command did before it returned.** Many
+  verbs finish later (Properties, the shell's own Delete, archive tools); their changes appear
+  at the next F5. Directory watching is the fix.
+- **The rename interception and the invocation of a shell verb have not been driven by a
+  script**: `menupick` refuses shell items by design. They need a check by hand.
+- Explorer clears the selection on a right-click in empty space; TwinFM keeps it (the
+  background menu acts on the folder either way).
+- This is the classic menu ("Show more options" in Explorer), which is what `IContextMenu`
+  hosts get. Windows 11's compact menu (`IExplorerCommand`) is not shown. Some entries appear
+  twice, for example Windows Terminal's own "Open in Terminal" next to TwinFM's "Open in
+  terminal".
+- TwinFM's own items have no icons.
+- wt.exe's `;` separator is escaped as `\;`, but this was not tried on a real folder with a `;`
+  in its name. The PowerShell fallback was not run live (wt.exe is installed here); the unit
+  test covers its command line.
+- **No screenshot of a menu.** `tools/shot.ps1` uses `PrintWindow` on the main window, and the
+  menu is a separate top-level window; screen capture does not work from the harness. The
+  submenu contents below come from the `[menu] popup` lines, read from the real menus after
+  the shell filled them. A visual check and a Narrator check need Jeremy at the console.
+
+### Modal-loop proof
+
+`TWINFM_SCRIPT="sleep 2000;rclick 0 3;sleep 400;menuclose;sleep 300;rclickempty 0;sleep 400;menuclose;sleep 300;quit"`,
+20 runs on `C:\Windows` and 20 on `C:\traces\bigdir`, back to back, RDP session, default
+features, perf timers running:
+
+| Folder | Runs | Exit 0 | `panicked` | Borrow errors | Menus opened and closed | In-menu ticks with state and driver free |
+|---|---|---|---|---|---|---|
+| `C:\Windows` | 20 | 20 | 0 | 0 | 40 | 80 of 80 |
+| `C:\traces\bigdir` | 20 | 20 | 0 | 0 | 40 | 80 of 80 |
+
+Other scripted runs:
+
+- **Submenus fill through the routing**: "Send to" 5 items (Bluetooth device, Compressed
+  (zipped) folder, Desktop (create shortcut), Documents, Mail recipient) on a folder in
+  `C:\Windows`; "Open with" 8 items on a `.txt`; "New" on the background menu 16 items (Folder,
+  Shortcut, then document templates) in a folder under `%TEMP%`, and 1 item (Folder) in
+  `C:\Windows`. Each root `WM_INITMENUPOPUP` reports "not handled" by `HandleMenuMsg2`, which is
+  expected; every submenu reports handled.
+- **Own items end to end**: Copy path put `...\twinfm-m4\sub dir` on the clipboard
+  (`Get-Clipboard` read it back); Open in other pane turned the split on and opened the folder;
+  Open in terminal started `wt.exe -d "...\sub dir"` (one Windows Terminal window, closed by the
+  check). Shift+F10 and the Menu key opened the item menu under the cursor row at (31, 129)
+  logical: the list's left plus 28 px, and row 2's bottom edge.
+- **Re-entry**: a 6-second menu kept the `[perf]` report back until it closed. A refresh
+  started just before a 1.5-second menu: its worker pass result arrived while the menu was open
+  and was applied after it closed.
+- UI-thread CPU while a menu is open: 0 ms for an idle 6-second menu, 16 to 156 ms for menus
+  whose submenus the shell filled.
+
+Soak: with M5.
+
+Gate: pending Jeremy's console WPR run.

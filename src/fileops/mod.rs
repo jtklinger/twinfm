@@ -38,7 +38,7 @@ use windows_sys::core::{BOOL, GUID, HRESULT};
 const WM_RUN: u32 = WM_APP + 1;
 
 /// HRESULT_FROM_WIN32(ERROR_CANCELLED): what some shell paths return when the user cancels.
-const HR_CANCELLED: HRESULT = (0x8007_0000u32 | ERROR_CANCELLED) as HRESULT;
+pub const HR_CANCELLED: HRESULT = (0x8007_0000u32 | ERROR_CANCELLED) as HRESULT;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Job {

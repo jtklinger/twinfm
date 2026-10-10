@@ -38,6 +38,10 @@ component FileListBase inherits ListView {
     callback open-row(int);
     callback focus-requested();
     callback row-clicked(int, bool /* ctrl */, bool /* shift */);
+    callback row-right-pressed(int);
+    // context-menu(row, x, y, shift): right button released over a row (row >= 0) or the empty
+    // space below the last row (-1), at window-relative logical coordinates.
+    callback context-menu(int, length, length, bool);
 
     accessible-label: "Files";
     accessible-item-count: rows.length;
@@ -69,6 +73,14 @@ component FileListBase inherits ListView {
                 if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
                     root.row-clicked(i, ev.modifiers.control, ev.modifiers.shift);
                 }
+                // Select on the press (so the row is drawn selected before the menu's modal loop
+                // starts), open the shell menu on the release.
+                if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.right) {
+                    root.row-right-pressed(i);
+                }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right) {
+                    root.context-menu(i, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);
+                }
             }
             double-clicked => { root.open-row(i); }
         }
@@ -84,6 +96,9 @@ component FileList inherits FileListBase {
     callback viewport-changed(length, length);
     // File operations on the active pane: copy, move, delete, sdelete, rename, newfolder, cc, cx, cv.
     callback command(string);
+    // context-key(row, list x, list y, content-y, visible-height): Shift+F10 or the Menu key, after
+    // the cursor row was scrolled into view; Rust places the menu under the row.
+    callback context-key(int, length, length, length, length);
     private property <int> row-count: root.rows.length;
     changed content-y => { root.viewport-changed(root.content-y, root.visible-height); }
     changed visible-height => { root.viewport-changed(root.content-y, root.visible-height); }
@@ -116,6 +131,14 @@ component FileList inherits FileListBase {
         root.select(ctrl ? 1 : shift ? 2 : 0, i);
     }
 
+    // Explorer's rule: an unselected row becomes the only selection, a selected row keeps it.
+    row-right-pressed(i) => {
+        root.current-row = i;
+        key-area.focus();
+        root.focus-requested();
+        root.select(4, i);
+    }
+
     key-area := FocusScope {
         x: 0;
         width: 0;
@@ -141,6 +164,11 @@ component FileList inherits FileListBase {
             if (e.text == Key.F6 && e.modifiers.shift) { root.command("move"); return accept; }
             if (e.text == Key.Delete) { root.command(e.modifiers.shift ? "sdelete" : "delete"); return accept; }
             if (e.text == Key.F2) { root.command("rename"); return accept; }
+            if ((e.text == Key.F10 && e.modifiers.shift) || e.text == Key.Menu) {
+                root.bring-into-view();
+                root.context-key(root.current-row, root.absolute-position.x, root.absolute-position.y, root.content-y, root.visible-height);
+                return accept;
+            }
             if (e.text == Key.F7 || (e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N"))) {
                 root.command("newfolder");
                 return accept;
@@ -174,6 +202,8 @@ export component Pane inherits Rectangle {
     callback command(string);
     // edit-commit(mode, original name, typed name): mode 1 rename, 2 new folder.
     callback edit-commit(int, string, string);
+    callback context-menu(int, length, length, bool);
+    callback context-key(int, length, length, length, length);
 
     // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder.
     in-out property <int> edit-mode: 0;
@@ -245,6 +275,8 @@ export component Pane inherits Rectangle {
             select(op, i) => { root.select(op, i); }
             viewport-changed(y, h) => { root.viewport-changed(y, h); }
             command(c) => { root.command(c); }
+            context-menu(r, x, y, s) => { root.context-menu(r, x, y, s); }
+            context-key(r, x, y, cy, h) => { root.context-key(r, x, y, cy, h); }
         }
         Text { text: status; height: 18px; font-size: 11px; color: Palette.foreground; }
     }
@@ -269,6 +301,25 @@ export component Pane inherits Rectangle {
             image-fit: fill;
             image-rendering: pixelated;
             accessible-role: none;
+        }
+    }
+
+    // The empty space below the last row (none when the rows fill the viewport): a right-click
+    // there opens the folder's background menu ("New", "Paste", "Properties").
+    private property <length> rows-end: max(0px, min(list.visible-height, list.content-y + root.rows.length * 22px));
+    TouchArea {
+        x: list.x;
+        y: list.y + root.rows-end;
+        width: list.visible-width;
+        height: max(0px, list.visible-height - root.rows-end);
+        pointer-event(ev) => {
+            if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+                list.focus-list();
+                root.focus-requested();
+            }
+            if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
+                root.context-menu(-1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);
+            }
         }
     }
 

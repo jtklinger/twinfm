@@ -8,7 +8,7 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
 milestones, gate re-run after each). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (36 tests; two touch the real shell and clipboard, see below)
+- `cargo test --release` (42 tests; two touch the real shell and clipboard, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -36,7 +36,12 @@ milestones, gate re-run after each). Read them before changing the list.
   `ShiftUp`/`ShiftDown`; `click`/`ctrlclick`/`shiftclick <pane> <row>` select rows; file
   operation steps `copy`, `move`, `delete`, `sdelete`, `newfolder <name>`, `rename <name>`,
   `cc`, `cx`, `cv`, and `waitops <ms>` to wait for a job and the refresh after it; `[fileops]`
-  lines on stderr. `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  lines on stderr. Context menu steps: `rclick <pane> <row>`, `rclickempty <pane>`, key names
+  `ShiftF10` and `Menu`, each followed by in-menu steps (`sleep`, `menuopen <text>`,
+  `menukey <key>`, `menupick <own item>`, `menuclose`) that run from a Win32 timer inside the
+  menu's modal loop, because no Slint timer fires while it runs (`src/auto.rs` header);
+  `[menu]` lines on stderr. A script must end every menu with `menuclose` or `menupick`, or the
+  run waits for a person. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in

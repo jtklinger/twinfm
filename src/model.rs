@@ -521,6 +521,9 @@ pub enum SelOp {
     Range = 2,
     /// Ctrl+A.
     All = 3,
+    /// Right-click: an unselected row becomes the only selection; a selected row keeps the
+    /// selection as it is (Explorer behaviour, so the menu acts on everything selected).
+    Context = 4,
 }
 
 impl SelOp {
@@ -529,6 +532,7 @@ impl SelOp {
             1 => SelOp::Toggle,
             2 => SelOp::Range,
             3 => SelOp::All,
+            4 => SelOp::Context,
             _ => SelOp::Only,
         }
     }
@@ -548,6 +552,11 @@ impl Selection {
             return Vec::new();
         }
         match op {
+            SelOp::Context if self.set.contains(&row) => {
+                self.anchor = Some(row);
+                Vec::new()
+            }
+            SelOp::Context => self.apply(SelOp::Only, row, len),
             SelOp::Toggle => {
                 if !self.set.remove(&row) {
                     self.set.insert(row);
@@ -908,6 +917,22 @@ mod tests {
         let mut fresh = Selection::default();
         fresh.apply(SelOp::Range, 4, 10);
         assert_eq!((fresh.set.clone(), fresh.anchor), (set(&[4]), Some(4)));
+    }
+
+    #[test]
+    fn right_click_selects_an_unselected_row_and_keeps_a_selected_one() {
+        let mut s = Selection::default();
+        s.apply(SelOp::Only, 2, 10);
+        s.apply(SelOp::Toggle, 4, 10);
+        s.apply(SelOp::Toggle, 6, 10);
+        assert!(s.apply(SelOp::Context, 4, 10).is_empty(), "a selected row keeps the selection");
+        assert_eq!(s.set, set(&[2, 4, 6]));
+        let mut changed = s.apply(SelOp::Context, 5, 10);
+        changed.sort();
+        assert_eq!(changed, vec![2, 4, 5, 6], "an unselected row becomes the only selection");
+        assert_eq!((s.set.clone(), s.anchor), (set(&[5]), Some(5)));
+        assert!(s.apply(SelOp::Context, 10, 10).is_empty(), "out of range is ignored");
+        assert_eq!(SelOp::from_i32(4), SelOp::Context);
     }
 
     #[test]

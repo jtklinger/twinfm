@@ -12,7 +12,7 @@ use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
-use windows_sys::Win32::System::Ole::{CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_MOVE};
+use windows_sys::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT, DROPEFFECT_COPY, DROPEFFECT_MOVE};
 
 pub const EFFECT_COPY: u32 = DROPEFFECT_COPY;
 pub const EFFECT_MOVE: u32 = DROPEFFECT_MOVE;
@@ -162,6 +162,22 @@ pub fn read(hwnd: isize) -> Result<Option<(Vec<PathBuf>, u32)>, String> {
     Ok(Some((paths, effect)))
 }
 
+/// `text` as a `CF_UNICODETEXT` block: UTF-16 with a terminating NUL.
+pub fn unicode_text_block(text: &str) -> Vec<u8> {
+    text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect()
+}
+
+/// Put `text` on the clipboard as `CF_UNICODETEXT` ("Copy path"); `hwnd` becomes the owner.
+pub fn write_text(hwnd: isize, text: &str) -> Result<(), String> {
+    let block = unicode_text_block(text);
+    let _open = Open::new(hwnd)?;
+    // SAFETY: the clipboard is open (`_open`).
+    if unsafe { EmptyClipboard() } == 0 {
+        return Err("EmptyClipboard failed".into());
+    }
+    set(CF_UNICODETEXT as u32, &block)
+}
+
 /// Empty the clipboard (after pasting a cut, as Explorer does).
 pub fn clear(hwnd: isize) -> Result<(), String> {
     let _open = Open::new(hwnd)?;
@@ -197,6 +213,15 @@ mod tests {
         ansi[16..20].copy_from_slice(&0u32.to_le_bytes());
         ansi.extend_from_slice(b"C:\\x\0D:\\y\0\0");
         assert_eq!(parse_dropfiles(&ansi).unwrap(), vec![PathBuf::from(r"C:\x"), PathBuf::from(r"D:\y")]);
+    }
+
+    #[test]
+    fn unicode_text_is_nul_terminated_utf16() {
+        let text = "C:\\a b\r\nC:\\\u{e9}";
+        let b = unicode_text_block(text);
+        let units: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(units.last(), Some(&0), "NUL-terminated");
+        assert_eq!(String::from_utf16(&units[..units.len() - 1]).unwrap(), text);
     }
 
     /// Touches the real clipboard of this desktop: whatever was on it is replaced, and it is left empty.
