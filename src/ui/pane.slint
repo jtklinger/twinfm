@@ -42,6 +42,15 @@ component FileListBase inherits ListView {
     // context-menu(row, x, y, shift): right button released over a row (row >= 0) or the empty
     // space below the last row (-1), at window-relative logical coordinates.
     callback context-menu(int, length, length, bool);
+    // row-gesture(row, what, ctrl, shift), the left button on a row, decided in Rust (dnd::Gesture):
+    // what 0 press, 1 release, 2 moved past the drag threshold with the button down (once per
+    // press), 3 double-click.
+    callback row-gesture(int, int, bool, bool);
+    // The drag threshold (SM_CXDRAG / SM_CYDRAG in logical px), set from Rust.
+    in property <length> drag-dx: 4px;
+    in property <length> drag-dy: 4px;
+    // The drag gesture for the current press has been reported.
+    private property <bool> drag-sent: false;
 
     accessible-label: "Files";
     accessible-item-count: rows.length;
@@ -71,7 +80,16 @@ component FileListBase inherits ListView {
         TouchArea {
             pointer-event(ev) => {
                 if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                    root.drag-sent = false;
                     root.row-clicked(i, ev.modifiers.control, ev.modifiers.shift);
+                }
+                if (ev.kind == PointerEventKind.move && self.pressed && !root.drag-sent
+                    && (abs(self.mouse-x - self.pressed-x) > root.drag-dx || abs(self.mouse-y - self.pressed-y) > root.drag-dy)) {
+                    root.drag-sent = true;
+                    root.row-gesture(i, 2, false, false);
+                }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+                    root.row-gesture(i, 1, ev.modifiers.control, ev.modifiers.shift);
                 }
                 // Select on the press (so the row is drawn selected before the menu's modal loop
                 // starts), open the shell menu on the release.
@@ -82,7 +100,7 @@ component FileListBase inherits ListView {
                     root.context-menu(i, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);
                 }
             }
-            double-clicked => { root.open-row(i); }
+            double-clicked => { root.row-gesture(i, 3, false, false); }
         }
     }
 }
@@ -124,11 +142,13 @@ component FileList inherits FileListBase {
         root.select(shift ? 2 : 0, root.current-row);
     }
 
+    // The selection a press makes (or defers to the release, so a drag carries the whole
+    // selection) is Rust's decision: dnd::Gesture.
     row-clicked(i, ctrl, shift) => {
         root.current-row = i;
         key-area.focus();
         root.focus-requested();
-        root.select(ctrl ? 1 : shift ? 2 : 0, i);
+        root.row-gesture(i, 0, ctrl, shift);
     }
 
     // Explorer's rule: an unselected row becomes the only selection, a selected row keeps it.
@@ -204,6 +224,12 @@ export component Pane inherits Rectangle {
     callback edit-commit(int, string, string);
     callback context-menu(int, length, length, bool);
     callback context-key(int, length, length, length, length);
+    callback row-gesture(int, int, bool, bool);
+    in property <length> drag-dx: 4px;
+    in property <length> drag-dy: 4px;
+    // A drag is over this pane and would drop: on row `drop-row`, or (-1) into the pane's folder.
+    in property <bool> drop-here: false;
+    in property <int> drop-row: -1;
 
     // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder.
     in-out property <int> edit-mode: 0;
@@ -277,6 +303,9 @@ export component Pane inherits Rectangle {
             command(c) => { root.command(c); }
             context-menu(r, x, y, s) => { root.context-menu(r, x, y, s); }
             context-key(r, x, y, cy, h) => { root.context-key(r, x, y, cy, h); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            drag-dx: root.drag-dx;
+            drag-dy: root.drag-dy;
         }
         Text { text: status; height: 18px; font-size: 11px; color: Palette.foreground; }
     }
@@ -301,6 +330,34 @@ export component Pane inherits Rectangle {
             image-fit: fill;
             image-rendering: pixelated;
             accessible-role: none;
+        }
+    }
+
+    // Drop highlight: the target row, or the whole list when the drop goes to the pane's folder.
+    // Overlays rather than per-row bindings, so the rows carry nothing new; no input handling and
+    // no accessibility node.
+    Rectangle {
+        x: list.x;
+        y: list.y;
+        width: list.visible-width;
+        height: list.visible-height;
+        clip: true;
+        visible: root.drop-here;
+        Rectangle {
+            visible: root.drop-row >= 0;
+            x: 0;
+            y: list.content-y + root.drop-row * 22px;
+            width: parent.width;
+            height: 22px;
+            background: Palette.accent-background.transparentize(65%);
+            border-width: 2px;
+            border-color: Palette.accent-background;
+        }
+        Rectangle {
+            visible: root.drop-row < 0;
+            background: Palette.accent-background.transparentize(88%);
+            border-width: 3px;
+            border-color: Palette.accent-background;
         }
     }
 

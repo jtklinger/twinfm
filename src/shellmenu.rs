@@ -156,7 +156,7 @@ pub fn is_open() -> bool {
 /// COM on the UI thread: S_FALSE is the expected answer (winit's `OleInitialize` came first).
 /// Checked once; never uninitialised, so shell extensions that outlive a menu keep their
 /// apartment.
-fn ensure_com() -> Result<(), String> {
+pub(crate) fn ensure_com() -> Result<(), String> {
     let hr = COM_INIT.with(|c| {
         c.get().unwrap_or_else(|| {
             // SAFETY: plain COM initialisation of the calling (UI) thread.
@@ -256,7 +256,7 @@ pub fn open_terminal(folder: &Path) -> Result<String, String> {
     Err(format!("no terminal could be started (error {last})"))
 }
 
-fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
+pub(crate) fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain([0]).collect()
 }
 
@@ -330,16 +330,16 @@ struct ContextMenu3Vtbl {
 }
 
 /// An owned COM interface pointer, released on drop.
-struct Com(*mut c_void);
+pub(crate) struct Com(pub(crate) *mut c_void);
 
 impl Com {
     /// The object's vtable, viewed as `T` (the caller picks the interface it asked for).
-    unsafe fn vtbl<T>(&self) -> &T {
+    pub(crate) unsafe fn vtbl<T>(&self) -> &T {
         // SAFETY: the caller guarantees the pointer is that interface.
         unsafe { &**(self.0 as *const *const T) }
     }
 
-    fn query(&self, iid: &GUID) -> Option<Com> {
+    pub(crate) fn query(&self, iid: &GUID) -> Option<Com> {
         let mut p: *mut c_void = std::ptr::null_mut();
         // SAFETY: a live interface; every COM vtable starts with IUnknown.
         let hr = unsafe { (self.vtbl::<UnknownVtbl>().query_interface)(self.0, iid, &mut p) };
@@ -355,7 +355,7 @@ impl Drop for Com {
 }
 
 /// A PIDL the shell allocated for us, freed with CoTaskMemFree.
-struct Pidl(*mut ITEMIDLIST);
+pub(crate) struct Pidl(pub(crate) *mut ITEMIDLIST);
 
 impl Drop for Pidl {
     fn drop(&mut self) {
@@ -482,17 +482,15 @@ fn check(hr: HRESULT, what: &str) -> Result<(), String> {
     if hr < 0 { Err(format!("{what} failed: 0x{:08X}", hr as u32)) } else { Ok(()) }
 }
 
-/// Build, show and run the menu. Blocks in `TrackPopupMenuEx` (and in `InvokeCommand`) until the
-/// user is done. **Call with no app-state borrow held** (module docs).
-pub fn show(req: &Request) -> Result<Picked, String> {
-    ensure_com()?;
-    let hwnd = req.hwnd as HWND;
-    // Objects are declared in creation order so they drop in reverse: the menu interfaces
-    // first, then the HMENU, the child PIDLs, the folder and its PIDL.
-    let folder_name = if crate::fs::enumerate::is_this_pc(&req.folder.to_string_lossy()) {
+/// The folder's absolute PIDL, its `IShellFolder`, and one child PIDL per name, as
+/// `GetUIObjectOf` and `SHCreateDataObject` take them. `This PC` means the drive list (This PC's
+/// shell folder, so drives get their own menus and data objects). Drop order: declare the result
+/// in this order so the children go first, then the folder, then its PIDL.
+pub(crate) fn parse_items(hwnd: HWND, folder: &Path, names: &[String]) -> Result<(Pidl, Com, Vec<Pidl>), String> {
+    let folder_name = if crate::fs::enumerate::is_this_pc(&folder.to_string_lossy()) {
         wide(std::ffi::OsStr::new(THIS_PC_PARSING_NAME))
     } else {
-        wide(req.folder.as_os_str())
+        wide(folder.as_os_str())
     };
     let mut raw: *mut ITEMIDLIST = std::ptr::null_mut();
     // SAFETY: NUL-terminated name; `raw` receives a PIDL we own or stays null.
@@ -501,21 +499,33 @@ pub fn show(req: &Request) -> Result<Picked, String> {
     let mut p: *mut c_void = std::ptr::null_mut();
     // SAFETY: binds the absolute PIDL from the desktop to an IShellFolder.
     check(unsafe { SHBindToObject(std::ptr::null_mut(), folder_pidl.0, std::ptr::null_mut(), &IID_ISHELLFOLDER, &mut p) }, "SHBindToObject")?;
-    let folder = Com(p);
-    // SAFETY: `folder` is an IShellFolder.
-    let fv = unsafe { folder.vtbl::<ShellFolderVtbl>() };
-
-    let mut children: Vec<Pidl> = Vec::with_capacity(req.names.len());
-    for name in &req.names {
+    let shell_folder = Com(p);
+    // SAFETY: `shell_folder` is an IShellFolder.
+    let fv = unsafe { shell_folder.vtbl::<ShellFolderVtbl>() };
+    let mut children: Vec<Pidl> = Vec::with_capacity(names.len());
+    for name in names {
         let w = wide(std::ffi::OsStr::new(name));
         let mut child: *mut ITEMIDLIST = std::ptr::null_mut();
         // SAFETY: parses a child name relative to the folder; `child` is ours on success.
         let hr = unsafe {
-            (fv.parse_display_name)(folder.0, hwnd, std::ptr::null_mut(), w.as_ptr(), std::ptr::null_mut(), &mut child, std::ptr::null_mut())
+            (fv.parse_display_name)(shell_folder.0, hwnd, std::ptr::null_mut(), w.as_ptr(), std::ptr::null_mut(), &mut child, std::ptr::null_mut())
         };
         check(hr, &format!("parsing \"{name}\""))?;
         children.push(Pidl(child));
     }
+    Ok((folder_pidl, shell_folder, children))
+}
+
+/// Build, show and run the menu. Blocks in `TrackPopupMenuEx` (and in `InvokeCommand`) until the
+/// user is done. **Call with no app-state borrow held** (module docs).
+pub fn show(req: &Request) -> Result<Picked, String> {
+    ensure_com()?;
+    let hwnd = req.hwnd as HWND;
+    // Objects are declared in creation order so they drop in reverse: the menu interfaces
+    // first, then the HMENU, the child PIDLs, the folder and its PIDL.
+    let (_folder_pidl, folder, children) = parse_items(hwnd, &req.folder, &req.names)?;
+    // SAFETY: `folder` is an IShellFolder.
+    let fv = unsafe { folder.vtbl::<ShellFolderVtbl>() };
     let mut p: *mut c_void = std::ptr::null_mut();
     let hr = if children.is_empty() {
         // SAFETY: the folder's background menu ("New", "Paste", "Properties", handlers).

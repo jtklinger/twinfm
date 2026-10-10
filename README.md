@@ -45,6 +45,7 @@ The one argument is the starting folder for the left pane (default `C:\`).
 | Right-click a row | The Windows shell context menu for the selection (an unselected row is selected first), with "Open in other pane", "Open in terminal" and "Copy path" on top; Shift+right-click adds the extended verbs |
 | Right-click below the last row | The folder's background menu ("New", "Paste", "Properties") |
 | Shift+F10, Menu key | The context menu for the selection or the cursor row, under the cursor row |
+| Drag rows | Drag the selection (pressing an unselected row selects it first) to the other pane, onto a folder row, or into Explorer and other programs; drop files from Explorer onto a pane (its folder) or a folder row. Same drive moves, another drive copies; hold Ctrl to copy, Shift to move; Escape cancels |
 | Click a column header | Sort by name, type, size or modified (click again to reverse) |
 | Type a path in the path bar and press Return | Navigate (empty or "This PC" lists the drives) |
 
@@ -65,6 +66,7 @@ src/
   fileops/mod.rs   File operation worker (COM STA + message loop): copy, move, delete, rename, new folder via IFileOperation
   fileops/clipboard.rs  CF_HDROP + "Preferred DropEffect" on the real clipboard; CF_UNICODETEXT for Copy path
   shellmenu.rs     Shell context menu (IContextMenu, on the UI thread) with TwinFM's own items; terminal launch
+  dnd.rs           OLE drag and drop (UI thread): IDropTarget on the window, drag source via SHCreateDataObject + DoDragDrop, click/drag gesture rules
   model.rs         PaneModel: full and filtered Vec<Entry>, selection, sort state; implements slint::Model
   ui/app.slint     Window, two Pane components, splitter
   ui/pane.slint    Path bar, column header, ListView over the model, status line
@@ -74,6 +76,7 @@ tools/
   wpr-gate.ps1     The gate scenario under Windows Performance Recorder (run elevated)
   shot.ps1         Capture the window to a PNG (works with SLINT_BACKEND=winit-software)
   soak-m3.ps1      File operation soak in %TEMP%\twinfm-m3 (TWINFM_SOAK=1), working set sampled every 30 s
+  soak-m5.ps1      The M3 soak plus drops through the drop target and scripted context menus, in %TEMP%\twinfm-m5
 ```
 
 Rules the prototype follows, because they are what makes the numbers possible:

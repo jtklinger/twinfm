@@ -5,6 +5,7 @@ mod fs {
     pub mod enumerate;
 }
 mod auto;
+mod dnd;
 mod fileops;
 mod icons;
 mod model;
@@ -25,6 +26,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG};
 
 /// Rows above and below the viewport whose icons are fetched ahead of a scroll.
 const ICON_MARGIN_ROWS: usize = 10;
@@ -90,12 +93,17 @@ struct State {
     /// Per pane, a name for the next pass to put the cursor and selection on (after a rename or
     /// a new folder).
     focus_name: [Option<SharedString>; 2],
-    /// TWINFM_SOAK=1: no confirmations, and every path must lie inside this scratch folder.
-    soak: Option<PathBuf>,
+    /// TWINFM_SOAK=1: no confirmations, and every path must lie inside one of these scratch
+    /// folders (`%TEMP%\twinfm-m3` for the M3 soak, `%TEMP%\twinfm-m5` for the M5 one).
+    soak: Option<Vec<PathBuf>>,
     /// What each pane's icon strip was last composed from (None: hidden), and whether its
     /// rows changed since, so the next resolve recomposes it.
     strip: [Option<icons::Composed>; 2],
     strip_dirty: [bool; 2],
+    /// Each pane's left-button gesture on a row (click, drag, double-click), dnd::Gesture.
+    gesture: [dnd::Gesture; 2],
+    /// Retries the drop target registration until the window exists, then stops.
+    dnd_timer: slint::Timer,
 }
 
 thread_local! {
@@ -472,9 +480,10 @@ fn sources(st: &mut State, app: &App, pane: usize) -> Option<(Vec<PathBuf>, Vec<
 
 /// Queue a job on the worker; the source pane shows its progress note. Returns the job id.
 fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
-    if let Some(root) = &st.soak {
-        if let Some(p) = job.paths().into_iter().find(|p| !inside(p, root)) {
-            let text = format!("soak: refused {} (outside {})", p.display(), root.display());
+    if let Some(roots) = &st.soak {
+        if let Some(p) = job.paths().into_iter().find(|p| !roots.iter().any(|r| inside(p, r))) {
+            let shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
+            let text = format!("soak: refused {} (outside {})", p.display(), shown.join(" and "));
             note(st, app, pane, text);
             return None;
         }
@@ -798,6 +807,216 @@ fn own_item(pane: usize, item: shellmenu::OwnItem, ctx: MenuContext) {
     }
 }
 
+/// Enter the row's directory (Return, or a double-click that was not the tail of a drag).
+fn open_row(pane: usize, row: i32) {
+    let target = with_state(|st| {
+        let e = st.panes[pane].entry(usize::try_from(row).ok()?)?;
+        if !e.is_dir() {
+            return None;
+        }
+        let app = st.app.upgrade()?;
+        Some(Path::new(pane_path(&app, pane).as_str()).join(e.name.as_str()))
+    });
+    if let Some(p) = target {
+        navigate(pane, p);
+    }
+}
+
+fn log_select(model: &PaneModel, pane: usize, op: SelOp, row: usize) {
+    eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
+}
+
+/// The left button on a row: press (0), release (1), moved past the drag threshold with the
+/// button down (2), double-click (3). `dnd::Gesture` decides what selects, drags and opens.
+fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
+    let Ok(row) = usize::try_from(row) else { return };
+    match what {
+        0 => with_state(|st| {
+            let model = &st.panes[pane];
+            let selected = model.entry(row).is_some_and(|e| e.selected);
+            if let Some(op) = st.gesture[pane].press(row, selected, ctrl, shift) {
+                model.select(op, row);
+                log_select(model, pane, op, row);
+            }
+        }),
+        1 => with_state(|st| {
+            if let Some((r, op)) = st.gesture[pane].release() {
+                st.panes[pane].select(op, r);
+                log_select(&st.panes[pane], pane, op, r);
+            }
+        }),
+        2 => drag_start(pane, row),
+        3 => {
+            if with_state(|st| st.gesture[pane].double_click()) {
+                open_row(pane, row as i32);
+            } else {
+                eprintln!("[dnd] pane={pane} double-click at the end of a drag: not opened");
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The pointer left the drag threshold with the left button down on `row`: drag the selection
+/// (the press made sure it includes the row) with OLE. `DoDragDrop` runs a modal loop, so the
+/// state borrow is dropped first and taken again after it returns.
+fn drag_start(pane: usize, row: usize) {
+    // SAFETY: plain Win32 query of this thread's key state.
+    let held = dnd::scripted() || unsafe { GetKeyState(VK_LBUTTON as i32) } < 0;
+    let taken = with_state(|st| {
+        let app = st.app.upgrade()?;
+        if !held {
+            // Slint thinks the button is down but it is not (a release it never saw): no drag,
+            // and the gesture ends like one, so the release given below selects nothing.
+            eprintln!("[dnd] pane={pane} drag threshold crossed with the left button up: no drag");
+            st.gesture[pane] = dnd::Gesture::Dragged;
+            return Some(None);
+        }
+        if !st.gesture[pane].drag(row) {
+            return None;
+        }
+        let folder = st.paths[pane].clone();
+        let targets = st.panes[pane].targets(current_row(&app, pane));
+        if targets.is_empty() || targets.iter().any(|e| e.kind == Kind::Drive) {
+            note(st, &app, pane, "drives cannot be dragged".into());
+            st.gesture[pane].drag_ended();
+            return None;
+        }
+        let hwnd = main_hwnd(st, &app);
+        if hwnd == 0 {
+            st.gesture[pane].drag_ended();
+            return None;
+        }
+        let names: Vec<String> = targets.iter().map(|e| e.name.to_string()).collect();
+        eprintln!("[dnd] pane={pane} row={row}: dragging {} item(s)", names.len());
+        Some(Some(dnd::DragRequest { hwnd, folder, names }))
+    });
+    let req = match taken {
+        None => return,
+        Some(None) => return slint::Timer::single_shot(Duration::ZERO, release_after_drag),
+        Some(Some(req)) => req,
+    };
+    // MODAL LOOP: no borrow held (see dnd). A drop on our own other pane comes back through our
+    // drop target from inside this call, and its job is posted to the event loop.
+    let res = dnd::drag(&req);
+    let dropped = res == Ok(true);
+    with_state(|st| {
+        st.gesture[pane].drag_ended();
+        if let (Err(e), Some(app)) = (&res, st.app.upgrade()) {
+            note(st, &app, pane, format!("drag: {e}"));
+        }
+    });
+    if dropped {
+        // A target that moved the files (Explorer does it itself, sometimes after this returns)
+        // leaves this pane stale; a drop on our own pane refreshes both when its job ends.
+        refresh(pane);
+    }
+    // Slint never saw the button come up (DoDragDrop's loop consumed it) and still holds the
+    // row's grab. Give it a release, after this pointer event has finished dispatching.
+    slint::Timer::single_shot(Duration::ZERO, release_after_drag);
+}
+
+/// The release Slint missed during `DoDragDrop`, at the cursor's position. The gesture is
+/// `Dragged`, so it neither selects nor (as a double-click) opens.
+fn release_after_drag() {
+    let Some((app, hwnd)) = with_state(|st| Some((st.app.upgrade()?, st.hwnd))) else { return };
+    let mut p = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+    // SAFETY: plain Win32 queries with a valid in/out pointer.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p);
+        windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd as windows_sys::Win32::Foundation::HWND, &mut p);
+    }
+    let scale = app.window().scale_factor();
+    let position = slint::LogicalPosition::new(p.x as f32 / scale, p.y as f32 / scale);
+    eprintln!("[dnd] release after the drag at ({:.0}, {:.0})", position.x, position.y);
+    app.window()
+        .dispatch_event_with_result(slint::platform::WindowEvent::PointerReleased {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        })
+        .ok();
+}
+
+/// Register the drop target once the window exists (retried by `dnd_timer` until then), and
+/// set the drag threshold from `SM_CXDRAG`/`SM_CYDRAG`.
+fn register_dnd() {
+    let Some((app, hwnd)) = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let hwnd = main_hwnd(st, &app);
+        (hwnd != 0).then_some((app, hwnd))
+    }) else {
+        return;
+    };
+    with_state(|st| st.dnd_timer.stop());
+    let (revoked, registered) = dnd::register(hwnd);
+    eprintln!(
+        "[dnd] registered: RevokeDragDrop (winit's target) = 0x{:08X}, RegisterDragDrop (ours) = 0x{:08X}",
+        revoked as u32, registered as u32
+    );
+    let scale = app.window().scale_factor();
+    // SAFETY: plain Win32 queries.
+    let (cx, cy) = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
+    app.set_drag_dx(cx as f32 / scale);
+    app.set_drag_dy(cy as f32 / scale);
+    eprintln!("[dnd] drag threshold {cx} x {cy} px (scale {scale})");
+}
+
+/// For the drop target: where a drop at client point (`px`, `py`, physical px) goes. A short
+/// borrow of the state, never held past this function; None off the panes, over the drive
+/// list's empty space, or if the state is busy (not expected: no borrow is held across a drag
+/// loop or a dispatched message).
+pub fn drop_spot(px: i32, py: i32) -> Option<dnd::DropSpot> {
+    STATE.with(|s| {
+        let Ok(guard) = s.try_borrow() else {
+            eprintln!("[dnd] app state busy during a drop target call: refused");
+            return None;
+        };
+        let st = guard.as_ref()?;
+        let app = st.app.upgrade()?;
+        let scale = app.window().scale_factor();
+        let size = app.window().size().to_logical(scale);
+        let layout = dnd::Layout { width: size.width, height: size.height, split: app.get_split(), ratio: app.get_split_ratio() };
+        let content_y = [app.invoke_get_scroll(0), app.invoke_get_scroll(1)];
+        let len = [st.panes[0].len(), st.panes[1].len()];
+        let (pane, row) = match dnd::hit(&layout, px as f32 / scale, py as f32 / scale, content_y, len) {
+            dnd::Spot::Outside => return None,
+            dnd::Spot::Pane(p) => (p, None),
+            dnd::Spot::Row(p, r) => (p, Some(r)),
+        };
+        let folder = &st.paths[pane];
+        let entry = row.and_then(|r| st.panes[pane].entry(r));
+        let this_pc = is_this_pc(&folder.to_string_lossy());
+        let (dest, on_row) = dnd::drop_folder(folder, this_pc, entry.as_ref().map(|e| (e.name.as_str(), e.is_dir())))?;
+        let row = if on_row { row.map_or(-1, |r| r as i32) } else { -1 };
+        Some(dnd::DropSpot { pane, row, dest })
+    })
+}
+
+/// For the drop target: highlight the pane (row -1) or row a drop would land on, or nothing.
+pub fn drop_highlight(at: Option<(usize, i32)>) {
+    let app = STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().and_then(|st| st.app.upgrade())));
+    let Some(app) = app else { return };
+    let (pane, row) = at.map_or((-1, -1), |(p, r)| (p as i32, r));
+    if app.get_drop_pane() != pane {
+        app.set_drop_pane(pane);
+    }
+    if app.get_drop_row() != row {
+        app.set_drop_row(row);
+    }
+}
+
+/// A drop landed (posted by the drop target through the event loop): copy or move the files
+/// into `dest` with the file operation worker, noted on the pane they were dropped on. Both
+/// panes refresh when the job ends.
+pub fn drop_files(pane: usize, sources: Vec<PathBuf>, dest: PathBuf, effect: u32) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        eprintln!("[dnd] drop into pane {pane}: {} {} item(s) to {}", dnd::effect_name(effect), sources.len(), dest.display());
+        let job = if effect == dnd::MOVE { Job::Move { sources, dest_dir: dest } } else { Job::Copy { sources, dest_dir: dest } };
+        submit(st, &app, pane, job);
+    });
+}
+
 /// For the scripted driver's in-menu steps: no borrow of the app state is held right now.
 pub fn state_is_free() -> bool {
     STATE.with(|s| s.try_borrow_mut().is_ok())
@@ -863,9 +1082,11 @@ fn main() -> Result<(), slint::PlatformError> {
     let ops = fileops::Worker::spawn(|d| {
         let _ = slint::invoke_from_event_loop(move || job_done(d));
     });
-    let soak = (std::env::var("TWINFM_SOAK").as_deref() == Ok("1")).then(|| std::env::temp_dir().join("twinfm-m3"));
-    if let Some(root) = &soak {
-        eprintln!("[fileops] TWINFM_SOAK=1: no confirmations, paths confined to {}", root.display());
+    let soak = (std::env::var("TWINFM_SOAK").as_deref() == Ok("1"))
+        .then(|| vec![std::env::temp_dir().join("twinfm-m3"), std::env::temp_dir().join("twinfm-m5")]);
+    if let Some(roots) = &soak {
+        let roots: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
+        eprintln!("[fileops] TWINFM_SOAK=1: no confirmations, paths confined to {}", roots.join(" or "));
     }
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
@@ -895,6 +1116,8 @@ fn main() -> Result<(), slint::PlatformError> {
             soak,
             strip: [None; 2],
             strip_dirty: [false; 2],
+            gesture: Default::default(),
+            dnd_timer: slint::Timer::default(),
         })
     });
 
@@ -916,19 +1139,8 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_viewport_changed(|pane, y, h| on_viewport(pane as usize, y, h));
 
     app.on_navigate(|pane, path| navigate(pane as usize, PathBuf::from(path.as_str())));
-    app.on_open_row(|pane, row| {
-        let target = with_state(|st| {
-            let e = st.panes[pane as usize].entry(row as usize)?;
-            if !e.is_dir() {
-                return None;
-            }
-            let app = st.app.upgrade()?;
-            Some(Path::new(pane_path(&app, pane as usize).as_str()).join(e.name.as_str()))
-        });
-        if let Some(p) = target {
-            navigate(pane as usize, p);
-        }
-    });
+    app.on_open_row(|pane, row| open_row(pane as usize, row));
+    app.on_row_gesture(|pane, row, what, ctrl, shift| row_gesture(pane as usize, row, what, ctrl, shift));
     app.on_go_up(|pane| {
         let target = with_state(|st| {
             let app = st.app.upgrade()?;
@@ -1005,6 +1217,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);
     auto::start(&app);
+    // The drop target goes on the window once it exists (winit creates it lazily, in `run`).
+    with_state(|st| st.dnd_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), register_dnd));
 
     app.run()
 }
