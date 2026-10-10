@@ -176,8 +176,6 @@ hand-written calls; nothing per frame or per row without a trace first.
 - **No back-off for folders that change continuously** (a log folder, `%TEMP%`): they refresh up to
   four times a second for as long as they are shown. No measurement of what that costs the UI
   thread on a 40k folder yet.
-- **`WM_DEVICECHANGE` is unverified with real hardware**: no USB drive was inserted or removed in
-  the session; the code path (subclass, debounce, drive list re-read, This PC refresh) is untested.
 
 ### Scripted checks
 
@@ -204,11 +202,58 @@ RDP session, `target/release` build of this branch:
 
 ### Gate
 
-Pending: the WPR run needs Jeremy at the console (`tools/wpr-gate.ps1`, accessibility on, Narrator
-off, a clean binary from its own `target-<name>`). The watcher adds nothing per frame or per row,
-and with `C:\traces\bigdir` unchanging during the run it delivers no events, so the expected
-result is the M6 figure (19.8%) within noise; that is an expectation, not a measurement. Record
-WPR busy, in-app busy, Narrator state and the top frames here.
+Console WPR, Jeremy elevated, `tools/wpr-gate.ps1`, accessibility on, Narrator off, hidden off,
+binaries built into their own `target-<name>` from detached worktrees (`target-p2m1` = merge
+commit ff594d4, `target-m6` = 3f622dc), analysed with `tools/analyze-trace.py --symbols --exe`.
+
+- **First run (2026-10-10 13:20)**: P2-M1 **20.4%** (2040 sampled ms; in-app 22.7%), against
+  the recorded M6 figure of 19.8%. Over the bar by 0.4. Symbolized: no P2-M1 frame anywhere in
+  the 10 s window. The watcher thread never woke (`C:\traces\bigdir` does not change during the
+  run; no `[watch] changed` line), and the permanent `WM_DEVICECHANGE` subclass costs 2 samples
+  (`COMCTL32!MasterSubclassProc` and `DefSubclassProc`, 1 exclusive each; AccessKit already
+  subclassed the window before P2-M1, so the chain only grew by one link). The extra 60 ms over
+  M6 was in ntdll heap alloc and free under the text path and in the kernel's stack walks for the
+  profiler, both of which move run to run. Trace `C:/traces/twinfm-p2m1.etl`.
+- **Same-session A/B (2026-10-10 15:17 to 15:19)**, three runs back to back, M6 first:
+
+  | Build | Sampled ms | WPR busy | In-app |
+  |---|---|---|---|
+  | M6 (`target-m6`) | 1985 | **19.9%** | 20.5% |
+  | P2-M1 (`target-p2m1`) | 2003 | **20.0%** | 23.4% |
+  | M6 again | 2025 | **20.2%** | 23.6% |
+
+  P2-M1 sits inside M6's own spread (19.9 to 20.2). Frame shares are the same build to build
+  within a few samples: accessibility 220 / 226 / 220 ms, render 1154 / 1152 / 1178, draw_text
+  668 / 640 / 650, ListView 365 / 362 / 369, timers 694 / 698 / 713. Traces
+  `C:/traces/twinfm-ab-{m6,p2m1,m6b}.etl`, symbolized reports under `C:/traces/export/`.
+
+**P2-M1 passes the gate**: no cost attributable to directory watching or the device subclass.
+Two facts for every later gate: a single console run moves by about 0.3 point on the same binary
+(M6 read 19.8, 19.9 and 20.2 across three sessions and runs), so the bar has no headroom left to
+speak of and a difference under half a point needs an A/B in one session, not a single run
+against a recorded number. And the binary matters: the main checkout's `target\release` is
+rebuilt only when someone builds there, so a feature test from it can run a pre-merge build (the
+USB check below did).
+
+### Manual check
+
+- **USB drive (2026-10-10)**: Jeremy inserted and removed a drive twice with TwinFM on This PC
+  and nothing refreshed. The binary was `target\release\twinfm.exe` built at 12:07, before P2-M1
+  merged at 13:12, so it had no device code. The path was then exercised from the harness with a
+  synthetic `WM_DEVICECHANGE` (`DBT_DEVICEARRIVAL` then `DBT_DEVICEREMOVECOMPLETE`,
+  `DBT_DEVTYP_VOLUME`, unit mask for Z:) sent to the window of the merged build: `[devices]
+  volume arrived`, 500 ms later `drives changed: drive list re-read, This PC refreshed in 1
+  pane(s)`, `[refresh]`, `[sidebar] 2 drive(s)`, and the same for the removal. That proves the
+  subclass, the debounce and the refresh. Jeremy then repeated the real-drive test on the
+  rebuilt binary (`target\release` from ff594d4): insert and remove both refreshed the sidebar
+  and This PC without F5. **Passed.**
+- **30-minute soak (2026-10-10 15:58 to 16:28, `tools/soak-p2m1.ps1 -Minutes 30`, Jeremy's
+  console, `target\release` from ff594d4)**: exit clean, **0 `panicked` lines**, 4,785 `[watch]`
+  lines (4,760 changes refreshed, 18 deferred behind a listing in flight, 0 lost, 0 refused),
+  5,110 `[refresh]` lines, 0 `waitwatch` timeouts, 0 soak refusals. Private memory 117.6 MB at 6 s,
+  119.6 at 5 min, 121.7 from 15 min on, 121.9 at the end: flat after the caches fill, no trend.
+  Working set 130.7 MB to 115.2 MB. **Passed.** P2-M1 is closed: gate, soak and the real-drive
+  check all recorded.
 
 ## Open questions
 
