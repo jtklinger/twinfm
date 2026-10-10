@@ -57,16 +57,16 @@ pub struct Entry {
 
 impl Entry {
     pub fn new(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString) -> Entry {
-        Entry::with_tz(name, size, modified, attrs, type_text, &current_tz())
+        Entry::with_zone(name, size, modified, attrs, type_text, &LocalZone::current())
     }
 
-    /// `tz` is the zone fetched once per enumeration; `SystemTimeToTzSpecificLocalTime` with a
-    /// null zone re-reads the registry on every call, which doubled the 40k worker time.
-    pub fn with_tz(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString, tz: &TIME_ZONE_INFORMATION) -> Entry {
+    /// `zone` is built once per enumeration; per-entry Win32 time conversion cost about 60 ms
+    /// per 40k entries (see `LocalZone`).
+    pub fn with_zone(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString, zone: &LocalZone) -> Entry {
         let is_dir = attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
         Entry {
             size_text: if is_dir { SharedString::default() } else { format_size(size).into() },
-            modified_text: format_time_in(modified, Some(tz)).into(),
+            modified_text: zone.format(modified),
             type_text,
             name,
             size,
@@ -526,8 +526,152 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Local date and time from Unix seconds, through the Win32 time-zone conversion
 /// (`FileTimeToSystemTime` + `SystemTimeToTzSpecificLocalTime`); no chrono dependency.
+#[cfg(test)]
 pub fn format_time(secs: i64) -> String {
     format_time_in(secs, None)
+}
+
+/// Smallest and largest Unix seconds a FILETIME can hold (0 to i64::MAX ticks since 1601), the
+/// range outside which the Win32 reference path returns an empty string.
+const MIN_SECS: i64 = -11_644_473_600;
+const MAX_SECS: i64 = i64::MAX / 10_000_000 - 11_644_473_600;
+
+/// A time zone's rules, read once per enumeration from a `TIME_ZONE_INFORMATION`, so the local
+/// time of each entry is pure arithmetic. Two Win32 calls plus a `format!` per entry cost about
+/// 1.5 us, 60 ms on a 40k folder. Matches `SystemTimeToTzSpecificLocalTime` (the reference in
+/// the tests): transitions are in the local time of the period being left, offsets in minutes
+/// with UTC = local + bias.
+pub struct LocalZone {
+    /// UTC minus local, in seconds, outside and inside daylight time.
+    std_off: i64,
+    dst_off: i64,
+    rules: Rules,
+    /// The last year looked up, with the UTC milliseconds at which its daylight time starts
+    /// and ends. A folder's dates cluster in a few years and recomputing a year is a few
+    /// dozen integer operations, so one entry beats a map.
+    cache: Cell<(i64, i64, i64)>,
+}
+
+enum Rules {
+    NoDst,
+    /// The usual "week N of month" rules (`wYear == 0`): daylight start, standard start.
+    Annual(SYSTEMTIME, SYSTEMTIME),
+    /// Absolute-date rules (`wYear != 0`), which `GetTimeZoneInformation` does not return in
+    /// practice: left to the Win32 path.
+    Win32(TIME_ZONE_INFORMATION),
+}
+
+impl LocalZone {
+    pub fn current() -> LocalZone {
+        LocalZone::from_tzi(&current_tz())
+    }
+
+    pub fn from_tzi(tzi: &TIME_ZONE_INFORMATION) -> LocalZone {
+        let (sd, dd) = (tzi.StandardDate, tzi.DaylightDate);
+        let rules = if sd.wMonth == 0 || dd.wMonth == 0 {
+            Rules::NoDst
+        } else if sd.wYear == 0 && dd.wYear == 0 {
+            Rules::Annual(dd, sd)
+        } else {
+            Rules::Win32(*tzi)
+        };
+        LocalZone {
+            std_off: (tzi.Bias as i64 + tzi.StandardBias as i64) * 60,
+            dst_off: (tzi.Bias as i64 + tzi.DaylightBias as i64) * 60,
+            rules,
+            cache: Cell::new((i64::MIN, 0, 0)),
+        }
+    }
+
+    /// UTC minus local, in seconds, at the instant `secs` (Unix seconds, within the FILETIME range).
+    fn offset(&self, secs: i64) -> i64 {
+        let Rules::Annual(dst_rule, std_rule) = &self.rules else { return self.std_off };
+        let year = civil_from_days((secs - self.std_off).div_euclid(86_400)).0;
+        let (mut y, mut start, mut end) = self.cache.get();
+        if y != year {
+            y = year;
+            start = transition_ms(year, dst_rule) + self.std_off * 1000;
+            end = transition_ms(year, std_rule) + self.dst_off * 1000;
+            self.cache.set((y, start, end));
+        }
+        let t = secs * 1000;
+        let dst = if start < end { start <= t && t < end } else { t >= start || t < end };
+        if dst { self.dst_off } else { self.std_off }
+    }
+
+    /// `YYYY-MM-DD HH:MM` in this zone, or an empty string where the Win32 path also fails.
+    /// Written straight into the SharedString, with no intermediate String.
+    pub fn format(&self, secs: i64) -> SharedString {
+        if let Rules::Win32(tzi) = &self.rules {
+            return format_time_in(secs, Some(tzi)).into();
+        }
+        if !(MIN_SECS..=MAX_SECS).contains(&secs) {
+            return SharedString::default();
+        }
+        let local = secs - self.offset(secs);
+        let (y, mo, d) = civil_from_days(local.div_euclid(86_400));
+        if !(1601..=30827).contains(&y) {
+            return SharedString::default();
+        }
+        let tod = local.rem_euclid(86_400);
+        // A year past 9999 takes five digits, as the reference `{:04}` does.
+        let yl = if y >= 10_000 { 5 } else { 4 };
+        let mut buf = [0u8; 17];
+        let mut v = y;
+        for i in (0..yl).rev() {
+            buf[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+        }
+        // Separators and the remaining fields sit at fixed positions after the year.
+        buf[yl] = b'-';
+        buf[yl + 3] = b'-';
+        buf[yl + 6] = b' ';
+        buf[yl + 9] = b':';
+        for (at, v) in [(yl + 1, mo as i64), (yl + 4, d as i64), (yl + 7, tod / 3600), (yl + 10, tod / 60 % 60)] {
+            buf[at] = b'0' + (v / 10) as u8;
+            buf[at + 1] = b'0' + (v % 10) as u8;
+        }
+        // Only ASCII digits and separators were written, so this never falls back to "".
+        std::str::from_utf8(&buf[..yl + 12]).unwrap_or_default().into()
+    }
+}
+
+/// Local milliseconds since the Unix epoch (as if UTC) of a "week N of month" rule in `year`.
+fn transition_ms(year: i64, r: &SYSTEMTIME) -> i64 {
+    let month = r.wMonth.clamp(1, 12) as u32;
+    let first = days_from_civil(year, month, 1);
+    let first_dow = (first + 4).rem_euclid(7); // 1970-01-01 was a Thursday; Sunday = 0
+    let mut day = 1 + (r.wDayOfWeek as i64 - first_dow).rem_euclid(7) + (r.wDay.clamp(1, 5) as i64 - 1) * 7;
+    let next = if month == 12 { days_from_civil(year + 1, 1, 1) } else { days_from_civil(year, month + 1, 1) };
+    while day > next - first {
+        day -= 7; // week 5 means the last such weekday
+    }
+    let secs = (first + day - 1) * 86_400 + r.wHour as i64 * 3600 + r.wMinute as i64 * 60 + r.wSecond as i64;
+    secs * 1000 + r.wMilliseconds as i64
+}
+
+/// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Year, month and day of a day count since 1970-01-01 (the inverse of `days_from_civil`).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + (m <= 2) as i64, m, d)
 }
 
 /// The current zone, with its daylight rules, so the conversion stays correct across a DST
@@ -543,7 +687,7 @@ pub fn current_tz() -> TIME_ZONE_INFORMATION {
 /// `tz = None` uses the current time zone; tests pass a fixed one.
 fn format_time_in(secs: i64, tz: Option<&TIME_ZONE_INFORMATION>) -> String {
     // FILETIME counts 100 ns ticks since 1601-01-01; the Unix epoch is 11,644,473,600 s later.
-    let ticks = (secs + 11_644_473_600).saturating_mul(10_000_000);
+    let ticks = secs.saturating_add(11_644_473_600).saturating_mul(10_000_000);
     let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
     let mut utc: SYSTEMTIME = unsafe { std::mem::zeroed() };
     let mut local: SYSTEMTIME = unsafe { std::mem::zeroed() };
@@ -742,6 +886,82 @@ mod tests {
         assert_eq!(e("d", 1536, true).size_text.as_str(), "");
         assert_eq!(format_size(1), "1 B");
         assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    fn rule(month: u16, dow: u16, week: u16, hour: u16) -> SYSTEMTIME {
+        SYSTEMTIME { wYear: 0, wMonth: month, wDayOfWeek: dow, wDay: week, wHour: hour, wMinute: 0, wSecond: 0, wMilliseconds: 0 }
+    }
+
+    /// US Eastern: DST from the 2nd Sunday of March 02:00 to the 1st Sunday of November 02:00.
+    fn us_eastern() -> TIME_ZONE_INFORMATION {
+        let mut tz = utc_minus_5();
+        tz.DaylightBias = -60;
+        tz.DaylightDate = rule(3, 0, 2, 2);
+        tz.StandardDate = rule(11, 0, 1, 2);
+        tz
+    }
+
+    /// UTC+10 with DST spanning the new year: 1st Sunday of October 02:00 to 1st Sunday of April 03:00.
+    fn southern() -> TIME_ZONE_INFORMATION {
+        let mut tz: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+        tz.Bias = -600;
+        tz.DaylightBias = -60;
+        tz.DaylightDate = rule(10, 0, 1, 2);
+        tz.StandardDate = rule(4, 0, 1, 3);
+        tz
+    }
+
+    /// The arithmetic path against the Win32 reference: every 7 minutes over 2024 to 2027, and
+    /// every 10 seconds within two hours of each transition. Returns how many points compared.
+    fn sweep(tzi: &TIME_ZONE_INFORMATION) -> usize {
+        let zone = LocalZone::from_tzi(tzi);
+        let (from, to) = (1_704_067_200i64 - 86_400, 1_830_297_600 + 86_400); // 2024-01-01 .. 2028-01-01 UTC
+        let mut points: Vec<i64> = (from..to).step_by(420).collect();
+        for year in 2024..=2027 {
+            if let Rules::Annual(d, s) = &zone.rules {
+                for (r, off) in [(d, zone.std_off), (s, zone.dst_off)] {
+                    let at = transition_ms(year, r) / 1000 + off;
+                    points.extend((at - 7200..=at + 7200).step_by(10));
+                }
+            }
+        }
+        let mut compared = 0;
+        for secs in points {
+            let slow = format_time_in(secs, Some(tzi));
+            if !slow.is_empty() {
+                assert_eq!(zone.format(secs).as_str(), slow, "secs {secs}");
+                compared += 1;
+            }
+        }
+        compared
+    }
+
+    #[test]
+    fn local_zone_matches_win32_us_eastern() {
+        assert!(sweep(&us_eastern()) > 300_000);
+        let z = LocalZone::from_tzi(&us_eastern());
+        assert_eq!(z.format(1_710_053_940), "2024-03-10 01:59"); // 06:59 UTC, last standard minute
+        assert_eq!(z.format(1_710_054_000), "2024-03-10 03:00"); // 07:00 UTC, DST starts
+    }
+
+    #[test]
+    fn local_zone_matches_win32_no_dst_and_southern() {
+        assert!(sweep(&utc_minus_5()) > 300_000);
+        assert!(sweep(&southern()) > 300_000);
+    }
+
+    #[test]
+    fn local_zone_edges_do_not_panic() {
+        let zones = [us_eastern(), southern(), utc_minus_5()];
+        let current = current_tz();
+        for tzi in zones.iter().chain([&current]) {
+            let z = LocalZone::from_tzi(tzi);
+            for secs in [i64::MIN, i64::MIN + 1, MIN_SECS - 1, MIN_SECS, MIN_SECS + 86_400, -1, 0, 1, MAX_SECS - 86_400, MAX_SECS, MAX_SECS + 1, i64::MAX] {
+                assert_eq!(z.format(secs).as_str(), format_time_in(secs, Some(tzi)), "secs {secs}");
+            }
+        }
+        assert_eq!(LocalZone::from_tzi(&utc_minus_5()).format(0), "1969-12-31 19:00");
+        assert_eq!(LocalZone::from_tzi(&utc_minus_5()).format(1_790_000_000), "2026-09-21 09:13");
     }
 
     #[test]

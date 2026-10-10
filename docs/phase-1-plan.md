@@ -112,6 +112,15 @@ on the worker.
   disconnected share; their type reads "Network Drive" and the size column stays blank.
 - Startup puts keyboard focus in the left list, so keys work before the first click (they
   did not before: focus sat on the window's outer scope).
+- Modified times are formatted without syscalls: `LocalZone` reads the zone's bias and
+  "week N of month" DST rules from `GetTimeZoneInformation` once per enumeration, and each
+  entry is integer arithmetic (Hinnant's civil-date algorithm) plus a hand-written
+  `YYYY-MM-DD HH:MM` straight into the SharedString. The per-entry `FileTimeToSystemTime` +
+  `SystemTimeToTzSpecificLocalTime` + `format!` cost about 1.5 us; the 40k worker went from
+  95 to 134 ms to 55 to 75 ms (formatting stubbed out: 52 to 64 ms). Tests sweep 2024 to 2027
+  every 7 minutes, plus each transition, against the Win32 path for a US, a no-DST and a
+  southern-hemisphere zone, with no mismatches. Absolute-date rules (`wYear != 0`) still go
+  through Win32.
 
 ### Deviations
 

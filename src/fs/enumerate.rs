@@ -57,7 +57,7 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         }
     };
     let mut types = TypeNames::default();
-    let tz = crate::model::current_tz();
+    let zone = crate::model::LocalZone::current();
     let mut batch: Vec<Entry> = Vec::with_capacity(BATCH_SIZE);
     let mut total = 0usize;
     for de in rd.flatten() {
@@ -74,7 +74,7 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         let name = de.file_name();
         let name = name.to_string_lossy();
         let type_text = types.for_entry(&name, attrs & FILE_ATTRIBUTE_DIRECTORY != 0);
-        batch.push(Entry::with_tz(name.as_ref().into(), size, modified, attrs, type_text, &tz));
+        batch.push(Entry::with_zone(name.as_ref().into(), size, modified, attrs, type_text, &zone));
         if batch.len() >= BATCH_SIZE {
             total += batch.len();
             let full = std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
