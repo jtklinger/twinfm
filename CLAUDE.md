@@ -5,10 +5,12 @@ prototype `rustfm-proto` (renamed 2026-10-09; stack adopted the same day, see th
 in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch keeps its `rustfm` name.
 `PROTOTYPE-RESULT.md` is the gate record, `docs/week-one-plan.md` the week-one record
 (accessibility fix, renderer decision), `docs/phase-1-plan.md` the Phase 1 record (six
-milestones, gate re-run after each). Read them before changing the list.
+milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record. Read them before
+changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (60 tests; three touch the real shell and clipboard, see below)
+- `cargo test --release` (68 tests; three touch the real shell and clipboard, and the eight
+  `fs::watch` tests write to scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -31,7 +33,7 @@ milestones, gate re-run after each). Read them before changing the list.
 
 ## Measuring
 - In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
-  `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]` lines. Driver
+  `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]` lines. Driver
   keys include `CtrlH` (hidden files), `F5`/`CtrlR` (refresh), `CtrlA`, `Space`,
   `ShiftUp`/`ShiftDown`; `click`/`ctrlclick`/`shiftclick <pane> <row>` select rows; file
   operation steps `copy`, `move`, `delete`, `sdelete`, `newfolder <name>`, `rename <name>`,
@@ -55,7 +57,15 @@ milestones, gate re-run after each). Read them before changing the list.
   enumeration time to the status bar (the gate tools read `[enum]` on stderr, not the status
   bar). Sidebar and dialogs: `sidebar toggle` (F9), `sidebar click <row>` (headers count),
   `bookmark add` (Ctrl+D), `bookmark remove <index>`, `about open` (F1) and `about close`;
-  `[sidebar]` and `[settings]` lines on stderr.
+  `[sidebar]` and `[settings]` lines on stderr. Directory watching: `touch <pane> <name>` creates an
+  empty file in the pane's folder (or sets an existing one's modified time to now), `rmfile <pane>
+  <name>` deletes it, and `waitwatch <ms>` waits until the next refresh started by the watch has
+  listed its folder (at most `<ms>`), then 300 ms more for the pass, like `waitops`. `touch` and
+  `rmfile` obey the `TWINFM_SOAK` fence as file operations do; outside a soak, point them at
+  `%TEMP%` scratch folders only. `[watch]` lines on stderr: `watching <path>`, `no watch for <path>:
+  <reason>` (This PC, network drives and shares, removable drives and discs, a folder that cannot
+  be opened; logged once per pane and path), `changed: refresh`, `changed while listing: refresh after it`, `changed in the
+  background: stale`, `lost <path>: <error>`; `[devices]` lines for volume arrivals and removals.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -73,11 +83,18 @@ milestones, gate re-run after each). Read them before changing the list.
   adds one Recycle Bin entry and overwrites the clipboard. `tools/soak-m5.ps1 -Minutes N` does the
   same in `%TEMP%\twinfm-m5\` and adds, per cycle, a `dropfiles` copy and move and a scripted
   context menu on a row and on empty space; it also reports drops, menus and in-menu ticks.
+  `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
+  (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
+  while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
+  second, a 200-operation burst every 15 s); it reports `[watch]` and `[refresh]` counts besides
+  exit code, panics and working set. It uses neither the clipboard nor the Recycle Bin.
 - Tests that touch the desktop: `fileops::tests::worker_runs_real_shell_operations` runs real
   `IFileOperation` jobs in `%TEMP%\twinfm-m3-test-<pid>\`, and
   `clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` replaces the clipboard's
   contents and leaves it empty, and `dnd::tests::shell_data_object_offers_hdrop` asks the shell
-  for a data object over two files in `%TEMP%\twinfm-m5-test-<pid>\`.
+  for a data object over two files in `%TEMP%\twinfm-m5-test-<pid>\`. The `fs::watch` tests create,
+  rename, delete and change attributes of files in `%TEMP%\twinfm-p2m1-test-<pid>\` (removed
+  afterwards); they touch neither the clipboard nor the Recycle Bin.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols`.

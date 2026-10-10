@@ -58,6 +58,13 @@
 //!   bookmark add                     Ctrl+D: bookmark the active tab's folder
 //!   bookmark remove <index>          the bookmark menu's "Remove bookmark" for bookmark <index>
 //!   about open | about close         F1 opens the About dialog; close closes it
+//!   touch <pane> <name>              create an empty file in the pane's folder, or set an existing
+//!                                    one's modified time to now (a change for the directory watch)
+//!   rmfile <pane> <name>             delete that file from the pane's folder. Both refuse paths
+//!                                    outside the soak folders under TWINFM_SOAK=1, as file
+//!                                    operations do; otherwise use them on %TEMP% scratch folders only
+//!   waitwatch <ms>                   wait until the next refresh started by the directory watch has
+//!                                    listed its folder (at most <ms>), then 300 ms more for the pass
 //!   quit                             exit the event loop
 //! Events are dispatched with slint::Window::dispatch_event on the UI thread, so Slint's full
 //! input -> layout -> render path runs; only the OS WndProc hop is skipped.
@@ -125,6 +132,9 @@ enum Step {
     SideClick(i32),
     BookmarkRemove(i32),
     AboutClose,
+    /// `touch` (create or update) or `rmfile` (delete) a file in the pane's folder.
+    ScriptFile { pane: usize, name: String, remove: bool },
+    WaitWatch(u64),
     Quit,
 }
 
@@ -186,6 +196,9 @@ fn parse(script: &str) -> Vec<Step> {
                 "bookmark" => Step::Key("CtrlD".into()),
                 "about" if a.get(1) == Some(&"close") => Step::AboutClose,
                 "about" => Step::Key("F1".into()),
+                "touch" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: false },
+                "rmfile" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: true },
+                "waitwatch" => Step::WaitWatch(num(1).max(1) as u64),
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("[auto] unknown step: {other}");
@@ -667,6 +680,29 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         Step::AboutClose => {
             app.invoke_close_about();
             schedule(runner, 1);
+        }
+        Step::ScriptFile { pane, name, remove } => {
+            if name.is_empty() || name.contains(['\\', '/']) {
+                eprintln!("[auto] touch/rmfile take a plain file name, not {name:?}");
+            } else {
+                crate::script_file(pane, &name, remove);
+            }
+            schedule(runner, 1);
+        }
+        Step::WaitWatch(max_ms) => {
+            let start = crate::watch_refreshes();
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                let seen = crate::watch_refreshes() > start;
+                if seen || std::time::Instant::now() >= deadline {
+                    if !seen {
+                        eprintln!("[auto] waitwatch: no watch-driven refresh within {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 300);
+                }
+            });
         }
         Step::Quit => {
             let _ = slint::quit_event_loop();
