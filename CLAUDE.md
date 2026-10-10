@@ -19,7 +19,7 @@ milestones, gate re-run after each). Read them before changing the list.
   `docs/patches/` with `git format-patch a1ce0d8`, and bump the `rev` in both `Cargo.toml`
   entries. Every git dependency is pinned by `rev`; never `branch = "master"`.
 - `target-*` directories are ignored. Never `git add -A` with an unignored target dir (a
-  1.2 GB commit happened once).
+  1.2 GB commit would be the result).
 - Unpatched Slint for comparison: `tools/build-master.sh` only. It rewrites the fork
   references to slint-ui/slint at a1ce0d8, builds with the lockfile set aside, restores both
   files, and fails if the binary contains the patch string.
