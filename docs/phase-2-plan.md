@@ -366,6 +366,9 @@ undo, and a queue TwinFM can see and cancel.
   move back from `$Recycle.Bin`, which loses the bin's own metadata). Not checked here.
 - **Undo of a move that renamed on collision** moves the item back under its new name ("a (2).txt");
   `MoveItem`'s `pszNewName` could restore the old one.
+- **Undo of a copy or move that replaced an existing file** recycles the copy (or moves the item
+  back) but does not restore the file it replaced; Explorer's undo does not either, but it is worth
+  saying. The replaced file is in the Recycle Bin only if the shell put it there.
 - **Dimming the cut row's icon** (only its text is dimmed, since M3).
 - **Progress inside TwinFM**: the shell's window still shows it; the status bar shows the queue
   count, not a percentage (`UpdateProgress` on the sink could feed one).
