@@ -156,3 +156,152 @@ on the worker.
   F3, UI thread 12.0% busy over the 10 s after the split. Not comparable with console WPR.
 
 Gate: pending Jeremy's console WPR run.
+
+## M2: icons
+
+### What landed (2026-10-09)
+
+- **Icon worker** (`src/icons.rs`). One thread, started with the app, `CoInitializeEx`
+  multithreaded, owns every shell call. Per request it calls `SHCreateItemFromParsingName`
+  for `IShellItemImageFactory` and `GetImage(16 x scale, SIIGBF_ICONONLY |
+  SIIGBF_BIGGERSIZEOK)`, reads the HBITMAP top-down with `GetDIBits` (negative height),
+  converts premultiplied BGRA to premultiplied RGBA in a `SharedPixelBuffer`, deletes the
+  bitmap and sends the buffer back over a crossbeam channel, then wakes the UI thread with
+  `invoke_from_event_loop`. COM is plain `windows-sys` with a four-slot vtable struct; the
+  `windows` crate was not needed. The worker keeps the set of keys it has delivered and never
+  renders one twice per process. New `windows-sys` features: `Win32_System_Com`,
+  `Win32_Graphics_Gdi`.
+- **Cache keys**, computed on the enumeration worker with no extra syscall for most entries:
+  ordinary files `ext:.<lowercase ext>`; plain directories one shared `dir`; `.exe`, `.lnk`,
+  `.ico`, `.url`, `.cur`, files with no extension, reparse points and drives by full path;
+  customised folders (a `desktop.ini` the shell honours) by full path.
+- **Icon table** (`IconTable`, UI thread, one `Rc<RefCell<..>>` shared by both panes):
+  `Vec<slint::Image>` whose first three slots are generated 16 x 16 placeholders (file, folder,
+  drive), a key-to-index map, and the pending and failed key sets. A reply's pixels become a
+  `slint::Image` once per key.
+- **Model.** `Entry` gained `icon: u16` (table index, a placeholder until resolved) and
+  `icon_key: SharedString`; `Row` gained `icon: image`. `row_data` adds one indexed `Vec`
+  access and one refcount bump (`icons.borrow().image(e.icon)`).
+- **Visible rows only.** `FileList` reports `(content-y, visible-height)` through a new
+  `viewport-changed` callback from `changed content-y`, `changed visible-height` and
+  `changed row-count`; Rust also re-resolves after every pass swap and after every batch of
+  icon replies. `icons::visible_range` turns that into the row range, and
+  `PaneModel::resolve_icons` walks the visible rows plus 10 above and below: a row whose
+  key is in the table gets its index and a `row_changed`, a key never seen is requested once,
+  pending and failed keys are left alone. Rows already resolved cost one integer compare.
+- **UI.** The glyph column (folder triangle, drive and reparse marks) is now a 16 px logical
+  `Image` for every kind, in the same 22 px slot; the buffer is 16 x the window scale factor,
+  so it stays sharp at 150% and 200%.
+- **Cancel by generation.** The UI stores each pane's generation in a shared
+  `[AtomicU64; 2]` on navigate and refresh; the worker answers a stale request with
+  `Skipped` instead of rendering it, and the UI asks again if the row is still on screen.
+- **Driver.** No new steps: the existing `wheel` and `drag` steps move `content-y`, which
+  fires `viewport-changed`. stderr has a new `[icons]` line once a second when icon work
+  happened: requests and replies in that second and in total, table size, the worker's
+  average ms per icon, and the number and average cost of UI-side resolve calls.
+- **Tests**, 18 to 25: key rules; the `desktop.ini` rule (needs the file and a read-only or
+  system folder); BGRA to RGBA on a 2 x 2 buffer (opaque, premultiplied half alpha,
+  transparent, and an all-zero-alpha bitmap treated as opaque); visible-range arithmetic
+  including overscroll and past-the-end; the table's intern, dedupe, pending, failed and
+  skipped states; `resolve_icons` requesting each key once and applying a reply only to the
+  visible rows; and an integration test that starts the worker, asks for
+  `C:\Windows\notepad.exe`, `C:\` and `ext:.txt` plus one stale request, and gets three icons
+  with visible pixels and one `Skipped` within 5 s (it skips with a message if the shell
+  returns nothing at all).
+
+### Decisions
+
+- **`desktop.ini` check on the enumeration worker, filtered to read-only or system folders.**
+  The shell only reads `desktop.ini` in folders with one of those attributes, so other
+  folders cannot have a custom icon and need no probe. Measured with a standalone timing of
+  `Path::join("desktop.ini").exists()`: unfiltered it costs 25 to 155 us per directory,
+  1.1 s warm and 4.2 s cold for the 26,867 folders of `C:\Windows\WinSxS` and 4.4 ms for the
+  179 folders of System32; filtered, WinSxS has no candidates (0 ms), System32 has 7
+  (0.26 ms), `C:\Users\jtkli` 8 (0.3 ms, all 8 custom). `C:\traces\bigdir` and
+  `WinSxS\Manifests` have no folders at all. That is under the 5 ms per 40k budget in every
+  folder tried, so the lazy variant (all folders `dir`, checked in the icon worker) was not
+  needed. A folder of tens of thousands of read-only subfolders would cost seconds on the
+  enumeration worker, not on the UI thread.
+- **Resolve on the visible range, not by walking the listing.** A reply does not walk
+  `shown` or `all`; it re-runs the visible-range resolve for both panes (a screenful plus the
+  margin). Rows that scroll into view later resolve from the table then, and a pass swap
+  resolves its visible rows before the next frame. Nothing on the UI thread is O(entries):
+  no per-entry table lookup at append or pass time. Measured resolve cost: 4 to 10 us
+  average per call, 30 to 60 us for the first calls of a listing.
+- **The worker serves newest first.** The first version served its queue in order; a fast
+  wheel through System32 queued 725 requests (every `.exe` scrolled past) and the rows on
+  screen at the end waited about 5 s behind them. With a LIFO queue the rows on screen get
+  their icons first and the rest still render, later, into the cache.
+- **No `waiting` map.** The UI keeps `pending` (and `failed`) per key; a `Skipped` reply
+  clears the pending mark and the next resolve re-requests the key if a row on screen still
+  needs it. Requests carry no row index and replies no row list, since the visible-range
+  resolve finds the rows itself.
+- **Failed keys are not retried** in this process; their rows keep the placeholder.
+- **Visible-range arithmetic in Rust** (`icons::visible_range`), fed with `content-y` and
+  `visible-height` from Slint, rather than computed in `.slint`, so it is unit-tested and the
+  same function serves the pass-swap and reply paths, which have no Slint event.
+- **The shared `dir` key renders from the first plain folder requested.** It cannot be a
+  customised folder (those have their own key), so it gets the generic folder icon.
+- **Scale factor** is read at request time (`window().scale_factor()`), which also covers a
+  window that has not been shown yet at startup.
+
+### Deviations
+
+- `Request` is `{ generation, pane, key, path, size_px }` and `Reply` is `{ key, outcome }`
+  with `Outcome::{Pixels, Failed, Skipped}`: no `row`/`rows` or `kind` fields (unused, see
+  above).
+- The UI keeps no `waiting` map (above).
+- The `desktop.ini` check runs eagerly, filtered by attribute, rather than lazily.
+
+### Deferred
+
+- **32 px icons.** Only the 16 px logical size is requested; a 32 px fetch comes with a
+  large-icon view.
+- **Scale-factor changes.** Icons already in the table keep the size they were rendered at
+  when the window moves to a monitor with a different scale; the table would need a flush and
+  re-request.
+- **Overlays.** `SIIGBF_ICONONLY` returns no overlay, so junctions, symlinks and shortcuts
+  show no arrow, and the M1 reparse glyph is gone with the glyph column. Reparse points still
+  get their own shell icon (keyed by full path), which tells OneDrive and other cloud
+  placeholders apart from junctions; telling reparse tags apart remains deferred from M1.
+- **One worker, no timeout.** A slow icon (a network path, a cloud placeholder: one entry in
+  `C:\Users\jtkli` took 568 ms) delays the icons queued behind it. Only rows on screen are
+  requested and newest are served first, so the cost is a late icon, not a stalled UI.
+- **Rows scrolled past are still rendered.** A fast scroll queues every key it passes over;
+  the worker renders them after the visible ones. Cancelling by row range could save that
+  worker time.
+- **Narrator check** that the icon images add nothing to the accessibility tree (they have no
+  `accessible-role`, so they should not), with Jeremy at the console.
+
+### Measurement
+
+In-app, RDP session, default features, the split-and-scroll script
+(`sleep 2500;split;sleep 1500;wheel 0 -40 30;wheel 1 -40 30;sleep 3000;drag 0 300 1000;sleep 2000;quit`),
+the M1 build (`feat/m1-entry-model`, built into `target-m1`) and the M2 build run
+alternately so both see the same session conditions. UI-thread busy over the 10 s after the
+split:
+
+| Folder | M1 runs | M1 mean | M2 runs | M2 mean |
+|---|---|---|---|---|
+| `C:\traces\bigdir` (40,000 `.txt`) | 8.1, 7.0, 7.0, 8.2, 6.7, 5.3 | 7.1% | 6.1, 6.8, 8.9, 8.2, 8.3, 7.2 | 7.6% |
+| `C:\Windows\System32` (4,912) | 9.2, 10.6, 9.8, 7.6 | 9.3% | 10.0, 8.1, 9.8, 10.0 | 9.5% |
+| `C:\Windows\WinSxS\Manifests` (35,969 `.manifest`) | 9.7, 9.5, 8.6, 9.2 | 9.3% | 10.9, 7.8, 10.9, 8.4 | 9.5% |
+
+The difference is inside the run-to-run spread (5.3 to 8.9 for the same build and folder).
+No panics in any run.
+
+- bigdir: one key (`ext:.txt`), table 4 images (3 placeholders + 1), one render of 60 to
+  120 ms (the first shell icon call in a process loads the shell; later calls take 4 to 7 ms).
+  The second pane needs no request at all.
+- WinSxS\Manifests: one key (`ext:.manifest`), one render of 52 to 59 ms. Every file there
+  shares the extension, so it says nothing about throughput.
+- System32 is the throughput case: each `.exe` is its own key. The script's scrolling sent
+  338 requests and got 338 replies, table 341 images, 4.4 to 7.9 ms per icon on the worker,
+  about 140 to 220 icons a second. A wheel through the whole folder sent 725 requests and
+  the worker cleared them in about 3.5 s at 4.5 to 4.9 ms per icon (about 210 a second).
+- Resolve on the UI thread: 4 to 10 us average per call over 260 to 1,600 calls.
+- Screenshots (software renderer, `tools/shot.ps1`) of System32, This PC and
+  `C:\Users\jtkli` show per-type file icons, `.exe` icons, drive icons (including the
+  Google Drive volume's own icon) and custom folder icons (OneDrive, Videos).
+
+Gate: pending Jeremy's console WPR run.

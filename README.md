@@ -45,7 +45,8 @@ Drag the bar between the panes to resize them.
 ```
 src/
   main.rs          Slint bootstrap, wires model <-> UI, owns the two panes
-  fs/enumerate.rs  Worker thread: read_dir -> Vec<Entry> batches of 2000 -> channel; type names, drive list
+  fs/enumerate.rs  Worker thread: read_dir -> Vec<Entry> batches of 2000 -> channel; type names, icon keys, drive list
+  icons.rs         Icon worker thread (COM): shell icon per type, extension or path -> RGBA pixels; UI-side icon table
   model.rs         PaneModel: full and filtered Vec<Entry>, selection, sort state; implements slint::Model
   ui/app.slint     Window, two Pane components, splitter
   ui/pane.slint    Path bar, column header, ListView over the model, status line
@@ -65,6 +66,9 @@ Rules the prototype follows, because they are what makes the numbers possible:
 - Sorting runs on a worker over a snapshot and swaps the whole Vec in one step.
 - Only the UI thread touches the Slint model. Workers wake it with
   `slint::invoke_from_event_loop`.
+- Shell icons come from one COM worker thread, fetched only for the rows on screen and
+  cached per extension (or per path for `.exe`, `.lnk`, drives and custom folders); rows show a
+  placeholder until their icon arrives.
 
 ## Measuring
 
