@@ -386,7 +386,10 @@ some of its remaining difference is icon replies landing and recomposing. No pan
   the end show the icons aligned with their rows in both panes and the partly scrolled top
   row's icon clipped at the header.
 
-Gate: pending Jeremy's console WPR run.
+Gate (2026-10-10, Jeremy at the console, strip build `target-m2`, same conditions as the
+morning run): **19.3%** by WPR (1932 sampled ms in the 10 s after the split; in-app 20.5%).
+Passes the 20% bar; the per-row version read 22.3% and M1 19.9%. Compose cost in the run: 125
+strips at 24 us average. Trace `C:/traces/twinfm-p1-m2strip.etl`.
 
 ## M3: file operations
 
@@ -573,7 +576,10 @@ at 1801 s, range 102.7 to 173.4 MB; private bytes 102.9 to 125.9 MB. The end poi
 10-minute soak's 148.8 MB, so the swings follow the scroll scenario and there is no growth trend.
 Samples: `%TEMP%/twinfm-m3/soak-m3-memory.csv`.
 
-Gate: not required for M3 but re-run with M4.
+Gate (2026-10-10, Jeremy at the console, `target-m3`, run right after the M2 strip run):
+**19.6%** by WPR (1957 sampled ms; in-app 19.4%). Within noise of M2's 19.3%, as expected for
+a milestone that adds no per-frame work. Trace `C:/traces/twinfm-p1-m3.etl`. Headroom to the
+bar is now under one point: M4 to M6 must add nothing to the per-frame path.
 
 ## M4: shell context menu
 
