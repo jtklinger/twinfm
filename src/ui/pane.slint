@@ -58,6 +58,7 @@ component FileListBase inherits ListView {
                 vertical-alignment: center;
             }
             Text { text: row.name; vertical-alignment: center; overflow: elide; }
+            Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; }
             Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; }
             Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; }
         }
@@ -123,6 +124,7 @@ export component Pane inherits Rectangle {
         HorizontalLayout {
             height: 24px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } }
+            HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } }
             HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } }
             HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } }
         }

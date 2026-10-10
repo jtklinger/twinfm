@@ -83,6 +83,7 @@ pub enum SortCol {
     Name = 0,
     Size = 1,
     Modified = 2,
+    Type = 3,
 }
 
 impl SortCol {
@@ -90,6 +91,7 @@ impl SortCol {
         match c {
             1 => SortCol::Size,
             2 => SortCol::Modified,
+            3 => SortCol::Type,
             _ => SortCol::Name,
         }
     }
@@ -188,6 +190,7 @@ pub fn sort_entries(entries: &mut [Entry], col: SortCol, asc: bool) {
             SortCol::Name => natural_cmp(&a.name, &b.name),
             SortCol::Size => a.size.cmp(&b.size).then_with(|| natural_cmp(&a.name, &b.name)),
             SortCol::Modified => a.modified.cmp(&b.modified).then_with(|| natural_cmp(&a.name, &b.name)),
+            SortCol::Type => natural_cmp(&a.type_text, &b.type_text).then_with(|| natural_cmp(&a.name, &b.name)),
         };
         if asc { o } else { o.reverse() }
     });
@@ -289,6 +292,19 @@ mod tests {
         sort_entries(&mut v, SortCol::Name, false);
         let names: Vec<&str> = v.iter().map(|x| x.name.as_str()).collect();
         assert_eq!(names, ["zdir", "file_10", "file_2", "File_1"]);
+    }
+
+    #[test]
+    fn sort_by_type_then_name() {
+        let t = |name: &str, ty: &str| Entry::new(name.into(), 0, 0, 0, ty.into());
+        let mut v = vec![t("b.txt", "Text Document"), t("z.png", "PNG File"), t("a.txt", "Text Document"), e("dir", 0, true)];
+        sort_entries(&mut v, SortCol::Type, true);
+        let names: Vec<&str> = v.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["dir", "z.png", "a.txt", "b.txt"]);
+        sort_entries(&mut v, SortCol::Type, false);
+        let names: Vec<&str> = v.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["dir", "b.txt", "a.txt", "z.png"]);
+        assert_eq!(SortCol::from_i32(3), SortCol::Type);
     }
 
     #[test]

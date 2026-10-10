@@ -6,7 +6,7 @@
 //!   drag <pane> <dy> <ms>            press the pane's scrollbar thumb and drag it <dy> px in 16 ms steps
 //!   nav <pane> <path>                navigate a pane
 //!   up <pane>                        go to the parent directory
-//!   sort <pane> <0|1|2>              click a column header (name/size/modified)
+//!   sort <pane> <0|1|2|3>            click a column header (name/size/modified/type)
 //!   key <F3|Backspace|AltUp|CtrlShiftRight|Return>   press a key through the Slint key path
 //!   dblclick <pane> <row>            double-click a visible row (enters the directory if it is one)
 //!   quit                             exit the event loop
