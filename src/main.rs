@@ -110,6 +110,8 @@ struct JobInfo {
     /// those rows were in and where its cursor falls back to if its row goes
     /// (`PaneModel::cursor_after_removal`).
     fallback: Option<(usize, u64, usize)>,
+    /// An undo job: the status text of the job it undoes. Its own completion is not recorded.
+    undo_of: Option<String>,
 }
 
 struct State {
@@ -143,6 +145,8 @@ struct State {
     cut_source: Option<(usize, u64)>,
     /// The clipboard's sequence number right after TwinFM's last copy or cut.
     clip_seq: u32,
+    /// Ctrl+Z's record, newest last, shared by both panes (`fileops::undo`).
+    undo: Vec<fileops::undo::Record>,
     /// The paste-of-a-cut job, if one is in flight: on success the clipboard is emptied.
     paste_move: Option<u64>,
     /// TWINFM_SOAK=1: no confirmations, and every path must lie inside one of these scratch
@@ -888,7 +892,7 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
         return None;
     }
     let tab = st.tab(pane).id;
-    st.jobs.insert(id, JobInfo { pane, tab, fallback: None });
+    st.jobs.insert(id, JobInfo { pane, tab, fallback: None, undo_of: None });
     note(st, app, pane, running);
     Some(id)
 }
@@ -916,6 +920,7 @@ fn command(pane: usize, cmd: &str) {
     match cmd {
         "cc" | "cx" => return clipboard_put(pane, cmd == "cx"),
         "cv" => return clipboard_paste(pane),
+        "undo" => return undo(pane),
         _ => {}
     }
     let edit = with_state(|st| {
@@ -995,6 +1000,46 @@ fn cut_fallback(st: &mut State, app: &App) -> Option<(usize, u64, usize)> {
     let t = st.find(pane, tab)?;
     let names = t.model.capture(-1).cut;
     Some((pane, tab, t.model.cursor_after_removal(row, &names)?))
+}
+
+/// Ctrl+Z in a pane's list: undo the newest recorded operation, whichever pane it was done in.
+/// Refused with a note when the items are no longer where it left them; the undo job runs
+/// through the worker like any other (the soak fence included) and is not recorded itself.
+fn undo(pane: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let Some(rec) = st.undo.pop() else {
+            eprintln!("[undo] nothing to undo");
+            return note(st, &app, pane, "Nothing to undo".into());
+        };
+        let Some(u) = rec.undo else {
+            eprintln!("[undo] \"{}\" cannot be undone", rec.text);
+            return note(st, &app, pane, fileops::undo::CANNOT_UNDO_DELETE.into());
+        };
+        if let Err(why) = fileops::undo::check(&u) {
+            eprintln!("[undo] \"{}\" refused: {why}", rec.text);
+            return note(st, &app, pane, why);
+        }
+        eprintln!("[undo] \"{}\" with {:?}", rec.text, u.job);
+        // Undoing a copy or a new folder in this pane's folder removes rows from it.
+        let fallback = match &u.job {
+            Job::Delete { sources, .. } => {
+                let folder = st.tab(pane).path.clone();
+                let names: Vec<SharedString> = sources
+                    .iter()
+                    .filter(|s| s.parent().is_some_and(|p| same_dir(p, &folder)))
+                    .filter_map(|s| Some(s.file_name()?.to_string_lossy().as_ref().into()))
+                    .collect();
+                removal_fallback(st, &app, pane, &names)
+            }
+            _ => None,
+        };
+        if let Some(id) = submit_removing(st, &app, pane, u.job, fallback) {
+            if let Some(j) = st.jobs.get_mut(&id) {
+                j.undo_of = Some(rec.text);
+            }
+        }
+    });
 }
 
 /// Clear the cut marks in every tab (the clipboard no longer holds a cut).
@@ -1094,8 +1139,24 @@ fn mark_background_stale(st: &mut State) {
 fn job_done(d: fileops::Done) {
     let mut clear_clipboard = None;
     let panes = with_state(|st| {
-        let info = st.jobs.remove(&d.id).unwrap_or(JobInfo { pane: 0, tab: 0, fallback: None });
+        let info = st.jobs.remove(&d.id).unwrap_or(JobInfo { pane: 0, tab: 0, fallback: None, undo_of: None });
         let (pane, tab) = (info.pane, info.tab);
+        let text = fileops::status_text(&d.job, &d.outcome, &d.results);
+        let text = match &info.undo_of {
+            // An undo job is never recorded itself (no redo).
+            Some(orig) => {
+                let shown = if d.outcome == Outcome::Done { format!("Undid: {orig}") } else { format!("Undo: {text}") };
+                eprintln!("[undo] done id={} {:?}: {shown}", d.id, d.outcome);
+                shown
+            }
+            None => {
+                if let Some(r) = fileops::undo::record_for(&d.job, &d.outcome, &d.results, &text) {
+                    eprintln!("[undo] recorded \"{}\": {:?}", r.text, r.undo.as_ref().map(|u| &u.job));
+                    fileops::undo::push(&mut st.undo, r);
+                }
+                text
+            }
+        };
         // Whatever the outcome (a cancel can come after some items went), the source tab's next
         // pass puts a cursor whose row is gone on the row after it.
         if let Some((p, id, idx)) = info.fallback {
@@ -1103,7 +1164,6 @@ fn job_done(d: fileops::Done) {
                 t.fallback_cursor = Some(idx);
             }
         }
-        let text = fileops::status_text(&d.job, &d.outcome, &d.results);
         eprintln!("[fileops] done id={} pane={pane} tab={tab} {:?}: {text}", d.id, d.outcome);
         for r in &d.results {
             let to = r.dest.as_ref().map_or_else(|| "-".to_string(), |p| p.display().to_string());
@@ -1860,6 +1920,7 @@ fn main() -> Result<(), slint::PlatformError> {
             jobs: HashMap::new(),
             cut_source: None,
             clip_seq: 0,
+            undo: Vec::new(),
             paste_move: None,
             soak,
             strip: [None; 2],

@@ -19,6 +19,7 @@
 //! new path, a copy's path) and the HRESULT; they come back in `Done::results`.
 
 pub mod clipboard;
+pub mod undo;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::ffi::c_void;
@@ -802,7 +803,18 @@ mod tests {
         assert!(root.join("made").join("made (2)").join("inner.txt").exists());
         assert_eq!(dest(&r), [canon(&root.join("made").join("made (2)"))], "a folder's contents are not the job's items");
 
-        let sources = vec![root.join("b.txt"), root.join("made"), root.join("made (2)"), root.join("a - Copy.txt")];
+        // Undo round trip: move a file, build the undo from the sink's results, run it.
+        std::fs::write(root.join("c.txt"), b"undo me").unwrap();
+        let job = Job::Move { sources: vec![root.join("c.txt")], dest_dir: root.join("made") };
+        let r = run(job.clone());
+        assert!(root.join("made").join("c.txt").exists() && !root.join("c.txt").exists());
+        let u = undo::undo_for(&job, &r).expect("a move is undoable");
+        assert_eq!(undo::check(&u), Ok(()));
+        run(u.job);
+        assert_eq!(std::fs::read(root.join("c.txt")).unwrap(), b"undo me", "the file is back");
+        assert!(!root.join("made").join("c.txt").exists());
+
+        let sources = vec![root.join("b.txt"), root.join("made"), root.join("made (2)"), root.join("a - Copy.txt"), root.join("c.txt")];
         let r = run(Job::Delete { sources: sources.clone(), permanent: true });
         assert!(!root.join("b.txt").exists());
         assert!(!root.join("made").exists());
