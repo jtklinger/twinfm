@@ -22,12 +22,18 @@ export component App inherits Window {
     in-out property <bool> split: false;
     in-out property <int> active-pane: 0;
     in-out property <float> split-ratio: 0.5;
+    in-out property <int> left-current-row: -1;
+    in-out property <int> right-current-row: -1;
 
     callback navigate(int, string);
     callback open-row(int, int);
     callback sort-by(int, int);
     callback go-up(int);
     callback toggle-split();
+    callback toggle-hidden(int);
+    callback refresh(int);
+    // select(pane, op, row): op 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
+    callback select(int, int, int);
 
     public function focus-pane(p: int) {
         active-pane = p;
@@ -38,11 +44,24 @@ export component App inherits Window {
         if (p == 0) { left.reset-scroll(); } else { right.reset-scroll(); }
     }
 
+    public function get-scroll(p: int) -> length {
+        return p == 0 ? left.get-scroll() : right.get-scroll();
+    }
+
+    public function set-scroll(p: int, y: length) {
+        if (p == 0) { left.set-scroll(y); } else { right.set-scroll(y); }
+    }
+
     forward-focus: outer;
 
     outer := FocusScope {
         key-pressed(e) => {
             if (e.text == Key.F3) { root.toggle-split(); return accept; }
+            if (e.modifiers.control && (e.text == "h" || e.text == "H")) { root.toggle-hidden(active-pane); return accept; }
+            if (e.text == Key.F5 || (e.modifiers.control && (e.text == "r" || e.text == "R"))) {
+                root.refresh(active-pane);
+                return accept;
+            }
             if (e.text == Key.RightArrow && e.modifiers.control && e.modifiers.shift) {
                 if (split) { root.focus-pane(1 - active-pane); }
                 return accept;
@@ -55,7 +74,9 @@ export component App inherits Window {
             rows: left-rows; path <=> left-path; status: left-status;
             active: !split || active-pane == 0;
             sort-col: left-sort-col; sort-asc: left-sort-asc;
+            current-row <=> left-current-row;
             navigate(p) => { root.navigate(0, p); }
+            select(op, i) => { root.select(0, op, i); }
             open-row(i) => { root.open-row(0, i); }
             sort-by(c) => { root.sort-by(0, c); }
             go-up => { root.go-up(0); }
@@ -68,7 +89,9 @@ export component App inherits Window {
             rows: right-rows; path <=> right-path; status: right-status;
             active: split && active-pane == 1;
             sort-col: right-sort-col; sort-asc: right-sort-asc;
+            current-row <=> right-current-row;
             navigate(p) => { root.navigate(1, p); }
+            select(op, i) => { root.select(1, op, i); }
             open-row(i) => { root.open-row(1, i); }
             sort-by(c) => { root.sort-by(1, c); }
             go-up => { root.go-up(1); }

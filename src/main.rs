@@ -9,8 +9,8 @@ mod model;
 mod perf;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use fs::enumerate::Msg;
-use model::{PaneModel, SortCol, sort_entries};
+use fs::enumerate::{Msg, THIS_PC, is_this_pc};
+use model::{PaneModel, SelOp, SortCol, filter_sort};
 use slint::{ComponentHandle, ModelRc, RenderingState, Weak};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,9 @@ struct PaneTiming {
     requested: Option<Instant>,
     first_batch: Option<Instant>,
     first_frame_reported: bool,
+    /// Request-to-done wall time once the listing is complete.
+    done_ms: Option<f64>,
+    error: Option<String>,
 }
 
 struct State {
@@ -31,6 +34,10 @@ struct State {
     rx: Receiver<Msg>,
     tx: Sender<Msg>,
     timing: [PaneTiming; 2],
+    /// The folder each pane last navigated to (the path bar may hold unsubmitted text).
+    paths: [PathBuf; 2],
+    /// Restore the list's scroll offset at the next pass swap (set when a refresh completes).
+    keep_scroll: [bool; 2],
     split_requested: Option<Instant>,
     busy_timer: slint::Timer,
 }
@@ -49,21 +56,23 @@ fn wake() {
 }
 
 fn navigate(pane: usize, path: PathBuf) {
+    let path = if is_this_pc(&path.to_string_lossy()) { PathBuf::from(THIS_PC) } else { path };
     with_state(|st| {
-        let app = st.app.unwrap();
+        let Some(app) = st.app.upgrade() else { return };
         let model = &st.panes[pane];
         let generation = model.generation.get() + 1;
         model.generation.set(generation);
         model.clear();
         st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
+        st.paths[pane] = path.clone();
+        st.keep_scroll[pane] = false;
         let shown = path.to_string_lossy().to_string();
         if pane == 0 {
             app.set_left_path(shown.as_str().into());
-            app.set_left_status("loading...".into());
         } else {
             app.set_right_path(shown.as_str().into());
-            app.set_right_status("loading...".into());
         }
+        set_status(&app, pane, "loading...".into());
         app.invoke_reset_scroll(pane as i32);
         eprintln!("[nav] pane={pane} gen={generation} path={shown}");
         let tx = st.tx.clone();
@@ -71,13 +80,45 @@ fn navigate(pane: usize, path: PathBuf) {
     });
 }
 
+/// Re-enumerate the pane's folder in place (F5, Ctrl+R). The old rows stay on screen until the
+/// new listing has been filtered and sorted; cursor, selection and scroll come back by name.
+fn refresh(pane: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let model = &st.panes[pane];
+        let generation = model.generation.get() + 1;
+        model.generation.set(generation);
+        model.begin_refresh();
+        st.timing[pane] = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
+        set_status(&app, pane, "refreshing...".into());
+        let path = st.paths[pane].clone();
+        eprintln!("[refresh] pane={pane} gen={generation} path={}", path.display());
+        fs::enumerate::spawn(path, pane, generation, st.tx.clone(), wake);
+    });
+}
+
 fn set_status(app: &App, pane: usize, s: String) {
     if pane == 0 { app.set_left_status(s.into()) } else { app.set_right_status(s.into()) }
 }
 
+/// The status line for a pane: loading, complete, or failed.
+fn status_text(model: &PaneModel, t: &PaneTiming) -> String {
+    if let Some(e) = &t.error {
+        return format!("error: {e}");
+    }
+    let hidden = match model.hidden_count() {
+        0 => String::new(),
+        n => format!(" ({n} hidden)"),
+    };
+    match t.done_ms {
+        Some(ms) => format!("{} items{hidden}, enumerated in {ms:.0} ms", model.len()),
+        None => format!("{} items{hidden} (loading...)", model.len()),
+    }
+}
+
 fn drain() {
     with_state(|st| {
-        let app = st.app.unwrap();
+        let Some(app) = st.app.upgrade() else { return };
         while let Ok(msg) = st.rx.try_recv() {
             match msg {
                 Msg::Batch { pane, generation, entries } => {
@@ -86,6 +127,9 @@ fn drain() {
                         continue;
                     }
                     model.append(entries);
+                    if model.is_refreshing() {
+                        continue; // staged; the old rows and status stay until the pass
+                    }
                     let t = &mut st.timing[pane];
                     if t.first_batch.is_none() {
                         t.first_batch = Some(Instant::now());
@@ -93,7 +137,7 @@ fn drain() {
                             eprintln!("[enum] pane={pane} first batch after {:.1} ms", perf::elapsed_ms(r));
                         }
                     }
-                    set_status(&app, pane, format!("{} items (loading...)", model.len()));
+                    set_status(&app, pane, status_text(model, t));
                 }
                 Msg::Done { pane, generation, total, elapsed, error } => {
                     let model = &st.panes[pane];
@@ -101,16 +145,24 @@ fn drain() {
                         continue;
                     }
                     let wall = st.timing[pane].requested.map(perf::elapsed_ms).unwrap_or(0.0);
+                    if model.is_refreshing() {
+                        model.finish_refresh();
+                        st.keep_scroll[pane] = true;
+                    }
                     match error {
-                        Some(e) => set_status(&app, pane, format!("error: {e}")),
+                        Some(e) => {
+                            st.timing[pane].error = Some(e);
+                            set_status(&app, pane, status_text(model, &st.timing[pane]));
+                        }
                         None => {
                             eprintln!(
                                 "[enum] pane={pane} done: {total} entries, worker {:.1} ms, request-to-done {wall:.1} ms",
                                 elapsed.as_secs_f64() * 1e3
                             );
-                            set_status(&app, pane, format!("{total} items, enumerated in {:.0} ms", wall));
-                            // Apply the pane's current sort once the listing is complete.
-                            request_sort(st, pane, model.sort_col.get(), model.sort_asc.get());
+                            st.timing[pane].done_ms = Some(wall);
+                            set_status(&app, pane, status_text(model, &st.timing[pane]));
+                            // Apply the pane's current filter and sort once the listing is complete.
+                            request_pass(st, pane);
                         }
                     }
                 }
@@ -119,12 +171,12 @@ fn drain() {
     });
 }
 
-/// Sort on a worker over a snapshot; swap the Vec in one step when it returns.
-fn request_sort(st: &mut State, pane: usize, col: SortCol, asc: bool) {
+/// Filter and sort on a worker over a snapshot of the full listing; swap the shown Vec in one
+/// step when it returns. Uses the pane's current sort column, direction and hidden filter.
+fn request_pass(st: &mut State, pane: usize) {
+    let Some(app) = st.app.upgrade() else { return };
     let model = &st.panes[pane];
-    model.sort_col.set(col);
-    model.sort_asc.set(asc);
-    let app = st.app.unwrap();
+    let (col, asc, show_hidden) = (model.sort_col.get(), model.sort_asc.get(), model.show_hidden.get());
     if pane == 0 {
         app.set_left_sort_col(col as i32);
         app.set_left_sort_asc(asc);
@@ -133,19 +185,42 @@ fn request_sort(st: &mut State, pane: usize, col: SortCol, asc: bool) {
         app.set_right_sort_asc(asc);
     }
     let generation = model.generation.get();
-    let mut snapshot = model.snapshot();
+    let pass = model.pass.get() + 1;
+    model.pass.set(pass);
+    let snapshot = model.snapshot_all();
+    let restore = model.capture(current_row(&app, pane));
+    let sel_version = model.sel_version.get();
     let t0 = Instant::now();
     std::thread::spawn(move || {
-        sort_entries(&mut snapshot, col, asc);
-        let sort_ms = perf::elapsed_ms(t0);
+        let total = snapshot.len();
+        let mut out = filter_sort(snapshot, show_hidden, col, asc, &restore);
+        let pass_ms = perf::elapsed_ms(t0);
         let _ = slint::invoke_from_event_loop(move || {
             with_state(|st| {
+                let Some(app) = st.app.upgrade() else { return };
                 let model = &st.panes[pane];
-                if model.generation.get() != generation || model.len() != snapshot.len() {
-                    return; // listing changed underneath us; a newer sort or Done will follow
+                if model.generation.get() != generation || model.pass.get() != pass || model.total() != total {
+                    return; // listing or request changed underneath us; a newer pass or Done follows
                 }
-                eprintln!("[sort] pane={pane} {} entries by {col:?} asc={asc} in {sort_ms:.1} ms", snapshot.len());
-                model.replace(snapshot);
+                if model.sel_version.get() != sel_version {
+                    // The user changed the selection while the pass ran; carry the current one.
+                    out.restore(&model.capture(current_row(&app, pane)));
+                }
+                eprintln!(
+                    "[sort] pane={pane} {} of {total} entries by {col:?} asc={asc} hidden={} cursor={:?} selected={} in {pass_ms:.1} ms",
+                    out.shown.len(),
+                    out.hidden,
+                    out.cursor,
+                    out.selection.len()
+                );
+                let scroll = std::mem::take(&mut st.keep_scroll[pane]).then(|| app.invoke_get_scroll(pane as i32));
+                let cursor = model.replace(out);
+                set_current_row(&app, pane, cursor);
+                if let (Some(y), Some(_)) = (scroll, cursor) {
+                    app.invoke_set_scroll(pane as i32, y);
+                    eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
+                }
+                set_status(&app, pane, status_text(model, &st.timing[pane]));
             });
         });
     });
@@ -171,6 +246,20 @@ fn on_frame_rendered() {
     });
 }
 
+fn current_row(app: &App, pane: usize) -> i32 {
+    if pane == 0 { app.get_left_current_row() } else { app.get_right_current_row() }
+}
+
+fn set_current_row(app: &App, pane: usize, row: Option<usize>) {
+    let row = row.map_or(-1, |r| r as i32);
+    if pane == 0 { app.set_left_current_row(row) } else { app.set_right_current_row(row) }
+}
+
+/// The path shown in a pane's path bar.
+fn pane_path(app: &App, pane: usize) -> slint::SharedString {
+    if pane == 0 { app.get_left_path() } else { app.get_right_path() }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
     let panes: [Rc<PaneModel>; 2] = [Rc::new(PaneModel::default()), Rc::new(PaneModel::default())];
@@ -184,6 +273,8 @@ fn main() -> Result<(), slint::PlatformError> {
             rx,
             tx,
             timing: Default::default(),
+            paths: Default::default(),
+            keep_scroll: [false; 2],
             split_requested: None,
             busy_timer: slint::Timer::default(),
         })
@@ -207,12 +298,11 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_open_row(|pane, row| {
         let target = with_state(|st| {
             let e = st.panes[pane as usize].entry(row as usize)?;
-            if !e.is_dir {
+            if !e.is_dir() {
                 return None;
             }
-            let app = st.app.unwrap();
-            let base = if pane == 0 { app.get_left_path() } else { app.get_right_path() };
-            Some(Path::new(base.as_str()).join(e.name.as_str()))
+            let app = st.app.upgrade()?;
+            Some(Path::new(pane_path(&app, pane as usize).as_str()).join(e.name.as_str()))
         });
         if let Some(p) = target {
             navigate(pane as usize, p);
@@ -220,9 +310,13 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_go_up(|pane| {
         let target = with_state(|st| {
-            let app = st.app.unwrap();
-            let base = if pane == 0 { app.get_left_path() } else { app.get_right_path() };
-            Path::new(base.as_str()).parent().map(|p| p.to_path_buf())
+            let app = st.app.upgrade()?;
+            let base = pane_path(&app, pane as usize);
+            if is_this_pc(&base) {
+                return None;
+            }
+            // A drive root (or UNC share root) has no parent: go up to the drive list.
+            Some(Path::new(base.as_str()).parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf()))
         });
         if let Some(p) = target {
             navigate(pane as usize, p);
@@ -233,13 +327,35 @@ fn main() -> Result<(), slint::PlatformError> {
             let model = &st.panes[pane as usize];
             let col = SortCol::from_i32(col);
             let asc = if model.sort_col.get() == col { !model.sort_asc.get() } else { true };
-            request_sort(st, pane as usize, col, asc);
+            model.sort_col.set(col);
+            model.sort_asc.set(asc);
+            request_pass(st, pane as usize);
+        });
+    });
+    app.on_select(|pane, op, row| {
+        let op = SelOp::from_i32(op);
+        if row < 0 && op != SelOp::All {
+            return;
+        }
+        with_state(|st| {
+            let model = &st.panes[pane as usize];
+            model.select(op, row.max(0) as usize);
+            eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
+        });
+    });
+    app.on_refresh(|pane| refresh(pane as usize));
+    app.on_toggle_hidden(|pane| {
+        with_state(|st| {
+            let model = &st.panes[pane as usize];
+            model.show_hidden.set(!model.show_hidden.get());
+            eprintln!("[hidden] pane={pane} show_hidden={}", model.show_hidden.get());
+            request_pass(st, pane as usize);
         });
     });
     app.on_toggle_split({
         let w = app.as_weak();
         move || {
-            let app = w.unwrap();
+            let Some(app) = w.upgrade() else { return };
             let now = !app.get_split();
             app.set_split(now);
             if now {
@@ -261,6 +377,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let start = std::env::args().nth(1).unwrap_or_else(|| "C:\\".to_string());
     app.set_right_path(start.as_str().into());
     navigate(0, PathBuf::from(start));
+    // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
+    app.invoke_focus_pane(0);
     auto::start(&app);
 
     app.run()
