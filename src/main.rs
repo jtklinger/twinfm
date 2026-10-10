@@ -94,6 +94,8 @@ struct Tab {
     /// The directory watch reported a change while the listing was still in flight: refresh again
     /// when it is done.
     refresh_pending: bool,
+    /// The refresh in flight was started by the directory watch (counted for `waitwatch`).
+    watch_refresh: bool,
 }
 
 struct State {
@@ -156,6 +158,8 @@ struct State {
     /// and its events, drained with the enumeration messages.
     watch: fs::watch::Watcher,
     watch_rx: Receiver<fs::watch::Event>,
+    /// Watch-driven refreshes whose listing completed (the driver's `waitwatch` waits on it).
+    watch_refreshes: u64,
     /// Debounces volume arrivals and removals (WM_DEVICECHANGE comes in bursts).
     device_timer: slint::Timer,
 }
@@ -175,6 +179,7 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         scroll: 0.0,
         stale: false,
         refresh_pending: false,
+        watch_refresh: false,
     }
 }
 
@@ -257,6 +262,7 @@ fn navigate(pane: usize, path: PathBuf) {
         t.free = None;
         t.stale = false;
         t.refresh_pending = false;
+        t.watch_refresh = false;
         st.icon_gens[pane].store(generation, Ordering::Relaxed);
         // Watched from the start, so a change during the listing is not missed; dropped again if
         // the listing fails (Msg::Done).
@@ -496,13 +502,18 @@ fn drain() {
                             t.timing.done_ms = Some(wall);
                         }
                     }
+                    let watched = std::mem::take(&mut t.watch_refresh);
                     let ok = t.timing.error.is_none();
                     let pending = std::mem::take(&mut t.refresh_pending) && ok;
+                    if watched {
+                        st.watch_refreshes += 1;
+                    }
                     if st.is_active(pane, id) {
                         update_status(st, &app, pane);
                         // A folder that cannot be listed is not watched.
                         if ok { st.watch_active(&app, pane) } else { st.watch.unwatch(pane) }
                         if pending {
+                            st.tab_mut(pane).watch_refresh = true;
                             again.push(pane);
                         }
                     }
@@ -542,6 +553,7 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
             eprintln!("[watch] pane={pane} tab={tab_id} changed while listing: refresh after it");
         }
         fs::watch::Event::Changed { .. } => {
+            t.watch_refresh = true;
             eprintln!("[watch] pane={pane} tab={tab_id} changed: refresh");
             if !again.contains(&pane) {
                 again.push(pane);
@@ -1628,6 +1640,34 @@ fn devices_changed() {
     }
 }
 
+/// For the scripted driver: watch-driven refreshes completed so far.
+pub fn watch_refreshes() -> u64 {
+    STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().map(|st| st.watch_refreshes)).unwrap_or(0))
+}
+
+/// For the scripted driver's `touch` and `rmfile`: create (or update the time of) an empty file
+/// in the pane's folder, or delete one. Under TWINFM_SOAK=1 the path must lie in the soak fence.
+pub fn script_file(pane: usize, name: &str, remove: bool) {
+    let Some((folder, soak)) = with_state(|st| Some((st.panes.get(pane)?.active().path.clone(), st.soak.clone()))) else {
+        return eprintln!("[auto] no pane {pane}");
+    };
+    if is_this_pc(&folder.to_string_lossy()) {
+        return eprintln!("[auto] pane {pane} lists drives; no file there");
+    }
+    let path = folder.join(name);
+    if let Some(roots) = soak {
+        if !roots.iter().any(|r| inside(&path, r)) {
+            return eprintln!("[auto] soak: refused {} (outside the soak folders)", path.display());
+        }
+    }
+    let res = if remove {
+        std::fs::remove_file(&path)
+    } else {
+        std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|f| f.set_modified(std::time::SystemTime::now()))
+    };
+    eprintln!("[auto] {} {}: {res:?}", if remove { "rmfile" } else { "touch" }, path.display());
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
     let icons = Rc::new(RefCell::new(IconTable::default()));
@@ -1733,6 +1773,7 @@ fn main() -> Result<(), slint::PlatformError> {
             side_model,
             watch,
             watch_rx,
+            watch_refreshes: 0,
             device_timer: slint::Timer::default(),
         })
     });
