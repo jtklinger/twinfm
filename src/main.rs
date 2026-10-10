@@ -1019,12 +1019,20 @@ fn job_done(d: fileops::Done) {
     let mut clear_clipboard = None;
     let panes = with_state(|st| {
         let (pane, tab) = st.jobs.remove(&d.id).unwrap_or((0, 0));
-        let text = fileops::status_text(&d.job, &d.outcome);
+        let text = fileops::status_text(&d.job, &d.outcome, &d.results);
         eprintln!("[fileops] done id={} pane={pane} tab={tab} {:?}: {text}", d.id, d.outcome);
+        for r in &d.results {
+            let to = r.dest.as_ref().map_or_else(|| "-".to_string(), |p| p.display().to_string());
+            eprintln!("[fileops]   item 0x{:08X} {} -> {to}", r.hr as u32, r.source.display());
+        }
         if let Some(t) = st.find(pane, tab) {
             if d.outcome == Outcome::Done {
+                // The name the shell really used ("New folder (2)"), else the one asked for.
                 match &d.job {
-                    Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } => t.focus_name = Some(n.as_str().into()),
+                    Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } => {
+                        let real = fileops::real_name(&d.job, &d.results).unwrap_or_else(|| n.clone());
+                        t.focus_name = Some(real.as_str().into());
+                    }
                     _ => {}
                 }
             }
