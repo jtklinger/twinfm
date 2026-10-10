@@ -255,6 +255,167 @@ USB check below did).
   Working set 130.7 MB to 115.2 MB. **Passed.** P2-M1 is closed: gate, soak and the real-drive
   check all recorded.
 
+## P2-M2: operations inside TwinFM
+
+The backlog was the M3 Deferred list (`phase-1-plan.md` § M3): the real new name, the cursor
+after a delete or move, the new row scrolled into view, cut marks that outlive the clipboard,
+undo, and a queue TwinFM can see and cancel.
+
+### What landed (2026-10-10)
+
+- **Real names through `IFileOperationProgressSink`** (`src/fileops/mod.rs`). A hand-written
+  sink (`#[repr(C)]` vtable in declaration order, refcount, `QueryInterface` for `IUnknown` and
+  the sink's IID), made per job on the STA worker, passed to `IFileOperation::Advise` before
+  `PerformOperations` and `Unadvise`d right after, released on the worker. `PostRenameItem`,
+  `PostMoveItem`, `PostCopyItem`, `PostDeleteItem` and `PostNewItem` record an `ItemResult
+  { source, dest, hr }`; the paths come from `IShellItem::GetDisplayName(SIGDN_FILESYSPATH)`
+  (freed with `CoTaskMemFree`). The shell also reports a folder's contents one by one (a copied
+  folder with one file gave two `PostCopyItem` calls), so `own_results` keeps only the job's own
+  items: a result whose parent is a source's parent and whose path is a source, compared ignoring
+  case and, failing that, through the canonical parent (`%TEMP%` can be an 8.3 path). `Done`
+  gained `results`; `real_name` gives the name the shell really used for a rename or a new
+  folder. `job_done` puts `focus_name` on it, and the status reads "Created New folder (2)".
+  A `[fileops]   item 0x<hr> <source> -> <dest>` line per result. A recycled item's `dest` is its
+  place in the Recycle Bin (`C:\$Recycle.Bin\<sid>\$R....txt`); a permanent delete has none.
+- **Cursor to the next row after a delete or move** (`model.rs`, `main.rs`). Before a delete,
+  Shift+F6 or a paste of a cut, `PaneModel::cursor_after_removal` records the cursor row's index
+  less the removed rows above it; for a paste it is computed on the tab that holds the cut marks
+  (`State::cut_source`). The job's `JobInfo` carries it; `job_done` hands it to that tab as
+  `fallback_cursor`; the next `request_pass` puts it in `Restore::fallback_index`, consumed once.
+  `restore_by_name` uses it only when the cursor's name is gone, clamped to `len - 1`; no rows, no
+  cursor. Watch-driven refreshes never set it. Undoing a copy or a new folder (a recycle in the
+  pane's own folder) gets one too.
+- **The operation's row scrolled into view.** When a pass placed the cursor from `focus_name` or
+  the fallback, `land_pass` calls `model::reveal_row` once (the pane's `bring-into-view`
+  arithmetic in Rust: 22 px rows, content-y from `get_scroll`, visible height from the pane's last
+  `viewport-changed`) and sets the scroll only if the row is not fully visible, with the least
+  movement. A `[refresh] pane=N cursor row R scrolled into view: <y> -> <y>` line.
+- **Cut marks clear when another program takes the clipboard.** `devices::install` also calls
+  `AddClipboardFormatListener`; the same permanent subclass posts `crate::clipboard_changed` on
+  `WM_CLIPBOARDUPDATE`. `clipboard_put` records `GetClipboardSequenceNumber` right after its
+  write (outside the state borrow, as before); `clipboard_changed` clears the cut marks when the
+  number differs and a cut is showing (`clipboard::taken_from_cut`), with a `[clipboard]` line.
+  The listener is never removed (process exit).
+- **Undo, Ctrl+Z** (`src/fileops/undo.rs`). `State.undo` holds up to 20 `Record { undo, text }`,
+  pushed by `job_done` for successful jobs from the sink's real paths: a move moves the moved
+  items back to their folder, a rename renames back, a new folder is recycled if still empty, a
+  copy's copies are recycled. A delete to the Recycle Bin pushes a record that undoes nothing and
+  says "Cannot undo a delete yet (use the Recycle Bin)"; a permanent delete pushes nothing.
+  Ctrl+Z (list FocusScope, either pane, one shared stack) pops the newest record, refuses with a
+  note when an expected path is gone or the new folder is no longer empty (`undo::check`, read
+  at undo time), and otherwise submits the inverse through `submit`, so the soak fence and the
+  confirmations apply as to any job. `JobInfo.undo_of` marks it: its completion is not recorded
+  (no redo) and the status reads "Undid: <original status>". Driver step `undo` (key `CtrlZ`),
+  `[undo]` lines.
+- **Stretch, done: a visible queue with cancel.** The status bar of both panes appends "N
+  operations queued" while jobs wait behind the running one (`statusbar::with_queue`, composed in
+  `update_status`, which runs on submit and on every job's refresh, never per frame). Escape in
+  the list calls `Worker::cancel_queued(last id)`: the worker reports every job up to that id that
+  has not started as `Cancelled` without running it; the running job is untouched (its own
+  dialog cancels it).
+- **Tests**, 68 to 76: the real-shell test now asserts the sink's results (the new folder's path,
+  the copy's, the renamed path, the moved path, "a - Copy.txt", "made (2)" with
+  `real_name`/`status_text`, a copied folder reported once without its contents, one result per
+  deleted source) and runs an undo round trip (move a file, `undo_for`, `check`, run it, the file
+  is back); `cancelled_queued_jobs_never_run` (cancel up to id 2, submit three new folders: two
+  `Cancelled` and absent, the third made); `cursor_falls_back_to_the_next_row`;
+  `reveal_row_moves_the_least`; `undo::which_job_undoes_which`, `records_and_the_cap`,
+  `check_refuses_missing_and_non_empty`; `foreign_clipboard_change_clears_a_cut_only`;
+  `queue_text`. Every path the shell hands back is compared canonicalised.
+
+### Decisions
+
+- **Results filtered on the worker**, not in `job_done`: the UI side never sees a folder's
+  contents, and the filter's `canonicalize` calls (only for top-level candidates) stay off the UI
+  thread.
+- **The fallback index subtracts the removed rows above the cursor**, rather than the brief's
+  plain `min(old_index, len - 1)`: with rows 3, 4 and 5 deleted and the cursor on 5, the plain
+  index would land two rows past the old row 6; this lands on it. The clamp to `len - 1` is the
+  brief's.
+- **A delete leaves a record that says it cannot be undone** instead of nothing. With nothing
+  recorded, Ctrl+Z after a delete would silently undo the operation before it. Ctrl+Z pops it
+  and shows the note; the next Ctrl+Z reaches the older records. A permanent delete records
+  nothing, as briefed; `undo::check` refuses any older record whose items it removed.
+- **A refused undo drops its record**: the items are not where the job left them, so it could
+  never succeed later.
+- **The undo note goes to the pane Ctrl+Z was pressed in**; both panes refresh as for any job.
+- **A move gathered from several folders (a paste) records nothing**: there is no single folder
+  to move it back to. Splitting it into one move per folder is possible but was not needed.
+- **Escape cancels everything queued at that moment** (ids up to the newest), not the newest one
+  only. The id check happens on the worker right before a job would start, so there is no race
+  with the job that is running.
+
+### Deviations
+
+- **The fallback rule** (above): removed rows above the cursor are subtracted.
+- **A rename onto a taken name did not "ask"** in the scripted check: renaming `f03.txt` to the
+  existing `f01.txt` brought up the copy engine's unowned "1 Interrupted Action" window
+  (`OperationStatusWindow`), not a confirmation dialog; closing it gave `Cancelled`, with two sink
+  results (`0x0027000B` and `0x80270000`) and nothing renamed. The M3 record says a rename onto an
+  existing name "still asks, as in Explorer"; it asks through that window.
+- **`own_results` was not in the brief**; without it a copied folder's every file would become a
+  result (and an undo item).
+- **`State::cut_source`** (the pane and tab holding the cut marks) was added for the paste's
+  fallback and for "TwinFM has cut marks"; navigating that tab clears it.
+
+### Deferred
+
+- **Redo.**
+- **Undo of a delete to the Recycle Bin.** The sink already reports each recycled item's place in
+  the Recycle Bin; restoring it means the Recycle Bin folder's "undelete" verb on that item (or a
+  move back from `$Recycle.Bin`, which loses the bin's own metadata). Not checked here.
+- **Undo of a move that renamed on collision** moves the item back under its new name ("a (2).txt");
+  `MoveItem`'s `pszNewName` could restore the old one.
+- **Dimming the cut row's icon** (only its text is dimmed, since M3).
+- **Progress inside TwinFM**: the shell's window still shows it; the status bar shows the queue
+  count, not a percentage (`UpdateProgress` on the sink could feed one).
+- **Explorer's own Undo picking up `FOFX_ADDUNDORECORD`**: still unchecked (the harness cannot
+  drive Explorer).
+- **A Narrator check** of the new notes ("Undid: ...", the queue count).
+
+### Scripted checks
+
+RDP session, `target\release` of this branch, scratch `%TEMP%\twinfm-p2m2-manual\a` (f01 to f10)
+and `\b`, no `TWINFM_SOAK`. A separate PowerShell closed any dialog of the process once it
+appeared (WM_CLOSE) and ran `Set-Clipboard "x"` a second after the cut. Script: split, pane 1 on
+`b`, `newfolder New folder` twice, rename the row `f03.txt` to `f01.txt`, delete the cursor row,
+`cx`, move a file to `b` then `undo`, `newfolder zz` then `undo`, delete then `undo`, quit. stderr:
+
+- `Done: Created New folder`, then `Done: Created New folder (2)` with the item line
+  `-> ...\a\New folder (2)` and the next pass `cursor=Some(1) selected=1` (the real name).
+- The rename onto `f01.txt`: the "1 Interrupted Action" window, closed, `Cancelled: Cancelled`.
+- Delete with the cursor on row 4 (`f03.txt`): `Deleted 1 item to the Recycle Bin`, the pass
+  `11 of 11 entries ... cursor=Some(4)`: the next row (`f04.txt`).
+- `Cut 1 item to the clipboard`, then `[clipboard] another program took the clipboard: cut marks
+  cleared` (TwinFM's own write before it did not trigger it).
+- Move `f05.txt` to `b` (`cursor=Some(5)`, the next row), `[undo] recorded "Moved 1 item": Some(Move
+  { sources: [...\b\f05.txt], dest_dir: ...\a })`, Ctrl+Z, `[undo] done id=6 Done: Undid: Moved 1
+  item`, `11 of 11 entries`: the file is back.
+- `Created zz`, Ctrl+Z, `Undid: Created zz` (the item line shows zz going to `$Recycle.Bin`); in a
+  second run the cursor then went to the next row (`cursor=Some(2)`), and a further Ctrl+Z said
+  `Nothing to undo`.
+- Delete, Ctrl+Z: `[undo] "Deleted 1 item to the Recycle Bin" cannot be undone` and the note
+  "Cannot undo a delete yet (use the Recycle Bin)".
+- Scroll: after a wheel to the bottom of 62 rows, renaming the row there to `aaa.txt` (which sorts
+  to row 3): `cursor row 3 scrolled into view: -650 -> -66`; the watch's refresh after it did not
+  scroll.
+- Queue: a copy onto an existing name (its "Replace or Skip Files" window left open), two more
+  copies, Escape: `1 operation(s) queued`, `2 operation(s) queued`, `Escape: cancelling 2 queued
+  operation(s) up to id 3`; after the window was closed all three reported `Cancelled` and
+  nothing was copied.
+
+All exit code 0, no panic. These runs put about five entries in the Recycle Bin (scratch files and
+folders named f02, f03, f05, zz) and left "x" on the clipboard.
+
+### Gate
+
+Pending: Jeremy at the console, `tools/wpr-gate.ps1` on a clean binary from its own
+`target-<name>`, Narrator off. Nothing per frame was added: the sink runs on the worker, the
+fallback and the scroll run once per pass swap, the clipboard listener wakes the UI only when the
+clipboard changes, and the queue text is composed with the status bar. The expected result is
+inside M6's own spread; a single run moves by about 0.3 point (P2-M1's Gate), so a reading over
+the bar needs a same-session A/B against `target-p2m1` before it means anything.
+
 ## Open questions
 
 - **Phase 2 scope.** Confirmed by the lead as the recommended order above, directory watching

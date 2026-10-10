@@ -9,8 +9,8 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record. 
 changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (68 tests; three touch the real shell and clipboard, and the eight
-  `fs::watch` tests write to scratch folders, see below)
+- `cargo test --release` (76 tests; four touch the real shell and clipboard, and the eight
+  `fs::watch` tests and one undo test write to scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -37,8 +37,13 @@ changing the list.
   keys include `CtrlH` (hidden files), `F5`/`CtrlR` (refresh), `CtrlA`, `Space`,
   `ShiftUp`/`ShiftDown`; `click`/`ctrlclick`/`shiftclick <pane> <row>` select rows; file
   operation steps `copy`, `move`, `delete`, `sdelete`, `newfolder <name>`, `rename <name>`,
-  `cc`, `cx`, `cv`, and `waitops <ms>` to wait for a job and the refresh after it; `[fileops]`
-  lines on stderr. Context menu steps: `rclick <pane> <row>`, `rclickempty <pane>`, key names
+  `cc`, `cx`, `cv`, `undo` (Ctrl+Z, key name `CtrlZ`), and `waitops <ms>` to wait for a job and
+  the refresh after it; key `Escape` in the list cancels the queued jobs that have not started.
+  `[fileops]` lines on stderr (submit, note, done, one `item` line per item the progress sink
+  reported, with its HRESULT and the real destination path, and `N operation(s) queued`);
+  `[undo]` lines (`recorded "<status>"`, the undo job, `done ... Undid: <status>`, `cannot be
+  undone`, `refused: <why>`, `nothing to undo`); `[clipboard]` lines (`format listener added`,
+  `another program took the clipboard: cut marks cleared`). Context menu steps: `rclick <pane> <row>`, `rclickempty <pane>`, key names
   `ShiftF10` and `Menu`, each followed by in-menu steps (`sleep`, `menuopen <text>`,
   `menukey <key>`, `menupick <own item>`, `menuclose`) that run from a Win32 timer inside the
   menu's modal loop, because no Slint timer fires while it runs (`src/auto.rs` header);
@@ -89,7 +94,11 @@ changing the list.
   second, a 200-operation burst every 15 s); it reports `[watch]` and `[refresh]` counts besides
   exit code, panics and working set. It uses neither the clipboard nor the Recycle Bin.
 - Tests that touch the desktop: `fileops::tests::worker_runs_real_shell_operations` runs real
-  `IFileOperation` jobs in `%TEMP%\twinfm-m3-test-<pid>\`, and
+  `IFileOperation` jobs in `%TEMP%\twinfm-m3-test-<pid>\` (and checks the progress sink's
+  results and an undo round trip), `fileops::tests::cancelled_queued_jobs_never_run` makes one
+  folder through the shell in `%TEMP%\twinfm-m3-test-queue-<pid>\`,
+  `undo::tests::check_refuses_missing_and_non_empty` only reads folders it makes in
+  `%TEMP%\twinfm-m3-test-undo-<pid>\` (none of the three uses the Recycle Bin), and
   `clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` replaces the clipboard's
   contents and leaves it empty, and `dnd::tests::shell_data_object_offers_hdrop` asks the shell
   for a data object over two files in `%TEMP%\twinfm-m5-test-<pid>\`. The `fs::watch` tests create,
