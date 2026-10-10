@@ -261,6 +261,7 @@ component FileList inherits FileListBase {
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "x" || e.text == "X")) { root.command("cx"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "v" || e.text == "V")) { root.command("cv"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "z" || e.text == "Z")) { root.command("undo"); return accept; }
+            if (e.text == Key.Escape) { root.command("cancelqueued"); return accept; }
             if (e.text == " ") { if (root.current-row >= 0) { root.select(1, root.current-row); } return accept; }
             if (e.modifiers.control && (e.text == "a" || e.text == "A")) { root.select(3, root.current-row); return accept; }
             return reject;

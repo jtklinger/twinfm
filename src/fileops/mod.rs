@@ -216,6 +216,8 @@ pub fn invalid_name(name: &str) -> Option<&'static str> {
 pub struct Worker {
     tid: u32,
     tx: Sender<Request>,
+    /// Jobs with an id up to this one that have not started yet are cancelled unrun (Escape).
+    cancel_upto: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Worker {
@@ -223,6 +225,8 @@ impl Worker {
     pub fn spawn(done: impl Fn(Done) + Send + 'static) -> Worker {
         let (tx, rx) = unbounded::<Request>();
         let (tid_tx, tid_rx) = crossbeam_channel::bounded(1);
+        let cancel_upto = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let cancel = cancel_upto.clone();
         std::thread::Builder::new()
             .name("fileops".into())
             .spawn(move || {
@@ -235,11 +239,11 @@ impl Worker {
                     GetCurrentThreadId()
                 };
                 let _ = tid_tx.send(tid);
-                run_loop(rx, done);
+                run_loop(rx, &cancel, done);
             })
             .expect("spawn fileops thread");
         let tid = tid_rx.recv().unwrap_or(0);
-        Worker { tid, tx }
+        Worker { tid, tx, cancel_upto }
     }
 
     /// Queue a job. False if the worker is gone.
@@ -250,6 +254,13 @@ impl Worker {
         // SAFETY: posting to a thread id; fails harmlessly if the thread has exited.
         unsafe { PostThreadMessageW(self.tid, WM_RUN, 0, 0) != 0 }
     }
+
+    /// Cancel every job with an id up to `id` that has not started: the worker reports each as
+    /// `Cancelled` without running it. A job already running is not touched (its own dialog
+    /// cancels it).
+    pub fn cancel_queued(&self, id: u64) {
+        self.cancel_upto.fetch_max(id, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 impl Drop for Worker {
@@ -259,7 +270,7 @@ impl Drop for Worker {
     }
 }
 
-fn run_loop(rx: Receiver<Request>, done: impl Fn(Done)) {
+fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, done: impl Fn(Done)) {
     // SAFETY: initialises COM for this thread as an STA; balanced by CoUninitialize below.
     let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     // SAFETY: a zeroed MSG is a valid out-buffer for GetMessageW.
@@ -272,7 +283,13 @@ fn run_loop(rx: Receiver<Request>, done: impl Fn(Done)) {
         }
         if msg.hwnd.is_null() && msg.message == WM_RUN {
             while let Ok(req) = rx.try_recv() {
-                let (outcome, results) = if com >= 0 { perform(&req) } else { (Outcome::Failed(com), Vec::new()) };
+                let (outcome, results) = if req.id <= cancel_upto.load(std::sync::atomic::Ordering::Acquire) {
+                    (Outcome::Cancelled, Vec::new()) // cancelled while queued: never started
+                } else if com >= 0 {
+                    perform(&req)
+                } else {
+                    (Outcome::Failed(com), Vec::new())
+                };
                 done(Done { id: req.id, job: req.job, outcome, results });
             }
             continue;
@@ -738,6 +755,31 @@ mod tests {
         }
         assert!(invalid_name("trailing.").is_some());
         assert!(invalid_name("trailing ").is_some());
+    }
+
+    /// Jobs cancelled while queued come back `Cancelled` and never touch the disk; later ones run.
+    #[test]
+    fn cancelled_queued_jobs_never_run() {
+        let root = std::env::temp_dir().join(format!("twinfm-m3-test-queue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let (tx, rx) = unbounded();
+        let worker = Worker::spawn(move |d| {
+            let _ = tx.send(d);
+        });
+        worker.cancel_queued(2);
+        for (id, name) in [(1, "one"), (2, "two"), (3, "three")] {
+            let job = Job::NewFolder { parent: root.clone(), name: name.into() };
+            assert!(worker.submit(Request { id, job, hwnd: 0, no_confirm: true }));
+        }
+        let mut got: Vec<(u64, Outcome)> =
+            (0..3).map(|_| rx.recv_timeout(Duration::from_secs(30)).map(|d| (d.id, d.outcome)).expect("each job reports")).collect();
+        got.sort_by_key(|g| g.0);
+        assert_eq!(got, [(1, Outcome::Cancelled), (2, Outcome::Cancelled), (3, Outcome::Done)]);
+        assert!(!root.join("one").exists() && !root.join("two").exists());
+        assert!(root.join("three").is_dir());
+        drop(worker);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The real shell, end to end, on a scratch folder: start the STA worker with no owner

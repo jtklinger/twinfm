@@ -336,7 +336,9 @@ fn update_status(st: &State, app: &App, pane: usize) {
     let m = &t.model;
     let loading = t.timing.done_ms.is_none() && t.timing.error.is_none();
     let enum_ms = if st.perf_status { t.timing.done_ms } else { None };
-    let left = statusbar::left_text(&t.note, m.len(), m.hidden_count(), loading, enum_ms, t.timing.error.as_deref());
+    // Jobs waiting behind the running one, shown on both panes.
+    let note = statusbar::with_queue(&t.note, st.jobs.len().saturating_sub(1));
+    let left = statusbar::left_text(&note, m.len(), m.hidden_count(), loading, enum_ms, t.timing.error.as_deref());
     let (n, bytes, any_file) = m.selection_summary();
     let s = StatusInfo {
         left: left.into(),
@@ -894,6 +896,10 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
     let tab = st.tab(pane).id;
     st.jobs.insert(id, JobInfo { pane, tab, fallback: None, undo_of: None });
     note(st, app, pane, running);
+    if st.jobs.len() > 1 {
+        eprintln!("[fileops] {} operation(s) queued", st.jobs.len() - 1);
+        update_status(st, app, 1 - pane);
+    }
     Some(id)
 }
 
@@ -921,6 +927,7 @@ fn command(pane: usize, cmd: &str) {
         "cc" | "cx" => return clipboard_put(pane, cmd == "cx"),
         "cv" => return clipboard_paste(pane),
         "undo" => return undo(pane),
+        "cancelqueued" => return cancel_queued(pane),
         _ => {}
     }
     let edit = with_state(|st| {
@@ -1038,6 +1045,22 @@ fn undo(pane: usize) {
             if let Some(j) = st.jobs.get_mut(&id) {
                 j.undo_of = Some(rec.text);
             }
+        }
+    });
+}
+
+/// Escape in a pane's list: cancel every queued job that has not started (each reports
+/// `Cancelled` through `job_done`); the running one goes on.
+fn cancel_queued(pane: usize) {
+    with_state(|st| {
+        let queued = st.jobs.len().saturating_sub(1);
+        if queued == 0 {
+            return;
+        }
+        st.ops.cancel_queued(st.next_job);
+        eprintln!("[fileops] Escape: cancelling {queued} queued operation(s) up to id {}", st.next_job);
+        if let Some(app) = st.app.upgrade() {
+            note(st, &app, pane, format!("Cancelling {queued} queued operation{}", if queued == 1 { "" } else { "s" }));
         }
     });
 }
