@@ -190,7 +190,7 @@ component FileListBase inherits ListView {
 
 component FileList inherits FileListBase {
     callback go-up();
-    // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
+    // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all, 4 right-click, 5 clear (model::SelOp)
     callback select(int, int);
     // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
     // turns it into the visible row range and fetches icons for it.
@@ -619,6 +619,8 @@ export component Pane inherits Rectangle {
             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
                 list.focus-list();
                 root.focus-requested();
+                // Explorer: a right-click on empty space leaves nothing selected.
+                root.select(5, -1);
             }
             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
                 root.context-menu(-1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);

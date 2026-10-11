@@ -888,6 +888,8 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 // space's TouchArea fires, called directly.
                 eprintln!("[auto] rclickempty: no empty space below the last row; calling context-menu(-1) directly");
                 let (_, _, mid) = geometry(&app, pane);
+                // What the empty space's right press does first: clear the selection.
+                app.invoke_select(pane as i32, 5, -1);
                 arm_menu_steps(&app, menu_steps);
                 app.invoke_context_menu(pane as i32, -1, mid.x, list_top(&app, pane) + 11.0, false);
                 disarm_menu_steps();

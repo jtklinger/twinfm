@@ -2245,7 +2245,7 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_select(|pane, op, row| {
         let op = SelOp::from_i32(op);
-        if row < 0 && op != SelOp::All {
+        if row < 0 && op != SelOp::All && op != SelOp::Clear {
             return;
         }
         with_state(|st| {

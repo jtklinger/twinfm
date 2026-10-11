@@ -145,7 +145,7 @@ export component App inherits Window {
     callback toggle-split();
     callback toggle-hidden(int);
     callback refresh(int);
-    // select(pane, op, row): op 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
+    // select(pane, op, row): op 0 only this row, 1 toggle, 2 range from anchor, 3 all, 4 right-click, 5 clear (model::SelOp)
     callback select(int, int, int);
     // viewport-changed(pane, content-y, visible-height)
     callback viewport-changed(int, length, length);
