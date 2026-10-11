@@ -75,6 +75,8 @@
 //!                                    operations do; otherwise use them on %TEMP% scratch folders only
 //!   waitwatch <ms>                   wait until the next refresh started by the directory watch has
 //!                                    listed its folder (at most <ms>), then 300 ms more for the pass
+//!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
+//!                                    the close button does (WM_CLOSE: settings saved, app exits)
 //!   quit                             exit the event loop
 //! Events are dispatched with slint::Window::dispatch_event on the UI thread, so Slint's full
 //! input -> layout -> render path runs; only the OS WndProc hop is skipped.
@@ -151,6 +153,9 @@ enum Step {
     /// `touch` (create or update) or `rmfile` (delete) a file in the pane's folder.
     ScriptFile { pane: usize, name: String, remove: bool },
     WaitWatch(u64),
+    /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
+    /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
+    Window(String),
     Quit,
 }
 
@@ -223,6 +228,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "touch" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: false },
                 "rmfile" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: true },
                 "waitwatch" => Step::WaitWatch(num(1).max(1) as u64),
+                "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("[auto] unknown step: {other}");
@@ -776,6 +782,21 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     schedule(r2.clone(), 300);
                 }
             });
+        }
+        Step::Window(what) => {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SW_MAXIMIZE, SW_RESTORE, ShowWindow, WM_CLOSE};
+            let hwnd = hwnd_of(&app) as HWND;
+            // SAFETY: our own top-level window, on its thread; WM_CLOSE carries no pointers.
+            match what.as_str() {
+                "max" => unsafe { ShowWindow(hwnd, SW_MAXIMIZE) },
+                "restore" => unsafe { ShowWindow(hwnd, SW_RESTORE) },
+                "close" => unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) },
+                other => {
+                    eprintln!("[auto] window {other}: only max, restore and close");
+                    0
+                }
+            };
+            schedule(runner, 1);
         }
         Step::Quit => {
             let _ = slint::quit_event_loop();

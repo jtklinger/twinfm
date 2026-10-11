@@ -8,13 +8,69 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW};
 
-/// Window placement: position in physical px (the virtual screen's), size in logical px.
+/// Window placement: position in physical px (the virtual screen's), size in logical px, and
+/// whether it was maximised. A maximised window's x, y, width and height are its normal
+/// (restored) placement, so un-maximising after a restart gives the right size.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowGeom {
     pub x: i32,
     pub y: i32,
     pub width: f32,
     pub height: f32,
+    /// Missing in a file from before it was saved: not maximised.
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+/// The window's state from its Win32 placement (`GetWindowPlacement`): `Some((true, normal))`
+/// when it is maximised, where `normal` is its restored placement (`rcNormalPosition`, turned
+/// from workspace into screen coordinates; the size less the window frame, in logical px);
+/// `Some((false, _))` when it is not; None when it is minimised or the call fails.
+pub fn placement(hwnd: isize, scale: f32) -> Option<(bool, WindowGeom)> {
+    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowPlacement, GetWindowRect, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, WINDOWPLACEMENT,
+    };
+    let hwnd = hwnd as HWND;
+    let mut wp: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+    // SAFETY: a sized WINDOWPLACEMENT; a stale or null handle makes the call fail, nothing more.
+    if hwnd.is_null() || unsafe { GetWindowPlacement(hwnd, &mut wp) } == 0 {
+        return None;
+    }
+    if wp.showCmd == SW_SHOWMINIMIZED as u32 {
+        return None;
+    }
+    let maximized = wp.showCmd == SW_SHOWMAXIMIZED as u32;
+    let n = wp.rcNormalPosition;
+    // rcNormalPosition is in workspace coordinates: the monitor's work area origin is (0, 0).
+    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    // SAFETY: a valid RECT and a sized MONITORINFO.
+    let (dx, dy) = if unsafe { GetMonitorInfoW(MonitorFromRect(&n, MONITOR_DEFAULTTONEAREST), &mut info) } != 0 {
+        (info.rcWork.left - info.rcMonitor.left, info.rcWork.top - info.rcMonitor.top)
+    } else {
+        (0, 0)
+    };
+    // The frame (borders and title bar) is the window rectangle less the client area; it is the
+    // same maximised as restored.
+    let (mut outer, mut client) = (RECT { left: 0, top: 0, right: 0, bottom: 0 }, RECT { left: 0, top: 0, right: 0, bottom: 0 });
+    // SAFETY: valid out pointers for a window handle that GetWindowPlacement just accepted.
+    let (fw, fh) = if unsafe { GetWindowRect(hwnd, &mut outer) != 0 && GetClientRect(hwnd, &mut client) != 0 } {
+        ((outer.right - outer.left) - client.right, (outer.bottom - outer.top) - client.bottom)
+    } else {
+        (0, 0)
+    };
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let normal = WindowGeom {
+        x: n.left + dx,
+        y: n.top + dy,
+        width: ((n.right - n.left - fw) as f32 / scale).max(1.0),
+        height: ((n.bottom - n.top - fh) as f32 / scale).max(1.0),
+        maximized,
+    };
+    Some((maximized, normal))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -244,7 +300,7 @@ mod tests {
             split_ratio: 0.3,
             bookmarks: vec![r"C:\Users".into(), r"D:\".into()],
             path_bar: "entry".into(),
-            window: Some(WindowGeom { x: -1900, y: 40, width: 1100.0, height: 700.0 }),
+            window: Some(WindowGeom { x: -1900, y: 40, width: 1100.0, height: 700.0, maximized: false }),
             ..Config::default()
         };
         c.show_hidden_right = true;
@@ -298,6 +354,19 @@ mod tests {
         // An active index past the end is clamped; blank entries are dropped.
         assert_eq!(start_tabs(&["a".into(), " ".into(), "b".into()], 7, "x"), (vec!["a".to_string(), "b".to_string()], 1));
         assert_eq!(start_tabs(&["".into()], 0, "x"), (vec!["x".to_string()], 0));
+    }
+
+    #[test]
+    fn maximized_window_round_trip() {
+        let c = Config { window: Some(WindowGeom { x: 104, y: 80, width: 1150.0, height: 760.0, maximized: true }), ..Config::default() };
+        let text = c.to_toml();
+        assert!(text.contains("maximized = true"), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        // A file from before the flag existed: not maximised, the rest as saved.
+        let old = Config::parse("[window]\nx = 10\ny = 20\nwidth = 900.0\nheight = 600.0\n").unwrap();
+        assert_eq!(old.window, Some(WindowGeom { x: 10, y: 20, width: 900.0, height: 600.0, maximized: false }));
+        // No window handle, no placement.
+        assert_eq!(placement(0, 1.0), None);
     }
 
     #[test]

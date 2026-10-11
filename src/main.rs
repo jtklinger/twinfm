@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tabs::Tabs;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG, SW_MAXIMIZE, ShowWindow};
 
 /// Rows above and below the viewport whose icons are fetched ahead of a scroll.
 const ICON_MARGIN_ROWS: usize = 10;
@@ -428,14 +428,21 @@ fn save_now() {
         c.sidebar_width = app.get_sidebar_width();
         c.path_bar = if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into();
         let w = app.window();
-        if !w.is_minimized() && !w.is_maximized() && w.is_visible() {
-            let size = w.size().to_logical(w.scale_factor());
-            let pos = w.position();
-            if size.width > 0.0 && size.height > 0.0 {
-                c.window = Some(settings::WindowGeom { x: pos.x, y: pos.y, width: size.width, height: size.height });
+        // Maximised: the Win32 placement's normal rectangle, so un-maximising after a restart
+        // gives the right size. Otherwise the window as it is; minimised: left as last saved.
+        match settings::placement(st.hwnd, w.scale_factor()) {
+            Some((true, normal)) => st.config.window = Some(normal),
+            Some((false, _)) if !w.is_minimized() && w.is_visible() => {
+                let size = w.size().to_logical(w.scale_factor());
+                let pos = w.position();
+                if size.width > 0.0 && size.height > 0.0 {
+                    st.config.window =
+                        Some(settings::WindowGeom { x: pos.x, y: pos.y, width: size.width, height: size.height, maximized: false });
+                }
             }
+            _ => {}
         }
-        Some((c.clone(), st.config_path.clone()?))
+        Some((st.config.clone(), st.config_path.clone()?))
     }) else {
         return;
     };
@@ -1563,7 +1570,16 @@ fn register_dnd() {
     }) else {
         return;
     };
-    with_state(|st| st.dnd_timer.stop());
+    // The window exists now: a window saved maximised is maximised again (its normal placement
+    // was restored before it was created, so un-maximising gives that size).
+    if with_state(|st| {
+        st.dnd_timer.stop();
+        st.config.window.is_some_and(|g| g.maximized)
+    }) {
+        // SAFETY: our own top-level window, on its thread.
+        unsafe { ShowWindow(hwnd as windows_sys::Win32::Foundation::HWND, SW_MAXIMIZE) };
+        eprintln!("[settings] window restored maximised");
+    }
     let (revoked, registered) = dnd::register(hwnd);
     eprintln!(
         "[dnd] registered: RevokeDragDrop (winit's target) = 0x{:08X}, RegisterDragDrop (ours) = 0x{:08X}",
