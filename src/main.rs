@@ -1614,6 +1614,9 @@ fn register_dnd() {
     // was restored before it was created, so un-maximising gives that size).
     if with_state(|st| {
         st.dnd_timer.stop();
+        // The panes have their width now: scroll restored tab strips to their active tabs.
+        update_tabs(st, 0);
+        update_tabs(st, 1);
         st.config.window.is_some_and(|g| g.maximized)
     }) {
         // SAFETY: our own top-level window, on its thread.

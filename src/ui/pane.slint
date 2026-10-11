@@ -363,6 +363,11 @@ export component Pane inherits Rectangle {
     // Scroll the strip just far enough that tab `i` is fully in view; returns the new offset.
     // Called from Rust when the active tab or the tab count changes, never per frame.
     public function reveal-tab(i: int) -> length {
+        // Before the window's first layout the pane has no width: nothing to reveal yet (main.rs
+        // reveals again once the window exists).
+        if (root.tab-strip-w <= 0px) {
+            return root.shown-tab-scroll;
+        }
         if (root.shown-tab-scroll + i * root.tab-w < 0px) {
             root.tab-scroll = -i * root.tab-w;
         } else if (root.shown-tab-scroll + (i + 1) * root.tab-w > root.tab-strip-w) {
