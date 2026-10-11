@@ -663,7 +663,7 @@ pub fn sort_entries(entries: &mut [Entry], col: SortCol, asc: bool) {
 }
 
 /// Case-insensitive compare with embedded numbers compared numerically (file_2 < file_10).
-fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+pub(crate) fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let (mut ia, mut ib) = (a.bytes().peekable(), b.bytes().peekable());
     loop {
         match (ia.peek().copied(), ib.peek().copied()) {

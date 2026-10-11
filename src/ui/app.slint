@@ -126,6 +126,10 @@ export component App inherits Window {
     callback tab-key(int, string);
     // crumb-clicked(pane, index): a breadcrumb button.
     callback crumb-clicked(int, int);
+    // crumb-menu(pane, index, x, y): the chevron after a crumb; Rust lists its subfolders on a
+    // worker and shows the dropdown below (x, y). crumb-pick(i): item i of the dropdown.
+    callback crumb-menu(int, int, length, length);
+    callback crumb-pick(int);
     // side-clicked(row, middle): a sidebar row; the middle button opens it in a new tab.
     callback side-clicked(int, bool);
     // bookmark-add(): Ctrl+D. bookmark-remove(index): the bookmark menu's "Remove bookmark".
@@ -144,6 +148,14 @@ export component App inherits Window {
 
     public function show-about() { about.show(); }
     public function close-about() { about.close(); }
+
+    // The breadcrumb dropdown's contents and place, set from Rust before show-crumb-menu.
+    in property <[string]> crumb-menu-items;
+    in property <string> crumb-menu-note;
+    in property <length> crumb-menu-x;
+    in property <length> crumb-menu-y;
+    public function show-crumb-menu() { crumb-menu.show(); }
+    public function close-crumb-menu() { crumb-menu.close(); }
 
     // Ctrl+L, and the driver's `pathmode`: the pane's path bar as text entry or breadcrumb.
     public function set-path-mode(p: int, entry: bool) {
@@ -307,6 +319,7 @@ export component App inherits Window {
                 tab-close(i) => { root.tab-close(0, i); }
                 tab-move(f, t) => { root.tab-move(0, f, t); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
+                crumb-menu(i, x, y) => { root.crumb-menu(0, i, x, y); }
                 active: !split || active-pane == 0;
                 sort-col: left-sort-col; sort-asc: left-sort-asc;
                 current-row <=> left-current-row;
@@ -338,6 +351,7 @@ export component App inherits Window {
                 tab-close(i) => { root.tab-close(1, i); }
                 tab-move(f, t) => { root.tab-move(1, f, t); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }
+                crumb-menu(i, x, y) => { root.crumb-menu(1, i, x, y); }
                 active: split && active-pane == 1;
                 sort-col: right-sort-col; sort-asc: right-sort-asc;
                 current-row <=> right-current-row;
@@ -401,6 +415,58 @@ export component App inherits Window {
                 height: parent.height - 4px;
                 background: remove-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
                 Text { x: 10px; text: "Remove bookmark"; vertical-alignment: center; }
+            }
+        }
+    }
+
+    // The breadcrumb dropdown: the subfolders of the crumb whose chevron was clicked. A popup, so
+    // its rows exist only while it is open; a click picks, Escape or a click outside closes it.
+    crumb-menu := PopupWindow {
+        x: max(0px, min(root.crumb-menu-x, root.width - 280px));
+        y: root.crumb-menu-y;
+        width: 280px;
+        height: max(30px, min(root.height - root.crumb-menu-y - 8px,
+            root.crumb-menu-items.length * 22px + (root.crumb-menu-note == "" ? 0px : 22px) + 8px));
+        Rectangle {
+            background: Palette.background;
+            border-width: 1px;
+            border-color: Palette.border;
+            crumb-keys := FocusScope {
+                init => { self.focus(); }
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) {
+                        crumb-menu.close();
+                        root.focus-pane(root.active-pane);
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+            VerticalLayout {
+                padding: 4px;
+                ListView {
+                    accessible-label: "Folders";
+                    for name[i] in root.crumb-menu-items: Rectangle {
+                        height: 22px;
+                        accessible-role: list-item;
+                        accessible-label: name;
+                        background: pick-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+                        Text { x: 8px; width: parent.width - 12px; text: name; vertical-alignment: center; overflow: elide; }
+                        pick-ta := TouchArea {
+                            clicked => {
+                                crumb-menu.close();
+                                root.crumb-pick(i);
+                            }
+                        }
+                    }
+                }
+                if root.crumb-menu-note != "": Text {
+                    height: 22px;
+                    x: 8px;
+                    text: root.crumb-menu-note;
+                    vertical-alignment: center;
+                    color: Palette.foreground.transparentize(35%);
+                }
             }
         }
     }

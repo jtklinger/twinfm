@@ -184,6 +184,10 @@ struct State {
     watch_refreshes: u64,
     /// Debounces volume arrivals and removals (WM_DEVICECHANGE comes in bursts).
     device_timer: slint::Timer,
+    /// The breadcrumb dropdown: requests handed out (a listing that comes back for an older one
+    /// is dropped), and the one on screen (its pane, folder and the folder names it lists).
+    crumb_seq: u64,
+    crumb_menu: Option<(usize, PathBuf, Vec<String>)>,
 }
 
 /// A tab with no folder yet, its model sharing the icon table.
@@ -1861,6 +1865,81 @@ fn crumb_clicked(pane: usize, i: usize) {
     }
 }
 
+/// The chevron after crumb `i`: list that crumb's subfolders on a worker (the pane's hidden-file
+/// setting applies), then show the dropdown at window point (`x`, `y`).
+fn crumb_menu(pane: usize, i: usize, x: f32, y: f32) {
+    let Some((dir, hidden, seq)) = with_state(|st| {
+        let dir = pathbar::crumbs(&st.tab(pane).path.to_string_lossy()).into_iter().nth(i)?.target;
+        st.crumb_seq += 1;
+        st.crumb_menu = None;
+        Some((dir, st.model(pane).show_hidden.get(), st.crumb_seq))
+    }) else {
+        return;
+    };
+    eprintln!("[crumb] pane={pane} menu {i}: listing the folders in {}", dir.display());
+    std::thread::spawn(move || {
+        let t0 = Instant::now();
+        let res = pathbar::subfolders(&dir, hidden, pathbar::MENU_CAP);
+        let ms = perf::elapsed_ms(t0);
+        let _ = slint::invoke_from_event_loop(move || crumb_menu_ready(pane, seq, dir, res, (x, y), ms));
+    });
+}
+
+/// The dropdown's listing came back (UI thread): fill the popup and show it, unless a newer
+/// request replaced this one.
+fn crumb_menu_ready(pane: usize, seq: u64, dir: PathBuf, res: Result<(Vec<String>, usize), String>, (x, y): (f32, f32), ms: f64) {
+    let Some(app) = with_state(|st| {
+        let app = st.app.upgrade()?;
+        if st.crumb_seq != seq {
+            return None;
+        }
+        let (names, note) = match res {
+            Ok((names, total)) if names.is_empty() => (names, if total == 0 { "No folders".to_string() } else { String::new() }),
+            Ok((names, total)) if total > names.len() => {
+                let note = format!("... and {} more", total - names.len());
+                (names, note)
+            }
+            Ok((names, _)) => (names, String::new()),
+            Err(e) => (Vec::new(), e),
+        };
+        let shown = if note.is_empty() { String::new() } else { format!(" ({note})") };
+        eprintln!("[crumb] pane={pane} menu: {} folder(s) in {}{shown}, listed in {ms:.1} ms", names.len(), dir.display());
+        let items: Vec<SharedString> = names.iter().map(|n| n.as_str().into()).collect();
+        app.set_crumb_menu_items(ModelRc::from(Rc::new(VecModel::from(items))));
+        app.set_crumb_menu_note(note.into());
+        app.set_crumb_menu_x(x);
+        app.set_crumb_menu_y(y);
+        st.crumb_menu = Some((pane, dir, names));
+        Some(app)
+    }) else {
+        return;
+    };
+    // Outside the state borrow: showing the popup moves keyboard focus.
+    app.invoke_show_crumb_menu();
+}
+
+/// Item `i` of the breadcrumb dropdown: navigate its pane there.
+fn crumb_pick(i: usize) {
+    let Some((pane, target)) = with_state(|st| {
+        let (pane, dir, names) = st.crumb_menu.take()?;
+        let name = names.get(i)?;
+        let target = if is_this_pc(&dir.to_string_lossy()) { PathBuf::from(name) } else { dir.join(name) };
+        Some((pane, target))
+    }) else {
+        return;
+    };
+    eprintln!("[crumb] pane={pane} picked {}", target.display());
+    navigate(pane, target);
+    if let Some(app) = with_state(|st| st.app.upgrade()) {
+        app.invoke_focus_pane(pane as i32);
+    }
+}
+
+/// For the scripted driver's `crumbpick`: the dropdown's item named `name` (case-insensitive).
+pub fn crumb_menu_index(name: &str) -> Option<usize> {
+    with_state(|st| st.crumb_menu.as_ref()?.2.iter().position(|n| n.eq_ignore_ascii_case(name)))
+}
+
 /// The clipboard changed (`WM_CLIPBOARDUPDATE`, posted by the `devices` subclass). If it was not
 /// TwinFM's own write and rows show as cut, the cut is no longer on the clipboard: clear them.
 pub fn clipboard_changed() {
@@ -2062,6 +2141,8 @@ fn main() -> Result<(), slint::PlatformError> {
             watch_rx,
             watch_refreshes: 0,
             device_timer: slint::Timer::default(),
+            crumb_seq: 0,
+            crumb_menu: None,
         })
     });
     with_state(rebuild_sidebar);
@@ -2189,6 +2270,16 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_crumb_clicked(|pane, i| {
         if let Ok(i) = usize::try_from(i) {
             crumb_clicked(pane as usize, i);
+        }
+    });
+    app.on_crumb_menu(|pane, i, x, y| {
+        if let Ok(i) = usize::try_from(i) {
+            crumb_menu(pane as usize, i, x, y);
+        }
+    });
+    app.on_crumb_pick(|i| {
+        if let Ok(i) = usize::try_from(i) {
+            crumb_pick(i);
         }
     });
     app.on_toggle_hidden(|pane| {

@@ -58,6 +58,10 @@
 //!   tabdrag <pane> <index> <dx>      press the left button on tab <index> (0-based), move <dx> px
 //!                                    in 8 px steps, release: a tab drag through Slint's pointer path
 //!   crumb <pane> <index>             breadcrumb button <index> (0 is This PC), through its callback
+//!   crumbmenu <pane> <index>         the chevron after crumb <index>: its subfolders in a dropdown
+//!                                    (listed on a worker; sleep before crumbpick)
+//!   crumbpick <name>                 pick the dropdown's folder <name> (the pane navigates there)
+//!   crumbclose                       close the dropdown (as Escape does)
 //!   pathmode <pane> <entry|crumb>    the path bar as text entry (as Ctrl+L) or back to the breadcrumb
 //!   sidebar toggle                   F9: show or hide the sidebar
 //!   sidebar click <row>              sidebar row <row> (headers count; 0 is "Drives"), through its callback
@@ -135,6 +139,9 @@ enum Step {
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
     DropFiles { pane: usize, row: i32, mode: String, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
+    CrumbMenu { pane: usize, index: i32 },
+    CrumbPick(String),
+    CrumbClose,
     /// Press the left button on tab `index`'s centre, move `dx` px in 8 px steps, release.
     TabDrag { pane: usize, index: usize, dx: f32 },
     PathMode { pane: usize, entry: bool },
@@ -203,6 +210,9 @@ fn parse(script: &str) -> Vec<Step> {
                 }),
                 "tabdrag" => Step::TabDrag { pane: num(1) as usize, index: num(2) as usize, dx: num(3) as f32 },
                 "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
+                "crumbmenu" => Step::CrumbMenu { pane: num(1) as usize, index: num(2) as i32 },
+                "crumbpick" => Step::CrumbPick(a[1..].join(" ")),
+                "crumbclose" => Step::CrumbClose,
                 "pathmode" => Step::PathMode { pane: num(1) as usize, entry: a.get(2) == Some(&"entry") },
                 "sidebar" if a.get(1) == Some(&"click") => Step::SideClick(num(2) as i32),
                 "sidebar" => Step::Key("F9".into()),
@@ -688,6 +698,26 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::Crumb { pane, index } => {
             app.invoke_crumb_clicked(pane as i32, index);
+            schedule(runner, 1);
+        }
+        Step::CrumbMenu { pane, index } => {
+            // Under the path bar, near the pane's left edge.
+            let (left, _) = crate::dnd::pane_x(&crate::window_layout(&app), pane);
+            app.invoke_crumb_menu(pane as i32, index, left + 40.0, list_top(&app, pane) - 26.0);
+            schedule(runner, 1);
+        }
+        Step::CrumbPick(name) => {
+            match crate::crumb_menu_index(&name) {
+                Some(i) => {
+                    app.invoke_close_crumb_menu();
+                    app.invoke_crumb_pick(i as i32);
+                }
+                None => eprintln!("[auto] crumbpick: no {name:?} in the dropdown (is it open and listed yet?)"),
+            }
+            schedule(runner, 1);
+        }
+        Step::CrumbClose => {
+            app.invoke_close_crumb_menu();
             schedule(runner, 1);
         }
         Step::TabDrag { pane, index, dx } => {

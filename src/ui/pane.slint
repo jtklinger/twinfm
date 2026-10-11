@@ -66,18 +66,29 @@ component TabButton inherits Rectangle {
     }
 }
 
-component CrumbButton inherits Rectangle {
+// One breadcrumb: the label navigates there; the chevron after it opens the dropdown of its
+// subfolders (the next crumb's siblings), as in Explorer.
+component CrumbButton inherits HorizontalLayout {
     in property <string> label;
-    in property <bool> first;
     callback clicked();
-    background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
-    ta := TouchArea { clicked => { root.clicked(); } }
-    HorizontalLayout {
-        padding-left: 4px;
-        padding-right: 4px;
-        spacing: 4px;
-        if !root.first: Text { text: "\u{203a}"; vertical-alignment: center; color: Palette.foreground.transparentize(40%); }
-        Text { text: root.label; vertical-alignment: center; }
+    // menu(x, y): the chevron, at window coordinates of its bottom-left corner.
+    callback menu(length, length);
+    Rectangle {
+        background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+        ta := TouchArea { clicked => { root.clicked(); } }
+        HorizontalLayout {
+            padding-left: 4px;
+            padding-right: 4px;
+            Text { text: root.label; vertical-alignment: center; }
+        }
+    }
+    Rectangle {
+        width: 16px;
+        background: chevron-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+        Text { text: "\u{203a}"; horizontal-alignment: center; vertical-alignment: center; color: Palette.foreground.transparentize(40%); }
+        chevron-ta := TouchArea {
+            clicked => { root.menu(self.absolute-position.x, self.absolute-position.y + self.height); }
+        }
     }
 }
 
@@ -303,6 +314,8 @@ export component Pane inherits Rectangle {
     // tab-move(from, to): a tab dragged past a neighbour's midpoint.
     callback tab-move(int, int);
     callback crumb-clicked(int);
+    // crumb-menu(index, x, y): the chevron after crumb `index`, at window coordinates.
+    callback crumb-menu(int, length, length);
     callback toggle-sticky();
     callback select(int, int);
     callback viewport-changed(length, length);
@@ -493,8 +506,8 @@ export component Pane inherits Rectangle {
                     padding-bottom: 3px;
                     for c[i] in root.crumbs: CrumbButton {
                         label: c.label;
-                        first: i == 0;
                         clicked => { root.crumb-clicked(i); }
+                        menu(x, y) => { root.crumb-menu(i, x, y); }
                     }
                 }
             }
