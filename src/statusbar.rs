@@ -64,9 +64,27 @@ pub fn disk_free(folder: &Path) -> Option<(u64, u64)> {
     (ok != 0).then_some((avail, total))
 }
 
+/// The note with "N operations queued" after it while jobs wait behind the running one (Escape
+/// in the list cancels them).
+pub fn with_queue(note: &str, queued: usize) -> String {
+    let q = match queued {
+        0 => return note.to_string(),
+        1 => "1 operation queued".to_string(),
+        n => format!("{n} operations queued"),
+    };
+    if note.is_empty() { q } else { format!("{note}, {q}") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_text() {
+        assert_eq!(with_queue("copying 2 items...", 0), "copying 2 items...");
+        assert_eq!(with_queue("copying 2 items...", 1), "copying 2 items..., 1 operation queued");
+        assert_eq!(with_queue("", 3), "3 operations queued");
+    }
 
     #[test]
     fn status_text_composition() {
