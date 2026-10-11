@@ -361,7 +361,18 @@ fn update_tabs(st: &State, pane: usize) {
         .enumerate()
         .map(|(i, t)| TabInfo { title: pathbar::title(&t.path.to_string_lossy()).into(), active: i == active })
         .collect();
-    st.tab_models[pane].set_vec(v);
+    // Same count: change the rows that differ, so the strip keeps its tab items (a reset would
+    // recreate them and drop the pointer grab of a tab being pressed or dragged).
+    let m = &st.tab_models[pane];
+    if m.row_count() == v.len() {
+        for (i, info) in v.into_iter().enumerate() {
+            if m.row_data(i).as_ref() != Some(&info) {
+                m.set_row_data(i, info);
+            }
+        }
+    } else {
+        m.set_vec(v);
+    }
     // The active tab scrolled into view in an overflowing strip (on change only, like the rest).
     if let (Some(app), true) = (st.app.upgrade(), tabs.len() > 1) {
         let x = app.invoke_reveal_tab(pane as i32, active as i32);
