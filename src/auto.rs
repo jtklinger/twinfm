@@ -13,7 +13,8 @@
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
 //!                                    CtrlV, CtrlZ, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
 //!                                    the context menu and take in-menu steps like rclick); CtrlT,
-//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9
+//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
+//!                                    CtrlShiftPageUp, CtrlShiftPageDown
 //!   copy | move                      Shift+F5 / Shift+F6: the active pane's selection to the other pane
 //!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
 //!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
@@ -52,6 +53,9 @@
 //!                                    because `;` separates steps
 //!   tab <new|close|next|prev|N>      Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+N (1..9) through the
 //!                                    Slint key path, on the active pane
+//!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
+//!   tabdrag <pane> <index> <dx>      press the left button on tab <index> (0-based), move <dx> px
+//!                                    in 8 px steps, release: a tab drag through Slint's pointer path
 //!   crumb <pane> <index>             breadcrumb button <index> (0 is This PC), through its callback
 //!   pathmode <pane> <entry|crumb>    the path bar as text entry (as Ctrl+L) or back to the breadcrumb
 //!   sidebar toggle                   F9: show or hide the sidebar
@@ -129,6 +133,8 @@ enum Step {
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
     DropFiles { pane: usize, row: i32, mode: String, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
+    /// Press the left button on tab `index`'s centre, move `dx` px in 8 px steps, release.
+    TabDrag { pane: usize, index: usize, dx: f32 },
     PathMode { pane: usize, entry: bool },
     SideClick(i32),
     BookmarkRemove(i32),
@@ -188,8 +194,11 @@ fn parse(script: &str) -> Vec<Step> {
                     "close" => "CtrlW".into(),
                     "next" => "CtrlTab".into(),
                     "prev" => "CtrlShiftTab".into(),
+                    "moveleft" => "CtrlShiftPageUp".into(),
+                    "moveright" => "CtrlShiftPageDown".into(),
                     n => format!("Ctrl{n}"),
                 }),
+                "tabdrag" => Step::TabDrag { pane: num(1) as usize, index: num(2) as usize, dx: num(3) as f32 },
                 "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
                 "pathmode" => Step::PathMode { pane: num(1) as usize, entry: a.get(2) == Some(&"entry") },
                 "sidebar" if a.get(1) == Some(&"click") => Step::SideClick(num(2) as i32),
@@ -554,6 +563,8 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlL" => vec![k(Key::Control), "l".into()],
         "CtrlTab" => vec![k(Key::Control), k(Key::Tab)],
         "CtrlShiftTab" => vec![k(Key::Control), k(Key::Shift), k(Key::Tab)],
+        "CtrlShiftPageUp" => vec![k(Key::Control), k(Key::Shift), k(Key::PageUp)],
+        "CtrlShiftPageDown" => vec![k(Key::Control), k(Key::Shift), k(Key::PageDown)],
         n if n.len() == 5 && n.starts_with("Ctrl") && n.as_bytes()[4].is_ascii_digit() && n.as_bytes()[4] != b'0' => {
             vec![k(Key::Control), n[4..].into()]
         }
@@ -666,6 +677,24 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::Crumb { pane, index } => {
             app.invoke_crumb_clicked(pane as i32, index);
+            schedule(runner, 1);
+        }
+        Step::TabDrag { pane, index, dx } => {
+            // The strip is the pane's first row: 3 px padding, 26 px tall, every tab tab-width
+            // wide from the strip's offset.
+            let (left, _) = crate::dnd::pane_x(&crate::window_layout(&app), pane);
+            let w = app.invoke_tab_width(pane as i32);
+            let x0 = left + 3.0 + app.invoke_tab_offset(pane as i32) + (index as f32 + 0.5) * w;
+            let at = |x: f32| LogicalPosition::new(x, 16.0);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at(x0) }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: at(x0), button: PointerEventButton::Left }).ok();
+            let steps = (dx.abs() / 8.0).ceil().max(1.0) as i32;
+            for k in 1..=steps {
+                win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at(x0 + dx * k as f32 / steps as f32) }).ok();
+            }
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: at(x0 + dx), button: PointerEventButton::Left }).ok();
+            eprintln!("[auto] tabdrag pane={pane} tab {index} from x {x0:.0} by {dx:.0} (tab width {w:.0})");
             schedule(runner, 1);
         }
         Step::PathMode { pane, entry } => {

@@ -30,22 +30,27 @@ export struct StatusInfo {
     right: string,
 }
 
+// One tab; the strip places and sizes it. The left press activates it (as browsers do), and
+// moving with the button held reports the pointer's x inside the tab, for the strip's reorder.
 component TabButton inherits Rectangle {
     in property <string> title;
     in property <bool> active;
-    callback clicked();
+    callback pressed();
+    callback released();
+    callback drag-moved(length);
     callback close();
-    min-width: 60px;
-    max-width: 180px;
-    preferred-width: 160px;
     background: active ? Palette.background : (ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background);
     border-width: 1px;
     border-color: active ? Palette.accent-background : Palette.border;
     ta := TouchArea {
         pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) { root.pressed(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) { root.released(); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) { root.close(); }
         }
-        clicked => { root.clicked(); }
+        moved => {
+            if (self.pressed) { root.drag-moved(self.mouse-x); }
+        }
     }
     HorizontalLayout {
         padding-left: 6px;
@@ -292,6 +297,8 @@ export component Pane inherits Rectangle {
     callback focus-requested();
     callback tab-clicked(int);
     callback tab-close(int);
+    // tab-move(from, to): a tab dragged past a neighbour's midpoint.
+    callback tab-move(int, int);
     callback crumb-clicked(int);
     callback toggle-sticky();
     callback select(int, int);
@@ -320,9 +327,35 @@ export component Pane inherits Rectangle {
     private property <length> strip-height;
     private property <bool> strip-shown: false;
 
+    // The tab strip: every tab the same width, from 160 px down to 120 px as tabs are added, then
+    // the strip scrolls instead (no scrollbar; the wheel scrolls it). tab-scroll is the content's
+    // offset (zero or negative), set by the wheel and by reveal-tab; shown-tab-scroll keeps it in
+    // range when tabs close or the pane widens. All of these are bindings on the tab count and the
+    // pane's width, so nothing here runs while the list scrolls.
+    in-out property <length> tab-scroll: 0px;
+    private property <length> tab-strip-w: root.width - 6px;
+    out property <length> tab-w: max(120px, min(160px, root.tab-strip-w / max(1, root.tabs.length)));
+    private property <length> tab-scroll-min: min(0px, root.tab-strip-w - root.tabs.length * root.tab-w);
+    out property <length> shown-tab-scroll: max(root.tab-scroll-min, min(0px, root.tab-scroll));
+    // The tab a left-button drag in the strip is moving (-1: none).
+    private property <int> drag-tab: -1;
+
     border-width: active ? 2px : 1px;
     border-color: active ? Palette.accent-background : Palette.border;
     background: Palette.background;
+
+    // Scroll the strip just far enough that tab `i` is fully in view; returns the new offset.
+    // Called from Rust when the active tab or the tab count changes, never per frame.
+    public function reveal-tab(i: int) -> length {
+        if (root.shown-tab-scroll + i * root.tab-w < 0px) {
+            root.tab-scroll = -i * root.tab-w;
+        } else if (root.shown-tab-scroll + (i + 1) * root.tab-w > root.tab-strip-w) {
+            root.tab-scroll = root.tab-strip-w - (i + 1) * root.tab-w;
+        } else {
+            root.tab-scroll = root.shown-tab-scroll;
+        }
+        return root.shown-tab-scroll;
+    }
 
     forward-focus: list;
     public function focus-list() { list.focus-list(); }
@@ -374,13 +407,43 @@ export component Pane inherits Rectangle {
     VerticalLayout {
         padding: 3px;
         spacing: 2px;
-        if root.tabs.length > 1: HorizontalLayout {
+        // Not a Flickable: its drag-to-flick would take the presses a tab drag needs.
+        if root.tabs.length > 1: Rectangle {
             height: 26px;
-            alignment: start;
+            clip: true;
+            // Behind the tabs, whose TouchAreas pass wheel events on: the wheel scrolls the strip.
+            TouchArea {
+                scroll-event(e) => {
+                    root.tab-scroll = root.shown-tab-scroll + (abs(e.delta-y) > abs(e.delta-x) ? e.delta-y : e.delta-x);
+                    root.tab-scroll = root.shown-tab-scroll;
+                    return accept;
+                }
+            }
             for t[i] in root.tabs: TabButton {
+                x: root.shown-tab-scroll + i * root.tab-w;
+                y: 0px;
+                width: root.tab-w;
+                height: 26px;
                 title: t.title;
                 active: t.active;
-                clicked => { root.tab-clicked(i); }
+                pressed => {
+                    root.drag-tab = i;
+                    root.tab-clicked(i);
+                }
+                released => { root.drag-tab = -1; }
+                // The pointer's x in the strip's content is this tab's slot plus its offset in
+                // the tab (whichever tab now sits in the slot). Once it passes a neighbour's
+                // midpoint, the dragged tab swaps with that neighbour.
+                drag-moved(mx) => {
+                    if (root.drag-tab < 0) { return; }
+                    if (i * root.tab-w + mx > (root.drag-tab + 1.5) * root.tab-w && root.drag-tab + 1 < root.tabs.length) {
+                        root.tab-move(root.drag-tab, root.drag-tab + 1);
+                        root.drag-tab += 1;
+                    } else if (i * root.tab-w + mx < (root.drag-tab - 0.5) * root.tab-w && root.drag-tab > 0) {
+                        root.tab-move(root.drag-tab, root.drag-tab - 1);
+                        root.drag-tab -= 1;
+                    }
+                }
                 close => { root.tab-close(i); }
             }
         }

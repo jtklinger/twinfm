@@ -117,8 +117,11 @@ export component App inherits Window {
     // tab-select(pane, index), tab-close(pane, index): a click or middle-click in a tab strip.
     callback tab-select(int, int);
     callback tab-close(int, int);
+    // tab-move(pane, from, to): a tab dragged within its strip.
+    callback tab-move(int, int, int);
     // tab-key(pane, what): for the active pane, Ctrl+T "new", Ctrl+W "close", Ctrl+Tab "next",
-    // Ctrl+Shift+Tab "prev", Ctrl+1..9 "1".."9".
+    // Ctrl+Shift+Tab "prev", Ctrl+1..9 "1".."9", Ctrl+Shift+PageUp "moveleft",
+    // Ctrl+Shift+PageDown "moveright".
     callback tab-key(int, string);
     // crumb-clicked(pane, index): a breadcrumb button.
     callback crumb-clicked(int, int);
@@ -159,6 +162,14 @@ export component App inherits Window {
         if (p == 0) { left.reset-scroll(); } else { right.reset-scroll(); }
     }
 
+    // The pane's tab strip: scroll tab `i` into view (returns the strip's offset), and its tab
+    // width and offset now (for the driver's tab drag).
+    public function reveal-tab(p: int, i: int) -> length {
+        return p == 0 ? left.reveal-tab(i) : right.reveal-tab(i);
+    }
+    public function tab-width(p: int) -> length { return p == 0 ? left.tab-w : right.tab-w; }
+    public function tab-offset(p: int) -> length { return p == 0 ? left.shown-tab-scroll : right.shown-tab-scroll; }
+
     public function get-scroll(p: int) -> length {
         return p == 0 ? left.get-scroll() : right.get-scroll();
     }
@@ -192,6 +203,10 @@ export component App inherits Window {
             }
             if (e.modifiers.control && (e.text == Key.Tab || e.text == Key.Backtab)) {
                 root.tab-key(active-pane, e.modifiers.shift || e.text == Key.Backtab ? "prev" : "next");
+                return accept;
+            }
+            if (e.modifiers.control && e.modifiers.shift && (e.text == Key.PageUp || e.text == Key.PageDown)) {
+                root.tab-key(active-pane, e.text == Key.PageUp ? "moveleft" : "moveright");
                 return accept;
             }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "t" || e.text == "T")) { root.tab-key(active-pane, "new"); return accept; }
@@ -289,6 +304,7 @@ export component App inherits Window {
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
+                tab-move(f, t) => { root.tab-move(0, f, t); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
                 active: !split || active-pane == 0;
                 sort-col: left-sort-col; sort-asc: left-sort-asc;
@@ -319,6 +335,7 @@ export component App inherits Window {
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
+                tab-move(f, t) => { root.tab-move(1, f, t); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }
                 active: split && active-pane == 1;
                 sort-col: right-sort-col; sort-asc: right-sort-asc;

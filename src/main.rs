@@ -358,6 +358,13 @@ fn update_tabs(st: &State, pane: usize) {
         .map(|(i, t)| TabInfo { title: pathbar::title(&t.path.to_string_lossy()).into(), active: i == active })
         .collect();
     st.tab_models[pane].set_vec(v);
+    // The active tab scrolled into view in an overflowing strip (on change only, like the rest).
+    if let (Some(app), true) = (st.app.upgrade(), tabs.len() > 1) {
+        let x = app.invoke_reveal_tab(pane as i32, active as i32);
+        if x <= -0.5 {
+            eprintln!("[tab] pane={pane} strip scrolled to {x:.0} (tab {} of {} in view)", active + 1, tabs.len());
+        }
+    }
 }
 
 /// The path bar (text and breadcrumb) from the active tab's folder.
@@ -1783,7 +1790,22 @@ fn close_tab(pane: usize, i: usize) {
     }
 }
 
-/// Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+1..9 on the active pane.
+/// A tab dragged in its strip, or Ctrl+Shift+PageUp/PageDown: move tab `from` to `to`. The active
+/// tab stays active, so only the strip changes.
+fn move_tab(pane: usize, from: usize, to: usize) {
+    with_state(|st| {
+        if !st.panes[pane].move_tab(from, to) {
+            return eprintln!("[tab] pane={pane} cannot move tab {} to {}", from + 1, to + 1);
+        }
+        let tabs = &st.panes[pane];
+        eprintln!("[tab] pane={pane} moved tab {} to {}, tab {} of {} active", from + 1, to + 1, tabs.active_index() + 1, tabs.len());
+        update_tabs(st, pane);
+        schedule_save(st);
+    });
+}
+
+/// Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+1..9 and Ctrl+Shift+PageUp/PageDown on the
+/// active pane.
 fn tab_key(pane: usize, what: &str) {
     match what {
         "new" => open_tab(pane, None),
@@ -1793,6 +1815,14 @@ fn tab_key(pane: usize, what: &str) {
         }
         "next" => switch_tab(pane, |t| t.next()),
         "prev" => switch_tab(pane, |t| t.prev()),
+        "moveleft" | "moveright" => {
+            let i = with_state(|st| st.panes[pane].active_index());
+            let to = if what == "moveleft" { i.checked_sub(1) } else { Some(i + 1) };
+            match to {
+                Some(to) => move_tab(pane, i, to),
+                None => eprintln!("[tab] pane={pane} tab 1 is first already"),
+            }
+        }
         n => {
             if let Ok(n @ 1..=9) = n.parse::<usize>() {
                 switch_tab(pane, |t| {
@@ -2129,6 +2159,11 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_tab_close(|pane, i| {
         if let Ok(i) = usize::try_from(i) {
             close_tab(pane as usize, i);
+        }
+    });
+    app.on_tab_move(|pane, from, to| {
+        if let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) {
+            move_tab(pane as usize, from, to);
         }
     });
     app.on_tab_key(|pane, what| tab_key(pane as usize, what.as_str()));
