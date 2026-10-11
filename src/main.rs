@@ -1413,8 +1413,26 @@ fn log_select(model: &PaneModel, pane: usize, op: SelOp, row: usize) {
     eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
 }
 
+/// The middle button on a row: a folder (or a drive, or a reparse directory) opens in a new tab
+/// in the same pane, as a middle-click in the sidebar does; a file does nothing.
+fn middle_click_row(pane: usize, row: usize) {
+    let target = with_state(|st| {
+        let e = st.model(pane).entry(row)?;
+        Some((e.is_dir(), st.tab(pane).path.join(e.name.as_str())))
+    });
+    match target {
+        Some((true, path)) => {
+            eprintln!("[tab] pane={pane} middle-click row {row}: new tab on {}", path.display());
+            open_tab(pane, Some(path));
+        }
+        Some((false, path)) => eprintln!("[tab] pane={pane} middle-click row {row}: {} is a file, nothing to do", path.display()),
+        None => {}
+    }
+}
+
 /// The left button on a row: press (0), release (1), moved past the drag threshold with the
-/// button down (2), double-click (3). `dnd::Gesture` decides what selects, drags and opens.
+/// button down (2), double-click (3); the middle button's release (4). `dnd::Gesture` decides
+/// what selects, drags and opens.
 fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
     let Ok(row) = usize::try_from(row) else { return };
     match what {
@@ -1446,6 +1464,7 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
                 eprintln!("[dnd] pane={pane} double-click at the end of a drag: not opened");
             }
         }
+        4 => middle_click_row(pane, row),
         _ => {}
     }
 }

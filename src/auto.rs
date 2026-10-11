@@ -27,6 +27,7 @@
 //!   ctrlclick <pane> <row>           Ctrl+click a visible row (toggles it)
 //!   shiftclick <pane> <row>          Shift+click a visible row (selects anchor..row)
 //!   dblclick <pane> <row>            double-click a visible row (enters the directory if it is one)
+//!   midclick <pane> <row>            middle-click a visible row (a folder opens in a new tab)
 //!   rclick <pane> <row>              right-click a visible row: press, 60 ms for a frame, release;
 //!                                    the release opens the real shell context menu
 //!   rclickempty <pane>               right-click the empty space below the last row (the folder's
@@ -119,6 +120,7 @@ enum Step {
     Key(String),
     Click { pane: usize, row: usize, modifier: Option<Key> },
     DblClick { pane: usize, row: usize },
+    MidClick { pane: usize, row: usize },
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
     WaitOps(u64),
@@ -164,6 +166,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "ctrlclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Control) },
                 "shiftclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Shift) },
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
+                "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
                 "copy" => Step::Key("ShiftF5".into()),
                 "move" => Step::Key("ShiftF6".into()),
                 "delete" => Step::Key("Delete".into()),
@@ -673,6 +676,14 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Left }).ok();
                 win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Left }).ok();
             }
+            schedule(runner, 1);
+        }
+        Step::MidClick { pane, row } => {
+            let pos = row_pos(&app, pane, row);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Middle }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Middle }).ok();
             schedule(runner, 1);
         }
         Step::Crumb { pane, index } => {

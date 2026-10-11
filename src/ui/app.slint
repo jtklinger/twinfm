@@ -112,7 +112,8 @@ export component App inherits Window {
     callback context-menu(int, int, length, length, bool);
     callback context-key(int, int, length, length, length, length);
     // row-gesture(pane, row, what, ctrl, shift): left press (0), release (1), drag past the
-    // threshold (2) or double-click (3) on a row; see pane.slint FileListBase.
+    // threshold (2) or double-click (3) on a row, or a middle-button release (4); see pane.slint
+    // FileListBase.
     callback row-gesture(int, int, int, bool, bool);
     // tab-select(pane, index), tab-close(pane, index): a click or middle-click in a tab strip.
     callback tab-select(int, int);

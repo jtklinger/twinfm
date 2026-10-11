@@ -113,7 +113,7 @@ component FileListBase inherits ListView {
     callback context-menu(int, length, length, bool);
     // row-gesture(row, what, ctrl, shift), the left button on a row, decided in Rust (dnd::Gesture):
     // what 0 press, 1 release, 2 moved past the drag threshold with the button down (once per
-    // press), 3 double-click.
+    // press), 3 double-click; and 4, the middle button released over the row.
     callback row-gesture(int, int, bool, bool);
     // The drag threshold (SM_CXDRAG / SM_CYDRAG in logical px), set from Rust.
     in property <length> drag-dx: 4px;
@@ -159,6 +159,9 @@ component FileListBase inherits ListView {
                 }
                 if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
                     root.row-gesture(i, 1, ev.modifiers.control, ev.modifiers.shift);
+                }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) {
+                    root.row-gesture(i, 4, false, false);
                 }
                 // Select on the press (so the row is drawn selected before the menu's modal loop
                 // starts), open the shell menu on the release.
