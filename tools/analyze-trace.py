@@ -66,15 +66,23 @@ def main():
         if not any(exe in line for exe in ("twinfm.exe", "rustfm-proto.exe")):  # old traces keep the old name
             continue
         f = [x.strip() for x in line.split(",")]
-        start, end, kind = int(f[0]), int(f[1]), f[2]
+        # A process or thread still alive when the trace stopped ends at "MAX".
+        start, end, kind = int(f[0]), (10**15 if f[1] == "MAX" else int(f[1])), f[2]
+        pid = int(re.search(r"\((\d+)\)", f[4]).group(1))
         if kind == "Process":
-            procs.append((start, end, f[4]))
+            procs.append((start, end, pid))
         elif kind == "Thread":
-            threads.append((start, end, int(f[5])))
+            threads.append((start, end, int(f[5]), pid))
     if not threads:
         print("no twinfm.exe (or rustfm-proto.exe) threads found in", etl)
         return 1
-    threads.sort()
+    # The gate's process is the one the script started right after wpr: the earliest. A TwinFM
+    # window opened by hand during or after the run is another process and is ignored.
+    procs.sort()
+    gate_pid = procs[0][2] if procs else threads[0][3]
+    if len(procs) > 1:
+        print(f"  {len(procs)} twinfm processes in the trace; using the earliest, pid {gate_pid}")
+    threads = sorted((s, e, t) for s, e, t, pid in threads if pid == gate_pid)
     pstart = procs[0][0] if procs else threads[0][0]
     main_tid = threads[0][2]
     workers = [(s, e, t) for s, e, t in threads if 15_000 <= e - s <= 80_000 and s - pstart >= 2_000_000]

@@ -372,8 +372,11 @@ undo, and a queue TwinFM can see and cancel.
 - **Dimming the cut row's icon** (only its text is dimmed, since M3).
 - **Progress inside TwinFM**: the shell's window still shows it; the status bar shows the queue
   count, not a percentage (`UpdateProgress` on the sink could feed one).
-- **Explorer's own Undo picking up `FOFX_ADDUNDORECORD`**: still unchecked (the harness cannot
-  drive Explorer).
+- **Explorer's own Undo never sees TwinFM's operations** (checked by Jeremy 2026-10-10: a rename in
+  TwinFM, then Explorer's context menu and Ctrl+Z offered nothing). The shell's undo list is per
+  process: `FOFX_ADDUNDORECORD` adds the record inside TwinFM's process, where only TwinFM could
+  play it back, and there is no public API to do that. This is why the TwinFM-side record exists;
+  the flag stays set because it costs nothing and keeps the shell's own bookkeeping consistent.
 - **A Narrator check** of the new notes ("Undid: ...", the queue count).
 
 ### Scripted checks
@@ -412,12 +415,29 @@ folders named f02, f03, f05, zz) and left "x" on the clipboard.
 
 ### Gate
 
-Pending: Jeremy at the console, `tools/wpr-gate.ps1` on a clean binary from its own
-`target-<name>`, Narrator off. Nothing per frame was added: the sink runs on the worker, the
-fallback and the scroll run once per pass swap, the clipboard listener wakes the UI only when the
-clipboard changes, and the queue text is composed with the status bar. The expected result is
-inside M6's own spread; a single run moves by about 0.3 point (P2-M1's Gate), so a reading over
-the bar needs a same-session A/B against `target-p2m1` before it means anything.
+Console WPR, Jeremy elevated, `tools/wpr-gate.ps1`, accessibility on, Narrator off, hidden off,
+same session, back to back (2026-10-10 20:42 and 20:45): `target-p2m1` (ff594d4) first, then
+`target-p2m2` (the PR #23 head, f95c35a). Analysed with `tools/analyze-trace.py --symbols --exe`.
+
+| Build | Sampled ms | WPR busy | In-app |
+|---|---|---|---|
+| P2-M1 (`target-p2m1`) | 2041 | **20.4%** | 21.9% |
+| P2-M2 (`target-p2m2`) | 2028 | **20.3%** | 21.2% |
+
+**P2-M2 passes**: nothing attributable to the milestone. Frame shares P2-M1 / P2-M2: accessibility
+232 / 228 ms, render 1193 / 1148, draw_text 664 / 653, ListView 349 / 369, timers 683 / 722, heap
+209 / 220; no sink, undo, clipboard-listener or queue frame appears in either window (the sink runs
+on the worker, the fallback and the reveal run once per pass swap, the listener wakes the UI only on
+a clipboard change). The same P2-M1 binary read 20.0% in the afternoon A/B and 20.4% here, M6 read
+19.9% and 20.2% within one session: the whole machine drifts by a few tenths between sessions, which
+is exactly why the pass criterion is "inside the same-session reference", not "under 20.0 on one
+run". Traces `C:/traces/twinfm-ab2-{p2m1,p2m2}.etl`, reports under `C:/traces/export/`.
+
+The P2-M1 trace also contained a second `twinfm.exe` that Jeremy opened by hand at 29.6 s, after
+the gate's process had exited at 21.9 s, which ran to the end of the trace; `analyze-trace.py` had
+mixed both processes' threads and crashed on the live one's "MAX" end time. It now takes the
+earliest-started TwinFM process (the one the gate script launched), ignores the others, and
+tolerates threads still alive at trace end (fixed in this PR).
 
 ## Open questions
 
