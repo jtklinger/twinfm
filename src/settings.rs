@@ -20,10 +20,19 @@ pub struct WindowGeom {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// The folders each pane opens at start (the active tabs' folders when TwinFM last saved).
-    /// An empty right path means the left one. A command-line path overrides the left one.
+    /// The active tabs' folders when TwinFM last saved: what a pane opens at start when its tab
+    /// list (below) is empty. An empty right path means the left one. A command-line path
+    /// replaces the left pane's tabs.
     pub start_left: String,
     pub start_right: String,
+    /// Each pane's tabs, left to right, as folder paths (`left_tabs = ["C:\\", "D:\\work"]`), and
+    /// the index of its active tab (`left_active = 1`), as TwinFM last saved them. Empty or
+    /// missing: the pane opens one tab on its start folder, so a file from before tabs were
+    /// saved still works. The right pane's tabs are restored only when the split is.
+    pub left_tabs: Vec<String>,
+    pub left_active: usize,
+    pub right_tabs: Vec<String>,
+    pub right_active: usize,
     /// New tabs in each pane show hidden and system files (Ctrl+H sets it for its pane).
     pub show_hidden_left: bool,
     pub show_hidden_right: bool,
@@ -48,6 +57,10 @@ impl Default for Config {
         Config {
             start_left: "C:\\".into(),
             start_right: String::new(),
+            left_tabs: Vec::new(),
+            left_active: 0,
+            right_tabs: Vec::new(),
+            right_active: 0,
             show_hidden_left: false,
             show_hidden_right: false,
             split: false,
@@ -82,6 +95,17 @@ pub fn sort_from_name(s: &str) -> crate::model::SortCol {
         "type" => SortCol::Type,
         _ => SortCol::Name,
     }
+}
+
+/// The tabs a pane opens at start: the saved list (blank entries dropped) with its active index
+/// clamped, or one tab on `fallback` (the pane's start folder) when there is no list.
+pub fn start_tabs(tabs: &[String], active: usize, fallback: &str) -> (Vec<String>, usize) {
+    let tabs: Vec<String> = tabs.iter().filter(|t| !t.trim().is_empty()).cloned().collect();
+    if tabs.is_empty() {
+        return (vec![fallback.to_string()], 0);
+    }
+    let active = active.min(tabs.len() - 1);
+    (tabs, active)
 }
 
 pub const SIDEBAR_MIN: f32 = 120.0;
@@ -250,6 +274,30 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("bad.toml.bad")).unwrap(), "this is = = not toml", "kept aside");
         assert_eq!(Config::load(&dir.join("missing.toml")), d);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tab_lists_round_trip_and_fall_back() {
+        let c = Config {
+            start_left: r"C:\b".into(),
+            left_tabs: vec![r"C:\a".into(), r"C:\b".into(), "This PC".into()],
+            left_active: 1,
+            right_tabs: vec![r"D:\x".into()],
+            ..Config::default()
+        };
+        let text = c.to_toml();
+        assert!(text.contains("left_tabs = ["), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        let (tabs, active) = start_tabs(&c.left_tabs, c.left_active, &c.start_left);
+        assert_eq!((tabs.len(), active), (3, 1));
+        // A file from before tabs were saved: one tab on the start folder.
+        let old = Config::parse("start_left = 'C:\\Windows'\nstart_right = 'D:\\'\n").unwrap();
+        assert!(old.left_tabs.is_empty() && old.right_tabs.is_empty());
+        assert_eq!(start_tabs(&old.left_tabs, old.left_active, &old.start_left), (vec![r"C:\Windows".to_string()], 0));
+        assert_eq!(start_tabs(&old.right_tabs, old.right_active, &old.start_right), (vec![r"D:\".to_string()], 0));
+        // An active index past the end is clamped; blank entries are dropped.
+        assert_eq!(start_tabs(&["a".into(), " ".into(), "b".into()], 7, "x"), (vec!["a".to_string(), "b".to_string()], 1));
+        assert_eq!(start_tabs(&["".into()], 0, "x"), (vec!["x".to_string()], 0));
     }
 
     #[test]

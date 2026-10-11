@@ -389,7 +389,20 @@ fn save_now() {
     let Some((config, path)) = with_state(|st| {
         st.save_timer.stop();
         let app = st.app.upgrade()?;
+        // Each pane's tabs; a pane whose tabs never had a folder (the second pane before the
+        // split was first opened) keeps the saved list.
+        let tab_paths = |tabs: &Tabs<Tab>| {
+            let v: Vec<String> = tabs.iter().map(|t| t.path.to_string_lossy().to_string()).collect();
+            v.iter().all(|p| !p.is_empty()).then_some((v, tabs.active_index()))
+        };
+        let (left_tabs, right_tabs) = (tab_paths(&st.panes[0]), tab_paths(&st.panes[1]));
         let c = &mut st.config;
+        if let Some((v, a)) = left_tabs {
+            (c.left_tabs, c.left_active) = (v, a);
+        }
+        if let Some((v, a)) = right_tabs {
+            (c.right_tabs, c.right_active) = (v, a);
+        }
         let left = st.panes[0].active().path.to_string_lossy().to_string();
         let right = st.panes[1].active().path.to_string_lossy().to_string();
         if !left.is_empty() {
@@ -1697,6 +1710,7 @@ fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
             t.stale = true;
         }
         show_tab(st, &app, pane);
+        schedule_save(st);
         let t = st.tab(pane);
         eprintln!(
             "[tab] pane={pane} switched to {} of {} (id {}, {}), cursor {} scroll {:.0}",
@@ -1755,6 +1769,7 @@ fn close_tab(pane: usize, i: usize) {
         // Late batches and passes for it find no tab with its generation or id, and are dropped.
         closed.model.generation.set(0);
         eprintln!("[tab] pane={pane} closed tab {} (id {}), {} left", i + 1, closed.id, st.panes[pane].len());
+        schedule_save(st);
         if was_active {
             show_tab(st, &app, pane);
             Some(st.tab(pane).stale)
@@ -1896,12 +1911,46 @@ fn main() -> Result<(), slint::PlatformError> {
             settings::Config::default()
         }
     };
-    let panes = [Tabs::new(blank_tab(1, &icons)), Tabs::new(blank_tab(2, &icons))];
-    for (tabs, hidden) in panes.iter().zip([config.show_hidden_left, config.show_hidden_right]) {
-        let m = &tabs.active().model;
-        m.sort_col.set(settings::sort_from_name(&config.sort_column));
-        m.sort_asc.set(config.sort_ascending);
-        m.show_hidden.set(hidden);
+    // Each pane's tabs: the saved list, or one tab on its start folder. A command-line folder
+    // replaces the left pane's tabs; the right pane's are restored only with the split (otherwise
+    // F3 opens it on the left pane's folder, as before). Only the active tab navigates below;
+    // the others are stale and list their folder when first shown.
+    let arg = std::env::args().nth(1);
+    let (left_paths, left_active) = match &arg {
+        Some(a) => (vec![a.clone()], 0),
+        None => settings::start_tabs(&config.left_tabs, config.left_active, &config.start_left),
+    };
+    let right_start = if config.start_right.is_empty() { left_paths[left_active].clone() } else { config.start_right.clone() };
+    let (right_paths, right_active) = if config.split {
+        settings::start_tabs(&config.right_tabs, config.right_active, &right_start)
+    } else {
+        (vec![String::new()], 0)
+    };
+    let mut next_tab = 0;
+    let mut restore = |paths: &[String], active: usize, hidden: bool| {
+        let mut tabs: Vec<Tab> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                next_tab += 1;
+                let t = Tab { path: PathBuf::from(p), stale: i != active, ..blank_tab(next_tab, &icons) };
+                t.model.sort_col.set(settings::sort_from_name(&config.sort_column));
+                t.model.sort_asc.set(config.sort_ascending);
+                t.model.show_hidden.set(hidden);
+                t
+            })
+            .collect();
+        let first = tabs.remove(0);
+        Tabs::restored(first, tabs, active)
+    };
+    let panes = [
+        restore(&left_paths, left_active, config.show_hidden_left),
+        restore(&right_paths, right_active, config.show_hidden_right),
+    ];
+    for (pane, tabs) in panes.iter().enumerate() {
+        if tabs.len() > 1 {
+            eprintln!("[tab] pane={pane} restored {} tabs, tab {} active", tabs.len(), tabs.active_index() + 1);
+        }
     }
     app.set_left_rows(ModelRc::from(panes[0].active().model.clone()));
     app.set_right_rows(ModelRc::from(panes[1].active().model.clone()));
@@ -1924,7 +1973,7 @@ fn main() -> Result<(), slint::PlatformError> {
         *s.borrow_mut() = Some(State {
             app: app.as_weak(),
             panes,
-            next_tab: 2,
+            next_tab,
             next_gen: 0,
             rx,
             tx,
@@ -2126,13 +2175,11 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // A command-line folder overrides the saved left start folder.
-    let start = std::env::args().nth(1).unwrap_or_else(|| config.start_left.clone());
-    navigate(0, PathBuf::from(&start));
+    // Each pane's active tab lists its folder; the restored background tabs wait until shown.
+    navigate(0, PathBuf::from(&left_paths[left_active]));
     if config.split {
         app.set_split(true);
-        let right = if config.start_right.is_empty() { start } else { config.start_right.clone() };
-        navigate(1, PathBuf::from(right));
+        navigate(1, PathBuf::from(&right_paths[right_active]));
     }
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);

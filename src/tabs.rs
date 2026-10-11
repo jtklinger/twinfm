@@ -9,9 +9,19 @@ pub struct Tabs<T> {
 }
 
 impl<T> Tabs<T> {
-    /// A pane always has at least one tab.
+    /// A pane always has at least one tab. (The app builds its panes with `restored`.)
+    #[cfg(test)]
     pub fn new(first: T) -> Tabs<T> {
         Tabs { items: vec![first], active: 0 }
+    }
+
+    /// Tabs restored from the settings: `first` then `rest`, with tab `active` active (clamped to
+    /// the last tab).
+    pub fn restored(first: T, rest: Vec<T>, active: usize) -> Tabs<T> {
+        let mut items = vec![first];
+        items.extend(rest);
+        let active = active.min(items.len() - 1);
+        Tabs { items, active }
     }
 
     pub fn len(&self) -> usize {
@@ -113,6 +123,16 @@ mod tests {
         one.next();
         one.prev();
         assert_eq!(*one.active(), 'x');
+    }
+
+    #[test]
+    fn restored_clamps_the_active_index() {
+        let t = Tabs::restored('a', vec!['b', 'c'], 1);
+        assert_eq!((order(&t), *t.active()), ("abc".into(), 'b'));
+        let t = Tabs::restored('a', vec!['b'], 9);
+        assert_eq!(*t.active(), 'b', "clamped to the last tab");
+        let t = Tabs::restored('a', Vec::new(), 0);
+        assert_eq!((t.len(), *t.active()), (1, 'a'));
     }
 
     #[test]
