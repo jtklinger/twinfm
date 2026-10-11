@@ -458,6 +458,9 @@ fn rebuild_sidebar(st: &mut State) {
     let items: Vec<SideItem> =
         st.side.iter().map(|r| SideItem { label: r.label.as_str().into(), kind: r.kind as i32, index: r.index as i32 }).collect();
     st.side_model.set_vec(items);
+    if let Some(app) = st.app.upgrade() {
+        app.set_bookmark_count(st.config.bookmarks.len() as i32);
+    }
 }
 
 /// Re-read the drive list for the sidebar on a worker (labels and free space can stall on a slow
@@ -516,8 +519,34 @@ fn bookmark_remove(i: usize) {
         let Some(gone) = sidebar::remove_bookmark(&mut st.config.bookmarks, i) else { return };
         rebuild_sidebar(st);
         schedule_save(st);
-        eprintln!("[sidebar] removed bookmark {i}: {gone}");
-        note(st, &app, active_pane(&app), format!("Removed the bookmark {gone}"));
+        eprintln!("[sidebar] removed bookmark {i}: {}", gone.path);
+        note(st, &app, active_pane(&app), format!("Removed the bookmark {}", gone.path));
+    });
+}
+
+/// The bookmark row's inline editor (from "Rename bookmark"): the title the sidebar shows; an
+/// empty one goes back to the folder's name.
+fn bookmark_rename(i: usize, title: &str) {
+    with_state(|st| {
+        if !sidebar::rename_bookmark(&mut st.config.bookmarks, i, title) {
+            return;
+        }
+        rebuild_sidebar(st);
+        schedule_save(st);
+        let b = &st.config.bookmarks[i];
+        eprintln!("[sidebar] renamed bookmark {i} ({}): {:?}", b.path, b.title);
+    });
+}
+
+/// The bookmark menu's "Move up" and "Move down".
+fn bookmark_move(i: usize, up: bool) {
+    with_state(|st| {
+        let Some(to) = sidebar::move_bookmark(&mut st.config.bookmarks, i, up) else {
+            return eprintln!("[sidebar] bookmark {i} cannot move {}", if up { "up" } else { "down" });
+        };
+        rebuild_sidebar(st);
+        schedule_save(st);
+        eprintln!("[sidebar] moved bookmark {i} to {to}: {}", st.config.bookmarks[to].path);
     });
 }
 
@@ -2243,6 +2272,16 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_bookmark_remove(|i| {
         if let Ok(i) = usize::try_from(i) {
             bookmark_remove(i);
+        }
+    });
+    app.on_bookmark_rename(|i, title| {
+        if let Ok(i) = usize::try_from(i) {
+            bookmark_rename(i, title.as_str());
+        }
+    });
+    app.on_bookmark_move(|i, up| {
+        if let Ok(i) = usize::try_from(i) {
+            bookmark_move(i, up);
         }
     });
     app.on_sidebar_toggled(|| {

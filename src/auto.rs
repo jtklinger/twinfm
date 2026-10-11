@@ -67,6 +67,9 @@
 //!   sidebar click <row>              sidebar row <row> (headers count; 0 is "Drives"), through its callback
 //!   bookmark add                     Ctrl+D: bookmark the active tab's folder
 //!   bookmark remove <index>          the bookmark menu's "Remove bookmark" for bookmark <index>
+//!   bookmark rename <index> <title>  what the bookmark row's title editor commits (an empty title
+//!                                    goes back to the folder's name)
+//!   bookmark move <index> <up|down>  the bookmark menu's "Move up" / "Move down"
 //!   about open | about close         F1 opens the About dialog; close closes it
 //!   touch <pane> <name>              create an empty file in the pane's folder, or set an existing
 //!                                    one's modified time to now (a change for the directory watch)
@@ -149,6 +152,9 @@ enum Step {
     PathMode { pane: usize, entry: bool },
     SideClick(i32),
     BookmarkRemove(i32),
+    BookmarkRename(i32, String),
+    /// Bookmark index, and up (true) or down.
+    BookmarkMove(i32, bool),
     AboutClose,
     /// `touch` (create or update) or `rmfile` (delete) a file in the pane's folder.
     ScriptFile { pane: usize, name: String, remove: bool },
@@ -222,6 +228,8 @@ fn parse(script: &str) -> Vec<Step> {
                 "sidebar" if a.get(1) == Some(&"click") => Step::SideClick(num(2) as i32),
                 "sidebar" => Step::Key("F9".into()),
                 "bookmark" if a.get(1) == Some(&"remove") => Step::BookmarkRemove(num(2) as i32),
+                "bookmark" if a.get(1) == Some(&"rename") => Step::BookmarkRename(num(2) as i32, a.get(3..).unwrap_or(&[]).join(" ")),
+                "bookmark" if a.get(1) == Some(&"move") => Step::BookmarkMove(num(2) as i32, a.get(3) == Some(&"up")),
                 "bookmark" => Step::Key("CtrlD".into()),
                 "about" if a.get(1) == Some(&"close") => Step::AboutClose,
                 "about" => Step::Key("F1".into()),
@@ -754,6 +762,14 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::BookmarkRemove(i) => {
             app.invoke_bookmark_remove(i);
+            schedule(runner, 1);
+        }
+        Step::BookmarkRename(i, title) => {
+            app.invoke_bookmark_rename(i, title.as_str().into());
+            schedule(runner, 1);
+        }
+        Step::BookmarkMove(i, up) => {
+            app.invoke_bookmark_move(i, up);
             schedule(runner, 1);
         }
         Step::AboutClose => {

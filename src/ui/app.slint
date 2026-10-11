@@ -1,5 +1,5 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo } from "pane.slint";
-import { Palette, ListView, AboutSlint, Button } from "std-widgets.slint";
+import { Palette, ListView, AboutSlint, Button, LineEdit } from "std-widgets.slint";
 export { Row, TabInfo, Crumb, StatusInfo }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
@@ -12,15 +12,21 @@ export struct SideItem {
 
 component SideRow inherits Rectangle {
     in property <SideItem> item;
+    // The row's inline title editor is open ("Rename bookmark").
+    in property <bool> editing;
     // clicked(middle): the left or the middle button released over the row.
     callback clicked(bool);
     // menu(x, y): the right button released over a bookmark, at window coordinates.
     callback menu(length, length);
-    height: item.kind == 0 ? 26px : 24px;
+    // renamed(title): Return in the editor. edit-cancelled(refocus): Escape (true) or focus loss.
+    callback renamed(string);
+    callback edit-cancelled(bool);
+    height: item.kind == 0 ? 26px : (root.editing ? 30px : 24px);
     background: item.kind != 0 && ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
     accessible-role: list-item;
     accessible-label: item.label;
     HorizontalLayout {
+        visible: !root.editing;
         padding-left: item.kind == 0 ? 8px : 16px;
         padding-right: 6px;
         Text {
@@ -32,8 +38,28 @@ component SideRow inherits Rectangle {
             color: item.kind == 0 ? Palette.foreground.transparentize(35%) : Palette.foreground;
         }
     }
+    // Exists only while the row is being renamed; takes the focus with the title selected.
+    if root.editing: LineEdit {
+        x: 8px;
+        width: parent.width - 12px;
+        height: parent.height;
+        text: root.item.label;
+        accessible-label: "Bookmark title";
+        init => {
+            self.focus();
+            self.select-all();
+        }
+        accepted(t) => { root.renamed(t); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.edit-cancelled(true); return accept; }
+            return reject;
+        }
+        changed has-focus => {
+            if (!self.has-focus) { root.edit-cancelled(false); }
+        }
+    }
     ta := TouchArea {
-        enabled: item.kind != 0;
+        enabled: item.kind != 0 && !root.editing;
         pointer-event(ev) => {
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) { root.clicked(false); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) { root.clicked(true); }
@@ -41,6 +67,27 @@ component SideRow inherits Rectangle {
                 root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
         }
+    }
+}
+
+// One item of TwinFM's own popup menus; a disabled item is dimmed and takes no clicks.
+component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback activated();
+    height: 26px;
+    background: ta.has-hover && root.enabled ? Palette.alternate-background.brighter(0.2) : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    Text {
+        x: 10px;
+        text: root.text;
+        vertical-alignment: center;
+        color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(55%);
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
     }
 }
 
@@ -133,8 +180,16 @@ export component App inherits Window {
     // side-clicked(row, middle): a sidebar row; the middle button opens it in a new tab.
     callback side-clicked(int, bool);
     // bookmark-add(): Ctrl+D. bookmark-remove(index): the bookmark menu's "Remove bookmark".
+    // bookmark-rename(index, title): the row's editor, opened by "Rename bookmark" (an empty
+    // title goes back to the folder's name). bookmark-move(index, up): "Move up" / "Move down".
     callback bookmark-add();
     callback bookmark-remove(int);
+    callback bookmark-rename(int, string);
+    callback bookmark-move(int, bool);
+    // How many bookmarks there are (for the menu's move items), and the sidebar row whose title
+    // editor is open (-1: none).
+    in property <int> bookmark-count;
+    in-out property <int> side-edit: -1;
     // sidebar-toggled(): F9 or a sidebar glyph changed sidebar-visible.
     callback sidebar-toggled();
     // settings-changed(): the split line, the sidebar width or the path bar mode moved; Rust
@@ -247,12 +302,23 @@ export component App inherits Window {
                     accessible-label: "Places";
                     for item[i] in root.side-items: SideRow {
                         item: item;
+                        editing: i == root.side-edit;
                         clicked(middle) => { root.side-clicked(i, middle); }
                         menu(x, y) => {
                             root.menu-index = item.index;
+                            root.menu-row = i;
                             root.menu-x = x;
                             root.menu-y = y;
                             bookmark-menu.show();
+                        }
+                        renamed(t) => {
+                            root.side-edit = -1;
+                            root.bookmark-rename(item.index, t);
+                            root.focus-pane(root.active-pane);
+                        }
+                        edit-cancelled(refocus) => {
+                            root.side-edit = -1;
+                            if (refocus) { root.focus-pane(root.active-pane); }
                         }
                     }
                 }
@@ -389,32 +455,53 @@ export component App inherits Window {
         }
     }
 
+    // The bookmark the menu is for: its index in the bookmark list and its sidebar row.
     private property <int> menu-index;
+    private property <int> menu-row;
     private property <length> menu-x;
     private property <length> menu-y;
-    // Right-click on a bookmark: TwinFM's own one-item menu (a Slint popup, not the shell's).
+    // Right-click on a bookmark: TwinFM's own menu (a Slint popup, not the shell's; no modal loop).
     bookmark-menu := PopupWindow {
         x: root.menu-x;
         y: root.menu-y;
-        width: 150px;
-        height: 30px;
+        width: 160px;
+        height: 4 * 26px + 6px;
         Rectangle {
             background: Palette.background;
             border-width: 1px;
             border-color: Palette.border;
-            remove-ta := TouchArea {
-                clicked => {
-                    root.bookmark-remove(root.menu-index);
-                    bookmark-menu.close();
+            VerticalLayout {
+                padding: 3px;
+                MenuItem {
+                    text: "Rename bookmark";
+                    activated => {
+                        bookmark-menu.close();
+                        root.side-edit = root.menu-row;
+                    }
                 }
-            }
-            Rectangle {
-                x: 2px;
-                y: 2px;
-                width: parent.width - 4px;
-                height: parent.height - 4px;
-                background: remove-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
-                Text { x: 10px; text: "Remove bookmark"; vertical-alignment: center; }
+                MenuItem {
+                    text: "Move up";
+                    enabled: root.menu-index > 0;
+                    activated => {
+                        bookmark-menu.close();
+                        root.bookmark-move(root.menu-index, true);
+                    }
+                }
+                MenuItem {
+                    text: "Move down";
+                    enabled: root.menu-index + 1 < root.bookmark-count;
+                    activated => {
+                        bookmark-menu.close();
+                        root.bookmark-move(root.menu-index, false);
+                    }
+                }
+                MenuItem {
+                    text: "Remove bookmark";
+                    activated => {
+                        bookmark-menu.close();
+                        root.bookmark-remove(root.menu-index);
+                    }
+                }
             }
         }
     }

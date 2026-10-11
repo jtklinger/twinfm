@@ -100,12 +100,32 @@ pub struct Config {
     pub sort_ascending: bool,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
-    /// Bookmarked folders, in the order they were added.
-    pub bookmarks: Vec<String>,
     /// "breadcrumb" or "entry" (the text entry for good).
     pub path_bar: String,
     /// Restored only when its title bar would be on a monitor.
     pub window: Option<WindowGeom>,
+    /// Bookmarked folders in sidebar order, as `[[bookmark]]` tables with `path` and an optional
+    /// `title` (without one the sidebar shows the folder's name).
+    #[serde(rename = "bookmark")]
+    pub bookmarks: Vec<Bookmark>,
+    /// The bare list of paths older files carry (`bookmarks = ["C:\\x"]`): read, turned into
+    /// `[[bookmark]]` entries when loaded, never written.
+    #[serde(rename = "bookmarks", skip_serializing)]
+    pub legacy_bookmarks: Vec<String>,
+}
+
+/// One bookmark: the folder and, if renamed, the title the sidebar shows.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Bookmark {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+impl Bookmark {
+    pub fn new(path: &str) -> Bookmark {
+        Bookmark { path: path.to_string(), title: None }
+    }
 }
 
 impl Default for Config {
@@ -125,9 +145,10 @@ impl Default for Config {
             sort_ascending: true,
             sidebar_visible: true,
             sidebar_width: 180.0,
-            bookmarks: Vec::new(),
             path_bar: "breadcrumb".into(),
             window: None,
+            bookmarks: Vec::new(),
+            legacy_bookmarks: Vec::new(),
         }
     }
 }
@@ -178,8 +199,12 @@ impl Config {
         toml::to_string_pretty(self).unwrap_or_default()
     }
 
-    /// Values outside their range pulled back in (a hand-edited file).
+    /// Values outside their range pulled back in (a hand-edited file), and an old bare bookmark
+    /// list turned into entries (after any `[[bookmark]]` ones, duplicates dropped).
     fn clamped(mut self) -> Config {
+        for path in std::mem::take(&mut self.legacy_bookmarks) {
+            crate::sidebar::add_bookmark(&mut self.bookmarks, &path);
+        }
         self.split_ratio = if self.split_ratio.is_finite() { self.split_ratio.clamp(0.15, 0.85) } else { 0.5 };
         self.sidebar_width =
             if self.sidebar_width.is_finite() { self.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX) } else { 180.0 };
@@ -298,7 +323,7 @@ mod tests {
             start_left: r"C:\traces\bigdir".into(),
             split: true,
             split_ratio: 0.3,
-            bookmarks: vec![r"C:\Users".into(), r"D:\".into()],
+            bookmarks: vec![Bookmark::new(r"C:\Users"), Bookmark { path: r"D:\".into(), title: Some("Data".into()) }],
             path_bar: "entry".into(),
             window: Some(WindowGeom { x: -1900, y: 40, width: 1100.0, height: 700.0, maximized: false }),
             ..Config::default()
@@ -357,6 +382,28 @@ mod tests {
     }
 
     #[test]
+    fn bookmark_entries_and_the_old_bare_list() {
+        let c = Config {
+            bookmarks: vec![Bookmark::new(r"C:\work"), Bookmark { path: r"D:\".into(), title: Some("Data drive".into()) }],
+            ..Config::default()
+        };
+        let text = c.to_toml();
+        assert!(text.contains("[[bookmark]]") && text.contains("title = \"Data drive\""), "{text}");
+        assert!(!text.contains("bookmarks"), "the old key is never written: {text}");
+        assert_eq!(text.matches("title").count(), 1, "no title line for an untitled bookmark: {text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        // A file from before titles: a bare list of paths, turned into entries on load (and
+        // written as [[bookmark]] tables by the next save).
+        let old = Config::parse("bookmarks = ['C:\\Users', 'D:\\']\nsplit = true\n").unwrap();
+        assert_eq!(old.bookmarks, vec![Bookmark::new(r"C:\Users"), Bookmark::new(r"D:\")]);
+        assert!(old.legacy_bookmarks.is_empty());
+        assert!(old.to_toml().contains("[[bookmark]]"));
+        // Both in one file: the entries first, the old list after them, duplicates dropped.
+        let both = Config::parse("bookmarks = ['C:\\a', 'c:\\b\\']\n[[bookmark]]\npath = 'C:\\b'\ntitle = 'B'\n").unwrap();
+        assert_eq!(both.bookmarks, vec![Bookmark { path: r"C:\b".into(), title: Some("B".into()) }, Bookmark::new(r"C:\a")]);
+    }
+
+    #[test]
     fn maximized_window_round_trip() {
         let c = Config { window: Some(WindowGeom { x: 104, y: 80, width: 1150.0, height: 760.0, maximized: true }), ..Config::default() };
         let text = c.to_toml();
@@ -378,7 +425,7 @@ mod tests {
         write_atomic(&path, "second = 2\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second = 2\n", "replaces it");
         assert!(!path.with_extension("toml.tmp").exists(), "no .tmp left behind");
-        let c = Config { bookmarks: vec!["C:\\x".into()], ..Config::default() };
+        let c = Config { bookmarks: vec![Bookmark::new("C:\\x")], ..Config::default() };
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path), c);
         let _ = std::fs::remove_dir_all(&dir);

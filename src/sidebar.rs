@@ -1,9 +1,11 @@
 //! The sidebar: Drives, Places (known folders) and Bookmarks, as one flat list of rows with
 //! section headers. Built on the UI thread only when something in it changes (shown, F5, a
-//! bookmark added or removed, the drive list arriving from its worker); the composition and the
+//! bookmark added, removed, renamed or moved, the drive list arriving from its worker); the
+//! composition and the
 //! bookmark list rules are pure and unit-tested.
 
 use crate::model::Entry;
+use crate::settings::Bookmark;
 use std::path::PathBuf;
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::UI::Shell::{
@@ -72,7 +74,7 @@ pub fn drive_label(e: &Entry) -> String {
 
 /// The whole list: a header per section, then its rows. The Bookmarks header is always there,
 /// so Ctrl+D has a visible place to land.
-pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], bookmarks: &[String]) -> Vec<Row> {
+pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], bookmarks: &[Bookmark]) -> Vec<Row> {
     let header = |label: &str| Row { label: label.into(), kind: RowKind::Header, path: None, index: 0 };
     let mut out = vec![header("Drives")];
     out.extend(drives.iter().enumerate().map(|(i, (l, p))| Row { label: l.clone(), kind: RowKind::Drive, path: Some(p.clone()), index: i }));
@@ -80,9 +82,9 @@ pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], bookm
     out.extend(places.iter().enumerate().map(|(i, (l, p))| Row { label: l.clone(), kind: RowKind::Place, path: Some(p.clone()), index: i }));
     out.push(header("Bookmarks"));
     out.extend(bookmarks.iter().enumerate().map(|(i, b)| Row {
-        label: crate::pathbar::title(b),
+        label: b.title.clone().unwrap_or_else(|| crate::pathbar::title(&b.path)),
         kind: RowKind::Bookmark,
-        path: Some(PathBuf::from(b)),
+        path: Some(PathBuf::from(&b.path)),
         index: i,
     }));
     out
@@ -99,17 +101,37 @@ fn same_folder(a: &str, b: &str) -> bool {
 }
 
 /// Add `folder` at the end unless it is there already. Returns whether it was added.
-pub fn add_bookmark(list: &mut Vec<String>, folder: &str) -> bool {
-    if folder.trim().is_empty() || list.iter().any(|b| same_folder(b, folder)) {
+pub fn add_bookmark(list: &mut Vec<Bookmark>, folder: &str) -> bool {
+    if folder.trim().is_empty() || list.iter().any(|b| same_folder(&b.path, folder)) {
         return false;
     }
-    list.push(folder.to_string());
+    list.push(Bookmark::new(folder));
     true
 }
 
 /// Remove bookmark `i`, returning it.
-pub fn remove_bookmark(list: &mut Vec<String>, i: usize) -> Option<String> {
+pub fn remove_bookmark(list: &mut Vec<Bookmark>, i: usize) -> Option<Bookmark> {
     (i < list.len()).then(|| list.remove(i))
+}
+
+/// Give bookmark `i` the sidebar title `title` (trimmed); an empty one, or the folder's own name,
+/// clears it, so the row shows the folder's name again. False when there is no bookmark `i`.
+pub fn rename_bookmark(list: &mut [Bookmark], i: usize, title: &str) -> bool {
+    let Some(b) = list.get_mut(i) else { return false };
+    let t = title.trim();
+    b.title = (!t.is_empty() && t != crate::pathbar::title(&b.path)).then(|| t.to_string());
+    true
+}
+
+/// Move bookmark `i` one place up or down; its new index, or None at the edge (or no such
+/// bookmark).
+pub fn move_bookmark(list: &mut [Bookmark], i: usize, up: bool) -> Option<usize> {
+    let to = if up { i.checked_sub(1)? } else { i + 1 };
+    if i >= list.len() || to >= list.len() {
+        return None;
+    }
+    list.swap(i, to);
+    Some(to)
 }
 
 #[cfg(test)]
@@ -125,17 +147,42 @@ mod tests {
         assert!(!add_bookmark(&mut b, r"c:\"));
         assert!(!add_bookmark(&mut b, "  "));
         assert!(add_bookmark(&mut b, r"\\server\share"));
-        assert_eq!(b, [r"C:\Users\x", r"C:\", r"\\server\share"]);
-        assert_eq!(remove_bookmark(&mut b, 1).as_deref(), Some(r"C:\"));
+        let paths = |b: &[Bookmark]| b.iter().map(|b| b.path.clone()).collect::<Vec<_>>();
+        assert_eq!(paths(&b), [r"C:\Users\x", r"C:\", r"\\server\share"]);
+        assert_eq!(remove_bookmark(&mut b, 1).map(|b| b.path).as_deref(), Some(r"C:\"));
         assert_eq!(remove_bookmark(&mut b, 5), None);
-        assert_eq!(b, [r"C:\Users\x", r"\\server\share"]);
+        assert_eq!(paths(&b), [r"C:\Users\x", r"\\server\share"]);
+    }
+
+    #[test]
+    fn bookmarks_rename_and_move() {
+        let mut b = vec![Bookmark::new(r"C:\a"), Bookmark::new(r"C:\b"), Bookmark::new(r"C:\c")];
+        assert!(rename_bookmark(&mut b, 1, "  Bee  "));
+        assert_eq!(b[1].title.as_deref(), Some("Bee"));
+        assert!(rename_bookmark(&mut b, 1, " "), "an empty title clears it");
+        assert_eq!(b[1].title, None);
+        assert!(rename_bookmark(&mut b, 2, "c"), "the folder's own name clears it too");
+        assert_eq!(b[2].title, None);
+        assert!(!rename_bookmark(&mut b, 3, "x"));
+        rename_bookmark(&mut b, 0, "Alpha");
+        let labels = |b: &[Bookmark]| compose(&[], &[], b).into_iter().skip(3).map(|r| (r.label, r.index)).collect::<Vec<_>>();
+        assert_eq!(labels(&b), [("Alpha".to_string(), 0), ("b".to_string(), 1), ("c".to_string(), 2)]);
+        // Move down, then up; nothing past either end.
+        assert_eq!(move_bookmark(&mut b, 0, false), Some(1));
+        assert_eq!(labels(&b), [("b".to_string(), 0), ("Alpha".to_string(), 1), ("c".to_string(), 2)]);
+        assert_eq!(move_bookmark(&mut b, 2, true), Some(1));
+        assert_eq!(labels(&b), [("b".to_string(), 0), ("c".to_string(), 1), ("Alpha".to_string(), 2)]);
+        assert_eq!(move_bookmark(&mut b, 0, true), None);
+        assert_eq!(move_bookmark(&mut b, 2, false), None);
+        assert_eq!(move_bookmark(&mut b, 7, true), None);
+        assert_eq!(b[2].path, r"C:\a", "the title travels with its bookmark");
     }
 
     #[test]
     fn known_folder_list_composition() {
         let drives = vec![("Local Disk (C:)".to_string(), PathBuf::from(r"C:\"))];
         let places = vec![("Home".to_string(), PathBuf::from(r"C:\Users\x")), ("Documents".to_string(), PathBuf::from(r"C:\Users\x\Documents"))];
-        let rows = compose(&drives, &places, &[r"C:\work\proj".to_string()]);
+        let rows = compose(&drives, &places, &[Bookmark::new(r"C:\work\proj")]);
         let shown: Vec<(&str, RowKind, usize)> = rows.iter().map(|r| (r.label.as_str(), r.kind, r.index)).collect();
         assert_eq!(
             shown,
