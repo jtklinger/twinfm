@@ -372,6 +372,8 @@ export component Pane inherits Rectangle {
     // A drag is over this pane and would drop: on row `drop-row`, or (-1) into the pane's folder.
     in property <bool> drop-here: false;
     in property <int> drop-row: -1;
+    // A drag is over tab `drop-tab` of the strip and would drop into its folder (-1: none).
+    in property <int> drop-tab: -1;
 
     // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder.
     in-out property <int> edit-mode: 0;
@@ -516,6 +518,17 @@ export component Pane inherits Rectangle {
                     }
                 }
                 close => { root.tab-close(i); }
+            }
+            // Drop highlight on tab `drop-tab` (a drag would drop into its folder): an overlay over
+            // the tab's slot, no input handling and no accessibility node.
+            if root.drop-tab >= 0: Rectangle {
+                x: root.shown-tab-scroll + root.drop-tab * root.tab-w;
+                y: 0px;
+                width: root.tab-w;
+                height: 26px;
+                background: Palette.accent-background.transparentize(65%);
+                border-width: 2px;
+                border-color: Palette.accent-background;
             }
         }
         // Same height whichever mode shows, so the list's top does not move (dnd.rs LIST_TOP).

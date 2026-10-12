@@ -134,6 +134,14 @@ export component App inherits Window {
     // the pane's folder). Set by the drop target (dnd.rs).
     in-out property <int> drop-pane: -1;
     in-out property <int> drop-row: -1;
+    // A drag would drop on tab `drop-tab` of pane `drop-tab-pane` (-1: none), or on sidebar row
+    // `drop-side-row` (-1: none), whose top in the sidebar list and height are drop-side-y and
+    // drop-side-h. Set by the drop target through main.rs `drop_highlight`, on change only.
+    in-out property <int> drop-tab-pane: -1;
+    in-out property <int> drop-tab: -1;
+    in-out property <int> drop-side-row: -1;
+    in-out property <length> drop-side-y;
+    in-out property <length> drop-side-h;
     // The drag threshold in logical px (SM_CXDRAG / SM_CYDRAG over the scale factor).
     in property <length> drag-dx: 4px;
     in property <length> drag-dy: 4px;
@@ -242,6 +250,9 @@ export component App inherits Window {
     public function tab-width(p: int) -> length { return p == 0 ? left.tab-w : right.tab-w; }
     public function tab-offset(p: int) -> length { return p == 0 ? left.shown-tab-scroll : right.shown-tab-scroll; }
 
+    // The sidebar list's scroll offset (zero or negative), for the drop target's hit test.
+    public function side-scroll() -> length { return side-list.content-y; }
+
     public function get-scroll(p: int) -> length {
         return p == 0 ? left.get-scroll() : right.get-scroll();
     }
@@ -302,7 +313,7 @@ export component App inherits Window {
             cache-rendering-hint: true;
             VerticalLayout {
                 padding-top: 3px;
-                ListView {
+                side-list := ListView {
                     accessible-label: "Places";
                     for item[i] in root.side-items: SideRow {
                         item: item;
@@ -351,6 +362,26 @@ export component App inherits Window {
                     }
                 }
             }
+            // Drop highlight on a sidebar row (drop-side-y: the row's top in the list's content,
+            // set from Rust with drop-side-h when the row changes). An overlay over the list,
+            // clipped to it, moved with its scroll; no input handling and no accessibility node.
+            Rectangle {
+                x: 0;
+                y: side-list.y;
+                width: side-list.width;
+                height: side-list.height;
+                clip: true;
+                visible: root.drop-side-row >= 0;
+                Rectangle {
+                    x: 0;
+                    y: side-list.content-y + root.drop-side-y;
+                    width: parent.width;
+                    height: root.drop-side-h;
+                    background: Palette.accent-background.transparentize(65%);
+                    border-width: 2px;
+                    border-color: Palette.accent-background;
+                }
+            }
         }
         // Drag the sidebar's right edge to resize it.
         Rectangle {
@@ -385,6 +416,7 @@ export component App inherits Window {
                 rows: left-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
+                drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
                 tab-move(f, t) => { root.tab-move(0, f, t); }
@@ -418,6 +450,7 @@ export component App inherits Window {
                 rows: right-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
+                drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
                 tab-move(f, t) => { root.tab-move(1, f, t); }

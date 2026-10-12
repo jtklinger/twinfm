@@ -1755,17 +1755,70 @@ pub fn drop_spot(px: i32, py: i32) -> Option<dnd::DropSpot> {
         let layout = window_layout(&app);
         let content_y = [app.invoke_get_scroll(0), app.invoke_get_scroll(1)];
         let len = [st.model(0).len(), st.model(1).len()];
-        let (pane, row) = match dnd::hit(&layout, px as f32 / scale, py as f32 / scale, content_y, len) {
+        let side_rows = side_rows(st, &app);
+        let strips = strips(st, &app, &side_rows);
+        let (pane, row) = match dnd::hit_all(&layout, &strips, px as f32 / scale, py as f32 / scale, content_y, len) {
             dnd::Spot::Outside => return None,
             dnd::Spot::Pane(p) => (p, None),
             dnd::Spot::Row(p, r) => (p, Some(r)),
+            // A sidebar row's folder (a drive's root, a place, a bookmark), noted in the active pane.
+            dnd::Spot::Side(i) => {
+                let dest = st.side.get(i)?.path.clone()?;
+                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest });
+            }
+            // A tab's folder; a tab on This PC is no folder.
+            dnd::Spot::Tab(p, i) => {
+                let dest = st.panes[p].iter().nth(i)?.path.clone();
+                if dest.as_os_str().is_empty() || is_this_pc(&dest.to_string_lossy()) {
+                    return None;
+                }
+                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Tab(i), dest });
+            }
         };
         let folder = &st.tab(pane).path;
         let entry = row.and_then(|r| st.model(pane).entry(r));
         let this_pc = is_this_pc(&folder.to_string_lossy());
         let (dest, on_row) = dnd::drop_folder(folder, this_pc, entry.as_ref().map(|e| (e.name.as_str(), e.is_dir())))?;
         let row = if on_row { row.map_or(-1, |r| r as i32) } else { -1 };
-        Some(dnd::DropSpot { pane, row, dest })
+        Some(dnd::DropSpot { pane, mark: dnd::Mark::Row(row), dest })
+    })
+}
+
+/// The sidebar's rows as the drop target's hit test sees them: each row's height (sidebar.slint
+/// `SideRow`: a header 26 px, a row 24 px, the row being renamed 30 px) and whether it is a drop
+/// target (every row but a header).
+fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
+    let editing = app.get_side_edit();
+    st.side
+        .iter()
+        .enumerate()
+        .map(|(i, r)| match r.kind {
+            sidebar::RowKind::Header => (26.0, false),
+            _ if i as i32 == editing => (30.0, true),
+            _ => (24.0, true),
+        })
+        .collect()
+}
+
+/// The sidebar and the tab strips for `dnd::hit_all`.
+fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)]) -> dnd::Strips<'a> {
+    let tab = |p: usize| (st.panes[p].len(), app.invoke_tab_width(p as i32), app.invoke_tab_offset(p as i32));
+    dnd::Strips {
+        side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { 0.0 },
+        side_scroll: app.invoke_side_scroll(),
+        side_rows,
+        tabs: [tab(0), tab(1)],
+    }
+}
+
+/// For the driver's `dropfiles side <row>`: sidebar row `i`'s vertical centre in the window
+/// (logical px), if the row exists and is on screen.
+pub fn side_row_centre(i: usize) -> Option<f32> {
+    with_state(|st| {
+        let app = st.app.upgrade()?;
+        let rows = side_rows(st, &app);
+        let h = rows.get(i)?.0;
+        Some(dnd::SIDE_TOP + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
     })
 }
 
@@ -1795,16 +1848,41 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
     true
 }
 
-/// For the drop target: highlight the pane (row -1) or row a drop would land on, or nothing.
-pub fn drop_highlight(at: Option<(usize, i32)>) {
-    let app = STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().and_then(|st| st.app.upgrade())));
-    let Some(app) = app else { return };
-    let (pane, row) = at.map_or((-1, -1), |(p, r)| (p as i32, r));
-    if app.get_drop_pane() == pane && app.get_drop_row() == row {
+/// For the drop target: highlight what a drop would land on (a pane's row, or with row -1 its
+/// whole list; a tab; a sidebar row), or nothing. Sets the properties only when they change.
+pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
+    // The sidebar row's place, under a short borrow (only for a sidebar mark).
+    let found = STATE.with(|s| {
+        let guard = s.try_borrow().ok()?;
+        let st = guard.as_ref()?;
+        let app = st.app.upgrade()?;
+        let side = match at {
+            Some((_, dnd::Mark::Side(i))) => {
+                let rows = side_rows(st, &app);
+                rows.get(i).map(|r| (i as i32, dnd::side_row_top(&rows, i), r.0))
+            }
+            _ => None,
+        };
+        Some((app, side))
+    });
+    let Some((app, side)) = found else { return };
+    let (pane, row, tab_pane, tab) = match at {
+        Some((p, dnd::Mark::Row(r))) => (p as i32, r, -1, -1),
+        Some((p, dnd::Mark::Tab(i))) => (-1, -1, p as i32, i as i32),
+        _ => (-1, -1, -1, -1),
+    };
+    let (side_row, side_y, side_h) = side.unwrap_or((-1, 0.0, 0.0));
+    let now = (app.get_drop_pane(), app.get_drop_row(), app.get_drop_tab_pane(), app.get_drop_tab(), app.get_drop_side_row());
+    if now == (pane, row, tab_pane, tab, side_row) {
         return;
     }
     app.set_drop_pane(pane);
     app.set_drop_row(row);
+    app.set_drop_tab_pane(tab_pane);
+    app.set_drop_tab(tab);
+    app.set_drop_side_y(side_y);
+    app.set_drop_side_h(side_h);
+    app.set_drop_side_row(side_row);
     dnd::repaint_during_own_drag();
 }
 

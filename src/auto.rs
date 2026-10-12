@@ -54,7 +54,10 @@
 //!                                    drop files without OLE's drag loop: our drop target's
 //!                                    DragEnter then Drop, called directly with a data object
 //!                                    serving the paths as CF_HDROP, at the centre of a visible row
-//!                                    (or, with row -1, the pane's header: its folder). copy holds
+//!                                    (or, with row -1, the pane's header: its folder). In place of
+//!                                    `<pane> <row>`, `side <row>` aims at sidebar row <row> (headers
+//!                                    count; 0 is "Drives") and `tab <pane> <index>` at tab <index>
+//!                                    of the pane's strip (shown with two tabs or more). copy holds
 //!                                    Ctrl, move Shift, auto neither; menu holds the right button,
 //!                                    so Drop opens the drop menu, and picks "Copy here", "Move
 //!                                    here" or "Cancel" from the in-menu timer. Paths are separated
@@ -129,6 +132,14 @@ use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_RBUTTON, MK_SHIF
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, PostMessageW, SetTimer, WM_KEYDOWN, WM_MOUSEMOVE};
 
+/// Where a `dropfiles` lands: a pane's row (-1: the pane's folder), a sidebar row, or a tab.
+#[derive(Debug, Clone, Copy)]
+enum DropAt {
+    Row(usize, i32),
+    Side(usize),
+    Tab(usize, usize),
+}
+
 #[derive(Debug, Clone)]
 enum Step {
     Sleep(u64),
@@ -158,7 +169,7 @@ enum Step {
     DragCancel,
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
     /// Mode `menu` is a right-button drop whose menu gets `pick` (copy, move or cancel).
-    DropFiles { pane: usize, row: i32, mode: String, pick: String, paths: Vec<String> },
+    DropFiles { at: DropAt, mode: String, pick: String, paths: Vec<String> },
     /// Hover a drag of `paths` near the pane list's top or bottom edge for `ms`, then leave.
     DragOver { pane: usize, top: bool, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
@@ -230,12 +241,19 @@ fn parse(script: &str) -> Vec<Step> {
                 },
                 "dragcancel" => Step::DragCancel,
                 "dropfiles" => {
-                    let mode = a.get(3).unwrap_or(&"auto").to_string();
+                    // `tab <pane> <index>` takes one word more than `<pane> <row>` and `side <row>`.
+                    let m = if a.get(1) == Some(&"tab") { 4 } else { 3 };
+                    let mode = a.get(m).unwrap_or(&"auto").to_string();
                     // `menu <copy|move|cancel>` takes one more word before the paths.
-                    let (pick, first) = if mode == "menu" { (a.get(4).unwrap_or(&"cancel").to_string(), 5) } else { (String::new(), 4) };
+                    let (pick, first) = if mode == "menu" { (a.get(m + 1).unwrap_or(&"cancel").to_string(), m + 2) } else { (String::new(), m + 1) };
+                    // The spot: `<pane> <row>`, `side <row>` or `tab <pane> <index>`.
+                    let at = match a.get(1).copied() {
+                        Some("side") => DropAt::Side(num(2) as usize),
+                        Some("tab") => DropAt::Tab(num(2) as usize, num(3) as usize),
+                        _ => DropAt::Row(num(1) as usize, num(2) as i32),
+                    };
                     Step::DropFiles {
-                        pane: num(1) as usize,
-                        row: num(2) as i32,
+                        at,
                         mode,
                         pick,
                         paths: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
@@ -483,13 +501,30 @@ fn when_drag_over(f: Box<dyn FnOnce()>) {
     }
 }
 
-/// Where `dropfiles` aims: the centre of a visible row, or with row -1 the pane's
-/// header (in the pane, over no row, so the drop goes to the pane's folder).
-fn drop_point(app: &App, pane: usize, row: i32) -> LogicalPosition {
-    let (_, _, mid) = geometry(app, pane);
-    match usize::try_from(row) {
-        Ok(r) => row_pos(app, pane, r),
-        Err(_) => LogicalPosition::new(mid.x, list_top(app, pane) - 14.0),
+/// Where `dropfiles` aims: the centre of a visible row, or with row -1 the pane's header (in the
+/// pane, over no row, so the drop goes to the pane's folder); the centre of a sidebar row; the
+/// centre of a tab. None for a sidebar row that does not exist, or a tab when the pane shows no
+/// strip.
+fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
+    match at {
+        DropAt::Row(pane, row) => {
+            let (_, _, mid) = geometry(app, pane);
+            Some(match usize::try_from(row) {
+                Ok(r) => row_pos(app, pane, r),
+                Err(_) => LogicalPosition::new(mid.x, list_top(app, pane) - 14.0),
+            })
+        }
+        DropAt::Side(row) => Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_row_centre(row)?)),
+        DropAt::Tab(pane, index) => {
+            let l = crate::window_layout(app);
+            if !l.tabs[pane] {
+                return None;
+            }
+            let (left, _) = crate::dnd::pane_x(&l, pane);
+            let w = app.invoke_tab_width(pane as i32);
+            let x = left + crate::dnd::PANE_PAD + app.invoke_tab_offset(pane as i32) + (index as f32 + 0.5) * w;
+            Some(LogicalPosition::new(x, crate::dnd::TAB_TOP + crate::dnd::TAB_H / 2.0))
+        }
     }
 }
 
@@ -953,8 +988,12 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 }
             });
         }
-        Step::DropFiles { pane, row, mode, pick, paths } => {
-            let pos = drop_point(&app, pane, row);
+        Step::DropFiles { at, mode, pick, paths } => {
+            let Some(pos) = drop_point(&app, at) else {
+                eprintln!("[auto] dropfiles {at:?}: no such sidebar row or tab on screen");
+                schedule(runner, 1);
+                return;
+            };
             let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), pos.x, pos.y, app.window().scale_factor());
             let keys = match mode.as_str() {
                 "copy" => MK_CONTROL,
@@ -979,7 +1018,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             }
             match result {
                 Some((enter, dropped)) => eprintln!(
-                    "[auto] dropfiles pane={pane} row={row} {mode}{}: {} path(s), DragEnter effect {}, Drop reported {}",
+                    "[auto] dropfiles {at:?} {mode}{}: {} path(s), DragEnter effect {}, Drop reported {}",
                     if mode == "menu" { format!(" {pick}") } else { String::new() },
                     paths.len(),
                     crate::dnd::effect_name(enter),

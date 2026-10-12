@@ -229,12 +229,75 @@ pub fn list_top(l: &Layout, pane: usize) -> f32 {
 /// Where a window point lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Spot {
-    /// Outside both panes (the splitter, or off the window).
+    /// Outside both panes (the splitter, or off the window), or on a sidebar header or the
+    /// sidebar's footer.
     Outside,
-    /// In the pane but not over a row (path bar, header, empty space, status line).
+    /// In the pane but not over a row (path bar, header, empty space, status line, the tab
+    /// strip past the last tab).
     Pane(usize),
     /// Over row `.1` of pane `.0`.
     Row(usize, usize),
+    /// Over sidebar row `.0` (a drive, a place or a bookmark).
+    Side(usize),
+    /// Over tab `.1` in pane `.0`'s tab strip.
+    Tab(usize, usize),
+}
+
+/// The sidebar's list starts under its 3 px top padding and ends above the 26 px footer (the
+/// "About TwinFM" row); a pane's tab strip is 26 px tall under the pane's 3 px padding.
+pub const SIDE_TOP: f32 = 3.0;
+pub const SIDE_FOOTER: f32 = 26.0;
+pub const TAB_TOP: f32 = 3.0;
+pub const TAB_H: f32 = 26.0;
+
+/// What `hit_all` needs beyond the panes: the sidebar and the tab strips (logical px).
+#[derive(Clone, Copy, Debug)]
+pub struct Strips<'a> {
+    /// The sidebar's width (0 when it is collapsed: no targets), its list's scroll offset (zero
+    /// or negative), and each of its rows' height and whether it is a drop target (headers are not).
+    pub side_w: f32,
+    pub side_scroll: f32,
+    pub side_rows: &'a [(f32, bool)],
+    /// Each pane's tab strip: tab count, tab width and the strip's scroll offset. The strip shows
+    /// only when the pane has more than one tab (`Layout::tabs`).
+    pub tabs: [(usize, f32, f32); 2],
+}
+
+/// The top of sidebar row `i` in the sidebar list's content (before its scroll), from the rows'
+/// heights.
+pub fn side_row_top(rows: &[(f32, bool)], i: usize) -> f32 {
+    rows.iter().take(i).map(|r| r.0).sum()
+}
+
+/// `hit`, plus the sidebar's rows and the panes' tab strips.
+pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> Spot {
+    if y < 0.0 || y >= l.height || x < 0.0 {
+        return Spot::Outside;
+    }
+    if x < s.side_w {
+        if y < SIDE_TOP || y >= l.height - SIDE_FOOTER {
+            return Spot::Outside;
+        }
+        let ly = y - SIDE_TOP - s.side_scroll;
+        let mut top = 0.0;
+        for (i, &(h, target)) in s.side_rows.iter().enumerate() {
+            if ly >= top && ly < top + h {
+                return if target { Spot::Side(i) } else { Spot::Outside };
+            }
+            top += h;
+        }
+        return Spot::Outside;
+    }
+    let panes = if l.split { 2 } else { 1 };
+    for pane in 0..panes {
+        let (a, b) = pane_x(l, pane);
+        if l.tabs[pane] && x >= a + PANE_PAD && x < b - PANE_PAD && y >= TAB_TOP && y < TAB_TOP + TAB_H {
+            let (n, w, off) = s.tabs[pane];
+            let i = ((x - a - PANE_PAD - off) / w).floor();
+            return if w > 0.0 && i >= 0.0 && (i as usize) < n { Spot::Tab(pane, i as usize) } else { Spot::Pane(pane) };
+        }
+    }
+    hit(l, x, y, content_y, len)
 }
 
 /// The pane's x range: the left pane is the whole panes area without the split, else up to 3 px
@@ -710,12 +773,21 @@ pub fn hdrop_data(paths: &[PathBuf]) -> Com {
 
 // --- The drop target ----------------------------------------------------------------------------
 
+/// What a drop spot highlights: a row of the pane's list (-1: the whole list, the drop goes to
+/// the pane's folder), a tab of its strip, or a sidebar row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    Row(i32),
+    Tab(usize),
+    Side(usize),
+}
+
 /// Where a drop at a window point goes, as the app decides it (`crate::drop_spot`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DropSpot {
+    /// The pane the drop is noted in (for a sidebar row, the active pane).
     pub pane: usize,
-    /// The row highlighted (-1: the whole pane, the drop goes to the pane's folder).
-    pub row: i32,
+    pub mark: Mark,
     pub dest: PathBuf,
 }
 
@@ -788,7 +860,7 @@ impl DropTarget {
         // SAFETY: COM contract: `effect` is a valid in/out pointer (checked for null).
         let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
         let (spot, e) = self.evaluate(keys, pt, allowed);
-        let highlight = spot.as_ref().filter(|_| e != NONE).map(|s| (s.pane, s.row));
+        let highlight = spot.as_ref().filter(|_| e != NONE).map(|s| (s.pane, s.mark));
         crate::drop_highlight(highlight);
         let changed = self.last.borrow().as_ref() != Some(&(spot.clone(), e));
         if changed {
@@ -805,8 +877,12 @@ impl DropTarget {
 fn describe(spot: &Option<DropSpot>) -> String {
     match spot {
         None => "nowhere".into(),
-        Some(s) if s.row >= 0 => format!("pane {} row {} ({})", s.pane, s.row, s.dest.display()),
-        Some(s) => format!("pane {} ({})", s.pane, s.dest.display()),
+        Some(s) => match s.mark {
+            Mark::Row(r) if r >= 0 => format!("pane {} row {r} ({})", s.pane, s.dest.display()),
+            Mark::Row(_) => format!("pane {} ({})", s.pane, s.dest.display()),
+            Mark::Tab(i) => format!("pane {} tab {i} ({})", s.pane, s.dest.display()),
+            Mark::Side(i) => format!("sidebar row {i} ({}), noted in pane {}", s.dest.display(), s.pane),
+        },
     }
 }
 
@@ -1785,6 +1861,55 @@ mod tests {
         let pc = p("This PC");
         assert_eq!(drop_folder(&pc, true, Some((r"D:\", true))), Some((p(r"D:\"), true)), "a drive row");
         assert_eq!(drop_folder(&pc, true, None), None, "the drive list is no folder");
+    }
+
+    #[test]
+    fn hit_sidebar_rows_and_tabs() {
+        // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000.
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0 };
+        // Header 26, two drives 24, header 26, a place 24, header 26, a bookmark being renamed 30.
+        let rows = [(26.0, false), (24.0, true), (24.0, true), (26.0, false), (24.0, true), (26.0, false), (30.0, true)];
+        let s = Strips { side_w: 180.0, side_scroll: 0.0, side_rows: &rows, tabs: [(1, 160.0, 0.0), (3, 120.0, 0.0)] };
+        let none = [0.0, 0.0];
+        let hit = |x: f32, y: f32| hit_all(&l, &s, x, y, none, [5, 7]);
+        // Sidebar rows from y 3 (its padding).
+        assert_eq!(hit(90.0, 2.0), Spot::Outside, "above the list: its padding");
+        assert_eq!(hit(90.0, 3.0), Spot::Outside, "the Drives header");
+        assert_eq!(hit(90.0, 29.0), Spot::Side(1), "the first drive");
+        assert_eq!(hit(90.0, 52.9), Spot::Side(1));
+        assert_eq!(hit(90.0, 53.0), Spot::Side(2));
+        assert_eq!(hit(90.0, 80.0), Spot::Outside, "the Places header");
+        assert_eq!(hit(90.0, 103.0), Spot::Side(4), "a place");
+        assert_eq!(hit(90.0, 130.0), Spot::Outside, "the Bookmarks header");
+        assert_eq!(hit(90.0, 160.0), Spot::Side(6), "a bookmark, 30 px while renamed");
+        assert_eq!(hit(90.0, 184.0), Spot::Outside, "below the last row");
+        assert_eq!(hit(90.0, 580.0), Spot::Outside, "the About row (footer)");
+        assert_eq!(hit(181.0, 29.0), Spot::Outside, "the sidebar's resize edge");
+        assert_eq!(side_row_top(&rows, 0), 0.0);
+        assert_eq!(side_row_top(&rows, 4), 100.0);
+        assert_eq!(side_row_top(&rows, 6), 150.0);
+        // A scrolled sidebar list (content-y -50): row 4 now sits at 3 + 100 - 50.
+        let scrolled = Strips { side_scroll: -50.0, ..s };
+        assert_eq!(hit_all(&l, &scrolled, 90.0, 60.0, none, [5, 7]), Spot::Side(4));
+        // A collapsed sidebar: no targets (and the 12 px strip is outside the panes).
+        let collapsed = Strips { side_w: 0.0, ..s };
+        let lc = Layout { left: 12.0, ..l };
+        assert_eq!(hit_all(&lc, &collapsed, 5.0, 29.0, none, [5, 7]), Spot::Outside);
+        // Tabs: only the right pane shows a strip (3 tabs of 120 px from x 598, y 3..29).
+        assert_eq!(hit(600.0, 10.0), Spot::Tab(1, 0));
+        assert_eq!(hit(717.9, 10.0), Spot::Tab(1, 0));
+        assert_eq!(hit(718.0, 10.0), Spot::Tab(1, 1));
+        assert_eq!(hit(598.0 + 2.5 * 120.0, 28.9), Spot::Tab(1, 2));
+        assert_eq!(hit(970.0, 10.0), Spot::Pane(1), "past the last tab: the pane");
+        assert_eq!(hit(700.0, 2.0), Spot::Pane(1), "above the strip: the pane's padding");
+        assert_eq!(hit(700.0, 29.0), Spot::Pane(1), "below the strip: the path bar");
+        assert_eq!(hit(300.0, 10.0), Spot::Pane(0), "the left pane has no strip: its path bar");
+        // A strip scrolled left by 130 px: x 600 is 132 px into the content, tab 1.
+        let s2 = Strips { tabs: [(1, 160.0, 0.0), (4, 120.0, -130.0)], ..s };
+        assert_eq!(hit_all(&l, &s2, 600.0, 10.0, none, [5, 7]), Spot::Tab(1, 1));
+        // The lists still hit as before.
+        assert_eq!(hit(300.0, 70.0), Spot::Row(0, 0));
+        assert_eq!(hit(700.0, 95.0), Spot::Row(1, 0));
     }
 
     #[test]
