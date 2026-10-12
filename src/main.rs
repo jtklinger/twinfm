@@ -1812,11 +1812,13 @@ fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)]) -> dnd::Strip
 }
 
 /// For the driver's `dropfiles side <row>`: sidebar row `i`'s vertical centre in the window
-/// (logical px), if the row exists and is on screen.
-pub fn side_row_centre(i: usize) -> Option<f32> {
+/// (logical px), if the row exists; a negative `i` counts from the end (-1: the last row, the
+/// newest bookmark).
+pub fn side_row_centre(i: i32) -> Option<f32> {
     with_state(|st| {
         let app = st.app.upgrade()?;
         let rows = side_rows(st, &app);
+        let i = if i < 0 { rows.len().checked_sub(i.unsigned_abs() as usize)? } else { i as usize };
         let h = rows.get(i)?.0;
         Some(dnd::SIDE_TOP + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
     })

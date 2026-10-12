@@ -56,7 +56,8 @@
 //!                                    serving the paths as CF_HDROP, at the centre of a visible row
 //!                                    (or, with row -1, the pane's header: its folder). In place of
 //!                                    `<pane> <row>`, `side <row>` aims at sidebar row <row> (headers
-//!                                    count; 0 is "Drives") and `tab <pane> <index>` at tab <index>
+//!                                    count; 0 is "Drives"; -1 the last row, the newest bookmark) and
+//!                                    `tab <pane> <index>` at tab <index>
 //!                                    of the pane's strip (shown with two tabs or more). copy holds
 //!                                    Ctrl, move Shift, auto neither; menu holds the right button,
 //!                                    so Drop opens the drop menu, and picks "Copy here", "Move
@@ -136,7 +137,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, PostMessag
 #[derive(Debug, Clone, Copy)]
 enum DropAt {
     Row(usize, i32),
-    Side(usize),
+    Side(i32),
     Tab(usize, usize),
 }
 
@@ -248,7 +249,7 @@ fn parse(script: &str) -> Vec<Step> {
                     let (pick, first) = if mode == "menu" { (a.get(m + 1).unwrap_or(&"cancel").to_string(), m + 2) } else { (String::new(), m + 1) };
                     // The spot: `<pane> <row>`, `side <row>` or `tab <pane> <index>`.
                     let at = match a.get(1).copied() {
-                        Some("side") => DropAt::Side(num(2) as usize),
+                        Some("side") => DropAt::Side(num(2) as i32),
                         Some("tab") => DropAt::Tab(num(2) as usize, num(3) as usize),
                         _ => DropAt::Row(num(1) as usize, num(2) as i32),
                     };
