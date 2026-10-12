@@ -1347,7 +1347,16 @@ Screenshots and logs (session scratchpad, not in the repo): `shots/manual.png` a
 - **The Type column** stays on by default for now. It cost 3.4 gate points in M1; if a Phase 2
   milestone needs per-frame headroom, the options are making it a setting (off by default) or
   buying the headroom elsewhere first.
-- **A large-icon view**: wanted at all? It would be the first feature since M1 to add per-row
-  rendering work, so P2-M5 starts it with a trace only if Jeremy says yes.
+- **A large-icon view**: declined by Jeremy (2026-10-12). P2-M5 is icons only; a large-icon view
+  is a Phase 3 candidate beside thumbnails, which it would share the per-row work with, and it
+  starts with a trace if it is ever taken up.
+- **Gate protocol, agreed by Jeremy (2026-10-12)**, from P2-M5 on: three console runs per binary,
+  interleaved (reference, candidate, reference, candidate, reference, candidate), compared by
+  median; a gap counts only when every reference run sits below every candidate run or the
+  medians differ by more than one point. Reason: single runs of one unchanged binary ranged 19.6
+  to 22.8 on 2026-10-12, so a one-pair A/B resolves about two points and both invented and hid a
+  one-point difference during P2-M4.
+- **Explorer never starts a right-button drag on this desktop** (P2-M4 manual check): outside
+  TwinFM; worth one check without Logi Options+ running if Jeremy cares.
 - **Upstreaming the two Slint accessibility patches** (`docs/upstream-issue-draft.md`,
   `docs/patches/`): still deferred; Jeremy decides when.
