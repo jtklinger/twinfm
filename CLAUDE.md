@@ -61,6 +61,8 @@ changing the list.
   presses Ctrl+Shift+PageUp / PageDown (key names `CtrlShiftPageUp`, `CtrlShiftPageDown`) to move
   the active tab, `tabdrag <pane> <index> <dx>` drags tab `<index>` (0-based) `<dx>` px through
   Slint's pointer path, `midclick <pane> <row>` middle-clicks a row (a folder opens in a new tab),
+  `backclick <pane>` presses and releases the mouse's Back button at the middle of the pane's list
+  (that pane becomes active and goes up a folder; on This PC one `[nav]` line and nothing else),
   `crumb <pane> <index>` clicks a breadcrumb button through its callback, `crumbmenu <pane>
   <index>` opens the dropdown of crumb `<index>`'s subfolders (listed on a worker: `sleep` before
   picking), `crumbpick <name>` picks one and `crumbclose` closes it, `pathmode <pane> entry|crumb`

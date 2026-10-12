@@ -519,6 +519,17 @@ space.
 - **Right-click on empty space clears the selection** (M4 Deferred). `SelOp::Clear` (5) empties
   the selection and the anchor; the empty space's right press sends it before the background menu
   opens, and the driver's `rclickempty` fallback (no empty space on screen) sends it too.
+- **The mouse's Back button goes up a folder** (added at Jeremy's request, 2026-10-12), as
+  Backspace and Alt+Up do, in the pane under the pointer, which becomes the active pane as a click
+  there would make it. Slint's winit backend delivers the side button as `PointerEventButton.back`;
+  every `TouchArea` grabs whatever press it receives, so each one in the pane reports a Back release
+  itself: the rows (gesture 5), the empty space below them, the header cells, the crumbs and their
+  chevrons, the path bar's mode glyph, and a `TouchArea` behind everything for the padding, the
+  status line and the gaps. All of them end in `back_button(pane)`, which calls the existing
+  up-folder path (`go_up`, shared with Backspace and Alt+Up). On This PC it does nothing and logs
+  one `[nav] ... This PC has no parent folder, nothing to do` line. Forward does nothing yet.
+  Driver step `backclick <pane>` dispatches a real Back press and release at the middle of the
+  pane's list.
 - **Driver**: `tab moveleft|moveright` (key names `CtrlShiftPageUp`, `CtrlShiftPageDown`),
   `tabdrag <pane> <index> <dx>` (press on the tab's centre, move in 8 px steps, release, through
   Slint's pointer path), `midclick <pane> <row>`, `crumbmenu <pane> <index>`, `crumbpick <name>`,
@@ -601,6 +612,10 @@ space.
   crumb.
 - **Rename is reached only from the bookmark menu**; F2 in the sidebar does not start it.
 - **Restored tabs keep only the folder**: their sort, hidden filter, cursor and scroll start fresh.
+- **A back/forward history per tab**, and with it **Forward = history forward** (the mouse's
+  Forward button does nothing yet) and Back as history back rather than up a folder.
+- **The Back button over a text entry** (the path entry, the rename editor), **the tab strip or
+  the list's scrollbar** does nothing: their own `TouchArea`s take the press and do not report it.
 
 ### Scripted checks
 
@@ -651,6 +666,12 @@ RDP session, `target\release` of this branch, scratch folders and configs in
   0 2`, `rclickempty 0`: `[select] pane=0 Clear row=-1 selected=0`, then the background menu.
   On `C:\Windows` (no empty space): the fallback logged `calling context-menu(-1) directly` after
   the same `Clear ... selected=0`.
+- **Back button** (2026-10-12). On `m\d1` (empty, so the press lands on the empty space):
+  `backclick 0` gave `[nav] pane=0 Back button (active pane was 0, now 0): up a folder` and `[nav]
+  pane=0 gen=2 path=...\m`. After `split` and `nav 1 C:\Windows\System32` (the list's middle is a
+  row there): `backclick 1` gave `pane=1 ... up a folder` and `path=C:\Windows`. With pane 1 active,
+  `nav 0 This PC` then `backclick 0`: one line, `[nav] pane=0 Back button (active pane was 1, now
+  0): This PC has no parent folder, nothing to do`, and no navigation.
 - **In-app gate scenario, not decisive** (RDP, presentation at about 21 fps, frame interval 47 ms):
   six alternating runs on `C:\traces\bigdir`, `target-p2m2` 9.8, 10.3, 9.2, 9.7, 9.7, 7.6% and this
   branch 10.6, 10.3, 4.8, 5.8, 10.3, 8.6%, 379 frames each. Nothing new runs per frame: the strip,

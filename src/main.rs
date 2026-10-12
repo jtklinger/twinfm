@@ -1464,6 +1464,44 @@ fn log_select(model: &PaneModel, pane: usize, op: SelOp, row: usize) {
     eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
 }
 
+/// Backspace, Alt+Up and the mouse's Back button: the active tab's parent folder (a drive or share
+/// root goes up to This PC). False on This PC, which has no parent.
+fn go_up(pane: usize) -> bool {
+    let target = with_state(|st| {
+        let base = st.tab(pane).path.clone();
+        if is_this_pc(&base.to_string_lossy()) {
+            return None;
+        }
+        // A drive root (or UNC share root) has no parent: go up to the drive list.
+        Some(base.parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf()))
+    });
+    match target {
+        Some(p) => {
+            navigate(pane, p);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The mouse's Back button released over a pane (any part of it but a text entry, the tab strip
+/// and the scrollbar): that pane becomes active, as a click there would make it, and goes up a
+/// folder. Forward does nothing yet (no history).
+fn back_button(pane: usize) {
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    if pane == 1 && !app.get_split() {
+        return;
+    }
+    let was = app.get_active_pane();
+    app.invoke_focus_pane(pane as i32);
+    let at_top = with_state(|st| is_this_pc(&st.tab(pane).path.to_string_lossy()));
+    let what = if at_top { "This PC has no parent folder, nothing to do" } else { "up a folder" };
+    eprintln!("[nav] pane={pane} Back button (active pane was {was}, now {pane}): {what}");
+    if !at_top {
+        go_up(pane);
+    }
+}
+
 /// The middle button on a row: a folder (or a drive, or a reparse directory) opens in a new tab
 /// in the same pane, as a middle-click in the sidebar does; a file does nothing.
 fn middle_click_row(pane: usize, row: usize) {
@@ -1482,8 +1520,8 @@ fn middle_click_row(pane: usize, row: usize) {
 }
 
 /// The left button on a row: press (0), release (1), moved past the drag threshold with the
-/// button down (2), double-click (3); the middle button's release (4). `dnd::Gesture` decides
-/// what selects, drags and opens.
+/// button down (2), double-click (3); the middle button's release (4) and the Back button's (5).
+/// `dnd::Gesture` decides what selects, drags and opens.
 fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
     let Ok(row) = usize::try_from(row) else { return };
     match what {
@@ -1516,6 +1554,7 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
             }
         }
         4 => middle_click_row(pane, row),
+        5 => back_button(pane),
         _ => {}
     }
 }
@@ -2230,18 +2269,9 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_open_row(|pane, row| open_row(pane as usize, row));
     app.on_row_gesture(|pane, row, what, ctrl, shift| row_gesture(pane as usize, row, what, ctrl, shift));
     app.on_go_up(|pane| {
-        let target = with_state(|st| {
-            let base = st.tab(pane as usize).path.clone();
-            if is_this_pc(&base.to_string_lossy()) {
-                return None;
-            }
-            // A drive root (or UNC share root) has no parent: go up to the drive list.
-            Some(base.parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf()))
-        });
-        if let Some(p) = target {
-            navigate(pane as usize, p);
-        }
+        go_up(pane as usize);
     });
+    app.on_pane_back(|pane| back_button(pane as usize));
     app.on_sort_by(|pane, col| {
         with_state(|st| {
             let model = st.model(pane as usize);

@@ -142,6 +142,9 @@ export component App inherits Window {
     callback open-row(int, int);
     callback sort-by(int, int);
     callback go-up(int);
+    // pane-back(pane): the mouse's Back button released over that pane (not necessarily the
+    // active one): it becomes active and goes up a folder.
+    callback pane-back(int);
     callback toggle-split();
     callback toggle-hidden(int);
     callback refresh(int);
@@ -159,7 +162,7 @@ export component App inherits Window {
     callback context-menu(int, int, length, length, bool);
     callback context-key(int, int, length, length, length, length);
     // row-gesture(pane, row, what, ctrl, shift): left press (0), release (1), drag past the
-    // threshold (2) or double-click (3) on a row, or a middle-button release (4); see pane.slint
+    // threshold (2) or double-click (3) on a row, or a middle (4) or Back (5) button release; see pane.slint
     // FileListBase.
     callback row-gesture(int, int, int, bool, bool);
     // tab-select(pane, index), tab-close(pane, index): a click or middle-click in a tab strip.
@@ -404,6 +407,7 @@ export component App inherits Window {
                 open-row(i) => { root.open-row(0, i); }
                 sort-by(c) => { root.sort-by(0, c); }
                 go-up => { root.go-up(0); }
+                back-button => { root.pane-back(0); }
                 focus-requested => { active-pane = 0; }
             }
             right := Pane {
@@ -436,6 +440,7 @@ export component App inherits Window {
                 open-row(i) => { root.open-row(1, i); }
                 sort-by(c) => { root.sort-by(1, c); }
                 go-up => { root.go-up(1); }
+                back-button => { root.pane-back(1); }
                 focus-requested => { active-pane = 1; }
             }
             splitter := Rectangle {
