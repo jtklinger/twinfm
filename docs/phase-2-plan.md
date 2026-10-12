@@ -728,8 +728,9 @@ back to back (2026-10-12 11:19 and 11:22): `target-p2m2` (0f57a5d) first, then `
 
 | Build | Sampled ms | WPR busy | In-app |
 |---|---|---|---|
-| P2-M2 (`target-p2m2`), reference | 2593 | 25.9% | 27.2% |
-| P2-M3 (`target-p2m3`) | 2060 | **20.6%** | 18.6% |
+| P2-M2 (`target-p2m2`), reference, 11:19 | 2593 | 25.9% (disturbed) | 27.2% |
+| P2-M3 (`target-p2m3`), 11:22 | 2060 | **20.6%** | 18.6% |
+| P2-M2 (`target-p2m2`), reference re-run, 11:30 | 2100 | **21.0%** | 20.8% |
 
 The reference run is an outlier, not a reading of P2-M2: the same binary read 20.3% the evening
 before, and every frame share in this run is up by about a quarter at once (render 1524 vs 1148
@@ -739,9 +740,12 @@ sat across sessions: M6 19.8 / 19.9 / 20.2, P2-M1 20.0 / 20.4, P2-M2 20.3, with 
 drift between sessions. Its frame shares match P2-M2's clean run within a few samples
 (accessibility 237 vs 228, render 1193 vs 1148, draw_text 668 vs 653, rows 377 vs 369, timers
 729 vs 722, heap 204 vs 220); no tab-strip, crumb, bookmark or Back-button frame appears in the
-window. **P2-M3 passes**, with the caveat that its same-session reference was disturbed; a clean
-reference re-run was requested. Traces `C:/traces/twinfm-ab3-{p2m2,p2m3}.etl`, reports under
-`C:/traces/export/`.
+window. The clean reference re-run eight minutes later read 21.0% (frame shares within a few
+samples of P2-M3's: accessibility 221, render 1233, draw_text 695, rows 389, timers 726, heap 225),
+so the same-session pair is P2-M2 21.0 / P2-M3 20.6. **P2-M3 passes**: below its reference. The
+whole machine sits about half a point above the previous evening (P2-M2 read 20.3 then), one more
+data point for "compare within a session, never against a recorded number". Traces
+`C:/traces/twinfm-ab3-{p2m2,p2m3,p2m2b}.etl`, reports under `C:/traces/export/`.
 
 ## Open questions
 
