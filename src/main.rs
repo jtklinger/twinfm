@@ -1737,6 +1737,31 @@ pub fn drop_spot(px: i32, py: i32) -> Option<dnd::DropSpot> {
     })
 }
 
+/// For the drop target's DragOver: a drag hovering near a list's top or bottom edge (client
+/// point, physical px) scrolls that list by one row. True when it scrolled. The state is read
+/// under a short borrow, released before the scroll is set (`set-scroll` is a property set).
+pub fn drop_autoscroll(px: i32, py: i32) -> bool {
+    let found = STATE.with(|s| {
+        let guard = s.try_borrow().ok()?;
+        let st = guard.as_ref()?;
+        let app = st.app.upgrade()?;
+        let scale = app.window().scale_factor();
+        let layout = window_layout(&app);
+        let (pane, dir) = dnd::edge_scroll(&layout, px as f32 / scale, py as f32 / scale)?;
+        let visible = layout.height - dnd::LIST_BOTTOM_GAP - dnd::list_top(&layout, pane);
+        Some((app, pane, dir, st.model(pane).len(), visible))
+    });
+    let Some((app, pane, dir, len, visible)) = found else { return false };
+    let from = app.invoke_get_scroll(pane as i32);
+    let to = dnd::scrolled(from, dir, len, visible);
+    if to == from {
+        return false;
+    }
+    app.invoke_set_scroll(pane as i32, to);
+    eprintln!("[dnd] auto-scroll pane {pane} {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
+    true
+}
+
 /// For the drop target: highlight the pane (row -1) or row a drop would land on, or nothing.
 pub fn drop_highlight(at: Option<(usize, i32)>) {
     let app = STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().and_then(|st| st.app.upgrade())));

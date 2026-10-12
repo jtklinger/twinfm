@@ -59,6 +59,11 @@
 //!                                    so Drop opens the drop menu, and picks "Copy here", "Move
 //!                                    here" or "Cancel" from the in-menu timer. Paths are separated
 //!                                    by `|` because `;` separates steps
+//!   dragover <pane> <top|bottom> <ms> <path|path|...>
+//!                                    a drag of the paths enters the window 6 px inside the pane
+//!                                    list's top or bottom edge and hovers there for <ms> (our drop
+//!                                    target's DragEnter, DragOver every 20 ms from a Slint timer,
+//!                                    DragLeave): the auto-scroll near the edges. It never drops
 //!   tab <new|close|next|prev|N>      Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+N (1..9) through the
 //!                                    Slint key path, on the active pane
 //!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
@@ -154,6 +159,8 @@ enum Step {
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
     /// Mode `menu` is a right-button drop whose menu gets `pick` (copy, move or cancel).
     DropFiles { pane: usize, row: i32, mode: String, pick: String, paths: Vec<String> },
+    /// Hover a drag of `paths` near the pane list's top or bottom edge for `ms`, then leave.
+    DragOver { pane: usize, top: bool, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
     CrumbMenu { pane: usize, index: i32 },
     CrumbPick(String),
@@ -234,6 +241,12 @@ fn parse(script: &str) -> Vec<Step> {
                         paths: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                     }
                 }
+                "dragover" => Step::DragOver {
+                    pane: num(1) as usize,
+                    top: a.get(2) == Some(&"top"),
+                    ms: num(3).max(1) as u64,
+                    paths: a.get(4..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
+                },
                 "tab" => Step::Key(match a.get(1).copied().unwrap_or("") {
                     "new" => "CtrlT".into(),
                     "close" => "CtrlW".into(),
@@ -896,6 +909,32 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 }
                 // After a drag the app gives Slint the release it missed (main.rs).
                 schedule(r2.clone(), 1);
+            });
+        }
+        Step::DragOver { pane, top, ms, paths } => {
+            // A drag hovering 6 px inside the list's top or bottom edge: DragEnter, a DragOver every
+            // 20 ms from a Slint timer (OLE calls DragOver on its own timer for another program's
+            // drag, outside any modal loop of ours), then DragLeave. It never drops.
+            let l = crate::window_layout(&app);
+            let (_, _, mid) = geometry(&app, pane);
+            let y = if top { crate::dnd::list_top(&l, pane) + 6.0 } else { l.height - crate::dnd::LIST_BOTTOM_GAP - 6.0 };
+            let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), mid.x, y, app.window().scale_factor());
+            let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+            if !crate::dnd::hover_begin(&paths, sx, sy) {
+                eprintln!("[auto] dragover: no drop target registered yet");
+                schedule(runner, 1);
+                return;
+            }
+            let deadline = std::time::Instant::now() + Duration::from_millis(ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(20), move || {
+                if std::time::Instant::now() >= deadline {
+                    crate::dnd::hover_end();
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 1);
+                } else {
+                    crate::dnd::hover_over(sx, sy);
+                }
             });
         }
         Step::DropFiles { pane, row, mode, pick, paths } => {

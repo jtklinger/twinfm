@@ -264,6 +264,38 @@ pub fn hit(l: &Layout, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> 
     if r >= 0.0 && (r as usize) < len[pane] { Spot::Row(pane, r as usize) } else { Spot::Pane(pane) }
 }
 
+/// How close to a list's top or bottom edge a hovering drag scrolls it, logical px.
+pub const EDGE_PX: f32 = 24.0;
+/// How often a hovering drag scrolls a list by one row.
+pub const SCROLL_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A drag hovering at window point (x, y) near a list's edge: that pane and the direction to
+/// scroll (-1 up, toward the top edge; 1 down). None outside the lists or away from their edges.
+pub fn edge_scroll(l: &Layout, x: f32, y: f32) -> Option<(usize, i32)> {
+    let panes = if l.split { 2 } else { 1 };
+    let pane = (0..panes).find(|&p| {
+        let (a, b) = pane_x(l, p);
+        x >= a + PANE_PAD && x < b - PANE_PAD
+    })?;
+    let (top, bottom) = (list_top(l, pane), l.height - LIST_BOTTOM_GAP);
+    if y < top || y >= bottom {
+        None
+    } else if y < top + EDGE_PX {
+        Some((pane, -1))
+    } else if y >= bottom - EDGE_PX {
+        Some((pane, 1))
+    } else {
+        None
+    }
+}
+
+/// The list's scroll offset after one row's scroll in `dir` from `content_y` (zero or negative),
+/// kept in range for `len` rows in a viewport `visible_h` tall.
+pub fn scrolled(content_y: f32, dir: i32, len: usize, visible_h: f32) -> f32 {
+    let lowest = (visible_h - len as f32 * ROW_PX).min(0.0);
+    (content_y - dir as f32 * ROW_PX).clamp(lowest, 0.0)
+}
+
 /// The folder a drop goes to: the row's directory when the row is one (a drive row's name is its
 /// root, so `join` gives the drive), else the pane's folder; the drive list itself is not a
 /// folder. `row` is the row's name and whether it is a directory. Returns the folder and whether
@@ -692,6 +724,8 @@ struct DropTarget {
     /// The last DragEnter or DragOver had the right button down: a right-button drag, whose
     /// Drop asks what to do (the button is already up when Drop is called).
     right: Cell<bool>,
+    /// When DragOver last scrolled a list (auto-scroll near its edges, `SCROLL_EVERY`).
+    scrolled_at: Cell<Option<std::time::Instant>>,
 }
 
 static DROP_TARGET_VTBL: DropTargetVtbl = DropTargetVtbl {
@@ -720,11 +754,17 @@ unsafe extern "system" fn dt_release(this: *mut c_void) -> u32 {
 }
 
 impl DropTarget {
-    /// The spot and effect at screen point `pt` for the cached sources.
-    fn evaluate(&self, keys: u32, pt: POINTL, allowed: u32) -> (Option<DropSpot>, u32) {
+    /// Screen point to client px.
+    fn client(&self, pt: POINTL) -> POINT {
         let mut p = POINT { x: pt.x, y: pt.y };
         // SAFETY: plain Win32 call on our own window with a valid in/out pointer.
         unsafe { ScreenToClient(self.hwnd as HWND, &mut p) };
+        p
+    }
+
+    /// The spot and effect at screen point `pt` for the cached sources.
+    fn evaluate(&self, keys: u32, pt: POINTL, allowed: u32) -> (Option<DropSpot>, u32) {
+        let p = self.client(pt);
         let spot = crate::drop_spot(p.x, p.y);
         let sources = self.sources.borrow();
         let effect = match (&*sources, &spot) {
@@ -794,6 +834,15 @@ unsafe extern "system" fn dt_drag_enter(this: *mut c_void, data: *mut c_void, ke
 unsafe extern "system" fn dt_drag_over(this: *mut c_void, keys: u32, pt: POINTL, effect: *mut u32) -> HRESULT {
     // SAFETY: as in `dt_drag_enter`.
     let t = unsafe { &*(this as *const DropTarget) };
+    // Near a list's top or bottom edge: scroll it a row, at most once per SCROLL_EVERY (OLE calls
+    // DragOver on a timer even while the mouse rests), then place the highlight on the scrolled
+    // list. The scroll is a property set; no app-state borrow is held while it runs.
+    if t.scrolled_at.get().is_none_or(|at| at.elapsed() >= SCROLL_EVERY) {
+        let p = t.client(pt);
+        if crate::drop_autoscroll(p.x, p.y) {
+            t.scrolled_at.set(Some(std::time::Instant::now()));
+        }
+    }
     t.over(keys, pt, effect);
     target_helper_call(HelperCall::Over, pt, out_effect(effect));
     S_OK
@@ -948,6 +997,7 @@ pub fn register(hwnd: isize) -> (HRESULT, HRESULT) {
         sources: RefCell::new(None),
         last: RefCell::new(None),
         right: Cell::new(false),
+        scrolled_at: Cell::new(None),
     });
     let ptr = Box::into_raw(obj) as *mut c_void;
     // SAFETY: plain OLE calls on our own window, on its thread. RegisterDragDrop takes its own
@@ -985,6 +1035,55 @@ pub fn drop_direct(paths: &[PathBuf], keys: u32, x: i32, y: i32) -> Option<(u32,
         (v.drop)(t, data.0, keys, pt, &mut dropped);
         Some((enter, dropped))
     }
+}
+
+thread_local! {
+    /// The data object of the driver's `dragover` hover, between `hover_begin` and `hover_end`.
+    static HOVER: RefCell<Option<Com>> = const { RefCell::new(None) };
+}
+
+/// The driver's `dragover`: a drag of `paths` that enters our window at screen point (x, y) and
+/// hovers there (`hover_over`, called from a Slint timer, as OLE calls DragOver on its own timer
+/// for another program's drag) until `hover_end` leaves. It never drops. False when no target
+/// is registered.
+pub fn hover_begin(paths: &[PathBuf], x: i32, y: i32) -> bool {
+    let t = TARGET.with(Cell::get);
+    if t.is_null() {
+        return false;
+    }
+    let data = hdrop_data(paths);
+    // SAFETY: as in `drop_direct`.
+    unsafe {
+        let v = &*(*(t as *const *const DropTargetVtbl));
+        let mut e = COPY | MOVE;
+        (v.drag_enter)(t, data.0, 0, POINTL { x, y }, &mut e);
+    }
+    HOVER.with(|h| *h.borrow_mut() = Some(data));
+    true
+}
+
+pub fn hover_over(x: i32, y: i32) {
+    let t = TARGET.with(Cell::get);
+    if t.is_null() || HOVER.with(|h| h.borrow().is_none()) {
+        return;
+    }
+    // SAFETY: as in `drop_direct`; the hover's data object is alive in HOVER.
+    unsafe {
+        let v = &*(*(t as *const *const DropTargetVtbl));
+        let mut e = COPY | MOVE;
+        (v.drag_over)(t, 0, POINTL { x, y }, &mut e);
+    }
+}
+
+pub fn hover_end() {
+    let t = TARGET.with(Cell::get);
+    let data = HOVER.with(|h| h.borrow_mut().take());
+    if t.is_null() || data.is_none() {
+        return;
+    }
+    // SAFETY: as in `drop_direct`.
+    unsafe { ((*(*(t as *const *const DropTargetVtbl))).drag_leave)(t) };
+    drop(data);
 }
 
 // --- Drag images: the shell's drag-drop helper --------------------------------------------------
@@ -1629,6 +1728,35 @@ mod tests {
         let pc = p("This PC");
         assert_eq!(drop_folder(&pc, true, Some((r"D:\", true))), Some((p(r"D:\"), true)), "a drive row");
         assert_eq!(drop_folder(&pc, true, None), None, "the drive list is no folder");
+    }
+
+    #[test]
+    fn auto_scroll_near_the_list_edges() {
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0 };
+        // The list runs from y 63 to 577; the edge zones are 24 px inside it.
+        assert_eq!(edge_scroll(&one, 500.0, 63.0), Some((0, -1)), "the top edge scrolls up");
+        assert_eq!(edge_scroll(&one, 500.0, 86.9), Some((0, -1)));
+        assert_eq!(edge_scroll(&one, 500.0, 87.0), None, "inside the list, away from the edges");
+        assert_eq!(edge_scroll(&one, 500.0, 300.0), None);
+        assert_eq!(edge_scroll(&one, 500.0, 553.0), Some((0, 1)), "the bottom edge scrolls down");
+        assert_eq!(edge_scroll(&one, 500.0, 576.9), Some((0, 1)));
+        assert_eq!(edge_scroll(&one, 500.0, 577.0), None, "the status line is no edge");
+        assert_eq!(edge_scroll(&one, 500.0, 50.0), None, "the header is no edge");
+        assert_eq!(edge_scroll(&one, 1.0, 70.0), None, "the pane's padding");
+        // Each pane its own edges; a tab strip moves the top edge down.
+        let two = Layout { split: true, tabs: [false, true], ..one };
+        assert_eq!(edge_scroll(&two, 100.0, 70.0), Some((0, -1)));
+        assert_eq!(edge_scroll(&two, 700.0, 70.0), None, "above the tabbed pane's list");
+        assert_eq!(edge_scroll(&two, 700.0, 95.0), Some((1, -1)));
+        assert_eq!(edge_scroll(&two, 700.0, 560.0), Some((1, 1)));
+        assert_eq!(edge_scroll(&two, 500.0, 560.0), None, "the splitter");
+        // One row per step, kept in range.
+        assert_eq!(scrolled(0.0, 1, 100, 440.0), -22.0);
+        assert_eq!(scrolled(-22.0, -1, 100, 440.0), 0.0);
+        assert_eq!(scrolled(0.0, -1, 100, 440.0), 0.0, "already at the top");
+        assert_eq!(scrolled(-1760.0, 1, 100, 440.0), -1760.0, "already at the bottom (2200 - 440)");
+        assert_eq!(scrolled(-1750.0, 1, 100, 440.0), -1760.0, "clamped to the bottom");
+        assert_eq!(scrolled(0.0, 1, 10, 440.0), 0.0, "rows that fit do not scroll");
     }
 
     #[test]
