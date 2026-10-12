@@ -664,6 +664,40 @@ clicking a chevron with the mouse (`crumbmenu` calls the callback with a fixed p
 path bar), Escape inside the dropdown, the bookmark menu's four items and the inline title editor
 (`bookmark rename` calls the callback the editor commits through), and a real middle button.
 
+### Console check (2026-10-12) and what it found
+
+Jeremy ran the gate binary with a real mouse and reported: nothing to drag, Escape dead inside the
+dropdown, no way to make a bookmark, the middle button doing nothing, a right-click on the other
+pane switching panes but also opening the context menu. Sorted out:
+
+- **Nothing to drag, no bookmark**: the strip is hidden with one tab per pane (Ctrl+T opens more)
+  and Ctrl+D makes a bookmark; the lead's instructions had not said so. Not bugs.
+- **Escape inside the dropdown: a P2-M2 regression, fixed here.** Slint's runtime closes the
+  topmost popup on an Escape that the focused element *rejects* (`WindowInner::process_key_input`,
+  the `close_on_escape` branch after the focus item declined). P2-M2 made the list's FocusScope
+  accept Escape for "cancel queued operations", so from then on no popup closed on Escape: the
+  crumb dropdown, the bookmark menu and the About dialog alike. The popup's own FocusScope with
+  `init => focus()` never receives the key either (focus stays in the list). The scripted
+  `crumbclose` had closed the menu through a direct call, so no script exercised the key. Fix: the
+  list issues `cancelqueued` and returns `reject`, so the cancel still happens and the runtime's
+  close runs. Proof, scripted through Slint's real key routing (`key Escape`): `crumbmenu 0 1; key
+  Escape; click 0 0` then `about open; key Escape; click 0 1` gave `[select] ... row=0` and `row=1`
+  (the clicks reached the list), while the same script without the two Escapes gave no `[select]`
+  line at all (the popups swallowed the clicks). 83 tests, no warnings.
+- **Middle button: not a TwinFM bug.** A real `WM_MBUTTONDOWN`/`WM_MBUTTONUP` posted to the window
+  at a folder row (scratchpad `post_input.py`, physical client pixels, DPI 96) gave `[tab] pane=0
+  middle-click row 0: new tab on ...\d1`. The window handles the OS message; Jeremy's physical
+  button does not produce it. Logi Options+ was running (`logioptionsplus_agent.exe`), and it
+  commonly assigns the wheel button to a gesture or SmartShift rather than a middle click. To
+  check in Options+: the mouse's wheel button should be "Middle click".
+- **Right-click on the other pane opens its menu**: by design since M4 (Explorer does the same: a
+  right-click on a row is a context menu for that row, and it also focuses the pane). The
+  selection-clearing right-click is for empty space.
+- **Maximise and restore**: worked.
+
+Still needing the real mouse, with Ctrl+T first: a tab drag, the wheel over the strip, the
+bookmark menu (Ctrl+D, then right-click the bookmark) and its inline editor.
+
 ### Gate
 
 Pending Jeremy: console WPR, `tools/wpr-gate.ps1` elevated, accessibility on, Narrator off, hidden
