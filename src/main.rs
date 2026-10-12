@@ -1591,7 +1591,16 @@ fn drag_start(pane: usize, row: usize) {
         }
         let names: Vec<String> = targets.iter().map(|e| e.name.to_string()).collect();
         eprintln!("[dnd] pane={pane} row={row}: dragging {} item(s)", names.len());
-        Some(Some(dnd::DragRequest { hwnd, folder, names }))
+        // The image shows the pressed row's icon (or the first item's), with the count.
+        let pressed = st.model(pane).entry(row).filter(|e| targets.iter().any(|t| t.name == e.name));
+        let shown = pressed.as_ref().unwrap_or(&targets[0]);
+        let image = dnd::DragImage {
+            path: folder.join(shown.name.as_str()),
+            cached: Some(st.icons.borrow().buffer(shown.icon).clone()),
+            count: names.len(),
+            scale: app.window().scale_factor(),
+        };
+        Some(Some(dnd::DragRequest { hwnd, folder, names, image: Some(image) }))
     });
     let req = match taken {
         None => return,

@@ -300,8 +300,9 @@ struct ImageFactoryVtbl {
 
 const IID_ISHELLITEMIMAGEFACTORY: GUID = GUID::from_u128(0xbcc18b79_ba16_442f_80c4_8a59c30c463b);
 
-/// The shell's icon for `path` at `size_px` square, or None. Worker thread only (COM).
-fn render(path: &Path, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+/// The shell's icon for `path` at `size_px` square, or None. Needs COM: the worker, and the UI
+/// thread once per drag for the drag image (`dnd::attach_drag_image`).
+pub(crate) fn render(path: &Path, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let mut factory: *mut c_void = std::ptr::null_mut();
     // SAFETY: `wide` is NUL-terminated and outlives the call; `factory` receives an interface
@@ -461,8 +462,8 @@ impl Default for IconTable {
 }
 
 impl IconTable {
-    /// The buffer at `i` as delivered (an out-of-range index reads as the file placeholder).
-    #[cfg(test)]
+    /// The buffer at `i` as delivered (an out-of-range index reads as the file placeholder): the
+    /// tests, and the drag image when the shell has no large icon for the item.
     pub fn buffer(&self, i: u16) -> &SharedPixelBuffer<Rgba8Pixel> {
         self.bufs.get(i as usize).unwrap_or(&self.bufs[PLACEHOLDER_FILE as usize])
     }
