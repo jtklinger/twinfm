@@ -38,6 +38,14 @@ from): only the UI thread touches a Slint model and workers wake it with
 `RefCell` borrow is held across a modal loop; no `unwrap` on `Weak<App>`; `windows-sys` with
 hand-written calls; nothing per frame or per row without a trace first.
 
+Amendment (P2-M4): the modal-loop rule is now load-bearing, not precautionary. Since P2-M4 our
+own `DoDragDrop` runs from a posted message outside winit's handler, so `invoke_from_event_loop`
+closures (enumeration results, job completions, icon replies, watch and clipboard events) run
+INSIDE our own drag loop. Every such closure takes `with_state`; the drag code must therefore
+hold no borrow while the loop runs (it takes everything out first and checks `state_is_free`),
+and no closure may itself open a modal loop. Context menus and the shell's dialogs still run
+inside a handler or on the worker and are unchanged.
+
 ## P2-M1: directory watching
 
 ### What landed (2026-10-10)
@@ -904,8 +912,12 @@ ever cancelled, and no app-state `RefCell` borrow is held across a modal loop.
 
 - **Item 4 is more than "a few lines"**: about 40 lines of mechanism (above), plus the logging that
   proves it and the driver's wait for the deferred drag (`when_drag_over`). It touches no per-frame
-  path and patches nothing in Slint. The lead may still prefer to defer it; reverting it is the one
-  commit "dnd: run our own drag outside winit's handler so the highlight paints during it".
+  path and patches nothing in Slint. Reverting it is the one commit "dnd: run our own drag outside
+  winit's handler so the highlight paints during it". **Lead's decision: accepted.** Dragging between
+  the two panes is the core of a dual-pane manager, and a drag whose target never lights up and never
+  scrolls is the kind of thing Phase 2 exists to fix. The price is real re-entrancy (the amendment
+  at the top of this file); the 2-minute soak ran with it and the 30-minute one will, and every
+  closure that can now run inside the loop was checked for modal loops (none).
 - **No first-name label** on the drag image (above).
 - **The helper test uses its own scratch folder**, `%TEMP%\twinfm-m5-test-img-<pid>\`, not the brief's
   `%TEMP%\twinfm-m5-test-<pid>\`: the existing `shell_data_object_offers_hdrop` test makes and
