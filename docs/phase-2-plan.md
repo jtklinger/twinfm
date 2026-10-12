@@ -1010,34 +1010,37 @@ Jeremy's: `powershell -File tools\soak-p2m4.ps1 -Minutes 30`.
 
 ### Gate
 
-Pending (Jeremy, console WPR, elevated): `tools/wpr-gate.ps1` A/B in one session against
-`target-p2m3` (2de0e4e), the P2-M4 build in its own `target-p2m4` from a detached worktree. Nothing
-here runs per frame: the drag image, the menu, the helpers, the hit test and the highlight run only
-while a drag is over the window or our own drag runs; the frame counter is read, never added to.
+**Not passed yet (2026-10-12).** Console WPR, Jeremy elevated, `tools/wpr-gate.ps1`, same session,
+back to back (14:10 and 14:12): `target-p2m3` (2de0e4e) first, then `target-p2m4` (551625a).
+A TwinFM window was already open before both runs (its process starts at "MIN" in both traces).
 
-### Manual check
+| Build | Sampled ms | WPR busy | In-app |
+|---|---|---|---|
+| P2-M3 (`target-p2m3`), reference | 1989 | **19.9%** | 19.5% |
+| P2-M4 (`target-p2m4`) | 2145 | **21.4%** | 22.7% |
 
-Jeremy, at the console, with scratch folders (for example `C:\Temp\dnd-a` with a few files and a
-subfolder, and an empty `C:\Temp\dnd-b`):
+A 1.5-point gap in one session, five times the drift seen between runs of one binary. Symbolized,
+every category is up by about seven percent at once (accessibility 223 to 241 ms, render 1156 to
+1243, draw_text 709 to 769, ListView rows 374 to 400, timers 706 to 780, heap 196 to 251); the
+function-level diff shows no frame that belongs to P2-M4 (no helper, drag, menu, overlay or
+subclass frame in the window) and its apparent "new" entries are the generated Slint types
+renumbered between builds. The code review found nothing per frame either: the subclass gains
+one message comparison, the icon render runs once per drag, the frame counter is only read, the
+sidebar and tab overlays are conditional and bound to drop state, not scroll. A uniform rise with
+no new frame is what a slower run looks like, as the disturbed P2-M2 reference was (25.9 against
+20.3 and 21.0), but one pair cannot tell that from a cost spread thinly, so a second pair with no
+other TwinFM window open was requested before this milestone is judged. If the gap holds, the
+suspects in order are: the pre-existing window (shared by both runs, so unlikely), the per-row
+`pointer-event` handlers extended in P2-M3 and P2-M4 (each row's TouchArea now tests more
+buttons; a trace of an older build with and without them would settle it), and the extra elements
+in the sidebar and tab strip. Traces `C:/traces/twinfm-ab4-{p2m3,p2m4}.etl`.
 
-1. **Drag image from TwinFM**: drag one file from TwinFM over Explorer and back over TwinFM: an icon
-   follows the cursor (below and to the right of it). Ctrl+click a second file and drag both: the icon
-   has a blue badge reading 2. Press Escape to end each drag.
-2. **Explorer's image over TwinFM**: drag a file from Explorer over TwinFM: Explorer's own drag image
-   stays visible over TwinFM's window (it used to vanish there).
-3. **Highlight during TwinFM's own drag**: drag a file from the left pane over the right pane's
-   folder rows: the row under the cursor is highlighted while the drag runs (it used to show nothing
-   until the drag ended). Rest at the bottom edge of a long list: it scrolls a row at a time.
-4. **Right-button drag from Explorer**: right-drag a file from `dnd-a` in Explorer onto TwinFM's
-   `dnd-b` and release: a menu with Move here (bold), Copy here, Cancel. Copy here copies, Move
-   here moves, Cancel and Escape do nothing.
-5. **Right-button drag from TwinFM**: right-drag a file to the other pane and release: the same menu;
-   no context menu opens afterwards. Right-drag and press Escape: nothing.
-6. **Sidebar and tab drops**: Ctrl+D on `dnd-b` (a bookmark), then drag a file onto that bookmark in
-   the sidebar: the row highlights, the file lands in `dnd-b`. Open a second tab (Ctrl+T) on
-   `dnd-b`, switch back, and drag a file onto that tab: the tab highlights, the file lands there.
-7. **Pane to pane** (still unscripted, M5): a plain drag from one pane to the other moves the file
-   and both panes refresh.
+Two analyzer findings from these traces, fixed in this PR: a TwinFM process already running when
+the trace started reads "MIN" as its start, which the script could not parse, and the gate's
+process must be chosen as the earliest that started inside the trace (and its start used for the
+split search); the first attempt used the pre-existing window's start and found the wrong
+enumeration thread, giving windows two seconds too early (23.1 and 24.4 percent, both wrong).
+Close every TwinFM window before a gate run.
 
 ## Open questions
 
