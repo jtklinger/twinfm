@@ -716,15 +716,32 @@ pane switching panes but also opening the context menu. Sorted out:
   selection-clearing right-click is for empty space.
 - **Maximise and restore**: worked.
 
-Still needing the real mouse, with Ctrl+T first: a tab drag, the wheel over the strip, the
-bookmark menu (Ctrl+D, then right-click the bookmark) and its inline editor.
+Second pass, same day, on the rebuilt binary: Jeremy confirmed the tab drag, the wheel over the
+strip, the bookmark menu and its editor, the middle button (after the Logi Options+ fix), the
+side button going up a folder, and Escape closing the dropdown. Every P2-M3 console check passed.
 
 ### Gate
 
-Pending Jeremy: console WPR, `tools/wpr-gate.ps1` elevated, accessibility on, Narrator off, hidden
-off, an A/B in one session against `target-p2m2`, both built into their own `target-<name>` from
-detached worktrees. Nothing in P2-M3 runs per frame or per row: the tab strip, breadcrumb,
-dropdown and bookmark rows are rebuilt on change only, and the gate scenario opens no second tab.
+Console WPR, Jeremy elevated, `tools/wpr-gate.ps1`, accessibility on, Narrator off, same session,
+back to back (2026-10-12 11:19 and 11:22): `target-p2m2` (0f57a5d) first, then `target-p2m3`
+(f52368a). Analysed with `tools/analyze-trace.py --symbols --exe`.
+
+| Build | Sampled ms | WPR busy | In-app |
+|---|---|---|---|
+| P2-M2 (`target-p2m2`), reference | 2593 | 25.9% | 27.2% |
+| P2-M3 (`target-p2m3`) | 2060 | **20.6%** | 18.6% |
+
+The reference run is an outlier, not a reading of P2-M2: the same binary read 20.3% the evening
+before, and every frame share in this run is up by about a quarter at once (render 1524 vs 1148
+ms, draw_text 887 vs 653, ListView rows 544 vs 369, timers 899 vs 722), which is the machine being
+slower or busier for those ten seconds, not a code path. P2-M3's 20.6% sits where every build has
+sat across sessions: M6 19.8 / 19.9 / 20.2, P2-M1 20.0 / 20.4, P2-M2 20.3, with about 0.3 point of
+drift between sessions. Its frame shares match P2-M2's clean run within a few samples
+(accessibility 237 vs 228, render 1193 vs 1148, draw_text 668 vs 653, rows 377 vs 369, timers
+729 vs 722, heap 204 vs 220); no tab-strip, crumb, bookmark or Back-button frame appears in the
+window. **P2-M3 passes**, with the caveat that its same-session reference was disturbed; a clean
+reference re-run was requested. Traces `C:/traces/twinfm-ab3-{p2m2,p2m3}.etl`, reports under
+`C:/traces/export/`.
 
 ## Open questions
 
