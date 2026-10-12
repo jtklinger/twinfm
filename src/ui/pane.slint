@@ -137,13 +137,19 @@ component FileListBase inherits ListView {
     // row-gesture(row, what, ctrl, shift), the left button on a row, decided in Rust (dnd::Gesture):
     // what 0 press, 1 release, 2 moved past the drag threshold with the button down (once per
     // press), 3 double-click; 4, the middle button released over the row; 5, the mouse's Back
-    // button released over it.
+    // button released over it; 6, moved past the threshold with the right button down (a
+    // right-button drag, once per press).
     callback row-gesture(int, int, bool, bool);
     // The drag threshold (SM_CXDRAG / SM_CYDRAG in logical px), set from Rust.
     in property <length> drag-dx: 4px;
     in property <length> drag-dy: 4px;
     // The drag gesture for the current press has been reported.
     private property <bool> drag-sent: false;
+    // The right button is down on a row (TouchArea.pressed is the left button's only), and where
+    // it went down, in the row: a move past the threshold starts a right-button drag (6).
+    private property <bool> right-down: false;
+    private property <length> right-x;
+    private property <length> right-y;
 
     accessible-label: "Files";
     accessible-item-count: rows.length;
@@ -174,12 +180,22 @@ component FileListBase inherits ListView {
             pointer-event(ev) => {
                 if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
                     root.drag-sent = false;
+                    root.right-down = false;
                     root.row-clicked(i, ev.modifiers.control, ev.modifiers.shift);
+                }
+                // The grab ended without a release (the end of a right-button drag, main.rs).
+                if (ev.kind == PointerEventKind.cancel) {
+                    root.right-down = false;
                 }
                 if (ev.kind == PointerEventKind.move && self.pressed && !root.drag-sent
                     && (abs(self.mouse-x - self.pressed-x) > root.drag-dx || abs(self.mouse-y - self.pressed-y) > root.drag-dy)) {
                     root.drag-sent = true;
                     root.row-gesture(i, 2, false, false);
+                }
+                if (ev.kind == PointerEventKind.move && root.right-down && !root.drag-sent
+                    && (abs(self.mouse-x - root.right-x) > root.drag-dx || abs(self.mouse-y - root.right-y) > root.drag-dy)) {
+                    root.drag-sent = true;
+                    root.row-gesture(i, 6, false, false);
                 }
                 if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
                     root.row-gesture(i, 1, ev.modifiers.control, ev.modifiers.shift);
@@ -193,9 +209,14 @@ component FileListBase inherits ListView {
                 // Select on the press (so the row is drawn selected before the menu's modal loop
                 // starts), open the shell menu on the release.
                 if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.right) {
+                    root.right-down = true;
+                    root.right-x = self.mouse-x;
+                    root.right-y = self.mouse-y;
+                    root.drag-sent = false;
                     root.row-right-pressed(i);
                 }
                 if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right) {
+                    root.right-down = false;
                     root.context-menu(i, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);
                 }
             }
@@ -351,6 +372,8 @@ export component Pane inherits Rectangle {
     // A drag is over this pane and would drop: on row `drop-row`, or (-1) into the pane's folder.
     in property <bool> drop-here: false;
     in property <int> drop-row: -1;
+    // A drag is over tab `drop-tab` of the strip and would drop into its folder (-1: none).
+    in property <int> drop-tab: -1;
 
     // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder.
     in-out property <int> edit-mode: 0;
@@ -495,6 +518,17 @@ export component Pane inherits Rectangle {
                     }
                 }
                 close => { root.tab-close(i); }
+            }
+            // Drop highlight on tab `drop-tab` (a drag would drop into its folder): an overlay over
+            // the tab's slot, no input handling and no accessibility node.
+            if root.drop-tab >= 0: Rectangle {
+                x: root.shown-tab-scroll + root.drop-tab * root.tab-w;
+                y: 0px;
+                width: root.tab-w;
+                height: 26px;
+                background: Palette.accent-background.transparentize(65%);
+                border-width: 2px;
+                border-color: Palette.accent-background;
             }
         }
         // Same height whichever mode shows, so the list's top does not move (dnd.rs LIST_TOP).

@@ -66,8 +66,11 @@ def main():
         if not any(exe in line for exe in ("twinfm.exe", "rustfm-proto.exe")):  # old traces keep the old name
             continue
         f = [x.strip() for x in line.split(",")]
-        # A process or thread still alive when the trace stopped ends at "MAX".
-        start, end, kind = int(f[0]), (10**15 if f[1] == "MAX" else int(f[1])), f[2]
+        # A process or thread alive before the trace started begins at "MIN"; one still alive
+        # when it stopped ends at "MAX".
+        start = -1 if f[0] == "MIN" else int(f[0])
+        end = 10**15 if f[1] == "MAX" else int(f[1])
+        kind = f[2]
         pid = int(re.search(r"\((\d+)\)", f[4]).group(1))
         if kind == "Process":
             procs.append((start, end, pid))
@@ -76,14 +79,19 @@ def main():
     if not threads:
         print("no twinfm.exe (or rustfm-proto.exe) threads found in", etl)
         return 1
-    # The gate's process is the one the script started right after wpr: the earliest. A TwinFM
-    # window opened by hand during or after the run is another process and is ignored.
+    # The gate's process is the one the script started right after wpr: the earliest of those
+    # that started INSIDE the trace. A TwinFM window already open before the trace (start "MIN")
+    # or opened by hand during or after the run is another process and is ignored.
     procs.sort()
-    gate_pid = procs[0][2] if procs else threads[0][3]
+    started_inside = [p for p in procs if p[0] >= 0]
+    if procs and not started_inside:
+        print("  every twinfm process in the trace was already running when it started; cannot tell the gate's")
+        return 1
+    gate_pid = started_inside[0][2] if started_inside else threads[0][3]
     if len(procs) > 1:
-        print(f"  {len(procs)} twinfm processes in the trace; using the earliest, pid {gate_pid}")
+        print(f"  {len(procs)} twinfm processes in the trace; using the first that started inside it, pid {gate_pid}")
     threads = sorted((s, e, t) for s, e, t, pid in threads if pid == gate_pid)
-    pstart = procs[0][0] if procs else threads[0][0]
+    pstart = started_inside[0][0] if started_inside else threads[0][0]
     main_tid = threads[0][2]
     workers = [(s, e, t) for s, e, t in threads if 15_000 <= e - s <= 80_000 and s - pstart >= 2_000_000]
     if not workers:

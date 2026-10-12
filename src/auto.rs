@@ -39,21 +39,35 @@
 //!                                    ("Send to"), with Down presses then Right; never Return
 //!   menukey <Down|Up|Right|Left|Escape>  inside the menu: one key
 //!   menupick <text>                  inside the menu: choose one of TwinFM's own items ("Copy path",
-//!                                    "Open in other pane", "Open in terminal"); refuses shell items
+//!                                    "Open in other pane", "Open in terminal", and the drop menu's
+//!                                    "Move here", "Copy here", "Cancel"); refuses shell items
 //!   menuclose                        inside the menu: close it (EndMenu)
-//!   dragrow <pane> <row> <dx> <dy>   drag a visible row: press, 60 ms, move <dx>,<dy> px, which
-//!                                    starts the OLE drag (DoDragDrop) if past the threshold; takes
-//!                                    in-drag steps (`sleep`, then `dragcancel`) like rclick takes
-//!                                    in-menu steps. A scripted drag can only be cancelled: it never
-//!                                    drops (dnd::script_begin says why)
+//!   dragrow <pane> <row> <dx> <dy> [right]
+//!                                    drag a visible row: press (the right button with `right`),
+//!                                    60 ms, move <dx>,<dy> px, which starts the OLE drag
+//!                                    (DoDragDrop) if past the threshold; takes in-drag steps
+//!                                    (`sleep`, then `dragcancel`) like rclick takes in-menu steps.
+//!                                    A scripted drag can only be cancelled: it never drops
+//!                                    (dnd::script_begin says why)
 //!   dragcancel                       inside the drag: Escape (a WM_KEYDOWN posted to the window)
-//!   dropfiles <pane> <row> <copy|move|auto> <path|path|...>
+//!   dropfiles <pane> <row> <copy|move|auto|menu <copy|move|cancel>> <path|path|...>
 //!                                    drop files without OLE's drag loop: our drop target's
 //!                                    DragEnter then Drop, called directly with a data object
 //!                                    serving the paths as CF_HDROP, at the centre of a visible row
-//!                                    (or, with row -1, the pane's header: its folder). copy holds
-//!                                    Ctrl, move Shift, auto neither. Paths are separated by `|`
-//!                                    because `;` separates steps
+//!                                    (or, with row -1, the pane's header: its folder). In place of
+//!                                    `<pane> <row>`, `side <row>` aims at sidebar row <row> (headers
+//!                                    count; 0 is "Drives"; -1 the last row, the newest bookmark) and
+//!                                    `tab <pane> <index>` at tab <index>
+//!                                    of the pane's strip (shown with two tabs or more). copy holds
+//!                                    Ctrl, move Shift, auto neither; menu holds the right button,
+//!                                    so Drop opens the drop menu, and picks "Copy here", "Move
+//!                                    here" or "Cancel" from the in-menu timer. Paths are separated
+//!                                    by `|` because `;` separates steps
+//!   dragover <pane> <top|bottom> <ms> <path|path|...>
+//!                                    a drag of the paths enters the window 6 px inside the pane
+//!                                    list's top or bottom edge and hovers there for <ms> (our drop
+//!                                    target's DragEnter, DragOver every 20 ms from a Slint timer,
+//!                                    DragLeave): the auto-scroll near the edges. It never drops
 //!   tab <new|close|next|prev|N>      Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+N (1..9) through the
 //!                                    Slint key path, on the active pane
 //!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
@@ -115,9 +129,17 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_SHIFT};
+use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_RBUTTON, MK_SHIFT};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, PostMessageW, SetTimer, WM_KEYDOWN, WM_MOUSEMOVE};
+
+/// Where a `dropfiles` lands: a pane's row (-1: the pane's folder), a sidebar row, or a tab.
+#[derive(Debug, Clone, Copy)]
+enum DropAt {
+    Row(usize, i32),
+    Side(i32),
+    Tab(usize, usize),
+}
 
 #[derive(Debug, Clone)]
 enum Step {
@@ -143,10 +165,14 @@ enum Step {
     MenuKey(String),
     MenuPick(String),
     MenuClose,
-    DragRow { pane: usize, row: usize, dx: f32, dy: f32 },
+    /// Press a row (the right button with `right`), move `dx`,`dy`: an OLE drag past the threshold.
+    DragRow { pane: usize, row: usize, dx: f32, dy: f32, right: bool },
     DragCancel,
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
-    DropFiles { pane: usize, row: i32, mode: String, paths: Vec<String> },
+    /// Mode `menu` is a right-button drop whose menu gets `pick` (copy, move or cancel).
+    DropFiles { at: DropAt, mode: String, pick: String, paths: Vec<String> },
+    /// Hover a drag of `paths` near the pane list's top or bottom edge for `ms`, then leave.
+    DragOver { pane: usize, top: bool, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
     CrumbMenu { pane: usize, index: i32 },
     CrumbPick(String),
@@ -207,12 +233,37 @@ fn parse(script: &str) -> Vec<Step> {
                 "menukey" => Step::MenuKey(a.get(1).unwrap_or(&"").to_string()),
                 "menupick" => Step::MenuPick(a[1..].join(" ")),
                 "menuclose" => Step::MenuClose,
-                "dragrow" => Step::DragRow { pane: num(1) as usize, row: num(2) as usize, dx: num(3) as f32, dy: num(4) as f32 },
-                "dragcancel" => Step::DragCancel,
-                "dropfiles" => Step::DropFiles {
+                "dragrow" => Step::DragRow {
                     pane: num(1) as usize,
-                    row: num(2) as i32,
-                    mode: a.get(3).unwrap_or(&"auto").to_string(),
+                    row: num(2) as usize,
+                    dx: num(3) as f32,
+                    dy: num(4) as f32,
+                    right: a.get(5) == Some(&"right"),
+                },
+                "dragcancel" => Step::DragCancel,
+                "dropfiles" => {
+                    // `tab <pane> <index>` takes one word more than `<pane> <row>` and `side <row>`.
+                    let m = if a.get(1) == Some(&"tab") { 4 } else { 3 };
+                    let mode = a.get(m).unwrap_or(&"auto").to_string();
+                    // `menu <copy|move|cancel>` takes one more word before the paths.
+                    let (pick, first) = if mode == "menu" { (a.get(m + 1).unwrap_or(&"cancel").to_string(), m + 2) } else { (String::new(), m + 1) };
+                    // The spot: `<pane> <row>`, `side <row>` or `tab <pane> <index>`.
+                    let at = match a.get(1).copied() {
+                        Some("side") => DropAt::Side(num(2) as i32),
+                        Some("tab") => DropAt::Tab(num(2) as usize, num(3) as usize),
+                        _ => DropAt::Row(num(1) as usize, num(2) as i32),
+                    };
+                    Step::DropFiles {
+                        at,
+                        mode,
+                        pick,
+                        paths: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
+                    }
+                }
+                "dragover" => Step::DragOver {
+                    pane: num(1) as usize,
+                    top: a.get(2) == Some(&"top"),
+                    ms: num(3).max(1) as u64,
                     paths: a.get(4..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                 },
                 "tab" => Step::Key(match a.get(1).copied().unwrap_or("") {
@@ -441,13 +492,40 @@ fn spawn_drag_pump(hwnd: isize, steps: Vec<Step>, done: std::sync::Arc<std::sync
     })
 }
 
-/// Where `dropfiles` aims: the centre of a visible row, or with row -1 the pane's
-/// header (in the pane, over no row, so the drop goes to the pane's folder).
-fn drop_point(app: &App, pane: usize, row: i32) -> LogicalPosition {
-    let (_, _, mid) = geometry(app, pane);
-    match usize::try_from(row) {
-        Ok(r) => row_pos(app, pane, r),
-        Err(_) => LogicalPosition::new(mid.x, list_top(app, pane) - 14.0),
+/// Run `f` once the drag a `dragrow` asked for is over (it runs from a posted message after the
+/// step's dispatch; no Slint timer fires while its loop runs, so this polls after it).
+fn when_drag_over(f: Box<dyn FnOnce()>) {
+    if crate::drag_pending() {
+        Timer::single_shot(Duration::from_millis(20), move || when_drag_over(f));
+    } else {
+        f();
+    }
+}
+
+/// Where `dropfiles` aims: the centre of a visible row, or with row -1 the pane's header (in the
+/// pane, over no row, so the drop goes to the pane's folder); the centre of a sidebar row; the
+/// centre of a tab. None for a sidebar row that does not exist, or a tab when the pane shows no
+/// strip.
+fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
+    match at {
+        DropAt::Row(pane, row) => {
+            let (_, _, mid) = geometry(app, pane);
+            Some(match usize::try_from(row) {
+                Ok(r) => row_pos(app, pane, r),
+                Err(_) => LogicalPosition::new(mid.x, list_top(app, pane) - 14.0),
+            })
+        }
+        DropAt::Side(row) => Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_row_centre(row)?)),
+        DropAt::Tab(pane, index) => {
+            let l = crate::window_layout(app);
+            if !l.tabs[pane] {
+                return None;
+            }
+            let (left, _) = crate::dnd::pane_x(&l, pane);
+            let w = app.invoke_tab_width(pane as i32);
+            let x = left + crate::dnd::PANE_PAD + app.invoke_tab_offset(pane as i32) + (index as f32 + 0.5) * w;
+            Some(LogicalPosition::new(x, crate::dnd::TAB_TOP + crate::dnd::TAB_H / 2.0))
+        }
     }
 }
 
@@ -518,7 +596,9 @@ unsafe extern "system" fn menu_tick(_hwnd: HWND, _msg: u32, id: usize, _time: u3
             },
             Step::MenuPick(text) => {
                 let labels = crate::shellmenu::item_labels(crate::shellmenu::current_menu());
-                let own = crate::shellmenu::OwnItem::ALL.iter().any(|o| o.label().eq_ignore_ascii_case(&text));
+                // TwinFM's own items, and the drop target's right-button menu (all its items are ours).
+                let own = crate::shellmenu::OwnItem::ALL.iter().any(|o| o.label().eq_ignore_ascii_case(&text))
+                    || crate::dnd::MENU_LABELS.iter().any(|l| l.eq_ignore_ascii_case(&text));
                 match labels.iter().position(|l| l.eq_ignore_ascii_case(&text)) {
                     Some(i) if own => {
                         let downs = labels[..i].iter().filter(|l| *l != "---").count() + 1;
@@ -839,14 +919,15 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             eprintln!("[auto] {step:?} outside a menu or drag (it belongs after rclick, rclickempty or dragrow); skipped");
             schedule(runner, 1);
         }
-        Step::DragRow { pane, row, dx, dy } => {
+        Step::DragRow { pane, row, dx, dy, right } => {
             let hwnd = hwnd_of(&app);
             let mut drag_steps = take_menu_steps(&mut runner.borrow_mut());
             let pos = row_pos(&app, pane, row);
             let to = LogicalPosition::new(pos.x + dx, pos.y + dy);
+            let button = if right { PointerEventButton::Right } else { PointerEventButton::Left };
             let win = app.window();
             win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
-            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Left }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button }).ok();
             // Move after a frame, so the pressed row is drawn selected before the drag loop.
             let r2 = runner.clone();
             let w = app.as_weak();
@@ -856,33 +937,90 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let pump = spawn_drag_pump(hwnd, std::mem::take(&mut drag_steps), done.clone());
                 crate::dnd::script_begin();
-                // The drag starts and runs inside this dispatch; it returns when the drag ends.
+                // The move asks for the drag; it runs from a posted message right after this
+                // dispatch (main.rs `run_pending_drag`), so wait until it is over.
                 app.window().dispatch_event_with_result(WindowEvent::PointerMoved { position: to }).ok();
-                crate::dnd::script_end();
-                done.store(true, std::sync::atomic::Ordering::Release);
-                let _ = pump.join();
-                if crate::dnd::drags_started() == before {
-                    eprintln!("[auto] dragrow: no drag started (under the threshold?); releasing");
-                    app.window()
-                        .dispatch_event_with_result(WindowEvent::PointerReleased { position: to, button: PointerEventButton::Left })
-                        .ok();
-                }
-                // After a drag the app gives Slint the release it missed (main.rs).
-                schedule(r2.clone(), 1);
+                let w = app.as_weak();
+                let r2 = r2.clone();
+                when_drag_over(Box::new(move || {
+                    crate::dnd::script_end();
+                    done.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = pump.join();
+                    let Some(app) = w.upgrade() else { return };
+                    if crate::dnd::drags_started() == before {
+                        if right {
+                            // A right release would open the row's context menu and wait for a
+                            // person; leaving the window ends Slint's grab instead.
+                            eprintln!("[auto] dragrow: no right-button drag started (under the threshold?); pointer leaves the window");
+                            app.window().dispatch_event_with_result(WindowEvent::PointerExited).ok();
+                        } else {
+                            eprintln!("[auto] dragrow: no drag started (under the threshold?); releasing");
+                            app.window().dispatch_event_with_result(WindowEvent::PointerReleased { position: to, button }).ok();
+                        }
+                    }
+                    // After a drag the app gives Slint the release it missed (main.rs).
+                    schedule(r2, 1);
+                }));
             });
         }
-        Step::DropFiles { pane, row, mode, paths } => {
-            let pos = drop_point(&app, pane, row);
+        Step::DragOver { pane, top, ms, paths } => {
+            // A drag hovering 6 px inside the list's top or bottom edge: DragEnter, a DragOver every
+            // 20 ms from a Slint timer (OLE calls DragOver on its own timer for another program's
+            // drag, outside any modal loop of ours), then DragLeave. It never drops.
+            let l = crate::window_layout(&app);
+            let (_, _, mid) = geometry(&app, pane);
+            let y = if top { crate::dnd::list_top(&l, pane) + 6.0 } else { l.height - crate::dnd::LIST_BOTTOM_GAP - 6.0 };
+            let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), mid.x, y, app.window().scale_factor());
+            let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+            if !crate::dnd::hover_begin(&paths, sx, sy) {
+                eprintln!("[auto] dragover: no drop target registered yet");
+                schedule(runner, 1);
+                return;
+            }
+            let deadline = std::time::Instant::now() + Duration::from_millis(ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(20), move || {
+                if std::time::Instant::now() >= deadline {
+                    crate::dnd::hover_end();
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 1);
+                } else {
+                    crate::dnd::hover_over(sx, sy);
+                }
+            });
+        }
+        Step::DropFiles { at, mode, pick, paths } => {
+            let Some(pos) = drop_point(&app, at) else {
+                eprintln!("[auto] dropfiles {at:?}: no such sidebar row or tab on screen");
+                schedule(runner, 1);
+                return;
+            };
             let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), pos.x, pos.y, app.window().scale_factor());
             let keys = match mode.as_str() {
                 "copy" => MK_CONTROL,
                 "move" => MK_SHIFT,
+                "menu" => MK_RBUTTON,
                 _ => 0,
             };
+            // A right-button drop opens the drop menu inside Drop; its item is picked from the
+            // in-menu timer, as `menupick` does in a context menu.
+            let label = match pick.as_str() {
+                "move" => crate::dnd::MENU_LABELS[0],
+                "copy" => crate::dnd::MENU_LABELS[1],
+                _ => crate::dnd::MENU_LABELS[2],
+            };
+            if mode == "menu" {
+                arm_menu_steps(&app, vec![Step::Sleep(300), Step::MenuPick(label.into())]);
+            }
             let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-            match crate::dnd::drop_direct(&paths, keys, sx, sy) {
+            let result = crate::dnd::drop_direct(&paths, keys, sx, sy);
+            if mode == "menu" {
+                disarm_menu_steps();
+            }
+            match result {
                 Some((enter, dropped)) => eprintln!(
-                    "[auto] dropfiles pane={pane} row={row} {mode}: {} path(s), DragEnter effect {}, Drop reported {}",
+                    "[auto] dropfiles {at:?} {mode}{}: {} path(s), DragEnter effect {}, Drop reported {}",
+                    if mode == "menu" { format!(" {pick}") } else { String::new() },
                     paths.len(),
                     crate::dnd::effect_name(enter),
                     crate::dnd::effect_name(dropped)

@@ -148,6 +148,12 @@ pub fn current_menu() -> isize {
     CURRENT_MENU.with(Cell::get)
 }
 
+/// The drop target's right-button menu (`dnd::drop_menu`) is up (or closed, 0): the driver's
+/// in-menu steps and the second-right-click guard see it as they see the shell menu.
+pub(crate) fn set_current_menu(hmenu: isize) {
+    CURRENT_MENU.with(|c| c.set(hmenu));
+}
+
 /// A shell menu is up on this thread (a second right-click arriving inside the loop is dropped).
 pub fn is_open() -> bool {
     current_menu() != 0

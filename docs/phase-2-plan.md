@@ -38,6 +38,14 @@ from): only the UI thread touches a Slint model and workers wake it with
 `RefCell` borrow is held across a modal loop; no `unwrap` on `Weak<App>`; `windows-sys` with
 hand-written calls; nothing per frame or per row without a trace first.
 
+Amendment (P2-M4): the modal-loop rule is now load-bearing, not precautionary. Since P2-M4 our
+own `DoDragDrop` runs from a posted message outside winit's handler, so `invoke_from_event_loop`
+closures (enumeration results, job completions, icon replies, watch and clipboard events) run
+INSIDE our own drag loop. Every such closure takes `with_state`; the drag code must therefore
+hold no borrow while the loop runs (it takes everything out first and checks `state_is_free`),
+and no closure may itself open a modal loop. Context menus and the shell's dialogs still run
+inside a handler or on the worker and are unchanged.
+
 ## P2-M1: directory watching
 
 ### What landed (2026-10-10)
@@ -746,6 +754,352 @@ so the same-session pair is P2-M2 21.0 / P2-M3 20.6. **P2-M3 passes**: below its
 whole machine sits about half a point above the previous evening (P2-M2 read 20.3 then), one more
 data point for "compare within a session, never against a recorded number". Traces
 `C:/traces/twinfm-ab3-{p2m2,p2m3,p2m2b}.etl`, reports under `C:/traces/export/`.
+
+## P2-M4: drag and drop finish
+
+The backlog was the M5 Deferred list (`phase-1-plan.md` § M5): drag images, the highlight that did
+not paint during TwinFM's own drag, the right-button drag menu, auto-scroll, and (from the M6 and
+P2-M3 lists) the sidebar and the tab strip as drop targets. M5's Decisions held: a move dropped on
+TwinFM is an optimized move, `Drop` posts its job through the event loop, a scripted drag is only
+ever cancelled, and no app-state `RefCell` borrow is held across a modal loop.
+
+### What landed (2026-10-12)
+
+- **Drag images, our drags** (`dnd.rs`). One `IDragSourceHelper` from `CLSID_DragDropHelper`
+  (`CoCreateInstance`, hand-written vtable), made on the UI thread when the drop target registers
+  and kept for the life of the process (never released: a release from a thread-local destructor
+  at exit could run after COM is gone). Before `DoDragDrop`, `attach_drag_image` composes a 96 x 96
+  px (at scale 1) top-down 32-bit premultiplied BGRA image: the pressed row's icon (or the first
+  dragged item's) at 64 px, 8 px in, and for several items a round accent badge with the count over
+  the icon's bottom-right corner ("99+" past 99). The icon comes from `icons::render` called once
+  on the UI thread (the same `IShellItemImageFactory` call the icon worker makes, at 64 px), falling
+  back to the pane's cached row icon scaled up when the shell has none. The count is GDI text
+  (`DrawTextW`, Segoe UI bold) drawn white on black into a scratch DIB, whose green channel is the
+  coverage the badge is blended with (GDI text leaves alpha alone). `CreateDIBSection`, then
+  `InitializeFromBitmap` with an `SHDRAGIMAGE` (`crColorKey` `CLR_NONE`, cursor offset 16, 16, so
+  the cursor sits near the image's top-left); the helper owns the bitmap on success, it is deleted
+  on failure. The helper stores the image on the shell's data object with `SetData`
+  (`SHCreateDataObject` takes it; no storage of our own was needed). One `[dnd] drag image 96x96 px,
+  N item(s), icon from <the shell|the pane's cache|nowhere>, composed in X ms: InitializeFromBitmap
+  = 0x...` line per drag.
+- **Drag images, drags over us.** One `IDropTargetHelper` (same CLSID), made and kept the same way.
+  Our `DragEnter`, `DragOver`, `DragLeave` and `Drop` call it after their own work (after
+  `drop_spot`'s borrow is released), with the data object, the screen point and the effect being
+  returned, so the shell paints the source's image (Explorer's, or ours) over the window. `Drop`
+  calls it before the drop menu, so the image is gone while the menu is up.
+- **Right-button drags, source side.** A right press on a row records where it went down (the
+  list's `right-down`, `right-x`, `right-y`; Slint's `TouchArea.pressed` is the left button's only);
+  a move past the drag threshold with the right button down reports gesture 6, once per press.
+  `drag_start(pane, row, right)` checks `VK_RBUTTON`, starts `Gesture::drag_right` (the right press
+  already selected the row, as a right-click does), and `DoDragDrop` runs with the same allowed
+  effects (copy and move). `continue_drag(escape, lbutton, rbutton, right)`: a right-button drag
+  continues while the right button is held, drops on its release, and is cancelled by Escape or the
+  left button. The end of a right-button drag hands Slint `PointerExited` instead of a release (a
+  right release would open the row's context menu wherever the cursor is), which ends the row's
+  grab and cancels the list's right press; `Gesture::drag_ended` goes straight to `Idle` for it.
+- **The drop menu, target side.** `Drop` shows "Move here", "Copy here", a separator and "Cancel"
+  (`TrackPopupMenuEx`, `TPM_RETURNCMD | TPM_RIGHTBUTTON`, at the drop point, owned by the main window,
+  which is brought to the front first so a click elsewhere closes the menu) when the drag is a
+  right-button one: `MK_RBUTTON` in `Drop`'s key state, or in the last `DragEnter`/`DragOver`'s (the
+  button is already up when OLE calls `Drop`, so the target remembers it). The default item, in
+  bold, is what a left-button drop would do (`effect_for`); an effect the source does not allow is
+  greyed. The choice maps to an effect through `menu_effect`; "Cancel", Escape or a click elsewhere
+  is `DROPEFFECT_NONE`. A move chosen from the menu is an optimized move, as before. The menu is a
+  modal loop inside `Drop`: nothing is borrowed across it, and a temporary subclass on the main
+  window ("twdm") logs `[dnd] drop menu loop idle: app state free=<bool>` at the menu's first
+  `WM_ENTERIDLE`. `shellmenu::set_current_menu` makes the driver's in-menu steps and the second
+  right-click guard see it as they see the shell menu. Works for drags from Explorer and for our own.
+- **Auto-scroll.** `DragOver` (which OLE calls on a timer even while the mouse rests) scrolls a list
+  by one row when the point is within 24 px of the list's top or bottom edge (`dnd::edge_scroll`,
+  `dnd::scrolled`, clamped to the list), at most once per 50 ms (a timestamp in the target, no
+  Slint timer), through `set-scroll`, then evaluates the spot again so the highlight lands on the
+  scrolled list. `[dnd] auto-scroll pane N up|down: content-y A -> B`.
+- **The highlight paints during our own drag** (the M5 Deferred item; the bounded spike, accepted,
+  see Decisions). `drag_start` no longer runs `DoDragDrop` inside the pointer move that crossed the
+  threshold: it takes the request out of the state, keeps it in a thread-local and posts
+  `WM_RUN_DRAG` to the main window; the permanent subclass (`devices.rs`) calls
+  `run_pending_drag` when winit's message loop dispatches it, outside winit's event handler. OLE's
+  loop then hands WM_PAINT to winit, which delivers a redraw to Slint, and `drop_highlight` and the
+  auto-scroll call `dnd::repaint_during_own_drag`, which queues a paint (`RedrawWindow` with
+  `RDW_INTERNALPAINT`, what winit's `request_redraw` does) whenever the highlight or a scroll
+  changes inside our own drag: Slint's own redraw request waits on its frame-throttle timer, and no
+  Slint timer runs inside OLE's loop. Proof lines: `[dnd] highlight painted inside our own drag loop
+  (frame F after the change at frame G)` (once per drag, checked from `QueryContinueDrag` against
+  the frame counter `perf` already keeps) and `[dnd] N frame(s) rendered inside the drag loop` when
+  `DoDragDrop` returns.
+- **The sidebar and the tab strip as drop targets.** `Spot` gains `Side(row)` and `Tab(pane, index)`;
+  `dnd::hit_all` takes `Strips` (the sidebar's width, its list's scroll, each row's height and
+  whether it is a target; each pane's tab count, tab width and strip offset) and checks the sidebar
+  and the tab strips before `hit`. Sidebar rows are 26 px (headers, never targets), 24 px, or 30
+  px while being renamed, from 3 px under the sidebar's top to above its 26 px footer (the About
+  row, no target); tabs are `tab-w` wide from the strip's offset, 26 px tall, 3 px in, only while
+  the strip shows (two tabs or more). A drive, place or bookmark row drops into its folder, noted in
+  the active pane; a tab drops into its tab's folder (a This PC tab is no target). The same
+  refusals apply (`refused`: a source's own folder, a dragged item, inside a dragged folder).
+  `DropSpot` carries a `Mark` (`Row`, `Tab` or `Side`) instead of a row. Highlights: `drop-tab-pane`
+  and `drop-tab` on `App`, drawn by an overlay in the pane's strip (an `if`, so it exists only while
+  a drag hovers a tab); `drop-side-row`, `drop-side-y` and `drop-side-h` drawn by an overlay over
+  the sidebar list, moved with its scroll (`side-list.content-y`). `drop_highlight` sets them only
+  when they change, as before. Nothing per row, nothing per frame.
+- **Driver** (`src/auto.rs`): `dragrow <pane> <row> <dx> <dy> right` presses the right button;
+  `dropfiles` takes the mode `menu <copy|move|cancel>` (the right button held in `DragEnter` and
+  `Drop`, the menu item picked from the in-menu Win32 timer as `menupick` does, which now accepts
+  the drop menu's three labels) and the spot forms `side <row>` (headers count; a negative row
+  counts from the end, `side -1` is the newest bookmark) and `tab <pane> <index>` in place of
+  `<pane> <row>`; `dragover <pane> <top|bottom> <ms> <paths>` enters the window 6 px inside a list's
+  edge and calls `DragOver` every 20 ms from a Slint timer for `<ms>`, then `DragLeave` (the
+  auto-scroll as another program's hovering drag drives it; it never drops). `dragrow` now waits for
+  the drag it asked for to finish (it runs from the posted message after the step's dispatch).
+- **Soak script** `tools/soak-p2m4.ps1` (see Soak).
+- **Tests**, 83 to 88: `right_button_drag` (`continue_drag` for a right-button drag: held, released,
+  Escape, the left button; the gesture's `drag_right` and its end; the drop menu's effect mapping
+  and default; `effect_for` unchanged by `MK_RBUTTON`); `hit_sidebar_rows_and_tabs` (sidebar rows,
+  headers, the footer, a scrolled sidebar, a collapsed one, tabs, past the last tab, a scrolled
+  strip, the lists unchanged); `auto_scroll_near_the_list_edges` (the edge zones of both panes and
+  under a tab strip, one row per step, clamped); `drag_image_composition` (geometry at two scales,
+  the icon's pixels, the badge and its text); and the real-shell
+  `drag_source_helper_takes_a_bitmap`: the shell's data object over a real file in
+  `%TEMP%\twinfm-m5-test-img-<pid>\`, `CoCreateInstance(CLSID_DragDropHelper)`,
+  `InitializeFromBitmap` with a 16 x 16 image returns `S_OK`, and the data object then offers
+  "DragImageBits". `query_continue_drag_states` takes the new argument; `decide_effect`'s test is
+  unchanged.
+
+### Decisions
+
+- **The drag image's icon is asked of the shell on the UI thread, once per drag**, at 64 px,
+  rather than scaled up from the 16 px row icon in the cache (blocky at 4x) or requested
+  synchronously from the icon worker (its queue serves newest first and replies through the shared
+  channel). It is the same kind of shell call the drag start already makes (`SHCreateDataObject`,
+  the PIDL parsing). Cost: 113 ms for the first drag of a run (the shell's first icon extraction on
+  that thread), 5 to 23 ms after that. The cached row icon is the fallback.
+- **A count badge for several items**, not the first item's name: the badge needs no text layout
+  beyond a number, and it is what Explorer shows.
+- **The right-button drag ends without a release for Slint.** M5 gave Slint the left release it
+  missed; a right release would open the row's context menu at the cursor (in the first scripted
+  run it reached the empty space's `TouchArea` and opened the folder's background menu).
+  `PointerExited` ends the grab and nothing else.
+- **The target remembers the right button from `DragEnter`/`DragOver`.** OLE calls `Drop` after the
+  button is released, so `Drop`'s own key state never has `MK_RBUTTON` for a real right-button
+  drag.
+- **The drop menu's default is `effect_for`'s choice** (move on the same volume, copy across), and
+  the bold item is the one a left-button drop would have done, as in Explorer. No "Create shortcuts
+  here": TwinFM makes no links (M5).
+- **The item 4 spike is accepted.** Running `DoDragDrop` from a posted message rather than inside
+  winit's handler is what makes Slint render during our own drag: winit buffers events only while
+  its handler runs, and answers WM_PAINT without rendering then (`should_buffer`, `WM_PAINT` in
+  winit 0.30's Windows event loop). The change is about 40 lines of app code (the thread-local and
+  the post in `drag_start`, `run_pending_drag`, the subclass's three lines, `repaint_during_own_drag`
+  and its two callers) plus the proof logging and the driver's wait. It reverses M5's decision that
+  "the drag starts inside the pointer move": the button is still down when the posted message
+  arrives (posted messages come before input), and a drag that finds it released drops where it
+  started, on our own pane, which `refused` turns into nothing. What runs inside our own drag loop
+  now: winit's redraws (Slint renders), and `invoke_from_event_loop` closures (job completions,
+  the enumeration drain, icon replies), which before waited until the drag ended. None of them can
+  find a borrow held: `run_pending_drag` checks `state_is_free` before it starts, and the first
+  `QueryContinueDrag` logs it as before. Slint timers still do not run inside the loop, hence the
+  explicit paint request. Nothing is added per frame: the frame counter is read only from
+  `QueryContinueDrag` and when the drag ends.
+- **A scripted drag's "held" button is fixed when the drag is asked for** (`DragRequest::scripted`,
+  copied into the drop source), not read from the driver's global flag inside the loop: the drag now
+  starts after the step's dispatch returns, and a driver that cleared the flag early must never be
+  able to turn a scripted drag into a drop.
+- **A sidebar drop is noted in the active pane**; a tab drop in the tab's pane. Both panes refresh
+  when the job ends, as for any drop.
+- **Auto-scroll only in `DragOver`**, not in `DragEnter`, and only over the lists (not the sidebar or
+  the tab strip).
+
+### Deviations
+
+- **Item 4 is more than "a few lines"**: about 40 lines of mechanism (above), plus the logging that
+  proves it and the driver's wait for the deferred drag (`when_drag_over`). It touches no per-frame
+  path and patches nothing in Slint. Reverting it is the one commit "dnd: run our own drag outside
+  winit's handler so the highlight paints during it". **Lead's decision: accepted.** Dragging between
+  the two panes is the core of a dual-pane manager, and a drag whose target never lights up and never
+  scrolls is the kind of thing Phase 2 exists to fix. The price is real re-entrancy (the amendment
+  at the top of this file); the 2-minute soak ran with it and the 30-minute one will, and every
+  closure that can now run inside the loop was checked for modal loops (none).
+- **No first-name label** on the drag image (above).
+- **The helper test uses its own scratch folder**, `%TEMP%\twinfm-m5-test-img-<pid>\`, not the brief's
+  `%TEMP%\twinfm-m5-test-<pid>\`: the existing `shell_data_object_offers_hdrop` test makes and
+  removes that folder, and the tests run in parallel.
+- **An extra driver step, `dragover`**, for the auto-scroll: `dropfiles` calls `DragEnter` and `Drop`
+  only, and auto-scroll lives in `DragOver`.
+- **`side -1`** (a negative sidebar row counts from the end), so the soak can aim at the bookmark it
+  made without knowing how many drives and places the machine has.
+- **The soak's tab is in the left pane**: a `key CtrlShiftRight` right after `split` did not make the
+  right pane active in the script, so `tab new` opened the tab in the left pane; the setup now makes
+  the tab before the split.
+
+### Deferred
+
+- **Spring-loaded folders** (hovering a folder row or a tab opens it).
+- **Virtual files** (`CFSTR_FILEDESCRIPTOR` / `CFSTR_FILECONTENTS`: a zip folder's items, an Outlook
+  attachment) and asynchronous data objects: still only `CF_HDROP`.
+- **Mounted folders** still count as the drive that holds them when choosing move or copy.
+- **The pane-to-pane OLE drop is still unscripted** (no scripted drop, M5): its `Drop` runs in every
+  `dropfiles`, and DragEnter/DragOver/the highlight ran inside our own drag in the scripted checks,
+  but the drop itself needs the console.
+- **Drop descriptions** (the "Move to Folder" text under the drag image, `DROPDESCRIPTION` through
+  `IDragSourceHelper2::SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT)` and the target setting it): not done.
+- **Drops on a breadcrumb crumb** and **auto-scroll of the sidebar list or the tab strip**.
+- **The first drag of a run waits about 0.1 s** for the drag image's icon (Decisions). Warming the
+  shell's icon path on the UI thread at start, or taking the icon from the worker at 64 px ahead of
+  time, would remove it.
+
+### Scripted checks
+
+RDP session, `target\release` of this branch (the final build, 3099104 plus docs), scratch folders in
+`%TEMP%\twinfm-p2m4-manual\` (`a` with `sub`, `a.txt`, `b.txt`, `c.txt`; `b` and `c` empty), no
+`TWINFM_SOAK`. For the in-drag checks a PowerShell helper put the real cursor over the window
+(`SetCursorPos`) 5 s into the run; the RDP session moved it between the panes during the drags.
+All runs exit code 0, no `panicked` line. stderr:
+
+- **Drag image, our drag**: `click 0 1; ctrlclick 0 2; dragrow 0 1 0 60; sleep 1200; dragcancel`:
+  `[dnd] pane=0 row=1: dragging 2 item(s)`, `[dnd] drag image 96x96 px, 2 item(s), icon from the
+  shell, composed in 22.7 ms: InitializeFromBitmap = 0x00000000`, `DoDragDrop starts (left button)`,
+  `first QueryContinueDrag inside the drag loop: app state free=true`, `DragEnter: 2 file(s)`, `over
+  pane 1 row 32 (C:\Windows\System32\de-DE) ... -> effect move`, **`[dnd] highlight painted inside our
+  own drag loop (frame 28 after the change at frame 27)`**, two `auto-scroll pane 1 down: content-y 0
+  -> -22` / `-22 -> -44` lines while the cursor rested at the list's bottom edge, `QueryContinueDrag
+  escape=true keys=0x0 (scripted): cancel`, `DoDragDrop returned 0x00040101 (cancelled)`, `1 frame(s)
+  rendered inside the drag loop`, then the release after the drag. The first drag of an earlier run
+  composed in 113.0 ms.
+- **Right-button drag, cancelled**: `dragrow 0 3 0 60 right; sleep 400; dragcancel`: `[select] pane=0
+  Context row=3`, `dragging 1 item(s) with the right button`, `InitializeFromBitmap = 0x00000000`,
+  `DoDragDrop starts (right button)`, `highlight painted inside our own drag loop (frame 32 after the
+  change at frame 31)`, `cancel`, `(cancelled)`, `2 frame(s) rendered inside the drag loop`, `[dnd]
+  right-button drag over: pointer grab ended without a release (no context menu)`, and no `[menu]`
+  line. A following `rclick 0 2` opened and closed the row's context menu normally. Under the
+  threshold (`dragrow 0 3 1 1 right`): `no right-button drag started (under the threshold?); pointer
+  leaves the window`, no menu.
+- **Drop menu**: `dropfiles 1 -1 menu copy a\a.txt`: `over pane 1 (...\b) keys=0x2 ... -> effect
+  move`, `drop menu starts at (1164, 288)`, `drop menu loop idle: app state free=true`, `drop menu:
+  default Move here, chose Copy here -> effect copy`, `Drop ... effect copy (reported to the source:
+  copy)`, `Copied 1 item`. `menu move a\b.txt`: `chose Move here -> effect move`, reported `none`
+  (the optimized move), `Moved 1 item`. `menu cancel a\c.txt`: `chose Cancel -> effect none`, no
+  job. The in-menu ticks logged `app state free=true driver free=true`.
+- **Sidebar and tab**: `bookmark add` on `c`, the right pane with tabs on `b` and `c`: `dropfiles side
+  12 copy a\a.txt`: `over sidebar row 12 (...\c), noted in pane 1 ... -> effect copy`, `Copied 1 item`
+  into `c`. `dropfiles tab 1 0 copy a\b.txt`: `over pane 1 tab 0 (...\b) -> effect copy`, copied into
+  `b`. `dropfiles tab 1 1 copy c\a.txt` (into its own folder): `effect none`, no job. `dropfiles tab
+  1 0 menu cancel`: the menu, `chose Cancel`. `dropfiles side 3 ...` (the Places header): `over
+  nowhere -> effect none`.
+- **Auto-scroll, another program's drag** (`dragover`), on `C:\Windows\System32`: `dragover 0 bottom
+  1000`: 16 `auto-scroll pane 0 down` lines in 1 s (DragOver every 20 ms, one scroll per 50 ms or
+  more), the spot moving down a row each time (`over pane 0 row 32` ... `row 48`), then `DragLeave`;
+  `dragover 0 top 400`: 7 `up` lines (`content-y -220 -> -198` the last), the spot moving up.
+- **Earlier regression runs** of this branch: two-item and one-item left drags cancelled (both
+  images `S_OK`), and the drop menu, side and tab drops above, all as expected.
+
+Not checked by a script, needs a person at the console (below): any real drop, the drag image as
+painted (our drag over Explorer and over our own window, Explorer's drag over TwinFM), a real
+right-button drag from Explorer and its menu, real auto-scroll with the mouse resting at an edge.
+
+### Soak
+
+2 minutes, `tools/soak-p2m4.ps1 -Minutes 2`, RDP session, `target\release` of this branch: window
+closed by the script, exit code 0, **0 `panicked` lines**; 4 cycles started, 63 jobs done, 0 failed,
+0 cancelled, 0 soak refusals, 0 `waitops` timeouts; 18 drops, every one as expected (pane copy 3,
+pane move 3, bookmark copy 3, tab copy 3, menu copy 3, menu cancel 3), 15 drop jobs; 6 drop menus,
+all 6 loops `app state free=true`; 3 right-button drags, 3 cancelled, **0 dropped**, 3 drag images
+set; 6 shell menus, 24 in-menu ticks, none busy. Working set 104.0 MB at 5 s, 181.9 at 35 s, 185.2
+at 66 s, 175.3 at 121 s; private 104.9, 141.4, 146.9, 135.4 MB (the M5 shape: the context menus'
+shell extensions load in the first cycle). The scripted right drags rendered no frame inside their
+loops in the soak (the real cursor was elsewhere, so no highlight changed). The 30-minute run is
+Jeremy's: `powershell -File tools\soak-p2m4.ps1 -Minutes 30`.
+
+### Manual check (2026-10-12, Jeremy at the console, stderr logged)
+
+Logged run of `target-p2m4` (`2> Documents\twinfm-drag-log.txt`; PowerShell writes UTF-16): a
+two-item drag from the left pane dropped on the right pane with the image and the "2" badge
+(`drag image 96x96 px, 2 item(s)`, `InitializeFromBitmap = 0x00000000`, `Drop ... 2 file(s),
+effect move`); drops on sidebar rows 12 and 13 (`over sidebar row 13 ... effect move`, 5 frames
+rendered inside the drag loop); a right-button drag from TwinFM to the other pane
+(`DoDragDrop starts (right button)`, `highlight painted inside our own drag loop (frame 283 after
+the change at frame 282)`, `drop menu: default Move here, chose Cancel -> effect none`);
+Explorer's image over TwinFM on a left drag (`DragEnter ... keys=0x1 allowed=0x7`, DragLeave).
+**Items 1, 2, 3 and 5 passed.** An earlier, unlogged attempt had reported all of them failing;
+the logged run shows them working, so that attempt was on another binary or without the
+conditions (the badge shows only with two or more items; the highlight needs the drag to cross a
+row).
+
+**Item 4, a right-button drag out of Explorer, does not start in Explorer**: the log holds no
+`DragEnter` with `keys=0x2`; the only Explorer-sourced drag arrived with the left button. Nothing
+reached TwinFM, so this is Explorer (or the mouse software) declining to begin a right-button drag,
+not the target. When such a drag does arrive, the target remembers `MK_RBUTTON` from DragEnter and
+DragOver and shows the menu on Drop, as the scripted `dropfiles menu` checks exercise. Recorded,
+not a TwinFM defect.
+
+### Gate
+
+**Passed (2026-10-12, third session), after two pairs that said otherwise; the record below keeps
+all three because the lesson is about the measurement.** Console WPR, Jeremy elevated, `tools/wpr-gate.ps1`, same session,
+back to back (14:10 and 14:12): `target-p2m3` (2de0e4e) first, then `target-p2m4` (551625a).
+A TwinFM window was already open before both runs (its process starts at "MIN" in both traces).
+
+| Build | Sampled ms | WPR busy | In-app |
+|---|---|---|---|
+| P2-M3 (`target-p2m3`), reference | 1989 | **19.9%** | 19.5% |
+| P2-M4 (`target-p2m4`) | 2145 | **21.4%** | 22.7% |
+
+A 1.5-point gap in one session, five times the drift seen between runs of one binary. Symbolized,
+every category is up by about seven percent at once (accessibility 223 to 241 ms, render 1156 to
+1243, draw_text 709 to 769, ListView rows 374 to 400, timers 706 to 780, heap 196 to 251); the
+function-level diff shows no frame that belongs to P2-M4 (no helper, drag, menu, overlay or
+subclass frame in the window) and its apparent "new" entries are the generated Slint types
+renumbered between builds. The code review found nothing per frame either: the subclass gains
+one message comparison, the icon render runs once per drag, the frame counter is only read, the
+sidebar and tab overlays are conditional and bound to drop state, not scroll. A uniform rise with
+no new frame is what a slower run looks like, as the disturbed P2-M2 reference was (25.9 against
+20.3 and 21.0), but one pair cannot tell that from a cost spread thinly, so a second pair with no
+other TwinFM window open was requested before this milestone is judged. If the gap holds, the
+suspects in order are: the pre-existing window (shared by both runs, so unlikely), the per-row
+`pointer-event` handlers extended in P2-M3 and P2-M4 (each row's TouchArea now tests more
+buttons; a trace of an older build with and without them would settle it), and the extra elements
+in the sidebar and tab strip. Traces `C:/traces/twinfm-ab4-{p2m3,p2m4}.etl`.
+
+**Second pair (2026-10-12 afternoon, no other TwinFM window open)**: P2-M3 **19.6%** (1958 ms;
+in-app 20.8), P2-M4 **20.4%** (2037 ms; in-app 21.1). The gap is 0.8 this time against 1.5 before:
+two pairs, both the same way, so about one point is P2-M4's and not noise. Category deltas in this
+pair: ListView rows 347 to 369 ms, render 1135 to 1170, timers 679 to 704, heap 189 to 219,
+accessibility 214 to 218. The mechanism is still unknown; the milestone does not merge until it is
+found. Bisect in progress with three binaries from the branch: `target-p2m4a` (6ec0e9b: drag images,
+right-button drags, auto-scroll; `dnd.rs` and `main.rs` only, no Slint overlays, drag still inside
+the handler), `target-p2m4b` (93c0f2c: plus the drag outside winit's handler), `target-p2m4`
+(551625a: plus the sidebar and tab overlays). Traces `C:/traces/twinfm-ab5-{p2m3,p2m4}.etl`.
+
+**Bisect session (2026-10-12 evening, four runs back to back, no other TwinFM window):**
+
+| Build | Sampled ms | WPR busy | In-app |
+|---|---|---|---|
+| P2-M3 (`target-p2m3`), reference | 2119 | 21.2% | 21.6% |
+| p2m4a (6ec0e9b: images, right drags, auto-scroll) | 1993 | 19.9% | 22.3% |
+| p2m4b (93c0f2c: plus the drag outside winit's handler) | 2284 | 22.8% | 21.7% |
+| P2-M4 (`target-p2m4`, full branch) | 2033 | **20.3%** | 20.8% |
+
+No step: the three branch builds read 19.9, 22.8 and 20.3, and the reference 21.2, so the full
+branch sat 0.9 below its reference and the "middle" build 2.9 above the first. That is not a
+commit's cost; it is the run-to-run spread of the machine today. Across the three sessions P2-M4
+minus its same-session reference reads +1.5, +0.8 and -0.9: mean +0.5, spread 2.4. Category
+shares move together in every run (render, text, rows, timers, heap all up or all down), and no
+P2-M4 frame has appeared in any of the eight profiles. **Verdict: no cost attributable to P2-M4
+has been shown; the milestone passes the gate as every earlier one did, inside its reference's
+spread.** The milestone's code review stands: nothing runs per frame.
+
+What the three sessions taught about the gate itself: single runs of one binary ranged 19.6 to
+21.2 (P2-M3) and 19.9 to 22.8 (branch builds) in one afternoon, so the usable resolution of a
+pair is about two points, not the half point assumed since P2-M1 (which was measured on one
+quiet evening). A one-pair A/B can therefore both miss a real one-point cost and invent one.
+Proposed for the next milestones, pending Jeremy's agreement: three runs per binary, interleaved
+(A B A B A B), compared by median, and a gap counts only when every A sits below every B or the
+medians differ by more than one point. Traces `C:/traces/twinfm-ab6-{p2m3,p2m4a,p2m4b,p2m4}.etl`.
+
+Two analyzer findings from these traces, fixed in this PR: a TwinFM process already running when
+the trace started reads "MIN" as its start, which the script could not parse, and the gate's
+process must be chosen as the earliest that started inside the trace (and its start used for the
+split search); the first attempt used the pre-existing window's start and found the wrong
+enumeration thread, giving windows two seconds too early (23.1 and 24.4 percent, both wrong).
+Close every TwinFM window before a gate run.
 
 ## Open questions
 

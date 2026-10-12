@@ -9,7 +9,7 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record. 
 changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (83 tests; four touch the real shell and clipboard, and the eight
+- `cargo test --release` (88 tests; five touch the real shell and clipboard, and the eight
   `fs::watch` tests, one undo test and the breadcrumb dropdown's test write to scratch folders,
   see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
@@ -51,11 +51,24 @@ changing the list.
   `[menu]` lines on stderr. A script must end every menu with `menuclose` or `menupick`, or the
   run waits for a person. Drag and drop steps: `dropfiles <pane> <row> <copy|move|auto>
   <path|path>` calls the drop target's DragEnter and Drop directly (no OLE loop; row -1 is the
-  pane's folder; `|` separates paths), and `dragrow <pane> <row> <dx> <dy>` starts a real OLE
-  drag followed by `sleep` and `dragcancel` steps, which run on a helper thread because OLE's drag
+  pane's folder; `|` separates paths); in place of `<pane> <row>`, `side <row>` aims at a sidebar
+  row (headers count; -1 is the last row, the newest bookmark) and `tab <pane> <index>` at a tab
+  (shown with two tabs or more); the mode `menu <copy|move|cancel>` holds the right button, so
+  Drop opens the Move here / Copy here / Cancel menu and the in-menu timer picks the item.
+  `dragover <pane> <top|bottom> <ms> <path|path>` hovers a drag 6 px inside a list's edge for
+  `<ms>` (DragEnter, DragOver every 20 ms, DragLeave; never a drop): the auto-scroll. `dragrow
+  <pane> <row> <dx> <dy> [right]` starts a real OLE drag (with the right button given `right`)
+  followed by `sleep` and `dragcancel` steps, which run on a helper thread because OLE's drag
   loop runs no Win32 timer. A scripted drag can only be cancelled, never dropped (a scripted drop
-  in an RDP session once landed on another program's window; see the M5 record). `[dnd]` lines on
-  stderr. Tabs and path bar: `tab <new|close|next|prev|N>` presses Ctrl+T, Ctrl+W, Ctrl+Tab,
+  in an RDP session once landed on another program's window; see the M5 record). Since P2-M4 our
+  own drag runs from a posted `WM_RUN_DRAG` (outside winit's handler, so the highlight paints),
+  and `dragrow` waits for it. `[dnd]` lines on stderr, P2-M4's among them: `drag image 96x96 px, N
+  item(s), icon from ...: InitializeFromBitmap = 0x...`, `DoDragDrop starts (left|right button)`,
+  `highlight painted inside our own drag loop`, `N frame(s) rendered inside the drag loop`,
+  `right-button drag over: pointer grab ended without a release`, `drop menu starts`, `drop menu
+  loop idle: app state free=`, `drop menu: default X, chose Y -> effect Z`, `auto-scroll pane N
+  up|down: content-y A -> B`, and spots `sidebar row N (...)` and `pane N tab I (...)`. Tabs and
+  path bar: `tab <new|close|next|prev|N>` presses Ctrl+T, Ctrl+W, Ctrl+Tab,
   Ctrl+Shift+Tab or Ctrl+N on the active pane (key names `CtrlT`, `CtrlW`, `CtrlTab`,
   `CtrlShiftTab`, `Ctrl1` to `Ctrl9`, and `CtrlL` for the path entry), `tab moveleft|moveright`
   presses Ctrl+Shift+PageUp / PageDown (key names `CtrlShiftPageUp`, `CtrlShiftPageDown`) to move
@@ -106,6 +119,11 @@ changing the list.
   adds one Recycle Bin entry and overwrites the clipboard. `tools/soak-m5.ps1 -Minutes N` does the
   same in `%TEMP%\twinfm-m5\` and adds, per cycle, a `dropfiles` copy and move and a scripted
   context menu on a row and on empty space; it also reports drops, menus and in-menu ticks.
+  `tools/soak-p2m4.ps1 -Minutes N` is the M5 soak plus, per cycle, a `dropfiles` onto a sidebar
+  bookmark (`side -1`) and onto a tab (`tab 0 1`), a drop menu's "Copy here" and "Cancel"
+  (`menu copy`, `menu cancel`), and a right-button `dragrow` cancelled with `dragcancel`; it
+  reports drops by kind, drop menus, right-button drags (cancelled, and dropped, which must be 0)
+  and drag images besides the M5 counts.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
@@ -119,7 +137,9 @@ changing the list.
   `%TEMP%\twinfm-m3-test-undo-<pid>\` (none of the three uses the Recycle Bin), and
   `clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` replaces the clipboard's
   contents and leaves it empty, and `dnd::tests::shell_data_object_offers_hdrop` asks the shell
-  for a data object over two files in `%TEMP%\twinfm-m5-test-<pid>\`. The `fs::watch` tests create,
+  for a data object over two files in `%TEMP%\twinfm-m5-test-<pid>\`, and
+  `dnd::tests::drag_source_helper_takes_a_bitmap` makes the shell's drag-drop helper store a drag
+  image on a data object over a file in `%TEMP%\twinfm-m5-test-img-<pid>\`. The `fs::watch` tests create,
   rename, delete and change attributes of files in `%TEMP%\twinfm-p2m1-test-<pid>\` (removed
   afterwards); they touch neither the clipboard nor the Recycle Bin.
   `pathbar::tests::subfolders_for_the_crumb_dropdown` makes folders (two of them hidden and

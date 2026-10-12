@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tabs::Tabs;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG, SW_MAXIMIZE, ShowWindow};
 
 /// Rows above and below the viewport whose icons are fetched ahead of a scroll.
@@ -1545,7 +1545,8 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
                 }
             }
         }),
-        2 => drag_start(pane, row),
+        2 => drag_start(pane, row, false),
+        6 => drag_start(pane, row, true),
         3 => {
             if with_state(|st| st.gesture[pane].double_click()) {
                 open_row(pane, row as i32);
@@ -1559,22 +1560,23 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
     }
 }
 
-/// The pointer left the drag threshold with the left button down on `row`: drag the selection
-/// (the press made sure it includes the row) with OLE. `DoDragDrop` runs a modal loop, so the
-/// state borrow is dropped first and taken again after it returns.
-fn drag_start(pane: usize, row: usize) {
+/// The pointer left the drag threshold with the left button (or, `right`, the right button) down
+/// on `row`: drag the selection (the press made sure it includes the row) with OLE. The request
+/// is taken out of the state here and run by `run_pending_drag` from a posted message.
+fn drag_start(pane: usize, row: usize, right: bool) {
+    let button = if right { VK_RBUTTON } else { VK_LBUTTON };
     // SAFETY: plain Win32 query of this thread's key state.
-    let held = dnd::scripted() || unsafe { GetKeyState(VK_LBUTTON as i32) } < 0;
+    let held = dnd::scripted() || unsafe { GetKeyState(button as i32) } < 0;
     let taken = with_state(|st| {
         let app = st.app.upgrade()?;
         if !held {
             // Slint thinks the button is down but it is not (a release it never saw): no drag,
             // and the gesture ends like one, so the release given below selects nothing.
-            eprintln!("[dnd] pane={pane} drag threshold crossed with the left button up: no drag");
-            st.gesture[pane] = dnd::Gesture::Dragged;
+            eprintln!("[dnd] pane={pane} drag threshold crossed with the {} button up: no drag", if right { "right" } else { "left" });
+            st.gesture[pane] = if right { dnd::Gesture::Idle } else { dnd::Gesture::Dragged };
             return Some(None);
         }
-        if !st.gesture[pane].drag(row) {
+        if !(if right { st.gesture[pane].drag_right(row) } else { st.gesture[pane].drag(row) }) {
             return None;
         }
         let folder = st.tab(pane).path.clone();
@@ -1590,14 +1592,55 @@ fn drag_start(pane: usize, row: usize) {
             return None;
         }
         let names: Vec<String> = targets.iter().map(|e| e.name.to_string()).collect();
-        eprintln!("[dnd] pane={pane} row={row}: dragging {} item(s)", names.len());
-        Some(Some(dnd::DragRequest { hwnd, folder, names }))
+        eprintln!("[dnd] pane={pane} row={row}: dragging {} item(s){}", names.len(), if right { " with the right button" } else { "" });
+        // The image shows the pressed row's icon (or the first item's), with the count.
+        let pressed = st.model(pane).entry(row).filter(|e| targets.iter().any(|t| t.name == e.name));
+        let shown = pressed.as_ref().unwrap_or(&targets[0]);
+        let image = dnd::DragImage {
+            path: folder.join(shown.name.as_str()),
+            cached: Some(st.icons.borrow().buffer(shown.icon).clone()),
+            count: names.len(),
+            scale: app.window().scale_factor(),
+        };
+        Some(Some(dnd::DragRequest { hwnd, folder, names, image: Some(image), right, scripted: dnd::scripted() }))
     });
     let req = match taken {
         None => return,
-        Some(None) => return slint::Timer::single_shot(Duration::ZERO, release_after_drag),
+        Some(None) => return slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right)),
         Some(Some(req)) => req,
     };
+    // The drag runs from a posted message, not inside this pointer event: OLE's loop then runs
+    // outside winit's event handler, so the WM_PAINT it dispatches reaches Slint and the
+    // highlight (and auto-scroll) render during our own drag. The button is still down when the
+    // message arrives (posted messages come before input); a drag that finds it released drops
+    // where it started, as a real one would.
+    let hwnd = req.hwnd;
+    PENDING_DRAG.with(|p| *p.borrow_mut() = Some((pane, req)));
+    // SAFETY: posting a message without pointers to our own window.
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(hwnd as windows_sys::Win32::Foundation::HWND, dnd::WM_RUN_DRAG, 0, 0) };
+}
+
+thread_local! {
+    /// The drag `drag_start` asked for, until the posted `WM_RUN_DRAG` runs it.
+    static PENDING_DRAG: RefCell<Option<(usize, dnd::DragRequest)>> = const { RefCell::new(None) };
+}
+
+/// A drag was asked for and has not finished (for the driver, which waits for it).
+pub fn drag_pending() -> bool {
+    PENDING_DRAG.with(|p| p.borrow().is_some()) || dnd::own_drag_running()
+}
+
+/// `WM_RUN_DRAG` arrived (the permanent subclass, dispatched by winit's message loop outside its
+/// event handler): run the pending drag. `DoDragDrop` runs a modal loop; no borrow is held.
+pub fn run_pending_drag() {
+    let Some((pane, req)) = PENDING_DRAG.with(|p| p.borrow_mut().take()) else { return };
+    let right = req.right;
+    if !state_is_free() {
+        // Not expected: the message is dispatched by an event loop, never inside a borrow.
+        eprintln!("[dnd] pane={pane} pending drag dropped: app state busy");
+        with_state(|st| st.gesture[pane].drag_ended());
+        return slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right));
+    }
     // MODAL LOOP: no borrow held (see dnd). A drop on our own other pane comes back through our
     // drop target from inside this call, and its job is posted to the event loop.
     let res = dnd::drag(&req);
@@ -1614,14 +1657,21 @@ fn drag_start(pane: usize, row: usize) {
         refresh(pane);
     }
     // Slint never saw the button come up (DoDragDrop's loop consumed it) and still holds the
-    // row's grab. Give it a release, after this pointer event has finished dispatching.
-    slint::Timer::single_shot(Duration::ZERO, release_after_drag);
+    // row's grab. Give it a release from the event loop.
+    slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right));
 }
 
 /// The release Slint missed during `DoDragDrop`, at the cursor's position. The gesture is
-/// `Dragged`, so it neither selects nor (as a double-click) opens.
-fn release_after_drag() {
+/// `Dragged`, so it neither selects nor (as a double-click) opens. After a right-button drag a
+/// right release would open a context menu wherever the cursor is, so Slint gets the pointer
+/// leaving the window instead, which ends the row's grab (and cancels the list's right press).
+fn release_after_drag(right: bool) {
     let Some((app, hwnd)) = with_state(|st| Some((st.app.upgrade()?, st.hwnd))) else { return };
+    if right {
+        eprintln!("[dnd] right-button drag over: pointer grab ended without a release (no context menu)");
+        app.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerExited).ok();
+        return;
+    }
     let mut p = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
     // SAFETY: plain Win32 queries with a valid in/out pointer.
     unsafe {
@@ -1705,31 +1755,137 @@ pub fn drop_spot(px: i32, py: i32) -> Option<dnd::DropSpot> {
         let layout = window_layout(&app);
         let content_y = [app.invoke_get_scroll(0), app.invoke_get_scroll(1)];
         let len = [st.model(0).len(), st.model(1).len()];
-        let (pane, row) = match dnd::hit(&layout, px as f32 / scale, py as f32 / scale, content_y, len) {
+        let side_rows = side_rows(st, &app);
+        let strips = strips(st, &app, &side_rows);
+        let (pane, row) = match dnd::hit_all(&layout, &strips, px as f32 / scale, py as f32 / scale, content_y, len) {
             dnd::Spot::Outside => return None,
             dnd::Spot::Pane(p) => (p, None),
             dnd::Spot::Row(p, r) => (p, Some(r)),
+            // A sidebar row's folder (a drive's root, a place, a bookmark), noted in the active pane.
+            dnd::Spot::Side(i) => {
+                let dest = st.side.get(i)?.path.clone()?;
+                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest });
+            }
+            // A tab's folder; a tab on This PC is no folder.
+            dnd::Spot::Tab(p, i) => {
+                let dest = st.panes[p].iter().nth(i)?.path.clone();
+                if dest.as_os_str().is_empty() || is_this_pc(&dest.to_string_lossy()) {
+                    return None;
+                }
+                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Tab(i), dest });
+            }
         };
         let folder = &st.tab(pane).path;
         let entry = row.and_then(|r| st.model(pane).entry(r));
         let this_pc = is_this_pc(&folder.to_string_lossy());
         let (dest, on_row) = dnd::drop_folder(folder, this_pc, entry.as_ref().map(|e| (e.name.as_str(), e.is_dir())))?;
         let row = if on_row { row.map_or(-1, |r| r as i32) } else { -1 };
-        Some(dnd::DropSpot { pane, row, dest })
+        Some(dnd::DropSpot { pane, mark: dnd::Mark::Row(row), dest })
     })
 }
 
-/// For the drop target: highlight the pane (row -1) or row a drop would land on, or nothing.
-pub fn drop_highlight(at: Option<(usize, i32)>) {
-    let app = STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().and_then(|st| st.app.upgrade())));
-    let Some(app) = app else { return };
-    let (pane, row) = at.map_or((-1, -1), |(p, r)| (p as i32, r));
-    if app.get_drop_pane() != pane {
-        app.set_drop_pane(pane);
+/// The sidebar's rows as the drop target's hit test sees them: each row's height (sidebar.slint
+/// `SideRow`: a header 26 px, a row 24 px, the row being renamed 30 px) and whether it is a drop
+/// target (every row but a header).
+fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
+    let editing = app.get_side_edit();
+    st.side
+        .iter()
+        .enumerate()
+        .map(|(i, r)| match r.kind {
+            sidebar::RowKind::Header => (26.0, false),
+            _ if i as i32 == editing => (30.0, true),
+            _ => (24.0, true),
+        })
+        .collect()
+}
+
+/// The sidebar and the tab strips for `dnd::hit_all`.
+fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)]) -> dnd::Strips<'a> {
+    let tab = |p: usize| (st.panes[p].len(), app.invoke_tab_width(p as i32), app.invoke_tab_offset(p as i32));
+    dnd::Strips {
+        side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { 0.0 },
+        side_scroll: app.invoke_side_scroll(),
+        side_rows,
+        tabs: [tab(0), tab(1)],
     }
-    if app.get_drop_row() != row {
-        app.set_drop_row(row);
+}
+
+/// For the driver's `dropfiles side <row>`: sidebar row `i`'s vertical centre in the window
+/// (logical px), if the row exists; a negative `i` counts from the end (-1: the last row, the
+/// newest bookmark).
+pub fn side_row_centre(i: i32) -> Option<f32> {
+    with_state(|st| {
+        let app = st.app.upgrade()?;
+        let rows = side_rows(st, &app);
+        let i = if i < 0 { rows.len().checked_sub(i.unsigned_abs() as usize)? } else { i as usize };
+        let h = rows.get(i)?.0;
+        Some(dnd::SIDE_TOP + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
+    })
+}
+
+/// For the drop target's DragOver: a drag hovering near a list's top or bottom edge (client
+/// point, physical px) scrolls that list by one row. True when it scrolled. The state is read
+/// under a short borrow, released before the scroll is set (`set-scroll` is a property set).
+pub fn drop_autoscroll(px: i32, py: i32) -> bool {
+    let found = STATE.with(|s| {
+        let guard = s.try_borrow().ok()?;
+        let st = guard.as_ref()?;
+        let app = st.app.upgrade()?;
+        let scale = app.window().scale_factor();
+        let layout = window_layout(&app);
+        let (pane, dir) = dnd::edge_scroll(&layout, px as f32 / scale, py as f32 / scale)?;
+        let visible = layout.height - dnd::LIST_BOTTOM_GAP - dnd::list_top(&layout, pane);
+        Some((app, pane, dir, st.model(pane).len(), visible))
+    });
+    let Some((app, pane, dir, len, visible)) = found else { return false };
+    let from = app.invoke_get_scroll(pane as i32);
+    let to = dnd::scrolled(from, dir, len, visible);
+    if to == from {
+        return false;
     }
+    app.invoke_set_scroll(pane as i32, to);
+    dnd::repaint_during_own_drag();
+    eprintln!("[dnd] auto-scroll pane {pane} {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
+    true
+}
+
+/// For the drop target: highlight what a drop would land on (a pane's row, or with row -1 its
+/// whole list; a tab; a sidebar row), or nothing. Sets the properties only when they change.
+pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
+    // The sidebar row's place, under a short borrow (only for a sidebar mark).
+    let found = STATE.with(|s| {
+        let guard = s.try_borrow().ok()?;
+        let st = guard.as_ref()?;
+        let app = st.app.upgrade()?;
+        let side = match at {
+            Some((_, dnd::Mark::Side(i))) => {
+                let rows = side_rows(st, &app);
+                rows.get(i).map(|r| (i as i32, dnd::side_row_top(&rows, i), r.0))
+            }
+            _ => None,
+        };
+        Some((app, side))
+    });
+    let Some((app, side)) = found else { return };
+    let (pane, row, tab_pane, tab) = match at {
+        Some((p, dnd::Mark::Row(r))) => (p as i32, r, -1, -1),
+        Some((p, dnd::Mark::Tab(i))) => (-1, -1, p as i32, i as i32),
+        _ => (-1, -1, -1, -1),
+    };
+    let (side_row, side_y, side_h) = side.unwrap_or((-1, 0.0, 0.0));
+    let now = (app.get_drop_pane(), app.get_drop_row(), app.get_drop_tab_pane(), app.get_drop_tab(), app.get_drop_side_row());
+    if now == (pane, row, tab_pane, tab, side_row) {
+        return;
+    }
+    app.set_drop_pane(pane);
+    app.set_drop_row(row);
+    app.set_drop_tab_pane(tab_pane);
+    app.set_drop_tab(tab);
+    app.set_drop_side_y(side_y);
+    app.set_drop_side_h(side_h);
+    app.set_drop_side_row(side_row);
+    dnd::repaint_during_own_drag();
 }
 
 /// A drop landed (posted by the drop target through the event loop): copy or move the files
