@@ -50,6 +50,11 @@ pub fn after_rendering() {
     });
 }
 
+/// Frames rendered so far (the counter `after_rendering` already keeps; read, never per frame).
+pub fn frames() -> u64 {
+    PERF.with(|p| p.try_borrow().map_or(0, |p| p.frames))
+}
+
 fn push(v: &mut Vec<Duration>, d: Duration) {
     if v.len() >= RING {
         v.remove(0);

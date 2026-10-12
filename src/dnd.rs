@@ -13,11 +13,14 @@
 //!
 //! **When the target methods run.** For a drag that another program started, OLE calls our
 //! `DragEnter`/`DragOver`/`DragLeave`/`Drop` from messages dispatched by winit's ordinary message
-//! loop, outside any winit handler, so Slint renders the highlight normally. For a drag we started
-//! ourselves, `DoDragDrop` runs a modal loop inside a winit handler (the pointer move that crossed
-//! the threshold), and OLE calls our target directly from that loop. Nothing of Slint runs there
-//! (see `shellmenu`'s modal-loop notes): property sets land, but the window does not repaint
-//! until `DoDragDrop` returns.
+//! loop, outside any winit handler, so Slint renders the highlight normally. A drag we start
+//! ourselves is asked for inside a winit handler (the pointer move that crossed the threshold),
+//! where nothing of Slint could render (see `shellmenu`'s modal-loop notes), so it is not run
+//! there: `crate::drag_start` posts `WM_RUN_DRAG`, and `DoDragDrop` runs when winit's message loop
+//! dispatches it, outside any handler. OLE's loop then dispatches WM_PAINT to winit, which hands
+//! Slint a redraw; `repaint_during_own_drag` asks for one whenever the highlight or a list's
+//! scroll changes, because Slint's own redraw request waits on a Slint timer, and no Slint timer
+//! runs inside OLE's loop.
 //!
 //! **Modal-loop rule.** `drag` must be called with no `RefCell` borrow of app state held. The
 //! target methods take what they need from the app state under short, non-reentrant borrows
@@ -46,7 +49,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, CreateFontW, DIB_RGB_COLORS, DT_CENTER,
     DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, GdiFlush, HBITMAP, ScreenToClient, SelectObject,
-    SetBkMode, SetTextColor, TRANSPARENT,
+    RDW_INTERNALPAINT, RedrawWindow, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, DVASPECT_CONTENT, FORMATETC, STGMEDIUM, TYMED_HGLOBAL};
 use windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW;
@@ -69,6 +72,10 @@ use windows_sys::core::{BOOL, GUID, HRESULT, PCWSTR};
 pub const NONE: u32 = DROPEFFECT_NONE;
 pub const COPY: u32 = DROPEFFECT_COPY;
 pub const MOVE: u32 = DROPEFFECT_MOVE;
+
+/// Posted to the main window by `crate::drag_start`; the permanent subclass (`devices`) runs the
+/// drag (`crate::run_pending_drag`) when it is dispatched, outside winit's event handler.
+pub const WM_RUN_DRAG: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 0x44;
 
 // ---------------------------------------------------------------------------------------------
 // Pure decisions (unit-tested)
@@ -981,11 +988,48 @@ thread_local! {
 
     /// Drags started (`drag` calls that reached DoDragDrop), for the driver.
     static DRAGS: Cell<u64> = const { Cell::new(0) };
+
+    /// Our own drag is inside DoDragDrop: its window, the frame count when it started, the frame
+    /// count when the highlight first changed inside it, and whether the paint was logged.
+    static OWN_DRAG: Cell<Option<(isize, u64)>> = const { Cell::new(None) };
+    static HIGHLIGHT_AT: Cell<Option<u64>> = const { Cell::new(None) };
+    static PAINT_LOGGED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// How many drags reached `DoDragDrop` so far.
 pub fn drags_started() -> u64 {
     DRAGS.with(Cell::get)
+}
+
+/// Our own drag's loop is running.
+pub fn own_drag_running() -> bool {
+    OWN_DRAG.with(Cell::get).is_some()
+}
+
+/// The highlight or a list's scroll changed. Inside our own drag nothing asks Slint for a frame
+/// (its redraw throttle is a Slint timer, and Slint timers do not run inside OLE's loop), so ask
+/// Windows for a paint, as winit's `request_redraw` does; the drag runs outside winit's handler
+/// (`crate::run_pending_drag`), so the WM_PAINT reaches Slint and renders. Outside our own drag,
+/// nothing.
+pub fn repaint_during_own_drag() {
+    let Some((hwnd, _)) = OWN_DRAG.with(Cell::get) else { return };
+    HIGHLIGHT_AT.with(|h| {
+        if h.get().is_none() {
+            h.set(Some(crate::perf::frames()));
+        }
+    });
+    // SAFETY: our own window; RDW_INTERNALPAINT only queues a WM_PAINT.
+    unsafe { RedrawWindow(hwnd as HWND, std::ptr::null(), std::ptr::null_mut(), RDW_INTERNALPAINT) };
+}
+
+/// From QueryContinueDrag (on every turn of the drag loop): once a frame was rendered after the
+/// highlight changed, say so, once per drag.
+fn log_paint_inside_drag() {
+    let Some(at) = HIGHLIGHT_AT.with(Cell::get) else { return };
+    if !PAINT_LOGGED.with(Cell::get) && crate::perf::frames() > at {
+        PAINT_LOGGED.with(|p| p.set(true));
+        eprintln!("[dnd] highlight painted inside our own drag loop (frame {} after the change at frame {at})", crate::perf::frames());
+    }
 }
 
 /// Replace winit's drop target with ours on `hwnd`. Returns (RevokeDragDrop, RegisterDragDrop)
@@ -1422,6 +1466,8 @@ struct DropSource {
     header: Header,
     /// A right-button drag (`continue_drag`).
     right: bool,
+    /// A scripted drag, fixed when the drag was asked for (`DragRequest::scripted`).
+    scripted: bool,
 }
 
 static DROP_SOURCE_VTBL: DropSourceVtbl = DropSourceVtbl {
@@ -1456,7 +1502,9 @@ unsafe extern "system" fn ds_query_continue_drag(this: *mut c_void, escape: BOOL
     let right = unsafe { (*(this as *const DropSource)).right };
     // A scripted drag holds its button (the left, or the right for a right-button drag) until
     // Escape cancels it: it never drops (see `script_begin`).
-    let scripted = SCRIPTED.load(Ordering::Acquire);
+    // SAFETY: as above.
+    let scripted = unsafe { (*(this as *const DropSource)).scripted };
+    log_paint_inside_drag();
     let lbutton = (scripted && !right) || keys & MK_LBUTTON != 0;
     let rbutton = (scripted && right) || keys & MK_RBUTTON != 0;
     let hr = continue_drag(escape != 0, lbutton, rbutton, right);
@@ -1503,6 +1551,9 @@ pub struct DragRequest {
     pub image: Option<DragImage>,
     /// A right-button drag: the right button held, its release drops, the target asks.
     pub right: bool,
+    /// A scripted drag (`script_begin`): its button counts as held until Escape, whatever the
+    /// driver does meanwhile, so it can never drop.
+    pub scripted: bool,
 }
 
 /// Drag the named items: a shell data object for them, our drop source, and `DoDragDrop`, which
@@ -1527,6 +1578,7 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
     let source = Com(Box::into_raw(Box::new(DropSource {
         header: Header { vtbl: &DROP_SOURCE_VTBL as *const DropSourceVtbl as *const c_void, refs: AtomicU32::new(1) },
         right: req.right,
+        scripted: req.scripted,
     })) as *mut c_void);
     let mut effect = NONE;
     DRAGS.with(|d| d.set(d.get() + 1));
@@ -1538,6 +1590,9 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
         req.folder.display()
     );
     let t0 = std::time::Instant::now();
+    OWN_DRAG.with(|d| d.set(Some((req.hwnd, crate::perf::frames()))));
+    HIGHLIGHT_AT.with(|h| h.set(None));
+    PAINT_LOGGED.with(|p| p.set(false));
     // MODAL LOOP. No RefCell borrow of app state is held here (the caller dropped its borrow).
     // OLE runs the drag until the button is released or Escape is pressed; our own drop target
     // is called from inside this loop when the cursor is over our window.
@@ -1556,6 +1611,8 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
         effect_name(effect),
         logical.map_or("not set", effect_name)
     );
+    let frames = crate::perf::frames() - OWN_DRAG.with(|d| d.take()).map_or(0, |(_, f)| f);
+    eprintln!("[dnd] {frames} frame(s) rendered inside the drag loop");
     Ok(hr == DRAGDROP_S_DROP)
 }
 

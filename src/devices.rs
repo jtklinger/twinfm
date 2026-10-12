@@ -32,6 +32,13 @@ pub fn install(hwnd: isize) {
 }
 
 unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    if msg == crate::dnd::WM_RUN_DRAG {
+        // The one exception to "only posts": the drag a row asked for runs here, dispatched by
+        // winit's message loop outside its event handler (see `crate::run_pending_drag`, which
+        // checks that no app-state borrow is held).
+        crate::run_pending_drag();
+        return 0;
+    }
     if msg == WM_CLIPBOARDUPDATE {
         let _ = slint::invoke_from_event_loop(crate::clipboard_changed);
     }

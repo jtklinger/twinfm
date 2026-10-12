@@ -1561,8 +1561,8 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
 }
 
 /// The pointer left the drag threshold with the left button (or, `right`, the right button) down
-/// on `row`: drag the selection (the press made sure it includes the row) with OLE. `DoDragDrop`
-/// runs a modal loop, so the state borrow is dropped first and taken again after it returns.
+/// on `row`: drag the selection (the press made sure it includes the row) with OLE. The request
+/// is taken out of the state here and run by `run_pending_drag` from a posted message.
 fn drag_start(pane: usize, row: usize, right: bool) {
     let button = if right { VK_RBUTTON } else { VK_LBUTTON };
     // SAFETY: plain Win32 query of this thread's key state.
@@ -1602,13 +1602,45 @@ fn drag_start(pane: usize, row: usize, right: bool) {
             count: names.len(),
             scale: app.window().scale_factor(),
         };
-        Some(Some(dnd::DragRequest { hwnd, folder, names, image: Some(image), right }))
+        Some(Some(dnd::DragRequest { hwnd, folder, names, image: Some(image), right, scripted: dnd::scripted() }))
     });
     let req = match taken {
         None => return,
         Some(None) => return slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right)),
         Some(Some(req)) => req,
     };
+    // The drag runs from a posted message, not inside this pointer event: OLE's loop then runs
+    // outside winit's event handler, so the WM_PAINT it dispatches reaches Slint and the
+    // highlight (and auto-scroll) render during our own drag. The button is still down when the
+    // message arrives (posted messages come before input); a drag that finds it released drops
+    // where it started, as a real one would.
+    let hwnd = req.hwnd;
+    PENDING_DRAG.with(|p| *p.borrow_mut() = Some((pane, req)));
+    // SAFETY: posting a message without pointers to our own window.
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(hwnd as windows_sys::Win32::Foundation::HWND, dnd::WM_RUN_DRAG, 0, 0) };
+}
+
+thread_local! {
+    /// The drag `drag_start` asked for, until the posted `WM_RUN_DRAG` runs it.
+    static PENDING_DRAG: RefCell<Option<(usize, dnd::DragRequest)>> = const { RefCell::new(None) };
+}
+
+/// A drag was asked for and has not finished (for the driver, which waits for it).
+pub fn drag_pending() -> bool {
+    PENDING_DRAG.with(|p| p.borrow().is_some()) || dnd::own_drag_running()
+}
+
+/// `WM_RUN_DRAG` arrived (the permanent subclass, dispatched by winit's message loop outside its
+/// event handler): run the pending drag. `DoDragDrop` runs a modal loop; no borrow is held.
+pub fn run_pending_drag() {
+    let Some((pane, req)) = PENDING_DRAG.with(|p| p.borrow_mut().take()) else { return };
+    let right = req.right;
+    if !state_is_free() {
+        // Not expected: the message is dispatched by an event loop, never inside a borrow.
+        eprintln!("[dnd] pane={pane} pending drag dropped: app state busy");
+        with_state(|st| st.gesture[pane].drag_ended());
+        return slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right));
+    }
     // MODAL LOOP: no borrow held (see dnd). A drop on our own other pane comes back through our
     // drop target from inside this call, and its job is posted to the event loop.
     let res = dnd::drag(&req);
@@ -1625,7 +1657,7 @@ fn drag_start(pane: usize, row: usize, right: bool) {
         refresh(pane);
     }
     // Slint never saw the button come up (DoDragDrop's loop consumed it) and still holds the
-    // row's grab. Give it a release, after this pointer event has finished dispatching.
+    // row's grab. Give it a release from the event loop.
     slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right));
 }
 
@@ -1758,6 +1790,7 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
         return false;
     }
     app.invoke_set_scroll(pane as i32, to);
+    dnd::repaint_during_own_drag();
     eprintln!("[dnd] auto-scroll pane {pane} {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
     true
 }
@@ -1767,12 +1800,12 @@ pub fn drop_highlight(at: Option<(usize, i32)>) {
     let app = STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().and_then(|st| st.app.upgrade())));
     let Some(app) = app else { return };
     let (pane, row) = at.map_or((-1, -1), |(p, r)| (p as i32, r));
-    if app.get_drop_pane() != pane {
-        app.set_drop_pane(pane);
+    if app.get_drop_pane() == pane && app.get_drop_row() == row {
+        return;
     }
-    if app.get_drop_row() != row {
-        app.set_drop_row(row);
-    }
+    app.set_drop_pane(pane);
+    app.set_drop_row(row);
+    dnd::repaint_during_own_drag();
 }
 
 /// A drop landed (posted by the drop target through the event loop): copy or move the files

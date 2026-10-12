@@ -473,6 +473,16 @@ fn spawn_drag_pump(hwnd: isize, steps: Vec<Step>, done: std::sync::Arc<std::sync
     })
 }
 
+/// Run `f` once the drag a `dragrow` asked for is over (it runs from a posted message after the
+/// step's dispatch; no Slint timer fires while its loop runs, so this polls after it).
+fn when_drag_over(f: Box<dyn FnOnce()>) {
+    if crate::drag_pending() {
+        Timer::single_shot(Duration::from_millis(20), move || when_drag_over(f));
+    } else {
+        f();
+    }
+}
+
 /// Where `dropfiles` aims: the centre of a visible row, or with row -1 the pane's
 /// header (in the pane, over no row, so the drop goes to the pane's folder).
 fn drop_point(app: &App, pane: usize, row: i32) -> LogicalPosition {
@@ -891,24 +901,30 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let pump = spawn_drag_pump(hwnd, std::mem::take(&mut drag_steps), done.clone());
                 crate::dnd::script_begin();
-                // The drag starts and runs inside this dispatch; it returns when the drag ends.
+                // The move asks for the drag; it runs from a posted message right after this
+                // dispatch (main.rs `run_pending_drag`), so wait until it is over.
                 app.window().dispatch_event_with_result(WindowEvent::PointerMoved { position: to }).ok();
-                crate::dnd::script_end();
-                done.store(true, std::sync::atomic::Ordering::Release);
-                let _ = pump.join();
-                if crate::dnd::drags_started() == before {
-                    if right {
-                        // A right release would open the row's context menu and wait for a
-                        // person; leaving the window ends Slint's grab instead.
-                        eprintln!("[auto] dragrow: no right-button drag started (under the threshold?); pointer leaves the window");
-                        app.window().dispatch_event_with_result(WindowEvent::PointerExited).ok();
-                    } else {
-                        eprintln!("[auto] dragrow: no drag started (under the threshold?); releasing");
-                        app.window().dispatch_event_with_result(WindowEvent::PointerReleased { position: to, button }).ok();
+                let w = app.as_weak();
+                let r2 = r2.clone();
+                when_drag_over(Box::new(move || {
+                    crate::dnd::script_end();
+                    done.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = pump.join();
+                    let Some(app) = w.upgrade() else { return };
+                    if crate::dnd::drags_started() == before {
+                        if right {
+                            // A right release would open the row's context menu and wait for a
+                            // person; leaving the window ends Slint's grab instead.
+                            eprintln!("[auto] dragrow: no right-button drag started (under the threshold?); pointer leaves the window");
+                            app.window().dispatch_event_with_result(WindowEvent::PointerExited).ok();
+                        } else {
+                            eprintln!("[auto] dragrow: no drag started (under the threshold?); releasing");
+                            app.window().dispatch_event_with_result(WindowEvent::PointerReleased { position: to, button }).ok();
+                        }
                     }
-                }
-                // After a drag the app gives Slint the release it missed (main.rs).
-                schedule(r2.clone(), 1);
+                    // After a drag the app gives Slint the release it missed (main.rs).
+                    schedule(r2, 1);
+                }));
             });
         }
         Step::DragOver { pane, top, ms, paths } => {
