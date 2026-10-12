@@ -157,6 +157,17 @@ changing the list.
 - Harness-launched runs flip between RDP 32 Hz and console 60 Hz presentation without notice,
   so in-app busy numbers taken minutes apart are not comparable. Record Narrator on/off with
   every run (it adds about 6 points of busy).
+- Close every TwinFM window before a gate run: a pre-existing one appears in the trace with
+  start "MIN" (the analyzer picks the process that started inside the trace, but the extra
+  process still shares the machine). Single runs of one unchanged binary ranged 19.6 to 22.8
+  in one afternoon (2026-10-12), so compare only within a session and never against a
+  recorded number; a difference under about two points needs more than one pair.
+- Paths handed to `twinfm.exe` from Git Bash must be Windows-style (`cygpath -w`): a
+  forward-slash path fails in `SHParseDisplayName` (0x80070057) and a scripted drag never starts.
+- PowerShell's `2>` redirect writes UTF-16 with wrapped lines; convert with
+  `iconv -f UTF-16LE -t UTF-8` before grepping a console log.
+- `target\release` is Jeremy's everyday binary and is rebuilt only by hand: rebuild it after
+  every merge (`cargo build --release` on main) and say so.
 - `tools/uia-dump.ps1` shows what a screen reader sees (names, selection, screen rectangles).
   Elements with no `accessible-role` are invisible to it; rows use the StandardListView
   layering (base component holds the single `for`, derived adds the zero-width FocusScope and
