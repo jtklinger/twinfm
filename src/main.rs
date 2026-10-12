@@ -50,8 +50,9 @@ struct IconCounts {
     /// Icon strips composed, and the time spent composing them (fitted buffers plus copies).
     composes: u64,
     compose_ns: u64,
-    /// (requests, replies, worker renders, worker ns, composes) at the last report.
-    reported: (u64, u64, u64, u64, u64),
+    /// (requests, replies, worker renders, worker ns, composes, overlays, slow renders) at the
+    /// last report.
+    reported: (u64, u64, u64, u64, u64, u64, u64),
 }
 
 /// Per-tab timing bookkeeping for the gate measurements.
@@ -799,7 +800,8 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let mut sent = 0;
     let changed = model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, |e| {
         let path = if e.kind == Kind::Drive { PathBuf::from(e.name.as_str()) } else { folder.join(e.name.as_str()) };
-        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px });
+        let overlay = icons::wants_overlay(e.kind, e.attrs, &e.name);
+        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay });
         sent += 1;
     });
     if let Some(c) = st.strip[pane] {
@@ -888,25 +890,29 @@ fn report_icons() {
         let c = &mut st.icon_counts;
         let rendered = st.icon_stats.rendered.load(Ordering::Relaxed);
         let render_ns = st.icon_stats.render_ns.load(Ordering::Relaxed);
-        let (req0, rep0, ren0, ns0, comp0) = c.reported;
+        let overlays = st.icon_stats.overlays.load(Ordering::Relaxed);
+        let slow = st.icon_stats.slow.load(Ordering::Relaxed);
+        let (req0, rep0, ren0, ns0, comp0, ov0, slow0) = c.reported;
         if c.requests == req0 && c.replies == rep0 && c.composes == comp0 {
             return;
         }
         let n = rendered - ren0;
         eprintln!(
-            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
+            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
             c.requests - req0,
             c.replies - rep0,
             c.requests,
             c.replies,
             st.icons.borrow().len(),
             if n > 0 { (render_ns - ns0) as f64 / n as f64 / 1e6 } else { 0.0 },
+            overlays - ov0,
+            slow - slow0,
             c.resolves,
             if c.resolves > 0 { c.resolve_ns as f64 / c.resolves as f64 / 1e3 } else { 0.0 },
             c.composes,
             if c.composes > 0 { c.compose_ns as f64 / c.composes as f64 / 1e3 } else { 0.0 },
         );
-        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes);
+        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes, overlays, slow);
     });
 }
 
