@@ -13,7 +13,8 @@
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
 //!                                    CtrlV, CtrlZ, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
 //!                                    the context menu and take in-menu steps like rclick); CtrlT,
-//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9
+//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
+//!                                    CtrlShiftPageUp, CtrlShiftPageDown
 //!   copy | move                      Shift+F5 / Shift+F6: the active pane's selection to the other pane
 //!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
 //!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
@@ -26,6 +27,9 @@
 //!   ctrlclick <pane> <row>           Ctrl+click a visible row (toggles it)
 //!   shiftclick <pane> <row>          Shift+click a visible row (selects anchor..row)
 //!   dblclick <pane> <row>            double-click a visible row (enters the directory if it is one)
+//!   midclick <pane> <row>            middle-click a visible row (a folder opens in a new tab)
+//!   backclick <pane>                 press and release the mouse's Back button in the middle of the
+//!                                    pane's list (a row or the empty space): the pane goes up a folder
 //!   rclick <pane> <row>              right-click a visible row: press, 60 ms for a frame, release;
 //!                                    the release opens the real shell context menu
 //!   rclickempty <pane>               right-click the empty space below the last row (the folder's
@@ -52,12 +56,22 @@
 //!                                    because `;` separates steps
 //!   tab <new|close|next|prev|N>      Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+N (1..9) through the
 //!                                    Slint key path, on the active pane
+//!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
+//!   tabdrag <pane> <index> <dx>      press the left button on tab <index> (0-based), move <dx> px
+//!                                    in 8 px steps, release: a tab drag through Slint's pointer path
 //!   crumb <pane> <index>             breadcrumb button <index> (0 is This PC), through its callback
+//!   crumbmenu <pane> <index>         the chevron after crumb <index>: its subfolders in a dropdown
+//!                                    (listed on a worker; sleep before crumbpick)
+//!   crumbpick <name>                 pick the dropdown's folder <name> (the pane navigates there)
+//!   crumbclose                       close the dropdown (as Escape does)
 //!   pathmode <pane> <entry|crumb>    the path bar as text entry (as Ctrl+L) or back to the breadcrumb
 //!   sidebar toggle                   F9: show or hide the sidebar
 //!   sidebar click <row>              sidebar row <row> (headers count; 0 is "Drives"), through its callback
 //!   bookmark add                     Ctrl+D: bookmark the active tab's folder
 //!   bookmark remove <index>          the bookmark menu's "Remove bookmark" for bookmark <index>
+//!   bookmark rename <index> <title>  what the bookmark row's title editor commits (an empty title
+//!                                    goes back to the folder's name)
+//!   bookmark move <index> <up|down>  the bookmark menu's "Move up" / "Move down"
 //!   about open | about close         F1 opens the About dialog; close closes it
 //!   touch <pane> <name>              create an empty file in the pane's folder, or set an existing
 //!                                    one's modified time to now (a change for the directory watch)
@@ -66,6 +80,8 @@
 //!                                    operations do; otherwise use them on %TEMP% scratch folders only
 //!   waitwatch <ms>                   wait until the next refresh started by the directory watch has
 //!                                    listed its folder (at most <ms>), then 300 ms more for the pass
+//!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
+//!                                    the close button does (WM_CLOSE: settings saved, app exits)
 //!   quit                             exit the event loop
 //! Events are dispatched with slint::Window::dispatch_event on the UI thread, so Slint's full
 //! input -> layout -> render path runs; only the OS WndProc hop is skipped.
@@ -115,6 +131,9 @@ enum Step {
     Key(String),
     Click { pane: usize, row: usize, modifier: Option<Key> },
     DblClick { pane: usize, row: usize },
+    MidClick { pane: usize, row: usize },
+    /// Press and release the mouse's Back button in the middle of the pane's list area.
+    BackClick(usize),
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
     WaitOps(u64),
@@ -129,13 +148,24 @@ enum Step {
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
     DropFiles { pane: usize, row: i32, mode: String, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
+    CrumbMenu { pane: usize, index: i32 },
+    CrumbPick(String),
+    CrumbClose,
+    /// Press the left button on tab `index`'s centre, move `dx` px in 8 px steps, release.
+    TabDrag { pane: usize, index: usize, dx: f32 },
     PathMode { pane: usize, entry: bool },
     SideClick(i32),
     BookmarkRemove(i32),
+    BookmarkRename(i32, String),
+    /// Bookmark index, and up (true) or down.
+    BookmarkMove(i32, bool),
     AboutClose,
     /// `touch` (create or update) or `rmfile` (delete) a file in the pane's folder.
     ScriptFile { pane: usize, name: String, remove: bool },
     WaitWatch(u64),
+    /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
+    /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
+    Window(String),
     Quit,
 }
 
@@ -158,6 +188,8 @@ fn parse(script: &str) -> Vec<Step> {
                 "ctrlclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Control) },
                 "shiftclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Shift) },
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
+                "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
+                "backclick" => Step::BackClick(num(1) as usize),
                 "copy" => Step::Key("ShiftF5".into()),
                 "move" => Step::Key("ShiftF6".into()),
                 "delete" => Step::Key("Delete".into()),
@@ -188,19 +220,28 @@ fn parse(script: &str) -> Vec<Step> {
                     "close" => "CtrlW".into(),
                     "next" => "CtrlTab".into(),
                     "prev" => "CtrlShiftTab".into(),
+                    "moveleft" => "CtrlShiftPageUp".into(),
+                    "moveright" => "CtrlShiftPageDown".into(),
                     n => format!("Ctrl{n}"),
                 }),
+                "tabdrag" => Step::TabDrag { pane: num(1) as usize, index: num(2) as usize, dx: num(3) as f32 },
                 "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
+                "crumbmenu" => Step::CrumbMenu { pane: num(1) as usize, index: num(2) as i32 },
+                "crumbpick" => Step::CrumbPick(a[1..].join(" ")),
+                "crumbclose" => Step::CrumbClose,
                 "pathmode" => Step::PathMode { pane: num(1) as usize, entry: a.get(2) == Some(&"entry") },
                 "sidebar" if a.get(1) == Some(&"click") => Step::SideClick(num(2) as i32),
                 "sidebar" => Step::Key("F9".into()),
                 "bookmark" if a.get(1) == Some(&"remove") => Step::BookmarkRemove(num(2) as i32),
+                "bookmark" if a.get(1) == Some(&"rename") => Step::BookmarkRename(num(2) as i32, a.get(3..).unwrap_or(&[]).join(" ")),
+                "bookmark" if a.get(1) == Some(&"move") => Step::BookmarkMove(num(2) as i32, a.get(3) == Some(&"up")),
                 "bookmark" => Step::Key("CtrlD".into()),
                 "about" if a.get(1) == Some(&"close") => Step::AboutClose,
                 "about" => Step::Key("F1".into()),
                 "touch" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: false },
                 "rmfile" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: true },
                 "waitwatch" => Step::WaitWatch(num(1).max(1) as u64),
+                "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("[auto] unknown step: {other}");
@@ -554,6 +595,8 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlL" => vec![k(Key::Control), "l".into()],
         "CtrlTab" => vec![k(Key::Control), k(Key::Tab)],
         "CtrlShiftTab" => vec![k(Key::Control), k(Key::Shift), k(Key::Tab)],
+        "CtrlShiftPageUp" => vec![k(Key::Control), k(Key::Shift), k(Key::PageUp)],
+        "CtrlShiftPageDown" => vec![k(Key::Control), k(Key::Shift), k(Key::PageDown)],
         n if n.len() == 5 && n.starts_with("Ctrl") && n.as_bytes()[4].is_ascii_digit() && n.as_bytes()[4] != b'0' => {
             vec![k(Key::Control), n[4..].into()]
         }
@@ -664,8 +707,63 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             }
             schedule(runner, 1);
         }
+        Step::MidClick { pane, row } => {
+            let pos = row_pos(&app, pane, row);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Middle }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Middle }).ok();
+            schedule(runner, 1);
+        }
+        Step::BackClick(pane) => {
+            let (_, _, pos) = geometry(&app, pane);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Back }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Back }).ok();
+            eprintln!("[auto] backclick pane={pane} at ({:.0}, {:.0})", pos.x, pos.y);
+            schedule(runner, 1);
+        }
         Step::Crumb { pane, index } => {
             app.invoke_crumb_clicked(pane as i32, index);
+            schedule(runner, 1);
+        }
+        Step::CrumbMenu { pane, index } => {
+            // Under the path bar, near the pane's left edge.
+            let (left, _) = crate::dnd::pane_x(&crate::window_layout(&app), pane);
+            app.invoke_crumb_menu(pane as i32, index, left + 40.0, list_top(&app, pane) - 26.0);
+            schedule(runner, 1);
+        }
+        Step::CrumbPick(name) => {
+            match crate::crumb_menu_index(&name) {
+                Some(i) => {
+                    app.invoke_close_crumb_menu();
+                    app.invoke_crumb_pick(i as i32);
+                }
+                None => eprintln!("[auto] crumbpick: no {name:?} in the dropdown (is it open and listed yet?)"),
+            }
+            schedule(runner, 1);
+        }
+        Step::CrumbClose => {
+            app.invoke_close_crumb_menu();
+            schedule(runner, 1);
+        }
+        Step::TabDrag { pane, index, dx } => {
+            // The strip is the pane's first row: 3 px padding, 26 px tall, every tab tab-width
+            // wide from the strip's offset.
+            let (left, _) = crate::dnd::pane_x(&crate::window_layout(&app), pane);
+            let w = app.invoke_tab_width(pane as i32);
+            let x0 = left + 3.0 + app.invoke_tab_offset(pane as i32) + (index as f32 + 0.5) * w;
+            let at = |x: f32| LogicalPosition::new(x, 16.0);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at(x0) }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: at(x0), button: PointerEventButton::Left }).ok();
+            let steps = (dx.abs() / 8.0).ceil().max(1.0) as i32;
+            for k in 1..=steps {
+                win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at(x0 + dx * k as f32 / steps as f32) }).ok();
+            }
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: at(x0 + dx), button: PointerEventButton::Left }).ok();
+            eprintln!("[auto] tabdrag pane={pane} tab {index} from x {x0:.0} by {dx:.0} (tab width {w:.0})");
             schedule(runner, 1);
         }
         Step::PathMode { pane, entry } => {
@@ -678,6 +776,14 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::BookmarkRemove(i) => {
             app.invoke_bookmark_remove(i);
+            schedule(runner, 1);
+        }
+        Step::BookmarkRename(i, title) => {
+            app.invoke_bookmark_rename(i, title.as_str().into());
+            schedule(runner, 1);
+        }
+        Step::BookmarkMove(i, up) => {
+            app.invoke_bookmark_move(i, up);
             schedule(runner, 1);
         }
         Step::AboutClose => {
@@ -706,6 +812,21 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     schedule(r2.clone(), 300);
                 }
             });
+        }
+        Step::Window(what) => {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SW_MAXIMIZE, SW_RESTORE, ShowWindow, WM_CLOSE};
+            let hwnd = hwnd_of(&app) as HWND;
+            // SAFETY: our own top-level window, on its thread; WM_CLOSE carries no pointers.
+            match what.as_str() {
+                "max" => unsafe { ShowWindow(hwnd, SW_MAXIMIZE) },
+                "restore" => unsafe { ShowWindow(hwnd, SW_RESTORE) },
+                "close" => unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) },
+                other => {
+                    eprintln!("[auto] window {other}: only max, restore and close");
+                    0
+                }
+            };
+            schedule(runner, 1);
         }
         Step::Quit => {
             let _ = slint::quit_event_loop();
@@ -781,6 +902,8 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 // space's TouchArea fires, called directly.
                 eprintln!("[auto] rclickempty: no empty space below the last row; calling context-menu(-1) directly");
                 let (_, _, mid) = geometry(&app, pane);
+                // What the empty space's right press does first: clear the selection.
+                app.invoke_select(pane as i32, 5, -1);
                 arm_menu_steps(&app, menu_steps);
                 app.invoke_context_menu(pane as i32, -1, mid.x, list_top(&app, pane) + 11.0, false);
                 disarm_menu_steps();

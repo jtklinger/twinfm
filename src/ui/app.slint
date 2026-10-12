@@ -1,5 +1,5 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo } from "pane.slint";
-import { Palette, ListView, AboutSlint, Button } from "std-widgets.slint";
+import { Palette, ListView, AboutSlint, Button, LineEdit } from "std-widgets.slint";
 export { Row, TabInfo, Crumb, StatusInfo }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
@@ -12,15 +12,21 @@ export struct SideItem {
 
 component SideRow inherits Rectangle {
     in property <SideItem> item;
+    // The row's inline title editor is open ("Rename bookmark").
+    in property <bool> editing;
     // clicked(middle): the left or the middle button released over the row.
     callback clicked(bool);
     // menu(x, y): the right button released over a bookmark, at window coordinates.
     callback menu(length, length);
-    height: item.kind == 0 ? 26px : 24px;
+    // renamed(title): Return in the editor. edit-cancelled(refocus): Escape (true) or focus loss.
+    callback renamed(string);
+    callback edit-cancelled(bool);
+    height: item.kind == 0 ? 26px : (root.editing ? 30px : 24px);
     background: item.kind != 0 && ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
     accessible-role: list-item;
     accessible-label: item.label;
     HorizontalLayout {
+        visible: !root.editing;
         padding-left: item.kind == 0 ? 8px : 16px;
         padding-right: 6px;
         Text {
@@ -32,8 +38,28 @@ component SideRow inherits Rectangle {
             color: item.kind == 0 ? Palette.foreground.transparentize(35%) : Palette.foreground;
         }
     }
+    // Exists only while the row is being renamed; takes the focus with the title selected.
+    if root.editing: LineEdit {
+        x: 8px;
+        width: parent.width - 12px;
+        height: parent.height;
+        text: root.item.label;
+        accessible-label: "Bookmark title";
+        init => {
+            self.focus();
+            self.select-all();
+        }
+        accepted(t) => { root.renamed(t); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.edit-cancelled(true); return accept; }
+            return reject;
+        }
+        changed has-focus => {
+            if (!self.has-focus) { root.edit-cancelled(false); }
+        }
+    }
     ta := TouchArea {
-        enabled: item.kind != 0;
+        enabled: item.kind != 0 && !root.editing;
         pointer-event(ev) => {
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) { root.clicked(false); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) { root.clicked(true); }
@@ -41,6 +67,27 @@ component SideRow inherits Rectangle {
                 root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
         }
+    }
+}
+
+// One item of TwinFM's own popup menus; a disabled item is dimmed and takes no clicks.
+component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback activated();
+    height: 26px;
+    background: ta.has-hover && root.enabled ? Palette.alternate-background.brighter(0.2) : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    Text {
+        x: 10px;
+        text: root.text;
+        vertical-alignment: center;
+        color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(55%);
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
     }
 }
 
@@ -95,10 +142,13 @@ export component App inherits Window {
     callback open-row(int, int);
     callback sort-by(int, int);
     callback go-up(int);
+    // pane-back(pane): the mouse's Back button released over that pane (not necessarily the
+    // active one): it becomes active and goes up a folder.
+    callback pane-back(int);
     callback toggle-split();
     callback toggle-hidden(int);
     callback refresh(int);
-    // select(pane, op, row): op 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
+    // select(pane, op, row): op 0 only this row, 1 toggle, 2 range from anchor, 3 all, 4 right-click, 5 clear (model::SelOp)
     callback select(int, int, int);
     // viewport-changed(pane, content-y, visible-height)
     callback viewport-changed(int, length, length);
@@ -112,21 +162,37 @@ export component App inherits Window {
     callback context-menu(int, int, length, length, bool);
     callback context-key(int, int, length, length, length, length);
     // row-gesture(pane, row, what, ctrl, shift): left press (0), release (1), drag past the
-    // threshold (2) or double-click (3) on a row; see pane.slint FileListBase.
+    // threshold (2) or double-click (3) on a row, or a middle (4) or Back (5) button release; see pane.slint
+    // FileListBase.
     callback row-gesture(int, int, int, bool, bool);
     // tab-select(pane, index), tab-close(pane, index): a click or middle-click in a tab strip.
     callback tab-select(int, int);
     callback tab-close(int, int);
+    // tab-move(pane, from, to): a tab dragged within its strip.
+    callback tab-move(int, int, int);
     // tab-key(pane, what): for the active pane, Ctrl+T "new", Ctrl+W "close", Ctrl+Tab "next",
-    // Ctrl+Shift+Tab "prev", Ctrl+1..9 "1".."9".
+    // Ctrl+Shift+Tab "prev", Ctrl+1..9 "1".."9", Ctrl+Shift+PageUp "moveleft",
+    // Ctrl+Shift+PageDown "moveright".
     callback tab-key(int, string);
     // crumb-clicked(pane, index): a breadcrumb button.
     callback crumb-clicked(int, int);
+    // crumb-menu(pane, index, x, y): the chevron after a crumb; Rust lists its subfolders on a
+    // worker and shows the dropdown below (x, y). crumb-pick(i): item i of the dropdown.
+    callback crumb-menu(int, int, length, length);
+    callback crumb-pick(int);
     // side-clicked(row, middle): a sidebar row; the middle button opens it in a new tab.
     callback side-clicked(int, bool);
     // bookmark-add(): Ctrl+D. bookmark-remove(index): the bookmark menu's "Remove bookmark".
+    // bookmark-rename(index, title): the row's editor, opened by "Rename bookmark" (an empty
+    // title goes back to the folder's name). bookmark-move(index, up): "Move up" / "Move down".
     callback bookmark-add();
     callback bookmark-remove(int);
+    callback bookmark-rename(int, string);
+    callback bookmark-move(int, bool);
+    // How many bookmarks there are (for the menu's move items), and the sidebar row whose title
+    // editor is open (-1: none).
+    in property <int> bookmark-count;
+    in-out property <int> side-edit: -1;
     // sidebar-toggled(): F9 or a sidebar glyph changed sidebar-visible.
     callback sidebar-toggled();
     // settings-changed(): the split line, the sidebar width or the path bar mode moved; Rust
@@ -140,6 +206,14 @@ export component App inherits Window {
 
     public function show-about() { about.show(); }
     public function close-about() { about.close(); }
+
+    // The breadcrumb dropdown's contents and place, set from Rust before show-crumb-menu.
+    in property <[string]> crumb-menu-items;
+    in property <string> crumb-menu-note;
+    in property <length> crumb-menu-x;
+    in property <length> crumb-menu-y;
+    public function show-crumb-menu() { crumb-menu.show(); }
+    public function close-crumb-menu() { crumb-menu.close(); }
 
     // Ctrl+L, and the driver's `pathmode`: the pane's path bar as text entry or breadcrumb.
     public function set-path-mode(p: int, entry: bool) {
@@ -158,6 +232,14 @@ export component App inherits Window {
     public function reset-scroll(p: int) {
         if (p == 0) { left.reset-scroll(); } else { right.reset-scroll(); }
     }
+
+    // The pane's tab strip: scroll tab `i` into view (returns the strip's offset), and its tab
+    // width and offset now (for the driver's tab drag).
+    public function reveal-tab(p: int, i: int) -> length {
+        return p == 0 ? left.reveal-tab(i) : right.reveal-tab(i);
+    }
+    public function tab-width(p: int) -> length { return p == 0 ? left.tab-w : right.tab-w; }
+    public function tab-offset(p: int) -> length { return p == 0 ? left.shown-tab-scroll : right.shown-tab-scroll; }
 
     public function get-scroll(p: int) -> length {
         return p == 0 ? left.get-scroll() : right.get-scroll();
@@ -194,6 +276,10 @@ export component App inherits Window {
                 root.tab-key(active-pane, e.modifiers.shift || e.text == Key.Backtab ? "prev" : "next");
                 return accept;
             }
+            if (e.modifiers.control && e.modifiers.shift && (e.text == Key.PageUp || e.text == Key.PageDown)) {
+                root.tab-key(active-pane, e.text == Key.PageUp ? "moveleft" : "moveright");
+                return accept;
+            }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "t" || e.text == "T")) { root.tab-key(active-pane, "new"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "w" || e.text == "W")) { root.tab-key(active-pane, "close"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "1" || e.text == "2" || e.text == "3" || e.text == "4" || e.text == "5" || e.text == "6" || e.text == "7" || e.text == "8" || e.text == "9")) {
@@ -219,12 +305,23 @@ export component App inherits Window {
                     accessible-label: "Places";
                     for item[i] in root.side-items: SideRow {
                         item: item;
+                        editing: i == root.side-edit;
                         clicked(middle) => { root.side-clicked(i, middle); }
                         menu(x, y) => {
                             root.menu-index = item.index;
+                            root.menu-row = i;
                             root.menu-x = x;
                             root.menu-y = y;
                             bookmark-menu.show();
+                        }
+                        renamed(t) => {
+                            root.side-edit = -1;
+                            root.bookmark-rename(item.index, t);
+                            root.focus-pane(root.active-pane);
+                        }
+                        edit-cancelled(refocus) => {
+                            root.side-edit = -1;
+                            if (refocus) { root.focus-pane(root.active-pane); }
                         }
                     }
                 }
@@ -289,7 +386,9 @@ export component App inherits Window {
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
+                tab-move(f, t) => { root.tab-move(0, f, t); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
+                crumb-menu(i, x, y) => { root.crumb-menu(0, i, x, y); }
                 active: !split || active-pane == 0;
                 sort-col: left-sort-col; sort-asc: left-sort-asc;
                 current-row <=> left-current-row;
@@ -308,6 +407,7 @@ export component App inherits Window {
                 open-row(i) => { root.open-row(0, i); }
                 sort-by(c) => { root.sort-by(0, c); }
                 go-up => { root.go-up(0); }
+                back-button => { root.pane-back(0); }
                 focus-requested => { active-pane = 0; }
             }
             right := Pane {
@@ -319,7 +419,9 @@ export component App inherits Window {
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
+                tab-move(f, t) => { root.tab-move(1, f, t); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }
+                crumb-menu(i, x, y) => { root.crumb-menu(1, i, x, y); }
                 active: split && active-pane == 1;
                 sort-col: right-sort-col; sort-asc: right-sort-asc;
                 current-row <=> right-current-row;
@@ -338,6 +440,7 @@ export component App inherits Window {
                 open-row(i) => { root.open-row(1, i); }
                 sort-by(c) => { root.sort-by(1, c); }
                 go-up => { root.go-up(1); }
+                back-button => { root.pane-back(1); }
                 focus-requested => { active-pane = 1; }
             }
             splitter := Rectangle {
@@ -357,32 +460,105 @@ export component App inherits Window {
         }
     }
 
+    // The bookmark the menu is for: its index in the bookmark list and its sidebar row.
     private property <int> menu-index;
+    private property <int> menu-row;
     private property <length> menu-x;
     private property <length> menu-y;
-    // Right-click on a bookmark: TwinFM's own one-item menu (a Slint popup, not the shell's).
+    // Right-click on a bookmark: TwinFM's own menu (a Slint popup, not the shell's; no modal loop).
     bookmark-menu := PopupWindow {
         x: root.menu-x;
         y: root.menu-y;
-        width: 150px;
-        height: 30px;
+        width: 160px;
+        height: 4 * 26px + 6px;
         Rectangle {
             background: Palette.background;
             border-width: 1px;
             border-color: Palette.border;
-            remove-ta := TouchArea {
-                clicked => {
-                    root.bookmark-remove(root.menu-index);
-                    bookmark-menu.close();
+            VerticalLayout {
+                padding: 3px;
+                MenuItem {
+                    text: "Rename bookmark";
+                    activated => {
+                        bookmark-menu.close();
+                        root.side-edit = root.menu-row;
+                    }
+                }
+                MenuItem {
+                    text: "Move up";
+                    enabled: root.menu-index > 0;
+                    activated => {
+                        bookmark-menu.close();
+                        root.bookmark-move(root.menu-index, true);
+                    }
+                }
+                MenuItem {
+                    text: "Move down";
+                    enabled: root.menu-index + 1 < root.bookmark-count;
+                    activated => {
+                        bookmark-menu.close();
+                        root.bookmark-move(root.menu-index, false);
+                    }
+                }
+                MenuItem {
+                    text: "Remove bookmark";
+                    activated => {
+                        bookmark-menu.close();
+                        root.bookmark-remove(root.menu-index);
+                    }
                 }
             }
-            Rectangle {
-                x: 2px;
-                y: 2px;
-                width: parent.width - 4px;
-                height: parent.height - 4px;
-                background: remove-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
-                Text { x: 10px; text: "Remove bookmark"; vertical-alignment: center; }
+        }
+    }
+
+    // The breadcrumb dropdown: the subfolders of the crumb whose chevron was clicked. A popup, so
+    // its rows exist only while it is open; a click picks, Escape or a click outside closes it.
+    crumb-menu := PopupWindow {
+        x: max(0px, min(root.crumb-menu-x, root.width - 280px));
+        y: root.crumb-menu-y;
+        width: 280px;
+        height: max(30px, min(root.height - root.crumb-menu-y - 8px,
+            root.crumb-menu-items.length * 22px + (root.crumb-menu-note == "" ? 0px : 22px) + 8px));
+        Rectangle {
+            background: Palette.background;
+            border-width: 1px;
+            border-color: Palette.border;
+            crumb-keys := FocusScope {
+                init => { self.focus(); }
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) {
+                        crumb-menu.close();
+                        root.focus-pane(root.active-pane);
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+            VerticalLayout {
+                padding: 4px;
+                ListView {
+                    accessible-label: "Folders";
+                    for name[i] in root.crumb-menu-items: Rectangle {
+                        height: 22px;
+                        accessible-role: list-item;
+                        accessible-label: name;
+                        background: pick-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+                        Text { x: 8px; width: parent.width - 12px; text: name; vertical-alignment: center; overflow: elide; }
+                        pick-ta := TouchArea {
+                            clicked => {
+                                crumb-menu.close();
+                                root.crumb-pick(i);
+                            }
+                        }
+                    }
+                }
+                if root.crumb-menu-note != "": Text {
+                    height: 22px;
+                    x: 8px;
+                    text: root.crumb-menu-note;
+                    vertical-alignment: center;
+                    color: Palette.foreground.transparentize(35%);
+                }
             }
         }
     }

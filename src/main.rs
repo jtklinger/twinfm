@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tabs::Tabs;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG, SW_MAXIMIZE, ShowWindow};
 
 /// Rows above and below the viewport whose icons are fetched ahead of a scroll.
 const ICON_MARGIN_ROWS: usize = 10;
@@ -184,6 +184,10 @@ struct State {
     watch_refreshes: u64,
     /// Debounces volume arrivals and removals (WM_DEVICECHANGE comes in bursts).
     device_timer: slint::Timer,
+    /// The breadcrumb dropdown: requests handed out (a listing that comes back for an older one
+    /// is dropped), and the one on screen (its pane, folder and the folder names it lists).
+    crumb_seq: u64,
+    crumb_menu: Option<(usize, PathBuf, Vec<String>)>,
 }
 
 /// A tab with no folder yet, its model sharing the icon table.
@@ -357,7 +361,25 @@ fn update_tabs(st: &State, pane: usize) {
         .enumerate()
         .map(|(i, t)| TabInfo { title: pathbar::title(&t.path.to_string_lossy()).into(), active: i == active })
         .collect();
-    st.tab_models[pane].set_vec(v);
+    // Same count: change the rows that differ, so the strip keeps its tab items (a reset would
+    // recreate them and drop the pointer grab of a tab being pressed or dragged).
+    let m = &st.tab_models[pane];
+    if m.row_count() == v.len() {
+        for (i, info) in v.into_iter().enumerate() {
+            if m.row_data(i).as_ref() != Some(&info) {
+                m.set_row_data(i, info);
+            }
+        }
+    } else {
+        m.set_vec(v);
+    }
+    // The active tab scrolled into view in an overflowing strip (on change only, like the rest).
+    if let (Some(app), true) = (st.app.upgrade(), tabs.len() > 1) {
+        let x = app.invoke_reveal_tab(pane as i32, active as i32);
+        if x <= -0.5 {
+            eprintln!("[tab] pane={pane} strip scrolled to {x:.0} (tab {} of {} in view)", active + 1, tabs.len());
+        }
+    }
 }
 
 /// The path bar (text and breadcrumb) from the active tab's folder.
@@ -389,7 +411,20 @@ fn save_now() {
     let Some((config, path)) = with_state(|st| {
         st.save_timer.stop();
         let app = st.app.upgrade()?;
+        // Each pane's tabs; a pane whose tabs never had a folder (the second pane before the
+        // split was first opened) keeps the saved list.
+        let tab_paths = |tabs: &Tabs<Tab>| {
+            let v: Vec<String> = tabs.iter().map(|t| t.path.to_string_lossy().to_string()).collect();
+            v.iter().all(|p| !p.is_empty()).then_some((v, tabs.active_index()))
+        };
+        let (left_tabs, right_tabs) = (tab_paths(&st.panes[0]), tab_paths(&st.panes[1]));
         let c = &mut st.config;
+        if let Some((v, a)) = left_tabs {
+            (c.left_tabs, c.left_active) = (v, a);
+        }
+        if let Some((v, a)) = right_tabs {
+            (c.right_tabs, c.right_active) = (v, a);
+        }
         let left = st.panes[0].active().path.to_string_lossy().to_string();
         let right = st.panes[1].active().path.to_string_lossy().to_string();
         if !left.is_empty() {
@@ -404,14 +439,21 @@ fn save_now() {
         c.sidebar_width = app.get_sidebar_width();
         c.path_bar = if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into();
         let w = app.window();
-        if !w.is_minimized() && !w.is_maximized() && w.is_visible() {
-            let size = w.size().to_logical(w.scale_factor());
-            let pos = w.position();
-            if size.width > 0.0 && size.height > 0.0 {
-                c.window = Some(settings::WindowGeom { x: pos.x, y: pos.y, width: size.width, height: size.height });
+        // Maximised: the Win32 placement's normal rectangle, so un-maximising after a restart
+        // gives the right size. Otherwise the window as it is; minimised: left as last saved.
+        match settings::placement(st.hwnd, w.scale_factor()) {
+            Some((true, normal)) => st.config.window = Some(normal),
+            Some((false, _)) if !w.is_minimized() && w.is_visible() => {
+                let size = w.size().to_logical(w.scale_factor());
+                let pos = w.position();
+                if size.width > 0.0 && size.height > 0.0 {
+                    st.config.window =
+                        Some(settings::WindowGeom { x: pos.x, y: pos.y, width: size.width, height: size.height, maximized: false });
+                }
             }
+            _ => {}
         }
-        Some((c.clone(), st.config_path.clone()?))
+        Some((st.config.clone(), st.config_path.clone()?))
     }) else {
         return;
     };
@@ -427,6 +469,9 @@ fn rebuild_sidebar(st: &mut State) {
     let items: Vec<SideItem> =
         st.side.iter().map(|r| SideItem { label: r.label.as_str().into(), kind: r.kind as i32, index: r.index as i32 }).collect();
     st.side_model.set_vec(items);
+    if let Some(app) = st.app.upgrade() {
+        app.set_bookmark_count(st.config.bookmarks.len() as i32);
+    }
 }
 
 /// Re-read the drive list for the sidebar on a worker (labels and free space can stall on a slow
@@ -485,8 +530,34 @@ fn bookmark_remove(i: usize) {
         let Some(gone) = sidebar::remove_bookmark(&mut st.config.bookmarks, i) else { return };
         rebuild_sidebar(st);
         schedule_save(st);
-        eprintln!("[sidebar] removed bookmark {i}: {gone}");
-        note(st, &app, active_pane(&app), format!("Removed the bookmark {gone}"));
+        eprintln!("[sidebar] removed bookmark {i}: {}", gone.path);
+        note(st, &app, active_pane(&app), format!("Removed the bookmark {}", gone.path));
+    });
+}
+
+/// The bookmark row's inline editor (from "Rename bookmark"): the title the sidebar shows; an
+/// empty one goes back to the folder's name.
+fn bookmark_rename(i: usize, title: &str) {
+    with_state(|st| {
+        if !sidebar::rename_bookmark(&mut st.config.bookmarks, i, title) {
+            return;
+        }
+        rebuild_sidebar(st);
+        schedule_save(st);
+        let b = &st.config.bookmarks[i];
+        eprintln!("[sidebar] renamed bookmark {i} ({}): {:?}", b.path, b.title);
+    });
+}
+
+/// The bookmark menu's "Move up" and "Move down".
+fn bookmark_move(i: usize, up: bool) {
+    with_state(|st| {
+        let Some(to) = sidebar::move_bookmark(&mut st.config.bookmarks, i, up) else {
+            return eprintln!("[sidebar] bookmark {i} cannot move {}", if up { "up" } else { "down" });
+        };
+        rebuild_sidebar(st);
+        schedule_save(st);
+        eprintln!("[sidebar] moved bookmark {i} to {to}: {}", st.config.bookmarks[to].path);
     });
 }
 
@@ -1393,8 +1464,64 @@ fn log_select(model: &PaneModel, pane: usize, op: SelOp, row: usize) {
     eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
 }
 
+/// Backspace, Alt+Up and the mouse's Back button: the active tab's parent folder (a drive or share
+/// root goes up to This PC). False on This PC, which has no parent.
+fn go_up(pane: usize) -> bool {
+    let target = with_state(|st| {
+        let base = st.tab(pane).path.clone();
+        if is_this_pc(&base.to_string_lossy()) {
+            return None;
+        }
+        // A drive root (or UNC share root) has no parent: go up to the drive list.
+        Some(base.parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf()))
+    });
+    match target {
+        Some(p) => {
+            navigate(pane, p);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The mouse's Back button released over a pane (any part of it but a text entry, the tab strip
+/// and the scrollbar): that pane becomes active, as a click there would make it, and goes up a
+/// folder. Forward does nothing yet (no history).
+fn back_button(pane: usize) {
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    if pane == 1 && !app.get_split() {
+        return;
+    }
+    let was = app.get_active_pane();
+    app.invoke_focus_pane(pane as i32);
+    let at_top = with_state(|st| is_this_pc(&st.tab(pane).path.to_string_lossy()));
+    let what = if at_top { "This PC has no parent folder, nothing to do" } else { "up a folder" };
+    eprintln!("[nav] pane={pane} Back button (active pane was {was}, now {pane}): {what}");
+    if !at_top {
+        go_up(pane);
+    }
+}
+
+/// The middle button on a row: a folder (or a drive, or a reparse directory) opens in a new tab
+/// in the same pane, as a middle-click in the sidebar does; a file does nothing.
+fn middle_click_row(pane: usize, row: usize) {
+    let target = with_state(|st| {
+        let e = st.model(pane).entry(row)?;
+        Some((e.is_dir(), st.tab(pane).path.join(e.name.as_str())))
+    });
+    match target {
+        Some((true, path)) => {
+            eprintln!("[tab] pane={pane} middle-click row {row}: new tab on {}", path.display());
+            open_tab(pane, Some(path));
+        }
+        Some((false, path)) => eprintln!("[tab] pane={pane} middle-click row {row}: {} is a file, nothing to do", path.display()),
+        None => {}
+    }
+}
+
 /// The left button on a row: press (0), release (1), moved past the drag threshold with the
-/// button down (2), double-click (3). `dnd::Gesture` decides what selects, drags and opens.
+/// button down (2), double-click (3); the middle button's release (4) and the Back button's (5).
+/// `dnd::Gesture` decides what selects, drags and opens.
 fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
     let Ok(row) = usize::try_from(row) else { return };
     match what {
@@ -1426,6 +1553,8 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
                 eprintln!("[dnd] pane={pane} double-click at the end of a drag: not opened");
             }
         }
+        4 => middle_click_row(pane, row),
+        5 => back_button(pane),
         _ => {}
     }
 }
@@ -1520,7 +1649,19 @@ fn register_dnd() {
     }) else {
         return;
     };
-    with_state(|st| st.dnd_timer.stop());
+    // The window exists now: a window saved maximised is maximised again (its normal placement
+    // was restored before it was created, so un-maximising gives that size).
+    if with_state(|st| {
+        st.dnd_timer.stop();
+        // The panes have their width now: scroll restored tab strips to their active tabs.
+        update_tabs(st, 0);
+        update_tabs(st, 1);
+        st.config.window.is_some_and(|g| g.maximized)
+    }) {
+        // SAFETY: our own top-level window, on its thread.
+        unsafe { ShowWindow(hwnd as windows_sys::Win32::Foundation::HWND, SW_MAXIMIZE) };
+        eprintln!("[settings] window restored maximised");
+    }
     let (revoked, registered) = dnd::register(hwnd);
     eprintln!(
         "[dnd] registered: RevokeDragDrop (winit's target) = 0x{:08X}, RegisterDragDrop (ours) = 0x{:08X}",
@@ -1697,6 +1838,7 @@ fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
             t.stale = true;
         }
         show_tab(st, &app, pane);
+        schedule_save(st);
         let t = st.tab(pane);
         eprintln!(
             "[tab] pane={pane} switched to {} of {} (id {}, {}), cursor {} scroll {:.0}",
@@ -1755,6 +1897,7 @@ fn close_tab(pane: usize, i: usize) {
         // Late batches and passes for it find no tab with its generation or id, and are dropped.
         closed.model.generation.set(0);
         eprintln!("[tab] pane={pane} closed tab {} (id {}), {} left", i + 1, closed.id, st.panes[pane].len());
+        schedule_save(st);
         if was_active {
             show_tab(st, &app, pane);
             Some(st.tab(pane).stale)
@@ -1768,7 +1911,22 @@ fn close_tab(pane: usize, i: usize) {
     }
 }
 
-/// Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+1..9 on the active pane.
+/// A tab dragged in its strip, or Ctrl+Shift+PageUp/PageDown: move tab `from` to `to`. The active
+/// tab stays active, so only the strip changes.
+fn move_tab(pane: usize, from: usize, to: usize) {
+    with_state(|st| {
+        if !st.panes[pane].move_tab(from, to) {
+            return eprintln!("[tab] pane={pane} cannot move tab {} to {}", from + 1, to + 1);
+        }
+        let tabs = &st.panes[pane];
+        eprintln!("[tab] pane={pane} moved tab {} to {}, tab {} of {} active", from + 1, to + 1, tabs.active_index() + 1, tabs.len());
+        update_tabs(st, pane);
+        schedule_save(st);
+    });
+}
+
+/// Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+1..9 and Ctrl+Shift+PageUp/PageDown on the
+/// active pane.
 fn tab_key(pane: usize, what: &str) {
     match what {
         "new" => open_tab(pane, None),
@@ -1778,6 +1936,14 @@ fn tab_key(pane: usize, what: &str) {
         }
         "next" => switch_tab(pane, |t| t.next()),
         "prev" => switch_tab(pane, |t| t.prev()),
+        "moveleft" | "moveright" => {
+            let i = with_state(|st| st.panes[pane].active_index());
+            let to = if what == "moveleft" { i.checked_sub(1) } else { Some(i + 1) };
+            match to {
+                Some(to) => move_tab(pane, i, to),
+                None => eprintln!("[tab] pane={pane} tab 1 is first already"),
+            }
+        }
         n => {
             if let Ok(n @ 1..=9) = n.parse::<usize>() {
                 switch_tab(pane, |t| {
@@ -1795,6 +1961,81 @@ fn crumb_clicked(pane: usize, i: usize) {
         eprintln!("[crumb] pane={pane} index {i}: {}", p.display());
         navigate(pane, p);
     }
+}
+
+/// The chevron after crumb `i`: list that crumb's subfolders on a worker (the pane's hidden-file
+/// setting applies), then show the dropdown at window point (`x`, `y`).
+fn crumb_menu(pane: usize, i: usize, x: f32, y: f32) {
+    let Some((dir, hidden, seq)) = with_state(|st| {
+        let dir = pathbar::crumbs(&st.tab(pane).path.to_string_lossy()).into_iter().nth(i)?.target;
+        st.crumb_seq += 1;
+        st.crumb_menu = None;
+        Some((dir, st.model(pane).show_hidden.get(), st.crumb_seq))
+    }) else {
+        return;
+    };
+    eprintln!("[crumb] pane={pane} menu {i}: listing the folders in {}", dir.display());
+    std::thread::spawn(move || {
+        let t0 = Instant::now();
+        let res = pathbar::subfolders(&dir, hidden, pathbar::MENU_CAP);
+        let ms = perf::elapsed_ms(t0);
+        let _ = slint::invoke_from_event_loop(move || crumb_menu_ready(pane, seq, dir, res, (x, y), ms));
+    });
+}
+
+/// The dropdown's listing came back (UI thread): fill the popup and show it, unless a newer
+/// request replaced this one.
+fn crumb_menu_ready(pane: usize, seq: u64, dir: PathBuf, res: Result<(Vec<String>, usize), String>, (x, y): (f32, f32), ms: f64) {
+    let Some(app) = with_state(|st| {
+        let app = st.app.upgrade()?;
+        if st.crumb_seq != seq {
+            return None;
+        }
+        let (names, note) = match res {
+            Ok((names, total)) if names.is_empty() => (names, if total == 0 { "No folders".to_string() } else { String::new() }),
+            Ok((names, total)) if total > names.len() => {
+                let note = format!("... and {} more", total - names.len());
+                (names, note)
+            }
+            Ok((names, _)) => (names, String::new()),
+            Err(e) => (Vec::new(), e),
+        };
+        let shown = if note.is_empty() { String::new() } else { format!(" ({note})") };
+        eprintln!("[crumb] pane={pane} menu: {} folder(s) in {}{shown}, listed in {ms:.1} ms", names.len(), dir.display());
+        let items: Vec<SharedString> = names.iter().map(|n| n.as_str().into()).collect();
+        app.set_crumb_menu_items(ModelRc::from(Rc::new(VecModel::from(items))));
+        app.set_crumb_menu_note(note.into());
+        app.set_crumb_menu_x(x);
+        app.set_crumb_menu_y(y);
+        st.crumb_menu = Some((pane, dir, names));
+        Some(app)
+    }) else {
+        return;
+    };
+    // Outside the state borrow: showing the popup moves keyboard focus.
+    app.invoke_show_crumb_menu();
+}
+
+/// Item `i` of the breadcrumb dropdown: navigate its pane there.
+fn crumb_pick(i: usize) {
+    let Some((pane, target)) = with_state(|st| {
+        let (pane, dir, names) = st.crumb_menu.take()?;
+        let name = names.get(i)?;
+        let target = if is_this_pc(&dir.to_string_lossy()) { PathBuf::from(name) } else { dir.join(name) };
+        Some((pane, target))
+    }) else {
+        return;
+    };
+    eprintln!("[crumb] pane={pane} picked {}", target.display());
+    navigate(pane, target);
+    if let Some(app) = with_state(|st| st.app.upgrade()) {
+        app.invoke_focus_pane(pane as i32);
+    }
+}
+
+/// For the scripted driver's `crumbpick`: the dropdown's item named `name` (case-insensitive).
+pub fn crumb_menu_index(name: &str) -> Option<usize> {
+    with_state(|st| st.crumb_menu.as_ref()?.2.iter().position(|n| n.eq_ignore_ascii_case(name)))
 }
 
 /// The clipboard changed (`WM_CLIPBOARDUPDATE`, posted by the `devices` subclass). If it was not
@@ -1896,12 +2137,46 @@ fn main() -> Result<(), slint::PlatformError> {
             settings::Config::default()
         }
     };
-    let panes = [Tabs::new(blank_tab(1, &icons)), Tabs::new(blank_tab(2, &icons))];
-    for (tabs, hidden) in panes.iter().zip([config.show_hidden_left, config.show_hidden_right]) {
-        let m = &tabs.active().model;
-        m.sort_col.set(settings::sort_from_name(&config.sort_column));
-        m.sort_asc.set(config.sort_ascending);
-        m.show_hidden.set(hidden);
+    // Each pane's tabs: the saved list, or one tab on its start folder. A command-line folder
+    // replaces the left pane's tabs; the right pane's are restored only with the split (otherwise
+    // F3 opens it on the left pane's folder, as before). Only the active tab navigates below;
+    // the others are stale and list their folder when first shown.
+    let arg = std::env::args().nth(1);
+    let (left_paths, left_active) = match &arg {
+        Some(a) => (vec![a.clone()], 0),
+        None => settings::start_tabs(&config.left_tabs, config.left_active, &config.start_left),
+    };
+    let right_start = if config.start_right.is_empty() { left_paths[left_active].clone() } else { config.start_right.clone() };
+    let (right_paths, right_active) = if config.split {
+        settings::start_tabs(&config.right_tabs, config.right_active, &right_start)
+    } else {
+        (vec![String::new()], 0)
+    };
+    let mut next_tab = 0;
+    let mut restore = |paths: &[String], active: usize, hidden: bool| {
+        let mut tabs: Vec<Tab> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                next_tab += 1;
+                let t = Tab { path: PathBuf::from(p), stale: i != active, ..blank_tab(next_tab, &icons) };
+                t.model.sort_col.set(settings::sort_from_name(&config.sort_column));
+                t.model.sort_asc.set(config.sort_ascending);
+                t.model.show_hidden.set(hidden);
+                t
+            })
+            .collect();
+        let first = tabs.remove(0);
+        Tabs::restored(first, tabs, active)
+    };
+    let panes = [
+        restore(&left_paths, left_active, config.show_hidden_left),
+        restore(&right_paths, right_active, config.show_hidden_right),
+    ];
+    for (pane, tabs) in panes.iter().enumerate() {
+        if tabs.len() > 1 {
+            eprintln!("[tab] pane={pane} restored {} tabs, tab {} active", tabs.len(), tabs.active_index() + 1);
+        }
     }
     app.set_left_rows(ModelRc::from(panes[0].active().model.clone()));
     app.set_right_rows(ModelRc::from(panes[1].active().model.clone()));
@@ -1924,7 +2199,7 @@ fn main() -> Result<(), slint::PlatformError> {
         *s.borrow_mut() = Some(State {
             app: app.as_weak(),
             panes,
-            next_tab: 2,
+            next_tab,
             next_gen: 0,
             rx,
             tx,
@@ -1964,6 +2239,8 @@ fn main() -> Result<(), slint::PlatformError> {
             watch_rx,
             watch_refreshes: 0,
             device_timer: slint::Timer::default(),
+            crumb_seq: 0,
+            crumb_menu: None,
         })
     });
     with_state(rebuild_sidebar);
@@ -1992,18 +2269,9 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_open_row(|pane, row| open_row(pane as usize, row));
     app.on_row_gesture(|pane, row, what, ctrl, shift| row_gesture(pane as usize, row, what, ctrl, shift));
     app.on_go_up(|pane| {
-        let target = with_state(|st| {
-            let base = st.tab(pane as usize).path.clone();
-            if is_this_pc(&base.to_string_lossy()) {
-                return None;
-            }
-            // A drive root (or UNC share root) has no parent: go up to the drive list.
-            Some(base.parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf()))
-        });
-        if let Some(p) = target {
-            navigate(pane as usize, p);
-        }
+        go_up(pane as usize);
     });
+    app.on_pane_back(|pane| back_button(pane as usize));
     app.on_sort_by(|pane, col| {
         with_state(|st| {
             let model = st.model(pane as usize);
@@ -2021,7 +2289,7 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_select(|pane, op, row| {
         let op = SelOp::from_i32(op);
-        if row < 0 && op != SelOp::All {
+        if row < 0 && op != SelOp::All && op != SelOp::Clear {
             return;
         }
         with_state(|st| {
@@ -2048,6 +2316,16 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_bookmark_remove(|i| {
         if let Ok(i) = usize::try_from(i) {
             bookmark_remove(i);
+        }
+    });
+    app.on_bookmark_rename(|i, title| {
+        if let Ok(i) = usize::try_from(i) {
+            bookmark_rename(i, title.as_str());
+        }
+    });
+    app.on_bookmark_move(|i, up| {
+        if let Ok(i) = usize::try_from(i) {
+            bookmark_move(i, up);
         }
     });
     app.on_sidebar_toggled(|| {
@@ -2082,10 +2360,25 @@ fn main() -> Result<(), slint::PlatformError> {
             close_tab(pane as usize, i);
         }
     });
+    app.on_tab_move(|pane, from, to| {
+        if let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) {
+            move_tab(pane as usize, from, to);
+        }
+    });
     app.on_tab_key(|pane, what| tab_key(pane as usize, what.as_str()));
     app.on_crumb_clicked(|pane, i| {
         if let Ok(i) = usize::try_from(i) {
             crumb_clicked(pane as usize, i);
+        }
+    });
+    app.on_crumb_menu(|pane, i, x, y| {
+        if let Ok(i) = usize::try_from(i) {
+            crumb_menu(pane as usize, i, x, y);
+        }
+    });
+    app.on_crumb_pick(|i| {
+        if let Ok(i) = usize::try_from(i) {
+            crumb_pick(i);
         }
     });
     app.on_toggle_hidden(|pane| {
@@ -2126,13 +2419,11 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // A command-line folder overrides the saved left start folder.
-    let start = std::env::args().nth(1).unwrap_or_else(|| config.start_left.clone());
-    navigate(0, PathBuf::from(&start));
+    // Each pane's active tab lists its folder; the restored background tabs wait until shown.
+    navigate(0, PathBuf::from(&left_paths[left_active]));
     if config.split {
         app.set_split(true);
-        let right = if config.start_right.is_empty() { start } else { config.start_right.clone() };
-        navigate(1, PathBuf::from(right));
+        navigate(1, PathBuf::from(&right_paths[right_active]));
     }
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);

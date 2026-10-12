@@ -581,6 +581,9 @@ pub enum SelOp {
     /// Right-click: an unselected row becomes the only selection; a selected row keeps the
     /// selection as it is (Explorer behaviour, so the menu acts on everything selected).
     Context = 4,
+    /// Right-click in the empty space below the rows: nothing stays selected (Explorer). The
+    /// row is ignored.
+    Clear = 5,
 }
 
 impl SelOp {
@@ -590,6 +593,7 @@ impl SelOp {
             2 => SelOp::Range,
             3 => SelOp::All,
             4 => SelOp::Context,
+            5 => SelOp::Clear,
             _ => SelOp::Only,
         }
     }
@@ -605,10 +609,14 @@ pub struct Selection {
 impl Selection {
     /// Apply a gesture over a list of `len` rows; returns the rows whose membership changed.
     pub fn apply(&mut self, op: SelOp, row: usize, len: usize) -> Vec<usize> {
-        if op != SelOp::All && row >= len {
+        if op != SelOp::All && op != SelOp::Clear && row >= len {
             return Vec::new();
         }
         match op {
+            SelOp::Clear => {
+                self.anchor = None;
+                std::mem::take(&mut self.set).into_iter().collect()
+            }
             SelOp::Context if self.set.contains(&row) => {
                 self.anchor = Some(row);
                 Vec::new()
@@ -663,7 +671,7 @@ pub fn sort_entries(entries: &mut [Entry], col: SortCol, asc: bool) {
 }
 
 /// Case-insensitive compare with embedded numbers compared numerically (file_2 < file_10).
-fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+pub(crate) fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let (mut ia, mut ib) = (a.bytes().peekable(), b.bytes().peekable());
     loop {
         match (ia.peek().copied(), ib.peek().copied()) {
@@ -990,6 +998,13 @@ mod tests {
         assert_eq!((s.set.clone(), s.anchor), (set(&[5]), Some(5)));
         assert!(s.apply(SelOp::Context, 10, 10).is_empty(), "out of range is ignored");
         assert_eq!(SelOp::from_i32(4), SelOp::Context);
+        // Right-click in the empty space clears it, whatever the row says.
+        s.apply(SelOp::Toggle, 7, 10);
+        let mut changed = s.apply(SelOp::Clear, usize::MAX, 10);
+        changed.sort();
+        assert_eq!((changed, s.set.is_empty(), s.anchor), (vec![5, 7], true, None));
+        assert!(s.apply(SelOp::Clear, 0, 10).is_empty(), "nothing selected: nothing changes");
+        assert_eq!(SelOp::from_i32(5), SelOp::Clear);
     }
 
     #[test]

@@ -30,22 +30,27 @@ export struct StatusInfo {
     right: string,
 }
 
+// One tab; the strip places and sizes it. The left press activates it (as browsers do), and
+// moving with the button held reports the pointer's x inside the tab, for the strip's reorder.
 component TabButton inherits Rectangle {
     in property <string> title;
     in property <bool> active;
-    callback clicked();
+    callback pressed();
+    callback released();
+    callback drag-moved(length);
     callback close();
-    min-width: 60px;
-    max-width: 180px;
-    preferred-width: 160px;
     background: active ? Palette.background : (ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background);
     border-width: 1px;
     border-color: active ? Palette.accent-background : Palette.border;
     ta := TouchArea {
         pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) { root.pressed(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) { root.released(); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) { root.close(); }
         }
-        clicked => { root.clicked(); }
+        moved => {
+            if (self.pressed) { root.drag-moved(self.mouse-x); }
+        }
     }
     HorizontalLayout {
         padding-left: 6px;
@@ -61,18 +66,36 @@ component TabButton inherits Rectangle {
     }
 }
 
-component CrumbButton inherits Rectangle {
+// One breadcrumb: the label navigates there; the chevron after it opens the dropdown of its
+// subfolders (the next crumb's siblings), as in Explorer.
+component CrumbButton inherits HorizontalLayout {
     in property <string> label;
-    in property <bool> first;
     callback clicked();
-    background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
-    ta := TouchArea { clicked => { root.clicked(); } }
-    HorizontalLayout {
-        padding-left: 4px;
-        padding-right: 4px;
-        spacing: 4px;
-        if !root.first: Text { text: "\u{203a}"; vertical-alignment: center; color: Palette.foreground.transparentize(40%); }
-        Text { text: root.label; vertical-alignment: center; }
+    // menu(x, y): the chevron, at window coordinates of its bottom-left corner.
+    callback menu(length, length);
+    // The mouse's Back button released over the crumb (every TouchArea grabs the press it gets,
+    // so each one in the pane reports it).
+    callback back();
+    Rectangle {
+        background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+        ta := TouchArea {
+            clicked => { root.clicked(); }
+            pointer-event(ev) => { if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); } }
+        }
+        HorizontalLayout {
+            padding-left: 4px;
+            padding-right: 4px;
+            Text { text: root.label; vertical-alignment: center; }
+        }
+    }
+    Rectangle {
+        width: 16px;
+        background: chevron-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+        Text { text: "\u{203a}"; horizontal-alignment: center; vertical-alignment: center; color: Palette.foreground.transparentize(40%); }
+        chevron-ta := TouchArea {
+            clicked => { root.menu(self.absolute-position.x, self.absolute-position.y + self.height); }
+            pointer-event(ev) => { if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); } }
+        }
     }
 }
 
@@ -81,6 +104,8 @@ component HeaderCell inherits Rectangle {
     in property <bool> sorted;
     in property <bool> asc;
     callback clicked();
+    // The mouse's Back button released over the header cell.
+    callback back();
     background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background;
     HorizontalLayout {
         padding-left: 6px;
@@ -88,7 +113,10 @@ component HeaderCell inherits Rectangle {
         Text { text: label; vertical-alignment: center; font-weight: 600; }
         Text { text: sorted ? (asc ? "\u{25b2}" : "\u{25bc}") : ""; vertical-alignment: center; }
     }
-    ta := TouchArea { clicked => { root.clicked(); } }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+        pointer-event(ev) => { if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); } }
+    }
 }
 
 // Same structure as Slint's StandardListView: a component inheriting ListView carries the list
@@ -108,7 +136,8 @@ component FileListBase inherits ListView {
     callback context-menu(int, length, length, bool);
     // row-gesture(row, what, ctrl, shift), the left button on a row, decided in Rust (dnd::Gesture):
     // what 0 press, 1 release, 2 moved past the drag threshold with the button down (once per
-    // press), 3 double-click.
+    // press), 3 double-click; 4, the middle button released over the row; 5, the mouse's Back
+    // button released over it.
     callback row-gesture(int, int, bool, bool);
     // The drag threshold (SM_CXDRAG / SM_CYDRAG in logical px), set from Rust.
     in property <length> drag-dx: 4px;
@@ -155,6 +184,12 @@ component FileListBase inherits ListView {
                 if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
                     root.row-gesture(i, 1, ev.modifiers.control, ev.modifiers.shift);
                 }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) {
+                    root.row-gesture(i, 4, false, false);
+                }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) {
+                    root.row-gesture(i, 5, false, false);
+                }
                 // Select on the press (so the row is drawn selected before the menu's modal loop
                 // starts), open the shell menu on the release.
                 if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.right) {
@@ -171,7 +206,7 @@ component FileListBase inherits ListView {
 
 component FileList inherits FileListBase {
     callback go-up();
-    // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all (model::SelOp)
+    // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all, 4 right-click, 5 clear (model::SelOp)
     callback select(int, int);
     // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
     // turns it into the visible row range and fetches icons for it.
@@ -261,7 +296,9 @@ component FileList inherits FileListBase {
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "x" || e.text == "X")) { root.command("cx"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "v" || e.text == "V")) { root.command("cv"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "z" || e.text == "Z")) { root.command("undo"); return accept; }
-            if (e.text == Key.Escape) { root.command("cancelqueued"); return accept; }
+            // Reject after the cancel: the runtime closes the topmost popup (crumb menu, bookmark menu,
+            // About) on an Escape the focused item did not take; accepting it here broke that (P2-M2).
+            if (e.text == Key.Escape) { root.command("cancelqueued"); return reject; }
             if (e.text == " ") { if (root.current-row >= 0) { root.select(1, root.current-row); } return accept; }
             if (e.modifiers.control && (e.text == "a" || e.text == "A")) { root.select(3, root.current-row); return accept; }
             return reject;
@@ -292,8 +329,15 @@ export component Pane inherits Rectangle {
     callback focus-requested();
     callback tab-clicked(int);
     callback tab-close(int);
+    // tab-move(from, to): a tab dragged past a neighbour's midpoint.
+    callback tab-move(int, int);
     callback crumb-clicked(int);
+    // crumb-menu(index, x, y): the chevron after crumb `index`, at window coordinates.
+    callback crumb-menu(int, length, length);
     callback toggle-sticky();
+    // The mouse's Back button released anywhere over the pane that is not a text entry, the tab
+    // strip or the scrollbar: main.rs makes the pane active and goes up a folder.
+    callback back-button();
     callback select(int, int);
     callback viewport-changed(length, length);
     callback command(string);
@@ -320,9 +364,40 @@ export component Pane inherits Rectangle {
     private property <length> strip-height;
     private property <bool> strip-shown: false;
 
+    // The tab strip: every tab the same width, from 160 px down to 120 px as tabs are added, then
+    // the strip scrolls instead (no scrollbar; the wheel scrolls it). tab-scroll is the content's
+    // offset (zero or negative), set by the wheel and by reveal-tab; shown-tab-scroll keeps it in
+    // range when tabs close or the pane widens. All of these are bindings on the tab count and the
+    // pane's width, so nothing here runs while the list scrolls.
+    in-out property <length> tab-scroll: 0px;
+    private property <length> tab-strip-w: root.width - 6px;
+    out property <length> tab-w: max(120px, min(160px, root.tab-strip-w / max(1, root.tabs.length)));
+    private property <length> tab-scroll-min: min(0px, root.tab-strip-w - root.tabs.length * root.tab-w);
+    out property <length> shown-tab-scroll: max(root.tab-scroll-min, min(0px, root.tab-scroll));
+    // The tab a left-button drag in the strip is moving (-1: none).
+    private property <int> drag-tab: -1;
+
     border-width: active ? 2px : 1px;
     border-color: active ? Palette.accent-background : Palette.border;
     background: Palette.background;
+
+    // Scroll the strip just far enough that tab `i` is fully in view; returns the new offset.
+    // Called from Rust when the active tab or the tab count changes, never per frame.
+    public function reveal-tab(i: int) -> length {
+        // Before the window's first layout the pane has no width: nothing to reveal yet (main.rs
+        // reveals again once the window exists).
+        if (root.tab-strip-w <= 0px) {
+            return root.shown-tab-scroll;
+        }
+        if (root.shown-tab-scroll + i * root.tab-w < 0px) {
+            root.tab-scroll = -i * root.tab-w;
+        } else if (root.shown-tab-scroll + (i + 1) * root.tab-w > root.tab-strip-w) {
+            root.tab-scroll = root.tab-strip-w - (i + 1) * root.tab-w;
+        } else {
+            root.tab-scroll = root.shown-tab-scroll;
+        }
+        return root.shown-tab-scroll;
+    }
 
     forward-focus: list;
     public function focus-list() { list.focus-list(); }
@@ -371,16 +446,54 @@ export component Pane inherits Rectangle {
     changed path => { path-edit.text = root.path; }
     changed entry-sticky => { root.path-entry = root.entry-sticky; }
 
+    // Behind everything in the pane: the Back button over the padding, the status line and the
+    // gaps between the bar's buttons (every other TouchArea in the pane reports it itself).
+    TouchArea {
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back-button(); }
+        }
+    }
+
     VerticalLayout {
         padding: 3px;
         spacing: 2px;
-        if root.tabs.length > 1: HorizontalLayout {
+        // Not a Flickable: its drag-to-flick would take the presses a tab drag needs.
+        if root.tabs.length > 1: Rectangle {
             height: 26px;
-            alignment: start;
+            clip: true;
+            // Behind the tabs, whose TouchAreas pass wheel events on: the wheel scrolls the strip.
+            TouchArea {
+                scroll-event(e) => {
+                    root.tab-scroll = root.shown-tab-scroll + (abs(e.delta-y) > abs(e.delta-x) ? e.delta-y : e.delta-x);
+                    root.tab-scroll = root.shown-tab-scroll;
+                    return accept;
+                }
+            }
             for t[i] in root.tabs: TabButton {
+                x: root.shown-tab-scroll + i * root.tab-w;
+                y: 0px;
+                width: root.tab-w;
+                height: 26px;
                 title: t.title;
                 active: t.active;
-                clicked => { root.tab-clicked(i); }
+                pressed => {
+                    root.drag-tab = i;
+                    root.tab-clicked(i);
+                }
+                released => { root.drag-tab = -1; }
+                // The pointer's x in the strip's content is this tab's slot plus its offset in
+                // the tab (whichever tab now sits in the slot). Once it passes a neighbour's
+                // midpoint, the dragged tab swaps with that neighbour.
+                drag-moved(mx) => {
+                    if (root.drag-tab < 0) { return; }
+                    if (i * root.tab-w + mx > (root.drag-tab + 1.5) * root.tab-w && root.drag-tab + 1 < root.tabs.length) {
+                        root.tab-move(root.drag-tab, root.drag-tab + 1);
+                        root.drag-tab += 1;
+                    } else if (i * root.tab-w + mx < (root.drag-tab - 0.5) * root.tab-w && root.drag-tab > 0) {
+                        root.tab-move(root.drag-tab, root.drag-tab - 1);
+                        root.drag-tab -= 1;
+                    }
+                }
                 close => { root.tab-close(i); }
             }
         }
@@ -427,8 +540,9 @@ export component Pane inherits Rectangle {
                     padding-bottom: 3px;
                     for c[i] in root.crumbs: CrumbButton {
                         label: c.label;
-                        first: i == 0;
                         clicked => { root.crumb-clicked(i); }
+                        menu(x, y) => { root.crumb-menu(i, x, y); }
+                        back => { root.back-button(); }
                     }
                 }
             }
@@ -443,15 +557,20 @@ export component Pane inherits Rectangle {
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                mode-ta := TouchArea { clicked => { root.toggle-sticky(); } }
+                mode-ta := TouchArea {
+                    clicked => { root.toggle-sticky(); }
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back-button(); }
+                    }
+                }
             }
         }
         HorizontalLayout {
             height: 24px;
-            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } }
-            HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } }
-            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } }
-            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } }
+            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } }
+            HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } }
+            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } }
+            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } }
         }
         list := FileList {
             rows: root.rows;
@@ -540,6 +659,11 @@ export component Pane inherits Rectangle {
             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
                 list.focus-list();
                 root.focus-requested();
+                // Explorer: a right-click on empty space leaves nothing selected.
+                root.select(5, -1);
+            }
+            if (ev.button == PointerEventButton.back && ev.kind == PointerEventKind.up) {
+                root.back-button();
             }
             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
                 root.context-menu(-1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);

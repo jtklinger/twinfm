@@ -8,22 +8,87 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW};
 
-/// Window placement: position in physical px (the virtual screen's), size in logical px.
+/// Window placement: position in physical px (the virtual screen's), size in logical px, and
+/// whether it was maximised. A maximised window's x, y, width and height are its normal
+/// (restored) placement, so un-maximising after a restart gives the right size.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowGeom {
     pub x: i32,
     pub y: i32,
     pub width: f32,
     pub height: f32,
+    /// Missing in a file from before it was saved: not maximised.
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+/// The window's state from its Win32 placement (`GetWindowPlacement`): `Some((true, normal))`
+/// when it is maximised, where `normal` is its restored placement (`rcNormalPosition`, turned
+/// from workspace into screen coordinates; the size less the window frame, in logical px);
+/// `Some((false, _))` when it is not; None when it is minimised or the call fails.
+pub fn placement(hwnd: isize, scale: f32) -> Option<(bool, WindowGeom)> {
+    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowPlacement, GetWindowRect, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, WINDOWPLACEMENT,
+    };
+    let hwnd = hwnd as HWND;
+    let mut wp: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+    // SAFETY: a sized WINDOWPLACEMENT; a stale or null handle makes the call fail, nothing more.
+    if hwnd.is_null() || unsafe { GetWindowPlacement(hwnd, &mut wp) } == 0 {
+        return None;
+    }
+    if wp.showCmd == SW_SHOWMINIMIZED as u32 {
+        return None;
+    }
+    let maximized = wp.showCmd == SW_SHOWMAXIMIZED as u32;
+    let n = wp.rcNormalPosition;
+    // rcNormalPosition is in workspace coordinates: the monitor's work area origin is (0, 0).
+    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    // SAFETY: a valid RECT and a sized MONITORINFO.
+    let (dx, dy) = if unsafe { GetMonitorInfoW(MonitorFromRect(&n, MONITOR_DEFAULTTONEAREST), &mut info) } != 0 {
+        (info.rcWork.left - info.rcMonitor.left, info.rcWork.top - info.rcMonitor.top)
+    } else {
+        (0, 0)
+    };
+    // The frame (borders and title bar) is the window rectangle less the client area; it is the
+    // same maximised as restored.
+    let (mut outer, mut client) = (RECT { left: 0, top: 0, right: 0, bottom: 0 }, RECT { left: 0, top: 0, right: 0, bottom: 0 });
+    // SAFETY: valid out pointers for a window handle that GetWindowPlacement just accepted.
+    let (fw, fh) = if unsafe { GetWindowRect(hwnd, &mut outer) != 0 && GetClientRect(hwnd, &mut client) != 0 } {
+        ((outer.right - outer.left) - client.right, (outer.bottom - outer.top) - client.bottom)
+    } else {
+        (0, 0)
+    };
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let normal = WindowGeom {
+        x: n.left + dx,
+        y: n.top + dy,
+        width: ((n.right - n.left - fw) as f32 / scale).max(1.0),
+        height: ((n.bottom - n.top - fh) as f32 / scale).max(1.0),
+        maximized,
+    };
+    Some((maximized, normal))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// The folders each pane opens at start (the active tabs' folders when TwinFM last saved).
-    /// An empty right path means the left one. A command-line path overrides the left one.
+    /// The active tabs' folders when TwinFM last saved: what a pane opens at start when its tab
+    /// list (below) is empty. An empty right path means the left one. A command-line path
+    /// replaces the left pane's tabs.
     pub start_left: String,
     pub start_right: String,
+    /// Each pane's tabs, left to right, as folder paths (`left_tabs = ["C:\\", "D:\\work"]`), and
+    /// the index of its active tab (`left_active = 1`), as TwinFM last saved them. Empty or
+    /// missing: the pane opens one tab on its start folder, so a file from before tabs were
+    /// saved still works. The right pane's tabs are restored only when the split is.
+    pub left_tabs: Vec<String>,
+    pub left_active: usize,
+    pub right_tabs: Vec<String>,
+    pub right_active: usize,
     /// New tabs in each pane show hidden and system files (Ctrl+H sets it for its pane).
     pub show_hidden_left: bool,
     pub show_hidden_right: bool,
@@ -35,12 +100,32 @@ pub struct Config {
     pub sort_ascending: bool,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
-    /// Bookmarked folders, in the order they were added.
-    pub bookmarks: Vec<String>,
     /// "breadcrumb" or "entry" (the text entry for good).
     pub path_bar: String,
     /// Restored only when its title bar would be on a monitor.
     pub window: Option<WindowGeom>,
+    /// Bookmarked folders in sidebar order, as `[[bookmark]]` tables with `path` and an optional
+    /// `title` (without one the sidebar shows the folder's name).
+    #[serde(rename = "bookmark")]
+    pub bookmarks: Vec<Bookmark>,
+    /// The bare list of paths older files carry (`bookmarks = ["C:\\x"]`): read, turned into
+    /// `[[bookmark]]` entries when loaded, never written.
+    #[serde(rename = "bookmarks", skip_serializing)]
+    pub legacy_bookmarks: Vec<String>,
+}
+
+/// One bookmark: the folder and, if renamed, the title the sidebar shows.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Bookmark {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+impl Bookmark {
+    pub fn new(path: &str) -> Bookmark {
+        Bookmark { path: path.to_string(), title: None }
+    }
 }
 
 impl Default for Config {
@@ -48,6 +133,10 @@ impl Default for Config {
         Config {
             start_left: "C:\\".into(),
             start_right: String::new(),
+            left_tabs: Vec::new(),
+            left_active: 0,
+            right_tabs: Vec::new(),
+            right_active: 0,
             show_hidden_left: false,
             show_hidden_right: false,
             split: false,
@@ -56,9 +145,10 @@ impl Default for Config {
             sort_ascending: true,
             sidebar_visible: true,
             sidebar_width: 180.0,
-            bookmarks: Vec::new(),
             path_bar: "breadcrumb".into(),
             window: None,
+            bookmarks: Vec::new(),
+            legacy_bookmarks: Vec::new(),
         }
     }
 }
@@ -84,6 +174,17 @@ pub fn sort_from_name(s: &str) -> crate::model::SortCol {
     }
 }
 
+/// The tabs a pane opens at start: the saved list (blank entries dropped) with its active index
+/// clamped, or one tab on `fallback` (the pane's start folder) when there is no list.
+pub fn start_tabs(tabs: &[String], active: usize, fallback: &str) -> (Vec<String>, usize) {
+    let tabs: Vec<String> = tabs.iter().filter(|t| !t.trim().is_empty()).cloned().collect();
+    if tabs.is_empty() {
+        return (vec![fallback.to_string()], 0);
+    }
+    let active = active.min(tabs.len() - 1);
+    (tabs, active)
+}
+
 pub const SIDEBAR_MIN: f32 = 120.0;
 pub const SIDEBAR_MAX: f32 = 400.0;
 
@@ -98,8 +199,12 @@ impl Config {
         toml::to_string_pretty(self).unwrap_or_default()
     }
 
-    /// Values outside their range pulled back in (a hand-edited file).
+    /// Values outside their range pulled back in (a hand-edited file), and an old bare bookmark
+    /// list turned into entries (after any `[[bookmark]]` ones, duplicates dropped).
     fn clamped(mut self) -> Config {
+        for path in std::mem::take(&mut self.legacy_bookmarks) {
+            crate::sidebar::add_bookmark(&mut self.bookmarks, &path);
+        }
         self.split_ratio = if self.split_ratio.is_finite() { self.split_ratio.clamp(0.15, 0.85) } else { 0.5 };
         self.sidebar_width =
             if self.sidebar_width.is_finite() { self.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX) } else { 180.0 };
@@ -218,9 +323,9 @@ mod tests {
             start_left: r"C:\traces\bigdir".into(),
             split: true,
             split_ratio: 0.3,
-            bookmarks: vec![r"C:\Users".into(), r"D:\".into()],
+            bookmarks: vec![Bookmark::new(r"C:\Users"), Bookmark { path: r"D:\".into(), title: Some("Data".into()) }],
             path_bar: "entry".into(),
-            window: Some(WindowGeom { x: -1900, y: 40, width: 1100.0, height: 700.0 }),
+            window: Some(WindowGeom { x: -1900, y: 40, width: 1100.0, height: 700.0, maximized: false }),
             ..Config::default()
         };
         c.show_hidden_right = true;
@@ -253,6 +358,65 @@ mod tests {
     }
 
     #[test]
+    fn tab_lists_round_trip_and_fall_back() {
+        let c = Config {
+            start_left: r"C:\b".into(),
+            left_tabs: vec![r"C:\a".into(), r"C:\b".into(), "This PC".into()],
+            left_active: 1,
+            right_tabs: vec![r"D:\x".into()],
+            ..Config::default()
+        };
+        let text = c.to_toml();
+        assert!(text.contains("left_tabs = ["), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        let (tabs, active) = start_tabs(&c.left_tabs, c.left_active, &c.start_left);
+        assert_eq!((tabs.len(), active), (3, 1));
+        // A file from before tabs were saved: one tab on the start folder.
+        let old = Config::parse("start_left = 'C:\\Windows'\nstart_right = 'D:\\'\n").unwrap();
+        assert!(old.left_tabs.is_empty() && old.right_tabs.is_empty());
+        assert_eq!(start_tabs(&old.left_tabs, old.left_active, &old.start_left), (vec![r"C:\Windows".to_string()], 0));
+        assert_eq!(start_tabs(&old.right_tabs, old.right_active, &old.start_right), (vec![r"D:\".to_string()], 0));
+        // An active index past the end is clamped; blank entries are dropped.
+        assert_eq!(start_tabs(&["a".into(), " ".into(), "b".into()], 7, "x"), (vec!["a".to_string(), "b".to_string()], 1));
+        assert_eq!(start_tabs(&["".into()], 0, "x"), (vec!["x".to_string()], 0));
+    }
+
+    #[test]
+    fn bookmark_entries_and_the_old_bare_list() {
+        let c = Config {
+            bookmarks: vec![Bookmark::new(r"C:\work"), Bookmark { path: r"D:\".into(), title: Some("Data drive".into()) }],
+            ..Config::default()
+        };
+        let text = c.to_toml();
+        assert!(text.contains("[[bookmark]]") && text.contains("title = \"Data drive\""), "{text}");
+        assert!(!text.contains("bookmarks"), "the old key is never written: {text}");
+        assert_eq!(text.matches("title").count(), 1, "no title line for an untitled bookmark: {text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        // A file from before titles: a bare list of paths, turned into entries on load (and
+        // written as [[bookmark]] tables by the next save).
+        let old = Config::parse("bookmarks = ['C:\\Users', 'D:\\']\nsplit = true\n").unwrap();
+        assert_eq!(old.bookmarks, vec![Bookmark::new(r"C:\Users"), Bookmark::new(r"D:\")]);
+        assert!(old.legacy_bookmarks.is_empty());
+        assert!(old.to_toml().contains("[[bookmark]]"));
+        // Both in one file: the entries first, the old list after them, duplicates dropped.
+        let both = Config::parse("bookmarks = ['C:\\a', 'c:\\b\\']\n[[bookmark]]\npath = 'C:\\b'\ntitle = 'B'\n").unwrap();
+        assert_eq!(both.bookmarks, vec![Bookmark { path: r"C:\b".into(), title: Some("B".into()) }, Bookmark::new(r"C:\a")]);
+    }
+
+    #[test]
+    fn maximized_window_round_trip() {
+        let c = Config { window: Some(WindowGeom { x: 104, y: 80, width: 1150.0, height: 760.0, maximized: true }), ..Config::default() };
+        let text = c.to_toml();
+        assert!(text.contains("maximized = true"), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        // A file from before the flag existed: not maximised, the rest as saved.
+        let old = Config::parse("[window]\nx = 10\ny = 20\nwidth = 900.0\nheight = 600.0\n").unwrap();
+        assert_eq!(old.window, Some(WindowGeom { x: 10, y: 20, width: 900.0, height: 600.0, maximized: false }));
+        // No window handle, no placement.
+        assert_eq!(placement(0, 1.0), None);
+    }
+
+    #[test]
     fn atomic_write_replaces_an_existing_file() {
         let dir = std::env::temp_dir().join(format!("twinfm-m6-atomic-{}", std::process::id()));
         let path = dir.join("sub").join("config.toml");
@@ -261,7 +425,7 @@ mod tests {
         write_atomic(&path, "second = 2\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second = 2\n", "replaces it");
         assert!(!path.with_extension("toml.tmp").exists(), "no .tmp left behind");
-        let c = Config { bookmarks: vec!["C:\\x".into()], ..Config::default() };
+        let c = Config { bookmarks: vec![Bookmark::new("C:\\x")], ..Config::default() };
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path), c);
         let _ = std::fs::remove_dir_all(&dir);

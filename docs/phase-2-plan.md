@@ -439,6 +439,314 @@ mixed both processes' threads and crashed on the live one's "MAX" end time. It n
 earliest-started TwinFM process (the one the gate script launched), ignores the others, and
 tolerates threads still alive at trace end (fixed in this PR).
 
+## P2-M3: daily-use polish
+
+The backlog was the M4, M6a and M6b Deferred lists (`phase-1-plan.md`): tabs that survive a
+restart, a tab strip that copes with many tabs, middle-click into a tab, the breadcrumb's sibling
+dropdown, the maximised window, bookmark titles and order, and Explorer's right-click on empty
+space.
+
+### What landed (2026-10-10)
+
+- **Tabs restored at start** (`settings.rs`, `main.rs`). `config.toml` gains, per pane, the tab
+  folders left to right and the active index: `left_tabs = ['C:\', 'C:\Users']`,
+  `left_active = 1`, `right_tabs`, `right_active`. At start each pane builds its tabs from the list
+  (`settings::start_tabs`: blank entries dropped, the index clamped; an empty or missing list gives
+  one tab on `start_left` / `start_right`, so older files work unchanged) with `Tabs::restored`;
+  only the active tab navigates, the others are created stale and list their folder when first
+  shown, through the existing stale path. A folder that no longer exists still gets its tab and
+  shows the error when shown. A command-line folder replaces the left pane's tabs; the right pane's
+  tabs are restored only when the split is (otherwise F3 opens the second pane on the left
+  pane's folder, as before). `save_now` writes each pane's list, except a pane whose tabs never had
+  a folder (the second pane before the split was first opened), which keeps the saved list. Saved
+  through the existing debounced `schedule_save` on every navigation, tab open, close, switch and
+  move. Scripted runs still ignore the file unless `TWINFM_CONFIG` names one.
+- **Tab strip overflow** (`pane.slint`). Every tab has the same width, 160 px down to 120 px as
+  tabs are added; past that the strip scrolls instead of shrinking or clipping. The strip is a
+  clipped `Rectangle` whose tabs sit at `shown-tab-scroll + i * tab-w`; `tab-scroll` is moved by
+  the wheel (a `TouchArea` behind the tabs, `scroll-event`, vertical or horizontal delta) and by
+  `reveal-tab(i)`, which scrolls just far enough to show tab `i`. `shown-tab-scroll` and `tab-w`
+  are bindings on the tab count and the pane's width, so a closed tab or a wider pane never leaves
+  a gap. Rust calls `reveal-tab` from `update_tabs`, which runs only when the tabs change, and once
+  more from `register_dnd` when the window first has its size (a restored strip whose active tab
+  is far right). `[tab] pane=N strip scrolled to X (tab K of N in view)` on stderr when the offset
+  is not 0.
+- **Tab reorder.** `Tabs::move_tab(from, to)` (pure, the active tab stays active wherever it
+  lands). A left press on a tab activates it, as in browsers (it used to switch on the release);
+  moving with the button held reports the pointer's x in the tab, and the pane swaps the dragged tab
+  with its neighbour once the pointer passes that neighbour's midpoint (several swaps in one drag).
+  Ctrl+Shift+PageUp / Ctrl+Shift+PageDown move the active tab left or right (outer `FocusScope`,
+  `tab-key` "moveleft" / "moveright"; no wrap at the ends). `update_tabs` now changes the rows that
+  differ when the count is unchanged and resets the model only when a tab opens or closes (see
+  Deviations).
+- **Middle-click on a row** (`pane.slint`, `main.rs`). The row's `TouchArea` reports a middle
+  release as gesture 4; `middle_click_row` opens a folder, a drive or a reparse directory in a new
+  tab after the active one in the same pane (`open_tab`, as the sidebar's middle-click does). A file
+  logs a line and does nothing.
+- **Breadcrumb dropdown** (`pathbar.rs`, `pane.slint`, `app.slint`). Each crumb is now its label
+  plus a chevron after it (This PC › C: › Users ›, Explorer's layout). Clicking a chevron lists that
+  crumb's subfolders, which are the next crumb's siblings (after the last crumb, the current
+  folder's own subfolders): `pathbar::subfolders` on a worker thread, folders only, hidden and
+  system ones left out unless the pane's active tab shows hidden files, sorted with the list's
+  `natural_cmp`, capped at 200 (`MENU_CAP`) with a "... and N more" line; This PC lists the drives.
+  The listing comes back through `invoke_from_event_loop`; a reply for an older request is dropped
+  (`crumb_seq`). One `PopupWindow` at the window level holds a `ListView` over a fresh string model,
+  so its rows exist only while it is open; a click navigates the pane there and gives the list the
+  focus, Escape (a `FocusScope` in the popup) or a click outside closes it. An unreadable folder
+  shows its error as the popup's note, an empty one "No folders".
+- **Maximised state** (`settings.rs`, `main.rs`). `WindowGeom` gains `maximized`
+  (`#[serde(default)]`). `settings::placement` reads `GetWindowPlacement`: when `showCmd` is
+  `SW_SHOWMAXIMIZED` the saved x, y, width and height are the normal placement from
+  `rcNormalPosition` (workspace coordinates turned into screen ones with the monitor's work-area
+  offset; the size less the window frame, which is `GetWindowRect` less `GetClientRect`, over the
+  scale factor), so un-maximising after a restart gives the right size. Not maximised: the Slint
+  size and position as before; minimised: the saved placement is kept. The normal placement is
+  still applied before the window exists; once it exists (`register_dnd`, the timer that waits for
+  the window) a saved `maximized = true` calls `ShowWindow(SW_MAXIMIZE)` and logs
+  `[settings] window restored maximised`.
+- **Bookmark rename and reorder** (`settings.rs`, `sidebar.rs`, `app.slint`). Bookmarks are
+  `[[bookmark]]` tables with `path` and an optional `title`. The old bare list
+  (`bookmarks = ['C:\x']`) still loads: it is read into a `legacy_bookmarks` field that is never
+  written, appended to the entries (duplicates dropped) on load, and so written as `[[bookmark]]`
+  tables by the next save. The bookmark menu (right-click a bookmark) has "Rename bookmark", "Move
+  up", "Move down" (dimmed at the ends, from `bookmark-count`) and "Remove bookmark", as one
+  `MenuItem` component. "Rename bookmark" opens a `LineEdit` in the sidebar row (`side-edit`, an
+  `if` so it exists only while editing) with the title selected; Return commits through
+  `bookmark-rename`, Escape or focus loss cancels. `sidebar::rename_bookmark` trims the title; an
+  empty one or the folder's own name clears it, so the row shows the folder's name again.
+  `sidebar::move_bookmark` swaps with the neighbour. The sidebar row label is the title when there
+  is one. `[sidebar]` lines for each.
+- **Right-click on empty space clears the selection** (M4 Deferred). `SelOp::Clear` (5) empties
+  the selection and the anchor; the empty space's right press sends it before the background menu
+  opens, and the driver's `rclickempty` fallback (no empty space on screen) sends it too.
+- **The mouse's Back button goes up a folder** (added at Jeremy's request, 2026-10-12), as
+  Backspace and Alt+Up do, in the pane under the pointer, which becomes the active pane as a click
+  there would make it. Slint's winit backend delivers the side button as `PointerEventButton.back`;
+  every `TouchArea` grabs whatever press it receives, so each one in the pane reports a Back release
+  itself: the rows (gesture 5), the empty space below them, the header cells, the crumbs and their
+  chevrons, the path bar's mode glyph, and a `TouchArea` behind everything for the padding, the
+  status line and the gaps. All of them end in `back_button(pane)`, which calls the existing
+  up-folder path (`go_up`, shared with Backspace and Alt+Up). On This PC it does nothing and logs
+  one `[nav] ... This PC has no parent folder, nothing to do` line. Forward does nothing yet.
+  Driver step `backclick <pane>` dispatches a real Back press and release at the middle of the
+  pane's list.
+- **Driver**: `tab moveleft|moveright` (key names `CtrlShiftPageUp`, `CtrlShiftPageDown`),
+  `tabdrag <pane> <index> <dx>` (press on the tab's centre, move in 8 px steps, release, through
+  Slint's pointer path), `midclick <pane> <row>`, `crumbmenu <pane> <index>`, `crumbpick <name>`,
+  `crumbclose`, `bookmark rename <index> <title>`, `bookmark move <index> up|down`, and
+  `window max|restore|close` (`ShowWindow`, or `WM_CLOSE`, which goes through the close request
+  and saves the settings the way the close button does; `quit` ends the event loop without it).
+- **Tests**, 76 to 83: `Tabs::restored` clamps the active index; `Tabs::move_tab` both ways, to
+  either edge, another tab passing the active one from each side, out of range and no-op moves;
+  the tab lists round trip through TOML and fall back to `start_left` / `start_right` when missing
+  or blank; `[[bookmark]]` entries round trip (no `title` line without a title, the old key never
+  written), the old bare list loads and converts, both together keep the entries first and drop
+  duplicates; bookmark rename (trim, clear by empty or own name) and move (both ways, both edges,
+  the title travels); `pathbar::subfolders` on a scratch tree in `%TEMP%\twinfm-p2m3-crumbs-<pid>\`
+  (folders only, natural order, hidden and system filtered or not, the cap and the full count, a
+  missing folder is an error, This PC lists C:\); `WindowGeom` with `maximized` round trips and an
+  older `[window]` table loads as not maximised; `SelOp::Clear` added to the right-click test.
+
+### Decisions
+
+- **Tab lists as string arrays plus an index** (`left_tabs = [...]`, `left_active = n`) rather
+  than `[[left_tabs]]` tables: one line per tab, and nothing else per tab is saved yet (sort and
+  hidden filter for new tabs stay pane-wide settings).
+- **A command-line folder replaces the left pane's tabs**, as it replaced `start_left` before; the
+  next save then holds that one tab.
+- **The right pane's tabs come back only with the split.** Without it F3 keeps its behaviour (the
+  second pane opens on the left pane's folder) and the saved right tabs are kept until the split
+  is used again.
+- **Equal tab widths** (160 px down to 120 px): the strip's arithmetic (scroll into view, drag
+  midpoints, the driver's tab positions) is then a multiplication, and nothing is measured.
+- **A tab activates on the press**, so a drag starts from the active tab and a click feels like a
+  browser's.
+- **A chevron after every crumb** rather than a clickable separator between two: it is Explorer's
+  layout, and the chevron after the last crumb lists the current folder's subfolders, which a
+  between-crumbs separator could not offer.
+- **One dropdown for both panes** at the window level, filled per request.
+- **`SelOp::Clear`** instead of clearing in `context_menu`: the keyboard menu also calls
+  `context_menu(-1)` when there is no cursor row, and that must not drop a Ctrl+A selection.
+- **A bookmark title equal to the folder's name is no title**, so renaming a bookmark back to its
+  folder's name leaves no stale title behind if the folder is renamed later.
+
+### Deviations
+
+- **Not a Slint `Flickable`.** The brief named one; its drag-to-flick takes the pointer presses a
+  tab drag needs. A clipped `Rectangle` with an offset and a wheel `TouchArea` behaves the same
+  for scrolling (no scrollbar, the wheel scrolls it, the offset set only on tab changes).
+- **The bookmark menu runs no modal loop.** The brief described it as a `TrackPopupMenuEx` loop;
+  since M6b it is a Slint `PopupWindow` (`phase-1-plan.md` § M6b Decisions), so the borrow rule
+  for modal loops does not come into it. The new items are in that popup.
+- **`update_tabs` changes rows in place** when the tab count is unchanged. Found by the scripted
+  `tabdrag` check: pressing an inactive tab switched to it, `set_vec` reset the strip's model, the
+  repeater rebuilt its items, and the pressed `TouchArea` lost the pointer grab, so the drag never
+  moved anything. `set_row_data` for the rows that differ keeps the items (and is less work).
+- **The restored strip is revealed once more when the window exists**: before the first layout the
+  panes have no width, `reveal-tab` returned nonsense offsets (now it does nothing at width 0).
+- **The frame size comes from `GetWindowRect` less `GetClientRect`**, not `AdjustWindowRectEx`
+  (that would need the window's styles and a DPI-aware variant); the difference is the same
+  maximised as restored. Checked: a window saved restored and then saved maximised gave the same
+  x, y, width and height (260, 260, 1200 x 800).
+- **Extra driver steps** `tabdrag` and `window max|restore|close`, so the drag and the maximised
+  round trip could be checked without a person.
+- **The middle button is handled in the row's `TouchArea`** (gesture 4) rather than in
+  `dnd::Gesture`, which tracks the left button's press, drag and release; a middle-click needs no
+  state.
+
+### Deferred
+
+- **Folder sizes in the status bar** (M6a): needs a recursive size worker and, for watched
+  folders, subtree watches.
+- **A settings dialog**: everything is still chosen by using the app or editing `config.toml`.
+- **Tabs as a drop target** (drop files on a tab to copy or move into its folder) and **the
+  sidebar as a drop target**: P2-M4.
+- **Explorer's "protected operating system files" switch** (M1 Decisions, M6b Deferred).
+- **The compact Windows 11 menu (`IExplorerCommand`)** and **icons on TwinFM's own menu items**
+  (M4 Deferred).
+- **A designed icon** and **the toolbar** (M6b Deferred).
+- **The tab strip does not re-reveal the active tab when the window is resized**; the offset stays
+  in range, but a narrower window can leave the active tab outside the strip until the next tab
+  change or a wheel.
+- **The breadcrumb dropdown has no keyboard navigation** (arrows, type-ahead) and no drop onto a
+  crumb.
+- **Rename is reached only from the bookmark menu**; F2 in the sidebar does not start it.
+- **Restored tabs keep only the folder**: their sort, hidden filter, cursor and scroll start fresh.
+- **A back/forward history per tab**, and with it **Forward = history forward** (the mouse's
+  Forward button does nothing yet) and Back as history back rather than up a folder.
+- **The Back button over a text entry** (the path entry, the rename editor), **the tab strip or
+  the list's scrollbar** does nothing: their own `TouchArea`s take the press and do not report it.
+
+### Scripted checks
+
+RDP session, `target\release` of this branch, scratch folders and configs in
+`%TEMP%\twinfm-p2m3-manual\`, never Jeremy's config:
+
+- **Tabs restored.** `TWINFM_CONFIG=cfg1.toml` (new), on `C:\`: `tab new`, `nav 0 C:\Windows`,
+  `tab new`, `nav 0 C:\Users`, `tab moveleft` twice, `tabdrag 0 0 200`, `quit`. stderr: `[tab]
+  pane=0 moved tab 3 to 2, tab 2 of 3 active`, `moved tab 2 to 1, tab 1 of 3 active`, `moved tab 1
+  to 2, tab 2 of 3 active`; the file then held `left_tabs = ['C:\', 'C:\Users', 'C:\Windows']`,
+  `left_active = 1`. Restart with the same file: `[tab] pane=0 restored 3 tabs, tab 2 active`,
+  `[nav] pane=0 gen=1 path=C:\Users` (the only listing); `tab next` then gave `switched to 3 of 3
+  (... C:\Windows)` and `[refresh] ... C:\Windows` (the stale path).
+- **Split and a missing folder.** A hand-written file with `split = true`, `left_tabs = ['C:\',
+  'C:\does-not-exist-p2m3']`, `right_tabs = ['C:\Windows', 'C:\Users']`, `right_active = 1`: both
+  panes restored (`pane=0 restored 2 tabs, tab 1 active`, `pane=1 restored 2 tabs, tab 2 active`),
+  only `C:\` and `C:\Users` listed; switching to the missing folder's tab refreshed it and showed
+  the error (`no watch for C:\does-not-exist-p2m3: The system cannot find the file specified`).
+  A file without tab lists (the bookmark check's, below) started on its `start_left` as before.
+- **Overflow.** Defaults (scripted, no file), 11 `tab new`: the strip stayed at 0 up to 8 tabs (126
+  px each; the log threshold was tightened after this run printed a rounding "-0" at 7), then
+  `strip scrolled to -70 (tab 9 of 9 in view)`, -190, -310 and `-430 (tab 12 of 12 in view)`;
+  `tab 1` scrolled it back to 0; `tab prev` (wrapping to 12) gave -430 again. 12 tabs of 120 px are
+  1,440 px in a 1,010 px strip: -430 puts the last tab's right edge on the strip's.
+- **Tab drag.** Four tabs, `tabdrag 0 0 400` (tab 1 pressed while tab 4 was active): `switched to 1
+  of 4`, `moved tab 1 to 2`, `moved tab 2 to 3` (two midpoints crossed in one drag);
+  `tabdrag 0 3 -300`: `moved tab 4 to 3`. Before the in-place fix the same steps moved nothing.
+- **Middle-click.** `m` with `d1`, `d2` and `f1.txt`: `midclick 0 2` gave `f1.txt is a file,
+  nothing to do`; `midclick 0 1` gave `middle-click row 1: new tab on ...\m\d2`, `opened tab 2 of
+  2`, and its `[nav]`.
+- **Breadcrumb dropdown.** In `m\d1`: `crumbmenu 0 8` (the `m` crumb): `listing the folders in
+  ...\m`, `menu: 2 folder(s) ..., listed in 0.2 ms`; the screenshot (software renderer) shows the
+  popup with d1 and d2 under the path bar and the chevron after every crumb; `crumbpick d2`:
+  `picked ...\m\d2` and its `[nav]`. `crumbmenu 0 0` (This PC): `2 folder(s) in This PC` (C:\ and
+  G:\), then `crumbclose`.
+- **Maximised.** `TWINFM_CONFIG=cfg2.toml`: a run closed with `window close` saved `x = 260, y =
+  260, width = 1200.0, height = 800.0, maximized = false`; the next run, `window max` then `window
+  close`, saved the same four numbers with `maximized = true`. The run after that logged
+  `[settings] window restored maximised`, and a PowerShell probe read `IsZoomed=True rect=-8,-8,
+  3848,1580` while it ran; `window restore` and `window close` then saved 1200 x 800 at 260, 260,
+  `maximized = false`.
+- **Bookmarks.** A file holding the old `bookmarks = ['C:\Windows', 'C:\Users']`: `bookmark add`
+  (on `C:\`), `bookmark rename 0 Win`, `bookmark move 2 up`, `bookmark move 0 up`: `Bookmarked C:\`,
+  `renamed bookmark 0 (C:\Windows): Some("Win")`, `moved bookmark 2 to 1: C:\`, `bookmark 0 cannot
+  move up`; the file then held three `[[bookmark]]` tables (C:\Windows titled "Win", C:\,
+  C:\Users) and no `bookmarks` key. The screenshot shows Win, C:, Users under Bookmarks.
+- **Right-click on empty space.** In `m` (empty space below three rows): `click 0 0`, `ctrlclick
+  0 2`, `rclickempty 0`: `[select] pane=0 Clear row=-1 selected=0`, then the background menu.
+  On `C:\Windows` (no empty space): the fallback logged `calling context-menu(-1) directly` after
+  the same `Clear ... selected=0`.
+- **Back button** (2026-10-12). On `m\d1` (empty, so the press lands on the empty space):
+  `backclick 0` gave `[nav] pane=0 Back button (active pane was 0, now 0): up a folder` and `[nav]
+  pane=0 gen=2 path=...\m`. After `split` and `nav 1 C:\Windows\System32` (the list's middle is a
+  row there): `backclick 1` gave `pane=1 ... up a folder` and `path=C:\Windows`. With pane 1 active,
+  `nav 0 This PC` then `backclick 0`: one line, `[nav] pane=0 Back button (active pane was 1, now
+  0): This PC has no parent folder, nothing to do`, and no navigation.
+- **In-app gate scenario, not decisive** (RDP, presentation at about 21 fps, frame interval 47 ms):
+  six alternating runs on `C:\traces\bigdir`, `target-p2m2` 9.8, 10.3, 9.2, 9.7, 9.7, 7.6% and this
+  branch 10.6, 10.3, 4.8, 5.8, 10.3, 8.6%, 379 frames each. Nothing new runs per frame: the strip,
+  the breadcrumb, the dropdown and the sidebar change on tab, path or bookmark changes only.
+
+All exit code 0, no panic.
+
+Not checked by a script, needs a person at the console: a real mouse drag of a tab (the scripted
+drag goes through Slint's pointer path, not the OS's), the mouse wheel over the tab strip,
+clicking a chevron with the mouse (`crumbmenu` calls the callback with a fixed point under the
+path bar), Escape inside the dropdown, the bookmark menu's four items and the inline title editor
+(`bookmark rename` calls the callback the editor commits through), and a real middle button.
+
+### Console check (2026-10-12) and what it found
+
+Jeremy ran the gate binary with a real mouse and reported: nothing to drag, Escape dead inside the
+dropdown, no way to make a bookmark, the middle button doing nothing, a right-click on the other
+pane switching panes but also opening the context menu. Sorted out:
+
+- **Nothing to drag, no bookmark**: the strip is hidden with one tab per pane (Ctrl+T opens more)
+  and Ctrl+D makes a bookmark; the lead's instructions had not said so. Not bugs.
+- **Escape inside the dropdown: a P2-M2 regression, fixed here.** Slint's runtime closes the
+  topmost popup on an Escape that the focused element *rejects* (`WindowInner::process_key_input`,
+  the `close_on_escape` branch after the focus item declined). P2-M2 made the list's FocusScope
+  accept Escape for "cancel queued operations", so from then on no popup closed on Escape: the
+  crumb dropdown, the bookmark menu and the About dialog alike. The popup's own FocusScope with
+  `init => focus()` never receives the key either (focus stays in the list). The scripted
+  `crumbclose` had closed the menu through a direct call, so no script exercised the key. Fix: the
+  list issues `cancelqueued` and returns `reject`, so the cancel still happens and the runtime's
+  close runs. Proof, scripted through Slint's real key routing (`key Escape`): `crumbmenu 0 1; key
+  Escape; click 0 0` then `about open; key Escape; click 0 1` gave `[select] ... row=0` and `row=1`
+  (the clicks reached the list), while the same script without the two Escapes gave no `[select]`
+  line at all (the popups swallowed the clicks). 83 tests, no warnings.
+- **Middle button: not a TwinFM bug.** A real `WM_MBUTTONDOWN`/`WM_MBUTTONUP` posted to the window
+  at a folder row (scratchpad `post_input.py`, physical client pixels, DPI 96) gave `[tab] pane=0
+  middle-click row 0: new tab on ...\d1`. The window handles the OS message; Jeremy's physical
+  button does not produce it. Logi Options+ was running (`logioptionsplus_agent.exe`), and it
+  commonly assigns the wheel button to a gesture or SmartShift rather than a middle click. To
+  check in Options+: the mouse's wheel button should be "Middle click".
+- **Right-click on the other pane opens its menu**: by design since M4 (Explorer does the same: a
+  right-click on a row is a context menu for that row, and it also focuses the pane). The
+  selection-clearing right-click is for empty space.
+- **Maximise and restore**: worked.
+
+Second pass, same day, on the rebuilt binary: Jeremy confirmed the tab drag, the wheel over the
+strip, the bookmark menu and its editor, the middle button (after the Logi Options+ fix), the
+side button going up a folder, and Escape closing the dropdown. Every P2-M3 console check passed.
+
+### Gate
+
+Console WPR, Jeremy elevated, `tools/wpr-gate.ps1`, accessibility on, Narrator off, same session,
+back to back (2026-10-12 11:19 and 11:22): `target-p2m2` (0f57a5d) first, then `target-p2m3`
+(f52368a). Analysed with `tools/analyze-trace.py --symbols --exe`.
+
+| Build | Sampled ms | WPR busy | In-app |
+|---|---|---|---|
+| P2-M2 (`target-p2m2`), reference, 11:19 | 2593 | 25.9% (disturbed) | 27.2% |
+| P2-M3 (`target-p2m3`), 11:22 | 2060 | **20.6%** | 18.6% |
+| P2-M2 (`target-p2m2`), reference re-run, 11:30 | 2100 | **21.0%** | 20.8% |
+
+The reference run is an outlier, not a reading of P2-M2: the same binary read 20.3% the evening
+before, and every frame share in this run is up by about a quarter at once (render 1524 vs 1148
+ms, draw_text 887 vs 653, ListView rows 544 vs 369, timers 899 vs 722), which is the machine being
+slower or busier for those ten seconds, not a code path. P2-M3's 20.6% sits where every build has
+sat across sessions: M6 19.8 / 19.9 / 20.2, P2-M1 20.0 / 20.4, P2-M2 20.3, with about 0.3 point of
+drift between sessions. Its frame shares match P2-M2's clean run within a few samples
+(accessibility 237 vs 228, render 1193 vs 1148, draw_text 668 vs 653, rows 377 vs 369, timers
+729 vs 722, heap 204 vs 220); no tab-strip, crumb, bookmark or Back-button frame appears in the
+window. The clean reference re-run eight minutes later read 21.0% (frame shares within a few
+samples of P2-M3's: accessibility 221, render 1233, draw_text 695, rows 389, timers 726, heap 225),
+so the same-session pair is P2-M2 21.0 / P2-M3 20.6. **P2-M3 passes**: below its reference. The
+whole machine sits about half a point above the previous evening (P2-M2 read 20.3 then), one more
+data point for "compare within a session, never against a recorded number". Traces
+`C:/traces/twinfm-ab3-{p2m2,p2m3,p2m2b}.etl`, reports under `C:/traces/export/`.
+
 ## Open questions
 
 - **Phase 2 scope.** Confirmed by the lead as the recommended order above, directory watching

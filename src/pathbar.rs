@@ -52,6 +52,37 @@ pub fn title(path: &str) -> String {
     crumbs(path).pop().map(|c| c.label).unwrap_or_else(|| THIS_PC.into())
 }
 
+/// The most folders a crumb's dropdown lists; the rest is a "..." note.
+pub const MENU_CAP: usize = 200;
+
+/// For a crumb's dropdown (the chevron after it): the subfolders of `dir`, sorted by name as the
+/// list sorts names, hidden and system folders left out unless `show_hidden`, at most `cap` of
+/// them, with the count of all of them. "This PC" lists the drives ("C:\"). Reads the disk, so
+/// it runs on a worker thread.
+pub fn subfolders(dir: &Path, show_hidden: bool, cap: usize) -> Result<(Vec<String>, usize), String> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM};
+    if is_this_pc(&dir.to_string_lossy()) {
+        let drives: Vec<String> = crate::fs::enumerate::drive_entries().into_iter().map(|e| e.name.to_string()).collect();
+        let total = drives.len();
+        return Ok((drives.into_iter().take(cap).collect(), total));
+    }
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter(|de| {
+            // Served from the FindNextFile data, as in fs::enumerate: no extra call per entry.
+            let attrs = de.metadata().map(|m| m.file_attributes()).unwrap_or(0);
+            attrs & FILE_ATTRIBUTE_DIRECTORY != 0 && (show_hidden || attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) == 0)
+        })
+        .map(|de| de.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort_by(|a, b| crate::model::natural_cmp(a, b));
+    let total = names.len();
+    names.truncate(cap);
+    Ok((names, total))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +111,34 @@ mod tests {
         assert_eq!(title(r"C:\"), "C:");
         assert_eq!(title(r"\\server\share"), r"\\server\share");
         assert_eq!(title("This PC"), "This PC");
+    }
+
+    #[test]
+    fn subfolders_for_the_crumb_dropdown() {
+        use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM, SetFileAttributesW};
+        let dir = std::env::temp_dir().join(format!("twinfm-p2m3-crumbs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["b", "a10", "a2", "hid", "sys"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        std::fs::write(dir.join("a1.txt"), b"a file, not a folder").unwrap();
+        for (d, attr) in [("hid", FILE_ATTRIBUTE_HIDDEN), ("sys", FILE_ATTRIBUTE_SYSTEM)] {
+            let w = crate::shellmenu::wide(dir.join(d).as_os_str());
+            // SAFETY: a NUL-terminated wide path to a folder this test made.
+            assert_ne!(unsafe { SetFileAttributesW(w.as_ptr(), attr) }, 0);
+        }
+        // Folders only, natural name order, hidden and system left out.
+        assert_eq!(subfolders(&dir, false, MENU_CAP).unwrap(), (vec!["a2".into(), "a10".into(), "b".into()], 3));
+        // With hidden files shown they are listed too.
+        let (all, n) = subfolders(&dir, true, MENU_CAP).unwrap();
+        assert_eq!((all, n), (vec!["a2".into(), "a10".into(), "b".into(), "hid".into(), "sys".into()], 5));
+        // Capped: the first `cap` and the full count.
+        assert_eq!(subfolders(&dir, true, 2).unwrap(), (vec!["a2".into(), "a10".into()], 5));
+        // A folder that is gone is an error, not an empty list.
+        assert!(subfolders(&dir.join("missing"), false, MENU_CAP).is_err());
+        // This PC lists the drives.
+        let (drives, _) = subfolders(Path::new("This PC"), false, MENU_CAP).unwrap();
+        assert!(drives.iter().any(|d| d.eq_ignore_ascii_case(r"C:\")), "{drives:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

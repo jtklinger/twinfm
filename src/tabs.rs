@@ -9,9 +9,19 @@ pub struct Tabs<T> {
 }
 
 impl<T> Tabs<T> {
-    /// A pane always has at least one tab.
+    /// A pane always has at least one tab. (The app builds its panes with `restored`.)
+    #[cfg(test)]
     pub fn new(first: T) -> Tabs<T> {
         Tabs { items: vec![first], active: 0 }
+    }
+
+    /// Tabs restored from the settings: `first` then `rest`, with tab `active` active (clamped to
+    /// the last tab).
+    pub fn restored(first: T, rest: Vec<T>, active: usize) -> Tabs<T> {
+        let mut items = vec![first];
+        items.extend(rest);
+        let active = active.min(items.len() - 1);
+        Tabs { items, active }
     }
 
     pub fn len(&self) -> usize {
@@ -70,6 +80,29 @@ impl<T> Tabs<T> {
         }
     }
 
+    /// Move tab `from` to position `to`, shifting the tabs between; the active tab stays active
+    /// wherever it lands. False (and nothing moves) when either index is out of range or they
+    /// are equal.
+    pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        let n = self.items.len();
+        if from >= n || to >= n || from == to {
+            return false;
+        }
+        let t = self.items.remove(from);
+        self.items.insert(to, t);
+        let a = self.active;
+        self.active = if a == from {
+            to
+        } else if from < a && to >= a {
+            a - 1
+        } else if from > a && to <= a {
+            a + 1
+        } else {
+            a
+        };
+        true
+    }
+
     /// The next tab, wrapping from the last to the first.
     pub fn next(&mut self) {
         self.active = (self.active + 1) % self.items.len();
@@ -113,6 +146,47 @@ mod tests {
         one.next();
         one.prev();
         assert_eq!(*one.active(), 'x');
+    }
+
+    #[test]
+    fn restored_clamps_the_active_index() {
+        let t = Tabs::restored('a', vec!['b', 'c'], 1);
+        assert_eq!((order(&t), *t.active()), ("abc".into(), 'b'));
+        let t = Tabs::restored('a', vec!['b'], 9);
+        assert_eq!(*t.active(), 'b', "clamped to the last tab");
+        let t = Tabs::restored('a', Vec::new(), 0);
+        assert_eq!((t.len(), *t.active()), (1, 'a'));
+    }
+
+    #[test]
+    fn move_tab_both_ways_and_the_active_follows() {
+        let mut t = Tabs::restored('a', vec!['b', 'c', 'd'], 1);
+        // The active tab moving right, then left.
+        assert!(t.move_tab(1, 2));
+        assert_eq!((order(&t), *t.active(), t.active_index()), ("acbd".into(), 'b', 2));
+        assert!(t.move_tab(2, 0));
+        assert_eq!((order(&t), *t.active(), t.active_index()), ("bacd".into(), 'b', 0));
+        // To the last place and back to the first (the edges).
+        assert!(t.move_tab(0, 3));
+        assert_eq!((order(&t), t.active_index()), ("acdb".into(), 3));
+        assert!(t.move_tab(3, 0));
+        assert_eq!((order(&t), t.active_index()), ("bacd".into(), 0));
+        // Another tab passing the active one from the right, then from the left.
+        t.select(1); // 'a'
+        assert!(t.move_tab(3, 0));
+        assert_eq!((order(&t), *t.active(), t.active_index()), ("dbac".into(), 'a', 2));
+        assert!(t.move_tab(0, 3));
+        assert_eq!((order(&t), *t.active(), t.active_index()), ("bacd".into(), 'a', 1));
+        // Moves that do not cross the active tab leave its index alone.
+        assert!(t.move_tab(2, 3));
+        assert_eq!((order(&t), t.active_index()), ("badc".into(), 1));
+        // Out of range or a no-op: nothing moves.
+        assert!(!t.move_tab(0, 4));
+        assert!(!t.move_tab(4, 0));
+        assert!(!t.move_tab(2, 2));
+        assert_eq!((order(&t), t.active_index()), ("badc".into(), 1));
+        let mut one = Tabs::new('x');
+        assert!(!one.move_tab(0, 0));
     }
 
     #[test]

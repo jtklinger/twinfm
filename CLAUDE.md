@@ -9,8 +9,9 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record. 
 changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (76 tests; four touch the real shell and clipboard, and the eight
-  `fs::watch` tests and one undo test write to scratch folders, see below)
+- `cargo test --release` (83 tests; four touch the real shell and clipboard, and the eight
+  `fs::watch` tests, one undo test and the breadcrumb dropdown's test write to scratch folders,
+  see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -56,13 +57,24 @@ changing the list.
   in an RDP session once landed on another program's window; see the M5 record). `[dnd]` lines on
   stderr. Tabs and path bar: `tab <new|close|next|prev|N>` presses Ctrl+T, Ctrl+W, Ctrl+Tab,
   Ctrl+Shift+Tab or Ctrl+N on the active pane (key names `CtrlT`, `CtrlW`, `CtrlTab`,
-  `CtrlShiftTab`, `Ctrl1` to `Ctrl9`, and `CtrlL` for the path entry), `crumb <pane> <index>`
-  clicks a breadcrumb button through its callback, `pathmode <pane> entry|crumb` switches the path
-  bar; `[tab]`, `[crumb]` and `[open]` lines on stderr. `TWINFM_PERF_STATUS=1` adds the
+  `CtrlShiftTab`, `Ctrl1` to `Ctrl9`, and `CtrlL` for the path entry), `tab moveleft|moveright`
+  presses Ctrl+Shift+PageUp / PageDown (key names `CtrlShiftPageUp`, `CtrlShiftPageDown`) to move
+  the active tab, `tabdrag <pane> <index> <dx>` drags tab `<index>` (0-based) `<dx>` px through
+  Slint's pointer path, `midclick <pane> <row>` middle-clicks a row (a folder opens in a new tab),
+  `backclick <pane>` presses and releases the mouse's Back button at the middle of the pane's list
+  (that pane becomes active and goes up a folder; on This PC one `[nav]` line and nothing else),
+  `crumb <pane> <index>` clicks a breadcrumb button through its callback, `crumbmenu <pane>
+  <index>` opens the dropdown of crumb `<index>`'s subfolders (listed on a worker: `sleep` before
+  picking), `crumbpick <name>` picks one and `crumbclose` closes it, `pathmode <pane> entry|crumb`
+  switches the path bar; `[tab]` (including `strip scrolled to <x>` when the tab strip
+  overflows), `[crumb]` and `[open]` lines on stderr. `TWINFM_PERF_STATUS=1` adds the
   enumeration time to the status bar (the gate tools read `[enum]` on stderr, not the status
   bar). Sidebar and dialogs: `sidebar toggle` (F9), `sidebar click <row>` (headers count),
-  `bookmark add` (Ctrl+D), `bookmark remove <index>`, `about open` (F1) and `about close`;
-  `[sidebar]` and `[settings]` lines on stderr. Directory watching: `touch <pane> <name>` creates an
+  `bookmark add` (Ctrl+D), `bookmark remove <index>`, `bookmark rename <index> <title>` (what the
+  row's title editor commits; empty goes back to the folder's name), `bookmark move <index>
+  up|down`, `about open` (F1) and `about close`; `window max|restore|close` maximises or restores
+  the window, or closes it through `WM_CLOSE` (the close button's path, which saves the settings;
+  `quit` does not); `[sidebar]` and `[settings]` lines on stderr. Directory watching: `touch <pane> <name>` creates an
   empty file in the pane's folder (or sets an existing one's modified time to now), `rmfile <pane>
   <name>` deletes it, and `waitwatch <ms>` waits until the next refresh started by the watch has
   listed its folder (at most `<ms>`), then 300 ms more for the pass, like `waitops`. `touch` and
@@ -76,7 +88,13 @@ changing the list.
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
   would make the gate's `split` step close the second pane). `TWINFM_CONFIG=<path>` points any run,
   scripted or not, at another file; a test config used across runs is rewritten at exit (make it
-  read-only to keep it fixed). `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  read-only to keep it fixed). Keys since P2-M3: `left_tabs` / `right_tabs` (each pane's tab
+  folders, left to right) with `left_active` / `right_active` (the active index), restored at
+  start (the right pane's only with `split`; empty or missing lists fall back to `start_left` /
+  `start_right`, a command-line folder replaces the left pane's tabs); bookmarks as `[[bookmark]]`
+  tables with `path` and an optional `title` (an old `bookmarks = [...]` list still loads and is
+  rewritten as tables by the next save); `maximized` in `[window]`, with x, y, width and height
+  then holding the normal placement. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -104,6 +122,8 @@ changing the list.
   for a data object over two files in `%TEMP%\twinfm-m5-test-<pid>\`. The `fs::watch` tests create,
   rename, delete and change attributes of files in `%TEMP%\twinfm-p2m1-test-<pid>\` (removed
   afterwards); they touch neither the clipboard nor the Recycle Bin.
+  `pathbar::tests::subfolders_for_the_crumb_dropdown` makes folders (two of them hidden and
+  system) in `%TEMP%\twinfm-p2m3-crumbs-<pid>\` and removes them.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols
