@@ -585,7 +585,7 @@ fn drain() {
                         update_status(st, &app, pane);
                     }
                 }
-                Msg::Done { pane, generation, total, elapsed, error, free } => {
+                Msg::Done { pane, generation, total, elapsed, error, free, reparse } => {
                     let Some(t) = st.by_generation(pane, generation) else { continue };
                     let wall = t.timing.requested.map(perf::elapsed_ms).unwrap_or(0.0);
                     if t.model.is_refreshing() {
@@ -597,8 +597,16 @@ fn drain() {
                     match error {
                         Some(e) => t.timing.error = Some(e),
                         None => {
+                            let split = if reparse.total() == 0 {
+                                String::new()
+                            } else {
+                                format!(
+                                    ", reparse: {} junction, {} symlink, {} cloud, {} app alias, {} other",
+                                    reparse.junction, reparse.symlink, reparse.cloud, reparse.alias, reparse.other
+                                )
+                            };
                             eprintln!(
-                                "[enum] pane={pane} done: {total} entries, worker {:.1} ms, request-to-done {wall:.1} ms",
+                                "[enum] pane={pane} done: {total} entries, worker {:.1} ms, request-to-done {wall:.1} ms{split}",
                                 elapsed.as_secs_f64() * 1e3
                             );
                             t.timing.done_ms = Some(wall);

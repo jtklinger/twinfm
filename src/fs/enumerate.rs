@@ -1,16 +1,20 @@
-//! Worker-thread directory enumeration. read_dir -> Vec<Entry> batches -> channel.
+//! Worker-thread directory enumeration. FindFirstFileExW/FindNextFileW -> Vec<Entry> batches ->
+//! channel.
 //! Never runs on the UI thread. The UI consumes batches via slint::invoke_from_event_loop.
 //! The pseudo-folder "This PC" (or an empty path) lists the drives instead.
 
-use crate::model::Entry;
+use crate::model::{Entry, Kind};
 use crossbeam_channel::Sender;
 use slint::SharedString;
 use std::collections::HashMap;
-use std::os::windows::fs::MetadataExt;
-use std::path::PathBuf;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, FILETIME, GetLastError, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic,
+    FindExSearchNameMatch, FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives,
+    GetVolumeInformationW, WIN32_FIND_DATAW,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
 use windows_sys::Win32::UI::Shell::{ASSOCF_NOTRUNCATE, ASSOCSTR_FRIENDLYDOCNAME, AssocQueryStringW};
@@ -19,7 +23,42 @@ pub const BATCH_SIZE: usize = 2000;
 
 pub enum Msg {
     Batch { pane: usize, generation: u64, entries: Vec<Entry> },
-    Done { pane: usize, generation: u64, total: usize, elapsed: Duration, error: Option<String>, free: Option<(u64, u64)> },
+    Done {
+        pane: usize,
+        generation: u64,
+        total: usize,
+        elapsed: Duration,
+        error: Option<String>,
+        free: Option<(u64, u64)>,
+        reparse: ReparseCounts,
+    },
+}
+
+/// Reparse points in a listing by kind, for the `[enum]` line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReparseCounts {
+    pub junction: usize,
+    pub symlink: usize,
+    pub cloud: usize,
+    pub alias: usize,
+    pub other: usize,
+}
+
+impl ReparseCounts {
+    fn add(&mut self, kind: Kind) {
+        match kind {
+            Kind::Junction => self.junction += 1,
+            Kind::Symlink => self.symlink += 1,
+            Kind::Cloud => self.cloud += 1,
+            Kind::AppAlias => self.alias += 1,
+            Kind::Reparse => self.other += 1,
+            Kind::Directory | Kind::File | Kind::Drive => {}
+        }
+    }
+
+    pub fn total(&self) -> usize {
+        self.junction + self.symlink + self.cloud + self.alias + self.other
+    }
 }
 
 pub fn spawn(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl Fn() + Send + 'static) {
@@ -44,47 +83,67 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         let entries = drive_entries();
         let total = entries.len();
         let _ = tx.send(Msg::Batch { pane, generation, entries });
-        let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None, free: None });
+        let reparse = ReparseCounts::default();
+        let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None, free: None, reparse });
         wake();
         return;
     }
-    let rd = match std::fs::read_dir(&path) {
-        Ok(rd) => rd,
-        Err(e) => {
-            let _ = tx.send(Msg::Done { pane, generation, total: 0, elapsed: t0.elapsed(), error: Some(e.to_string()), free: None });
+    let mut data = WIN32_FIND_DATAW::default();
+    let pattern = find_pattern(&path);
+    // SAFETY: `pattern` is a NUL-terminated wide string and `data` a WIN32_FIND_DATAW, both alive
+    // for the call. Basic info (no 8.3 name) and large fetch.
+    let find = unsafe {
+        FindFirstFileExW(
+            pattern.as_ptr(),
+            FindExInfoBasic,
+            &mut data as *mut WIN32_FIND_DATAW as *mut std::ffi::c_void,
+            FindExSearchNameMatch,
+            std::ptr::null(),
+            FIND_FIRST_EX_LARGE_FETCH,
+        )
+    };
+    if find == INVALID_HANDLE_VALUE {
+        // SAFETY: no arguments; read right after the failing call on this thread.
+        let code = unsafe { GetLastError() };
+        // A drive root with nothing in it has no "." entry either: an empty listing, as read_dir
+        // gave; anything else is the error read_dir reported ("... (os error 3)").
+        if code != ERROR_FILE_NOT_FOUND {
+            let error = Some(std::io::Error::from_raw_os_error(code as i32).to_string());
+            let reparse = ReparseCounts::default();
+            let _ = tx.send(Msg::Done { pane, generation, total: 0, elapsed: t0.elapsed(), error, free: None, reparse });
             wake();
             return;
         }
-    };
+    }
     let mut types = TypeNames::default();
     let mut icon_keys = crate::icons::IconKeys::new(path.clone());
     let zone = crate::model::LocalZone::current();
     let mut batch: Vec<Entry> = Vec::with_capacity(BATCH_SIZE);
     let mut total = 0usize;
-    for de in rd.flatten() {
-        // On Windows DirEntry::metadata() is served from the FindNextFile data: no extra syscall,
-        // and a reparse point's own attributes are reported (it is not followed).
-        let md = de.metadata().ok();
-        let attrs = md.as_ref().map(|m| m.file_attributes()).unwrap_or(0);
-        let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
-        let modified = md
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let name = de.file_name();
-        let name = name.to_string_lossy();
-        let type_text = types.for_entry(&name, attrs & FILE_ATTRIBUTE_DIRECTORY != 0);
-        let icon_key = icon_keys.for_entry(&name, attrs);
-        batch.push(Entry::with_zone(name.as_ref().into(), size, modified, attrs, type_text, icon_key, &zone));
+    let mut reparse = ReparseCounts::default();
+    let mut more = find != INVALID_HANDLE_VALUE;
+    while more {
+        if let Some(e) = entry_of(&data, &mut types, &mut icon_keys, &zone) {
+            reparse.add(e.kind);
+            batch.push(e);
+        }
         if batch.len() >= BATCH_SIZE {
             total += batch.len();
             let full = std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
             if tx.send(Msg::Batch { pane, generation, entries: full }).is_err() {
+                // SAFETY: `find` is the live search handle from FindFirstFileExW, closed once.
+                unsafe { FindClose(find) };
                 return;
             }
             wake();
         }
+        // SAFETY: `find` is a live search handle and `data` is writable. Any failure ends the
+        // listing (ERROR_NO_MORE_FILES at the end; read_dir's iterator skipped other errors).
+        more = unsafe { FindNextFileW(find, &mut data) } != 0;
+    }
+    if find != INVALID_HANDLE_VALUE {
+        // SAFETY: as above, closed exactly once.
+        unsafe { FindClose(find) };
     }
     if !batch.is_empty() {
         total += batch.len();
@@ -93,8 +152,62 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
     // Timed before the free-space query, so the [enum] worker time is the listing alone.
     let elapsed = t0.elapsed();
     let free = crate::statusbar::disk_free(&path);
-    let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error: None, free });
+    let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error: None, free, reparse });
     wake();
+}
+
+/// `<path>\*` as a NUL-terminated wide string. A long path gets the `\\?\` prefix (`\\?\UNC\`
+/// for a share), as std's read_dir adds it, so folders past MAX_PATH still list.
+fn find_pattern(path: &Path) -> Vec<u16> {
+    let star: Vec<u16> = path.join("*").as_os_str().encode_wide().collect();
+    let (bs, q) = (b'\\' as u16, b'?' as u16);
+    let (prefix, rest) = if star.len() < 248 || star.starts_with(&[bs, bs, q, bs]) {
+        ("", &star[..])
+    } else if star.starts_with(&[bs, bs]) {
+        (r"\\?\UNC", &star[1..]) // \\server\share -> \\?\UNC\server\share
+    } else {
+        (r"\\?\", &star[..])
+    };
+    prefix.encode_utf16().chain(rest.iter().copied()).chain([0]).collect()
+}
+
+/// FILETIME (100 ns ticks since 1601) to unix seconds, truncated; a time before 1970 reads 0,
+/// as `metadata().modified()` through `duration_since(UNIX_EPOCH)` gave.
+fn unix_secs(ft: FILETIME) -> i64 {
+    const EPOCH_1970: i64 = 116_444_736_000_000_000;
+    let ticks = ((ft.dwHighDateTime as u64) << 32 | ft.dwLowDateTime as u64) as i64;
+    if ticks < EPOCH_1970 { 0 } else { (ticks - EPOCH_1970) / 10_000_000 }
+}
+
+/// One listing entry from FindFirstFileExW/FindNextFileW data; None for "." and "..". The
+/// attributes are the entry's own (a reparse point is not followed) and its tag is in
+/// `dwReserved0` when FILE_ATTRIBUTE_REPARSE_POINT is set.
+fn entry_of(
+    d: &WIN32_FIND_DATAW,
+    types: &mut TypeNames,
+    icon_keys: &mut crate::icons::IconKeys,
+    zone: &crate::model::LocalZone,
+) -> Option<Entry> {
+    let len = d.cFileName.iter().position(|&c| c == 0).unwrap_or(d.cFileName.len());
+    let wname = &d.cFileName[..len];
+    let dot = b'.' as u16;
+    if wname == [dot] || wname == [dot, dot] {
+        return None;
+    }
+    let name = String::from_utf16_lossy(wname);
+    let attrs = d.dwFileAttributes;
+    let tag = if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 { d.dwReserved0 } else { 0 };
+    let kind = Kind::from_attrs(attrs, tag);
+    let size = (d.nFileSizeHigh as u64) << 32 | d.nFileSizeLow as u64;
+    // A cloud placeholder keeps its type's text (Explorer shows "Microsoft Word Document").
+    let type_text = match kind {
+        Kind::Junction => SharedString::from("Junction"),
+        Kind::Symlink => SharedString::from("Symbolic link"),
+        Kind::AppAlias => SharedString::from("Application"),
+        _ => types.for_entry(&name, attrs & FILE_ATTRIBUTE_DIRECTORY != 0),
+    };
+    let icon_key = icon_keys.for_entry(&name, attrs, kind);
+    Some(Entry::with_zone(name.into(), size, unix_secs(d.ftLastWriteTime), attrs, kind, type_text, icon_key, zone))
 }
 
 // GetDriveTypeW results (WinBase.h). Declared here rather than enabling windows-sys's large
@@ -358,6 +471,80 @@ mod tests {
             Msg::Done { pane: 1, generation: 7, total: 4, error: None, .. } => {}
             other => panic!("unexpected final message: {}", describe(other)),
         }
+    }
+
+    #[test]
+    fn tells_reparse_points_apart() {
+        let dir = std::env::temp_dir().join(format!("twinfm-enum-reparse-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("target")).unwrap();
+        std::fs::write(dir.join("plain.txt"), b"hello").unwrap();
+        // A junction needs no privilege; mklink /J is the shortest way to make one.
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(dir.join("junc"))
+            .arg(dir.join("target"))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(made, "mklink /J failed");
+        // A symbolic link needs the privilege or Developer Mode.
+        let symlink = std::os::windows::fs::symlink_file(dir.join("plain.txt"), dir.join("link.txt")).is_ok();
+        let plain_modified = std::fs::metadata(dir.join("plain.txt"))
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let msgs = collect(dir.clone());
+        std::fs::remove_dir_all(&dir).unwrap(); // removes the junction, not its target's contents
+
+        let entries = entries_of(&msgs);
+        let by = |n: &str| entries.iter().find(|e| e.name == n).unwrap_or_else(|| panic!("{n} listed")).clone();
+        let junc = by("junc");
+        assert_eq!(junc.kind, Kind::Junction);
+        assert_eq!(junc.type_text, "Junction");
+        assert!(junc.is_dir(), "a junction opens by navigating");
+        assert_eq!(junc.icon_key.as_str(), dir.join("junc").to_string_lossy(), "keyed by full path for its overlay");
+        let plain = by("plain.txt");
+        assert_eq!(plain.kind, Kind::File);
+        assert_eq!(plain.size, 5);
+        assert_eq!(plain.modified, plain_modified, "the same second metadata().modified() gives");
+        assert_eq!(plain.icon_key, "ext:.txt");
+        assert_eq!(by("target").kind, Kind::Directory);
+        let expected = ReparseCounts { junction: 1, symlink: symlink as usize, ..Default::default() };
+        match msgs.last().unwrap() {
+            Msg::Done { reparse, error: None, .. } => assert_eq!(*reparse, expected),
+            other => panic!("unexpected final message: {}", describe(other)),
+        }
+        if !symlink {
+            eprintln!("skipping the symbolic link: creating one needs the privilege or Developer Mode");
+            return;
+        }
+        let link = by("link.txt");
+        assert_eq!(link.kind, Kind::Symlink);
+        assert_eq!(link.type_text, "Symbolic link");
+        assert!(!link.is_dir());
+        assert_eq!(link.icon_key.as_str(), dir.join("link.txt").to_string_lossy());
+    }
+
+    #[test]
+    fn filetime_and_long_paths() {
+        let ft = |t: i64| FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 };
+        assert_eq!(unix_secs(ft(116_444_736_000_000_000)), 0);
+        assert_eq!(unix_secs(ft(116_444_736_000_000_000 + 15_999_999)), 1, "truncated");
+        assert_eq!(unix_secs(ft(0)), 0, "before 1970 reads 0");
+        assert_eq!(unix_secs(ft(133_000_000_000_000_000)), 1_655_526_400);
+        let s = |p: &str| String::from_utf16(&find_pattern(Path::new(p))).unwrap();
+        assert_eq!(s(r"C:\Windows"), r"C:\Windows\*".to_string() + "\0");
+        assert_eq!(s(r"C:\"), r"C:\*".to_string() + "\0");
+        let long = format!(r"C:\{}", "a".repeat(300));
+        assert_eq!(s(&long), format!(r"\\?\{long}\*") + "\0");
+        let unc = format!(r"\\server\share\{}", "b".repeat(300));
+        assert_eq!(s(&unc), format!(r"\\?\UNC\server\share\{}\*", "b".repeat(300)) + "\0");
+        let verbatim = format!(r"\\?\C:\{}", "c".repeat(300));
+        assert_eq!(s(&verbatim), format!(r"{verbatim}\*") + "\0");
     }
 
     #[test]

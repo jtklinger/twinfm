@@ -7,8 +7,10 @@
 //! Cache keys (`icon_key`): ordinary files share one key per lowercase extension (`ext:.txt`),
 //! plain directories share `dir`; files whose icon is their own (`.exe`, `.lnk`, `.ico`, `.url`,
 //! `.cur`, no extension), customised folders (a `desktop.ini` that the shell honours), reparse
-//! points and drives are keyed by full path.
+//! points and drives are keyed by full path. A cloud placeholder (OneDrive) is keyed as if it
+//! were no reparse point: its icon is its type's, or the folder's.
 
+use crate::model::Kind;
 use crossbeam_channel::{Receiver, Sender};
 use slint::{Rgba8Pixel, SharedPixelBuffer, SharedString};
 use std::collections::{HashMap, HashSet};
@@ -83,10 +85,18 @@ fn extension(name: &str) -> Option<&str> {
     }
 }
 
+/// `attrs` as the key rules read them: a cloud placeholder's icon is its type's (a file) or
+/// the plain folder's, so it is keyed as if it were no reparse point. Sharing those keys is
+/// what spares one shell call per placeholder (one took 568 ms in M2).
+fn key_attrs(attrs: u32, kind: Kind) -> u32 {
+    if kind == Kind::Cloud { attrs & !FILE_ATTRIBUTE_REPARSE_POINT } else { attrs }
+}
+
 /// The cache key for a directory entry (drives are keyed by their root, see `Entry::drive`).
 /// `custom_folder` says the directory carries a `desktop.ini` the shell honours (`custom_folder`).
-pub fn icon_key(folder: &Path, name: &str, attrs: u32, custom_folder: bool) -> String {
+pub fn icon_key(folder: &Path, name: &str, attrs: u32, kind: Kind, custom_folder: bool) -> String {
     let full = || folder.join(name).to_string_lossy().into_owned();
+    let attrs = key_attrs(attrs, kind);
     if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return full();
     }
@@ -125,7 +135,8 @@ impl IconKeys {
         IconKeys { folder, dir: "dir".into(), ext: HashMap::new() }
     }
 
-    pub fn for_entry(&mut self, name: &str, attrs: u32) -> SharedString {
+    pub fn for_entry(&mut self, name: &str, attrs: u32, kind: Kind) -> SharedString {
+        let attrs = key_attrs(attrs, kind);
         let custom = custom_folder(&self.folder, name, attrs);
         if attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) == FILE_ATTRIBUTE_DIRECTORY && !custom {
             return self.dir.clone();
@@ -137,7 +148,7 @@ impl IconKeys {
                 }
             }
         }
-        let key = icon_key(&self.folder, name, attrs, custom);
+        let key = icon_key(&self.folder, name, attrs, kind, custom);
         if key.starts_with("ext:") {
             let k: SharedString = key.as_str().into();
             // Cached under the extension as spelled; another spelling misses once and caches too.
@@ -561,29 +572,43 @@ mod tests {
     #[test]
     fn key_rules() {
         let f = Path::new(r"C:\some\dir");
-        assert_eq!(icon_key(f, "a.TXT", 0, false), "ext:.txt");
-        assert_eq!(icon_key(f, "archive.tar.gz", 0, false), "ext:.gz");
-        assert_eq!(icon_key(f, ".gitignore", 0, false), "ext:.gitignore");
+        let (file, dir) = (Kind::File, Kind::Directory);
+        assert_eq!(icon_key(f, "a.TXT", 0, file, false), "ext:.txt");
+        assert_eq!(icon_key(f, "archive.tar.gz", 0, file, false), "ext:.gz");
+        assert_eq!(icon_key(f, ".gitignore", 0, file, false), "ext:.gitignore");
         for own in ["setup.exe", "Link.LNK", "app.ico", "site.url", "arrow.cur", "README", "trailing."] {
-            assert_eq!(icon_key(f, own, 0, false), format!(r"C:\some\dir\{own}"), "{own}");
+            assert_eq!(icon_key(f, own, 0, file, false), format!(r"C:\some\dir\{own}"), "{own}");
         }
-        assert_eq!(icon_key(f, "sub", FILE_ATTRIBUTE_DIRECTORY, false), "dir");
-        assert_eq!(icon_key(f, "Docs", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, true), r"C:\some\dir\Docs");
-        let junction = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
-        assert_eq!(icon_key(f, "j", junction, false), r"C:\some\dir\j");
-        assert_eq!(icon_key(f, "cloud.txt", FILE_ATTRIBUTE_REPARSE_POINT, false), r"C:\some\dir\cloud.txt");
-        assert_eq!(icon_key(Path::new(r"C:\"), "x.exe", 0, false), r"C:\x.exe");
+        assert_eq!(icon_key(f, "sub", FILE_ATTRIBUTE_DIRECTORY, dir, false), "dir");
+        assert_eq!(icon_key(f, "Docs", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, dir, true), r"C:\some\dir\Docs");
+        let rdir = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        let rfile = FILE_ATTRIBUTE_REPARSE_POINT;
+        assert_eq!(icon_key(f, "j", rdir, Kind::Junction, false), r"C:\some\dir\j");
+        assert_eq!(icon_key(f, "l", rdir, Kind::Symlink, false), r"C:\some\dir\l");
+        assert_eq!(icon_key(f, "l.txt", rfile, Kind::Symlink, false), r"C:\some\dir\l.txt");
+        assert_eq!(icon_key(f, "x.txt", rfile, Kind::Reparse, false), r"C:\some\dir\x.txt");
+        assert_eq!(icon_key(f, "wt.exe", rfile, Kind::AppAlias, false), r"C:\some\dir\wt.exe");
+        // Cloud placeholders share their type's key, or `dir`, unless the icon is their own.
+        assert_eq!(icon_key(f, "cloud.TXT", rfile, Kind::Cloud, false), "ext:.txt");
+        assert_eq!(icon_key(f, "cloud.lnk", rfile, Kind::Cloud, false), r"C:\some\dir\cloud.lnk");
+        assert_eq!(icon_key(f, "csub", rdir, Kind::Cloud, false), "dir");
+        assert_eq!(icon_key(f, "Pictures", rdir | FILE_ATTRIBUTE_READONLY, Kind::Cloud, true), r"C:\some\dir\Pictures");
+        assert_eq!(icon_key(Path::new(r"C:\"), "x.exe", 0, file, false), r"C:\x.exe");
 
         // The cached builder agrees with the pure rules and shares extension keys.
         let mut keys = IconKeys::new(f.to_path_buf());
-        let a = keys.for_entry("a.txt", 0);
-        let b = keys.for_entry("b.txt", 0);
+        let a = keys.for_entry("a.txt", 0, file);
+        let b = keys.for_entry("b.txt", 0, file);
         assert_eq!((a.as_str(), b.as_str()), ("ext:.txt", "ext:.txt"));
-        assert_eq!(keys.for_entry("B.TXT", 0), "ext:.txt");
-        assert_eq!(keys.for_entry("sub", FILE_ATTRIBUTE_DIRECTORY), "dir");
-        assert_eq!(keys.for_entry("x.exe", 0), r"C:\some\dir\x.exe");
+        assert_eq!(keys.for_entry("B.TXT", 0, file), "ext:.txt");
+        assert_eq!(keys.for_entry("sub", FILE_ATTRIBUTE_DIRECTORY, dir), "dir");
+        assert_eq!(keys.for_entry("x.exe", 0, file), r"C:\some\dir\x.exe");
         // A read-only folder with no desktop.ini (this path does not exist) stays `dir`.
-        assert_eq!(keys.for_entry("ro", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY), "dir");
+        assert_eq!(keys.for_entry("ro", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, dir), "dir");
+        assert_eq!(keys.for_entry("cloud.txt", rfile, Kind::Cloud), "ext:.txt");
+        assert_eq!(keys.for_entry("csub", rdir | FILE_ATTRIBUTE_READONLY, Kind::Cloud), "dir");
+        assert_eq!(keys.for_entry("j", rdir, Kind::Junction), r"C:\some\dir\j");
+        assert_eq!(keys.for_entry("l.txt", rfile, Kind::Symlink), r"C:\some\dir\l.txt");
     }
 
     #[test]
