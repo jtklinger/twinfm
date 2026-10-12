@@ -1008,6 +1008,28 @@ shell extensions load in the first cycle). The scripted right drags rendered no 
 loops in the soak (the real cursor was elsewhere, so no highlight changed). The 30-minute run is
 Jeremy's: `powershell -File tools\soak-p2m4.ps1 -Minutes 30`.
 
+### Manual check (2026-10-12, Jeremy at the console, stderr logged)
+
+Logged run of `target-p2m4` (`2> Documents\twinfm-drag-log.txt`; PowerShell writes UTF-16): a
+two-item drag from the left pane dropped on the right pane with the image and the "2" badge
+(`drag image 96x96 px, 2 item(s)`, `InitializeFromBitmap = 0x00000000`, `Drop ... 2 file(s),
+effect move`); drops on sidebar rows 12 and 13 (`over sidebar row 13 ... effect move`, 5 frames
+rendered inside the drag loop); a right-button drag from TwinFM to the other pane
+(`DoDragDrop starts (right button)`, `highlight painted inside our own drag loop (frame 283 after
+the change at frame 282)`, `drop menu: default Move here, chose Cancel -> effect none`);
+Explorer's image over TwinFM on a left drag (`DragEnter ... keys=0x1 allowed=0x7`, DragLeave).
+**Items 1, 2, 3 and 5 passed.** An earlier, unlogged attempt had reported all of them failing;
+the logged run shows them working, so that attempt was on another binary or without the
+conditions (the badge shows only with two or more items; the highlight needs the drag to cross a
+row).
+
+**Item 4, a right-button drag out of Explorer, does not start in Explorer**: the log holds no
+`DragEnter` with `keys=0x2`; the only Explorer-sourced drag arrived with the left button. Nothing
+reached TwinFM, so this is Explorer (or the mouse software) declining to begin a right-button drag,
+not the target. When such a drag does arrive, the target remembers `MK_RBUTTON` from DragEnter and
+DragOver and shows the menu on Drop, as the scripted `dropfiles menu` checks exercise. Recorded,
+not a TwinFM defect.
+
 ### Gate
 
 **Not passed yet (2026-10-12).** Console WPR, Jeremy elevated, `tools/wpr-gate.ps1`, same session,
@@ -1034,6 +1056,16 @@ suspects in order are: the pre-existing window (shared by both runs, so unlikely
 `pointer-event` handlers extended in P2-M3 and P2-M4 (each row's TouchArea now tests more
 buttons; a trace of an older build with and without them would settle it), and the extra elements
 in the sidebar and tab strip. Traces `C:/traces/twinfm-ab4-{p2m3,p2m4}.etl`.
+
+**Second pair (2026-10-12 afternoon, no other TwinFM window open)**: P2-M3 **19.6%** (1958 ms;
+in-app 20.8), P2-M4 **20.4%** (2037 ms; in-app 21.1). The gap is 0.8 this time against 1.5 before:
+two pairs, both the same way, so about one point is P2-M4's and not noise. Category deltas in this
+pair: ListView rows 347 to 369 ms, render 1135 to 1170, timers 679 to 704, heap 189 to 219,
+accessibility 214 to 218. The mechanism is still unknown; the milestone does not merge until it is
+found. Bisect in progress with three binaries from the branch: `target-p2m4a` (6ec0e9b: drag images,
+right-button drags, auto-scroll; `dnd.rs` and `main.rs` only, no Slint overlays, drag still inside
+the handler), `target-p2m4b` (93c0f2c: plus the drag outside winit's handler), `target-p2m4`
+(551625a: plus the sidebar and tab overlays). Traces `C:/traces/twinfm-ab5-{p2m3,p2m4}.etl`.
 
 Two analyzer findings from these traces, fixed in this PR: a TwinFM process already running when
 the trace started reads "MIN" as its start, which the script could not parse, and the gate's
