@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tabs::Tabs;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG, SW_MAXIMIZE, ShowWindow};
 
 /// Rows above and below the viewport whose icons are fetched ahead of a scroll.
@@ -1545,7 +1545,8 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
                 }
             }
         }),
-        2 => drag_start(pane, row),
+        2 => drag_start(pane, row, false),
+        6 => drag_start(pane, row, true),
         3 => {
             if with_state(|st| st.gesture[pane].double_click()) {
                 open_row(pane, row as i32);
@@ -1559,22 +1560,23 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
     }
 }
 
-/// The pointer left the drag threshold with the left button down on `row`: drag the selection
-/// (the press made sure it includes the row) with OLE. `DoDragDrop` runs a modal loop, so the
-/// state borrow is dropped first and taken again after it returns.
-fn drag_start(pane: usize, row: usize) {
+/// The pointer left the drag threshold with the left button (or, `right`, the right button) down
+/// on `row`: drag the selection (the press made sure it includes the row) with OLE. `DoDragDrop`
+/// runs a modal loop, so the state borrow is dropped first and taken again after it returns.
+fn drag_start(pane: usize, row: usize, right: bool) {
+    let button = if right { VK_RBUTTON } else { VK_LBUTTON };
     // SAFETY: plain Win32 query of this thread's key state.
-    let held = dnd::scripted() || unsafe { GetKeyState(VK_LBUTTON as i32) } < 0;
+    let held = dnd::scripted() || unsafe { GetKeyState(button as i32) } < 0;
     let taken = with_state(|st| {
         let app = st.app.upgrade()?;
         if !held {
             // Slint thinks the button is down but it is not (a release it never saw): no drag,
             // and the gesture ends like one, so the release given below selects nothing.
-            eprintln!("[dnd] pane={pane} drag threshold crossed with the left button up: no drag");
-            st.gesture[pane] = dnd::Gesture::Dragged;
+            eprintln!("[dnd] pane={pane} drag threshold crossed with the {} button up: no drag", if right { "right" } else { "left" });
+            st.gesture[pane] = if right { dnd::Gesture::Idle } else { dnd::Gesture::Dragged };
             return Some(None);
         }
-        if !st.gesture[pane].drag(row) {
+        if !(if right { st.gesture[pane].drag_right(row) } else { st.gesture[pane].drag(row) }) {
             return None;
         }
         let folder = st.tab(pane).path.clone();
@@ -1590,7 +1592,7 @@ fn drag_start(pane: usize, row: usize) {
             return None;
         }
         let names: Vec<String> = targets.iter().map(|e| e.name.to_string()).collect();
-        eprintln!("[dnd] pane={pane} row={row}: dragging {} item(s)", names.len());
+        eprintln!("[dnd] pane={pane} row={row}: dragging {} item(s){}", names.len(), if right { " with the right button" } else { "" });
         // The image shows the pressed row's icon (or the first item's), with the count.
         let pressed = st.model(pane).entry(row).filter(|e| targets.iter().any(|t| t.name == e.name));
         let shown = pressed.as_ref().unwrap_or(&targets[0]);
@@ -1600,11 +1602,11 @@ fn drag_start(pane: usize, row: usize) {
             count: names.len(),
             scale: app.window().scale_factor(),
         };
-        Some(Some(dnd::DragRequest { hwnd, folder, names, image: Some(image) }))
+        Some(Some(dnd::DragRequest { hwnd, folder, names, image: Some(image), right }))
     });
     let req = match taken {
         None => return,
-        Some(None) => return slint::Timer::single_shot(Duration::ZERO, release_after_drag),
+        Some(None) => return slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right)),
         Some(Some(req)) => req,
     };
     // MODAL LOOP: no borrow held (see dnd). A drop on our own other pane comes back through our
@@ -1624,13 +1626,20 @@ fn drag_start(pane: usize, row: usize) {
     }
     // Slint never saw the button come up (DoDragDrop's loop consumed it) and still holds the
     // row's grab. Give it a release, after this pointer event has finished dispatching.
-    slint::Timer::single_shot(Duration::ZERO, release_after_drag);
+    slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right));
 }
 
 /// The release Slint missed during `DoDragDrop`, at the cursor's position. The gesture is
-/// `Dragged`, so it neither selects nor (as a double-click) opens.
-fn release_after_drag() {
+/// `Dragged`, so it neither selects nor (as a double-click) opens. After a right-button drag a
+/// right release would open a context menu wherever the cursor is, so Slint gets the pointer
+/// leaving the window instead, which ends the row's grab (and cancels the list's right press).
+fn release_after_drag(right: bool) {
     let Some((app, hwnd)) = with_state(|st| Some((st.app.upgrade()?, st.hwnd))) else { return };
+    if right {
+        eprintln!("[dnd] right-button drag over: pointer grab ended without a release (no context menu)");
+        app.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerExited).ok();
+        return;
+    }
     let mut p = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
     // SAFETY: plain Win32 queries with a valid in/out pointer.
     unsafe {

@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use windows_sys::Win32::Foundation::{
     DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC, E_NOINTERFACE, E_NOTIMPL,
-    GlobalFree, HWND, OLE_E_ADVISENOTSUPPORTED, POINT, POINTL, RECT, S_OK, SIZE,
+    GlobalFree, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED, POINT, POINTL, RECT, S_OK, SIZE, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, CreateFontW, DIB_RGB_COLORS, DT_CENTER,
@@ -56,7 +56,14 @@ use windows_sys::Win32::System::Ole::{
     RevokeDragDrop,
 };
 use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MK_RBUTTON, MK_SHIFT};
-use windows_sys::Win32::UI::Shell::{CFSTR_LOGICALPERFORMEDDROPEFFECT, CFSTR_PERFORMEDDROPEFFECT, SHCreateDataObject, SHDRAGIMAGE};
+use windows_sys::Win32::UI::Shell::{
+    CFSTR_LOGICALPERFORMEDDROPEFFECT, CFSTR_PERFORMEDDROPEFFECT, DefSubclassProc, RemoveWindowSubclass, SHCreateDataObject,
+    SHDRAGIMAGE, SetWindowSubclass,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, CreatePopupMenu, DestroyMenu, MF_GRAYED, MF_SEPARATOR, MF_STRING, SetForegroundWindow, SetMenuDefaultItem,
+    TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, WM_ENTERIDLE,
+};
 use windows_sys::core::{BOOL, GUID, HRESULT, PCWSTR};
 
 pub const NONE: u32 = DROPEFFECT_NONE;
@@ -67,15 +74,40 @@ pub const MOVE: u32 = DROPEFFECT_MOVE;
 // Pure decisions (unit-tested)
 // ---------------------------------------------------------------------------------------------
 
-/// `IDropSource::QueryContinueDrag`: Escape or the right button cancels, releasing the left
-/// button drops, anything else keeps dragging.
-pub fn continue_drag(escape: bool, lbutton: bool, rbutton: bool) -> HRESULT {
-    if escape || rbutton {
+/// `IDropSource::QueryContinueDrag`. A left-button drag: Escape or the right button cancels,
+/// releasing the left button drops. A right-button drag (`right`), as in Explorer: Escape or the
+/// left button cancels, releasing the right button drops (the target then asks what to do).
+/// Anything else keeps dragging.
+pub fn continue_drag(escape: bool, lbutton: bool, rbutton: bool, right: bool) -> HRESULT {
+    let (held, other) = if right { (rbutton, lbutton) } else { (lbutton, rbutton) };
+    if escape || other {
         DRAGDROP_S_CANCEL
-    } else if !lbutton {
+    } else if !held {
         DRAGDROP_S_DROP
     } else {
         S_OK
+    }
+}
+
+/// The right-button drop menu's items (command ids 1, 2, 3; 0 is "dismissed").
+pub const MENU_MOVE: u32 = 1;
+pub const MENU_COPY: u32 = 2;
+pub const MENU_CANCEL: u32 = 3;
+pub const MENU_LABELS: [&str; 3] = ["Move here", "Copy here", "Cancel"];
+
+/// The menu item drawn bold: the one a left-button drop would have done.
+pub fn menu_default(effect: u32) -> u32 {
+    if effect == MOVE { MENU_MOVE } else { MENU_COPY }
+}
+
+/// The effect a right-button drop menu's choice means: "Move here" and "Copy here" when the
+/// source allows them (the menu greys out the others), else, and for "Cancel" or a dismissed
+/// menu (Escape, a click elsewhere), none.
+pub fn menu_effect(cmd: u32, allowed: u32) -> u32 {
+    match cmd {
+        MENU_MOVE if allowed & MOVE != 0 => MOVE,
+        MENU_COPY if allowed & COPY != 0 => COPY,
+        _ => NONE,
     }
 }
 
@@ -256,8 +288,9 @@ pub enum Gesture {
     Idle,
     /// The left button is down on `row`; `deferred` is the selection to apply on release.
     Pressed { row: usize, deferred: Option<SelOp> },
-    /// `DoDragDrop` is running for a drag that started on `row`.
-    Dragging { row: usize },
+    /// `DoDragDrop` is running for a drag that started on `row`, with the right button (`right`)
+    /// or the left.
+    Dragging { row: usize, right: bool },
     /// The drag ended; waiting for the release Slint will deliver.
     Dragged,
 }
@@ -285,17 +318,32 @@ impl Gesture {
     pub fn drag(&mut self, row: usize) -> bool {
         match *self {
             Gesture::Pressed { row: r, .. } if r == row => {
-                *self = Gesture::Dragging { row };
+                *self = Gesture::Dragging { row, right: false };
                 true
             }
             _ => false,
         }
     }
 
-    /// `DoDragDrop` returned (dropped, cancelled or failed).
-    pub fn drag_ended(&mut self) {
+    /// The pointer moved past the threshold with the right button down on `row` (its press
+    /// selected the row, as a right-click does): start a right-button drag? Not while a drag
+    /// runs.
+    pub fn drag_right(&mut self, row: usize) -> bool {
         if matches!(self, Gesture::Dragging { .. }) {
-            *self = Gesture::Dragged;
+            return false;
+        }
+        *self = Gesture::Dragging { row, right: true };
+        true
+    }
+
+    /// `DoDragDrop` returned (dropped, cancelled or failed). A left-button drag waits for the
+    /// release the app hands Slint (`Dragged`); a right-button drag gets no release (the app ends
+    /// Slint's grab without one, so no context menu opens), so it is over.
+    pub fn drag_ended(&mut self) {
+        match self {
+            Gesture::Dragging { right: true, .. } => *self = Gesture::Idle,
+            Gesture::Dragging { .. } => *self = Gesture::Dragged,
+            _ => {}
         }
     }
 
@@ -641,6 +689,9 @@ struct DropTarget {
     sources: RefCell<Option<Vec<PathBuf>>>,
     /// The last (spot, effect) logged by DragOver, so it logs changes only.
     last: RefCell<Option<(Option<DropSpot>, u32)>>,
+    /// The last DragEnter or DragOver had the right button down: a right-button drag, whose
+    /// Drop asks what to do (the button is already up when Drop is called).
+    right: Cell<bool>,
 }
 
 static DROP_TARGET_VTBL: DropTargetVtbl = DropTargetVtbl {
@@ -684,6 +735,9 @@ impl DropTarget {
     }
 
     fn over(&self, keys: u32, pt: POINTL, effect: *mut u32) {
+        // A right-button drag: the button is still down in DragOver; Drop, after its release,
+        // goes by this.
+        self.right.set(keys & MK_RBUTTON != 0);
         // SAFETY: COM contract: `effect` is a valid in/out pointer (checked for null).
         let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
         let (spot, e) = self.evaluate(keys, pt, allowed);
@@ -756,6 +810,60 @@ unsafe extern "system" fn dt_drag_leave(this: *mut c_void) -> HRESULT {
     S_OK
 }
 
+/// Our temporary subclass id on the main window while the drop menu is up ("twdm").
+const DROP_MENU_SUBCLASS: usize = 0x7477_646d;
+
+/// While the drop menu is up: log, once, whether the app state is free when the menu's modal
+/// loop first goes idle (`WM_ENTERIDLE` goes to the owner). Touches no app state itself.
+unsafe extern "system" fn drop_menu_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, data: usize) -> LRESULT {
+    if msg == WM_ENTERIDLE && data != 0 {
+        // SAFETY: `data` is the Cell that `drop_menu` keeps alive until after the subclass is removed.
+        let seen = unsafe { &*(data as *const Cell<bool>) };
+        if !seen.replace(true) {
+            eprintln!("[dnd] drop menu loop idle: app state free={}", crate::state_is_free());
+        }
+    }
+    // SAFETY: everything goes on down the subclass chain.
+    unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+}
+
+/// The right-button drop menu at screen point `pt`, owned by `hwnd`: "Move here", "Copy here", a
+/// separator and "Cancel", `default` in bold, an effect the source does not allow greyed out.
+/// Returns the command id (0 when dismissed). A modal loop: **call with no borrow held**.
+fn drop_menu(hwnd: isize, pt: POINTL, default: u32, allowed: u32) -> u32 {
+    // SAFETY: a popup menu we create, show on our own window's thread and destroy; the subclass
+    // and its refdata live until after RemoveWindowSubclass.
+    unsafe {
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return 0;
+        }
+        for (i, (label, effect)) in [(MENU_LABELS[0], MOVE), (MENU_LABELS[1], COPY)].into_iter().enumerate() {
+            let w: Vec<u16> = label.encode_utf16().chain([0]).collect();
+            let grey = if allowed & effect != 0 { 0 } else { MF_GRAYED };
+            AppendMenuW(menu, MF_STRING | grey, i + 1, w.as_ptr());
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        let w: Vec<u16> = MENU_LABELS[2].encode_utf16().chain([0]).collect();
+        AppendMenuW(menu, MF_STRING, MENU_CANCEL as usize, w.as_ptr());
+        SetMenuDefaultItem(menu, default, 0);
+        let seen = Box::new(Cell::new(false));
+        let hwnd = hwnd as HWND;
+        SetWindowSubclass(hwnd, Some(drop_menu_proc), DROP_MENU_SUBCLASS, &*seen as *const Cell<bool> as usize);
+        crate::shellmenu::set_current_menu(menu as isize);
+        // A menu whose owner is not in the foreground does not close on a click elsewhere
+        // (TrackPopupMenu's documented caveat); a drop from Explorer leaves Explorer in front.
+        SetForegroundWindow(hwnd);
+        eprintln!("[dnd] drop menu starts at ({}, {})", pt.x, pt.y);
+        // MODAL LOOP. No RefCell borrow of app state is held (see dt_drop).
+        let cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, hwnd, std::ptr::null()) as u32;
+        crate::shellmenu::set_current_menu(0);
+        RemoveWindowSubclass(hwnd, Some(drop_menu_proc), DROP_MENU_SUBCLASS);
+        DestroyMenu(menu);
+        cmd
+    }
+}
+
 /// The effect a target method is about to return (NONE when OLE passed no pointer).
 fn out_effect(effect: *mut u32) -> u32 {
     // SAFETY: COM contract: a valid in/out pointer (checked for null).
@@ -770,12 +878,27 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
     *t.sources.borrow_mut() = fresh.clone();
     // SAFETY: COM contract: a valid in/out pointer (checked for null).
     let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
-    let (spot, e) = t.evaluate(keys, pt, allowed);
+    let (spot, mut e) = t.evaluate(keys, pt, allowed);
+    let right = keys & MK_RBUTTON != 0 || t.right.replace(false);
     *t.sources.borrow_mut() = None;
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
-    // The shell takes its drag image down.
+    // The shell takes its drag image down (before the menu, as Explorer does).
     target_helper_call(HelperCall::Drop(data), pt, e);
+    if right && e != NONE && spot.is_some() {
+        // A right-button drop asks: Move here, Copy here or Cancel, the default in bold. A modal
+        // loop inside Drop (itself inside the source's DoDragDrop): nothing is borrowed here,
+        // `drop_spot`'s borrow ended inside `evaluate` and the target's own cells are free.
+        let cmd = drop_menu(t.hwnd, pt, menu_default(e), allowed);
+        let chosen = menu_effect(cmd, allowed);
+        eprintln!(
+            "[dnd] drop menu: default {}, chose {} -> effect {}",
+            MENU_LABELS[menu_default(e) as usize - 1],
+            if cmd == 0 { "nothing (dismissed)" } else { MENU_LABELS.get(cmd as usize - 1).copied().unwrap_or("?") },
+            effect_name(chosen)
+        );
+        e = chosen;
+    }
     let reported = reported_effect(e);
     eprintln!(
         "[dnd] Drop at {} keys=0x{keys:x} allowed=0x{allowed:x}: {} file(s), effect {} (reported to the source: {})",
@@ -824,6 +947,7 @@ pub fn register(hwnd: isize) -> (HRESULT, HRESULT) {
         hwnd,
         sources: RefCell::new(None),
         last: RefCell::new(None),
+        right: Cell::new(false),
     });
     let ptr = Box::into_raw(obj) as *mut c_void;
     // SAFETY: plain OLE calls on our own window, on its thread. RegisterDragDrop takes its own
@@ -1197,6 +1321,8 @@ fn attach_drag_image(data: *mut c_void, img: &DragImage) {
 #[repr(C)]
 struct DropSource {
     header: Header,
+    /// A right-button drag (`continue_drag`).
+    right: bool,
 }
 
 static DROP_SOURCE_VTBL: DropSourceVtbl = DropSourceVtbl {
@@ -1222,16 +1348,19 @@ unsafe extern "system" fn ds_release(this: *mut c_void) -> u32 {
     unsafe { release_impl(this, ds_free) }
 }
 
-unsafe extern "system" fn ds_query_continue_drag(_this: *mut c_void, escape: BOOL, keys: u32) -> HRESULT {
+unsafe extern "system" fn ds_query_continue_drag(this: *mut c_void, escape: BOOL, keys: u32) -> HRESULT {
     if !FIRST_QCD_SEEN.with(|c| c.replace(true)) {
         // The re-entrancy check: inside DoDragDrop's loop no borrow of the app state is held.
         eprintln!("[dnd] first QueryContinueDrag inside the drag loop: app state free={}", crate::state_is_free());
     }
-    // A scripted drag holds the left button until Escape cancels it: it never drops (see
-    // `script_begin`).
+    // SAFETY: `this` is our DropSource.
+    let right = unsafe { (*(this as *const DropSource)).right };
+    // A scripted drag holds its button (the left, or the right for a right-button drag) until
+    // Escape cancels it: it never drops (see `script_begin`).
     let scripted = SCRIPTED.load(Ordering::Acquire);
-    let lbutton = scripted || keys & MK_LBUTTON != 0;
-    let hr = continue_drag(escape != 0, lbutton, keys & MK_RBUTTON != 0);
+    let lbutton = (scripted && !right) || keys & MK_LBUTTON != 0;
+    let rbutton = (scripted && right) || keys & MK_RBUTTON != 0;
+    let hr = continue_drag(escape != 0, lbutton, rbutton, right);
     if hr != S_OK {
         eprintln!(
             "[dnd] QueryContinueDrag escape={} keys=0x{keys:x}{}: {}",
@@ -1273,6 +1402,8 @@ pub struct DragRequest {
     pub names: Vec<String>,
     /// The drag image to show (None: the cursor alone).
     pub image: Option<DragImage>,
+    /// A right-button drag: the right button held, its release drops, the target asks.
+    pub right: bool,
 }
 
 /// Drag the named items: a shell data object for them, our drop source, and `DoDragDrop`, which
@@ -1296,11 +1427,17 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
     }
     let source = Com(Box::into_raw(Box::new(DropSource {
         header: Header { vtbl: &DROP_SOURCE_VTBL as *const DropSourceVtbl as *const c_void, refs: AtomicU32::new(1) },
+        right: req.right,
     })) as *mut c_void);
     let mut effect = NONE;
     DRAGS.with(|d| d.set(d.get() + 1));
     FIRST_QCD_SEEN.with(|c| c.set(false));
-    eprintln!("[dnd] DoDragDrop starts: {} item(s) from {}", req.names.len(), req.folder.display());
+    eprintln!(
+        "[dnd] DoDragDrop starts ({} button): {} item(s) from {}",
+        if req.right { "right" } else { "left" },
+        req.names.len(),
+        req.folder.display()
+    );
     let t0 = std::time::Instant::now();
     // MODAL LOOP. No RefCell borrow of app state is held here (the caller dropped its borrow).
     // OLE runs the drag until the button is released or Escape is pressed; our own drop target
@@ -1333,14 +1470,64 @@ mod tests {
 
     #[test]
     fn query_continue_drag_states() {
-        // (escape, lbutton, rbutton)
-        assert_eq!(continue_drag(false, true, false), S_OK, "button held: keep dragging");
-        assert_eq!(continue_drag(false, false, false), DRAGDROP_S_DROP, "left released: drop");
-        assert_eq!(continue_drag(true, true, false), DRAGDROP_S_CANCEL, "Escape cancels");
-        assert_eq!(continue_drag(true, false, false), DRAGDROP_S_CANCEL, "Escape wins over a release");
-        assert_eq!(continue_drag(false, true, true), DRAGDROP_S_CANCEL, "right button cancels");
-        assert_eq!(continue_drag(false, false, true), DRAGDROP_S_CANCEL);
-        assert_eq!(continue_drag(true, false, true), DRAGDROP_S_CANCEL);
+        // (escape, lbutton, rbutton, right-button drag)
+        assert_eq!(continue_drag(false, true, false, false), S_OK, "button held: keep dragging");
+        assert_eq!(continue_drag(false, false, false, false), DRAGDROP_S_DROP, "left released: drop");
+        assert_eq!(continue_drag(true, true, false, false), DRAGDROP_S_CANCEL, "Escape cancels");
+        assert_eq!(continue_drag(true, false, false, false), DRAGDROP_S_CANCEL, "Escape wins over a release");
+        assert_eq!(continue_drag(false, true, true, false), DRAGDROP_S_CANCEL, "right button cancels");
+        assert_eq!(continue_drag(false, false, true, false), DRAGDROP_S_CANCEL);
+        assert_eq!(continue_drag(true, false, true, false), DRAGDROP_S_CANCEL);
+    }
+
+    #[test]
+    fn right_button_drag() {
+        // A right-button drag continues while the right button is held, drops on its release,
+        // and is cancelled by Escape or the left button.
+        assert_eq!(continue_drag(false, false, true, true), S_OK, "right held: keep dragging");
+        assert_eq!(continue_drag(false, false, false, true), DRAGDROP_S_DROP, "right released: drop");
+        assert_eq!(continue_drag(true, false, true, true), DRAGDROP_S_CANCEL, "Escape cancels");
+        assert_eq!(continue_drag(true, false, false, true), DRAGDROP_S_CANCEL, "Escape wins over the release");
+        assert_eq!(continue_drag(false, true, true, true), DRAGDROP_S_CANCEL, "the left button cancels");
+
+        // The gesture: a right-button drag from any state but a running drag; no release follows
+        // it (the app ends Slint's grab without one), so it is over when DoDragDrop returns.
+        let mut g = Gesture::default();
+        assert!(g.drag_right(4));
+        assert_eq!(g, Gesture::Dragging { row: 4, right: true });
+        assert!(!g.drag_right(4), "one drag at a time");
+        assert!(!g.drag(4), "no left drag inside it");
+        assert!(!g.double_click(), "nothing opens while it runs");
+        g.drag_ended();
+        assert_eq!(g, Gesture::Idle, "over: the next press starts afresh");
+        // A right-button drag after a left press on another row (the press is forgotten).
+        g.press(1, false, false, false);
+        assert!(g.drag_right(2));
+        assert_eq!(g.release(), None, "a stray left release selects nothing");
+        // The left gesture is unchanged: a left drag ends as Dragged, waiting for its release.
+        g.press(3, false, false, false);
+        assert!(g.drag(3));
+        assert_eq!(g, Gesture::Dragging { row: 3, right: false });
+        g.drag_ended();
+        assert_eq!(g, Gesture::Dragged);
+
+        // The drop menu's choice.
+        let both = COPY | MOVE;
+        assert_eq!(menu_effect(MENU_MOVE, both), MOVE);
+        assert_eq!(menu_effect(MENU_COPY, both), COPY);
+        assert_eq!(menu_effect(MENU_CANCEL, both), NONE, "Cancel");
+        assert_eq!(menu_effect(0, both), NONE, "dismissed (Escape, a click elsewhere)");
+        assert_eq!(menu_effect(MENU_MOVE, COPY), NONE, "a greyed-out item cannot be chosen");
+        assert_eq!(menu_effect(MENU_COPY, MOVE), NONE);
+        assert_eq!(menu_effect(99, both), NONE);
+        assert_eq!(menu_default(MOVE), MENU_MOVE, "bold: what a left drop would do");
+        assert_eq!(menu_default(COPY), MENU_COPY);
+        assert_eq!(MENU_LABELS[MENU_MOVE as usize - 1], "Move here");
+        assert_eq!(MENU_LABELS[MENU_COPY as usize - 1], "Copy here");
+        assert_eq!(MENU_LABELS[MENU_CANCEL as usize - 1], "Cancel");
+        // The effect the menu starts from is decide_effect's, unchanged by the right button.
+        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_RBUTTON, both), MOVE);
+        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"D:\dst"), MK_RBUTTON, both), COPY);
     }
 
     #[test]
