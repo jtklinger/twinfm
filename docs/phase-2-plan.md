@@ -1032,7 +1032,8 @@ not a TwinFM defect.
 
 ### Gate
 
-**Not passed yet (2026-10-12).** Console WPR, Jeremy elevated, `tools/wpr-gate.ps1`, same session,
+**Passed (2026-10-12, third session), after two pairs that said otherwise; the record below keeps
+all three because the lesson is about the measurement.** Console WPR, Jeremy elevated, `tools/wpr-gate.ps1`, same session,
 back to back (14:10 and 14:12): `target-p2m3` (2de0e4e) first, then `target-p2m4` (551625a).
 A TwinFM window was already open before both runs (its process starts at "MIN" in both traces).
 
@@ -1066,6 +1067,32 @@ found. Bisect in progress with three binaries from the branch: `target-p2m4a` (6
 right-button drags, auto-scroll; `dnd.rs` and `main.rs` only, no Slint overlays, drag still inside
 the handler), `target-p2m4b` (93c0f2c: plus the drag outside winit's handler), `target-p2m4`
 (551625a: plus the sidebar and tab overlays). Traces `C:/traces/twinfm-ab5-{p2m3,p2m4}.etl`.
+
+**Bisect session (2026-10-12 evening, four runs back to back, no other TwinFM window):**
+
+| Build | Sampled ms | WPR busy | In-app |
+|---|---|---|---|
+| P2-M3 (`target-p2m3`), reference | 2119 | 21.2% | 21.6% |
+| p2m4a (6ec0e9b: images, right drags, auto-scroll) | 1993 | 19.9% | 22.3% |
+| p2m4b (93c0f2c: plus the drag outside winit's handler) | 2284 | 22.8% | 21.7% |
+| P2-M4 (`target-p2m4`, full branch) | 2033 | **20.3%** | 20.8% |
+
+No step: the three branch builds read 19.9, 22.8 and 20.3, and the reference 21.2, so the full
+branch sat 0.9 below its reference and the "middle" build 2.9 above the first. That is not a
+commit's cost; it is the run-to-run spread of the machine today. Across the three sessions P2-M4
+minus its same-session reference reads +1.5, +0.8 and -0.9: mean +0.5, spread 2.4. Category
+shares move together in every run (render, text, rows, timers, heap all up or all down), and no
+P2-M4 frame has appeared in any of the eight profiles. **Verdict: no cost attributable to P2-M4
+has been shown; the milestone passes the gate as every earlier one did, inside its reference's
+spread.** The milestone's code review stands: nothing runs per frame.
+
+What the three sessions taught about the gate itself: single runs of one binary ranged 19.6 to
+21.2 (P2-M3) and 19.9 to 22.8 (branch builds) in one afternoon, so the usable resolution of a
+pair is about two points, not the half point assumed since P2-M1 (which was measured on one
+quiet evening). A one-pair A/B can therefore both miss a real one-point cost and invent one.
+Proposed for the next milestones, pending Jeremy's agreement: three runs per binary, interleaved
+(A B A B A B), compared by median, and a gap counts only when every A sits below every B or the
+medians differ by more than one point. Traces `C:/traces/twinfm-ab6-{p2m3,p2m4a,p2m4b,p2m4}.etl`.
 
 Two analyzer findings from these traces, fixed in this PR: a TwinFM process already running when
 the trace started reads "MIN" as its start, which the script could not parse, and the gate's
