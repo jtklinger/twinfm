@@ -1,33 +1,40 @@
-//! Shell icons. One worker thread, initialised for COM (MTA), owns every shell call: it turns a
-//! path into a 32-bit HBITMAP through `IShellItemImageFactory::GetImage` and the bitmap into a
-//! premultiplied RGBA pixel buffer. The UI thread keeps one buffer per cache key in an
+//! Shell icons. A pool of worker threads (`ICON_WORKERS`), each initialised for COM (MTA), owns
+//! every shell call: a worker turns a path into a 32-bit HBITMAP through
+//! `IShellItemImageFactory::GetImage` and the bitmap into a premultiplied RGBA pixel buffer, with
+//! the shell's overlay (a link's arrow) drawn over it for links and reparse points. The UI thread keeps one buffer per cache key in an
 //! `IconTable` that both panes share, and composes the icons of the rows on screen into one
 //! strip image per pane (`compose`), so the list rows carry no image at all.
 //!
 //! Cache keys (`icon_key`): ordinary files share one key per lowercase extension (`ext:.txt`),
 //! plain directories share `dir`; files whose icon is their own (`.exe`, `.lnk`, `.ico`, `.url`,
 //! `.cur`, no extension), customised folders (a `desktop.ini` that the shell honours), reparse
-//! points and drives are keyed by full path.
+//! points and drives are keyed by full path. A cloud placeholder (OneDrive) is keyed as if it
+//! were no reparse point: its icon is its type's, or the folder's.
 
+use crate::model::Kind;
 use crossbeam_channel::{Receiver, Sender};
 use slint::{Rgba8Pixel, SharedPixelBuffer, SharedString};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 use windows_sys::Win32::Foundation::SIZE;
 use windows_sys::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits, GetObjectW, HBITMAP,
-    ReleaseDC,
+    BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject,
+    GdiFlush, GetDC, GetDIBits, GetObjectW, HBITMAP, ReleaseDC, SelectObject,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM,
 };
 use windows_sys::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
-use windows_sys::Win32::UI::Shell::{SHCreateItemFromParsingName, SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY};
+use windows_sys::Win32::UI::Shell::{
+    SHCreateItemFromParsingName, SHFILEINFOW, SHGFI_ADDOVERLAYS, SHGFI_ICON, SHGFI_OVERLAYINDEX, SHGFI_SMALLICON, SHGetFileInfoW,
+    SHGetImageList, SHIL_LARGE, SHIL_SMALL, SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON};
 use windows_sys::core::{GUID, HRESULT};
 
 /// Icon table slots that exist before any shell icon arrives, one per kind of row.
@@ -53,6 +60,8 @@ pub struct Request {
     pub key: SharedString,
     pub path: PathBuf,
     pub size_px: u32,
+    /// Draw the shell's overlay (a link's arrow) over the icon (`wants_overlay`).
+    pub overlay: bool,
 }
 
 pub enum Outcome {
@@ -73,6 +82,10 @@ pub struct Reply {
 pub struct Stats {
     pub rendered: AtomicU64,
     pub render_ns: AtomicU64,
+    /// Icons that got an overlay drawn over them.
+    pub overlays: AtomicU64,
+    /// Renders (overlay included) over `SLOW_MS`.
+    pub slow: AtomicU64,
 }
 
 /// Lowercase extension after the last dot, as Explorer and `TypeNames` read it, or None.
@@ -83,10 +96,18 @@ fn extension(name: &str) -> Option<&str> {
     }
 }
 
+/// `attrs` as the key rules read them: a cloud placeholder's icon is its type's (a file) or
+/// the plain folder's, so it is keyed as if it were no reparse point. Sharing those keys is
+/// what spares one shell call per placeholder (one took 568 ms in M2).
+fn key_attrs(attrs: u32, kind: Kind) -> u32 {
+    if kind == Kind::Cloud { attrs & !FILE_ATTRIBUTE_REPARSE_POINT } else { attrs }
+}
+
 /// The cache key for a directory entry (drives are keyed by their root, see `Entry::drive`).
 /// `custom_folder` says the directory carries a `desktop.ini` the shell honours (`custom_folder`).
-pub fn icon_key(folder: &Path, name: &str, attrs: u32, custom_folder: bool) -> String {
+pub fn icon_key(folder: &Path, name: &str, attrs: u32, kind: Kind, custom_folder: bool) -> String {
     let full = || folder.join(name).to_string_lossy().into_owned();
+    let attrs = key_attrs(attrs, kind);
     if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return full();
     }
@@ -98,6 +119,21 @@ pub fn icon_key(folder: &Path, name: &str, attrs: u32, custom_folder: bool) -> S
             format!("ext:.{}", ext.to_ascii_lowercase())
         }
         _ => full(),
+    }
+}
+
+/// Whether an entry's icon should carry the shell's overlay: links (`.lnk`, `.url`), junctions,
+/// symbolic links, app execution aliases and other reparse points. Each of them is keyed by full
+/// path, so the overlay never lands on a key other files share; a folder named `x.lnk` (keyed
+/// `dir`) does not qualify.
+pub fn wants_overlay(kind: Kind, attrs: u32, name: &str) -> bool {
+    match kind {
+        Kind::Junction | Kind::Symlink | Kind::AppAlias | Kind::Reparse => true,
+        Kind::Drive => false,
+        _ => {
+            attrs & FILE_ATTRIBUTE_DIRECTORY == 0
+                && extension(name).is_some_and(|e| e.eq_ignore_ascii_case("lnk") || e.eq_ignore_ascii_case("url"))
+        }
     }
 }
 
@@ -125,7 +161,8 @@ impl IconKeys {
         IconKeys { folder, dir: "dir".into(), ext: HashMap::new() }
     }
 
-    pub fn for_entry(&mut self, name: &str, attrs: u32) -> SharedString {
+    pub fn for_entry(&mut self, name: &str, attrs: u32, kind: Kind) -> SharedString {
+        let attrs = key_attrs(attrs, kind);
         let custom = custom_folder(&self.folder, name, attrs);
         if attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) == FILE_ATTRIBUTE_DIRECTORY && !custom {
             return self.dir.clone();
@@ -137,7 +174,7 @@ impl IconKeys {
                 }
             }
         }
-        let key = icon_key(&self.folder, name, attrs, custom);
+        let key = icon_key(&self.folder, name, attrs, kind, custom);
         if key.starts_with("ext:") {
             let k: SharedString = key.as_str().into();
             // Cached under the extension as spelled; another spelling misses once and caches too.
@@ -290,6 +327,22 @@ pub fn bgra_to_rgba(bgra: &[u8], width: u32, height: u32) -> SharedPixelBuffer<R
     buf
 }
 
+/// `over` drawn over `base`, source-over on premultiplied pixels: `dst = src + dst * (1 - src.a)`
+/// per channel. The shell's overlay images are full icon size with the glyph in the bottom-left
+/// corner, so the two buffers line up at (0, 0). Buffers of different sizes give `base` back.
+pub fn overlay(base: &SharedPixelBuffer<Rgba8Pixel>, over: &SharedPixelBuffer<Rgba8Pixel>) -> SharedPixelBuffer<Rgba8Pixel> {
+    let mut out = base.clone();
+    if (base.width(), base.height()) != (over.width(), over.height()) {
+        return out;
+    }
+    for (d, s) in out.make_mut_slice().iter_mut().zip(over.as_slice()) {
+        let keep = 255 - s.a as u32;
+        let mix = |s: u8, d: u8| (s as u32 + (d as u32 * keep + 127) / 255).min(255) as u8;
+        *d = Rgba8Pixel { r: mix(s.r, d.r), g: mix(s.g, d.g), b: mix(s.b, d.b), a: mix(s.a, d.a) };
+    }
+    out
+}
+
 #[repr(C)]
 struct ImageFactoryVtbl {
     _query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
@@ -364,66 +417,306 @@ fn hbitmap_pixels(hbm: HBITMAP) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     (lines == h).then(|| bgra_to_rgba(&bgra, w as u32, h as u32))
 }
 
-/// Start the icon worker. It serves its queue newest first, skips requests whose pane has
-/// navigated since (`generations`), renders each key at most once per process, and wakes the
-/// UI thread after every reply.
+/// Threads that render icons. Two, so one slow shell call (a network path, a dead share, a
+/// placeholder the sync engine must answer) does not hold the icons queued behind it: a
+/// synchronous shell call cannot be abandoned, so the other thread serves the queue meanwhile.
+pub const ICON_WORKERS: usize = 2;
+
+/// A render (overlay included) at least this long is logged as `[icons] slow icon`.
+const SLOW_MS: u64 = 100;
+
+/// How a worker turns a path into pixels: `render`, or a stand-in in the tests.
+type RenderFn = fn(&Path, u32) -> Option<SharedPixelBuffer<Rgba8Pixel>>;
+
+/// What the worker threads share.
+#[derive(Default)]
+struct Pool {
+    /// Requests not yet taken, served newest first, and whether the request channel has closed.
+    queue: Mutex<(Vec<Request>, bool)>,
+    ready: Condvar,
+    /// Keys rendered or being rendered: a key is taken when a thread pops it, so the two threads
+    /// never render one key twice. A failed key is given back (the UI's `failed` set is what stops
+    /// it being asked for again).
+    taken: Mutex<HashSet<SharedString>>,
+    /// Overlay images by (overlay index, size in px), fetched once per process (`overlay_image`).
+    overlays: Mutex<HashMap<(i32, u32), Option<SharedPixelBuffer<Rgba8Pixel>>>>,
+}
+
+/// A lock that a panic elsewhere cannot poison for good: the data is plain sets and queues.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Start the icon workers (`ICON_WORKERS` threads sharing one queue). They serve the queue
+/// newest first, skip requests whose pane has navigated since (`generations`), render each key
+/// at most once per process, draw the shell's overlay when asked, and wake the UI thread after
+/// every reply.
 pub fn spawn(
     rx: Receiver<Request>,
     tx: Sender<Reply>,
     generations: Arc<[AtomicU64; 2]>,
     stats: Arc<Stats>,
-    wake: impl Fn() + Send + 'static,
+    wake: impl Fn() + Send + Sync + 'static,
 ) {
+    spawn_with(rx, tx, generations, stats, wake, render);
+}
+
+/// `spawn` with the render function as a parameter, so a test can make one render slow.
+fn spawn_with(
+    rx: Receiver<Request>,
+    tx: Sender<Reply>,
+    generations: Arc<[AtomicU64; 2]>,
+    stats: Arc<Stats>,
+    wake: impl Fn() + Send + Sync + 'static,
+    render: RenderFn,
+) {
+    let pool = Arc::new(Pool::default());
+    // The feeder moves requests from the UI's channel into the shared queue and wakes one idle
+    // worker. Workers that drained the channel themselves would leave the requests they drained
+    // waiting behind their own slow render while the other thread slept in `recv`.
+    let feed = pool.clone();
     std::thread::Builder::new()
-        .name("icons".into())
+        .name("icons-feed".into())
         .spawn(move || {
-            // SAFETY: initialises COM for this thread only; balanced by CoUninitialize below.
-            let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED as u32) };
-            let mut delivered: HashSet<SharedString> = HashSet::new();
-            // Newest first: the latest requests are the rows on screen now, while older ones
-            // may be rows a fast scroll passed over (still rendered, later, for the cache).
-            let mut queue: Vec<Request> = Vec::new();
-            loop {
-                if queue.is_empty() {
-                    match rx.recv() {
-                        Ok(r) => queue.push(r),
-                        Err(_) => break,
-                    }
-                }
-                queue.extend(rx.try_iter());
-                let Some(r) = queue.pop() else { continue };
-                let stale = generations[r.pane].load(Ordering::Relaxed) != r.generation;
-                if stale || delivered.contains(&r.key) {
-                    if tx.send(Reply { key: r.key, outcome: Outcome::Skipped }).is_err() {
-                        break;
-                    }
-                    if queue.is_empty() {
-                        wake(); // otherwise the next rendered reply wakes the UI for both
-                    }
-                    continue;
-                }
-                let t0 = Instant::now();
-                let pixels = if com >= 0 { render(&r.path, r.size_px) } else { None };
-                stats.rendered.fetch_add(1, Ordering::Relaxed);
-                stats.render_ns.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                let outcome = match pixels {
-                    Some(p) => {
-                        delivered.insert(r.key.clone());
-                        Outcome::Pixels(p)
-                    }
-                    None => Outcome::Failed,
-                };
-                if tx.send(Reply { key: r.key, outcome }).is_err() {
-                    break;
-                }
-                wake();
+            for r in rx.iter() {
+                lock(&feed.queue).0.push(r);
+                feed.ready.notify_one();
             }
-            if com >= 0 {
-                // SAFETY: pairs the successful CoInitializeEx above, on the same thread.
-                unsafe { CoUninitialize() };
-            }
+            lock(&feed.queue).1 = true;
+            feed.ready.notify_all();
         })
-        .expect("spawn icon thread");
+        .expect("spawn icon feeder thread");
+    let wake = Arc::new(wake);
+    for i in 0..ICON_WORKERS {
+        let (pool, tx, generations, stats, wake) = (pool.clone(), tx.clone(), generations.clone(), stats.clone(), wake.clone());
+        std::thread::Builder::new()
+            .name(format!("icons-{i}"))
+            .spawn(move || work(&pool, &tx, &generations, &stats, &*wake, render))
+            .expect("spawn icon thread");
+    }
+}
+
+/// The newest request, and whether the queue is empty after it; None once the channel closed.
+fn next(pool: &Pool) -> Option<(Request, bool)> {
+    let mut q = lock(&pool.queue);
+    loop {
+        if let Some(r) = q.0.pop() {
+            let idle = q.0.is_empty();
+            return Some((r, idle));
+        }
+        if q.1 {
+            return None;
+        }
+        q = pool.ready.wait(q).unwrap_or_else(PoisonError::into_inner);
+    }
+}
+
+/// One worker thread: COM (MTA) for itself, then requests until the channel closes.
+fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], stats: &Stats, wake: &dyn Fn(), render: RenderFn) {
+    // SAFETY: initialises COM for this thread only; balanced by CoUninitialize below.
+    let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED as u32) };
+    // Newest first: the latest requests are the rows on screen now, while older ones may be
+    // rows a fast scroll passed over (still rendered, later, for the cache).
+    while let Some((r, idle)) = next(pool) {
+        let stale = generations[r.pane].load(Ordering::Relaxed) != r.generation;
+        if stale || !lock(&pool.taken).insert(r.key.clone()) {
+            if tx.send(Reply { key: r.key, outcome: Outcome::Skipped }).is_err() {
+                break;
+            }
+            if idle {
+                wake(); // otherwise the next rendered reply wakes the UI for both
+            }
+            continue;
+        }
+        let t0 = Instant::now();
+        let mut pixels = if com >= 0 { render(&r.path, r.size_px) } else { None };
+        if r.overlay {
+            if let (Some(p), Some(over)) = (&pixels, overlay_image(pool, &r.path, r.size_px)) {
+                pixels = Some(overlay(&fit(p, r.size_px), &over));
+                stats.overlays.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let took = t0.elapsed();
+        stats.rendered.fetch_add(1, Ordering::Relaxed);
+        stats.render_ns.fetch_add(took.as_nanos() as u64, Ordering::Relaxed);
+        if took.as_millis() as u64 >= SLOW_MS {
+            stats.slow.fetch_add(1, Ordering::Relaxed);
+            eprintln!("[icons] slow icon {} ms: {}", took.as_millis(), r.path.display());
+        }
+        let outcome = match pixels {
+            Some(p) => Outcome::Pixels(p),
+            None => {
+                lock(&pool.taken).remove(&r.key);
+                Outcome::Failed
+            }
+        };
+        if tx.send(Reply { key: r.key, outcome }).is_err() {
+            break;
+        }
+        wake();
+    }
+    if com >= 0 {
+        // SAFETY: pairs the successful CoInitializeEx above, on the same thread.
+        unsafe { CoUninitialize() };
+    }
+}
+
+/// IImageList (commoncontrols.h), every slot in declaration order; only the ones called are
+/// typed. GetIcon is slot 10 and GetOverlayImage slot 31, counting IUnknown's three.
+#[repr(C)]
+struct ImageListVtbl {
+    _query_interface: usize,
+    _add_ref: usize,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    _add: usize,
+    _replace_icon: usize,
+    _set_overlay_image: usize,
+    _replace: usize,
+    _add_masked: usize,
+    _draw: usize,
+    _remove: usize,
+    get_icon: unsafe extern "system" fn(*mut c_void, i32, u32, *mut HICON) -> HRESULT,
+    _get_image_info: usize,
+    _copy: usize,
+    _merge: usize,
+    _clone: usize,
+    _get_image_rect: usize,
+    get_icon_size: unsafe extern "system" fn(*mut c_void, *mut i32, *mut i32) -> HRESULT,
+    _set_icon_size: usize,
+    _get_image_count: usize,
+    _set_image_count: usize,
+    _set_bk_color: usize,
+    _get_bk_color: usize,
+    _begin_drag: usize,
+    _end_drag: usize,
+    _drag_enter: usize,
+    _drag_leave: usize,
+    _drag_move: usize,
+    _set_drag_cursor_image: usize,
+    _drag_show_nolock: usize,
+    _get_drag_image: usize,
+    _get_item_flags: usize,
+    get_overlay_image: unsafe extern "system" fn(*mut c_void, i32, *mut i32) -> HRESULT,
+}
+
+const IID_IIMAGELIST: GUID = GUID::from_u128(0x46eb5926_582e_4017_9fdf_e8998daa0950);
+/// ILD_TRANSPARENT (commctrl.h), declared here rather than enabling windows-sys's Win32_UI_Controls.
+const ILD_TRANSPARENT: u32 = 1;
+
+/// The shell's overlay for `path` drawn at `size_px`, or None when it has none. The overlay's
+/// index costs one `SHGetFileInfoW` per call (the shell looks at the file); its image is fetched
+/// once per (index, size) per process and shared by the worker threads.
+fn overlay_image(pool: &Pool, path: &Path, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    let index = overlay_index(path)?;
+    let mut cache = lock(&pool.overlays);
+    if let Some(o) = cache.get(&(index, size_px)) {
+        return o.clone();
+    }
+    let o = overlay_pixels(index, size_px);
+    eprintln!("[icons] overlay index {index} fetched at {size_px} px{}", if o.is_some() { "" } else { ": no image" });
+    cache.insert((index, size_px), o.clone());
+    o
+}
+
+/// The overlay index the shell gives `path` (the top eight bits of `iIcon` with
+/// SHGFI_OVERLAYINDEX), or None for no overlay. The icon handle that comes with it is destroyed.
+fn overlay_index(path: &Path) -> Option<i32> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: a zeroed SHFILEINFOW is valid; `wide` is NUL-terminated; the HICON, when one is
+    // returned, is ours to destroy.
+    let (ok, shfi) = unsafe {
+        let mut shfi: SHFILEINFOW = std::mem::zeroed();
+        let flags = SHGFI_ICON | SHGFI_SMALLICON | SHGFI_ADDOVERLAYS | SHGFI_OVERLAYINDEX;
+        let ok = SHGetFileInfoW(wide.as_ptr(), 0, &mut shfi, std::mem::size_of::<SHFILEINFOW>() as u32, flags);
+        if !shfi.hIcon.is_null() {
+            DestroyIcon(shfi.hIcon);
+        }
+        (ok, shfi)
+    };
+    let index = (shfi.iIcon >> 24) & 0xFF;
+    (ok != 0 && index != 0).then_some(index)
+}
+
+/// Overlay `index`'s image from the system image list, drawn at `size_px` square: the small
+/// list when its icons are at least that big, else the large one (`DrawIconEx` scales).
+fn overlay_pixels(index: i32, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    let list_of = |which: u32| {
+        let mut list: *mut c_void = std::ptr::null_mut();
+        // SAFETY: `list` receives an IImageList pointer or stays null.
+        let hr = unsafe { SHGetImageList(which as i32, &IID_IIMAGELIST, &mut list) };
+        (hr >= 0 && !list.is_null()).then_some(list)
+    };
+    // SAFETY: `list` is a live IImageList from SHGetImageList, whose vtable is `ImageListVtbl`.
+    let vt = |list: *mut c_void| unsafe { &**(list as *const *const ImageListVtbl) };
+    let mut list = list_of(SHIL_SMALL)?;
+    let (mut cx, mut cy) = (0, 0);
+    // SAFETY: a live list; `cx` and `cy` are writable.
+    if unsafe { (vt(list).get_icon_size)(list, &mut cx, &mut cy) } >= 0 && (cx as u32) < size_px {
+        if let Some(large) = list_of(SHIL_LARGE) {
+            // SAFETY: the small list is released once and replaced by the large one.
+            unsafe { (vt(list).release)(list) };
+            list = large;
+        }
+    }
+    let mut image = -1;
+    let mut hicon: HICON = std::ptr::null_mut();
+    // SAFETY: a live list; `image` and `hicon` are writable; the icon, if made, is ours.
+    let ok = unsafe {
+        (vt(list).get_overlay_image)(list, index, &mut image) >= 0
+            && image >= 0
+            && (vt(list).get_icon)(list, image, ILD_TRANSPARENT, &mut hicon) >= 0
+    };
+    // SAFETY: released exactly once; nothing uses it after this.
+    unsafe { (vt(list).release)(list) };
+    if !ok || hicon.is_null() {
+        return None;
+    }
+    let pixels = icon_pixels(hicon, size_px);
+    // SAFETY: GetIcon made this icon for us.
+    unsafe { DestroyIcon(hicon) };
+    pixels
+}
+
+/// An icon drawn at `px` square into a transparent 32-bit DIB: `DrawIconEx` alpha-blends an
+/// alpha icon, which leaves premultiplied BGRA. None when nothing visible was drawn.
+fn icon_pixels(hicon: HICON, px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    // SAFETY: zeroed BITMAPINFO is a valid starting point; the header fields are set below.
+    let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
+    bmi.bmiHeader = BITMAPINFOHEADER {
+        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: px as i32,
+        biHeight: -(px as i32), // negative: top-down rows
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB,
+        ..bmi.bmiHeader
+    };
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    // SAFETY: a memory DC and a DIB section of px * px 32-bit pixels, both freed before
+    // returning; `bits` covers px * px * 4 bytes while the section lives.
+    let bgra = unsafe {
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        let bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+        let mut out = None;
+        if !bmp.is_null() && !bits.is_null() {
+            let old = SelectObject(dc, bmp);
+            if DrawIconEx(dc, 0, 0, hicon, px as i32, px as i32, 0, std::ptr::null_mut(), DI_NORMAL) != 0 {
+                GdiFlush();
+                out = Some(std::slice::from_raw_parts(bits as *const u8, (px * px * 4) as usize).to_vec());
+            }
+            SelectObject(dc, old);
+        }
+        if !bmp.is_null() {
+            DeleteObject(bmp);
+        }
+        DeleteDC(dc);
+        out
+    }?;
+    // All alpha zero would read as an opaque square in `bgra_to_rgba`: no overlay instead.
+    if bgra.chunks_exact(4).all(|p| p[3] == 0) {
+        return None;
+    }
+    Some(bgra_to_rgba(&bgra, px, px))
 }
 
 /// What the table knows about a key.
@@ -561,29 +854,43 @@ mod tests {
     #[test]
     fn key_rules() {
         let f = Path::new(r"C:\some\dir");
-        assert_eq!(icon_key(f, "a.TXT", 0, false), "ext:.txt");
-        assert_eq!(icon_key(f, "archive.tar.gz", 0, false), "ext:.gz");
-        assert_eq!(icon_key(f, ".gitignore", 0, false), "ext:.gitignore");
+        let (file, dir) = (Kind::File, Kind::Directory);
+        assert_eq!(icon_key(f, "a.TXT", 0, file, false), "ext:.txt");
+        assert_eq!(icon_key(f, "archive.tar.gz", 0, file, false), "ext:.gz");
+        assert_eq!(icon_key(f, ".gitignore", 0, file, false), "ext:.gitignore");
         for own in ["setup.exe", "Link.LNK", "app.ico", "site.url", "arrow.cur", "README", "trailing."] {
-            assert_eq!(icon_key(f, own, 0, false), format!(r"C:\some\dir\{own}"), "{own}");
+            assert_eq!(icon_key(f, own, 0, file, false), format!(r"C:\some\dir\{own}"), "{own}");
         }
-        assert_eq!(icon_key(f, "sub", FILE_ATTRIBUTE_DIRECTORY, false), "dir");
-        assert_eq!(icon_key(f, "Docs", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, true), r"C:\some\dir\Docs");
-        let junction = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
-        assert_eq!(icon_key(f, "j", junction, false), r"C:\some\dir\j");
-        assert_eq!(icon_key(f, "cloud.txt", FILE_ATTRIBUTE_REPARSE_POINT, false), r"C:\some\dir\cloud.txt");
-        assert_eq!(icon_key(Path::new(r"C:\"), "x.exe", 0, false), r"C:\x.exe");
+        assert_eq!(icon_key(f, "sub", FILE_ATTRIBUTE_DIRECTORY, dir, false), "dir");
+        assert_eq!(icon_key(f, "Docs", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, dir, true), r"C:\some\dir\Docs");
+        let rdir = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        let rfile = FILE_ATTRIBUTE_REPARSE_POINT;
+        assert_eq!(icon_key(f, "j", rdir, Kind::Junction, false), r"C:\some\dir\j");
+        assert_eq!(icon_key(f, "l", rdir, Kind::Symlink, false), r"C:\some\dir\l");
+        assert_eq!(icon_key(f, "l.txt", rfile, Kind::Symlink, false), r"C:\some\dir\l.txt");
+        assert_eq!(icon_key(f, "x.txt", rfile, Kind::Reparse, false), r"C:\some\dir\x.txt");
+        assert_eq!(icon_key(f, "wt.exe", rfile, Kind::AppAlias, false), r"C:\some\dir\wt.exe");
+        // Cloud placeholders share their type's key, or `dir`, unless the icon is their own.
+        assert_eq!(icon_key(f, "cloud.TXT", rfile, Kind::Cloud, false), "ext:.txt");
+        assert_eq!(icon_key(f, "cloud.lnk", rfile, Kind::Cloud, false), r"C:\some\dir\cloud.lnk");
+        assert_eq!(icon_key(f, "csub", rdir, Kind::Cloud, false), "dir");
+        assert_eq!(icon_key(f, "Pictures", rdir | FILE_ATTRIBUTE_READONLY, Kind::Cloud, true), r"C:\some\dir\Pictures");
+        assert_eq!(icon_key(Path::new(r"C:\"), "x.exe", 0, file, false), r"C:\x.exe");
 
         // The cached builder agrees with the pure rules and shares extension keys.
         let mut keys = IconKeys::new(f.to_path_buf());
-        let a = keys.for_entry("a.txt", 0);
-        let b = keys.for_entry("b.txt", 0);
+        let a = keys.for_entry("a.txt", 0, file);
+        let b = keys.for_entry("b.txt", 0, file);
         assert_eq!((a.as_str(), b.as_str()), ("ext:.txt", "ext:.txt"));
-        assert_eq!(keys.for_entry("B.TXT", 0), "ext:.txt");
-        assert_eq!(keys.for_entry("sub", FILE_ATTRIBUTE_DIRECTORY), "dir");
-        assert_eq!(keys.for_entry("x.exe", 0), r"C:\some\dir\x.exe");
+        assert_eq!(keys.for_entry("B.TXT", 0, file), "ext:.txt");
+        assert_eq!(keys.for_entry("sub", FILE_ATTRIBUTE_DIRECTORY, dir), "dir");
+        assert_eq!(keys.for_entry("x.exe", 0, file), r"C:\some\dir\x.exe");
         // A read-only folder with no desktop.ini (this path does not exist) stays `dir`.
-        assert_eq!(keys.for_entry("ro", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY), "dir");
+        assert_eq!(keys.for_entry("ro", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, dir), "dir");
+        assert_eq!(keys.for_entry("cloud.txt", rfile, Kind::Cloud), "ext:.txt");
+        assert_eq!(keys.for_entry("csub", rdir | FILE_ATTRIBUTE_READONLY, Kind::Cloud), "dir");
+        assert_eq!(keys.for_entry("j", rdir, Kind::Junction), r"C:\some\dir\j");
+        assert_eq!(keys.for_entry("l.txt", rfile, Kind::Symlink), r"C:\some\dir\l.txt");
     }
 
     #[test]
@@ -762,6 +1069,135 @@ mod tests {
     }
 
     #[test]
+    fn overlay_blends_source_over_premultiplied() {
+        let buf = |px: [Rgba8Pixel; 4]| {
+            let mut b = SharedPixelBuffer::<Rgba8Pixel>::new(2, 2);
+            b.make_mut_slice().copy_from_slice(&px);
+            b
+        };
+        let p = |r, g, b, a| Rgba8Pixel { r, g, b, a };
+        let clear = p(0, 0, 0, 0);
+        // Base: opaque red, opaque red, half-transparent green (premultiplied), transparent.
+        let base = buf([p(255, 0, 0, 255), p(255, 0, 0, 255), p(0, 128, 0, 128), clear]);
+        // Overlay: nothing, opaque white, half-transparent blue (premultiplied), opaque black.
+        let over = buf([clear, p(255, 255, 255, 255), p(0, 0, 128, 128), p(0, 0, 0, 255)]);
+        let out = overlay(&base, &over);
+        assert_eq!(out.as_slice()[0], p(255, 0, 0, 255), "a transparent overlay pixel keeps the base");
+        assert_eq!(out.as_slice()[1], p(255, 255, 255, 255), "an opaque overlay pixel replaces it");
+        // 128 + 128 * 127 / 255 = 128 + 64 (rounded): half blue over half green.
+        assert_eq!(out.as_slice()[2], p(0, 64, 128, 192));
+        assert_eq!(out.as_slice()[3], p(0, 0, 0, 255), "over a transparent base the overlay shows as is");
+        assert_eq!(base.as_slice()[1], p(255, 0, 0, 255), "the base buffer is not changed");
+        // Different sizes: the base comes back unchanged.
+        assert_eq!(overlay(&base, &SharedPixelBuffer::new(4, 4)).as_slice(), base.as_slice());
+    }
+
+    #[test]
+    fn overlay_only_for_links_and_reparse_points() {
+        let rdir = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        assert!(wants_overlay(Kind::File, 0, "Notes.LNK"));
+        assert!(wants_overlay(Kind::File, 0, "site.url"));
+        assert!(wants_overlay(Kind::Cloud, FILE_ATTRIBUTE_REPARSE_POINT, "synced.lnk"));
+        assert!(wants_overlay(Kind::Junction, rdir, "Application Data"));
+        assert!(wants_overlay(Kind::Symlink, FILE_ATTRIBUTE_REPARSE_POINT, "link.txt"));
+        assert!(wants_overlay(Kind::AppAlias, FILE_ATTRIBUTE_REPARSE_POINT, "wt.exe"));
+        assert!(wants_overlay(Kind::Reparse, FILE_ATTRIBUTE_REPARSE_POINT, "x.dat"));
+        assert!(!wants_overlay(Kind::File, 0, "a.txt"));
+        assert!(!wants_overlay(Kind::File, 0, "setup.exe"));
+        assert!(!wants_overlay(Kind::Directory, FILE_ATTRIBUTE_DIRECTORY, "odd.lnk"), "keyed `dir`, shared");
+        assert!(!wants_overlay(Kind::Cloud, rdir, "csub"));
+        assert!(!wants_overlay(Kind::Cloud, FILE_ATTRIBUTE_REPARSE_POINT, "doc.docx"));
+        assert!(!wants_overlay(Kind::Drive, FILE_ATTRIBUTE_DIRECTORY, r"C:\"));
+    }
+
+    fn req(generation: u64, key: &str, path: &str) -> Request {
+        Request { generation, pane: 0, key: key.into(), path: PathBuf::from(path), size_px: 1, overlay: false }
+    }
+
+    /// A stand-in render: "slow" takes 2 s, "busy" 50 ms (counted in BUSY_RENDERS), others none.
+    fn fake_render(path: &Path, _size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+        match path.to_str() {
+            Some("slow") => std::thread::sleep(Duration::from_secs(2)),
+            Some("busy") => {
+                BUSY_RENDERS.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Some("fail") => return None,
+            _ => {}
+        }
+        Some(SharedPixelBuffer::new(1, 1))
+    }
+
+    static BUSY_RENDERS: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn pool_serves_others_while_one_icon_is_slow() {
+        let (req_tx, req_rx) = unbounded();
+        let (rep_tx, rep_rx) = unbounded();
+        let gens = Arc::new([AtomicU64::new(1), AtomicU64::new(0)]);
+        let stats = Arc::new(Stats::default());
+        spawn_with(req_rx, rep_tx, gens.clone(), stats.clone(), || {}, fake_render);
+
+        // One slow render takes a thread; three requests sent after it go to the other one.
+        req_tx.send(req(1, "slow", "slow")).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let t0 = Instant::now();
+        for k in ["a", "b", "c"] {
+            req_tx.send(req(1, k, k)).unwrap();
+        }
+        let mut fast = HashSet::new();
+        while fast.len() < 3 {
+            let r = rep_rx.recv_timeout(Duration::from_millis(500)).expect("the others reply within 500 ms");
+            assert!(matches!(r.outcome, Outcome::Pixels(_)), "{} rendered", r.key);
+            fast.insert(r.key.to_string());
+        }
+        assert!(t0.elapsed() < Duration::from_millis(500), "{:?}", t0.elapsed());
+        assert_eq!(fast, HashSet::from(["a".to_string(), "b".to_string(), "c".to_string()]));
+
+        // A stale generation is skipped, not rendered, even while a thread is busy.
+        req_tx.send(req(9, "stale", "x")).unwrap();
+        let r = rep_rx.recv_timeout(Duration::from_millis(500)).expect("stale reply");
+        assert_eq!(r.key, "stale");
+        assert!(matches!(r.outcome, Outcome::Skipped));
+
+        // A failed key is given back, so a later request for it renders (and fails) again.
+        req_tx.send(req(1, "f", "fail")).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_millis(500)).unwrap().outcome, Outcome::Failed));
+        req_tx.send(req(1, "f", "fail")).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_millis(500)).unwrap().outcome, Outcome::Failed));
+
+        let r = rep_rx.recv_timeout(Duration::from_secs(3)).expect("the slow icon arrives");
+        assert_eq!(r.key, "slow");
+        assert_eq!(stats.slow.load(Ordering::Relaxed), 1, "only the 2 s render is slow");
+    }
+
+    #[test]
+    fn pool_renders_each_key_once() {
+        let (req_tx, req_rx) = unbounded();
+        let (rep_tx, rep_rx) = unbounded();
+        let gens = Arc::new([AtomicU64::new(1), AtomicU64::new(0)]);
+        spawn_with(req_rx, rep_tx, gens, Arc::new(Stats::default()), || {}, fake_render);
+        for _ in 0..20 {
+            req_tx.send(req(1, "same", "busy")).unwrap();
+        }
+        let mut pixels = 0;
+        for _ in 0..20 {
+            match rep_rx.recv_timeout(Duration::from_secs(2)).expect("20 replies").outcome {
+                Outcome::Pixels(_) => pixels += 1,
+                Outcome::Skipped => {}
+                Outcome::Failed => panic!("the fake render does not fail here"),
+            }
+        }
+        assert_eq!(pixels, 1, "one reply carries the icon, the other 19 are skipped");
+        assert_eq!(BUSY_RENDERS.load(Ordering::SeqCst), 1, "rendered once across the pool");
+        // Delivered keys stay taken.
+        req_tx.send(req(1, "same", "busy")).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Skipped));
+        drop(req_tx);
+        assert!(rep_rx.recv_timeout(Duration::from_secs(2)).is_err(), "the workers exit when the channel closes");
+    }
+
+    #[test]
     fn worker_renders_exe_drive_and_extension() {
         let (req_tx, req_rx) = unbounded();
         let (rep_tx, rep_rx) = unbounded();
@@ -769,22 +1205,38 @@ mod tests {
         spawn(req_rx, rep_tx, gens.clone(), Arc::new(Stats::default()), || {});
         let txt = std::env::temp_dir().join(format!("twinfm-icon-{}.txt", std::process::id()));
         std::fs::write(&txt, b"x").unwrap();
+        // A junction, asked for twice: plain and with the shell's overlay (the link arrow).
+        let dir = std::env::temp_dir().join(format!("twinfm-p2m5-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("target")).unwrap();
+        let junction = dir.join("junc");
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(dir.join("target"))
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(made, "mklink /J failed");
         let jobs = [
             (r"C:\Windows\notepad.exe".to_string(), PathBuf::from(r"C:\Windows\notepad.exe")),
             (r"C:\".to_string(), PathBuf::from(r"C:\")),
             ("ext:.txt".to_string(), txt.clone()),
+            ("junction".to_string(), junction.clone()),
         ];
         for (key, path) in &jobs {
-            req_tx.send(Request { generation: 1, pane: 0, key: key.as_str().into(), path: path.clone(), size_px: 16 }).unwrap();
+            req_tx.send(Request { generation: 1, pane: 0, key: key.as_str().into(), path: path.clone(), size_px: 16, overlay: false }).unwrap();
         }
+        let key = "junction+overlay";
+        req_tx.send(Request { generation: 1, pane: 0, key: key.into(), path: junction.clone(), size_px: 16, overlay: true }).unwrap();
         // A stale request (pane 1 is at generation 0) is skipped, not rendered.
-        req_tx.send(Request { generation: 5, pane: 1, key: "stale".into(), path: txt.clone(), size_px: 16 }).unwrap();
+        req_tx.send(Request { generation: 5, pane: 1, key: "stale".into(), path: txt.clone(), size_px: 16, overlay: false }).unwrap();
         let mut got = HashMap::new();
-        while got.len() < 4 {
+        while got.len() < 6 {
             let r = rep_rx.recv_timeout(Duration::from_secs(5)).expect("reply within 5 s");
             got.insert(r.key.to_string(), r.outcome);
         }
         std::fs::remove_file(&txt).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap(); // removes the junction, not its target's contents
         assert!(matches!(got.get("stale"), Some(Outcome::Skipped)));
         if jobs.iter().all(|(k, _)| matches!(got.get(k), Some(Outcome::Failed))) {
             eprintln!("skipping: the shell returned no icons at all (COM unavailable in this environment?)");
@@ -799,6 +1251,13 @@ mod tests {
                 Some(Outcome::Failed) => panic!("{key}: the shell returned no icon"),
                 _ => panic!("{key}: no reply"),
             }
+        }
+        match (got.get("junction"), got.get(key)) {
+            (Some(Outcome::Pixels(plain)), Some(Outcome::Pixels(with))) => {
+                assert_eq!((with.width(), with.height()), (16, 16), "fitted to the size asked for, then overlaid");
+                assert_ne!(fit(plain, 16).as_slice(), with.as_slice(), "the overlay changed the junction's icon");
+            }
+            _ => panic!("the junction's icons did not both arrive"),
         }
     }
 }

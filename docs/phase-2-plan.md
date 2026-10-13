@@ -1101,6 +1101,278 @@ split search); the first attempt used the pre-existing window's start and found 
 enumeration thread, giving windows two seconds too early (23.1 and 24.4 percent, both wrong).
 Close every TwinFM window before a gate run.
 
+## P2-M5: icons
+
+The backlog was the M1 and M2 Deferred lists (`phase-1-plan.md` § M1, § M2): reparse points not
+told apart by tag, no overlays (shortcuts, junctions and symbolic links showed no arrow), and one
+icon worker whose slow calls held every icon queued behind them. A large-icon view was declined
+by Jeremy and is not part of this milestone. The M2 rework held: rows carry no image, icons reach
+the screen only through each pane's strip (`icons::compose`), and every per-key cost is paid on a
+worker, once per key per process.
+
+### What landed (2026-10-12)
+
+- **Enumeration through `FindFirstFileExW`** (`fs/enumerate.rs`). The `read_dir` loop is now
+  `FindFirstFileExW(<folder>\*, FindExInfoBasic, FindExSearchNameMatch, FIND_FIRST_EX_LARGE_FETCH)`,
+  `FindNextFileW` and `FindClose` on the worker, skipping `.` and `..`. `WIN32_FIND_DATAW` gives
+  the attributes, the size (`nFileSizeHigh/Low`), the modified time (`ftLastWriteTime`, converted
+  to unix seconds by `unix_secs`, truncated; a time before 1970 reads 0, as `metadata().modified()`
+  through `duration_since(UNIX_EPOCH)` gave) and, for a reparse point, its tag (`dwReserved0`).
+  `Entry` holds exactly what it held before; the existing enumeration and model tests pass
+  unchanged. A folder that cannot be listed still gives one `Done` with the error text, formatted
+  as before (`std::io::Error::from_raw_os_error(GetLastError())`: "... (os error 3)");
+  `ERROR_FILE_NOT_FOUND` from the first call (a drive root with nothing in it) is an empty listing,
+  as `read_dir` made it. A pattern of 248 characters or more gets the `\\?\` (or `\\?\UNC\`)
+  prefix that `read_dir` added, so long folders still list.
+- **Reparse kinds** (`model.rs`). `Kind` gains `Junction` (4, `IO_REPARSE_TAG_MOUNT_POINT`),
+  `Symlink` (5, `IO_REPARSE_TAG_SYMLINK`), `Cloud` (6, `tag & 0xFFFF0FFF == IO_REPARSE_TAG_CLOUD`,
+  the cloud tag and its fifteen numbered variants) and `AppAlias` (7, `IO_REPARSE_TAG_APPEXECLINK`);
+  `Reparse` (3) is now "any other tag". `Kind::from_attrs(attrs, tag)` reads the tag only for a
+  reparse point; `Kind::from_tag` is the pure mapping. `Entry::is_dir` is unchanged (a junction or
+  directory link opens by navigating). The comment over pane.slint's `Row` lists the new values.
+- **What the user sees.** The Type column reads "Junction" for a junction, "Symbolic link" for a
+  file or directory link, "Application" for an app execution alias, and the type's own text for
+  a cloud placeholder. The row's accessible label no longer keys on `kind == 1`: a row with both
+  a size and a time (a file of any kind) reads "name, type, size, modified", other rows "name,
+  type" plus the size when there is one (drives), as before. Checked with `tools/uia-dump.ps1` on
+  `C:\Users`: "All Users, Symbolic link", "Default User, Junction", "desktop.ini, Configuration
+  settings, 174 B, 2024-04-01 03:24". The status bar is unchanged.
+- **Icon keys.** `icon_key` and `IconKeys::for_entry` take the kind. A cloud placeholder is keyed
+  as if it were no reparse point (`key_attrs`): a file by its extension (or full path for the
+  own-icon extensions), a folder `dir` unless `custom_folder` finds a `desktop.ini` (read-only or
+  system folders only, as before; OneDrive's own folders are read-only and carry one). Junctions,
+  symbolic links, app execution aliases and other reparse points stay keyed by full path.
+- **`[enum]` reparse split.** The `done:` line ends with `, reparse: J junction, S symlink, C
+  cloud, A app alias, O other` when the listing has any (counted on the worker, `ReparseCounts`
+  in `Msg::Done`); nothing per entry is logged.
+- **Overlays** (`icons.rs`). `Request` gains `overlay: bool`, set in `resolve_view` by
+  `icons::wants_overlay(kind, attrs, name)`: junctions, symbolic links, app execution aliases,
+  other reparse points, and files named `.lnk` or `.url` (never a folder: a folder named `x.lnk`
+  shares `dir`). Every such entry has a full-path key. For those the worker asks the shell for the
+  overlay index (`SHGetFileInfoW(path, 0, SHGFI_ICON | SHGFI_SMALLICON | SHGFI_ADDOVERLAYS |
+  SHGFI_OVERLAYINDEX)`, `iIcon >> 24`, the icon handle destroyed at once; no
+  `SHGFI_USEFILEATTRIBUTES`, the shell looks at the file), and the overlay image from the system
+  image list: `SHGetImageList(SHIL_SMALL, IID_IImageList)` (`SHIL_LARGE` when the small list's
+  icons are smaller than the strip's), `GetOverlayImage`, `GetIcon(ILD_TRANSPARENT)`, drawn with
+  `DrawIconEx(DI_NORMAL)` at the requested size into a transparent 32-bit top-down DIB section
+  (premultiplied BGRA, since `DrawIconEx` alpha-blends an alpha icon). The overlay pixels are cached
+  per (overlay index, size) in the pool, shared by both threads, and logged once:
+  `[icons] overlay index 2 fetched at 16 px`. The base icon is fitted to the requested size and the
+  overlay drawn over it by `icons::overlay` (source-over on premultiplied pixels, `dst = src + dst
+  * (1 - src.a)`; the shell's overlay images are full icon size with the glyph in the bottom-left
+  corner). The reply carries the composed pixels; `IconTable`, `compose`, `fit` and the strip are
+  unchanged. `IImageList` is a hand-written vtable struct with every slot in declaration order
+  (only `Release`, `GetIcon`, `GetIconSize` and `GetOverlayImage` typed); `ILD_TRANSPARENT` is
+  declared locally, so `Cargo.toml` is unchanged.
+- **Two icon worker threads** (`ICON_WORKERS = 2`) sharing one queue (`Mutex<(Vec<Request>,
+  bool)>` plus a `Condvar`), served newest first as before. A feeder thread ("icons-feed") moves
+  requests from the UI's crossbeam channel into the queue and wakes one worker; the channel's
+  close sets the flag and wakes both, which then exit. The UI side is unchanged (it still sends on
+  a `Sender<Request>`). Each worker initialises COM (MTA) for itself. A key is taken when a worker
+  pops it (`taken: Mutex<HashSet>`), so it is rendered at most once per process across the pool;
+  a request for a taken key, or with a stale generation, gets `Skipped` as before; a failed render
+  gives the key back (the UI's `failed` set is what stops a retry). `Stats` stays atomics and gains
+  `overlays` and `slow`. A render (overlay included) of 100 ms or more logs `[icons] slow icon <ms>
+  ms: <path>`.
+- **`[icons]` line** gains `overlays N, slow N` for the period, after the worker's average.
+- **Tests**, 88 to 95: `reparse_tags_map_to_kinds` (the four tags, all sixteen cloud tags, six
+  others including WOF, dedup and AF_UNIX, the discriminants); `kind_from_attributes` extended (the
+  tag read only for a reparse point); `tells_reparse_points_apart` (a junction made with `cmd /c
+  mklink /J` in `%TEMP%\twinfm-enum-reparse-test-<pid>\` lists as `Junction`, "Junction", opens as
+  a directory, keyed by full path; a plain file's `modified` equals `metadata().modified()` to the
+  second; the `Done` counts; a file symbolic link is asserted when one can be made, else skipped
+  with a note, which it was here: no privilege, no Developer Mode); `filetime_and_long_paths`
+  (`unix_secs` at and around the epoch, truncation, before 1970, and the `\\?\` and `\\?\UNC\`
+  prefixes); `key_rules` extended (every kind, cloud files and folders, a custom cloud folder);
+  `overlay_blends_source_over_premultiplied` (2 x 2: transparent, opaque, half over half,
+  over a transparent base; sizes that differ); `overlay_only_for_links_and_reparse_points`;
+  `pool_serves_others_while_one_icon_is_slow` (a stand-in render sleeps 2 s for one request; three
+  requests sent 100 ms later all reply within 500 ms; a stale request is skipped meanwhile; a failed
+  key renders again when asked again; one slow render counted) and `pool_renders_each_key_once`
+  (one key asked for 20 times at once: one `Pixels`, 19 `Skipped`, one render; a later request is
+  skipped; the workers exit when the channel closes), both through the test-only
+  `spawn_with(..., render)` seam that `spawn` calls with `render`; and the real-shell
+  `worker_renders_exe_drive_and_extension` now also makes a junction in
+  `%TEMP%\twinfm-p2m5-test-<pid>\` and asks for it twice, without and with the overlay flag: both
+  render, the overlaid one is 16 x 16 and its pixels differ from the plain one fitted to 16 (overlay
+  index 2, the link arrow).
+
+### Decisions
+
+- **The pool is fed by a feeder thread, not by the workers draining the channel.** With workers
+  draining the channel themselves, a worker that pulled a burst of requests into the shared queue
+  and then started a slow render left the rest of the burst sitting there while the other worker
+  slept in `recv` (it only wakes for a new message). The feeder moves each request into the queue
+  and wakes an idle worker, so whatever is queued is served while one render is stuck. Cost: one
+  more thread that sleeps in `recv`.
+- **A key is taken when popped, not when delivered.** That is what makes "at most once per process"
+  hold with two threads; a failure gives the key back so that `failed` in the UI's table stays the
+  only retry policy, as in M2.
+- **The overlay is drawn at the requested size by `DrawIconEx`**, not read with `GetIconInfo` and
+  fitted: `GetIconInfo`'s colour bitmap of an alpha icon is not premultiplied, `DrawIconEx` into a
+  transparent DIB gives premultiplied pixels directly. An overlay that draws nothing visible
+  (every alpha byte zero) is treated as no overlay, so `bgra_to_rgba` can never turn it into an
+  opaque square.
+- **The base icon is fitted to the requested size before the blend**, so the two buffers match
+  even when `SIIGBF_BIGGERSIZEOK` returned a bigger image; the table's own `fit` is then a refcount
+  bump for these keys.
+- **App execution aliases read "Application"** whatever their extension; all fifty on this machine
+  are `.exe`, whose shell type is "Application" anyway. The shell gives them no overlay (`overlays
+  0` over the 28 rendered in `WindowsApps`), so they show their own icon only.
+- **The accessible label keys on the row's text, not its kind**, so a cloud placeholder or an
+  alias keeps its size and time in the label without the label naming every file-like kind.
+  It is the same per-row binding as before with one more string comparison, evaluated only when
+  the accessibility tree asks for the label.
+
+### Deviations
+
+- **Cloud placeholders inside a sync root are not reparse points to TwinFM, so the brief's
+  "120 cloud" split and the 568 ms per placeholder cannot occur in a listing of a OneDrive folder.**
+  The cloud files filter shows a process placeholders as plain files unless the process opts into
+  `PHCM_EXPOSE_PLACEHOLDERS` (`RtlSetProcessPlaceholderCompatibilityMode`); TwinFM does not.
+  Measured with a P/Invoke probe of the same `FindFirstFileExW` call: `C:\Users\jtkli\OneDrive`,
+  15 entries, 12 reparse points in expose mode (PowerShell's default, 2), 0 in disguise mode (1);
+  TwinFM's `[enum]` for that folder and for `OneDrive\Documents` shows no reparse split at all, and
+  the old build already keyed those files by extension. What TwinFM does see as cloud is the sync
+  root itself, from its parent: `C:\Users\jtkli` lists `OneDrive` as 1 cloud (read-only, with
+  `desktop.ini`, so still keyed by full path for its own icon, which is right). M2's 568 ms entry in
+  `C:\Users\jtkli` was most likely that folder or another full-path key on a cold shell; it did not
+  recur in this session's runs (the slowest there was `netbird-0.80.0-ipv6fix.exe`, 1057 ms, a
+  37 MB exe). The cloud mapping and the shared keys still apply to any cloud reparse point TwinFM
+  is shown; exposing placeholders is under Deferred.
+- **The `IImageList` slot numbers in the brief were off**: counting IUnknown's three, `GetIcon` is
+  slot 10 (not 13) and `GetOverlayImage` slot 31 (not 29). Verified against the vtable generated
+  from the SDK metadata in the `windows` crate 0.62.2 (`IImageList_Vtbl`, already in the cargo
+  registry here; there is no Windows SDK header on this machine). The overlay test's link arrow
+  (index 2) is the evidence that the slots are right.
+- **No new `windows-sys` features**: `IImageList` is hand-written, `ILD_TRANSPARENT` declared
+  locally, and everything else was already enabled.
+- **The `[enum]` split has five fields** (junction, symlink, cloud, app alias, other), not four:
+  the aliases are their own kind, and `WindowsApps` lists 50 of them.
+- **`wants_overlay` takes the attributes too** (kind, attributes, name), so a folder named `x.lnk`
+  is never overlaid on the shared `dir` key.
+- **The real-shell overlay check uses a junction**, not a `.lnk` (the brief allowed either); the
+  `.lnk` and `.url` arrows are checked in the scripted run and screenshot below.
+- **The symbolic-link assertions were skipped in this session's test runs** (creating one needs the
+  privilege or Developer Mode, neither here); the tag mapping is unit-tested and a real directory
+  link (`C:\Users\All Users`) was checked by hand below.
+- **A time before 1970 still reads 0**, not a negative number: that is what the old code stored,
+  and the brief asks for the same contents.
+- **The two icon items are one commit** ("icons: two worker threads ..."): the overlay is fetched
+  inside the pool's worker loop and the seam test covers both.
+
+### Deferred
+
+- **Cloud status overlays** (OneDrive's green check or cloud glyph): placeholder keys are shared by
+  type, so a per-file status cannot ride on them. It would need a per-file key for placeholders
+  (the 568 ms-per-file cost again) or a second, per-row status mark, which is per-row work.
+- **Exposing placeholders** (`PHCM_EXPOSE_PLACEHOLDERS`) so that TwinFM sees files inside a sync
+  root as cloud reparse points. It changes what every file API in the process reports for them
+  (attributes, and possibly file operations), so it needs its own check before it is turned on.
+- **The overlay index costs one `SHGetFileInfoW` per overlaid key**, on the worker (40 to 200 ms for
+  the first ones of a run, a few ms after; `slow icon 199 ms: ...\OneDrive\Personal Vault.lnk`). A
+  folder of thousands of shortcuts would take that many shell calls once each, on the workers.
+- **"Other" reparse points are overlaid but none was seen**: no folder listed in the checks had
+  one (System32, bigdir, the profile folders), so whether the shell gives them an arrow is
+  unchecked.
+
+### Scripted checks
+
+RDP session, `target\release` of this branch (3e1374e then fbf6d6c), against the main checkout's
+`target\release\twinfm.exe` built at a35f583 (copied to the session scratchpad and run from there,
+so it was not rebuilt or locked). stderr timestamped by a launcher script; all runs exit code 0,
+no `panicked` line.
+
+- **Enumeration, `C:\traces\bigdir`** (40,000 files; `sleep 2000;split;sleep 1500;quit`, so pane 0
+  lists at start and pane 1 on the split), `[enum]` worker ms, five runs each, old build run before
+  and after the new one:
+
+  | Build | Pane 0 (at start) | Pane 1 (split) |
+  |---|---|---|
+  | old (a35f583), first set | 66.9, 62.7, 69.6, 67.6, 62.9: mean 65.9 | 45.2, 45.4, 50.0, 47.6, 52.5: mean 48.1 |
+  | new (FindFirstFileExW) | 55.0, 56.4, 51.5, 52.7, 53.0: mean 53.7 | 37.6, 36.3, 47.4, 37.6, 36.3: mean 39.0 |
+  | old, second set | 64.9, 65.7, 66.7, 67.2, 63.4: mean 65.6 | 51.2, 45.4, 51.6, 45.1, 49.4: mean 48.5 |
+
+  The new loop is about 12 ms (18%) faster at start and 9 ms (19%) faster on the split. On
+  `C:\Windows\System32` (4,912 entries, where the type lookups and the seven `desktop.ini` probes
+  dominate) the five throughput runs below listed in 98.6, 117.2, 112.7, 101.8, 108.5 ms (old) and
+  155.2, 90.2, 109.6, 93.1, 93.3 ms (new): the same, with one slow first run.
+- **Icon throughput, `C:\Windows\System32`** (`sleep 2500;drag 0 900 1500;sleep 8000;quit`: the
+  scrollbar thumb dragged through the whole folder in 1.5 s, 574 requests and 574 replies per run
+  for both builds), replies per once-a-second `[icons]` report after the drag, five runs each:
+
+  | Build | 1st report | 2nd report | 3rd report | All 574 in by | avg ms/icon per render |
+  |---|---|---|---|---|---|
+  | old (one worker) | 179, 159, 162, 178, 176 | 208, 219, 204, 225, 215 | 182, 191, 203, 166, 178 | the 3rd report | 3.8 to 5.6 |
+  | new (two workers) | 321, 311, 328, 320, 329 | 248, 258, 241, 249, 240 | none | the 2nd report | 5.1 to 5.8 |
+
+  About 320 icons a second against about 190: each render is slightly slower with two threads in
+  the shell (5.5 against 4.8 ms average), but the queue drains in about two thirds of the time,
+  one report earlier. `overlays 0, slow 0` in every new run (System32 has no links). The first five
+  renders of a run (the shell's warm-up) averaged 25 to 28 ms on the pool against 15 to 19 ms on
+  one thread.
+- **In-app busy, the gate scenario** (`tools/wpr-gate.ps1`'s script on bigdir, relative only in
+  RDP), interleaved old/new: old 16.7, 18.9, 17.3, 16.9 (median 17.1); new 16.2, 16.9, 17.2, 17.7
+  (median 17.05). No difference; the strip and the UI thread's icon path are unchanged.
+- **Junction, `.lnk` and `.url`**, `%TEMP%\twinfm-p2m5-manual\` (a junction `junction` to `target`,
+  `notepad.lnk`, `plain-txt.lnk` made with `WScript.Shell`'s `CreateShortcut`, `example.url`,
+  `plain.txt`), software renderer: `[enum] ... reparse: 1 junction, 0 symlink, 0 cloud, 0 app
+  alias, 0 other`, `[icons] overlay index 2 fetched at 16 px`, `slow icon 118 ms:
+  ...\plain-txt.lnk` (the first overlay of the run), `+6 requests +6 replies ... overlays 4, slow
+  1`. The screenshot shows the arrow on the junction, both shortcuts and the `.url`, none on
+  `target` or `plain.txt`; Type reads "Junction", "Internet Shortcut", "Shortcut".
+- **`C:\Users\jtkli`** (hidden shown with Ctrl+H): `reparse: 10 junction, 0 symlink, 1 cloud, 0 app
+  alias, 0 other` (old build: no split; worker 82.9 against 90.4 ms). The junctions (`Application
+  Data`, `Cookies`, `NetHood`, `PrintHood`, `Recent`, `SendTo`, `Start Menu`, `Templates`, ...) read
+  "Junction" with the arrow; `OneDrive` keeps its own icon and "File folder". One `slow icon 1057
+  ms: C:\Users\jtkli\netbird-0.80.0-ipv6fix.exe` while the other rows' icons kept arriving on the
+  second thread (`+37 requests +16 replies`, then `+8 +28`, then the slow one alone).
+- **`C:\Users`** (Ctrl+H): `reparse: 1 junction, 1 symlink`; `All Users` reads "Symbolic link" and
+  `Default User` "Junction", both with the arrow (`overlays 2`); `uia-dump.ps1` labels as above.
+- **`C:\Users\jtkli\AppData\Local\Microsoft\WindowsApps`**: `reparse: 0 junction, 0 symlink, 0
+  cloud, 50 app alias, 0 other`, worker 1.2 ms; the aliases read "Application" with their own
+  icons, `overlays 0`, two `slow icon 161 ms` (`ms-teams_autostarter.exe`, `mspaint.exe`).
+- **`C:\Users\jtkli\OneDrive`**: no reparse split (see Deviations); `Personal Vault.lnk` got its
+  arrow (`overlays 1`, `slow icon 199 ms`), `Pictures` (custom folder) `slow icon 135 ms`.
+
+Screenshots and logs (session scratchpad, not in the repo): `shots/manual.png` and
+`shots/manual-zoom.png` (the arrows, 6x), `shots/home-new.png`, `shots/home-new-mid.png`,
+`shots/users.png`, `shots/windowsapps.png`, `shots/onedrive-{old,new}.png`; `logs/enum-*.log`,
+`logs/s32-*.log`, `logs/gate-*.log`.
+
+### Gate
+
+**Passed (2026-10-13), the first milestone judged under the interleaved-triplet protocol.** Console
+WPR, Jeremy elevated, `tools/wpr-gate.ps1`, accessibility on, Narrator off, no other TwinFM window,
+six runs back to back from 09:37 to 09:53, reference and candidate alternating: `target-p2m4`
+(551625a, the P2-M4 merge build) and `target-p2m5` (011430e, the PR head, built from a detached
+checkout). Analysed with `tools/analyze-trace.py --symbols --exe`.
+
+| Run | P2-M4 (`target-p2m4`) | P2-M5 (`target-p2m5`) |
+|---|---|---|
+| 1 | 20.9% (2086 ms; in-app 21.1) | 20.4% (2040 ms; in-app 23.1) |
+| 2 | 21.6% (2157 ms; in-app 21.6) | 20.9% (2088 ms; in-app 20.9) |
+| 3 | 21.0% (2099 ms; in-app 20.6) | 20.1% (2009 ms; in-app 20.5) |
+| **median** | **21.0%** | **20.4%** |
+
+The candidate's median is 0.6 below the reference's and no P2-M5 run sits above any P2-M4 run
+(its highest, 20.9, equals the reference's lowest). Under the rule (a gap counts only when every
+reference run sits below every candidate run or the medians differ by more than one point) there
+is no cost attributable to P2-M5. Frame shares match within a few samples in every pair
+(accessibility 225 / 209, 226 / 216, 234 / 225 ms; render 1197 / 1186, 1260 / 1234, 1200 / 1142;
+draw_text 693 / 686, 689 / 677, 696 / 665; ListView rows 383 / 382, 394 / 379, 377 / 386; timers
+723 / 705, 731 / 712, 730 / 718; heap 216 / 232, 235 / 212, 220 / 206), and no icon-pool, overlay
+or enumeration frame appears in any window: on bigdir one key (`ext:.txt`) renders once (56 to 63
+ms on the first shell call), `overlays 0, slow 0`, and the strips compose at 24 to 26 us as before.
+The whole machine sat about half a point above the previous day's bisect session (P2-M4 read 20.3
+there), one more data point for comparing within a session only. No `panicked` line in any of the
+six logs. Traces `C:/traces/twinfm-ab7-{p2m4,p2m5}-{1,2,3}.etl`, reports under
+`C:/traces/export/`.
+
+Jeremy reported the console checks (junction and shortcut arrows, the Type column on `C:\Users`,
+a slow icon not holding the rest) done on 2026-10-13 on `target-p2m5`.
+
+
 ## Open questions
 
 - **Phase 2 scope.** Confirmed by the lead as the recommended order above, directory watching
@@ -1108,7 +1380,71 @@ Close every TwinFM window before a gate run.
 - **The Type column** stays on by default for now. It cost 3.4 gate points in M1; if a Phase 2
   milestone needs per-frame headroom, the options are making it a setting (off by default) or
   buying the headroom elsewhere first.
-- **A large-icon view**: wanted at all? It would be the first feature since M1 to add per-row
-  rendering work, so P2-M5 starts it with a trace only if Jeremy says yes.
+- **A large-icon view**: declined by Jeremy (2026-10-12). P2-M5 is icons only; a large-icon view
+  is a Phase 3 candidate beside thumbnails, which it would share the per-row work with, and it
+  starts with a trace if it is ever taken up.
+- **Gate protocol, agreed by Jeremy (2026-10-12)**, from P2-M5 on: three console runs per binary,
+  interleaved (reference, candidate, reference, candidate, reference, candidate), compared by
+  median; a gap counts only when every reference run sits below every candidate run or the
+  medians differ by more than one point. Reason: single runs of one unchanged binary ranged 19.6
+  to 22.8 on 2026-10-12, so a one-pair A/B resolves about two points and both invented and hid a
+  one-point difference during P2-M4.
+- **Explorer never starts a right-button drag on this desktop** (P2-M4 manual check): outside
+  TwinFM; worth one check without Logi Options+ running if Jeremy cares.
 - **Upstreaming the two Slint accessibility patches** (`docs/upstream-issue-draft.md`,
   `docs/patches/`): still deferred; Jeremy decides when.
+
+## Phase 2 close
+
+P2-M1 to P2-M5 are in: directory watching, operations inside TwinFM (real names, cursor, cut
+marks, Undo, the queue), the daily-use polish (tabs restored and reorderable, the crumb dropdown,
+the maximised state, bookmark editing, the Back button), the drag and drop finish (drag images, the
+right-button menu, auto-scroll, the sidebar and tabs as targets, the highlight during our own
+drags), and icons (reparse kinds, overlays, two workers, the find loop). Phase 2's goal held:
+the list stays true to the disk without F5, operations are visible and undoable inside the app,
+and the gate gave nothing back. Every milestone passed inside its same-session reference's spread:
+P2-M1 20.0 against M6 19.9 / 20.2; P2-M2 20.3 against P2-M1 20.4; P2-M3 20.6 against P2-M2 21.0;
+P2-M4 +1.5, +0.8 and -0.9 over three sessions (mean +0.5, no frame of its own in eight profiles);
+P2-M5 median 20.4 against 21.0 under the triplet protocol. Two 30-minute soaks (P2-M1, P2-M4)
+ran clean. The protocol itself was the lesson of the phase: a single console run resolves about
+two points on a busy day, so from P2-M5 on the gate is three interleaved runs per binary compared
+by median.
+
+Deferred to Phase 3, pulled together from every milestone and deduplicated:
+
+- **Directory watching**: parsing the change records for targeted row updates instead of a
+  re-listing; watching background tabs; subtree watches (for folder sizes); network shares with a
+  timeout; removable drives through `RegisterDeviceNotification` with `DBT_DEVTYP_HANDLE`;
+  noticing the watched folder itself being renamed; the double refresh after our own operations;
+  a back-off for folders that change continuously (P2-M1).
+- **File operations**: Redo; undo of a delete to the Recycle Bin and of a move that renamed on
+  collision; restoring a file a copy or move replaced; dimming the cut row's icon; progress inside
+  TwinFM (`UpdateProgress`); a Narrator check of the notes (P2-M2).
+- **Shell and settings**: folder sizes in the status bar (needs the size worker and subtree
+  watches); a settings dialog; Explorer's protected-operating-system-files switch; the compact
+  Windows 11 menu (`IExplorerCommand`) and icons on TwinFM's own menu items; a designed icon and
+  the toolbar; re-revealing the active tab on resize; keyboard navigation and drops in the crumb
+  dropdown; F2 for a bookmark; restored tabs keeping their sort, filter, cursor and scroll; a
+  back/forward history per tab (the mouse's Forward button, and Back as history back); the Back
+  button over text entries, the tab strip and the scrollbar (P2-M3).
+- **Drag and drop**: spring-loaded folders; virtual files (`CFSTR_FILEDESCRIPTOR`) and
+  asynchronous data objects; mounted folders counted as their own volume; a scripted pane-to-pane
+  OLE drop; drop descriptions; drops on a crumb; auto-scroll of the sidebar and the tab strip;
+  warming the shell's icon path so the first drag image does not wait 0.1 s (P2-M4).
+- **Icons**: cloud status overlays (OneDrive's check and cloud marks, which need a per-file key or
+  a per-row status mark); exposing placeholders (`PHCM_EXPOSE_PLACEHOLDERS`) so files inside a sync
+  root are seen as cloud reparse points; the `SHGetFileInfoW` call per overlaid key (a folder of
+  thousands of shortcuts); whether the shell overlays "other" reparse points; not rendering icons
+  for rows scrolled past; 32 px icons and the large-icon view Jeremy declined for Phase 2; scale
+  factor changes flushing the table (M2, P2-M5).
+- **Checks that need Jeremy at the console**: a Narrator pass over the Phase 2 notes and the new
+  Type texts; the OneDrive folder with placeholders exposed, if that is ever turned on; a
+  right-button drag out of Explorer on a machine where Explorer starts one.
+
+Phase 3 candidates, in no agreed order: search (a name filter in the pane first, then content),
+archives (zip folders as navigable, which also needs the virtual-file drop path), thumbnails (and
+with them the large-icon view, the first per-row rendering since M1, trace first), history and the
+Forward button, the settings dialog, folder sizes, the compact context menu, and upstreaming the
+two Slint accessibility patches (`docs/upstream-issue-draft.md`, `docs/patches/`), which Jeremy
+decides on. Phase 3's kickoff brief should set the gate protocol as the triplet rule from the
+start and name the reference binary (`target-p2m5`, 011430e).

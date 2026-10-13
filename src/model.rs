@@ -15,25 +15,52 @@ use windows_sys::Win32::System::Time::{
     FileTimeToSystemTime, GetTimeZoneInformation, SystemTimeToTzSpecificLocalTime, TIME_ZONE_INFORMATION,
 };
 
-/// What a row is, for display. A reparse point (junction, symlink, cloud placeholder) shows as
-/// `Reparse` even when it is a directory; it still opens like one (see `Entry::is_dir`).
+/// What a row is, for display. A reparse point shows as its own kind even when it is a
+/// directory; a junction or directory link still opens like one (see `Entry::is_dir`).
 /// The discriminants are the `kind` int the Slint `Row` carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Directory = 0,
     File = 1,
     Drive = 2,
+    /// A reparse point of a tag not told apart below.
     Reparse = 3,
+    Junction = 4,
+    Symlink = 5,
+    /// A cloud sync engine's placeholder (OneDrive and others), file or directory.
+    Cloud = 6,
+    /// An app execution alias (the Store's `WindowsApps` shims).
+    AppAlias = 7,
 }
 
+// Reparse tags (winnt.h).
+pub const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+pub const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+pub const IO_REPARSE_TAG_CLOUD: u32 = 0x9000_001A;
+pub const IO_REPARSE_TAG_APPEXECLINK: u32 = 0x8000_001B;
+
 impl Kind {
-    pub fn from_attrs(attrs: u32) -> Kind {
+    /// `tag` is the reparse tag FindFirstFileExW reports (`dwReserved0`), read only when
+    /// `attrs` has FILE_ATTRIBUTE_REPARSE_POINT.
+    pub fn from_attrs(attrs: u32, tag: u32) -> Kind {
         if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            Kind::Reparse
+            Kind::from_tag(tag)
         } else if attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
             Kind::Directory
         } else {
             Kind::File
+        }
+    }
+
+    /// The kind of a reparse point by its tag. The cloud tags are IO_REPARSE_TAG_CLOUD and its
+    /// sixteen numbered variants, which differ only in bits 12 to 15 (`IsReparseTagCloud`'s mask).
+    pub fn from_tag(tag: u32) -> Kind {
+        match tag {
+            IO_REPARSE_TAG_MOUNT_POINT => Kind::Junction,
+            IO_REPARSE_TAG_SYMLINK => Kind::Symlink,
+            IO_REPARSE_TAG_APPEXECLINK => Kind::AppAlias,
+            t if t & 0xFFFF_0FFF == IO_REPARSE_TAG_CLOUD => Kind::Cloud,
+            _ => Kind::Reparse,
         }
     }
 }
@@ -67,16 +94,18 @@ pub struct Entry {
 impl Entry {
     #[cfg(test)]
     pub fn new(name: SharedString, size: u64, modified: i64, attrs: u32, type_text: SharedString) -> Entry {
-        Entry::with_zone(name, size, modified, attrs, type_text, SharedString::default(), &LocalZone::current())
+        let kind = Kind::from_attrs(attrs, 0);
+        Entry::with_zone(name, size, modified, attrs, kind, type_text, SharedString::default(), &LocalZone::current())
     }
 
     /// `zone` is built once per enumeration; per-entry Win32 time conversion cost about 60 ms
-    /// per 40k entries (see `LocalZone`).
+    /// per 40k entries (see `LocalZone`). `kind` comes from `Kind::from_attrs`.
     pub fn with_zone(
         name: SharedString,
         size: u64,
         modified: i64,
         attrs: u32,
+        kind: Kind,
         type_text: SharedString,
         icon_key: SharedString,
         zone: &LocalZone,
@@ -92,7 +121,7 @@ impl Entry {
             size,
             modified,
             attrs,
-            kind: Kind::from_attrs(attrs),
+            kind,
             selected: false,
             cut: false,
         }
@@ -1123,14 +1152,37 @@ mod tests {
 
     #[test]
     fn kind_from_attributes() {
-        assert_eq!(Kind::from_attrs(0), Kind::File);
-        assert_eq!(Kind::from_attrs(FILE_ATTRIBUTE_DIRECTORY), Kind::Directory);
+        assert_eq!(Kind::from_attrs(0, 0), Kind::File);
+        assert_eq!(Kind::from_attrs(FILE_ATTRIBUTE_DIRECTORY, 0), Kind::Directory);
         let junction = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
-        assert_eq!(Kind::from_attrs(junction), Kind::Reparse);
+        assert_eq!(Kind::from_attrs(junction, 0), Kind::Reparse);
+        assert_eq!(Kind::from_attrs(junction, IO_REPARSE_TAG_MOUNT_POINT), Kind::Junction);
+        // The tag is read only for a reparse point.
+        assert_eq!(Kind::from_attrs(FILE_ATTRIBUTE_DIRECTORY, IO_REPARSE_TAG_MOUNT_POINT), Kind::Directory);
+        assert_eq!(Kind::from_attrs(0, IO_REPARSE_TAG_SYMLINK), Kind::File);
         let j = Entry::new("j".into(), 0, 0, junction, "File folder".into());
         assert!(j.is_dir(), "a reparse directory still opens like a directory");
         let h = Entry::new("h".into(), 0, 0, FILE_ATTRIBUTE_HIDDEN, "".into());
         assert!(h.is_hidden() && !h.is_system());
+    }
+
+    #[test]
+    fn reparse_tags_map_to_kinds() {
+        assert_eq!(Kind::from_tag(0xA000_0003), Kind::Junction);
+        assert_eq!(Kind::from_tag(0xA000_000C), Kind::Symlink);
+        assert_eq!(Kind::from_tag(0x8000_001B), Kind::AppAlias);
+        // IO_REPARSE_TAG_CLOUD and CLOUD_1 to CLOUD_F (OneDrive uses several of them).
+        assert_eq!(Kind::from_tag(0x9000_001A), Kind::Cloud);
+        for n in 1..=0xFu32 {
+            assert_eq!(Kind::from_tag(0x9000_001A | (n << 12)), Kind::Cloud, "CLOUD_{n:X}");
+        }
+        // Others: dedup, WIM, WOF (compressed system files), AF_UNIX sockets, an unknown tag.
+        for t in [0x8000_0013u32, 0x8000_0008, 0x8000_0017, 0x8000_0023, 0x9000_001B, 0x1234_5678] {
+            assert_eq!(Kind::from_tag(t), Kind::Reparse, "{t:#x}");
+        }
+        // The discriminants the Slint Row's `kind` comment documents.
+        let kinds = [Kind::Directory, Kind::File, Kind::Drive, Kind::Reparse, Kind::Junction, Kind::Symlink, Kind::Cloud, Kind::AppAlias];
+        assert_eq!(kinds.map(|k| k as i32), [0, 1, 2, 3, 4, 5, 6, 7]);
     }
 
     #[test]

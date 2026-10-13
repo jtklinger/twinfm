@@ -9,9 +9,9 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record. 
 changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (88 tests; five touch the real shell and clipboard, and the eight
-  `fs::watch` tests, one undo test and the breadcrumb dropdown's test write to scratch folders,
-  see below)
+- `cargo test --release` (95 tests; five touch the real shell and clipboard, and the eight
+  `fs::watch` tests, one undo test, the breadcrumb dropdown's test and the reparse enumeration
+  test write to scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -34,7 +34,12 @@ changing the list.
 
 ## Measuring
 - In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
-  `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]` lines. Driver
+  `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]` lines.
+  Since P2-M5 the `[enum] ... done:` line ends with `, reparse: J junction, S symlink, C cloud, A app
+  alias, O other` when the listing has reparse points, and the once-a-second `[icons]` line
+  carries `overlays N` (icons given the shell's overlay) and `slow N` (renders of 100 ms or
+  more) for the period; each slow render also logs `[icons] slow icon <ms> ms: <path>`, and the
+  first fetch of each overlay image `[icons] overlay index K fetched at S px`. Driver
   keys include `CtrlH` (hidden files), `F5`/`CtrlR` (refresh), `CtrlA`, `Space`,
   `ShiftUp`/`ShiftDown`; `click`/`ctrlclick`/`shiftclick <pane> <row>` select rows; file
   operation steps `copy`, `move`, `delete`, `sdelete`, `newfolder <name>`, `rename <name>`,
@@ -144,6 +149,11 @@ changing the list.
   afterwards); they touch neither the clipboard nor the Recycle Bin.
   `pathbar::tests::subfolders_for_the_crumb_dropdown` makes folders (two of them hidden and
   system) in `%TEMP%\twinfm-p2m3-crumbs-<pid>\` and removes them.
+  `fs::enumerate::tests::tells_reparse_points_apart` makes a junction (`cmd /c mklink /J`) and
+  tries a file symbolic link in `%TEMP%\twinfm-enum-reparse-test-<pid>\`, and
+  `icons::tests::worker_renders_exe_drive_and_extension` makes a junction in
+  `%TEMP%\twinfm-p2m5-test-<pid>\` and asks the shell for its icon and overlay; both remove
+  their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols
