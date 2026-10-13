@@ -74,14 +74,18 @@ component CrumbButton inherits HorizontalLayout {
     callback clicked();
     // menu(x, y): the chevron, at window coordinates of its bottom-left corner.
     callback menu(length, length);
-    // The mouse's Back button released over the crumb (every TouchArea grabs the press it gets,
-    // so each one in the pane reports it).
+    // The mouse's Back or Forward button released over the crumb (every TouchArea grabs the press
+    // it gets, so each one in the pane reports it).
     callback back();
+    callback forward();
     Rectangle {
         background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
         ta := TouchArea {
             clicked => { root.clicked(); }
-            pointer-event(ev) => { if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); } }
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+            }
         }
         HorizontalLayout {
             padding-left: 4px;
@@ -95,7 +99,10 @@ component CrumbButton inherits HorizontalLayout {
         Text { text: "\u{203a}"; horizontal-alignment: center; vertical-alignment: center; color: Palette.foreground.transparentize(40%); }
         chevron-ta := TouchArea {
             clicked => { root.menu(self.absolute-position.x, self.absolute-position.y + self.height); }
-            pointer-event(ev) => { if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); } }
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+            }
         }
     }
 }
@@ -105,8 +112,9 @@ component HeaderCell inherits Rectangle {
     in property <bool> sorted;
     in property <bool> asc;
     callback clicked();
-    // The mouse's Back button released over the header cell.
+    // The mouse's Back or Forward button released over the header cell.
     callback back();
+    callback forward();
     background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background;
     HorizontalLayout {
         padding-left: 6px;
@@ -116,7 +124,10 @@ component HeaderCell inherits Rectangle {
     }
     ta := TouchArea {
         clicked => { root.clicked(); }
-        pointer-event(ev) => { if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); } }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+        }
     }
 }
 
@@ -125,32 +136,17 @@ component HeaderCell inherits Rectangle {
 // accessible-delegate-focus makes assistive clients see focus on the current row.
 // The base holds the single `for` a ListView allows; the derived component adds the focus scope,
 // which is how StandardListView is layered too.
-component FileListBase inherits ListView {
+// Two such lists exist, with the Type column (FileRows, FileList) and without it (FileRowsNoType,
+// FileListNoType); FileListHost shows one per pane, so no row binds to the switch (a binding on
+// it per row cost 0.7 of a point on the gate, a conditional cell per row 1.5). The rows and the
+// focus layer are all each variant holds; the state and the logic live in the host, once.
+component FileRows inherits ListView {
     in property <[Row]> rows;
-    in-out property <int> current-row: -1;
-    callback open-row(int);
-    callback focus-requested();
-    callback row-clicked(int, bool /* ctrl */, bool /* shift */);
-    callback row-right-pressed(int);
-    // context-menu(row, x, y, shift): right button released over a row (row >= 0) or the empty
-    // space below the last row (-1), at window-relative logical coordinates.
-    callback context-menu(int, length, length, bool);
-    // row-gesture(row, what, ctrl, shift), the left button on a row, decided in Rust (dnd::Gesture):
-    // what 0 press, 1 release, 2 moved past the drag threshold with the button down (once per
-    // press), 3 double-click; 4, the middle button released over the row; 5, the mouse's Back
-    // button released over it; 6, moved past the threshold with the right button down (a
-    // right-button drag, once per press).
+    in property <int> current-row: -1;
+    // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
+    // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
+    callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
-    // The drag threshold (SM_CXDRAG / SM_CYDRAG in logical px), set from Rust.
-    in property <length> drag-dx: 4px;
-    in property <length> drag-dy: 4px;
-    // The drag gesture for the current press has been reported.
-    private property <bool> drag-sent: false;
-    // The right button is down on a row (TouchArea.pressed is the left button's only), and where
-    // it went down, in the row: a move past the threshold starts a right-button drag (6).
-    private property <bool> right-down: false;
-    private property <length> right-x;
-    private property <length> right-y;
 
     accessible-label: "Files";
     accessible-item-count: rows.length;
@@ -180,56 +176,119 @@ component FileListBase inherits ListView {
             Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
         }
         TouchArea {
-            pointer-event(ev) => {
-                if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
-                    root.drag-sent = false;
-                    root.right-down = false;
-                    root.row-clicked(i, ev.modifiers.control, ev.modifiers.shift);
-                }
-                // The grab ended without a release (the end of a right-button drag, main.rs).
-                if (ev.kind == PointerEventKind.cancel) {
-                    root.right-down = false;
-                }
-                if (ev.kind == PointerEventKind.move && self.pressed && !root.drag-sent
-                    && (abs(self.mouse-x - self.pressed-x) > root.drag-dx || abs(self.mouse-y - self.pressed-y) > root.drag-dy)) {
-                    root.drag-sent = true;
-                    root.row-gesture(i, 2, false, false);
-                }
-                if (ev.kind == PointerEventKind.move && root.right-down && !root.drag-sent
-                    && (abs(self.mouse-x - root.right-x) > root.drag-dx || abs(self.mouse-y - root.right-y) > root.drag-dy)) {
-                    root.drag-sent = true;
-                    root.row-gesture(i, 6, false, false);
-                }
-                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
-                    root.row-gesture(i, 1, ev.modifiers.control, ev.modifiers.shift);
-                }
-                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) {
-                    root.row-gesture(i, 4, false, false);
-                }
-                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) {
-                    root.row-gesture(i, 5, false, false);
-                }
-                // Select on the press (so the row is drawn selected before the menu's modal loop
-                // starts), open the shell menu on the release.
-                if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.right) {
-                    root.right-down = true;
-                    root.right-x = self.mouse-x;
-                    root.right-y = self.mouse-y;
-                    root.drag-sent = false;
-                    root.row-right-pressed(i);
-                }
-                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right) {
-                    root.right-down = false;
-                    root.context-menu(i, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);
-                }
-            }
+            pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
             double-clicked => { root.row-gesture(i, 3, false, false); }
         }
     }
 }
 
-component FileList inherits FileListBase {
+// FileRows without the Type cell; the Name column takes its width. The accessible label still
+// names the type (it is evaluated only when the accessibility tree asks for it).
+component FileRowsNoType inherits ListView {
+    in property <[Row]> rows;
+    in property <int> current-row: -1;
+    callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
+    callback row-gesture(int, int, bool, bool);
+
+    accessible-label: "Files";
+    accessible-item-count: rows.length;
+    accessible-delegate-focus: max(0, current-row);
+
+    for row[i] in rows: Rectangle {
+        height: 22px;
+        accessible-role: AccessibleRole.list-item;
+        accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
+            : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
+        accessible-item-selectable: true;
+        accessible-item-selected: row.selected;
+        accessible-item-index: i;
+        background: row.selected ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
+        border-width: i == current-row ? 1px : 0px;
+        border-color: Palette.accent-background;
+        HorizontalLayout {
+            padding-left: 28px;
+            padding-right: 6px;
+            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+        }
+        TouchArea {
+            pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
+            double-clicked => { root.row-gesture(i, 3, false, false); }
+        }
+    }
+}
+
+// The focus layer. FileListHost cannot reach inside its `if`, so it asks for the focus by bumping
+// focus-request; a list created while its pane is active (the Type column switched, which drops
+// the list that had the focus, or the pane split) takes the focus itself.
+// A new list starts at the host's content-y, but the Flickable checks its bounds on the next turn
+// of the event loop, before the ListView's first layout has set content-height, and would scroll
+// it back to the top; so init sets content-height to what that layout will (22 px rows).
+component FileList inherits FileRows {
+    in property <int> focus-request;
+    in property <bool> focus-on-init;
+    callback key(KeyEvent) -> EventResult;
+    forward-focus: key-area;
+    init => {
+        root.content-height = root.rows.length * 22px;
+        if (root.focus-on-init) { key-area.focus(); }
+    }
+    changed focus-request => { key-area.focus(); }
+    key-area := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(e) => { return root.key(e); }
+    }
+}
+
+component FileListNoType inherits FileRowsNoType {
+    in property <int> focus-request;
+    in property <bool> focus-on-init;
+    callback key(KeyEvent) -> EventResult;
+    forward-focus: key-area;
+    init => {
+        root.content-height = root.rows.length * 22px;
+        if (root.focus-on-init) { key-area.focus(); }
+    }
+    changed focus-request => { key-area.focus(); }
+    key-area := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(e) => { return root.key(e); }
+    }
+}
+
+// A pane's file list: its state, callbacks and logic, and one of the two lists above, chosen by
+// the Type column switch once per pane, outside any `for`. Switching keeps the rows, the scroll
+// (content-y), the cursor and the selection, which are the host's; the new list binds to them.
+// It has the ListView's geometry, so the pane's overlays (strip, drop highlight, empty space,
+// rename editor) read list.x, list.y, list.visible-width, list.visible-height and list.content-y
+// from it as before. No accessible role: assistive clients see the inner list only.
+component FileListHost inherits Rectangle {
+    in property <[Row]> rows;
+    in-out property <int> current-row: -1;
+    in property <bool> show-type: true;
+    // The pane is active: a list created now takes the focus.
+    in property <bool> active;
+    in-out property <length> content-y;
+    // A ListView's visible size is its own (Fluent's scrollbar overlays the content).
+    out property <length> visible-width: self.width;
+    out property <length> visible-height: self.height;
+    callback open-row(int);
+    callback focus-requested();
+    // context-menu(row, x, y, shift): right button released over a row (row >= 0) or the empty
+    // space below the last row (-1), at window-relative logical coordinates.
+    callback context-menu(int, length, length, bool);
+    // row-gesture(row, what, ctrl, shift), the left button on a row, decided in Rust (dnd::Gesture):
+    // what 0 press, 1 release, 2 moved past the drag threshold with the button down (once per
+    // press), 3 double-click; 4, the middle button released over the row; 5, the mouse's Back
+    // button released over it; 6, moved past the threshold with the right button down (a
+    // right-button drag, once per press); 7, the mouse's Forward button released over it.
+    callback row-gesture(int, int, bool, bool);
     callback go-up();
+    // history(forward): Alt+Left (back) or Alt+Right (forward) in the tab's history.
+    callback history(bool);
     // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all, 4 right-click, 5 clear (model::SelOp)
     callback select(int, int);
     // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
@@ -240,12 +299,26 @@ component FileList inherits FileListBase {
     // context-key(row, list x, list y, content-y, visible-height): Shift+F10 or the Menu key, after
     // the cursor row was scrolled into view; Rust places the menu under the row.
     callback context-key(int, length, length, length, length);
+    // The drag threshold (SM_CXDRAG / SM_CYDRAG in logical px), set from Rust.
+    in property <length> drag-dx: 4px;
+    in property <length> drag-dy: 4px;
+    // The drag gesture for the current press has been reported.
+    private property <bool> drag-sent: false;
+    // The right button is down on a row (TouchArea.pressed is the left button's only), and where
+    // it went down, in the row: a move past the threshold starts a right-button drag (6).
+    private property <bool> right-down: false;
+    private property <length> right-x;
+    private property <length> right-y;
+    private property <int> focus-request: 0;
     private property <int> row-count: root.rows.length;
     changed content-y => { root.viewport-changed(root.content-y, root.visible-height); }
     changed visible-height => { root.viewport-changed(root.content-y, root.visible-height); }
     changed row-count => { root.viewport-changed(root.content-y, root.visible-height); }
-    forward-focus: key-area;
-    public function focus-list() { key-area.focus(); }
+    // A ListView's minimum size.
+    min-width: 50px;
+    min-height: 50px;
+
+    public function focus-list() { root.focus-request += 1; }
 
     // Same arithmetic as StandardListView's bring-into-view, for our 22px rows: scroll just far
     // enough that the cursor row is fully inside the viewport, then apply the selection gesture.
@@ -265,68 +338,131 @@ component FileList inherits FileListBase {
         root.select(shift ? 2 : 0, root.current-row);
     }
 
-    // The selection a press makes (or defers to the release, so a drag carries the whole
-    // selection) is Rust's decision: dnd::Gesture.
-    row-clicked(i, ctrl, shift) => {
-        root.current-row = i;
-        key-area.focus();
-        root.focus-requested();
-        root.row-gesture(i, 0, ctrl, shift);
-    }
-
-    // Explorer's rule: an unselected row becomes the only selection, a selected row keeps it.
-    row-right-pressed(i) => {
-        root.current-row = i;
-        key-area.focus();
-        root.focus-requested();
-        root.select(4, i);
-    }
-
-    key-area := FocusScope {
-        x: 0;
-        width: 0;
-        key-pressed(e) => {
-            if (e.text == Key.Backspace && !e.modifiers.control) { root.go-up(); return accept; }
-            if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return accept; }
-            if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return accept; }
-            if (e.text == Key.UpArrow) {
-                if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }
-                root.cursor-moved(e.modifiers.shift);
-                return accept;
-            }
-            if (e.text == Key.DownArrow) {
-                if (root.current-row + 1 < root.rows.length) { root.current-row += 1; }
-                root.cursor-moved(e.modifiers.shift);
-                return accept;
-            }
-            if (e.text == Key.Home) { if (root.rows.length > 0) { root.current-row = 0; root.cursor-moved(e.modifiers.shift); } return accept; }
-            if (e.text == Key.End) { if (root.rows.length > 0) { root.current-row = root.rows.length - 1; root.cursor-moved(e.modifiers.shift); } return accept; }
-            // File operations live here, not in the window's outer scope, so they only fire while
-            // the list has focus: a Delete typed into the path bar or the rename box stays text.
-            if (e.text == Key.F5 && e.modifiers.shift) { root.command("copy"); return accept; }
-            if (e.text == Key.F6 && e.modifiers.shift) { root.command("move"); return accept; }
-            if (e.text == Key.Delete) { root.command(e.modifiers.shift ? "sdelete" : "delete"); return accept; }
-            if (e.text == Key.F2) { root.command("rename"); return accept; }
-            if ((e.text == Key.F10 && e.modifiers.shift) || e.text == Key.Menu) {
-                root.bring-into-view();
-                root.context-key(root.current-row, root.absolute-position.x, root.absolute-position.y, root.content-y, root.visible-height);
-                return accept;
-            }
-            if (e.text == Key.F7 || (e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N"))) {
-                root.command("newfolder");
-                return accept;
-            }
-            if (e.modifiers.control && !e.modifiers.shift && (e.text == "c" || e.text == "C")) { root.command("cc"); return accept; }
-            if (e.modifiers.control && !e.modifiers.shift && (e.text == "x" || e.text == "X")) { root.command("cx"); return accept; }
-            if (e.modifiers.control && !e.modifiers.shift && (e.text == "v" || e.text == "V")) { root.command("cv"); return accept; }
-            if (e.modifiers.control && !e.modifiers.shift && (e.text == "z" || e.text == "Z")) { root.command("undo"); return accept; }
-            // Reject after the cancel: the runtime closes the topmost popup (crumb menu, bookmark menu,
-            // About) on an Escape the focused item did not take; accepting it here broke that (P2-M2).
-            if (e.text == Key.Escape) { root.command("cancelqueued"); return reject; }
-            if (e.text == " ") { if (root.current-row >= 0) { root.select(1, root.current-row); } return accept; }
-            if (e.modifiers.control && (e.text == "a" || e.text == "A")) { root.select(3, root.current-row); return accept; }
-            return reject;
+    // A row's TouchArea event (FileRows.row-pointer). The selection a press makes (or defers to
+    // the release, so a drag carries the whole selection) is Rust's decision: dnd::Gesture.
+    function row-pointer(i: int, ev: PointerEvent, pressed: bool, mx: length, my: length, px: length, py: length, ax: length, ay: length) {
+        if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+            root.drag-sent = false;
+            root.right-down = false;
+            root.current-row = i;
+            root.focus-list();
+            root.focus-requested();
+            root.row-gesture(i, 0, ev.modifiers.control, ev.modifiers.shift);
         }
+        // The grab ended without a release (the end of a right-button drag, main.rs).
+        if (ev.kind == PointerEventKind.cancel) {
+            root.right-down = false;
+        }
+        if (ev.kind == PointerEventKind.move && pressed && !root.drag-sent
+            && (abs(mx - px) > root.drag-dx || abs(my - py) > root.drag-dy)) {
+            root.drag-sent = true;
+            root.row-gesture(i, 2, false, false);
+        }
+        if (ev.kind == PointerEventKind.move && root.right-down && !root.drag-sent
+            && (abs(mx - root.right-x) > root.drag-dx || abs(my - root.right-y) > root.drag-dy)) {
+            root.drag-sent = true;
+            root.row-gesture(i, 6, false, false);
+        }
+        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+            root.row-gesture(i, 1, ev.modifiers.control, ev.modifiers.shift);
+        }
+        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) {
+            root.row-gesture(i, 4, false, false);
+        }
+        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) {
+            root.row-gesture(i, 5, false, false);
+        }
+        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) {
+            root.row-gesture(i, 7, false, false);
+        }
+        // Select on the press (so the row is drawn selected before the menu's modal loop
+        // starts), open the shell menu on the release. Explorer's rule: an unselected row becomes
+        // the only selection, a selected row keeps it.
+        if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.right) {
+            root.right-down = true;
+            root.right-x = mx;
+            root.right-y = my;
+            root.drag-sent = false;
+            root.current-row = i;
+            root.focus-list();
+            root.focus-requested();
+            root.select(4, i);
+        }
+        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right) {
+            root.right-down = false;
+            root.context-menu(i, ax + mx, ay + my, ev.modifiers.shift);
+        }
+    }
+
+    // The list's keys (the variants' zero-width FocusScope hands them here).
+    function key(e: KeyEvent) -> EventResult {
+        if (e.text == Key.Backspace && !e.modifiers.control) { root.go-up(); return EventResult.accept; }
+        if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return EventResult.accept; }
+        if (e.text == Key.LeftArrow && e.modifiers.alt) { root.history(false); return EventResult.accept; }
+        if (e.text == Key.RightArrow && e.modifiers.alt) { root.history(true); return EventResult.accept; }
+        if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return EventResult.accept; }
+        if (e.text == Key.UpArrow) {
+            if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }
+            root.cursor-moved(e.modifiers.shift);
+            return EventResult.accept;
+        }
+        if (e.text == Key.DownArrow) {
+            if (root.current-row + 1 < root.rows.length) { root.current-row += 1; }
+            root.cursor-moved(e.modifiers.shift);
+            return EventResult.accept;
+        }
+        if (e.text == Key.Home) { if (root.rows.length > 0) { root.current-row = 0; root.cursor-moved(e.modifiers.shift); } return EventResult.accept; }
+        if (e.text == Key.End) { if (root.rows.length > 0) { root.current-row = root.rows.length - 1; root.cursor-moved(e.modifiers.shift); } return EventResult.accept; }
+        // File operations live here, not in the window's outer scope, so they only fire while
+        // the list has focus: a Delete typed into the path bar or the rename box stays text.
+        if (e.text == Key.F5 && e.modifiers.shift) { root.command("copy"); return EventResult.accept; }
+        if (e.text == Key.F6 && e.modifiers.shift) { root.command("move"); return EventResult.accept; }
+        if (e.text == Key.Delete) { root.command(e.modifiers.shift ? "sdelete" : "delete"); return EventResult.accept; }
+        if (e.text == Key.F2) { root.command("rename"); return EventResult.accept; }
+        if ((e.text == Key.F10 && e.modifiers.shift) || e.text == Key.Menu) {
+            root.bring-into-view();
+            root.context-key(root.current-row, root.absolute-position.x, root.absolute-position.y, root.content-y, root.visible-height);
+            return EventResult.accept;
+        }
+        if (e.text == Key.F7 || (e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N"))) {
+            root.command("newfolder");
+            return EventResult.accept;
+        }
+        if (e.modifiers.control && !e.modifiers.shift && (e.text == "c" || e.text == "C")) { root.command("cc"); return EventResult.accept; }
+        if (e.modifiers.control && !e.modifiers.shift && (e.text == "x" || e.text == "X")) { root.command("cx"); return EventResult.accept; }
+        if (e.modifiers.control && !e.modifiers.shift && (e.text == "v" || e.text == "V")) { root.command("cv"); return EventResult.accept; }
+        if (e.modifiers.control && !e.modifiers.shift && (e.text == "z" || e.text == "Z")) { root.command("undo"); return EventResult.accept; }
+        // Reject after the cancel: the runtime closes the topmost popup (crumb menu, bookmark menu,
+        // About) on an Escape the focused item did not take; accepting it here broke that (P2-M2).
+        if (e.text == Key.Escape) { root.command("cancelqueued"); return EventResult.reject; }
+        if (e.text == " ") { if (root.current-row >= 0) { root.select(1, root.current-row); } return EventResult.accept; }
+        if (e.modifiers.control && (e.text == "a" || e.text == "A")) { root.select(3, root.current-row); return EventResult.accept; }
+        return EventResult.reject;
+    }
+
+    if root.show-type: FileList {
+        width: root.width;
+        height: root.height;
+        rows: root.rows;
+        current-row: root.current-row;
+        content-y <=> root.content-y;
+        focus-request: root.focus-request;
+        focus-on-init: root.active;
+        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+        key(e) => { return root.key(e); }
+    }
+    if !root.show-type: FileListNoType {
+        width: root.width;
+        height: root.height;
+        rows: root.rows;
+        current-row: root.current-row;
+        content-y <=> root.content-y;
+        focus-request: root.focus-request;
+        focus-on-init: root.active;
+        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+        key(e) => { return root.key(e); }
     }
 }
 
@@ -345,6 +481,9 @@ export component Pane inherits Rectangle {
     in property <int> sort-col: 0;
     in property <bool> sort-asc: true;
     in-out property <int> current-row: -1;
+    // The Type column (settings `show_type`). Off, the pane shows a header and a list without the
+    // Type cell (FileListHost), and the Name column takes the 120 px.
+    in property <bool> show-type: true;
 
     callback navigate(string);
     callback open-row(int);
@@ -359,9 +498,13 @@ export component Pane inherits Rectangle {
     // crumb-menu(index, x, y): the chevron after crumb `index`, at window coordinates.
     callback crumb-menu(int, length, length);
     callback toggle-sticky();
-    // The mouse's Back button released anywhere over the pane that is not a text entry, the tab
-    // strip or the scrollbar: main.rs makes the pane active and goes up a folder.
+    // The mouse's Back or Forward button released anywhere over the pane that is not a text entry,
+    // the tab strip or the scrollbar: main.rs makes the pane active and goes back or forward in
+    // its active tab's history.
     callback back-button();
+    callback forward-button();
+    // history(forward): Alt+Left / Alt+Right in the list.
+    callback history(bool);
     callback select(int, int);
     callback viewport-changed(length, length);
     callback command(string);
@@ -425,7 +568,8 @@ export component Pane inherits Rectangle {
         return root.shown-tab-scroll;
     }
 
-    forward-focus: list;
+    // No forward-focus: the list's FocusScope sits inside FileListHost's `if`, out of reach;
+    // focus-list asks for it (nothing focuses a Pane itself).
     public function focus-list() { list.focus-list(); }
     public function reset-scroll() { list.content-y = 0; current-row = -1; }
     public function get-scroll() -> length { return list.content-y; }
@@ -472,11 +616,13 @@ export component Pane inherits Rectangle {
     changed path => { path-edit.text = root.path; }
     changed entry-sticky => { root.path-entry = root.entry-sticky; }
 
-    // Behind everything in the pane: the Back button over the padding, the status line and the
-    // gaps between the bar's buttons (every other TouchArea in the pane reports it itself).
+    // Behind everything in the pane: the Back and Forward buttons over the padding, the status
+    // line and the gaps between the bar's buttons (every other TouchArea in the pane reports them
+    // itself).
     TouchArea {
         pointer-event(ev) => {
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back-button(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward-button(); }
         }
     }
 
@@ -580,6 +726,7 @@ export component Pane inherits Rectangle {
                         clicked => { root.crumb-clicked(i); }
                         menu(x, y) => { root.crumb-menu(i, x, y); }
                         back => { root.back-button(); }
+                        forward => { root.forward-button(); }
                     }
                 }
             }
@@ -598,21 +745,34 @@ export component Pane inherits Rectangle {
                     clicked => { root.toggle-sticky(); }
                     pointer-event(ev) => {
                         if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back-button(); }
+                        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward-button(); }
                     }
                 }
             }
         }
-        HorizontalLayout {
+        // One header per Type column state, chosen per pane like the list below: on, it is the
+        // header as it was before the switch; off, the Type cell does not exist, so a header click
+        // cannot sort by it.
+        if root.show-type: HorizontalLayout {
             height: 24px;
-            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } }
-            HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } }
-            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } }
-            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } }
+            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
-        list := FileList {
+        if !root.show-type: HorizontalLayout {
+            height: 24px;
+            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
+        }
+        list := FileListHost {
             rows: root.rows;
             current-row <=> root.current-row;
+            show-type: root.show-type;
+            active: root.active;
             go-up => { root.go-up(); }
+            history(f) => { root.history(f); }
             open-row(i) => { root.open-row(i); }
             focus-requested => { root.focus-requested(); }
             select(op, i) => { root.select(op, i); }
@@ -702,6 +862,9 @@ export component Pane inherits Rectangle {
             if (ev.button == PointerEventButton.back && ev.kind == PointerEventKind.up) {
                 root.back-button();
             }
+            if (ev.button == PointerEventButton.forward && ev.kind == PointerEventKind.up) {
+                root.forward-button();
+            }
             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
                 root.context-menu(-1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);
             }
@@ -709,13 +872,14 @@ export component Pane inherits Rectangle {
     }
 
     // Return commits, Escape cancels, focus loss cancels. Over the name cell: 6 px row padding
-    // plus the 22 px icon slot from the left, the three fixed columns (350 px) from the right.
+    // plus the 22 px icon slot from the left, the fixed columns (350 px, 230 px without Type) from
+    // the right.
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
         x: list.x + 24px;
         y: list.y - 3px + (root.edit-mode == 1 ? list.content-y + list.current-row * 22px : 0px);
-        width: max(160px, list.width - 24px - 350px - 12px);
+        width: max(160px, list.width - 24px - (root.show-type ? 350px : 230px) - 12px);
         height: 28px;
         background: Palette.background;
         edit := LineEdit {

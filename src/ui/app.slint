@@ -1,5 +1,5 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo } from "pane.slint";
-import { Palette, ListView, AboutSlint, Button, LineEdit } from "std-widgets.slint";
+import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox } from "std-widgets.slint";
 export { Row, TabInfo, Crumb, StatusInfo }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
@@ -121,6 +121,8 @@ export component App inherits Window {
     in-out property <length> sidebar-width: 180px;
     // For the About dialog (CARGO_PKG_VERSION).
     in property <string> version;
+    // The Type column in both panes (settings `show_type`; set at start and by the dialog).
+    in property <bool> show-type: true;
     in property <int> left-sort-col;
     in property <bool> left-sort-asc;
     in property <int> right-sort-col;
@@ -150,9 +152,12 @@ export component App inherits Window {
     callback open-row(int, int);
     callback sort-by(int, int);
     callback go-up(int);
-    // pane-back(pane): the mouse's Back button released over that pane (not necessarily the
-    // active one): it becomes active and goes up a folder.
+    // pane-back(pane), pane-forward(pane): the mouse's Back or Forward button released over that
+    // pane (not necessarily the active one): it becomes active and goes back or forward in its
+    // active tab's history. pane-history(pane, forward): Alt+Left / Alt+Right in its list.
     callback pane-back(int);
+    callback pane-forward(int);
+    callback pane-history(int, bool);
     callback toggle-split();
     callback toggle-hidden(int);
     callback refresh(int);
@@ -171,7 +176,8 @@ export component App inherits Window {
     callback context-key(int, int, length, length, length, length);
     // row-gesture(pane, row, what, ctrl, shift): left press (0), release (1), drag past the
     // threshold (2) or double-click (3) on a row, or a middle (4) or Back (5) button release, or a
-    // move past the threshold with the right button down (6, a right-button drag); see pane.slint
+    // move past the threshold with the right button down (6, a right-button drag), or a Forward
+    // button release (7); see pane.slint
     // FileListBase.
     callback row-gesture(int, int, int, bool, bool);
     // tab-select(pane, index), tab-close(pane, index): a click or middle-click in a tab strip.
@@ -215,6 +221,50 @@ export component App inherits Window {
 
     public function show-about() { about.show(); }
     public function close-about() { about.close(); }
+
+    // The settings dialog. settings-requested(): Ctrl+, or "Settings" in the sidebar; Rust copies
+    // the live values into the dlg-* properties and calls show-settings. The controls stage their
+    // values there through settings-stage; settings-closed(ok) tells Rust to apply them (OK) or to
+    // drop them (Cancel, Escape). Nothing is applied while the dialog is open.
+    callback settings-requested();
+    callback settings-closed(bool);
+    in-out property <string> dlg-start-left;
+    in-out property <string> dlg-start-right;
+    in-out property <bool> dlg-hidden-left;
+    in-out property <bool> dlg-hidden-right;
+    in-out property <bool> dlg-type-column;
+    in-out property <bool> dlg-sidebar;
+    in-out property <bool> dlg-crumbs;
+    // "Saved to <file>", or that a scripted run saves nothing.
+    in property <string> settings-note;
+    private property <bool> settings-shown: false;
+    // Bumped after each show: the dialog then puts the focus in its first field (see there).
+    private property <int> settings-focus-token: 0;
+    public function show-settings() {
+        settings-shown = true;
+        settings-dialog.show();
+        settings-focus-token += 1;
+    }
+    function finish-settings(ok: bool) {
+        settings-dialog.close();
+        settings-shown = false;
+        root.settings-closed(ok);
+        root.focus-pane(root.active-pane);
+    }
+    public function settings-ok() { finish-settings(true); }
+    public function settings-cancel() { finish-settings(false); }
+    // What each control calls when the user changes it (and the driver's `settings set`): field
+    // start_left, start_right (a path), hidden_left, hidden_right, type_column, sidebar ("true" or
+    // "false"), path_bar ("entry" or "crumb").
+    public function settings-stage(field: string, value: string) {
+        if (field == "start_left") { dlg-start-left = value; }
+        if (field == "start_right") { dlg-start-right = value; }
+        if (field == "hidden_left") { dlg-hidden-left = value == "true"; }
+        if (field == "hidden_right") { dlg-hidden-right = value == "true"; }
+        if (field == "type_column") { dlg-type-column = value == "true"; }
+        if (field == "sidebar") { dlg-sidebar = value == "true"; }
+        if (field == "path_bar") { dlg-crumbs = value != "entry"; }
+    }
 
     // The breadcrumb dropdown's contents and place, set from Rust before show-crumb-menu.
     in property <[string]> crumb-menu-items;
@@ -274,6 +324,13 @@ export component App inherits Window {
 
     outer := FocusScope {
         key-pressed(e) => {
+            // The list rejects Escape (it cancels queued jobs first); with the settings dialog
+            // open it cancels the dialog, which closes on nothing else but OK and Cancel.
+            if (e.text == Key.Escape && root.settings-shown) { root.settings-cancel(); return accept; }
+            if (e.modifiers.control && !e.modifiers.shift && e.text == ",") {
+                if (!root.settings-shown) { root.settings-requested(); }
+                return accept;
+            }
             if (e.text == Key.F3) { root.toggle-split(); return accept; }
             if (e.modifiers.control && (e.text == "h" || e.text == "H")) { root.toggle-hidden(active-pane); return accept; }
             if (e.text == Key.F5 || (e.modifiers.control && (e.text == "r" || e.text == "R"))) {
@@ -341,6 +398,17 @@ export component App inherits Window {
                     height: 26px;
                     padding-left: 8px;
                     padding-right: 4px;
+                    spacing: 10px;
+                    settings-ta := TouchArea {
+                        width: 48px;
+                        clicked => { if (!root.settings-shown) { root.settings-requested(); } }
+                        Text {
+                            text: "Settings";
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            color: settings-ta.has-hover ? Palette.accent-background : Palette.foreground;
+                        }
+                    }
                     about-ta := TouchArea {
                         clicked => { root.show-about(); }
                         Text {
@@ -441,6 +509,9 @@ export component App inherits Window {
                 sort-by(c) => { root.sort-by(0, c); }
                 go-up => { root.go-up(0); }
                 back-button => { root.pane-back(0); }
+                forward-button => { root.pane-forward(0); }
+                history(f) => { root.pane-history(0, f); }
+                show-type: root.show-type;
                 focus-requested => { active-pane = 0; }
             }
             right := Pane {
@@ -475,6 +546,9 @@ export component App inherits Window {
                 sort-by(c) => { root.sort-by(1, c); }
                 go-up => { root.go-up(1); }
                 back-button => { root.pane-back(1); }
+                forward-button => { root.pane-forward(1); }
+                history(f) => { root.pane-history(1, f); }
+                show-type: root.show-type;
                 focus-requested => { active-pane = 1; }
             }
             splitter := Rectangle {
@@ -592,6 +666,128 @@ export component App inherits Window {
                     text: root.crumb-menu-note;
                     vertical-alignment: center;
                     color: Palette.foreground.transparentize(35%);
+                }
+            }
+        }
+    }
+
+    // Ctrl+, or "Settings": what is otherwise chosen only by using the app or editing config.toml.
+    // Labels left, controls right, OK and Cancel bottom right. Closes only through OK, Cancel or
+    // Escape (no-auto-close), so a click on a control never closes it and Rust always hears how it
+    // closed. The FocusScope takes Escape while a control inside has the focus.
+    settings-dialog := PopupWindow {
+        x: (root.width - 480px) / 2;
+        y: max(10px, (root.height - 330px) / 2);
+        width: 480px;
+        height: 330px;
+        close-policy: PopupClosePolicy.no-auto-close;
+        Rectangle {
+            background: Palette.background;
+            border-width: 1px;
+            border-color: Palette.border;
+            border-radius: 6px;
+            // Showing a popup takes the focus from the window and gives it to nothing
+            // (WindowInner::show_popup), and a focus() in init runs before that. Once the popup is
+            // shown, show-settings bumps the token and the first field takes the focus, so typing,
+            // Tab and Escape go to the dialog.
+            property <int> focus-token: root.settings-focus-token;
+            changed focus-token => { start-left-edit.focus(); }
+            FocusScope {
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) { root.settings-cancel(); return accept; }
+                    return reject;
+                }
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 8px;
+                    Text { text: "Settings"; font-size: 18px; font-weight: 700; accessible-role: text; }
+                    GridLayout {
+                        spacing: 6px;
+                        Row {
+                            Text { text: "Left start folder"; vertical-alignment: center; }
+                            start-left-edit := LineEdit {
+                                text: root.dlg-start-left;
+                                placeholder-text: "C:\\";
+                                accessible-label: "Left start folder";
+                                edited(t) => { root.settings-stage("start_left", t); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Right start folder"; vertical-alignment: center; }
+                            LineEdit {
+                                text: root.dlg-start-right;
+                                placeholder-text: "The left pane's folder";
+                                accessible-label: "Right start folder";
+                                edited(t) => { root.settings-stage("start_right", t); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Hidden files"; vertical-alignment: center; }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                CheckBox {
+                                    text: "Left pane";
+                                    checked: root.dlg-hidden-left;
+                                    accessible-label: "Show hidden files in the left pane";
+                                    toggled => { root.settings-stage("hidden_left", self.checked ? "true" : "false"); }
+                                }
+                                CheckBox {
+                                    text: "Right pane";
+                                    checked: root.dlg-hidden-right;
+                                    accessible-label: "Show hidden files in the right pane";
+                                    toggled => { root.settings-stage("hidden_right", self.checked ? "true" : "false"); }
+                                }
+                            }
+                        }
+                        Row {
+                            Text { text: "Columns"; vertical-alignment: center; }
+                            CheckBox {
+                                text: "Type column";
+                                checked: root.dlg-type-column;
+                                accessible-label: "Show the Type column";
+                                toggled => { root.settings-stage("type_column", self.checked ? "true" : "false"); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Sidebar"; vertical-alignment: center; }
+                            CheckBox {
+                                text: "Show the sidebar";
+                                checked: root.dlg-sidebar;
+                                accessible-label: "Show the sidebar";
+                                toggled => { root.settings-stage("sidebar", self.checked ? "true" : "false"); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Path bar"; vertical-alignment: center; }
+                            CheckBox {
+                                text: "Breadcrumbs (off: a text entry)";
+                                checked: root.dlg-crumbs;
+                                accessible-label: "Breadcrumbs in the path bar";
+                                toggled => { root.settings-stage("path_bar", self.checked ? "crumb" : "entry"); }
+                            }
+                        }
+                    }
+                    Rectangle { }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        Button {
+                            text: "OK";
+                            accessible-label: "OK";
+                            clicked => { root.settings-ok(); }
+                        }
+                        Button {
+                            text: "Cancel";
+                            accessible-label: "Cancel";
+                            clicked => { root.settings-cancel(); }
+                        }
+                    }
+                    Text {
+                        text: root.settings-note;
+                        font-size: 11px;
+                        overflow: elide;
+                        color: Palette.foreground.transparentize(35%);
+                    }
                 }
             }
         }

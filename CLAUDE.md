@@ -5,11 +5,11 @@ prototype `rustfm-proto` (renamed 2026-10-09; stack adopted the same day, see th
 in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch keeps its `rustfm` name.
 `PROTOTYPE-RESULT.md` is the gate record, `docs/week-one-plan.md` the week-one record
 (accessibility fix, renderer decision), `docs/phase-1-plan.md` the Phase 1 record (six
-milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record. Read them before
-changing the list.
+milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
+`docs/phase-3-plan.md` the Phase 3 plan and record. Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (95 tests; five touch the real shell and clipboard, and the eight
+- `cargo test --release` (99 tests; five touch the real shell and clipboard, and the eight
   `fs::watch` tests, one undo test, the breadcrumb dropdown's test and the reparse enumeration
   test write to scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
@@ -40,7 +40,7 @@ changing the list.
   carries `overlays N` (icons given the shell's overlay) and `slow N` (renders of 100 ms or
   more) for the period; each slow render also logs `[icons] slow icon <ms> ms: <path>`, and the
   first fetch of each overlay image `[icons] overlay index K fetched at S px`. Driver
-  keys include `CtrlH` (hidden files), `F5`/`CtrlR` (refresh), `CtrlA`, `Space`,
+  keys include `CtrlH` (hidden files), `F5`/`CtrlR` (refresh), `CtrlA`, `Space`, `Down`,
   `ShiftUp`/`ShiftDown`; `click`/`ctrlclick`/`shiftclick <pane> <row>` select rows; file
   operation steps `copy`, `move`, `delete`, `sdelete`, `newfolder <name>`, `rename <name>`,
   `cc`, `cx`, `cv`, `undo` (Ctrl+Z, key name `CtrlZ`), and `waitops <ms>` to wait for a job and
@@ -79,20 +79,33 @@ changing the list.
   presses Ctrl+Shift+PageUp / PageDown (key names `CtrlShiftPageUp`, `CtrlShiftPageDown`) to move
   the active tab, `tabdrag <pane> <index> <dx>` drags tab `<index>` (0-based) `<dx>` px through
   Slint's pointer path, `midclick <pane> <row>` middle-clicks a row (a folder opens in a new tab),
-  `backclick <pane>` presses and releases the mouse's Back button at the middle of the pane's list
-  (that pane becomes active and goes up a folder; on This PC one `[nav]` line and nothing else),
+  `backclick <pane>` and `forwardclick <pane>` post `WM_MOUSEMOVE`, `WM_XBUTTONDOWN` and
+  `WM_XBUTTONUP` (XBUTTON1, XBUTTON2) at the middle of the pane's list, so the side buttons take
+  winit's real path (that pane becomes active and goes back or forward in its active tab's
+  history), `history back|forward` presses Alt+Left / Alt+Right on the active pane (key names
+  `AltLeft`, `AltRight`; Backspace and `AltUp` stay up a folder), `scrollpos <pane>` logs the
+  pane's list scroll (content-y) and cursor row,
   `crumb <pane> <index>` clicks a breadcrumb button through its callback, `crumbmenu <pane>
   <index>` opens the dropdown of crumb `<index>`'s subfolders (listed on a worker: `sleep` before
   picking), `crumbpick <name>` picks one and `crumbclose` closes it, `pathmode <pane> entry|crumb`
   switches the path bar; `[tab]` (including `strip scrolled to <x>` when the tab strip
-  overflows), `[crumb]` and `[open]` lines on stderr. `TWINFM_PERF_STATUS=1` adds the
+  overflows), `[crumb]` and `[open]` lines on stderr, and since P3-M1 `[nav]` history lines:
+  `history push <folder> (K back)`, `history back|forward: <from> -> <to> (K back, M forward
+  left)`, `history back: nothing to go back to` (and forward), `Back|Forward button (active pane
+  was A, now B)`. `TWINFM_PERF_STATUS=1` adds the
   enumeration time to the status bar (the gate tools read `[enum]` on stderr, not the status
   bar). Sidebar and dialogs: `sidebar toggle` (F9), `sidebar click <row>` (headers count),
   `bookmark add` (Ctrl+D), `bookmark remove <index>`, `bookmark rename <index> <title>` (what the
   row's title editor commits; empty goes back to the folder's name), `bookmark move <index>
-  up|down`, `about open` (F1) and `about close`; `window max|restore|close` maximises or restores
+  up|down`, `about open` (F1) and `about close`, `settings open` (Ctrl+, , key name `CtrlComma`),
+  `settings set <field> <value>` (stages a value through the function the dialog's control calls:
+  `start_left`, `start_right` take a path, `hidden_left`, `hidden_right`, `type_column`, `sidebar`
+  take `true|false`, `path_bar` takes `entry|crumb`), `settings ok` and `settings close` (the OK
+  and Cancel buttons; `key Escape` cancels through the key path); `window max|restore|close` maximises or restores
   the window, or closes it through `WM_CLOSE` (the close button's path, which saves the settings;
-  `quit` does not); `[sidebar]` and `[settings]` lines on stderr. Directory watching: `touch <pane> <name>` creates an
+  `quit` does not); `[sidebar]` and `[settings]` lines on stderr, the dialog's among them:
+  `dialog opened`, `dialog: <key> <old> -> <new>` per applied change, `dialog closed (ok), N
+  change(s)` or `dialog closed (cancel), N change(s) discarded`. Directory watching: `touch <pane> <name>` creates an
   empty file in the pane's folder (or sets an existing one's modified time to now), `rmfile <pane>
   <name>` deletes it, and `waitwatch <ms>` waits until the next refresh started by the watch has
   listed its folder (at most `<ms>`), then 300 ms more for the pass, like `waitops`. `touch` and
@@ -112,7 +125,12 @@ changing the list.
   `start_right`, a command-line folder replaces the left pane's tabs); bookmarks as `[[bookmark]]`
   tables with `path` and an optional `title` (an old `bookmarks = [...]` list still loads and is
   rewritten as tables by the next save); `maximized` in `[window]`, with x, y, width and height
-  then holding the normal placement. `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  then holding the normal placement. Since P3-M1 the settings dialog (Ctrl+, or "Settings" at the
+  foot of the sidebar) sets `start_left` / `start_right` (no longer overwritten by every save),
+  hidden files per pane, `show_type` (the Type column, default true; each pane chooses its header and
+  its list (`FileListHost`), with or without the Type cell, once, never per row; off, a saved
+  `type` sort becomes `name`), `sidebar_visible` and
+  `path_bar`. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -173,7 +191,9 @@ changing the list.
   in one afternoon (2026-10-12), so compare only within a session and never against a
   recorded number. The gate protocol since P2-M5 (agreed 2026-10-12): three runs per binary,
   interleaved reference, candidate, reference, candidate, reference, candidate, compared by
-  median; a gap counts only when every reference run sits below every candidate run or the
+  median (`tools/wpr-triplet.ps1 -Reference <name> -Candidate <name> -Tag <tag>` runs all six
+  from one elevated console, builds named by their `target-<name>` dir, and refuses to start
+  while a TwinFM window is open); a gap counts only when every reference run sits below every candidate run or the
   medians differ by more than one point. The reference binary is the last merged milestone's
   gate build (`target-p2m5`, 011430e, after Phase 2).
 - Paths handed to `twinfm.exe` from Git Bash must be Windows-style (`cygpath -w`): a
