@@ -132,16 +132,33 @@ later milestone needs the 3.4 gate points the column cost in M1 (`phase-1-plan.m
   popup is `no-auto-close`, so a click on a checkbox never closes it and Rust always hears how it
   closed. Every control has an `accessible-label`, the title `accessible-role: text`.
 - **The Type column switch.** `show_type` in `Config` (default true, so a file without the key
-  loads with the column on) and a `show-type` property on the window, passed to both panes and
-  their lists. Off, the "Type" `HeaderCell` sits behind `if root.show-type` (one per pane) and each row's
-  type `Text` stays one item per row with an empty text and a zero width (the first gate run
-  showed what a conditional element per row costs, see § Gate); the Name column, the only flexible one,
-  takes the 120 px in the header and the rows alike, and the rename editor's width allows for
-  230 px of fixed columns instead of 350. A header click can no longer sort by Type; turning the
-  column off re-sorts every tab sorted by Type by name (`request_pass`, background tabs too) and
-  sets `sort_column = "name"`; a saved `sort_column = "type"` with the column off is read as name
-  at start, with one `[settings]` line. With the column on nothing in the row changed but the
-  `if` around the type cell.
+  loads with the column on) and a `show-type` property on the window, passed to both panes. Since
+  the second gate run (§ Gate) the switch is chosen once per pane, by an `if` outside any `for`,
+  and no row binds to it. The pane's list is a host, `FileListHost` (`pane.slint`), which keeps
+  the id `list` in `Pane`, so every `list.` reference there (the strip, the drop highlight, the
+  empty space, the rename editor) and every Rust call (`get_scroll`, `set_scroll`,
+  `reset_scroll`, `begin_edit`, `set_strip`, the driver's clicks) is unchanged. The host owns the
+  list's state (`rows`, `current-row`, `content-y`, the drag threshold and the press state) and
+  its logic (the row gestures, the keys, `bring-into-view`, the `viewport-changed` reports), and
+  holds one of two ListViews: `if root.show-type: FileList` or `if !root.show-type:
+  FileListNoType`. Each keeps the StandardListView layering: a row layer (`FileRows`,
+  `FileRowsNoType`) holding the single `for` and `accessible-delegate-focus`, and a focus layer
+  adding the zero-width FocusScope. `FileRows`' row is the reference's row (P2-M5) element for
+  element and binding for binding; `FileRowsNoType`'s is the same without the Type `Text`. State
+  crosses the `if` by binding (`content-y <=> root.content-y`, `current-row: root.current-row`,
+  `rows: root.rows`); events come back by callbacks (`row-pointer`, `row-gesture`, `key`) that the
+  host answers with its functions. What the pane asks of the list crosses by a request:
+  `focus-list()` bumps a counter the inner list watches (`changed focus-request`), and
+  `bring-into-view()` runs in the host on `content-y`. The host's `visible-width` and
+  `visible-height` are its own width and height, as a Fluent ListView's are. Switching keeps the
+  folder, rows, scroll position, cursor, selection and strip: they are the host's or Rust's, and
+  the new list binds to them. The header is chosen the same way: two `HorizontalLayout`s under
+  `if`, the default one the reference's four cells, the other without "Type". Off, the Name
+  column, the only flexible one, takes the 120 px in the header and the rows alike, and the
+  rename editor's width allows for 230 px of fixed columns instead of 350 (per pane, not per row).
+  A header click can no longer sort by Type; turning the column off re-sorts every tab sorted by
+  Type by name (`request_pass`, background tabs too) and sets `sort_column = "name"`; a saved
+  `sort_column = "type"` with the column off is read as name at start, with one `[settings]` line.
 - **Start folders are now the dialog's.** `save_now` no longer copies the active tabs' folders
   into `start_left` / `start_right` (see Decisions).
 - **Driver** (`auto.rs`): `history back|forward` (Alt+Left / Alt+Right through the Slint key path;
@@ -202,6 +219,30 @@ later milestone needs the 3.4 gate points the column cost in M1 (`phase-1-plan.m
   the brief ruled out for the default-on path.
 - **The forward stack has no cap of its own**: it only grows by moves back, so it never holds more
   than the back stack's 100.
+- **Two copies of the row, not a shared row component.** A component instantiated in each row
+  (a `FileRow` with an `@children` slot for the Type cell, as the follow-up brief suggested)
+  would carry its own input properties and their bindings (the row, its index, the cursor) into
+  every row instance, which is what the gate measures. So the two `for` bodies are copies that
+  differ only by the Type `Text`. The generated Rust for `FileRows`' row was compared with the
+  reference's (`target-p2m5`'s `app.rs`): the same struct, items and bindings; the only
+  difference is the body of the `TouchArea`'s `pointer-event` handler, now one call to
+  `row-pointer` (a handler is code run on an event, not a binding).
+- **The row gestures and the keys live in the host, once**, not in each variant: the variants
+  hold only the rows and the FocusScope, whose `key-pressed` returns the host's `key(e)`. One
+  consequence: a press on a row asks for the keyboard focus through the counter, so the list
+  takes it at the start of the next event-loop turn instead of inside the press (no key can
+  arrive in between; the press's cursor, selection and `focus-requested` are immediate as before).
+- **A list created while its pane is active takes the focus in its `init`.** The switch destroys
+  the list that had the focus, and the counter bump from `focus-pane` after OK may be consumed by
+  the old list before the `if` swaps. A split creates the right pane's list after `focus-pane(1)`,
+  so it takes the focus the same way.
+- **The new list's `init` sets `content-height` to rows x 22 px.** The Flickable checks its bounds
+  on the next turn of the event loop (a delayed change tracker), before the ListView's first
+  layout has set `content-height`; with the default content height (the list's own height) the
+  kept `content-y` read as out of bounds and the list jumped to the top. The first scripted run
+  showed it (pane 0 at -352 before the switch, 0 after); with the height set first, -352 stays.
+- **The header is chosen per pane like the list**: two whole `HorizontalLayout`s rather than an
+  `if` around the Type cell inside one, so the default header is the reference's layout.
 
 ### Deviations
 
@@ -222,6 +263,10 @@ later milestone needs the 3.4 gate points the column cost in M1 (`phase-1-plan.m
   exist; `ShiftDown` did).
 - **Extra logging** beyond the brief's list: the Back/Forward button line names the pane that was
   active, as the P2-M3 Back line did, and the Type column switch logs what it re-sorted.
+- **No `FileRow` component** (the follow-up brief's suggested factoring); see Decisions.
+- **`Pane` has no `forward-focus` any more.** Slint refuses to forward the focus to the host (not
+  a focusable element), and the FocusScope inside the `if` cannot be named from outside. Nothing
+  focuses a `Pane` itself; every caller goes through `focus-list`.
 
 ### Deferred
 
@@ -392,6 +437,40 @@ run read or wrote `%APPDATA%\twinfm\config.toml`. All exit code 0, no panic.
   next start logged `[settings] the Type column is off: sorting by name instead of the saved type
   sort`, sorted `C:\Windows` `by Name`, and saved `sort_column = "name"`.
 
+- **The switch chosen per pane (the follow-up after the second gate run).** All runs on the
+  worktree's build of f21c036, RDP, `TWINFM_SCRIPT` set, no `TWINFM_SOAK`, `TWINFM_CONFIG` only
+  at scratch files; exit 0 and no `panicked` line in every run. Both panes on
+  `C:\Windows\System32`, cursor and scroll moved in each, read through a tab switch (`tab new;
+  tab prev`, whose `[tab]` line prints the cursor and scroll), then `settings set type_column
+  false; settings ok` and the same read:
+
+  ```
+  [tab] pane=1 switched to 1 of 3 (id 2, C:\Windows\System32), cursor 4 scroll -220
+  [tab] pane=0 switched to 1 of 3 (id 1, C:\Windows\System32), cursor 7 scroll -352
+  [settings] dialog: show_type true -> false
+  [tab] pane=0 switched to 1 of 4 (id 1, C:\Windows\System32), cursor 7 scroll -352
+  [tab] pane=1 switched to 1 of 4 (id 2, C:\Windows\System32), cursor 4 scroll -220
+  ```
+
+  With the column off, in both panes: `key Down` moved the cursor (`[select] pane=0 Only row=8`),
+  `click` selected, `rclick` opened the shell menu (`[menu] pane=0 row=14 ...`, `closed ... id 0 =
+  Nothing` after `menuclose`); in a `%TEMP%` scratch folder `dropfiles <pane> 0 copy` found the
+  folder row (`[dnd] over pane 0 row 0 (...\dest) ... -> effect copy`, `Done: Copied 1 item`) and
+  `rename` renamed the clicked row's file through the editor (`Done: Renamed to zc-ren0.txt`);
+  the `[icons]` line kept composing strips across the switch. Switched back on: `key Down` and
+  `click` again in both panes. Focus, in both states: after `settings ok`, after Ctrl+L then
+  Escape, and after F2 then Escape, a `key Down` logged a `[select]` line one row on, in pane 0
+  and in pane 1. The gate script on `C:\traces\bigdir` ran to the end with the column on and with
+  a read-only scratch config holding `show_type = false`. `SLINT_ACCESSKIT_STATS=1` on the gate
+  script: the same counters per second as `target-p2m5` (`full=1 incremental=4 ... nodes_sent=848
+  cached=409` against `846 ... 408`; the one extra node is the sidebar's "Settings" link).
+  `tools/uia-dump.ps1` on `C:\Windows` with row 3 clicked, `target-p2m5` against this build: the
+  same 212 nodes at the same places in the window, the same row names, `AppReadiness, File folder`
+  focused and selected in both; the only differences are the "Settings" text and the "About
+  TwinFM" text moved right of it. The P3-M1 checks above were re-run on this build with the same
+  lines (history, the empty space, the split, the dialog with its UIA dump, the other fields, the
+  `TWINFM_CONFIG` round trip).
+
 Not checked by a script, needs a person at the console: the physical side buttons of Jeremy's
 mouse (Logi Options+ may map them, as it did the middle button in P2-M3), Alt+Left and Alt+Right
 on the keyboard, clicking the dialog's checkboxes and typing in its fields, Tab through the dialog
@@ -471,4 +550,14 @@ dependencies and runs two closures the reference does not. A zero-cost switch wo
 choose the row layout once per pane, outside the `for` (two ListViews under a pane-level `if`,
 which the driver's and the focus layering's references to the one `list` element rule out for
 this milestone). Traces `C:/traces/twinfm-ab9-{p2m5,p3m1}-{1,2,3}.etl`.
+
+**Third run: pending.** Jeremy chose the zero-cost switch over dropping it (2026-10-13). A host
+element keeps the one `list` the driver and the pane's overlays name, and the two ListViews sit
+inside it, which removes the obstacle named above. What changed since cba777e: no row binds to
+`show-type` any more, and `FileRows`' generated row is the reference's but for the body of its
+press handler; per pane, the list and the header each sit in one `if`, and the host adds one
+`Rectangle` around the ListView. In-app `[busy]` from the gate script under RDP, a sanity check
+and not a gate number: `target-p2m5` 19.5, this build 18.9, `target-p2m5` 18.6, this build 16.7,
+and with `show_type = false` 14.8 and 13.9. `target-p3m1` is to be rebuilt from the new head;
+Jeremy runs the triplets against `target-p2m5` (`-Etl C:\traces\twinfm-ab10-<build>-<n>.etl`).
 

@@ -126,8 +126,9 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   rewritten as tables by the next save); `maximized` in `[window]`, with x, y, width and height
   then holding the normal placement. Since P3-M1 the settings dialog (Ctrl+, or "Settings" at the
   foot of the sidebar) sets `start_left` / `start_right` (no longer overwritten by every save),
-  hidden files per pane, `show_type` (the Type column, default true; off, its header cell is not
-  instantiated, each row's type cell is empty and zero wide, and a saved `type` sort becomes `name`), `sidebar_visible` and
+  hidden files per pane, `show_type` (the Type column, default true; each pane chooses its header and
+  its list (`FileListHost`), with or without the Type cell, once, never per row; off, a saved
+  `type` sort becomes `name`), `sidebar_visible` and
   `path_bar`. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
