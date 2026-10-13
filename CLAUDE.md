@@ -9,9 +9,9 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
 `docs/phase-3-plan.md` the Phase 3 plan and record. Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (104 tests; five touch the real shell and clipboard, and the eight
-  `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test
-  and the search walker's test write to scratch folders, see below)
+- `cargo test --release` (111 tests; five touch the real shell and clipboard, and nine of the ten
+  `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
+  the search walker's test and the size walker's test write to scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -35,7 +35,7 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
 ## Measuring
 - In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
   `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]`,
-  `[filter]`, `[search]` lines.
+  `[filter]`, `[search]`, `[size]` lines.
   Since P2-M5 the `[enum] ... done:` line ends with `, reparse: J junction, S symlink, C cloud, A app
   alias, O other` when the listing has reparse points, and the once-a-second `[icons]` line
   carries `overlays N` (icons given the shell's overlay) and `slow N` (renders of 100 ms or
@@ -128,6 +128,19 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   after D folders (<why>)` (tab closed, navigated away, new search, Escape, F5), `skipped N
   folders`; `[watch] no watch for <root>: search results` and `[dnd] pane N tab I shows search
   results: no drop there` for search tabs.
+  Since P3-M3, folder sizes: `sizeall <pane>` focuses the pane's list and presses Alt+Return (key
+  name `AltReturn`: size every folder of the listing, at most 500, nearest the cursor first);
+  `waitsize <ms>` waits until no folder size is queued or walking and the last reply has landed (at
+  most `<ms>`), then 300 ms; `click`, `ctrlclick`, `CtrlA`, `Space` select folders, which queues
+  them (at most 100 per selection). `[size]` lines: `queued <path> (K in queue)`, `partial <path>:
+  X bytes, F files, D folders` (at most four a second per path, from the worker), `done <path>: X
+  bytes, F files, D folders in T ms (S skipped)` (`, truncated at depth 64` when it was), `cancelled
+  <path> (<why>)` (deselected, navigation, F5, tab in the background, tab closed), `cache cleared
+  pane=N (<why>)`, `invalidated <path> (<change>)`, `capped: K of M folders sized`, `pane=N
+  Alt+Return: K of M folder(s) to size`. `[watch]` adds `subtree on <path>` / `subtree off <path>`
+  (a tab with sizes cached or in flight watches every folder below its folder), `changed below the folder: no
+  refresh`, `subtree overflow <path>: sizes dropped` and `subtree disabled for this tab after two
+  overflows`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -188,6 +201,11 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   their folders. `fs::enumerate::tests::search_walks_the_tree_without_links_or_hidden_folders`
   makes a tree with a hidden folder, a junction to an ancestor (`cmd /c mklink /J`) and 620 small
   files in `%TEMP%\twinfm-p3m2-test-<pid>\`, and removes it.
+  `fs::sizes::tests::walker_counts_hidden_files_and_skips_links` makes a tree with hidden and
+  system files, a junction to an ancestor and a folder whose listing is denied to Everyone
+  (`icacls /deny *S-1-1-0:(RD)`, removed again before the tree is deleted) in
+  `%TEMP%\twinfm-p3m3-test-<pid>\`, and removes it. The subtree watch's test
+  (`subtree_watch_tells_deep_changes_from_top_ones`) uses the `fs::watch` scratch folder.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols
