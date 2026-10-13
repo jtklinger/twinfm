@@ -372,6 +372,53 @@ impl PaneModel {
         (sel.set.len(), bytes, any_file)
     }
 
+    /// Names of the selected plain folders (not links, placeholders or drives), in display order:
+    /// the ones whose size the size worker computes.
+    pub fn selected_folders(&self) -> Vec<String> {
+        let shown = self.shown.borrow();
+        let sel = self.sel.borrow();
+        sel.set.iter().filter_map(|&i| shown.get(i)).filter(|e| e.kind == Kind::Directory).map(|e| e.name.to_string()).collect()
+    }
+
+    /// The plain folders shown, with their rows: what Alt+Return sizes.
+    pub fn folder_rows(&self) -> Vec<(usize, String)> {
+        let shown = self.shown.borrow();
+        shown.iter().enumerate().filter(|(_, e)| e.kind == Kind::Directory).map(|(i, e)| (i, e.name.to_string())).collect()
+    }
+
+    /// A folder's computed size (None: not known, an empty cell) into its entry in the listing
+    /// and its row, which alone is notified. The next pass sorts by it.
+    pub fn set_size(&self, name: &str, bytes: Option<u64>) {
+        let text: SharedString = bytes.map(format_size).unwrap_or_default().into();
+        if let Some(e) = self.all.borrow_mut().iter_mut().find(|e| e.name == name) {
+            e.size = bytes.unwrap_or(0);
+            e.size_text = text.clone();
+        }
+        let row = {
+            let mut shown = self.shown.borrow_mut();
+            let row = shown.iter().position(|e| e.name == name);
+            if let Some(e) = row.map(|i| &mut shown[i]) {
+                e.size = bytes.unwrap_or(0);
+                e.size_text = text;
+            }
+            row
+        };
+        if let Some(i) = row {
+            self.notify.row_changed(i);
+        }
+    }
+
+    /// Put cached folder sizes back into a fresh listing (after a refresh that kept the cache), in
+    /// one pass over it; the pass that follows shows and sorts them.
+    pub fn apply_sizes(&self, size_of: impl Fn(&str) -> Option<u64>) {
+        for e in self.all.borrow_mut().iter_mut() {
+            if let Some(b) = size_of(e.name.as_str()) {
+                e.size = b;
+                e.size_text = format_size(b).into();
+            }
+        }
+    }
+
     /// The cursor and selection by name, to carry across a pass or a refresh.
     pub fn capture(&self, cursor: i32) -> Restore {
         let shown = self.shown.borrow();

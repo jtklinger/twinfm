@@ -7,11 +7,14 @@
 //! channel, announced by a `PostQueuedCompletionStatus` with the completion key `KEY_CMD`, and the
 //! wait's timeout is the coalescing timer.
 //!
-//! Records are not parsed: any completion, a buffer overflow (`ERROR_NOTIFY_ENUM_DIR`) included,
-//! means "the folder changed", and the UI re-enumerates it through its refresh path. Changes are
-//! coalesced per watch: the first change after a quiet spell is delivered 250 ms later (the
-//! trailing edge, so a burst becomes one event), and a continuous stream delivers one event per
-//! 250 ms.
+//! A shallow watch does not parse its records: any completion, a buffer overflow
+//! (`ERROR_NOTIFY_ENUM_DIR`) included, means "the folder changed", and the UI re-enumerates it
+//! through its refresh path. A subtree watch (a tab with folder sizes, `fs::sizes`) parses the
+//! `FILE_NOTIFY_INFORMATION` records to tell a change in the folder itself (the listing changes)
+//! from one below one of its subfolders (only that subfolder's size changes), and reports an
+//! overflow as such. Changes are coalesced per watch: the first change after a quiet spell is
+//! delivered 250 ms later (the trailing edge, so a burst becomes one event), and a continuous
+//! stream delivers one event per 250 ms.
 //!
 //! A watch's state is a `Box<Watch>` whose first field is its `OVERLAPPED`, so the `OVERLAPPED`
 //! pointer a completion carries is the watch's identity. A replaced or removed watch is cancelled
@@ -59,13 +62,18 @@ const FILTER: u32 = FILE_NOTIFY_CHANGE_FILE_NAME
 pub enum Event {
     /// The folder changed (coalesced).
     Changed { pane: usize, tab_id: u64 },
+    /// What a subtree watch saw (coalesced). `top`: something in the folder itself changed (an
+    /// entry added, removed, renamed or modified; the listing needs a refresh). `changes`: each
+    /// child of the folder that a record lay below or added, removed or renamed (not one that only
+    /// modified the child's own entry), once, with the first such record ("added sub\x.txt"). `overflow`: the buffer overflowed, so what changed is unknown.
+    Subtree { pane: usize, tab_id: u64, top: bool, changes: Vec<(String, String)>, overflow: bool },
     /// The watch failed after it started (folder deleted, drive gone, access revoked) and is
     /// closed.
     Lost { pane: usize, tab_id: u64, error: String },
 }
 
 enum Cmd {
-    Watch { pane: usize, tab_id: u64, path: PathBuf },
+    Watch { pane: usize, tab_id: u64, path: PathBuf, subtree: bool },
     Unwatch(usize),
     /// Reply once every earlier command has been handled (tests).
     #[cfg(test)]
@@ -113,10 +121,11 @@ impl Watcher {
         unsafe { PostQueuedCompletionStatus(self.port as HANDLE, 0, KEY_CMD, std::ptr::null()) };
     }
 
-    /// Watch `path` for `pane`, replacing whatever the pane watched before. A no-op when the pane
-    /// already watches that folder (only the tab id is updated).
-    pub fn watch(&self, pane: usize, tab_id: u64, path: PathBuf) {
-        self.send(Cmd::Watch { pane, tab_id, path });
+    /// Watch `path` for `pane` (with every folder below it when `subtree`), replacing whatever
+    /// the pane watched before. A no-op when the pane already watches that folder the same way
+    /// (only the tab id is updated).
+    pub fn watch(&self, pane: usize, tab_id: u64, path: PathBuf, subtree: bool) {
+        self.send(Cmd::Watch { pane, tab_id, path, subtree });
     }
 
     /// Stop watching for `pane`.
@@ -169,6 +178,12 @@ struct Watch {
     cancelled: bool,
     /// A change is waiting to be delivered at this time.
     due: Option<Instant>,
+    /// Watching every folder below too; the records are parsed into the three fields after it,
+    /// gathered until the change is delivered.
+    subtree: bool,
+    top: bool,
+    changes: Vec<(String, String)>,
+    overflow: bool,
 }
 
 struct Dirwatch<W: Fn()> {
@@ -247,7 +262,7 @@ unsafe fn arm(w: &mut Watch) -> Result<(), String> {
             w.handle,
             w.buf.as_mut_ptr() as *mut c_void,
             BUF_BYTES as u32,
-            0,
+            w.subtree as i32,
             FILTER,
             std::ptr::null_mut(),
             &mut w.ov,
@@ -277,7 +292,7 @@ impl<W: Fn()> Dirwatch<W> {
             // SAFETY: reads this thread's last-error value, set by the failed call just above.
             let err = if ok { 0 } else { unsafe { GetLastError() } };
             if !ov.is_null() {
-                self.completed(ov as *mut Watch, ok, err);
+                self.completed(ov as *mut Watch, ok, err, bytes);
             } else if ok && key == KEY_CMD {
                 if !self.commands() {
                     return self.shutdown();
@@ -299,7 +314,7 @@ impl<W: Fn()> Dirwatch<W> {
     fn commands(&mut self) -> bool {
         while let Ok(cmd) = self.cmds.try_recv() {
             match cmd {
-                Cmd::Watch { pane, tab_id, path } => self.start(pane, tab_id, path),
+                Cmd::Watch { pane, tab_id, path, subtree } => self.start(pane, tab_id, path, subtree),
                 Cmd::Unwatch(pane) => {
                     self.refused.remove(&pane);
                     if let Some(p) = self.slots.remove(&pane) {
@@ -325,13 +340,16 @@ impl<W: Fn()> Dirwatch<W> {
         }
     }
 
-    fn start(&mut self, pane: usize, tab_id: u64, path: PathBuf) {
+    fn start(&mut self, pane: usize, tab_id: u64, path: PathBuf, subtree: bool) {
         if let Some(&p) = self.slots.get(&pane) {
             // SAFETY: a live watch owned by this thread.
             let w = unsafe { &mut *p };
-            if w.path == path {
+            if w.path == path && w.subtree == subtree {
                 w.tab_id = tab_id;
                 return;
+            }
+            if w.path == path && !subtree {
+                eprintln!("[watch] pane={pane} subtree off {}", path.display());
             }
             self.slots.remove(&pane);
             self.retire(p);
@@ -350,6 +368,10 @@ impl<W: Fn()> Dirwatch<W> {
             pending: false,
             cancelled: false,
             due: None,
+            subtree,
+            top: false,
+            changes: Vec::new(),
+            overflow: false,
         }));
         // SAFETY: `p` is the Box just leaked; the handle is open; the key is the watch's address.
         let res = unsafe {
@@ -360,6 +382,9 @@ impl<W: Fn()> Dirwatch<W> {
         match res {
             Ok(()) => {
                 eprintln!("[watch] pane={pane} tab={tab_id} watching {}", w.path.display());
+                if subtree {
+                    eprintln!("[watch] pane={pane} subtree on {}", w.path.display());
+                }
                 self.slots.insert(pane, p);
                 self.refused.remove(&pane);
             }
@@ -397,8 +422,8 @@ impl<W: Fn()> Dirwatch<W> {
         }
     }
 
-    /// A read completed (or failed) for the watch at `p`.
-    fn completed(&mut self, p: *mut Watch, ok: bool, err: u32) {
+    /// A read completed (or failed) for the watch at `p`, with `bytes` of records in its buffer.
+    fn completed(&mut self, p: *mut Watch, ok: bool, err: u32, bytes: u32) {
         // SAFETY: only reads of live or dying watches are ever issued, and neither is freed while
         // its read is pending, so `p` is a live Box.
         let w = unsafe { &mut *p };
@@ -415,6 +440,28 @@ impl<W: Fn()> Dirwatch<W> {
         // Success (records, or zero bytes for an overflow) or an overflow error: changed.
         if w.due.is_none() {
             w.due = Some(Instant::now() + COALESCE);
+        }
+        if w.subtree {
+            if !ok || bytes == 0 {
+                w.overflow = true;
+            } else {
+                // SAFETY: the kernel wrote `bytes` (at most BUF_BYTES) into the buffer, whose read
+                // has completed; it is not written again until `arm` below.
+                let raw = unsafe { std::slice::from_raw_parts(w.buf.as_ptr() as *const u8, (bytes as usize).min(BUF_BYTES)) };
+                for (action, name) in parse_records(raw) {
+                    let child = crate::fs::sizes::child_of(&name);
+                    let top = child.len() == name.len();
+                    w.top |= top;
+                    // A subfolder's own entry modified (its times, which NTFS also updates lazily
+                    // after a walk has opened it) is not a change of its contents.
+                    if top && action == FILE_ACTION_MODIFIED {
+                        continue;
+                    }
+                    if !w.changes.iter().any(|(c, _)| c.eq_ignore_ascii_case(child)) {
+                        w.changes.push((child.to_string(), format!("{} {name}", action_name(action))));
+                    }
+                }
+            }
         }
         // SAFETY: the read just completed, so none is pending.
         if let Err(why) = unsafe { arm(w) } {
@@ -446,7 +493,13 @@ impl<W: Fn()> Dirwatch<W> {
             let w = unsafe { &mut *p };
             if w.due.is_some_and(|d| d <= now) {
                 w.due = None;
-                sent |= self.events.send(Event::Changed { pane: w.pane, tab_id: w.tab_id }).is_ok();
+                let ev = if w.subtree {
+                    let (top, changes, overflow) = (std::mem::take(&mut w.top), std::mem::take(&mut w.changes), std::mem::take(&mut w.overflow));
+                    Event::Subtree { pane: w.pane, tab_id: w.tab_id, top, changes, overflow }
+                } else {
+                    Event::Changed { pane: w.pane, tab_id: w.tab_id }
+                };
+                sent |= self.events.send(ev).is_ok();
             }
         }
         if sent {
@@ -472,9 +525,42 @@ impl<W: Fn()> Dirwatch<W> {
             // SAFETY: as in `run`.
             let ok = unsafe { GetQueuedCompletionStatus(self.port, &mut bytes, &mut key, &mut ov, left.as_millis() as u32) } != 0;
             if !ov.is_null() {
-                self.completed(ov as *mut Watch, ok, 0);
+                self.completed(ov as *mut Watch, ok, 0, 0);
             }
         }
+    }
+}
+
+/// The records of a completed read: (action, name relative to the watched folder) for each
+/// `FILE_NOTIFY_INFORMATION` (NextEntryOffset, Action, FileNameLength in bytes, then the UTF-16
+/// name). Stops at a record that does not fit in `buf`.
+fn parse_records(buf: &[u8]) -> Vec<(u32, String)> {
+    let u32_at = |i: usize| buf.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while let (Some(next), Some(action), Some(len)) = (u32_at(at), u32_at(at + 4), u32_at(at + 8)) {
+        let Some(name) = buf.get(at + 12..at + 12 + len as usize) else { break };
+        let wide: Vec<u16> = name.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        out.push((action, String::from_utf16_lossy(&wide)));
+        if next == 0 {
+            break;
+        }
+        at += next as usize;
+    }
+    out
+}
+
+const FILE_ACTION_MODIFIED: u32 = 3;
+
+/// FILE_ACTION_* as a word for the `[size] invalidated` line.
+fn action_name(action: u32) -> &'static str {
+    match action {
+        1 => "added",
+        2 => "removed",
+        3 => "modified",
+        4 => "renamed from",
+        5 => "renamed to",
+        _ => "changed",
     }
 }
 
@@ -522,7 +608,7 @@ mod tests {
     fn create_file_gives_one_changed() {
         let dir = Scratch::new("create");
         let (w, rx) = watcher();
-        w.watch(0, 7, dir.0.clone());
+        w.watch(0, 7, dir.0.clone(), false);
         w.sync();
         std::fs::write(dir.0.join("a.txt"), b"x").unwrap();
         let first = rx.recv_timeout(Duration::from_secs(2)).expect("a Changed within 2 s");
@@ -534,7 +620,7 @@ mod tests {
     fn bursts_are_coalesced() {
         let dir = Scratch::new("burst");
         let (w, rx) = watcher();
-        w.watch(1, 3, dir.0.clone());
+        w.watch(1, 3, dir.0.clone(), false);
         w.sync();
         for i in 0..50 {
             let f = dir.0.join(format!("f{i}.txt"));
@@ -552,7 +638,7 @@ mod tests {
         let f = dir.0.join("a.txt");
         std::fs::write(&f, b"x").unwrap();
         let (w, rx) = watcher();
-        w.watch(0, 1, dir.0.clone());
+        w.watch(0, 1, dir.0.clone(), false);
         w.sync();
         std::fs::rename(&f, dir.0.join("b.txt")).unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(Event::Changed { pane: 0, tab_id: 1 }), "rename");
@@ -569,7 +655,7 @@ mod tests {
     fn unwatch_stops_events() {
         let dir = Scratch::new("unwatch");
         let (w, rx) = watcher();
-        w.watch(0, 1, dir.0.clone());
+        w.watch(0, 1, dir.0.clone(), false);
         w.sync();
         w.unwatch(0);
         w.sync();
@@ -581,9 +667,9 @@ mod tests {
     fn replacing_a_watch_moves_it() {
         let (a, b) = (Scratch::new("replace-a"), Scratch::new("replace-b"));
         let (w, rx) = watcher();
-        w.watch(0, 1, a.0.clone());
+        w.watch(0, 1, a.0.clone(), false);
         w.sync();
-        w.watch(0, 2, b.0.clone());
+        w.watch(0, 2, b.0.clone(), false);
         w.sync();
         std::fs::write(a.0.join("old.txt"), b"x").unwrap();
         assert!(collect(&rx, Duration::from_millis(500)).is_empty(), "the old folder is no longer watched");
@@ -601,12 +687,12 @@ mod tests {
         assert_eq!(unwatchable(Path::new(r"\\server\share\dir")), Some("network share"));
         assert_eq!(unwatchable(&dir.0), None);
         let (w, rx) = watcher();
-        w.watch(0, 1, gone);
+        w.watch(0, 1, gone, false);
         w.sync();
         std::fs::write(dir.0.join("a.txt"), b"x").unwrap();
         assert!(collect(&rx, Duration::from_millis(500)).is_empty());
         // The watcher still works afterwards.
-        w.watch(0, 2, dir.0.clone());
+        w.watch(0, 2, dir.0.clone(), false);
         w.sync();
         std::fs::write(dir.0.join("b.txt"), b"x").unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(Event::Changed { pane: 0, tab_id: 2 }));
@@ -619,7 +705,7 @@ mod tests {
         std::fs::create_dir(&inner).unwrap();
         std::fs::write(inner.join("a.txt"), b"x").unwrap();
         let (w, rx) = watcher();
-        w.watch(1, 9, inner.clone());
+        w.watch(1, 9, inner.clone(), false);
         w.sync();
         std::fs::remove_dir_all(&inner).unwrap();
         let events = collect(&rx, Duration::from_secs(2));
@@ -633,8 +719,8 @@ mod tests {
     fn drop_stops_the_thread() {
         let dir = Scratch::new("drop");
         let (w, _rx) = watcher();
-        w.watch(0, 1, dir.0.clone());
-        w.watch(1, 2, dir.0.clone());
+        w.watch(0, 1, dir.0.clone(), false);
+        w.watch(1, 2, dir.0.clone(), false);
         w.sync();
         let (done_tx, done_rx) = unbounded();
         std::thread::spawn(move || {
@@ -642,5 +728,48 @@ mod tests {
             let _ = done_tx.send(());
         });
         assert!(done_rx.recv_timeout(Duration::from_secs(3)).is_ok(), "the watcher thread did not exit");
+    }
+
+    #[test]
+    fn records_parse() {
+        let mut buf = Vec::new();
+        for (i, (action, name)) in [(1u32, "a.txt"), (3, r"sub\deep")].iter().enumerate() {
+            let wide: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            let len = 12 + wide.len();
+            let next = if i == 0 { len.div_ceil(4) * 4 } else { 0 };
+            buf.extend((next as u32).to_le_bytes());
+            buf.extend(action.to_le_bytes());
+            buf.extend((wide.len() as u32).to_le_bytes());
+            buf.extend(&wide);
+            buf.resize(buf.len() + next.saturating_sub(len), 0);
+        }
+        assert_eq!(parse_records(&buf), vec![(1, "a.txt".to_string()), (3, r"sub\deep".to_string())]);
+        assert_eq!(parse_records(&buf[..10]), vec![], "a cut record is dropped");
+    }
+
+    #[test]
+    fn subtree_watch_tells_deep_changes_from_top_ones() {
+        let dir = Scratch::new("subtree");
+        std::fs::create_dir_all(dir.0.join(r"sub\deep")).unwrap();
+        let (w, rx) = watcher();
+        w.watch(0, 4, dir.0.clone(), true);
+        w.sync();
+        std::fs::write(dir.0.join(r"sub\deep\x.txt"), b"x").unwrap();
+        let ev = rx.recv_timeout(Duration::from_secs(2)).expect("an event within 2 s");
+        let Event::Subtree { pane: 0, tab_id: 4, top, changes, overflow } = ev else { panic!("expected Subtree, got {ev:?}") };
+        assert!(!top && !overflow, "a change two levels down is not in the folder itself: {changes:?}");
+        assert_eq!(changes.first().map(|(c, _)| c.as_str()), Some("sub"));
+        assert!(changes.iter().all(|(c, _)| c == "sub"), "{changes:?}");
+        assert!(collect(&rx, Duration::from_millis(400)).is_empty());
+        std::fs::write(dir.0.join("top.txt"), b"x").unwrap();
+        let ev = rx.recv_timeout(Duration::from_secs(2)).expect("an event within 2 s");
+        assert!(matches!(ev, Event::Subtree { top: true, .. }), "{ev:?}");
+        // Back to shallow: a deep change is no longer seen, a top-level one is a plain Changed.
+        w.watch(0, 4, dir.0.clone(), false);
+        w.sync();
+        std::fs::write(dir.0.join(r"sub\deep\y.txt"), b"x").unwrap();
+        assert!(collect(&rx, Duration::from_millis(600)).is_empty());
+        std::fs::write(dir.0.join("top2.txt"), b"x").unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(Event::Changed { pane: 0, tab_id: 4 }));
     }
 }

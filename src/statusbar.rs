@@ -3,6 +3,7 @@
 //! completion only; the free space is read on the enumeration worker (`disk_free`), never on the
 //! UI thread and never per frame.
 
+use crate::fs::sizes::DirTotals;
 use crate::model::format_size;
 use std::path::Path;
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -60,14 +61,32 @@ pub fn search_text(note: &str, found: usize, hidden: usize, secs: Option<f64>, s
     if note.is_empty() { s } else { format!("{note} | {s}") }
 }
 
-/// Middle: "M selected, <total size of the selected files>", "M selected" when only folders are
-/// selected, empty when nothing is.
-pub fn mid_text(selected: usize, bytes: u64, any_file: bool) -> String {
-    match (selected, any_file) {
-        (0, _) => String::new(),
-        (n, true) => format!("{n} selected, {}", format_size(bytes)),
-        (n, false) => format!("{n} selected"),
+/// Middle: "M selected, <total size>", empty when nothing is selected. Without selected folders
+/// the total is the selected files'; "M selected" alone when only links or drives are selected.
+/// With selected folders (`dirs`) their computed sizes count too: "X so far..." while some are
+/// still being sized (finished sizes plus partial totals), "X so far (K folders not sized)" when
+/// more were selected than are sized.
+pub fn mid_text(selected: usize, bytes: u64, any_file: bool, dirs: DirTotals) -> String {
+    if dirs.folders == 0 {
+        return match (selected, any_file) {
+            (0, _) => String::new(),
+            (n, true) => format!("{n} selected, {}", format_size(bytes)),
+            (n, false) => format!("{n} selected"),
+        };
     }
+    let mut s = format!("{selected} selected, {}", format_size(bytes + dirs.bytes));
+    if dirs.pending > 0 || dirs.not_sized > 0 {
+        s.push_str(" so far");
+    }
+    if dirs.pending > 0 {
+        s.push_str("...");
+    }
+    match dirs.not_sized {
+        0 => {}
+        1 => s.push_str(" (1 folder not sized)"),
+        k => s.push_str(&format!(" ({k} folders not sized)")),
+    }
+    s
 }
 
 /// Right: "X free of Y" for the pane's volume, empty when unknown (This PC, an error).
@@ -130,10 +149,27 @@ mod tests {
         assert_eq!(search_text("", 12, 2, Some(4.26), false, None), "12 found in 4.3 s (2 hidden)");
         assert_eq!(search_text("Deleted 1 item", 7, 0, Some(1.0), true, None), "Deleted 1 item | 7 found, stopped after 1.0 s");
         assert_eq!(search_text("", 0, 0, Some(0.0), false, Some("Access is denied.")), "error: Access is denied.");
-        assert_eq!(mid_text(0, 0, false), "");
-        assert_eq!(mid_text(3, 1536, true), "3 selected, 1.5 KB");
-        assert_eq!(mid_text(2, 0, false), "2 selected");
-        assert_eq!(mid_text(1, 0, true), "1 selected, 0 B");
+        let none = DirTotals::default();
+        assert_eq!(mid_text(0, 0, false, none), "");
+        assert_eq!(mid_text(3, 1536, true, none), "3 selected, 1.5 KB");
+        assert_eq!(mid_text(2, 0, false, none), "2 selected");
+        assert_eq!(mid_text(1, 0, true, none), "1 selected, 0 B");
+    }
+
+    #[test]
+    fn folder_sizes_in_the_middle_text() {
+        let kb = 1024;
+        // Two folders sized, one file: everything known.
+        let done = DirTotals { folders: 2, bytes: 3 * kb, pending: 0, not_sized: 0 };
+        assert_eq!(mid_text(3, kb, true, done), "3 selected, 4.0 KB");
+        // Folders only, one still walking (its partial total counts).
+        let walking = DirTotals { folders: 2, bytes: 2 * kb, pending: 1, not_sized: 0 };
+        assert_eq!(mid_text(2, 0, false, walking), "2 selected, 2.0 KB so far...");
+        // More folders than the cap: the rest are not sized.
+        let capped = DirTotals { folders: 150, bytes: 5 * kb, pending: 0, not_sized: 50 };
+        assert_eq!(mid_text(150, 0, false, capped), "150 selected, 5.0 KB so far (50 folders not sized)");
+        let both = DirTotals { folders: 102, bytes: 0, pending: 3, not_sized: 1 };
+        assert_eq!(mid_text(102, 0, false, both), "102 selected, 0 B so far... (1 folder not sized)");
     }
 
     #[test]

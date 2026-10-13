@@ -17,8 +17,9 @@
 //!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
 //!                                    CtrlShiftPageUp, CtrlShiftPageDown, AltLeft, AltRight (back
 //!                                    and forward in the tab's history), CtrlComma (settings),
-//!                                    CtrlF (the filter box), CtrlShiftF (search), and any single
-//!                                    character, typed as itself (`key a`)
+//!                                    CtrlF (the filter box), CtrlShiftF (search), AltReturn (size
+//!                                    every folder in the listing), and any single character, typed
+//!                                    as itself (`key a`)
 //!   copy | move                      Shift+F5 / Shift+F6: the active pane's selection to the other pane
 //!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
 //!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
@@ -116,6 +117,10 @@
 //!                                    filter box's text in a new tab (an empty box opens, focused)
 //!   waitsearch <ms>                  wait until no search tab is still walking (at most <ms>), then
 //!                                    300 ms more for the pass
+//!   sizeall <pane>                   Alt+Return in the pane's list (focused first): size every folder
+//!                                    of the listing (at most 500, nearest the cursor first)
+//!   waitsize <ms>                    wait until no folder size is queued or walking and the last
+//!                                    reply has landed (at most <ms>), then 300 ms more
 //!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
 //!                                    the close button does (WM_CLOSE: settings saved, app exits)
 //!   quit                             exit the event loop
@@ -224,6 +229,10 @@ enum Step {
     Search(usize),
     /// Wait until no search tab is still walking (at most `ms`), then 300 ms for the pass.
     WaitSearch(u64),
+    /// Alt+Return in the pane's list.
+    SizeAll(usize),
+    /// Wait until no folder size is queued or walking (at most `ms`), then 300 ms.
+    WaitSize(u64),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
     /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
     Window(String),
@@ -343,6 +352,8 @@ fn parse(script: &str) -> Vec<Step> {
                 },
                 "search" => Step::Search(num(1) as usize),
                 "waitsearch" => Step::WaitSearch(num(1).max(1) as u64),
+                "sizeall" => Step::SizeAll(num(1) as usize),
+                "waitsize" => Step::WaitSize(num(1).max(1) as u64),
                 "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
@@ -704,6 +715,7 @@ fn chord(name: &str) -> Vec<SharedString> {
         "AltUp" => vec![k(Key::Alt), k(Key::UpArrow)],
         "AltLeft" => vec![k(Key::Alt), k(Key::LeftArrow)],
         "AltRight" => vec![k(Key::Alt), k(Key::RightArrow)],
+        "AltReturn" => vec![k(Key::Alt), k(Key::Return)],
         "CtrlComma" => vec![k(Key::Control), ",".into()],
         "CtrlShiftRight" => vec![k(Key::Control), k(Key::Shift), k(Key::RightArrow)],
         "CtrlH" => vec![k(Key::Control), "h".into()],
@@ -1001,6 +1013,25 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 if !running || std::time::Instant::now() >= deadline {
                     if running {
                         eprintln!("[auto] waitsearch: still searching after {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 300);
+                }
+            });
+        }
+        Step::SizeAll(pane) => {
+            app.invoke_focus_pane(pane as i32);
+            press(&app, &chord("AltReturn"));
+            schedule(runner, 1);
+        }
+        Step::WaitSize(max_ms) => {
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                let busy = crate::sizes_busy();
+                if !busy || std::time::Instant::now() >= deadline {
+                    if busy {
+                        eprintln!("[auto] waitsize: still sizing after {max_ms} ms");
                     }
                     r2.borrow().sub.stop();
                     schedule(r2.clone(), 300);
