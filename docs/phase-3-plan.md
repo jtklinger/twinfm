@@ -448,5 +448,27 @@ settings set type_column false; settings ok; nav 0 C:\Windows; quit`: `dialog: s
 false`, `Type column removed from the header and the rows`, exit 0, no panic). Traces
 `C:/traces/twinfm-ab8-{p2m5,p3m1}-{1,2,3}.etl`, reports under `C:/traces/export/`.
 
-**Second run: pending.** `target-p3m1` rebuilt from the fixed head; Jeremy runs the triplets
-against `target-p2m5` again (`-Etl C:\traces\twinfm-ab9-<build>-<n>.etl`).
+**Second run (2026-10-13): still a gap, smaller, no single frame.** Same protocol, six runs from
+11:40 to 11:50, `target-p2m5` against `target-p3m1` rebuilt from cba777e (the fix above).
+
+| Run | P2-M5 (`target-p2m5`) | P3-M1 cba777e |
+|---|---|---|
+| 1 | 19.9% (1989 ms) | 20.7% (2069 ms) |
+| 2 | 19.9% (1994 ms) | 20.6% (2065 ms) |
+| 3 | 20.1% (2008 ms) | 20.9% (2092 ms) |
+| **median** | **19.9%** | **20.7%** |
+
+The medians differ by 0.8, under the one-point half of the rule, but every reference run sits
+below every candidate run, which is the other half, so the gap counts. Both triplets are tight
+(0.2 and 0.3 of spread), which makes the 0.7 look real rather than drift. The `Conditional::visit`
+frame is gone. No new frame stands out: the extra 70 to 85 inclusive samples per run are spread
+over heap allocation (`RtlpLowFragHeapAllocFromContext` +60, +21, 0 exclusive), property
+evaluation (`PropertyTracker::evaluate_if_dirty`, `PropertyHandle::update`, `hash_one`, each +8
+to +13) and text layout, the profile of two more bindings evaluated per row instance: the type
+cell's `text` and `width` now depend on `root.show-type` where the reference's were constants,
+and the ListView instantiates rows as they scroll into view, so each new row registers two
+dependencies and runs two closures the reference does not. A zero-cost switch would have to
+choose the row layout once per pane, outside the `for` (two ListViews under a pane-level `if`,
+which the driver's and the focus layering's references to the one `list` element rule out for
+this milestone). Traces `C:/traces/twinfm-ab9-{p2m5,p3m1}-{1,2,3}.etl`.
+
