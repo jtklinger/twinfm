@@ -997,7 +997,27 @@ names. The search of `C:\Windows` for `kernel32.dll`: 20 found, 156,836 folders 
 
 ### Gate
 
-Pending: the lead builds `target-p3m2` from the PR head and Jeremy runs `tools/wpr-triplet.ps1
--Reference p3m1 -Candidate p3m2 -Tag ab11`. The gate scenario opens no filter and no search tab:
-what it meets of this milestone is, per pane, one `if` (the closed box) and one width binding on
-the path bar, and nothing in the rows.
+**Passed (2026-10-13), one triplet.** Console WPR, Jeremy elevated, `tools/wpr-triplet.ps1
+-Reference p3m1 -Candidate p3m2 -Tag ab11`, accessibility on, Narrator off, no other TwinFM
+window: `target-p3m1` (537f606) against `target-p3m2` (e2b6343, the PR head, built from a
+detached checkout). Analysed with `tools/analyze-trace.py --symbols --exe`.
+
+| Run | P3-M1 (`target-p3m1`) | P3-M2 e2b6343 |
+|---|---|---|
+| 1 | 21.5% (2152 ms) | 26.4% (2636 ms) |
+| 2 | 26.2% (2622 ms) | 27.1% (2706 ms) |
+| 3 | 26.9% (2693 ms) | 26.9% (2685 ms) |
+| **median** | **26.2%** | **26.9%** |
+
+The medians differ by 0.7, and the reference's run 3 is not below the candidate's run 1, so
+neither half of the rule calls a gap. The machine rose by five points during the candidate's first
+run and stayed there (Defender's `MsMpEng` at 460 MB working set during the analysis, most likely
+scanning after the console checks' search had walked `C:\`), which the pairwise reading tolerates:
+runs 2 and 3 pair at +0.9 and 0.0 with every category in proportion (accessibility 261 / 262,
+247 / 250; render 1528 / 1581, 1599 / 1552; draw_text 861 / 886, 907 / 879; rows 514 / 536,
+545 / 502; timers 909 / 940, 915 / 905; heap 263 / 253, 236 / 255). No filter, matcher, search or
+walk frame of ours appears in any candidate window (the `filter_item` and `WalkFrameChain` frames
+are Slint's renderer and the kernel's stack walker, in both binaries). Traces
+`C:/traces/twinfm-ab11-{p3m1,p3m2}-{1,2,3}.etl`, reports under `C:/traces/export/`. Lesson for the
+protocol: run the console checks AFTER the triplet, or wait for Defender to settle; a recursive
+search of `C:\` before the gate costs the session five points of noise.
