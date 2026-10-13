@@ -171,7 +171,11 @@ changing the list.
   start "MIN" (the analyzer picks the process that started inside the trace, but the extra
   process still shares the machine). Single runs of one unchanged binary ranged 19.6 to 22.8
   in one afternoon (2026-10-12), so compare only within a session and never against a
-  recorded number; a difference under about two points needs more than one pair.
+  recorded number. The gate protocol since P2-M5 (agreed 2026-10-12): three runs per binary,
+  interleaved reference, candidate, reference, candidate, reference, candidate, compared by
+  median; a gap counts only when every reference run sits below every candidate run or the
+  medians differ by more than one point. The reference binary is the last merged milestone's
+  gate build (`target-p2m5`, 011430e, after Phase 2).
 - Paths handed to `twinfm.exe` from Git Bash must be Windows-style (`cygpath -w`): a
   forward-slash path fails in `SHParseDisplayName` (0x80070057) and a scripted drag never starts.
 - PowerShell's `2>` redirect writes UTF-16 with wrapped lines; convert with
