@@ -3,22 +3,49 @@
 //! `Tabs<Tab>` per pane; the tab content (model, path, scroll, cursor) is its business. `History`
 //! is one tab's back/forward list, pure for the same reason.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Folders a tab keeps to go back to (the oldest is dropped past this).
 pub const HISTORY_CAP: usize = 100;
 
-/// One tab's back/forward history: the folders left behind (newest last) and the ones gone back
+/// Where a tab is: a folder, or a recursive name search (`search`: the pattern) under the folder
+/// `path`, its root. A search is a history entry like a folder (a page in a browser).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub path: PathBuf,
+    pub search: Option<String>,
+}
+
+impl Place {
+    pub fn folder(path: impl Into<PathBuf>) -> Place {
+        Place { path: path.into(), search: None }
+    }
+
+    pub fn search(root: impl Into<PathBuf>, pattern: &str) -> Place {
+        Place { path: root.into(), search: Some(pattern.to_string()) }
+    }
+
+    /// The same place: the same folder ignoring ASCII case (Windows paths), the same search.
+    fn same(&self, other: &Place) -> bool {
+        self.path.as_os_str().eq_ignore_ascii_case(other.path.as_os_str()) && self.search == other.search
+    }
+}
+
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.search {
+            Some(p) => write!(f, "search \"{p}\" in {}", self.path.display()),
+            None => write!(f, "{}", self.path.display()),
+        }
+    }
+}
+
+/// One tab's back/forward history: the places left behind (newest last) and the ones gone back
 /// from (next forward last). Starts empty for every tab; not saved.
 #[derive(Debug, Default)]
 pub struct History {
-    back: Vec<PathBuf>,
-    forward: Vec<PathBuf>,
-}
-
-/// Same folder, ignoring ASCII case (Windows paths).
-fn same(a: &Path, b: &Path) -> bool {
-    a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+    back: Vec<Place>,
+    forward: Vec<Place>,
 }
 
 impl History {
@@ -26,31 +53,31 @@ impl History {
     /// entry is dropped past `HISTORY_CAP`) and the forward stack is cleared. Nothing changes
     /// when `from` is empty (a tab's first folder) or is `to` itself (the same folder twice in a
     /// row). True when `from` was pushed.
-    pub fn push(&mut self, from: &Path, to: &Path) -> bool {
-        if from.as_os_str().is_empty() || same(from, to) {
+    pub fn push(&mut self, from: &Place, to: &Place) -> bool {
+        if from.path.as_os_str().is_empty() || from.same(to) {
             return false;
         }
         if self.back.len() >= HISTORY_CAP {
             self.back.remove(0);
         }
-        self.back.push(from.to_path_buf());
+        self.back.push(from.clone());
         self.forward.clear();
         true
     }
 
     /// Back from `current`: the folder to go to, with `current` put on the forward stack; None
     /// when there is nothing to go back to.
-    pub fn back(&mut self, current: &Path) -> Option<PathBuf> {
+    pub fn back(&mut self, current: &Place) -> Option<Place> {
         let to = self.back.pop()?;
-        self.forward.push(current.to_path_buf());
+        self.forward.push(current.clone());
         Some(to)
     }
 
     /// Forward from `current`: the folder to go to, with `current` put on the back stack; None
     /// when there is nothing to go forward to.
-    pub fn forward(&mut self, current: &Path) -> Option<PathBuf> {
+    pub fn forward(&mut self, current: &Place) -> Option<Place> {
         let to = self.forward.pop()?;
-        self.back.push(current.to_path_buf());
+        self.back.push(current.clone());
         Some(to)
     }
 
@@ -179,8 +206,28 @@ impl<T> Tabs<T> {
 mod tests {
     use super::*;
 
-    fn p(s: &str) -> PathBuf {
-        PathBuf::from(s)
+    fn p(s: &str) -> Place {
+        Place::folder(s)
+    }
+
+    #[test]
+    fn history_holds_searches_like_folders() {
+        let mut h = History::default();
+        let root = r"C:\Temp\root";
+        let search = Place::search(root, "hit");
+        // A search started from its root (a new search tab), then a folder result opened.
+        assert!(h.push(&p(root), &search));
+        assert!(h.push(&search, &p(r"C:\Temp\root\sub\hit-folder")));
+        // Back re-runs the search (root and pattern), then goes to the root; Forward the other way.
+        assert_eq!(h.back(&p(r"C:\Temp\root\sub\hit-folder")), Some(search.clone()));
+        assert_eq!(h.back(&search), Some(p(root)));
+        assert_eq!(h.forward(&p(root)), Some(search.clone()));
+        assert_eq!(h.forward(&search), Some(p(r"C:\Temp\root\sub\hit-folder")));
+        // The search and its root are different places; the same search twice in a row is one.
+        assert!(!h.push(&Place::search(r"c:\temp\ROOT", "hit"), &search));
+        assert!(h.push(&Place::search(root, "hit"), &Place::search(root, "HIT")));
+        assert_eq!(search.to_string(), r#"search "hit" in C:\Temp\root"#);
+        assert_eq!(p(root).to_string(), root);
     }
 
     #[test]

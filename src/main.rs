@@ -23,7 +23,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use fileops::{Job, Outcome, clipboard, same_dir};
 use fs::enumerate::{Msg, THIS_PC, is_this_pc};
 use icons::IconTable;
-use model::{Kind, PaneModel, SelOp, SortCol, filter_sort};
+use model::{Kind, NameMatch, PaneModel, SelOp, SortCol, filter_sort};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{ComponentHandle, Image, Model, ModelRc, RenderingState, SharedString, VecModel, Weak};
 use std::cell::RefCell;
@@ -31,9 +31,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tabs::Tabs;
+use tabs::{Place, Tabs};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG, SW_MAXIMIZE, ShowWindow};
 
@@ -103,6 +103,29 @@ struct Tab {
     /// Back/forward (Alt+Left, Alt+Right, the mouse's side buttons); empty for a new or restored
     /// tab, never saved.
     history: tabs::History,
+    /// A search tab (Ctrl+Shift+F): its listing is a recursive name search under `path`, its
+    /// root. None for a folder tab.
+    search: Option<Search>,
+}
+
+/// What a search tab searches for, and its worker's cancel flag (`fs::enumerate::SEARCH_*`).
+struct Search {
+    pattern: NameMatch,
+    cancel: Arc<AtomicU8>,
+}
+
+impl Tab {
+    /// Where the tab is, as its history records it: its folder, or its search and root.
+    fn place(&self) -> Place {
+        Place { path: self.path.clone(), search: self.search.as_ref().map(|s| s.pattern.pattern.clone()) }
+    }
+}
+
+impl Search {
+    /// Stop the walk (within one folder or one batch), saying why; a no-op once stopped.
+    fn cancel(&self, why: u8) {
+        let _ = self.cancel.compare_exchange(fs::enumerate::SEARCH_RUNNING, why, Ordering::Relaxed, Ordering::Relaxed);
+    }
 }
 
 /// A job in flight, as the UI side remembers it.
@@ -194,6 +217,13 @@ struct State {
     crumb_menu: Option<(usize, PathBuf, Vec<String>)>,
     /// The settings dialog's values when it opened (None: closed); OK applies what differs.
     dialog: Option<settings::Dialog>,
+    /// Each pane's filter debounce: restarted on every edit in the box, it applies the text 150 ms
+    /// after the last one.
+    filter_timer: [slint::Timer; 2],
+    /// Ctrl+Shift+F with an empty filter box opened the box: Return there starts the search.
+    search_armed: [bool; 2],
+    /// The search tab whose "no watch" line each pane logged last (logged once per tab).
+    no_watch_logged: [Option<u64>; 2],
 }
 
 /// A tab with no folder yet, its model sharing the icon table.
@@ -214,6 +244,7 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         refresh_pending: false,
         watch_refresh: false,
         history: tabs::History::default(),
+        search: None,
     }
 }
 
@@ -271,12 +302,26 @@ impl State {
 
     /// Point the pane's directory watch at its active tab's folder (a no-op when it already
     /// watches it). The hidden second pane watches nothing.
-    fn watch_active(&self, app: &App, pane: usize) {
+    fn watch_active(&mut self, app: &App, pane: usize) {
         if pane == 1 && !app.get_split() {
             return self.watch.unwatch(1);
         }
-        let t = self.tab(pane);
+        let t = self.panes[pane].active();
+        if t.search.is_some() {
+            // A search's results come from many folders; F5 runs it again.
+            self.watch.unwatch(pane);
+            if self.no_watch_logged[pane] != Some(t.id) {
+                eprintln!("[watch] pane={pane} no watch for {}: search results", t.path.display());
+                self.no_watch_logged[pane] = Some(t.id);
+            }
+            return;
+        }
         self.watch.watch(pane, t.id, t.path.clone());
+    }
+
+    /// The pane's active tab is a search tab.
+    fn is_search(&self, pane: usize) -> bool {
+        self.tab(pane).search.is_some()
     }
 }
 
@@ -295,8 +340,10 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         let generation = st.generation();
         let t = st.tab_mut(pane);
         // A folder that then fails to list still counts as visited, as in Explorer.
-        if push && t.history.push(&t.path, &path) {
-            eprintln!("[nav] pane={pane} history push {} ({} back)", t.path.display(), t.history.back_len());
+        // From a search tab the search goes on the back stack (Back runs it again).
+        let from = t.place();
+        if push && t.history.push(&from, &Place::folder(path.clone())) {
+            eprintln!("[nav] pane={pane} history push {from} ({} back)", t.history.back_len());
         }
         t.model.generation.set(generation);
         t.model.clear();
@@ -310,7 +357,21 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         t.stale = false;
         t.refresh_pending = false;
         t.watch_refresh = false;
+        // A search tab becomes a folder tab again (its root goes on the back stack, the search
+        // does not).
+        if let Some(s) = t.search.take() {
+            s.cancel(fs::enumerate::SEARCH_NAVIGATED);
+        }
+        // Another folder starts unfiltered (Explorer's behaviour).
+        let filtered = !t.model.filter.borrow().is_empty();
+        *t.model.filter.borrow_mut() = NameMatch::default();
         let id = t.id;
+        if filtered {
+            eprintln!("[filter] pane={pane} cleared");
+        }
+        st.filter_timer[pane].stop();
+        st.search_armed[pane] = false;
+        set_filter_box(&app, pane, "");
         // `model.clear` dropped the tab's cut marks.
         if st.cut_source == Some((pane, id)) {
             st.cut_source = None;
@@ -347,6 +408,17 @@ fn refresh(pane: usize) {
         st.icon_gens[pane].store(generation, Ordering::Relaxed);
         update_status(st, &app, pane);
         eprintln!("[refresh] pane={pane} gen={generation} path={}", path.display());
+        // A search tab runs its search again (F5, after a file operation, when it comes back to
+        // the front stale).
+        let t = st.tab_mut(pane);
+        if let Some(s) = &mut t.search {
+            s.cancel(fs::enumerate::SEARCH_REFRESH);
+            s.cancel = Arc::new(AtomicU8::new(fs::enumerate::SEARCH_RUNNING));
+            let (pattern, cancel, hidden) = (s.pattern.clone(), s.cancel.clone(), t.model.show_hidden.get());
+            eprintln!("[search] pane={pane} gen={generation} start \"{}\" in {}", pattern.pattern, path.display());
+            fs::enumerate::spawn_search(path, pattern, hidden, cancel, pane, generation, st.tx.clone(), wake);
+            return;
+        }
         fs::enumerate::spawn(path, pane, generation, st.tx.clone(), wake);
     });
 }
@@ -361,7 +433,18 @@ fn update_status(st: &State, app: &App, pane: usize) {
     let enum_ms = if st.perf_status { t.timing.done_ms } else { None };
     // Jobs waiting behind the running one, shown on both panes.
     let note = statusbar::with_queue(&t.note, st.jobs.len().saturating_sub(1));
-    let left = statusbar::left_text(&note, m.len(), m.hidden_count(), loading, enum_ms, t.timing.error.as_deref());
+    let left = match &t.search {
+        Some(s) => {
+            let secs = (!loading).then(|| t.timing.done_ms.unwrap_or(0.0) / 1e3);
+            let stopped = s.cancel.load(Ordering::Relaxed) != fs::enumerate::SEARCH_RUNNING;
+            statusbar::search_text(&note, m.len(), m.hidden_count(), secs, stopped, t.timing.error.as_deref())
+        }
+        None => {
+            // "N of M items" while a name filter is on.
+            let of = (!m.filter.borrow().is_empty()).then(|| m.len() + m.filtered_count());
+            statusbar::left_text(&note, m.len(), of, m.hidden_count(), loading, enum_ms, t.timing.error.as_deref())
+        }
+    };
     let (n, bytes, any_file) = m.selection_summary();
     let s = StatusInfo {
         left: left.into(),
@@ -378,7 +461,7 @@ fn update_tabs(st: &State, pane: usize) {
     let v: Vec<TabInfo> = tabs
         .iter()
         .enumerate()
-        .map(|(i, t)| TabInfo { title: pathbar::title(&t.path.to_string_lossy()).into(), active: i == active })
+        .map(|(i, t)| TabInfo { title: tab_title(t).into(), active: i == active })
         .collect();
     // Same count: change the rows that differ, so the strip keeps its tab items (a reset would
     // recreate them and drop the pointer grab of a tab being pressed or dragged).
@@ -401,13 +484,27 @@ fn update_tabs(st: &State, pane: usize) {
     }
 }
 
-/// The path bar (text and breadcrumb) from the active tab's folder.
+/// A tab's title: its folder's name, or `Search: <pattern>` for a search tab.
+fn tab_title(t: &Tab) -> String {
+    match &t.search {
+        Some(s) => format!("Search: {}", s.pattern.pattern),
+        None => pathbar::title(&t.path.to_string_lossy()),
+    }
+}
+
+/// The path bar (text and breadcrumb) from the active tab's folder. A search tab's breadcrumb is
+/// its root's, navigable as ever, then one more crumb naming the search (a click on it does
+/// nothing: it is past the root's crumbs).
 fn set_path(st: &State, app: &App, pane: usize) {
-    let path = st.tab(pane).path.to_string_lossy().to_string();
-    let crumbs: Vec<Crumb> = pathbar::crumbs(&path).into_iter().map(|c| Crumb { label: c.label.into() }).collect();
+    let t = st.tab(pane);
+    let path = t.path.to_string_lossy().to_string();
+    let mut crumbs: Vec<Crumb> = pathbar::crumbs(&path).into_iter().map(|c| Crumb { label: c.label.into() }).collect();
+    if let Some(s) = &t.search {
+        crumbs.push(Crumb { label: format!("Search: \"{}\"", s.pattern.pattern).into() });
+    }
     st.crumb_models[pane].set_vec(crumbs);
     // The window title reads the active pane's one ("TwinFM - <folder>", app.slint).
-    let title: SharedString = pathbar::title(&path).into();
+    let title: SharedString = tab_title(t).into();
     if pane == 0 {
         app.set_left_path(path.into());
         app.set_left_title(title);
@@ -700,6 +797,7 @@ fn request_pass(st: &mut State, pane: usize, id: u64) {
     let Some(t) = st.find(pane, id) else { return };
     let model = t.model.clone();
     let (col, asc, show_hidden) = (model.sort_col.get(), model.sort_asc.get(), model.show_hidden.get());
+    let filter = model.filter.borrow().clone();
     if active {
         if pane == 0 {
             app.set_left_sort_col(col as i32);
@@ -728,10 +826,10 @@ fn request_pass(st: &mut State, pane: usize, id: u64) {
     let t0 = Instant::now();
     std::thread::spawn(move || {
         let total = snapshot.len();
-        let out = filter_sort(snapshot, show_hidden, col, asc, &restore);
+        let out = filter_sort(snapshot, show_hidden, &filter, col, asc, &restore);
         let pass_ms = perf::elapsed_ms(t0);
         let _ = slint::invoke_from_event_loop(move || {
-            with_state(|st| land_pass(st, pane, id, (generation, pass, total, sel_version), out, (col, asc, pass_ms), reveal));
+            with_state(|st| land_pass(st, pane, id, (generation, pass, total, sel_version), out, (col, asc, pass_ms), reveal, &filter));
         });
     });
 }
@@ -745,6 +843,7 @@ fn land_pass(
     mut out: model::PassOutput,
     (col, asc, pass_ms): (SortCol, bool, f64),
     reveal: bool,
+    filter: &NameMatch,
 ) {
     let Some(app) = st.app.upgrade() else { return };
     let active = st.is_active(pane, id);
@@ -765,6 +864,15 @@ fn land_pass(
         out.cursor,
         out.selection.len()
     );
+    if !filter.is_empty() {
+        eprintln!(
+            "[filter] pane={pane} \"{}\" ({}): {} of {} shown, pass {pass_ms:.1} ms",
+            filter.pattern,
+            if filter.is_glob() { "glob" } else { "substring" },
+            out.shown.len(),
+            out.shown.len() + out.filtered
+        );
+    }
     let keep = std::mem::take(&mut t.keep_scroll);
     let scroll = (keep && active).then(|| app.invoke_get_scroll(pane as i32));
     let cursor = model.replace(out);
@@ -1033,6 +1141,7 @@ fn command(pane: usize, cmd: &str) {
         let at_drives = is_this_pc(&folder.to_string_lossy());
         match cmd {
             "newfolder" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
+            "newfolder" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a folder in it".into()),
             "newfolder" => return Some((app, 2, SharedString::from("New folder"))),
             "rename" => match usize::try_from(current_row(&app, pane)).ok().and_then(|r| st.model(pane).entry(r)) {
                 None => note(st, &app, pane, "nothing to rename".into()),
@@ -1045,6 +1154,10 @@ fn command(pane: usize, cmd: &str) {
                     return None;
                 }
                 let dest = st.tab(1 - pane).path.clone();
+                if st.is_search(1 - pane) {
+                    note(st, &app, pane, "the other pane shows search results; open a folder there first".into());
+                    return None;
+                }
                 if is_this_pc(&dest.to_string_lossy()) {
                     note(st, &app, pane, "the other pane lists drives; open a folder there first".into());
                     return None;
@@ -1080,14 +1193,18 @@ fn command(pane: usize, cmd: &str) {
 fn edit_commit(pane: usize, mode: i32, original: &str, typed: &str) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
-        let name = typed.trim();
+        // A search result's name is its path under the root (`sub\file.txt`); the editor shows it
+        // whole, and a rename keeps it in its folder.
+        let parent = original.rsplit_once('\\').map_or("", |(p, _)| p);
+        let typed = typed.trim();
+        let name = typed.strip_prefix(parent).and_then(|t| t.strip_prefix('\\')).filter(|_| mode == 1 && !parent.is_empty()).unwrap_or(typed);
         if let Some(why) = fileops::invalid_name(name) {
             note(st, &app, pane, why.into());
             return;
         }
         let folder = st.tab(pane).path.clone();
         let job = match mode {
-            1 if name == original => return,
+            1 if name == original || (!parent.is_empty() && original.ends_with(&format!("\\{name}"))) => return,
             1 => Job::Rename { source: folder.join(original), new_name: name.into() },
             2 => Job::NewFolder { parent: folder, name: name.into() },
             _ => return,
@@ -1150,6 +1267,12 @@ fn undo(pane: usize) {
 /// `Cancelled` through `job_done`); the running one goes on.
 fn cancel_queued(pane: usize) {
     with_state(|st| {
+        // Escape in a search tab's list also stops its walk; the results so far stay.
+        let t = st.tab(pane);
+        if let Some(s) = t.search.as_ref().filter(|_| t.timing.done_ms.is_none() && t.timing.error.is_none()) {
+            s.cancel(fs::enumerate::SEARCH_ESCAPE);
+            eprintln!("[search] pane={pane} Escape: stopping the search");
+        }
         let queued = st.jobs.len().saturating_sub(1);
         if queued == 0 {
             return;
@@ -1212,6 +1335,10 @@ fn clipboard_paste(pane: usize) {
         let app = st.app.upgrade()?;
         if is_this_pc(&st.tab(pane).path.to_string_lossy()) {
             note(st, &app, pane, "This PC lists drives; open a folder first".into());
+            return None;
+        }
+        if st.is_search(pane) {
+            note(st, &app, pane, "search results: paste into a folder".into());
             return None;
         }
         Some(main_hwnd(st, &app))
@@ -1353,6 +1480,11 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
         let this_pc = is_this_pc(&folder.to_string_lossy());
         let targets = if row >= 0 { st.model(pane).targets(current_row(&app, pane)) } else { Vec::new() };
         let names: Vec<String> = targets.iter().map(|e| e.name.to_string()).collect();
+        if targets.is_empty() && st.is_search(pane) {
+            // Its "Paste" and "New" would act on the root, which is not what the list shows.
+            note(st, &app, pane, "search results have no folder menu; right-click a result".into());
+            return None;
+        }
         let (own, dir, paths) = match targets.as_slice() {
             [] if this_pc => (Vec::new(), folder.clone(), Vec::new()),
             [] => (vec![shellmenu::OwnItem::OpenOther, shellmenu::OwnItem::Terminal, shellmenu::OwnItem::CopyPath], folder.clone(), vec![folder.clone()]),
@@ -1465,7 +1597,10 @@ fn open_row(pane: usize, row: i32) {
         let app = st.app.upgrade()?;
         let folder = st.tab(pane).path.clone();
         let hwnd = main_hwnd(st, &app);
-        Some((e.is_dir(), folder.join(e.name.as_str()), folder, hwnd))
+        let path = folder.join(e.name.as_str());
+        // The file's own folder (a search result's may lie below the tab's).
+        let dir = path.parent().map_or(folder, Path::to_path_buf);
+        Some((e.is_dir(), path, dir, hwnd))
     });
     match target {
         Some((true, p, _, _)) => navigate(pane, p),
@@ -1517,12 +1652,11 @@ fn history_move(pane: usize, forward: bool) {
     let dir = if forward { "forward" } else { "back" };
     let target = with_state(|st| {
         let t = st.tab_mut(pane);
-        let to = if forward { t.history.forward(&t.path) } else { t.history.back(&t.path) };
+        let here = t.place();
+        let to = if forward { t.history.forward(&here) } else { t.history.back(&here) };
         match &to {
             Some(to) => eprintln!(
-                "[nav] pane={pane} history {dir}: {} -> {} ({} back, {} forward left)",
-                t.path.display(),
-                to.display(),
+                "[nav] pane={pane} history {dir}: {here} -> {to} ({} back, {} forward left)",
                 t.history.back_len(),
                 t.history.forward_len()
             ),
@@ -1530,8 +1664,11 @@ fn history_move(pane: usize, forward: bool) {
         }
         to
     });
-    if let Some(p) = target {
-        navigate_to(pane, p, false);
+    match target {
+        // A search in the history runs again, in this tab, under the same root.
+        Some(Place { path, search: Some(pattern) }) => start_search(pane, &pattern, Some(path)),
+        Some(Place { path, search: None }) => navigate_to(pane, path, false),
+        None => {}
     }
 }
 
@@ -1794,6 +1931,28 @@ pub fn window_layout(app: &App) -> dnd::Layout {
 /// list's empty space, or if the state is busy (not expected: no borrow is held across a drag
 /// loop or a dispatched message).
 pub fn drop_spot(px: i32, py: i32) -> Option<dnd::DropSpot> {
+    let spot = drop_spot_at(px, py);
+    if spot.is_some() {
+        DROP_REFUSED.with(|c| c.set(None));
+    }
+    spot
+}
+
+thread_local! {
+    /// The search tab (pane, tab id) a drag over it was last refused for, so the refusal is
+    /// logged once per hover rather than on every DragOver.
+    static DROP_REFUSED: std::cell::Cell<Option<(usize, u64)>> = const { std::cell::Cell::new(None) };
+}
+
+/// A drop on a search tab (its list, or its tab in the strip) goes nowhere: its folder is the
+/// search's root, not what the list shows. Logged once per hover.
+fn refuse_search_drop(pane: usize, id: u64) {
+    if DROP_REFUSED.with(|c| c.replace(Some((pane, id)))) != Some((pane, id)) {
+        eprintln!("[dnd] pane {pane} tab {id} shows search results: no drop there (it would land in the search's root)");
+    }
+}
+
+fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
     STATE.with(|s| {
         let Ok(guard) = s.try_borrow() else {
             eprintln!("[dnd] app state busy during a drop target call: refused");
@@ -1818,13 +1977,22 @@ pub fn drop_spot(px: i32, py: i32) -> Option<dnd::DropSpot> {
             }
             // A tab's folder; a tab on This PC is no folder.
             dnd::Spot::Tab(p, i) => {
-                let dest = st.panes[p].iter().nth(i)?.path.clone();
+                let tab = st.panes[p].iter().nth(i)?;
+                if tab.search.is_some() {
+                    refuse_search_drop(p, tab.id);
+                    return None;
+                }
+                let dest = tab.path.clone();
                 if dest.as_os_str().is_empty() || is_this_pc(&dest.to_string_lossy()) {
                     return None;
                 }
                 return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Tab(i), dest });
             }
         };
+        if st.is_search(pane) {
+            refuse_search_drop(pane, st.tab(pane).id);
+            return None;
+        }
         let folder = &st.tab(pane).path;
         let entry = row.and_then(|r| st.model(pane).entry(r));
         let this_pc = is_this_pc(&folder.to_string_lossy());
@@ -2008,6 +2176,7 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
         app.set_right_sort_asc(asc);
     }
     set_path(st, app, pane);
+    set_filter_box(app, pane, &model.filter.borrow().pattern);
     set_current_row(app, pane, usize::try_from(cursor).ok());
     app.invoke_set_scroll(pane as i32, scroll);
     st.view[pane].0 = app.invoke_get_scroll(pane as i32);
@@ -2039,8 +2208,9 @@ fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
         if st.panes[pane].active_index() == before {
             return None;
         }
-        // Its watch goes to the new tab, so what happens to its folder from now on is unknown.
-        if let Some(t) = st.panes[pane].iter_mut().nth(before) {
+        // Its watch goes to the new tab, so what happens to its folder from now on is unknown. A
+        // search tab has no watch to lose (and going stale would run its search again).
+        if let Some(t) = st.panes[pane].iter_mut().nth(before).filter(|t| t.search.is_none()) {
             t.stale = true;
         }
         show_tab(st, &app, pane);
@@ -2068,8 +2238,10 @@ fn open_tab(pane: usize, path: Option<PathBuf>) {
     let path = with_state(|st| {
         let app = st.app.upgrade()?;
         save_view(st, &app, pane);
-        // Leaves the foreground and loses its watch (see switch_tab).
-        st.tab_mut(pane).stale = true;
+        // Leaves the foreground and loses its watch (see switch_tab); a search tab has none.
+        if !st.is_search(pane) {
+            st.tab_mut(pane).stale = true;
+        }
         let cur = st.tab(pane);
         let (col, asc, hidden) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get());
         let path = path.unwrap_or_else(|| cur.path.clone());
@@ -2102,6 +2274,9 @@ fn close_tab(pane: usize, i: usize) {
         };
         // Late batches and passes for it find no tab with its generation or id, and are dropped.
         closed.model.generation.set(0);
+        if let Some(s) = &closed.search {
+            s.cancel(fs::enumerate::SEARCH_CLOSED);
+        }
         eprintln!("[tab] pane={pane} closed tab {} (id {}), {} left", i + 1, closed.id, st.panes[pane].len());
         schedule_save(st);
         if was_active {
@@ -2287,6 +2462,187 @@ fn toggle_hidden(pane: usize) {
         let id = st.tab(pane).id;
         request_pass(st, pane, id);
     });
+}
+
+/// The pane's filter box: its text, shown while the text is not empty (a tab switch shows the new
+/// tab's filter; a navigation clears it). Closing an open box in the active pane gives its list
+/// the focus: the box may have held it, and a destroyed box leaves the focus nowhere (no key would
+/// reach the window). `focus-pane` only bumps a counter, so this is safe inside the state borrow.
+fn set_filter_box(app: &App, pane: usize, text: &str) {
+    let was_open = if pane == 0 { app.get_left_filter_open() } else { app.get_right_filter_open() };
+    if pane == 0 {
+        app.set_left_filter_text(text.into());
+        app.set_left_filter_open(!text.is_empty());
+    } else {
+        app.set_right_filter_text(text.into());
+        app.set_right_filter_open(!text.is_empty());
+    }
+    if was_open && text.is_empty() && active_pane(app) == pane {
+        app.invoke_focus_pane(pane as i32);
+    }
+}
+
+/// An edit in the filter box: apply it to the active tab 150 ms after the last edit, so a word
+/// typed is one pass, not one per keystroke.
+fn filter_edited(pane: usize, text: SharedString) {
+    with_state(|st| {
+        let id = st.tab(pane).id;
+        st.filter_timer[pane].start(slint::TimerMode::SingleShot, Duration::from_millis(150), move || apply_filter(pane, id, &text));
+    });
+}
+
+/// Return or Down in the filter box: apply the text at once (an empty one closes the box). With a
+/// search waiting for its pattern (Ctrl+Shift+F on an empty box), start the search instead.
+fn filter_apply(pane: usize, text: SharedString) {
+    let Some((app, id, armed)) = with_state(|st| {
+        st.filter_timer[pane].stop();
+        Some((st.app.upgrade()?, st.tab(pane).id, std::mem::take(&mut st.search_armed[pane])))
+    }) else {
+        return;
+    };
+    if armed && !text.trim().is_empty() {
+        return start_search(pane, text.trim(), None);
+    }
+    apply_filter(pane, id, &text);
+    if text.is_empty() {
+        set_filter_box(&app, pane, "");
+    }
+}
+
+/// Escape in the filter box or its clear glyph (the box has closed itself): no filter, at once.
+fn filter_clear(pane: usize) {
+    let id = with_state(|st| {
+        st.filter_timer[pane].stop();
+        st.search_armed[pane] = false;
+        st.tab(pane).id
+    });
+    apply_filter(pane, id, "");
+}
+
+/// Set tab `id`'s name filter and run its pass (the hidden-file switch's pass: the snapshot, the
+/// worker, cursor and selection restored by name); nothing when the filter is unchanged.
+fn apply_filter(pane: usize, id: u64, text: &str) {
+    with_state(|st| {
+        let Some(t) = st.find(pane, id) else { return };
+        let new = NameMatch::new(text);
+        if *t.model.filter.borrow() == new {
+            return;
+        }
+        if new.is_empty() {
+            eprintln!("[filter] pane={pane} cleared");
+        }
+        *t.model.filter.borrow_mut() = new;
+        request_pass(st, pane, id);
+    });
+}
+
+/// Ctrl+Shift+F (and the driver's `search`): search the active tab's folder and everything under
+/// it for the filter box's text. With an empty box, open it: Return there starts the search.
+fn search_key(pane: usize) {
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    let text = if pane == 0 { app.get_left_filter_text() } else { app.get_right_filter_text() };
+    if text.trim().is_empty() {
+        with_state(|st| st.search_armed[pane] = true);
+        eprintln!("[search] pane={pane} no pattern yet: the filter box opens, Return searches");
+        return app.invoke_open_filter(pane as i32);
+    }
+    start_search(pane, text.trim(), None);
+}
+
+/// Start a recursive name search for `pattern` under the active tab's folder: in a new tab after
+/// it, or in place when the active tab is a search tab already (its old search is cancelled). The
+/// search worker sends its matches through the enumeration channel with the tab's generation, so
+/// they stream in as a listing's batches do.
+///
+/// `history_root`: a search taken from the tab's history (Back or Forward): it runs again in this
+/// tab under that root, and nothing is pushed. Otherwise the search is a navigation: a new search
+/// tab starts with its root folder on its back stack (it was searched from there), and a new search
+/// in a search tab pushes the old one.
+fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
+    let started = with_state(|st| {
+        let app = st.app.upgrade()?;
+        st.search_armed[pane] = false;
+        st.filter_timer[pane].stop();
+        if is_this_pc(&st.tab(pane).path.to_string_lossy()) {
+            note(st, &app, pane, "This PC lists drives; open a folder to search in it".into());
+            return None;
+        }
+        let to = |root: &Path| Place::search(root, pattern);
+        if let Some(root) = history_root {
+            st.tab_mut(pane).path = root;
+        } else if st.is_search(pane) {
+            let t = st.tab_mut(pane);
+            let from = t.place();
+            if t.history.push(&from, &to(&t.path)) {
+                eprintln!("[nav] pane={pane} history push {from} ({} back)", t.history.back_len());
+            }
+        } else {
+            save_view(st, &app, pane);
+            // Leaves the foreground and loses its watch (see switch_tab).
+            st.tab_mut(pane).stale = true;
+            let cur = st.tab(pane);
+            let (col, asc, hidden, root) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get(), cur.path.clone());
+            let mut t = st.new_tab(root.clone());
+            t.model.sort_col.set(col);
+            t.model.sort_asc.set(asc);
+            t.model.show_hidden.set(hidden);
+            if t.history.push(&Place::folder(root.clone()), &to(&root)) {
+                eprintln!("[nav] pane={pane} history push {} ({} back)", root.display(), t.history.back_len());
+            }
+            let id = t.id;
+            st.panes[pane].open(t);
+            let tabs = &st.panes[pane];
+            eprintln!("[tab] pane={pane} opened tab {} of {} (id {id}) on {} for a search", tabs.active_index() + 1, tabs.len(), root.display());
+        }
+        let generation = st.generation();
+        let matcher = NameMatch::new(pattern);
+        let cancel = Arc::new(AtomicU8::new(fs::enumerate::SEARCH_RUNNING));
+        let t = st.tab_mut(pane);
+        if let Some(old) = t.search.take() {
+            old.cancel(fs::enumerate::SEARCH_REPLACED);
+        }
+        t.search = Some(Search { pattern: matcher.clone(), cancel: cancel.clone() });
+        *t.model.filter.borrow_mut() = NameMatch::default();
+        t.model.generation.set(generation);
+        t.model.clear();
+        t.timing = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
+        t.keep_scroll = false;
+        t.note.clear();
+        t.focus_name = None;
+        t.fallback_cursor = None;
+        t.free = None;
+        t.stale = false;
+        t.refresh_pending = false;
+        t.watch_refresh = false;
+        t.cursor = -1;
+        t.scroll = 0.0;
+        let (id, root, hidden) = (t.id, t.path.clone(), t.model.show_hidden.get());
+        if st.cut_source == Some((pane, id)) {
+            st.cut_source = None;
+        }
+        st.icon_gens[pane].store(generation, Ordering::Relaxed);
+        show_tab(st, &app, pane);
+        schedule_save(st);
+        eprintln!("[search] pane={pane} gen={generation} start \"{pattern}\" in {}", root.display());
+        fs::enumerate::spawn_search(root, matcher, hidden, cancel, pane, generation, st.tx.clone(), wake);
+        Some(app)
+    });
+    // The search started from the filter box (Ctrl+Shift+F there, or Return with a search waiting)
+    // or from the list: either way the keys go to the results list now. Outside the state borrow:
+    // moving the focus runs the pane's handlers.
+    if let Some(app) = started {
+        app.invoke_focus_pane(pane as i32);
+    }
+}
+
+/// For the scripted driver's `waitsearch`: a search tab is still walking.
+pub fn search_running() -> bool {
+    STATE.with(|s| match s.try_borrow() {
+        Ok(g) => g.as_ref().is_some_and(|st| {
+            st.panes.iter().any(|p| p.iter().any(|t| t.search.is_some() && t.timing.done_ms.is_none() && t.timing.error.is_none()))
+        }),
+        Err(_) => true,
+    })
 }
 
 /// The Type column on or off in both panes. Off, every tab sorted by Type is sorted by name
@@ -2580,6 +2936,9 @@ fn main() -> Result<(), slint::PlatformError> {
             crumb_seq: 0,
             crumb_menu: None,
             dialog: None,
+            filter_timer: Default::default(),
+            search_armed: [false; 2],
+            no_watch_logged: [None; 2],
         })
     });
     with_state(rebuild_sidebar);
@@ -2723,6 +3082,10 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     app.on_toggle_hidden(|pane| toggle_hidden(pane as usize));
+    app.on_filter_edited(|pane, text| filter_edited(pane as usize, text));
+    app.on_filter_apply(|pane, text| filter_apply(pane as usize, text));
+    app.on_filter_clear(|pane| filter_clear(pane as usize));
+    app.on_search(|pane| search_key(pane as usize));
     app.on_settings_requested(settings_open);
     app.on_settings_closed(settings_closed);
     app.on_toggle_split({

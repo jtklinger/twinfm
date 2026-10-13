@@ -9,9 +9,9 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
 `docs/phase-3-plan.md` the Phase 3 plan and record. Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (99 tests; five touch the real shell and clipboard, and the eight
-  `fs::watch` tests, one undo test, the breadcrumb dropdown's test and the reparse enumeration
-  test write to scratch folders, see below)
+- `cargo test --release` (104 tests; five touch the real shell and clipboard, and the eight
+  `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test
+  and the search walker's test write to scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -34,7 +34,8 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
 
 ## Measuring
 - In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
-  `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]` lines.
+  `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]`,
+  `[filter]`, `[search]` lines.
   Since P2-M5 the `[enum] ... done:` line ends with `, reparse: J junction, S symlink, C cloud, A app
   alias, O other` when the listing has reparse points, and the once-a-second `[icons]` line
   carries `overlays N` (icons given the shell's overlay) and `slow N` (renders of 100 ms or
@@ -114,6 +115,19 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   <reason>` (This PC, network drives and shares, removable drives and discs, a folder that cannot
   be opened; logged once per pane and path), `changed: refresh`, `changed while listing: refresh after it`, `changed in the
   background: stale`, `lost <path>: <error>`; `[devices]` lines for volume arrivals and removals.
+  Since P3-M2, filter and search: `filter <pane> <text>` puts `<text>` (the rest of the step,
+  trimmed, may be empty) in the pane's filter box, opening it without the focus, and calls the
+  box's `edited` callback as typing does (applied 150 ms later); `search <pane>` calls Ctrl+Shift+F's
+  callback (a recursive name search for the box's text in a new tab; an empty box opens, focused,
+  and Return there searches); `waitsearch <ms>` waits until no search tab is still walking (at
+  most `<ms>`), then 300 ms for the pass. Key names `CtrlF` (the box, focused), `CtrlShiftF`, and
+  any single character typed as itself (`key a`, into whatever has the focus). `[filter]` lines:
+  `pane=N "<pattern>" (glob|substring): K of M shown, pass P ms` once per pass while a filter is
+  on, `pane=N cleared`. `[search]` lines: `pane=N gen=G start "<pattern>" in <root>`, `batch K (N so
+  far)` (at most ten a second), `done: N found, D folders walked, S skipped, in T ms`, `cancelled
+  after D folders (<why>)` (tab closed, navigated away, new search, Escape, F5), `skipped N
+  folders`; `[watch] no watch for <root>: search results` and `[dnd] pane N tab I shows search
+  results: no drop there` for search tabs.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -171,7 +185,9 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   tries a file symbolic link in `%TEMP%\twinfm-enum-reparse-test-<pid>\`, and
   `icons::tests::worker_renders_exe_drive_and_extension` makes a junction in
   `%TEMP%\twinfm-p2m5-test-<pid>\` and asks the shell for its icon and overlay; both remove
-  their folders.
+  their folders. `fs::enumerate::tests::search_walks_the_tree_without_links_or_hidden_folders`
+  makes a tree with a hidden folder, a junction to an ancestor (`cmd /c mklink /J`) and 620 small
+  files in `%TEMP%\twinfm-p3m2-test-<pid>\`, and removes it.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

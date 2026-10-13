@@ -208,6 +208,23 @@ export component App inherits Window {
     // editor is open (-1: none).
     in property <int> bookmark-count;
     in-out property <int> side-edit: -1;
+    // The name filter in each pane (pane.slint): whether its box shows and its text, set from Rust
+    // on a tab switch and a navigation. filter-edited(pane, text): an edit (applied 150 ms after the
+    // last one); filter-apply(pane, text): Return or Down in the box (at once; with a search waiting
+    // for its pattern, the search starts); filter-clear(pane): Escape or the clear glyph.
+    // search(pane): Ctrl+Shift+F, a recursive name search for the box's text in a new tab.
+    in-out property <bool> left-filter-open;
+    in-out property <string> left-filter-text;
+    in-out property <bool> right-filter-open;
+    in-out property <string> right-filter-text;
+    callback filter-edited(int, string);
+    callback filter-apply(int, string);
+    callback filter-clear(int);
+    callback search(int);
+    // Ctrl+F, and Rust when a search waits for its pattern: the pane's filter box, focused.
+    public function open-filter(p: int) {
+        if (p == 0) { left.open-filter(); } else { right.open-filter(); }
+    }
     // sidebar-toggled(): F9 or a sidebar glyph changed sidebar-visible.
     callback sidebar-toggled();
     // settings-changed(): the split line, the sidebar width or the path bar mode moved; Rust
@@ -356,6 +373,10 @@ export component App inherits Window {
                 return accept;
             }
             if (e.modifiers.control && (e.text == "l" || e.text == "L")) { root.set-path-mode(active-pane, true); return accept; }
+            if (e.modifiers.control && (e.text == "f" || e.text == "F")) {
+                if (e.modifiers.shift) { root.search(active-pane); } else { root.open-filter(active-pane); }
+                return accept;
+            }
             if (e.text == Key.F9) { root.toggle-sidebar(); return accept; }
             if (e.text == Key.F1) { root.show-about(); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "d" || e.text == "D")) { root.bookmark-add(); return accept; }
@@ -513,6 +534,11 @@ export component App inherits Window {
                 history(f) => { root.pane-history(0, f); }
                 show-type: root.show-type;
                 focus-requested => { active-pane = 0; }
+                filter-open <=> root.left-filter-open;
+                filter-text <=> root.left-filter-text;
+                filter-edited(t) => { root.filter-edited(0, t); }
+                filter-apply(t) => { root.filter-apply(0, t); }
+                filter-clear => { root.filter-clear(0); }
             }
             right := Pane {
                 visible: split;
@@ -550,6 +576,11 @@ export component App inherits Window {
                 history(f) => { root.pane-history(1, f); }
                 show-type: root.show-type;
                 focus-requested => { active-pane = 1; }
+                filter-open <=> root.right-filter-open;
+                filter-text <=> root.right-filter-text;
+                filter-edited(t) => { root.filter-edited(1, t); }
+                filter-apply(t) => { root.filter-apply(1, t); }
+                filter-clear => { root.filter-clear(1); }
             }
             splitter := Rectangle {
                 visible: split;

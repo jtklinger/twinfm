@@ -614,3 +614,524 @@ dialog work; switching the Type column off moved the list up by one row (switchi
 kept its place): Slint's whole-row snap on a rebuilt list, accepted for P3-M1 and deferred as
 a fork patch (Deferred). The console checks pass; the gate is closed.
 
+## P3-M2: search
+
+The backlog was the second item of the Phase 3 list: TwinFM had no way to find a file it does not
+show. Explorer has a search box that filters the folder as you type and a search that looks
+through every folder below. This milestone gives TwinFM both, the first by reusing the pass that
+already filters hidden files, the second by reusing the listing loop and the listing's channel, so
+sorting, the cursor, icons and the status bar work on results unchanged. Content search (the plan
+said "only if wanted") was not asked for and is deferred.
+
+### What landed (2026-10-13)
+
+- **The name filter** (`model.rs`, `main.rs`, `pane.slint`, `app.slint`). `model::NameMatch` is the
+  pattern prepared once: the text as typed, its Unicode lowercase (`to_lowercase`), and with `*`
+  or `?` in it the same as characters for a glob. `matches(name)` is true for every name when the
+  pattern is empty (nothing is lowercased then); otherwise it lowercases the part of the name after
+  the last `\` and tests `contains` (a substring) or an anchored glob (`*` any run, `?` one
+  character, backtracking only to the last `*`). `PaneModel` gains `filter: RefCell<NameMatch>`, a
+  property of the tab like `show_hidden`, and a `filtered` count beside `hidden`. `visible(e,
+  show_hidden, filter)` is the hidden-file test and the filter test; `filter_sort` takes the
+  filter and counts the two apart (`PassOutput.filtered`), and `append` (batches while a listing
+  streams in) does the same. The pass is the hidden-file switch's pass: `request_pass` clones the
+  tab's filter into the worker with the snapshot, and the cursor and selection come back by name.
+- **The box.** In the pane's path bar row, at its right end (220 px, the breadcrumb or the text
+  entry shrinking by as much): `if root.filter-open: HorizontalLayout { LineEdit, clear glyph }`,
+  an `if` at pane level, so the box does not exist while closed and no row knows about it. Ctrl+F
+  (the window-level `key-pressed`, so it works from the list and from the box) calls `open-filter`:
+  the box opens with the focus in it and its text selected (a new box takes the focus in its
+  `init`, an open one through a counter it watches). Each edit calls `filter-edited`; Rust restarts
+  a 150 ms single-shot timer per pane (`State::filter_timer`) and applies the text when it fires,
+  so a word typed is one pass. Return or Down call `filter-apply` (at once, the focus goes to the
+  list; an empty text closes the box); Escape or the clear glyph empty the text, close the box,
+  call `filter-clear` (at once) and give the list the focus. When the box closes while it has the
+  focus (a navigation or a tab switch closed it), the list takes the focus. Typing in the list does
+  not start a filter: there is no type-to-select and none was added.
+- **What the user sees.** The status bar's left text reads "N of M items (K hidden)" while a filter
+  is on, M being the entries the hidden-file switch lets through. The filter never reveals a hidden
+  file. A navigation to another folder clears the filter and closes the box (Explorer's
+  behaviour); a tab switch shows the new tab's own filter (`show_tab` sets the box from the tab's
+  model); F5 keeps it; nothing is saved to `config.toml`. Ctrl+A, the file operations, the context
+  menu, open and drag act on the rows shown, which is what the model holds.
+- **The listing loop factored out** (`fs/enumerate.rs`). `list_dir(path, types, icon_keys, zone,
+  f)` is the `FindFirstFileExW` / `FindNextFileW` / `FindClose` loop that `run` had, calling `f`
+  per entry (false stops it), with `ERROR_FILE_NOT_FOUND` from the first call an empty listing as
+  before. `run` now calls it; its batches, its `Done` and its error text are what they were (the
+  existing enumeration tests pass unchanged).
+- **The recursive name search.** `fs::enumerate::walk(root, matcher, show_hidden, cancel, emit)`
+  lists the root and every folder below it with `list_dir`, depth first from an explicit stack,
+  and hands every entry whose own name matches to `emit`, renamed to its path relative to the root
+  (`sub\dir\file.txt`), in batches of up to 256 (`SEARCH_BATCH`) or whatever matched in the last
+  100 ms (`SEARCH_FLUSH`). It enters only `Kind::Directory` entries, so a junction, a symbolic link,
+  a cloud placeholder or an app alias is listed when it matches but never entered (a loop through
+  a link cannot happen), skips hidden and system folders unless the tab shows hidden files, and
+  does not enter folders deeper than 64 (`SEARCH_MAX_DEPTH`). A folder below the root that cannot
+  be listed is counted as skipped; a root that cannot be listed is the error. The icon keys come
+  from the entry's real folder, so full-path keys (junctions, `.exe`, `.lnk`) are right.
+  `spawn_search` runs it on a thread named `search-<pane>-<gen>`, sends each batch as `Msg::Batch`
+  with the tab's generation to the enumeration channel and finishes with one `Msg::Done` (the
+  count, the time, the error, the root's free space), so `drain`, the pass, the cursor, the icons
+  and the status bar handle results as a listing's. The worker logs its own `[search]` lines,
+  since the folder counts are its.
+- **Search tabs** (`main.rs`). `Tab::search: Option<Search>` holds the pattern and an
+  `Arc<AtomicU8>` that is both the cancel flag and its reason (`SEARCH_RUNNING`, or tab closed,
+  navigated away, new search, Escape, F5). Ctrl+Shift+F (the window-level `key-pressed`, callback
+  `search`) takes the filter box's text: with text, `start_search` opens a new tab after the
+  active one whose folder is the current folder (the root) and starts the walk; with an empty box,
+  the box opens with the focus and Return there starts the search (`State::search_armed`). In a
+  search tab, Ctrl+Shift+F searches again in place. This PC cannot be searched (a note says so).
+  The tab's title and the window title read `Search: <pattern>`; the breadcrumb is the root's,
+  navigable as ever, followed by a crumb `Search: "<pattern>"` that does nothing when clicked; the
+  path entry shows the root. The status bar reads "Searching... N found" (updated on the batch
+  path through `update_status`, no timer), then "N found in S s", or "N found, stopped after S s"
+  after Escape.
+- **Cancellation.** Closing the tab, navigating it (a crumb, the path entry, Back, opening a folder
+  result), a new search in it, F5 (which runs the search again) and Escape in its list set the
+  flag; the walk reads it before each folder and after each batch, so it stops within one folder
+  or one batch. The generation changing still drops late batches. After Escape the generation is
+  the same, so the walk's `Done` lands and the results so far are sorted and kept.
+- **What a search tab is not.** It has no directory watch (`[watch] pane=N no watch for <root>:
+  search results`, once per tab); F5 runs the search again, as does a file operation (the active
+  tabs refresh after every job) and a background search tab made stale by one when it is shown;
+  switching away from it does not make it stale (it has no watch to lose). It is saved as its root
+  folder (the tab list holds `path`) and restored as that folder. A bookmark of it bookmarks the
+  root. It is never a drop target: a drop on its list or on its tab in the strip goes nowhere and
+  logs why (`[dnd] pane N tab I shows search results: no drop there (it would land in the search's
+  root)`, once per hover). Paste, a new folder, Shift+F5 / Shift+F6 into it from the other pane,
+  and the background context menu are refused with a note for the same reason.
+- **Results act on their real paths.** Every place that builds a path as `folder.join(name)` gets
+  `root\sub\file.txt`: open (and the working directory is now the file's own folder), the file
+  operations, copy, move, delete, cut and copy to the clipboard, the icons, middle-click into a new
+  tab. A folder result opens in the same tab, and the search goes on the back stack (next bullet
+  but one). Two places needed the relative name
+  split: `shellmenu::parse_items` (the context menu and the drag's data object) now resolves the
+  names to their own folder with `common_parent`, since a child PIDL must be one level deep, and
+  refuses items from different folders ("the items are in different folders; select items from one
+  folder"); the rename editor shows the relative name and a rename keeps the item in its folder
+  (`edit_commit` strips the folder prefix when the typed name keeps it).
+- **Searches are in the tab's history** (`tabs.rs`, `main.rs`; changed after Jeremy's console
+  check, see Decisions). `tabs::History` holds `tabs::Place` entries, a folder or a search (`path`
+  the root, `search` the pattern), instead of bare folders; `push`, `back` and `forward` take and
+  give places, and two places are the same when the folder matches ignoring ASCII case and the
+  pattern matches exactly. `Tab::place()` is where a tab is. Opening a folder result pushes the
+  search; Back (Alt+Left, the mouse's Back button) to a search runs it again in that tab under
+  the same root (`start_search(.., Some(root))`, nothing pushed) and Forward from it returns to the
+  folder. A new search tab starts with its root folder on its back stack (it was searched from
+  there), so Back from a search goes to the root folder; a new search in a search tab pushes the
+  old one. The `[nav]` history lines name a search as `search "<pattern>" in <root>`.
+- **Focus and keys around the box** (changed after the console check). Starting a search gives the
+  results list the focus (`focus-pane` after the state borrow), and whenever Rust closes an open
+  box in the active pane (a navigation, a tab switch, a new tab, a search) it gives that pane's
+  list the focus (`set_filter_box`): a box destroyed while it holds the focus leaves the focus
+  nowhere, and then no key reached the window at all. The rule for keys while the box has the
+  focus: the window's keys pass through it (Ctrl+W, Ctrl+T, Ctrl+Tab, Ctrl+1 to 9, F3, F5, F9,
+  Ctrl+H, Ctrl+L, Ctrl+F, Ctrl+Shift+F: the box does not take them); F7 does what it does in the
+  list (a new folder, or the refusal in a search tab); text keys stay the box's (Ctrl+V, Ctrl+A,
+  Ctrl+C, Ctrl+X, Ctrl+Z, Delete, Backspace, the arrows but Down, Home, End). The pane's
+  `filter-focused` property and its `changed filter-open` handler are gone (the handler did not
+  restore the focus after a tab switch).
+- **Driver** (`auto.rs`): `filter <pane> <text>` (sets the box's text, opening it without the
+  focus, and calls the `edited` callback the control fires), `search <pane>` (the callback
+  Ctrl+Shift+F fires), `waitsearch <ms>` (waits until no search tab is still walking, then 300 ms
+  for the pass), key names `CtrlF`, `CtrlShiftF` and any single character typed as itself (`key
+  a`).
+- **Logging.** `[filter] pane=N "<pattern>" (glob|substring): K of M shown, pass P ms` once per pass
+  while a filter is on, `[filter] pane=N cleared`; `[search] pane=N gen=G start "<pattern>" in
+  <root>`, `batch K (N so far)` (at most one a 100 ms), `done: N found, D folders walked, S skipped,
+  in T ms`, `cancelled after D folders (<why>)`, `skipped N folders`, `pane=N Escape: stopping the
+  search`, `pane=N no pattern yet: the filter box opens, Return searches`; `[tab] ... for a search`.
+  The `[sort]` line is unchanged; a search's `Done` also prints the usual `[enum] ... done:` line.
+- **Tests**, 99 to 104: `history_holds_searches_like_folders` (a search and a folder result in
+  the history, back and forward through both, a search is not its root, the log form);
+  `name_match_substring_glob_and_case` (empty matches all; substring either
+  case; `é`/`É` and `ß`; anchored globs, `?` one character, `*` none or more; a relative name matched
+  by its own name only); `filter_and_hidden_combine_in_the_pass_and_the_batches` (the filter never
+  reveals a hidden file; hidden and filtered counted apart in the pass and in streamed batches; a
+  cleared filter shows everything the switch lets through); `relative_names_resolve_to_their_own_folder`
+  (`common_parent`); `search_walks_the_tree_without_links_or_hidden_folders` on a tree in
+  `%TEMP%\twinfm-p3m2-test-<pid>\` (a match at depth 3 named `d1\d2\d3\HIT-deep.txt`, a matching
+  folder, a junction to the root listed as a `Junction` keyed by its real path but not entered, a
+  hidden folder entered only with hidden files shown, 4 found in 5 folders and 5 in 6; 620 matches
+  in 21 folders; the flag set after the first batch stops the walk inside the first folder with
+  that batch only; a missing root is an error), removed afterwards. `status_text_composition`
+  covers "N of M items" and the search texts.
+- **Docs**: `CLAUDE.md` (test count, the new driver steps and key names, the `[filter]` and
+  `[search]` lines, the new scratch folder).
+
+### Decisions
+
+- **The box sits in the path bar's row, not in a row of its own.** A new row under the path bar
+  would move the list's top and one in the status line would move its bottom; `dnd.rs`'s
+  `LIST_TOP` and `LIST_BOTTOM_GAP`, the drop hit test, the auto-scroll edges and the driver's row
+  positions all assume them. In the path bar's row only the breadcrumb (or the entry) gets 220 px
+  narrower, through one pane-level binding.
+- **Ctrl+F and Ctrl+Shift+F are window-level keys**, beside Ctrl+H and Ctrl+L, so they reach the
+  active pane from the list, from the box and from the path entry alike.
+- **The box shows the tab's filter.** It is open while the tab's filter is not empty (or right after
+  Ctrl+F); an emptied box stays open until Escape, the clear glyph, or Return on the empty text.
+- **The filter tests the name after the last `\`**, so in a search tab Ctrl+F filters the results
+  by their own names, not by the folders above them; in a folder tab the names have no `\`.
+- **Hidden and filtered are counted apart**, so the status reads "N of M items (K hidden)" with M the
+  entries the hidden switch lets through, and the hidden count stays what it was.
+- **Ctrl+Shift+F only; no Shift+Return.** An empty box opens with the search waiting, and Return
+  there searches; one key, one place to document.
+- **A search started from a folder tab leaves that tab's filter on**: the filter is the tab's, and
+  the search tab starts unfiltered.
+- **In a search tab Ctrl+Shift+F searches again in place** (the old walk logs `cancelled ... (new
+  search)`) rather than opening yet another tab.
+- **The walk hands out hidden matches in the folders it enters**; the tab's hidden-file switch shows
+  or hides them like in a folder, so Ctrl+H in a search tab works without searching again. The
+  status bar's "N found" counts the rows shown; the `[search] done` line counts every match sent.
+  Which folders are entered is fixed when the search starts.
+- **Depth first from an explicit stack**, popped last in first: each folder's last subfolder is
+  walked first (in `C:\Windows` the first results came from `WinSxS`). Results are sorted by the
+  pass anyway.
+- **One atomic for the flag and the reason**, set with a compare-exchange from running, so the
+  first reason wins and a cancel after the end is a no-op.
+- **A search is a place in the tab's history, like a page in a browser** (Jeremy, after his console
+  check, 2026-10-13, reversing the first version, where Back from a folder result went to the root
+  folder and the search was lost). A folder result opens in the same tab; Back runs the search
+  again (same root, same pattern), Forward returns to the folder; Back from the search goes to the
+  root folder. Middle-click opens a folder result in a new tab, as before.
+- **Starting a search moves the focus to the results list.** In Jeremy's check Ctrl+F, typing,
+  Ctrl+Shift+F, then Ctrl+W did nothing: the new tab's empty filter closed the box that held the
+  focus, the focus went nowhere and no key reached the window (Ctrl+W, Ctrl+V and F7 alike: the
+  paste and new-folder refusals never ran). The scripted check had used the `filter` step, which
+  opens the box without the focus.
+- **Window keys pass the box, text keys stay in it, F7 acts as in the list.** Checked with real
+  keys: with the box focused, Ctrl+W, Ctrl+T, Ctrl+Tab, F3, F5 and F9 already reached the window
+  (the LineEdit does not take them); only F7, a list key, needed forwarding.
+- **The refusals go further than the drop**: paste, a new folder, Shift+F5 / Shift+F6 into a pane
+  showing search results, and the background context menu ("Paste", "New") would all act on the
+  root, which is not what the list shows.
+- **Escape in a search tab's list stops the walk and keeps the results**; it still cancels queued
+  file operations as before.
+- **The filter's per-entry cost is one `to_lowercase` of the name** (a `String` and `contains` for a
+  substring; a `Vec<char>` only for a glob), measured below: within the range of the passes without
+  a filter.
+
+### Deviations
+
+- **The bigdir names are `file_1.txt` to `file_40000.txt`**, not `file00001`, so `*7*` keeps 13,756
+  of 40,000 rather than a tenth. Measured as it is; `1234` (14 kept) and `file0*` (none) were added.
+- **Two places needed the relative names after all** (the brief expected none): the shell wants
+  child PIDLs one level deep, so `parse_items` resolves the names to their own folder (context menu
+  and drag), and the rename editor strips the folder prefix. Items from different folders get a note
+  instead of a menu or a drag.
+- **`open_row` passes the file's own folder as the working directory** (the tab's folder before;
+  the same thing in a folder tab).
+- **Refusals beyond the drop** (paste, new folder, copy and move into a search pane, background
+  menu); see Decisions.
+- **The `filter` driver step opens the box without the focus**, so a `key CtrlA` after it reaches
+  the list, as the brief's check needs; `key CtrlF` is the focused path.
+- **The search worker logs its own lines** from its thread (the folder counts are its), as the
+  watcher thread does.
+- **The Fluent `LineEdit` draws its own clear button** inside the box while it has the focus; it
+  empties the text (a filter edit). The glyph after the box also closes the box.
+- **Extra lines**: `[search] pane=N Escape: stopping the search`, `[search] pane=N no pattern yet:
+  ...`, `[tab] ... for a search`, `[dnd] ... no drop there`.
+
+### Deferred
+- **Result names are cut short** in a search tab: the Name column shows the relative path and
+  elides it from the right (`Windows\WinSxS...` in Jeremy's console check, 2026-10-13); a wider
+  Name column for search tabs, or the folder in its own column, is a follow-up.
+- **Refusal notes stay in the status bar** (paste, new folder, copy and move into a search tab);
+  Jeremy is fine with that for now (2026-10-13); a louder message would be a product decision.
+
+- **Content search**: not asked for.
+- **A rename in a search tab does not move the cursor to the renamed row**: the pass looks for the
+  new name, the row's name is its relative path.
+- **The context menu and drags over results from different folders** are refused (the shell's data
+  object for items in several folders needs absolute PIDLs, `SHCreateShellItemArrayFromIDLists`).
+- **Search results do not follow changes** (no watch); F5 or a file operation runs the search again.
+  During that rerun the old results stay and the status bar shows their count until it ends.
+- **No index**: the walk lists every folder; `C:\Windows` takes about 39 s here (157,000 folders).
+  The Windows Search index is not used.
+- **Not checked by a person**: typing in the box with the keyboard and mouse, the clear glyph by
+  mouse, Narrator on the box (its accessible label is "Filter"), and a long search left running
+  while working in the other pane.
+
+### Scripted checks
+
+RDP session, this worktree's `target\release\twinfm.exe` (a1d2081), every run with `TWINFM_SCRIPT`
+(`@file` in the session scratchpad) and without `TWINFM_SOAK`; no run read or wrote
+`%APPDATA%\twinfm\config.toml`. All exit code 0, no `panicked` line.
+
+- **The filter, by the driver and through real key routing.** `nav 0 C:\Windows\System32; sleep
+  1500; filter 0 *.dll; sleep 600; key CtrlA; sleep 300; filter 0 ; sleep 600; nav 0
+  C:\Windows\System32; sleep 1500; key CtrlF; sleep 200; key a; key b; sleep 600; key Escape; sleep
+  500; key Escape; key a; sleep 600; key Down; sleep 300; key CtrlF; sleep 200; key d; key l; key l;
+  key Return; sleep 400; key Down`:
+
+  ```
+  [sort] pane=0 4904 of 4912 entries by Name asc=true hidden=8 cursor=None selected=0 in 1.5 ms
+  [auto] Filter { pane: 0, text: "*.dll" }
+  [filter] pane=0 "*.dll" (glob): 3638 of 4904 shown, pass 2.4 ms
+  [auto] Key("CtrlA")
+  [select] pane=0 All row=-1 selected=3638
+  [auto] Filter { pane: 0, text: "" }
+  [filter] pane=0 cleared
+  [sort] pane=0 4904 of 4912 entries by Name asc=true hidden=8 cursor=None selected=3638 in 1.9 ms
+  [auto] Key("CtrlF")
+  [auto] Key("a")
+  [auto] Key("b")
+  [filter] pane=0 "ab" (substring): 51 of 4904 shown, pass 1.2 ms
+  [auto] Key("Escape")
+  [filter] pane=0 cleared
+  [sort] pane=0 4904 of 4912 entries by Name asc=true hidden=8 cursor=None selected=0 in 1.4 ms
+  [auto] Key("Escape")
+  [auto] Key("a")
+  [auto] Key("Down")
+  [select] pane=0 Only row=0 selected=1
+  [auto] Key("CtrlF")
+  [auto] Key("d") ... Key("Return")
+  [filter] pane=0 "dll" (substring): 3642 of 4904 shown, pass 1.9 ms
+  [auto] Key("Down")
+  [select] pane=0 Only row=0 selected=1
+  ```
+
+  Counted another way (PowerShell, `Get-ChildItem -Force` with hidden and system entries left
+  out): 4,912 entries, 4,904 visible, 3,638 named `*.dll`, 51 containing `ab`, 3,642 containing
+  `dll`. The two keys typed 0.2 s apart gave one pass. After Escape in the list, `a` filtered
+  nothing (the negative control) and Down moved the list's cursor: the list had the focus. The
+  second Ctrl+F found the box closed and created it with the focus (its `init`); Return applied at
+  once and gave the list the focus.
+- **Operations on filtered rows.** A scratch tree `%TEMP%\twinfm-p3m2-ops\` (removed afterwards),
+  `src` holding `a1.txt`, `a2.txt`, `b1.log`: `split; nav 1 ...\dest; nav 0 ...\src; click 0 0;
+  filter 0 *.txt; key CtrlA; copy; waitops 10000; filter 0 a2; key CtrlA; delete; waitops 10000`:
+
+  ```
+  [filter] pane=0 "*.txt" (glob): 2 of 3 shown, pass 0.3 ms
+  [select] pane=0 All row=0 selected=2
+  [fileops] submit id=1 pane=0 hwnd=0x230a64 Copy { sources: ["...\\src\\a1.txt", "...\\src\\a2.txt"], dest_dir: "...\\dest" }
+  [fileops] done id=1 pane=0 tab=1 Done: Copied 2 items
+  [filter] pane=0 "a2" (substring): 1 of 3 shown, pass 0.2 ms
+  [select] pane=0 All row=-1 selected=1
+  [fileops] submit id=2 pane=0 hwnd=0x230a64 Delete { sources: ["...\\src\\a2.txt"], permanent: false }
+  [fileops] done id=2 pane=0 tab=1 Done: Deleted 1 item to the Recycle Bin
+  [filter] pane=0 "a2" (substring): 0 of 2 shown, pass 0.2 ms
+  ```
+
+  Afterwards `src` held `a1.txt` and `b1.log`, `dest` `a1.txt` and `a2.txt`. The deleted 1-byte
+  `a2.txt` is in the Recycle Bin. The refresh after the job kept the filter.
+- **Search of `C:\Windows`.** `nav 0 C:\Windows; sleep 1500; filter 0 kernel32.dll; sleep 500;
+  search 0; waitsearch 120000`:
+
+  ```
+  [filter] pane=0 "kernel32.dll" (substring): 0 of 103 shown, pass 0.3 ms
+  [tab] pane=0 opened tab 2 of 2 (id 3) on C:\Windows for a search
+  [watch] pane=0 no watch for C:\Windows: search results
+  [search] pane=0 gen=3 start "kernel32.dll" in C:\Windows
+  [search] pane=0 gen=3 batch 1 (1 so far)
+  [enum] pane=0 first batch after 1916.1 ms
+  [search] pane=0 gen=3 batch 2 (5 so far)
+  ...
+  [search] pane=0 gen=3 batch 9 (20 so far)
+  [search] pane=0 gen=3 done: 20 found, 156836 folders walked, 45 skipped, in 38925 ms
+  [search] pane=0 gen=3 skipped 45 folders
+  [enum] pane=0 done: 20 entries, worker 38924.7 ms, request-to-done 38925.6 ms
+  [sort] pane=0 20 of 20 entries by Name asc=true hidden=0 cursor=None selected=0 in 0.2 ms
+  ```
+
+  `dir /s /b C:\Windows\*kernel32.dll*` lists the same 20: `System32\kernel32.dll`,
+  `System32\en-US\kernel32.dll.mui`, `SysWOW64\kernel32.dll`, and 17 in `WinSxS` (its `Backup`
+  folder included). Screenshots (`tools/shot.ps1`) during and after a search of `C:\Windows`
+  stopped with Escape after 4 s show the tab `Search: kernel32.dll`, the window title `TwinFM -
+  Search: kernel32.dll`, the crumbs `This PC > C: > Windows > Search: "kernel32.dll"`, the rows
+  named `WinSxS\wow64_microsoft-windows-kernel32_...\kernel32.dll`, and the status bar
+  "Searching... 5 found", then "5 found, stopped after 4.0 s"; one taken with the box open on
+  `ker` in System32 shows the box at the bar's right end and "96 of 4904 items (8 hidden)".
+- **Results act on their full paths.** A scratch tree `%TEMP%\twinfm-p3m2-search\` (removed
+  afterwards): `root\hit-top.txt`, `root\miss.txt`, `root\sub\hit-folder\`, and
+  `root\sub\deep\hit-run.cmd`, a one-line script that writes `ran-marker.txt` next to itself.
+  `split; nav 1 ...\dest; nav 0 ...\root; click 0 0; filter 0 hit; search 0; waitsearch 10000;
+  click 0 2; key Return; click 0 2; copy; waitops 5000; rclick 0 2; menuclose; dragrow 0 2 0 40;
+  dragcancel; dropfiles 0 -1 copy ...\drop-me.txt; dropfiles tab 0 1 copy ...\drop-me.txt;
+  rclickempty 0; menuclose; key F5; waitsearch 10000; click 0 0; key Return; history back`:
+
+  ```
+  [search] pane=0 gen=5 done: 3 found, 4 folders walked, 0 skipped, in 5 ms
+  [open] pane=0 C:\Users\jtkli\AppData\Local\Temp\twinfm-p3m2-search\root\sub\deep\hit-run.cmd: Ok(())
+  [fileops] submit id=1 pane=0 hwnd=0xfb09ee Copy { sources: ["...\\root\\sub\\deep\\hit-run.cmd"], dest_dir: "...\\dest" }
+  [fileops]   item 0x00000000 ...\root\sub\deep\hit-run.cmd -> ...\dest\hit-run.cmd
+  [refresh] pane=0 gen=6 path=...\root
+  [search] pane=0 gen=6 start "hit" in ...\root
+  [menu] pane=0 row=2 1 target(s) at (436, 146) -> screen (705, 437)
+  [menu] item menu for 1 item(s) in ...\root: Open in terminal | Copy path | --- | Open | Edit | ...
+  [menu] closed after 429 ms (UI thread cpu 31 ms in the loop): id 0 = Nothing
+  [dnd] pane=0 row=2: dragging 1 item(s)
+  [dnd] drag image 96x96 px, 1 item(s), icon from the shell, composed in 22.5 ms: InitializeFromBitmap = 0x00000000
+  [dnd] pane 0 tab 3 shows search results: no drop there (it would land in the search's root)
+  [auto] dropfiles Row(0, -1) copy: 1 path(s), DragEnter effect none, Drop reported none
+  [auto] dropfiles Tab(0, 1) copy: 1 path(s), DragEnter effect none, Drop reported none
+  [fileops] pane=0 note: search results have no folder menu; right-click a result
+  [refresh] pane=0 gen=9 path=...\root
+  [search] pane=0 gen=9 done: 3 found, 4 folders walked, 0 skipped, in 5 ms
+  [nav] pane=0 history push ...\root (1 back)
+  [nav] pane=0 gen=10 path=...\root\sub\hit-folder
+  [nav] pane=0 history back: ...\root\sub\hit-folder -> ...\root (0 back, 1 forward left)
+  [sort] pane=0 3 of 3 entries by Name asc=true hidden=0 cursor=None selected=0 in 0.3 ms
+  ```
+
+  The script ran (`root\sub\deep\ran-marker.txt` appeared) and the copy landed in `dest`. Rows: 0
+  `sub\hit-folder`, 1 `hit-top.txt`, 2 `sub\deep\hit-run.cmd`. Back returned to the root's own
+  listing (3 entries), not to the search. Renames, in the same tree: `click 0 2; rename
+  hit-renamed.cmd` gave `Rename { source: "...\\root\\sub\\deep\\hit-run.cmd", new_name:
+  "hit-renamed.cmd" }`, and `rename sub\deep\hit-two.cmd` (the prefix kept) gave `Rename { source:
+  "...\\root\\sub\\deep\\hit-renamed.cmd", new_name: "hit-two.cmd" }`; both `Done`, the file stayed
+  in `sub\deep`.
+- **Cancellation, on `C:\`.** `filter 0 kernel32.dll; search 0; sleep 1500; filter 0 ntdll.dll;
+  search 0; sleep 1500; crumb 0 1; tab 1; key CtrlShiftF; sleep 1500; key Escape; tab 1; search 0;
+  sleep 1500; tab close; tab 2; key CtrlShiftF; key n; key t; key d; key l; key l; key Return;
+  sleep 1500; tab close`:
+
+  ```
+  [tab] pane=0 opened tab 2 of 2 (id 3) on C:\ for a search
+  [search] pane=0 gen=2 start "kernel32.dll" in C:\
+  [search] pane=0 gen=3 start "ntdll.dll" in C:\
+  [search] pane=0 gen=2 cancelled after 13142 folders (new search)
+  [auto] Crumb { pane: 0, index: 1 }
+  [nav] pane=0 gen=4 path=C:\
+  [search] pane=0 gen=3 cancelled after 18432 folders (navigated away)
+  [auto] Key("CtrlShiftF")
+  [tab] pane=0 opened tab 2 of 3 (id 4) on C:\ for a search
+  [search] pane=0 gen=6 start "kernel32.dll" in C:\
+  [auto] Key("Escape")
+  [search] pane=0 Escape: stopping the search
+  [search] pane=0 gen=6 cancelled after 20109 folders (Escape)
+  [sort] pane=0 5 of 5 entries by Name asc=true hidden=0 cursor=None selected=0 in 0.2 ms
+  [tab] pane=0 opened tab 2 of 4 (id 5) on C:\ for a search
+  [search] pane=0 gen=8 start "kernel32.dll" in C:\
+  [auto] Key("CtrlW")
+  [tab] pane=0 closed tab 2 (id 5), 3 left
+  [search] pane=0 gen=8 cancelled after 15677 folders (tab closed)
+  [auto] Key("CtrlShiftF")
+  [search] pane=0 no pattern yet: the filter box opens, Return searches
+  [auto] Key("Return")
+  [search] pane=0 gen=9 start "ntdll" in C:\
+  [auto] Key("CtrlW")
+  [search] pane=0 gen=9 cancelled after 19254 folders (tab closed)
+  ```
+
+  Every way out stopped the walk with its reason. After Escape the five results found so far were
+  sorted and kept. Ctrl+Shift+F through the key path opened a search tab, and on an empty box opened
+  it for the pattern: five typed keys, then Return, searched in place in that tab.
+
+- **After Jeremy's console check: the focus, the keys and the history** (same rules; scratch
+  trees in `%TEMP%\twinfm-p3m2-fix\` and `%TEMP%\twinfm-p3m2-search\`, removed afterwards). Before
+  the fix, `key CtrlF; key n; key t; key d; key l; key l; key CtrlShiftF; sleep 500; key CtrlW` on
+  `C:\` logged `[search] ... start "ntdll" in C:\` and, after `Key("CtrlW")`, only more `batch`
+  lines: the tab stayed open. A longer run showed that every key after Ctrl+Shift+F (Down, Escape,
+  Ctrl+W, Ctrl+F, Ctrl+T) logged nothing. After the fix the same script gives:
+
+  ```
+  [search] pane=0 gen=2 start "ntdll" in C:\
+  [auto] Key("CtrlW")
+  [tab] pane=0 closed tab 2 (id 3), 1 left
+  [search] pane=0 gen=2 cancelled after 5217 folders (tab closed)
+  ```
+
+  Keys with the box focused (`key CtrlF` before each): `CtrlT` opened a tab, `CtrlTab` switched,
+  `F5` refreshed, `F9` hid and showed the sidebar, `F3` opened the split, `CtrlW` reached the
+  pane (`the last tab stays` on the new pane), and `Down` after a search moved the list's cursor
+  (`[select] pane=0 Only row=0 selected=1`). Refusals with real keys in a search tab, after `cc`
+  on a file in the other pane, `click 0 1` on a result:
+
+  ```
+  [auto] Key("CtrlV")
+  [fileops] pane=0 note: search results: paste into a folder
+  [auto] Key("F7")
+  [fileops] pane=0 note: search results: open a folder to make a folder in it
+  [auto] Key("CtrlF")
+  [auto] Key("F7")
+  [fileops] pane=0 note: search results: open a folder to make a folder in it
+  ```
+
+  The root held `hit-top.txt` and `sub\hit-folder` before and after (nothing pasted or created); a
+  screenshot shows the status bar "search results: paste into a folder | 2 found in 0.0 s". History,
+  `nav 0 <root>; filter 0 hit; search 0; waitsearch 5000; click 0 0; key Return; backclick 0;
+  waitsearch 5000; forwardclick 0; key AltLeft; waitsearch 5000; key AltRight; key AltLeft;
+  waitsearch 5000; key AltLeft; key AltLeft; key AltRight; waitsearch 5000`:
+
+  ```
+  [nav] pane=0 history push ...\root (1 back)
+  [tab] pane=0 opened tab 2 of 2 (id 3) on ...\root for a search
+  [search] pane=0 gen=3 done: 2 found, 3 folders walked, 0 skipped, in 4 ms
+  [nav] pane=0 history push search "hit" in ...\root (2 back)
+  [nav] pane=0 gen=4 path=...\root\sub\hit-folder
+  [nav] pane=0 Back button (active pane was 0, now 0)
+  [nav] pane=0 history back: ...\root\sub\hit-folder -> search "hit" in ...\root (1 back, 1 forward left)
+  [search] pane=0 gen=5 start "hit" in ...\root
+  [search] pane=0 gen=5 done: 2 found, 3 folders walked, 0 skipped, in 4 ms
+  [nav] pane=0 Forward button (active pane was 0, now 0)
+  [nav] pane=0 history forward: search "hit" in ...\root -> ...\root\sub\hit-folder (2 back, 0 forward left)
+  [auto] Key("AltLeft")
+  [nav] pane=0 history back: ...\root\sub\hit-folder -> search "hit" in ...\root (1 back, 1 forward left)
+  [search] pane=0 gen=7 start "hit" in ...\root
+  [auto] Key("AltRight")
+  [nav] pane=0 history forward: search "hit" in ...\root -> ...\root\sub\hit-folder (2 back, 0 forward left)
+  [auto] Key("AltLeft")      (the search again, gen 9)
+  [auto] Key("AltLeft")
+  [nav] pane=0 history back: search "hit" in ...\root -> ...\root (0 back, 2 forward left)
+  [auto] Key("AltLeft")
+  [nav] pane=0 history back: nothing to go back to
+  [auto] Key("AltRight")
+  [nav] pane=0 history forward: ...\root -> search "hit" in ...\root (1 back, 1 forward left)
+  [search] pane=0 gen=11 start "hit" in ...\root
+  ```
+
+  The filter, results and cancellation checks above were re-run on this build with the same
+  lines (`3638 of 4904`, `51`, `3642`; `[open]` with the full path, copy, the item menu, the drag,
+  both drops refused; every cancel reason). The results check's `history back` now runs the
+  search again (`history back: ...\hit-folder -> search "hit" in ...\root`, `[search] ... gen=11
+  start`).
+
+**Measurements** (this machine, RDP, from the lines above and `C:\traces\bigdir`, 40,000 one-byte
+files `file_1.txt` to `file_40000.txt`; the pass is filter plus sort on the worker):
+
+| Pass on bigdir | ms |
+|---|---|
+| no filter (seven passes: three sorts, four clears) | 18.3 to 25.0 |
+| `*7*` glob, 13,756 kept (four passes, one after F5) | 17.2, 17.9, 19.0, 22.8 |
+| `1234` substring, 14 kept | 6.4 |
+| `file0*` glob, none kept | 12.3 |
+
+On System32 (4,912 entries): 1.5 ms without a filter, 2.4 ms with `*.dll`. A filter that keeps few
+rows makes the pass cheaper (less to sort); the per-entry lowercase costs about 6 ms per 40,000
+names. The search of `C:\Windows` for `kernel32.dll`: 20 found, 156,836 folders walked, 45 skipped,
+38.9 s, first result after 1.9 s.
+
+### Gate
+
+**Passed (2026-10-13), one triplet.** Console WPR, Jeremy elevated, `tools/wpr-triplet.ps1
+-Reference p3m1 -Candidate p3m2 -Tag ab11`, accessibility on, Narrator off, no other TwinFM
+window: `target-p3m1` (537f606) against `target-p3m2` (e2b6343, the PR head, built from a
+detached checkout). Analysed with `tools/analyze-trace.py --symbols --exe`.
+
+| Run | P3-M1 (`target-p3m1`) | P3-M2 e2b6343 |
+|---|---|---|
+| 1 | 21.5% (2152 ms) | 26.4% (2636 ms) |
+| 2 | 26.2% (2622 ms) | 27.1% (2706 ms) |
+| 3 | 26.9% (2693 ms) | 26.9% (2685 ms) |
+| **median** | **26.2%** | **26.9%** |
+
+The medians differ by 0.7, and the reference's run 3 is not below the candidate's run 1, so
+neither half of the rule calls a gap. The machine rose by five points during the candidate's first
+run and stayed there (Defender's `MsMpEng` at 460 MB working set during the analysis, most likely
+scanning after the console checks' search had walked `C:\`), which the pairwise reading tolerates:
+runs 2 and 3 pair at +0.9 and 0.0 with every category in proportion (accessibility 261 / 262,
+247 / 250; render 1528 / 1581, 1599 / 1552; draw_text 861 / 886, 907 / 879; rows 514 / 536,
+545 / 502; timers 909 / 940, 915 / 905; heap 263 / 253, 236 / 255). No filter, matcher, search or
+walk frame of ours appears in any candidate window (the `filter_item` and `WalkFrameChain` frames
+are Slint's renderer and the kernel's stack walker, in both binaries). Traces
+`C:/traces/twinfm-ab11-{p3m1,p3m2}-{1,2,3}.etl`, reports under `C:/traces/export/`. Lesson for the
+protocol: run the console checks AFTER the triplet, or wait for Defender to settle; a recursive
+search of `C:\` before the gate costs the session five points of noise.
+
+**After the gate** (fixes from Jeremy's console checks, see Decisions): searches in the tab's
+history (`tabs::Place`), the focus given to the results list when a search starts and to the list
+when Rust closes an open filter box, F7 forwarded from the box, and the pane's `filter-focused`
+property and `changed filter-open` handler removed. None of it touches the rows. In the gate
+scenario (no box, no search) what runs differently is a `Place` cloned per navigation instead of a
+`PathBuf` (per navigation, not per frame) and one change handler fewer per pane.

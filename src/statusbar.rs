@@ -8,9 +8,18 @@ use std::path::Path;
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
 /// Left: "N items (K hidden)", after the pane's note (the last file operation's result) when
-/// there is one; "error: ..." when the listing failed. `enum_ms` is the enumeration time, shown
-/// only with `TWINFM_PERF_STATUS=1`; None while the listing is still loading.
-pub fn left_text(note: &str, items: usize, hidden: usize, loading: bool, enum_ms: Option<f64>, error: Option<&str>) -> String {
+/// there is one; "error: ..." when the listing failed. `of`: a name filter is on and M entries
+/// pass the hidden-file switch ("N of M items"). `enum_ms` is the enumeration time, shown only
+/// with `TWINFM_PERF_STATUS=1`; None while the listing is still loading.
+pub fn left_text(
+    note: &str,
+    items: usize,
+    of: Option<usize>,
+    hidden: usize,
+    loading: bool,
+    enum_ms: Option<f64>,
+    error: Option<&str>,
+) -> String {
     if let Some(e) = error {
         return if note.is_empty() { format!("error: {e}") } else { format!("{note} | error: {e}") };
     }
@@ -19,7 +28,11 @@ pub fn left_text(note: &str, items: usize, hidden: usize, loading: bool, enum_ms
         s.push_str(note);
         s.push_str(" | ");
     }
-    s.push_str(&format!("{items} item{}", if items == 1 { "" } else { "s" }));
+    let plural = if of.unwrap_or(items) == 1 { "" } else { "s" };
+    match of {
+        Some(m) => s.push_str(&format!("{items} of {m} item{plural}")),
+        None => s.push_str(&format!("{items} item{plural}")),
+    }
     if hidden > 0 {
         s.push_str(&format!(" ({hidden} hidden)"));
     }
@@ -29,6 +42,22 @@ pub fn left_text(note: &str, items: usize, hidden: usize, loading: bool, enum_ms
         s.push_str(&format!(", enumerated in {ms:.0} ms"));
     }
     s
+}
+
+/// Left for a search tab: "Searching... N found" while the walk runs, then "N found in S s"
+/// ("N found, stopped after S s" when it was stopped), with the hidden count and the note as in a
+/// folder. `secs` is None while searching.
+pub fn search_text(note: &str, found: usize, hidden: usize, secs: Option<f64>, stopped: bool, error: Option<&str>) -> String {
+    let mut s = match (error, secs) {
+        (Some(e), _) => format!("error: {e}"),
+        (None, None) => format!("Searching... {found} found"),
+        (None, Some(t)) if stopped => format!("{found} found, stopped after {t:.1} s"),
+        (None, Some(t)) => format!("{found} found in {t:.1} s"),
+    };
+    if hidden > 0 && error.is_none() {
+        s.push_str(&format!(" ({hidden} hidden)"));
+    }
+    if note.is_empty() { s } else { format!("{note} | {s}") }
 }
 
 /// Middle: "M selected, <total size of the selected files>", "M selected" when only folders are
@@ -88,13 +117,19 @@ mod tests {
 
     #[test]
     fn status_text_composition() {
-        assert_eq!(left_text("", 40000, 0, false, None, None), "40000 items");
-        assert_eq!(left_text("", 1, 0, false, None, None), "1 item");
-        assert_eq!(left_text("", 12, 3, false, None, None), "12 items (3 hidden)");
-        assert_eq!(left_text("", 2000, 0, true, None, None), "2000 items (loading...)");
-        assert_eq!(left_text("", 5, 0, false, Some(52.4), None), "5 items, enumerated in 52 ms");
-        assert_eq!(left_text("Copied 2 items", 5, 1, false, None, None), "Copied 2 items | 5 items (1 hidden)");
-        assert_eq!(left_text("", 0, 0, false, None, Some("Access is denied.")), "error: Access is denied.");
+        assert_eq!(left_text("", 40000, None, 0, false, None, None), "40000 items");
+        assert_eq!(left_text("", 1, None, 0, false, None, None), "1 item");
+        assert_eq!(left_text("", 12, None, 3, false, None, None), "12 items (3 hidden)");
+        assert_eq!(left_text("", 2000, None, 0, true, None, None), "2000 items (loading...)");
+        assert_eq!(left_text("", 5, None, 0, false, Some(52.4), None), "5 items, enumerated in 52 ms");
+        assert_eq!(left_text("Copied 2 items", 5, None, 1, false, None, None), "Copied 2 items | 5 items (1 hidden)");
+        assert_eq!(left_text("", 0, None, 0, false, None, Some("Access is denied.")), "error: Access is denied.");
+        assert_eq!(left_text("", 12, Some(400), 3, false, None, None), "12 of 400 items (3 hidden)");
+        assert_eq!(left_text("", 0, Some(1), 0, false, None, None), "0 of 1 item");
+        assert_eq!(search_text("", 3, 0, None, false, None), "Searching... 3 found");
+        assert_eq!(search_text("", 12, 2, Some(4.26), false, None), "12 found in 4.3 s (2 hidden)");
+        assert_eq!(search_text("Deleted 1 item", 7, 0, Some(1.0), true, None), "Deleted 1 item | 7 found, stopped after 1.0 s");
+        assert_eq!(search_text("", 0, 0, Some(0.0), false, Some("Access is denied.")), "error: Access is denied.");
         assert_eq!(mid_text(0, 0, false), "");
         assert_eq!(mid_text(3, 1536, true), "3 selected, 1.5 KB");
         assert_eq!(mid_text(2, 0, false), "2 selected");
