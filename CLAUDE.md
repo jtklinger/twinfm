@@ -9,7 +9,7 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
 `docs/phase-3-plan.md` the Phase 3 plan and record. Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (103 tests; five touch the real shell and clipboard, and the eight
+- `cargo test --release` (104 tests; five touch the real shell and clipboard, and the eight
   `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test
   and the search walker's test write to scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,

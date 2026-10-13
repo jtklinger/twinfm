@@ -703,13 +703,34 @@ said "only if wanted") was not asked for and is deferred.
 - **Results act on their real paths.** Every place that builds a path as `folder.join(name)` gets
   `root\sub\file.txt`: open (and the working directory is now the file's own folder), the file
   operations, copy, move, delete, cut and copy to the clipboard, the icons, middle-click into a new
-  tab. A folder result opens in the same tab: the search is dropped and the root goes on the back
-  stack, so Back returns to the root folder, not to the search. Two places needed the relative name
+  tab. A folder result opens in the same tab, and the search goes on the back stack (next bullet
+  but one). Two places needed the relative name
   split: `shellmenu::parse_items` (the context menu and the drag's data object) now resolves the
   names to their own folder with `common_parent`, since a child PIDL must be one level deep, and
   refuses items from different folders ("the items are in different folders; select items from one
   folder"); the rename editor shows the relative name and a rename keeps the item in its folder
   (`edit_commit` strips the folder prefix when the typed name keeps it).
+- **Searches are in the tab's history** (`tabs.rs`, `main.rs`; changed after Jeremy's console
+  check, see Decisions). `tabs::History` holds `tabs::Place` entries, a folder or a search (`path`
+  the root, `search` the pattern), instead of bare folders; `push`, `back` and `forward` take and
+  give places, and two places are the same when the folder matches ignoring ASCII case and the
+  pattern matches exactly. `Tab::place()` is where a tab is. Opening a folder result pushes the
+  search; Back (Alt+Left, the mouse's Back button) to a search runs it again in that tab under
+  the same root (`start_search(.., Some(root))`, nothing pushed) and Forward from it returns to the
+  folder. A new search tab starts with its root folder on its back stack (it was searched from
+  there), so Back from a search goes to the root folder; a new search in a search tab pushes the
+  old one. The `[nav]` history lines name a search as `search "<pattern>" in <root>`.
+- **Focus and keys around the box** (changed after the console check). Starting a search gives the
+  results list the focus (`focus-pane` after the state borrow), and whenever Rust closes an open
+  box in the active pane (a navigation, a tab switch, a new tab, a search) it gives that pane's
+  list the focus (`set_filter_box`): a box destroyed while it holds the focus leaves the focus
+  nowhere, and then no key reached the window at all. The rule for keys while the box has the
+  focus: the window's keys pass through it (Ctrl+W, Ctrl+T, Ctrl+Tab, Ctrl+1 to 9, F3, F5, F9,
+  Ctrl+H, Ctrl+L, Ctrl+F, Ctrl+Shift+F: the box does not take them); F7 does what it does in the
+  list (a new folder, or the refusal in a search tab); text keys stay the box's (Ctrl+V, Ctrl+A,
+  Ctrl+C, Ctrl+X, Ctrl+Z, Delete, Backspace, the arrows but Down, Home, End). The pane's
+  `filter-focused` property and its `changed filter-open` handler are gone (the handler did not
+  restore the focus after a tab switch).
 - **Driver** (`auto.rs`): `filter <pane> <text>` (sets the box's text, opening it without the
   focus, and calls the `edited` callback the control fires), `search <pane>` (the callback
   Ctrl+Shift+F fires), `waitsearch <ms>` (waits until no search tab is still walking, then 300 ms
@@ -721,7 +742,9 @@ said "only if wanted") was not asked for and is deferred.
   in T ms`, `cancelled after D folders (<why>)`, `skipped N folders`, `pane=N Escape: stopping the
   search`, `pane=N no pattern yet: the filter box opens, Return searches`; `[tab] ... for a search`.
   The `[sort]` line is unchanged; a search's `Done` also prints the usual `[enum] ... done:` line.
-- **Tests**, 99 to 103: `name_match_substring_glob_and_case` (empty matches all; substring either
+- **Tests**, 99 to 104: `history_holds_searches_like_folders` (a search and a folder result in
+  the history, back and forward through both, a search is not its root, the log form);
+  `name_match_substring_glob_and_case` (empty matches all; substring either
   case; `é`/`É` and `ß`; anchored globs, `?` one character, `*` none or more; a relative name matched
   by its own name only); `filter_and_hidden_combine_in_the_pass_and_the_batches` (the filter never
   reveals a hidden file; hidden and filtered counted apart in the pass and in streamed batches; a
@@ -766,9 +789,19 @@ said "only if wanted") was not asked for and is deferred.
   pass anyway.
 - **One atomic for the flag and the reason**, set with a compare-exchange from running, so the
   first reason wins and a cancel after the end is a no-op.
-- **Folder results navigate the same tab and leave the search**; the search is not in the history,
-  so Back returns to the root folder (its listing, not the search). Middle-click opens a folder
-  result in a new tab, as before.
+- **A search is a place in the tab's history, like a page in a browser** (Jeremy, after his console
+  check, 2026-10-13, reversing the first version, where Back from a folder result went to the root
+  folder and the search was lost). A folder result opens in the same tab; Back runs the search
+  again (same root, same pattern), Forward returns to the folder; Back from the search goes to the
+  root folder. Middle-click opens a folder result in a new tab, as before.
+- **Starting a search moves the focus to the results list.** In Jeremy's check Ctrl+F, typing,
+  Ctrl+Shift+F, then Ctrl+W did nothing: the new tab's empty filter closed the box that held the
+  focus, the focus went nowhere and no key reached the window (Ctrl+W, Ctrl+V and F7 alike: the
+  paste and new-folder refusals never ran). The scripted check had used the `filter` step, which
+  opens the box without the focus.
+- **Window keys pass the box, text keys stay in it, F7 acts as in the list.** Checked with real
+  keys: with the box focused, Ctrl+W, Ctrl+T, Ctrl+Tab, F3, F5 and F9 already reached the window
+  (the LineEdit does not take them); only F7, a list key, needed forwarding.
 - **The refusals go further than the drop**: paste, a new folder, Shift+F5 / Shift+F6 into a pane
   showing search results, and the background context menu ("Paste", "New") would all act on the
   root, which is not what the list shows.
@@ -980,6 +1013,75 @@ RDP session, this worktree's `target\release\twinfm.exe` (a1d2081), every run wi
   sorted and kept. Ctrl+Shift+F through the key path opened a search tab, and on an empty box opened
   it for the pattern: five typed keys, then Return, searched in place in that tab.
 
+- **After Jeremy's console check: the focus, the keys and the history** (same rules; scratch
+  trees in `%TEMP%\twinfm-p3m2-fix\` and `%TEMP%\twinfm-p3m2-search\`, removed afterwards). Before
+  the fix, `key CtrlF; key n; key t; key d; key l; key l; key CtrlShiftF; sleep 500; key CtrlW` on
+  `C:\` logged `[search] ... start "ntdll" in C:\` and, after `Key("CtrlW")`, only more `batch`
+  lines: the tab stayed open. A longer run showed that every key after Ctrl+Shift+F (Down, Escape,
+  Ctrl+W, Ctrl+F, Ctrl+T) logged nothing. After the fix the same script gives:
+
+  ```
+  [search] pane=0 gen=2 start "ntdll" in C:\
+  [auto] Key("CtrlW")
+  [tab] pane=0 closed tab 2 (id 3), 1 left
+  [search] pane=0 gen=2 cancelled after 5217 folders (tab closed)
+  ```
+
+  Keys with the box focused (`key CtrlF` before each): `CtrlT` opened a tab, `CtrlTab` switched,
+  `F5` refreshed, `F9` hid and showed the sidebar, `F3` opened the split, `CtrlW` reached the
+  pane (`the last tab stays` on the new pane), and `Down` after a search moved the list's cursor
+  (`[select] pane=0 Only row=0 selected=1`). Refusals with real keys in a search tab, after `cc`
+  on a file in the other pane, `click 0 1` on a result:
+
+  ```
+  [auto] Key("CtrlV")
+  [fileops] pane=0 note: search results: paste into a folder
+  [auto] Key("F7")
+  [fileops] pane=0 note: search results: open a folder to make a folder in it
+  [auto] Key("CtrlF")
+  [auto] Key("F7")
+  [fileops] pane=0 note: search results: open a folder to make a folder in it
+  ```
+
+  The root held `hit-top.txt` and `sub\hit-folder` before and after (nothing pasted or created); a
+  screenshot shows the status bar "search results: paste into a folder | 2 found in 0.0 s". History,
+  `nav 0 <root>; filter 0 hit; search 0; waitsearch 5000; click 0 0; key Return; backclick 0;
+  waitsearch 5000; forwardclick 0; key AltLeft; waitsearch 5000; key AltRight; key AltLeft;
+  waitsearch 5000; key AltLeft; key AltLeft; key AltRight; waitsearch 5000`:
+
+  ```
+  [nav] pane=0 history push ...\root (1 back)
+  [tab] pane=0 opened tab 2 of 2 (id 3) on ...\root for a search
+  [search] pane=0 gen=3 done: 2 found, 3 folders walked, 0 skipped, in 4 ms
+  [nav] pane=0 history push search "hit" in ...\root (2 back)
+  [nav] pane=0 gen=4 path=...\root\sub\hit-folder
+  [nav] pane=0 Back button (active pane was 0, now 0)
+  [nav] pane=0 history back: ...\root\sub\hit-folder -> search "hit" in ...\root (1 back, 1 forward left)
+  [search] pane=0 gen=5 start "hit" in ...\root
+  [search] pane=0 gen=5 done: 2 found, 3 folders walked, 0 skipped, in 4 ms
+  [nav] pane=0 Forward button (active pane was 0, now 0)
+  [nav] pane=0 history forward: search "hit" in ...\root -> ...\root\sub\hit-folder (2 back, 0 forward left)
+  [auto] Key("AltLeft")
+  [nav] pane=0 history back: ...\root\sub\hit-folder -> search "hit" in ...\root (1 back, 1 forward left)
+  [search] pane=0 gen=7 start "hit" in ...\root
+  [auto] Key("AltRight")
+  [nav] pane=0 history forward: search "hit" in ...\root -> ...\root\sub\hit-folder (2 back, 0 forward left)
+  [auto] Key("AltLeft")      (the search again, gen 9)
+  [auto] Key("AltLeft")
+  [nav] pane=0 history back: search "hit" in ...\root -> ...\root (0 back, 2 forward left)
+  [auto] Key("AltLeft")
+  [nav] pane=0 history back: nothing to go back to
+  [auto] Key("AltRight")
+  [nav] pane=0 history forward: ...\root -> search "hit" in ...\root (1 back, 1 forward left)
+  [search] pane=0 gen=11 start "hit" in ...\root
+  ```
+
+  The filter, results and cancellation checks above were re-run on this build with the same
+  lines (`3638 of 4904`, `51`, `3642`; `[open]` with the full path, copy, the item menu, the drag,
+  both drops refused; every cancel reason). The results check's `history back` now runs the
+  search again (`history back: ...\hit-folder -> search "hit" in ...\root`, `[search] ... gen=11
+  start`).
+
 **Measurements** (this machine, RDP, from the lines above and `C:\traces\bigdir`, 40,000 one-byte
 files `file_1.txt` to `file_40000.txt`; the pass is filter plus sort on the worker):
 
@@ -1021,3 +1123,10 @@ are Slint's renderer and the kernel's stack walker, in both binaries). Traces
 `C:/traces/twinfm-ab11-{p3m1,p3m2}-{1,2,3}.etl`, reports under `C:/traces/export/`. Lesson for the
 protocol: run the console checks AFTER the triplet, or wait for Defender to settle; a recursive
 search of `C:\` before the gate costs the session five points of noise.
+
+**After the gate** (fixes from Jeremy's console checks, see Decisions): searches in the tab's
+history (`tabs::Place`), the focus given to the results list when a search starts and to the list
+when Rust closes an open filter box, F7 forwarded from the box, and the pane's `filter-focused`
+property and `changed filter-open` handler removed. None of it touches the rows. In the gate
+scenario (no box, no search) what runs differently is a `Place` cloned per navigation instead of a
+`PathBuf` (per navigation, not per frame) and one change handler fewer per pane.
