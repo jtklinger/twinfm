@@ -74,14 +74,18 @@ component CrumbButton inherits HorizontalLayout {
     callback clicked();
     // menu(x, y): the chevron, at window coordinates of its bottom-left corner.
     callback menu(length, length);
-    // The mouse's Back button released over the crumb (every TouchArea grabs the press it gets,
-    // so each one in the pane reports it).
+    // The mouse's Back or Forward button released over the crumb (every TouchArea grabs the press
+    // it gets, so each one in the pane reports it).
     callback back();
+    callback forward();
     Rectangle {
         background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
         ta := TouchArea {
             clicked => { root.clicked(); }
-            pointer-event(ev) => { if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); } }
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+            }
         }
         HorizontalLayout {
             padding-left: 4px;
@@ -95,7 +99,10 @@ component CrumbButton inherits HorizontalLayout {
         Text { text: "\u{203a}"; horizontal-alignment: center; vertical-alignment: center; color: Palette.foreground.transparentize(40%); }
         chevron-ta := TouchArea {
             clicked => { root.menu(self.absolute-position.x, self.absolute-position.y + self.height); }
-            pointer-event(ev) => { if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); } }
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+            }
         }
     }
 }
@@ -105,8 +112,9 @@ component HeaderCell inherits Rectangle {
     in property <bool> sorted;
     in property <bool> asc;
     callback clicked();
-    // The mouse's Back button released over the header cell.
+    // The mouse's Back or Forward button released over the header cell.
     callback back();
+    callback forward();
     background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background;
     HorizontalLayout {
         padding-left: 6px;
@@ -116,7 +124,10 @@ component HeaderCell inherits Rectangle {
     }
     ta := TouchArea {
         clicked => { root.clicked(); }
-        pointer-event(ev) => { if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); } }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+        }
     }
 }
 
@@ -128,6 +139,8 @@ component HeaderCell inherits Rectangle {
 component FileListBase inherits ListView {
     in property <[Row]> rows;
     in-out property <int> current-row: -1;
+    // The Type column; off, the row's type text is not instantiated (Pane show-type).
+    in property <bool> show-type: true;
     callback open-row(int);
     callback focus-requested();
     callback row-clicked(int, bool /* ctrl */, bool /* shift */);
@@ -139,7 +152,7 @@ component FileListBase inherits ListView {
     // what 0 press, 1 release, 2 moved past the drag threshold with the button down (once per
     // press), 3 double-click; 4, the middle button released over the row; 5, the mouse's Back
     // button released over it; 6, moved past the threshold with the right button down (a
-    // right-button drag, once per press).
+    // right-button drag, once per press); 7, the mouse's Forward button released over it.
     callback row-gesture(int, int, bool, bool);
     // The drag threshold (SM_CXDRAG / SM_CYDRAG in logical px), set from Rust.
     in property <length> drag-dx: 4px;
@@ -175,7 +188,7 @@ component FileListBase inherits ListView {
             padding-left: 28px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            if root.show-type: Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
             Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
             Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
         }
@@ -209,6 +222,9 @@ component FileListBase inherits ListView {
                 if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) {
                     root.row-gesture(i, 5, false, false);
                 }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) {
+                    root.row-gesture(i, 7, false, false);
+                }
                 // Select on the press (so the row is drawn selected before the menu's modal loop
                 // starts), open the shell menu on the release.
                 if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.right) {
@@ -230,6 +246,8 @@ component FileListBase inherits ListView {
 
 component FileList inherits FileListBase {
     callback go-up();
+    // history(forward): Alt+Left (back) or Alt+Right (forward) in the tab's history.
+    callback history(bool);
     // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all, 4 right-click, 5 clear (model::SelOp)
     callback select(int, int);
     // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
@@ -288,6 +306,8 @@ component FileList inherits FileListBase {
         key-pressed(e) => {
             if (e.text == Key.Backspace && !e.modifiers.control) { root.go-up(); return accept; }
             if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return accept; }
+            if (e.text == Key.LeftArrow && e.modifiers.alt) { root.history(false); return accept; }
+            if (e.text == Key.RightArrow && e.modifiers.alt) { root.history(true); return accept; }
             if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return accept; }
             if (e.text == Key.UpArrow) {
                 if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }
@@ -345,6 +365,9 @@ export component Pane inherits Rectangle {
     in property <int> sort-col: 0;
     in property <bool> sort-asc: true;
     in-out property <int> current-row: -1;
+    // The Type column (settings `show_type`). Off, its header cell and every row's type text are
+    // not instantiated at all, and the Name column takes the 120 px.
+    in property <bool> show-type: true;
 
     callback navigate(string);
     callback open-row(int);
@@ -359,9 +382,13 @@ export component Pane inherits Rectangle {
     // crumb-menu(index, x, y): the chevron after crumb `index`, at window coordinates.
     callback crumb-menu(int, length, length);
     callback toggle-sticky();
-    // The mouse's Back button released anywhere over the pane that is not a text entry, the tab
-    // strip or the scrollbar: main.rs makes the pane active and goes up a folder.
+    // The mouse's Back or Forward button released anywhere over the pane that is not a text entry,
+    // the tab strip or the scrollbar: main.rs makes the pane active and goes back or forward in
+    // its active tab's history.
     callback back-button();
+    callback forward-button();
+    // history(forward): Alt+Left / Alt+Right in the list.
+    callback history(bool);
     callback select(int, int);
     callback viewport-changed(length, length);
     callback command(string);
@@ -472,11 +499,13 @@ export component Pane inherits Rectangle {
     changed path => { path-edit.text = root.path; }
     changed entry-sticky => { root.path-entry = root.entry-sticky; }
 
-    // Behind everything in the pane: the Back button over the padding, the status line and the
-    // gaps between the bar's buttons (every other TouchArea in the pane reports it itself).
+    // Behind everything in the pane: the Back and Forward buttons over the padding, the status
+    // line and the gaps between the bar's buttons (every other TouchArea in the pane reports them
+    // itself).
     TouchArea {
         pointer-event(ev) => {
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back-button(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward-button(); }
         }
     }
 
@@ -580,6 +609,7 @@ export component Pane inherits Rectangle {
                         clicked => { root.crumb-clicked(i); }
                         menu(x, y) => { root.crumb-menu(i, x, y); }
                         back => { root.back-button(); }
+                        forward => { root.forward-button(); }
                     }
                 }
             }
@@ -598,21 +628,25 @@ export component Pane inherits Rectangle {
                     clicked => { root.toggle-sticky(); }
                     pointer-event(ev) => {
                         if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back-button(); }
+                        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward-button(); }
                     }
                 }
             }
         }
         HorizontalLayout {
             height: 24px;
-            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } }
-            HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } }
-            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } }
-            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } }
+            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            // Not instantiated with the Type column off, so a header click cannot sort by it.
+            if root.show-type: HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
         list := FileList {
             rows: root.rows;
             current-row <=> root.current-row;
             go-up => { root.go-up(); }
+            history(f) => { root.history(f); }
+            show-type: root.show-type;
             open-row(i) => { root.open-row(i); }
             focus-requested => { root.focus-requested(); }
             select(op, i) => { root.select(op, i); }
@@ -702,6 +736,9 @@ export component Pane inherits Rectangle {
             if (ev.button == PointerEventButton.back && ev.kind == PointerEventKind.up) {
                 root.back-button();
             }
+            if (ev.button == PointerEventButton.forward && ev.kind == PointerEventKind.up) {
+                root.forward-button();
+            }
             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
                 root.context-menu(-1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);
             }
@@ -709,13 +746,14 @@ export component Pane inherits Rectangle {
     }
 
     // Return commits, Escape cancels, focus loss cancels. Over the name cell: 6 px row padding
-    // plus the 22 px icon slot from the left, the three fixed columns (350 px) from the right.
+    // plus the 22 px icon slot from the left, the fixed columns (350 px, 230 px without Type) from
+    // the right.
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
         x: list.x + 24px;
         y: list.y - 3px + (root.edit-mode == 1 ? list.content-y + list.current-row * 22px : 0px);
-        width: max(160px, list.width - 24px - 350px - 12px);
+        width: max(160px, list.width - 24px - (root.show-type ? 350px : 230px) - 12px);
         height: 28px;
         background: Palette.background;
         edit := LineEdit {

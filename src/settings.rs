@@ -76,9 +76,9 @@ pub fn placement(hwnd: isize, scale: f32) -> Option<(bool, WindowGeom)> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// The active tabs' folders when TwinFM last saved: what a pane opens at start when its tab
-    /// list (below) is empty. An empty right path means the left one. A command-line path
-    /// replaces the left pane's tabs.
+    /// What a pane opens at start when its tab list (below) is empty; set in the settings dialog
+    /// (before P3-M1 every save wrote the active tabs' folders here). An empty right path means
+    /// the left one. A command-line path replaces the left pane's tabs.
     pub start_left: String,
     pub start_right: String,
     /// Each pane's tabs, left to right, as folder paths (`left_tabs = ["C:\\", "D:\\work"]`), and
@@ -98,6 +98,8 @@ pub struct Config {
     /// The sort new tabs start with: "name", "size", "modified" or "type" (a header click sets it).
     pub sort_column: String,
     pub sort_ascending: bool,
+    /// The Type column in both panes (the settings dialog sets it). Missing in an older file: on.
+    pub show_type: bool,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
     /// "breadcrumb" or "entry" (the text entry for good).
@@ -143,6 +145,7 @@ impl Default for Config {
             split_ratio: 0.5,
             sort_column: "name".into(),
             sort_ascending: true,
+            show_type: true,
             sidebar_visible: true,
             sidebar_width: 180.0,
             path_bar: "breadcrumb".into(),
@@ -171,6 +174,57 @@ pub fn sort_from_name(s: &str) -> crate::model::SortCol {
         "modified" => SortCol::Modified,
         "type" => SortCol::Type,
         _ => SortCol::Name,
+    }
+}
+
+/// What the settings dialog shows and stages, one field per control. Opening it takes the live
+/// values; OK applies the fields whose staged value differs (`changes`); Cancel drops them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dialog {
+    pub start_left: String,
+    pub start_right: String,
+    /// The active tab's hidden-file filter in each pane (what Ctrl+H toggles).
+    pub show_hidden_left: bool,
+    pub show_hidden_right: bool,
+    pub show_type: bool,
+    pub sidebar_visible: bool,
+    /// "breadcrumb" or "entry", as in `Config::path_bar`.
+    pub path_bar: String,
+}
+
+impl Dialog {
+    /// The staged values as they are applied: start folders trimmed, an empty left one the
+    /// default (`C:\`), an empty right one left empty (it means the left pane's folder).
+    pub fn normalized(mut self) -> Dialog {
+        self.start_left = match self.start_left.trim() {
+            "" => Config::default().start_left,
+            t => t.to_string(),
+        };
+        self.start_right = self.start_right.trim().to_string();
+        self
+    }
+
+    fn fields(&self) -> [(&'static str, String); 7] {
+        [
+            ("start_left", self.start_left.clone()),
+            ("start_right", self.start_right.clone()),
+            ("show_hidden_left", self.show_hidden_left.to_string()),
+            ("show_hidden_right", self.show_hidden_right.to_string()),
+            ("show_type", self.show_type.to_string()),
+            ("sidebar_visible", self.sidebar_visible.to_string()),
+            ("path_bar", self.path_bar.clone()),
+        ]
+    }
+
+    /// The fields whose `staged` value differs from these (the values when the dialog opened),
+    /// as (config key, old, new), in the dialog's order.
+    pub fn changes(&self, staged: &Dialog) -> Vec<(&'static str, String, String)> {
+        self.fields()
+            .into_iter()
+            .zip(staged.fields())
+            .filter(|((_, old), (_, new))| old != new)
+            .map(|((key, old), (_, new))| (key, old, new))
+            .collect()
     }
 }
 
@@ -401,6 +455,47 @@ mod tests {
         // Both in one file: the entries first, the old list after them, duplicates dropped.
         let both = Config::parse("bookmarks = ['C:\\a', 'c:\\b\\']\n[[bookmark]]\npath = 'C:\\b'\ntitle = 'B'\n").unwrap();
         assert_eq!(both.bookmarks, vec![Bookmark { path: r"C:\b".into(), title: Some("B".into()) }, Bookmark::new(r"C:\a")]);
+    }
+
+    #[test]
+    fn show_type_defaults_on_and_round_trips_off() {
+        // A file from before the key existed: the Type column is on.
+        assert!(Config::parse("split = true\n").unwrap().show_type);
+        assert!(Config::default().show_type);
+        let c = Config { show_type: false, ..Config::default() };
+        let text = c.to_toml();
+        assert!(text.contains("show_type = false"), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+    }
+
+    #[test]
+    fn dialog_changes_are_the_differing_fields() {
+        let open = Dialog {
+            start_left: r"C:\".into(),
+            start_right: String::new(),
+            show_hidden_left: false,
+            show_hidden_right: false,
+            show_type: true,
+            sidebar_visible: true,
+            path_bar: "breadcrumb".into(),
+        };
+        assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
+        let staged = Dialog { show_hidden_left: true, show_type: false, path_bar: "entry".into(), ..open.clone() };
+        assert_eq!(
+            open.changes(&staged),
+            vec![
+                ("show_hidden_left", "false".into(), "true".into()),
+                ("show_type", "true".into(), "false".into()),
+                ("path_bar", "breadcrumb".into(), "entry".into()),
+            ]
+        );
+        // Start folders: trimmed; an empty left one is the default, so blanking it changes nothing.
+        let typed = Dialog { start_left: "   ".into(), start_right: "  D:\\work ".into(), ..open.clone() }.normalized();
+        assert_eq!(typed.start_left, r"C:\");
+        assert_eq!(open.changes(&typed), vec![("start_right", String::new(), r"D:\work".into())]);
+        // A folder that does not exist is accepted as typed.
+        let missing = Dialog { start_left: r"Q:\nowhere".into(), ..open.clone() }.normalized();
+        assert_eq!(open.changes(&missing), vec![("start_left", r"C:\".into(), r"Q:\nowhere".into())]);
     }
 
     #[test]

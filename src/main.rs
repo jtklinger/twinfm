@@ -100,6 +100,9 @@ struct Tab {
     refresh_pending: bool,
     /// The refresh in flight was started by the directory watch (counted for `waitwatch`).
     watch_refresh: bool,
+    /// Back/forward (Alt+Left, Alt+Right, the mouse's side buttons); empty for a new or restored
+    /// tab, never saved.
+    history: tabs::History,
 }
 
 /// A job in flight, as the UI side remembers it.
@@ -189,6 +192,8 @@ struct State {
     /// is dropped), and the one on screen (its pane, folder and the folder names it lists).
     crumb_seq: u64,
     crumb_menu: Option<(usize, PathBuf, Vec<String>)>,
+    /// The settings dialog's values when it opened (None: closed); OK applies what differs.
+    dialog: Option<settings::Dialog>,
 }
 
 /// A tab with no folder yet, its model sharing the icon table.
@@ -208,6 +213,7 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         stale: false,
         refresh_pending: false,
         watch_refresh: false,
+        history: tabs::History::default(),
     }
 }
 
@@ -274,12 +280,24 @@ impl State {
     }
 }
 
+/// An ordinary navigation (a click, Return, a crumb, the sidebar, the path entry, up a folder):
+/// the folder being left goes on the active tab's back stack.
 fn navigate(pane: usize, path: PathBuf) {
+    navigate_to(pane, path, true);
+}
+
+/// The one place folders change. `push`: record the folder being left in the tab's history (an
+/// ordinary navigation); false for a move through the history itself (`history_move`).
+fn navigate_to(pane: usize, path: PathBuf, push: bool) {
     let path = if is_this_pc(&path.to_string_lossy()) { PathBuf::from(THIS_PC) } else { path };
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let generation = st.generation();
         let t = st.tab_mut(pane);
+        // A folder that then fails to list still counts as visited, as in Explorer.
+        if push && t.history.push(&t.path, &path) {
+            eprintln!("[nav] pane={pane} history push {} ({} back)", t.path.display(), t.history.back_len());
+        }
         t.model.generation.set(generation);
         t.model.clear();
         t.timing = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
@@ -426,14 +444,8 @@ fn save_now() {
         if let Some((v, a)) = right_tabs {
             (c.right_tabs, c.right_active) = (v, a);
         }
-        let left = st.panes[0].active().path.to_string_lossy().to_string();
-        let right = st.panes[1].active().path.to_string_lossy().to_string();
-        if !left.is_empty() {
-            c.start_left = left;
-        }
-        if !right.is_empty() {
-            c.start_right = right;
-        }
+        // The start folders are the settings dialog's to change (the tab lists hold the folders
+        // last open).
         c.split = app.get_split();
         c.split_ratio = app.get_split_ratio();
         c.sidebar_visible = app.get_sidebar_visible();
@@ -1478,8 +1490,8 @@ fn log_select(model: &PaneModel, pane: usize, op: SelOp, row: usize) {
     eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
 }
 
-/// Backspace, Alt+Up and the mouse's Back button: the active tab's parent folder (a drive or share
-/// root goes up to This PC). False on This PC, which has no parent.
+/// Backspace and Alt+Up: the active tab's parent folder (a drive or share root goes up to This
+/// PC). False on This PC, which has no parent.
 fn go_up(pane: usize) -> bool {
     let target = with_state(|st| {
         let base = st.tab(pane).path.clone();
@@ -1498,22 +1510,44 @@ fn go_up(pane: usize) -> bool {
     }
 }
 
-/// The mouse's Back button released over a pane (any part of it but a text entry, the tab strip
-/// and the scrollbar): that pane becomes active, as a click there would make it, and goes up a
-/// folder. Forward does nothing yet (no history).
-fn back_button(pane: usize) {
+/// Alt+Left (back) and Alt+Right (`forward`), and the side buttons through `history_button`:
+/// move through the active tab's history without recording the move. With nothing to go to it
+/// logs one line and does nothing (no fallback to up a folder).
+fn history_move(pane: usize, forward: bool) {
+    let dir = if forward { "forward" } else { "back" };
+    let target = with_state(|st| {
+        let t = st.tab_mut(pane);
+        let to = if forward { t.history.forward(&t.path) } else { t.history.back(&t.path) };
+        match &to {
+            Some(to) => eprintln!(
+                "[nav] pane={pane} history {dir}: {} -> {} ({} back, {} forward left)",
+                t.path.display(),
+                to.display(),
+                t.history.back_len(),
+                t.history.forward_len()
+            ),
+            None => eprintln!("[nav] pane={pane} history {dir}: nothing to go {dir} to"),
+        }
+        to
+    });
+    if let Some(p) = target {
+        navigate_to(pane, p, false);
+    }
+}
+
+/// The mouse's Back or Forward button released over a pane (any part of it but a text entry, the
+/// tab strip and the scrollbar): that pane becomes active, as a click there would make it, and
+/// goes back or forward in its active tab's history.
+fn history_button(pane: usize, forward: bool) {
     let Some(app) = with_state(|st| st.app.upgrade()) else { return };
     if pane == 1 && !app.get_split() {
         return;
     }
     let was = app.get_active_pane();
     app.invoke_focus_pane(pane as i32);
-    let at_top = with_state(|st| is_this_pc(&st.tab(pane).path.to_string_lossy()));
-    let what = if at_top { "This PC has no parent folder, nothing to do" } else { "up a folder" };
-    eprintln!("[nav] pane={pane} Back button (active pane was {was}, now {pane}): {what}");
-    if !at_top {
-        go_up(pane);
-    }
+    let name = if forward { "Forward" } else { "Back" };
+    eprintln!("[nav] pane={pane} {name} button (active pane was {was}, now {pane})");
+    history_move(pane, forward);
 }
 
 /// The middle button on a row: a folder (or a drive, or a reparse directory) opens in a new tab
@@ -1534,7 +1568,8 @@ fn middle_click_row(pane: usize, row: usize) {
 }
 
 /// The left button on a row: press (0), release (1), moved past the drag threshold with the
-/// button down (2), double-click (3); the middle button's release (4) and the Back button's (5).
+/// button down (2), double-click (3); the middle button's release (4), the Back button's (5) and
+/// the Forward button's (7).
 /// `dnd::Gesture` decides what selects, drags and opens.
 fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
     let Ok(row) = usize::try_from(row) else { return };
@@ -1569,7 +1604,8 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
             }
         }
         4 => middle_click_row(pane, row),
-        5 => back_button(pane),
+        5 => history_button(pane, false),
+        7 => history_button(pane, true),
         _ => {}
     }
 }
@@ -2237,6 +2273,132 @@ fn devices_changed() {
     }
 }
 
+/// Ctrl+H, and the settings dialog's hidden-file boxes: show or hide hidden and system files in the
+/// pane's active tab.
+fn toggle_hidden(pane: usize) {
+    with_state(|st| {
+        let model = st.model(pane);
+        let shown = !model.show_hidden.get();
+        model.show_hidden.set(shown);
+        eprintln!("[hidden] pane={pane} show_hidden={shown}");
+        // The pane's new tabs follow its last Ctrl+H.
+        if pane == 0 { st.config.show_hidden_left = shown } else { st.config.show_hidden_right = shown }
+        schedule_save(st);
+        let id = st.tab(pane).id;
+        request_pass(st, pane, id);
+    });
+}
+
+/// The Type column on or off in both panes. Off, every tab sorted by Type is sorted by name
+/// instead (a header click can no longer reach Type).
+fn set_show_type(st: &mut State, app: &App, on: bool) {
+    app.set_show_type(on);
+    st.config.show_type = on;
+    eprintln!("[settings] Type column {}", if on { "shown" } else { "removed from the header and the rows" });
+    if on {
+        return;
+    }
+    if settings::sort_from_name(&st.config.sort_column) == SortCol::Type {
+        st.config.sort_column = settings::sort_name(SortCol::Name).into();
+    }
+    let mut resort: Vec<(usize, u64)> = Vec::new();
+    for (pane, tabs) in st.panes.iter().enumerate() {
+        for t in tabs.iter().filter(|t| t.model.sort_col.get() == SortCol::Type) {
+            t.model.sort_col.set(SortCol::Name);
+            resort.push((pane, t.id));
+        }
+    }
+    for (pane, id) in resort {
+        eprintln!("[settings] pane={pane} tab {id} was sorted by Type: sorted by name instead");
+        request_pass(st, pane, id);
+    }
+}
+
+/// Ctrl+, or "Settings": copy the live values into the dialog and show it.
+fn settings_open() {
+    let Some((app, d, note)) = with_state(|st| {
+        let app = st.app.upgrade()?;
+        if st.dialog.is_some() {
+            return None;
+        }
+        let d = settings::Dialog {
+            start_left: st.config.start_left.clone(),
+            start_right: st.config.start_right.clone(),
+            show_hidden_left: st.model(0).show_hidden.get(),
+            show_hidden_right: st.model(1).show_hidden.get(),
+            show_type: st.config.show_type,
+            sidebar_visible: app.get_sidebar_visible(),
+            path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
+        };
+        st.dialog = Some(d.clone());
+        let note = match &st.config_path {
+            Some(p) => format!("Saved to {}", p.display()),
+            None => "Not saved in a scripted run".to_string(),
+        };
+        Some((app, d, note))
+    }) else {
+        return;
+    };
+    app.set_dlg_start_left(d.start_left.into());
+    app.set_dlg_start_right(d.start_right.into());
+    app.set_dlg_hidden_left(d.show_hidden_left);
+    app.set_dlg_hidden_right(d.show_hidden_right);
+    app.set_dlg_type_column(d.show_type);
+    app.set_dlg_sidebar(d.sidebar_visible);
+    app.set_dlg_crumbs(d.path_bar != "entry");
+    app.set_settings_note(note.into());
+    eprintln!("[settings] dialog opened");
+    // Outside the state borrow: showing the popup moves keyboard focus.
+    app.invoke_show_settings();
+}
+
+/// The dialog closed: OK applies every field whose staged value differs from the value it opened
+/// with, through the path the rest of the app uses for it (Ctrl+H, F9, the path bar's glyph);
+/// Cancel and Escape drop them.
+fn settings_closed(ok: bool) {
+    let Some((app, opened)) = with_state(|st| Some((st.app.upgrade()?, st.dialog.take()?))) else { return };
+    let staged = settings::Dialog {
+        start_left: app.get_dlg_start_left().to_string(),
+        start_right: app.get_dlg_start_right().to_string(),
+        show_hidden_left: app.get_dlg_hidden_left(),
+        show_hidden_right: app.get_dlg_hidden_right(),
+        show_type: app.get_dlg_type_column(),
+        sidebar_visible: app.get_dlg_sidebar(),
+        path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
+    }
+    .normalized();
+    let changes = opened.changes(&staged);
+    if !ok {
+        return eprintln!("[settings] dialog closed (cancel), {} change(s) discarded", changes.len());
+    }
+    for (key, old, new) in &changes {
+        eprintln!("[settings] dialog: {key} {old} -> {new}");
+        match *key {
+            "start_left" => with_state(|st| st.config.start_left = staged.start_left.clone()),
+            "start_right" => with_state(|st| st.config.start_right = staged.start_right.clone()),
+            "show_hidden_left" | "show_hidden_right" => {
+                let pane = usize::from(*key == "show_hidden_right");
+                let want = if pane == 0 { staged.show_hidden_left } else { staged.show_hidden_right };
+                if with_state(|st| st.model(pane).show_hidden.get()) != want {
+                    toggle_hidden(pane);
+                }
+            }
+            "show_type" => with_state(|st| set_show_type(st, &app, staged.show_type)),
+            "sidebar_visible" => {
+                if app.get_sidebar_visible() != staged.sidebar_visible {
+                    app.invoke_toggle_sidebar();
+                }
+            }
+            "path_bar" => app.set_path_entry_sticky(staged.path_bar == "entry"),
+            _ => {}
+        }
+    }
+    if !changes.is_empty() {
+        with_state(|st| schedule_save(st));
+    }
+    eprintln!("[settings] dialog closed (ok), {} change(s)", changes.len());
+}
+
 /// For the scripted driver: watch-driven refreshes completed so far.
 pub fn watch_refreshes() -> u64 {
     STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().map(|st| st.watch_refreshes)).unwrap_or(0))
@@ -2296,7 +2458,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // Settings before the first navigation: they decide the start folders, sort and hidden files,
     // the split, the sidebar, the path bar and the window's placement.
     let config_path = settings::config_path();
-    let config = match &config_path {
+    let mut config = match &config_path {
         Some(p) => {
             let c = settings::Config::load(p);
             eprintln!("[settings] file {} ({})", p.display(), if p.exists() { "read" } else { "not there yet: defaults" });
@@ -2307,6 +2469,11 @@ fn main() -> Result<(), slint::PlatformError> {
             settings::Config::default()
         }
     };
+    // With the Type column off, a header click cannot reach a Type sort, so none is restored.
+    if !config.show_type && settings::sort_from_name(&config.sort_column) == SortCol::Type {
+        eprintln!("[settings] the Type column is off: sorting by name instead of the saved type sort");
+        config.sort_column = settings::sort_name(SortCol::Name).into();
+    }
     // Each pane's tabs: the saved list, or one tab on its start folder. A command-line folder
     // replaces the left pane's tabs; the right pane's are restored only with the split (otherwise
     // F3 opens it on the left pane's folder, as before). Only the active tab navigates below;
@@ -2354,6 +2521,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_sidebar_width(config.sidebar_width);
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
+    app.set_show_type(config.show_type);
     app.set_version(env!("CARGO_PKG_VERSION").into());
     if let Some(g) = config.window {
         app.window().set_size(slint::LogicalSize::new(g.width, g.height));
@@ -2411,6 +2579,7 @@ fn main() -> Result<(), slint::PlatformError> {
             device_timer: slint::Timer::default(),
             crumb_seq: 0,
             crumb_menu: None,
+            dialog: None,
         })
     });
     with_state(rebuild_sidebar);
@@ -2441,7 +2610,9 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_go_up(|pane| {
         go_up(pane as usize);
     });
-    app.on_pane_back(|pane| back_button(pane as usize));
+    app.on_pane_back(|pane| history_button(pane as usize, false));
+    app.on_pane_forward(|pane| history_button(pane as usize, true));
+    app.on_pane_history(|pane, forward| history_move(pane as usize, forward));
     app.on_sort_by(|pane, col| {
         with_state(|st| {
             let model = st.model(pane as usize);
@@ -2551,19 +2722,9 @@ fn main() -> Result<(), slint::PlatformError> {
             crumb_pick(i);
         }
     });
-    app.on_toggle_hidden(|pane| {
-        with_state(|st| {
-            let model = st.model(pane as usize);
-            let shown = !model.show_hidden.get();
-            model.show_hidden.set(shown);
-            eprintln!("[hidden] pane={pane} show_hidden={shown}");
-            // The pane's new tabs follow its last Ctrl+H.
-            if pane == 0 { st.config.show_hidden_left = shown } else { st.config.show_hidden_right = shown }
-            schedule_save(st);
-            let id = st.tab(pane as usize).id;
-            request_pass(st, pane as usize, id);
-        });
-    });
+    app.on_toggle_hidden(|pane| toggle_hidden(pane as usize));
+    app.on_settings_requested(settings_open);
+    app.on_settings_closed(settings_closed);
     app.on_toggle_split({
         let w = app.as_weak();
         move || {

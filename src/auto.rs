@@ -9,12 +9,13 @@
 //!   sort <pane> <0|1|2|3>            click a column header (name/size/modified/type)
 //!   key <name>                       press a key through the Slint key path; names: F3, F5,
 //!                                    Backspace, Return, Space, AltUp, CtrlShiftRight, CtrlH
-//!                                    (hidden files), CtrlR (refresh), CtrlA, ShiftUp, ShiftDown,
+//!                                    (hidden files), CtrlR (refresh), CtrlA, Down, ShiftUp, ShiftDown,
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
 //!                                    CtrlV, CtrlZ, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
 //!                                    the context menu and take in-menu steps like rclick); CtrlT,
 //!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
-//!                                    CtrlShiftPageUp, CtrlShiftPageDown
+//!                                    CtrlShiftPageUp, CtrlShiftPageDown, AltLeft, AltRight (back
+//!                                    and forward in the tab's history), CtrlComma (settings)
 //!   copy | move                      Shift+F5 / Shift+F6: the active pane's selection to the other pane
 //!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
 //!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
@@ -28,8 +29,12 @@
 //!   shiftclick <pane> <row>          Shift+click a visible row (selects anchor..row)
 //!   dblclick <pane> <row>            double-click a visible row (enters the directory if it is one)
 //!   midclick <pane> <row>            middle-click a visible row (a folder opens in a new tab)
-//!   backclick <pane>                 press and release the mouse's Back button in the middle of the
-//!                                    pane's list (a row or the empty space): the pane goes up a folder
+//!   backclick <pane>                 the mouse's Back button in the middle of the pane's list (a row
+//!                                    or the empty space), as posted WM_MOUSEMOVE, WM_XBUTTONDOWN and
+//!                                    WM_XBUTTONUP (XBUTTON1) messages, so it takes winit's real path:
+//!                                    the pane becomes active and goes back in its tab's history
+//!   forwardclick <pane>              the same with the Forward button (XBUTTON2): forward in the history
+//!   history <back|forward>           Alt+Left / Alt+Right through the Slint key path, on the active pane
 //!   rclick <pane> <row>              right-click a visible row: press, 60 ms for a frame, release;
 //!                                    the release opens the real shell context menu
 //!   rclickempty <pane>               right-click the empty space below the last row (the folder's
@@ -87,6 +92,13 @@
 //!                                    goes back to the folder's name)
 //!   bookmark move <index> <up|down>  the bookmark menu's "Move up" / "Move down"
 //!   about open | about close         F1 opens the About dialog; close closes it
+//!   settings open                    Ctrl+, opens the settings dialog (key name CtrlComma)
+//!   settings set <field> <value>     stage a value in the open dialog through the function its control
+//!                                    calls: fields start_left, start_right (a path; the rest of the
+//!                                    step, may be empty), hidden_left, hidden_right, type_column,
+//!                                    sidebar (true|false), path_bar (entry|crumb)
+//!   settings ok | settings close     the OK button (apply the staged changes) / the Cancel button
+//!                                    (discard them); `key Escape` cancels through the key path
 //!   touch <pane> <name>              create an empty file in the pane's folder, or set an existing
 //!                                    one's modified time to now (a change for the directory watch)
 //!   rmfile <pane> <name>             delete that file from the pane's folder. Both refuse paths
@@ -154,8 +166,9 @@ enum Step {
     Click { pane: usize, row: usize, modifier: Option<Key> },
     DblClick { pane: usize, row: usize },
     MidClick { pane: usize, row: usize },
-    /// Press and release the mouse's Back button in the middle of the pane's list area.
-    BackClick(usize),
+    /// Post the mouse's Back (or, `forward`, Forward) button's press and release to the window, in
+    /// the middle of the pane's list area.
+    XButton { pane: usize, forward: bool },
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
     WaitOps(u64),
@@ -186,6 +199,10 @@ enum Step {
     /// Bookmark index, and up (true) or down.
     BookmarkMove(i32, bool),
     AboutClose,
+    /// The settings dialog's OK (true) or Cancel button.
+    SettingsClose(bool),
+    /// Stage `value` for the dialog's `field`.
+    SettingsSet(String, String),
     /// `touch` (create or update) or `rmfile` (delete) a file in the pane's folder.
     ScriptFile { pane: usize, name: String, remove: bool },
     WaitWatch(u64),
@@ -215,7 +232,9 @@ fn parse(script: &str) -> Vec<Step> {
                 "shiftclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Shift) },
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
-                "backclick" => Step::BackClick(num(1) as usize),
+                "backclick" => Step::XButton { pane: num(1) as usize, forward: false },
+                "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true },
+                "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
                 "copy" => Step::Key("ShiftF5".into()),
                 "move" => Step::Key("ShiftF6".into()),
                 "delete" => Step::Key("Delete".into()),
@@ -289,6 +308,12 @@ fn parse(script: &str) -> Vec<Step> {
                 "bookmark" => Step::Key("CtrlD".into()),
                 "about" if a.get(1) == Some(&"close") => Step::AboutClose,
                 "about" => Step::Key("F1".into()),
+                "settings" if a.get(1) == Some(&"ok") => Step::SettingsClose(true),
+                "settings" if a.get(1) == Some(&"close") => Step::SettingsClose(false),
+                "settings" if a.get(1) == Some(&"set") => {
+                    Step::SettingsSet(a.get(2).unwrap_or(&"").to_string(), a.get(3..).unwrap_or(&[]).join(" "))
+                }
+                "settings" => Step::Key("CtrlComma".into()),
                 "touch" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: false },
                 "rmfile" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: true },
                 "waitwatch" => Step::WaitWatch(num(1).max(1) as u64),
@@ -651,6 +676,9 @@ fn chord(name: &str) -> Vec<SharedString> {
         "Delete" => vec![k(Key::Delete)],
         "Space" => vec![" ".into()],
         "AltUp" => vec![k(Key::Alt), k(Key::UpArrow)],
+        "AltLeft" => vec![k(Key::Alt), k(Key::LeftArrow)],
+        "AltRight" => vec![k(Key::Alt), k(Key::RightArrow)],
+        "CtrlComma" => vec![k(Key::Control), ",".into()],
         "CtrlShiftRight" => vec![k(Key::Control), k(Key::Shift), k(Key::RightArrow)],
         "CtrlH" => vec![k(Key::Control), "h".into()],
         "CtrlR" => vec![k(Key::Control), "r".into()],
@@ -660,6 +688,7 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlV" => vec![k(Key::Control), "v".into()],
         "CtrlZ" => vec![k(Key::Control), "z".into()],
         "CtrlShiftN" => vec![k(Key::Control), k(Key::Shift), "N".into()],
+        "Down" => vec![k(Key::DownArrow)],
         "ShiftUp" => vec![k(Key::Shift), k(Key::UpArrow)],
         "ShiftDown" => vec![k(Key::Shift), k(Key::DownArrow)],
         "ShiftF5" => vec![k(Key::Shift), k(Key::F5)],
@@ -795,14 +824,27 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Middle }).ok();
             schedule(runner, 1);
         }
-        Step::BackClick(pane) => {
+        Step::XButton { pane, forward } => {
+            use windows_sys::Win32::System::SystemServices::{MK_XBUTTON1, MK_XBUTTON2};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2};
+            // Posted, not dispatched: winit's window procedure turns them into the side button's
+            // press and release (after the move that places the pointer), as for a real mouse.
             let (_, _, pos) = geometry(&app, pane);
-            let win = app.window();
-            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
-            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Back }).ok();
-            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Back }).ok();
-            eprintln!("[auto] backclick pane={pane} at ({:.0}, {:.0})", pos.x, pos.y);
-            schedule(runner, 1);
+            let s = app.window().scale_factor();
+            let (x, y) = ((pos.x * s).round() as i32, (pos.y * s).round() as i32);
+            let lp = (((y as u16 as u32) << 16) | x as u16 as u32) as isize;
+            let (which, held) = if forward { (XBUTTON2, MK_XBUTTON2) } else { (XBUTTON1, MK_XBUTTON1) };
+            let hwnd = hwnd_of(&app) as HWND;
+            // SAFETY: posting to our own window; the messages carry no pointers.
+            unsafe {
+                PostMessageW(hwnd, WM_MOUSEMOVE, 0, lp);
+                PostMessageW(hwnd, WM_XBUTTONDOWN, ((which as usize) << 16) | held as usize, lp);
+                PostMessageW(hwnd, WM_XBUTTONUP, (which as usize) << 16, lp);
+            }
+            let name = if forward { "forwardclick" } else { "backclick" };
+            eprintln!("[auto] {name} pane={pane}: posted at ({:.0}, {:.0}) logical, ({x}, {y}) physical", pos.x, pos.y);
+            // The posted messages are handled when this timer callback returns.
+            schedule(runner, 150);
         }
         Step::Crumb { pane, index } => {
             app.invoke_crumb_clicked(pane as i32, index);
@@ -868,6 +910,14 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::AboutClose => {
             app.invoke_close_about();
+            schedule(runner, 1);
+        }
+        Step::SettingsClose(ok) => {
+            if ok { app.invoke_settings_ok() } else { app.invoke_settings_cancel() }
+            schedule(runner, 1);
+        }
+        Step::SettingsSet(field, value) => {
+            app.invoke_settings_stage(field.as_str().into(), value.as_str().into());
             schedule(runner, 1);
         }
         Step::ScriptFile { pane, name, remove } => {

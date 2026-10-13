@@ -1,6 +1,67 @@
 //! Tab bookkeeping for one pane: an ordered list with an active index. Pure, so the open, close,
 //! next/previous and by-index rules are unit-tested without a window. `main.rs` keeps one
-//! `Tabs<Tab>` per pane; the tab content (model, path, scroll, cursor) is its business.
+//! `Tabs<Tab>` per pane; the tab content (model, path, scroll, cursor) is its business. `History`
+//! is one tab's back/forward list, pure for the same reason.
+
+use std::path::{Path, PathBuf};
+
+/// Folders a tab keeps to go back to (the oldest is dropped past this).
+pub const HISTORY_CAP: usize = 100;
+
+/// One tab's back/forward history: the folders left behind (newest last) and the ones gone back
+/// from (next forward last). Starts empty for every tab; not saved.
+#[derive(Debug, Default)]
+pub struct History {
+    back: Vec<PathBuf>,
+    forward: Vec<PathBuf>,
+}
+
+/// Same folder, ignoring ASCII case (Windows paths).
+fn same(a: &Path, b: &Path) -> bool {
+    a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+}
+
+impl History {
+    /// An ordinary navigation from `from` to `to`: `from` goes on the back stack (the oldest
+    /// entry is dropped past `HISTORY_CAP`) and the forward stack is cleared. Nothing changes
+    /// when `from` is empty (a tab's first folder) or is `to` itself (the same folder twice in a
+    /// row). True when `from` was pushed.
+    pub fn push(&mut self, from: &Path, to: &Path) -> bool {
+        if from.as_os_str().is_empty() || same(from, to) {
+            return false;
+        }
+        if self.back.len() >= HISTORY_CAP {
+            self.back.remove(0);
+        }
+        self.back.push(from.to_path_buf());
+        self.forward.clear();
+        true
+    }
+
+    /// Back from `current`: the folder to go to, with `current` put on the forward stack; None
+    /// when there is nothing to go back to.
+    pub fn back(&mut self, current: &Path) -> Option<PathBuf> {
+        let to = self.back.pop()?;
+        self.forward.push(current.to_path_buf());
+        Some(to)
+    }
+
+    /// Forward from `current`: the folder to go to, with `current` put on the back stack; None
+    /// when there is nothing to go forward to.
+    pub fn forward(&mut self, current: &Path) -> Option<PathBuf> {
+        let to = self.forward.pop()?;
+        self.back.push(current.to_path_buf());
+        Some(to)
+    }
+
+    pub fn back_len(&self) -> usize {
+        self.back.len()
+    }
+
+    pub fn forward_len(&self) -> usize {
+        self.forward.len()
+    }
+}
 
 #[derive(Debug)]
 pub struct Tabs<T> {
@@ -117,6 +178,57 @@ impl<T> Tabs<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn p(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn history_push_back_forward() {
+        let mut h = History::default();
+        // A tab's first folder pushes nothing; neither does the same folder twice in a row.
+        assert!(!h.push(&p(""), &p(r"C:\")));
+        assert!(!h.push(&p(r"C:\Windows"), &p(r"c:\windows")));
+        assert!(h.back(&p(r"C:\")).is_none(), "nothing to go back to");
+        assert!(h.forward(&p(r"C:\")).is_none(), "nothing to go forward to");
+        // C:\ -> Windows -> System32, back twice, forward once.
+        assert!(h.push(&p(r"C:\"), &p(r"C:\Windows")));
+        assert!(h.push(&p(r"C:\Windows"), &p(r"C:\Windows\System32")));
+        assert_eq!((h.back_len(), h.forward_len()), (2, 0));
+        assert_eq!(h.back(&p(r"C:\Windows\System32")), Some(p(r"C:\Windows")));
+        assert_eq!(h.back(&p(r"C:\Windows")), Some(p(r"C:\")));
+        assert_eq!((h.back_len(), h.forward_len()), (0, 2));
+        assert!(h.back(&p(r"C:\")).is_none());
+        assert_eq!(h.forward(&p(r"C:\")), Some(p(r"C:\Windows")));
+        assert_eq!((h.back_len(), h.forward_len()), (1, 1));
+        // The same folder again keeps the forward stack; a new one clears it.
+        assert!(!h.push(&p(r"C:\Windows"), &p(r"C:\Windows")));
+        assert_eq!(h.forward_len(), 1);
+        assert!(h.push(&p(r"C:\Windows"), &p(r"C:\Users")));
+        assert_eq!((h.back_len(), h.forward_len()), (2, 0));
+        assert!(h.forward(&p(r"C:\Users")).is_none(), "forward cleared by the push");
+        // A folder reached twice, not in a row, is two entries.
+        assert!(h.push(&p(r"C:\Users"), &p(r"C:\")));
+        assert_eq!(h.back(&p(r"C:\")), Some(p(r"C:\Users")));
+        assert_eq!(h.back(&p(r"C:\Users")), Some(p(r"C:\Windows")));
+        assert_eq!(h.back(&p(r"C:\Windows")), Some(p(r"C:\")));
+        assert!(h.back(&p(r"C:\")).is_none());
+    }
+
+    #[test]
+    fn history_drops_the_oldest_past_the_cap() {
+        let mut h = History::default();
+        for i in 0..HISTORY_CAP + 5 {
+            assert!(h.push(&p(&format!(r"C:\d{i}")), &p(&format!(r"C:\d{}", i + 1))));
+        }
+        assert_eq!(h.back_len(), HISTORY_CAP);
+        let mut last = None;
+        while let Some(to) = h.back(&p("x")) {
+            last = Some(to);
+        }
+        assert_eq!(last, Some(p(r"C:\d5")), "the five oldest were dropped");
+        assert_eq!(h.forward_len(), HISTORY_CAP);
+    }
 
     fn order(t: &Tabs<char>) -> String {
         t.iter().collect()
