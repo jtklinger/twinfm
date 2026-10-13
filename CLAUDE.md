@@ -83,7 +83,8 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   `WM_XBUTTONUP` (XBUTTON1, XBUTTON2) at the middle of the pane's list, so the side buttons take
   winit's real path (that pane becomes active and goes back or forward in its active tab's
   history), `history back|forward` presses Alt+Left / Alt+Right on the active pane (key names
-  `AltLeft`, `AltRight`; Backspace and `AltUp` stay up a folder),
+  `AltLeft`, `AltRight`; Backspace and `AltUp` stay up a folder), `scrollpos <pane>` logs the
+  pane's list scroll (content-y) and cursor row,
   `crumb <pane> <index>` clicks a breadcrumb button through its callback, `crumbmenu <pane>
   <index>` opens the dropdown of crumb `<index>`'s subfolders (listed on a worker: `sleep` before
   picking), `crumbpick <name>` picks one and `crumbclose` closes it, `pathmode <pane> entry|crumb`

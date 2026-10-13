@@ -270,6 +270,21 @@ later milestone needs the 3.4 gate points the column cost in M1 (`phase-1-plan.m
 
 ### Deferred
 
+- **Slint snaps a rebuilt list to a whole row.** Jeremy's console check (2026-10-13): switching the
+  Type column off moved the list up by part of a row. Reproduced with the `scrollpos` driver
+  step (added for it): `-360.0` became `-352.0` (16.4 rows to 16), `-24254.0` became `-24244.0`;
+  positions already on a 22 px boundary did not move. The cause is `ensure_updated_listview` in
+  Slint's `internal/core/model/repeater.rs`: a ListView created with its viewport already past the
+  second row takes the "random seek" branch, lays the first instance out at viewport y 0 and writes
+  `content-y` back as `-offset * row_height`, dropping the fraction. The P2-M5 build does the same
+  on every tab switch (`scroll -360` then `restored to -352` in the P2-M3 record) and on a
+  scrollbar thumb drag, so the switch only made an old snap visible. The one-line fix, proven on a
+  local build (`target-zcfix`, every `scrollpos` reading identical before and after, off and on,
+  both panes, three rounds), keeps the fraction: `(state.offset, content_y_value + state.offset as
+  Coord * element_height)` in place of `(state.offset, 0 as Coord)`. It changes how every ListView
+  in the app scrolls (thumb drags no longer snap either), so it is a third fork patch with its own
+  gate triplet, and an upstreamable bug fix. Jeremy chose (2026-10-13) to accept the snap for
+  P3-M1 and take the patch when the fork is next touched.
 - **Back and Forward over a text entry, the tab strip or the list's scrollbar** still do nothing
   (their own `TouchArea`s take the press), as in P2-M3.
 - **No history menu** (a right-click or long press on a Back button listing the stack): there is
@@ -596,5 +611,6 @@ the per-row switch in its two earlier forms, and the per-pane form has none. Tra
 
 Jeremy's console checks on `target-p3m1` (2026-10-13): the side buttons, Alt+Left/Right and the
 dialog work; switching the Type column off moved the list up by one row (switching it back on
-kept its place), see the fix below.
+kept its place): Slint's whole-row snap on a rebuilt list, accepted for P3-M1 and deferred as
+a fork patch (Deferred). The console checks pass; the gate is closed.
 
