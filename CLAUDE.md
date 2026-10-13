@@ -190,7 +190,9 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   in one afternoon (2026-10-12), so compare only within a session and never against a
   recorded number. The gate protocol since P2-M5 (agreed 2026-10-12): three runs per binary,
   interleaved reference, candidate, reference, candidate, reference, candidate, compared by
-  median; a gap counts only when every reference run sits below every candidate run or the
+  median (`tools/wpr-triplet.ps1 -Reference <name> -Candidate <name> -Tag <tag>` runs all six
+  from one elevated console, builds named by their `target-<name>` dir, and refuses to start
+  while a TwinFM window is open); a gap counts only when every reference run sits below every candidate run or the
   medians differ by more than one point. The reference binary is the last merged milestone's
   gate build (`target-p2m5`, 011430e, after Phase 2).
 - Paths handed to `twinfm.exe` from Git Bash must be Windows-style (`cygpath -w`): a
