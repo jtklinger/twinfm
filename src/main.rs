@@ -33,7 +33,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tabs::Tabs;
+use tabs::{Place, Tabs};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG, SW_MAXIMIZE, ShowWindow};
 
@@ -112,6 +112,13 @@ struct Tab {
 struct Search {
     pattern: NameMatch,
     cancel: Arc<AtomicU8>,
+}
+
+impl Tab {
+    /// Where the tab is, as its history records it: its folder, or its search and root.
+    fn place(&self) -> Place {
+        Place { path: self.path.clone(), search: self.search.as_ref().map(|s| s.pattern.pattern.clone()) }
+    }
 }
 
 impl Search {
@@ -333,8 +340,10 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         let generation = st.generation();
         let t = st.tab_mut(pane);
         // A folder that then fails to list still counts as visited, as in Explorer.
-        if push && t.history.push(&t.path, &path) {
-            eprintln!("[nav] pane={pane} history push {} ({} back)", t.path.display(), t.history.back_len());
+        // From a search tab the search goes on the back stack (Back runs it again).
+        let from = t.place();
+        if push && t.history.push(&from, &Place::folder(path.clone())) {
+            eprintln!("[nav] pane={pane} history push {from} ({} back)", t.history.back_len());
         }
         t.model.generation.set(generation);
         t.model.clear();
@@ -1643,12 +1652,11 @@ fn history_move(pane: usize, forward: bool) {
     let dir = if forward { "forward" } else { "back" };
     let target = with_state(|st| {
         let t = st.tab_mut(pane);
-        let to = if forward { t.history.forward(&t.path) } else { t.history.back(&t.path) };
+        let here = t.place();
+        let to = if forward { t.history.forward(&here) } else { t.history.back(&here) };
         match &to {
             Some(to) => eprintln!(
-                "[nav] pane={pane} history {dir}: {} -> {} ({} back, {} forward left)",
-                t.path.display(),
-                to.display(),
+                "[nav] pane={pane} history {dir}: {here} -> {to} ({} back, {} forward left)",
                 t.history.back_len(),
                 t.history.forward_len()
             ),
@@ -1656,8 +1664,11 @@ fn history_move(pane: usize, forward: bool) {
         }
         to
     });
-    if let Some(p) = target {
-        navigate_to(pane, p, false);
+    match target {
+        // A search in the history runs again, in this tab, under the same root.
+        Some(Place { path, search: Some(pattern) }) => start_search(pane, &pattern, Some(path)),
+        Some(Place { path, search: None }) => navigate_to(pane, path, false),
+        None => {}
     }
 }
 
@@ -2454,14 +2465,20 @@ fn toggle_hidden(pane: usize) {
 }
 
 /// The pane's filter box: its text, shown while the text is not empty (a tab switch shows the new
-/// tab's filter; a navigation clears it).
+/// tab's filter; a navigation clears it). Closing an open box in the active pane gives its list
+/// the focus: the box may have held it, and a destroyed box leaves the focus nowhere (no key would
+/// reach the window). `focus-pane` only bumps a counter, so this is safe inside the state borrow.
 fn set_filter_box(app: &App, pane: usize, text: &str) {
+    let was_open = if pane == 0 { app.get_left_filter_open() } else { app.get_right_filter_open() };
     if pane == 0 {
         app.set_left_filter_text(text.into());
         app.set_left_filter_open(!text.is_empty());
     } else {
         app.set_right_filter_text(text.into());
         app.set_right_filter_open(!text.is_empty());
+    }
+    if was_open && text.is_empty() && active_pane(app) == pane {
+        app.invoke_focus_pane(pane as i32);
     }
 }
 
@@ -2484,7 +2501,7 @@ fn filter_apply(pane: usize, text: SharedString) {
         return;
     };
     if armed && !text.trim().is_empty() {
-        return start_search(pane, text.trim());
+        return start_search(pane, text.trim(), None);
     }
     apply_filter(pane, id, &text);
     if text.is_empty() {
@@ -2529,31 +2546,49 @@ fn search_key(pane: usize) {
         eprintln!("[search] pane={pane} no pattern yet: the filter box opens, Return searches");
         return app.invoke_open_filter(pane as i32);
     }
-    start_search(pane, text.trim());
+    start_search(pane, text.trim(), None);
 }
 
 /// Start a recursive name search for `pattern` under the active tab's folder: in a new tab after
 /// it, or in place when the active tab is a search tab already (its old search is cancelled). The
 /// search worker sends its matches through the enumeration channel with the tab's generation, so
 /// they stream in as a listing's batches do.
-fn start_search(pane: usize, pattern: &str) {
-    with_state(|st| {
-        let Some(app) = st.app.upgrade() else { return };
+///
+/// `history_root`: a search taken from the tab's history (Back or Forward): it runs again in this
+/// tab under that root, and nothing is pushed. Otherwise the search is a navigation: a new search
+/// tab starts with its root folder on its back stack (it was searched from there), and a new search
+/// in a search tab pushes the old one.
+fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
+    let started = with_state(|st| {
+        let app = st.app.upgrade()?;
         st.search_armed[pane] = false;
         st.filter_timer[pane].stop();
         if is_this_pc(&st.tab(pane).path.to_string_lossy()) {
-            return note(st, &app, pane, "This PC lists drives; open a folder to search in it".into());
+            note(st, &app, pane, "This PC lists drives; open a folder to search in it".into());
+            return None;
         }
-        if !st.is_search(pane) {
+        let to = |root: &Path| Place::search(root, pattern);
+        if let Some(root) = history_root {
+            st.tab_mut(pane).path = root;
+        } else if st.is_search(pane) {
+            let t = st.tab_mut(pane);
+            let from = t.place();
+            if t.history.push(&from, &to(&t.path)) {
+                eprintln!("[nav] pane={pane} history push {from} ({} back)", t.history.back_len());
+            }
+        } else {
             save_view(st, &app, pane);
             // Leaves the foreground and loses its watch (see switch_tab).
             st.tab_mut(pane).stale = true;
             let cur = st.tab(pane);
             let (col, asc, hidden, root) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get(), cur.path.clone());
-            let t = st.new_tab(root.clone());
+            let mut t = st.new_tab(root.clone());
             t.model.sort_col.set(col);
             t.model.sort_asc.set(asc);
             t.model.show_hidden.set(hidden);
+            if t.history.push(&Place::folder(root.clone()), &to(&root)) {
+                eprintln!("[nav] pane={pane} history push {} ({} back)", root.display(), t.history.back_len());
+            }
             let id = t.id;
             st.panes[pane].open(t);
             let tabs = &st.panes[pane];
@@ -2590,7 +2625,14 @@ fn start_search(pane: usize, pattern: &str) {
         schedule_save(st);
         eprintln!("[search] pane={pane} gen={generation} start \"{pattern}\" in {}", root.display());
         fs::enumerate::spawn_search(root, matcher, hidden, cancel, pane, generation, st.tx.clone(), wake);
+        Some(app)
     });
+    // The search started from the filter box (Ctrl+Shift+F there, or Return with a search waiting)
+    // or from the list: either way the keys go to the results list now. Outside the state borrow:
+    // moving the focus runs the pane's handlers.
+    if let Some(app) = started {
+        app.invoke_focus_pane(pane as i32);
+    }
 }
 
 /// For the scripted driver's `waitsearch`: a search tab is still walking.
