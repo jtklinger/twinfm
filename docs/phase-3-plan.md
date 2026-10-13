@@ -133,8 +133,9 @@ later milestone needs the 3.4 gate points the column cost in M1 (`phase-1-plan.m
   closed. Every control has an `accessible-label`, the title `accessible-role: text`.
 - **The Type column switch.** `show_type` in `Config` (default true, so a file without the key
   loads with the column on) and a `show-type` property on the window, passed to both panes and
-  their lists. Off, the "Type" `HeaderCell` and each row's type `Text` sit behind `if
-  root.show-type`, so they are not instantiated at all; the Name column, the only flexible one,
+  their lists. Off, the "Type" `HeaderCell` sits behind `if root.show-type` (one per pane) and each row's
+  type `Text` stays one item per row with an empty text and a zero width (the first gate run
+  showed what a conditional element per row costs, see § Gate); the Name column, the only flexible one,
   takes the 120 px in the header and the rows alike, and the rename editor's width allows for
   230 px of fixed columns instead of 350. A header click can no longer sort by Type; turning the
   column off re-sorts every tab sorted by Type by name (`request_pass`, background tabs too) and
@@ -413,5 +414,39 @@ read-only, the run cannot rewrite it and logs `could not save` at exit), interle
 
 ### Gate
 
-Pending: the lead builds `target-p3m1` from the PR head and Jeremy runs the triplets against
-`target-p2m5`.
+**First run (2026-10-13): failed, mechanism named, fixed.** Console WPR, Jeremy elevated,
+`tools/wpr-gate.ps1`, accessibility on, Narrator off, no other TwinFM window, six runs from
+11:08 to 11:19, reference and candidate alternating: `target-p2m5` (011430e) and `target-p3m1`
+built from d70c3c5 (the PR head at the time). Analysed with `tools/analyze-trace.py --symbols
+--exe`.
+
+| Run | P2-M5 (`target-p2m5`) | P3-M1 d70c3c5 |
+|---|---|---|
+| 1 | 19.9% (1992 ms) | 21.7% (2172 ms) |
+| 2 | 20.3% (2026 ms) | 22.7% (2269 ms) |
+| 3 | 20.2% (2022 ms) | 20.5% (2048 ms) |
+| **median** | **20.2%** | **21.7%** |
+
+Both halves of the rule said gap: every reference run sat below every candidate run, and the
+medians differed by 1.5. The category shares (accessibility, render, draw_text, rows, timers,
+heap) kept their proportions, which on its own would read as machine speed, but the symbolized
+tables held a frame the reference has nowhere: `i_slint_core::model::repeater::Conditional::visit`,
+184 to 205 inclusive samples per run, and under it `InnerComponent_text_N::layout_info` (74 to 93
+samples) that the reference's rows never call. The cause was the `if root.show-type:` around each
+row's type `Text`: a conditional element is its own sub-component per row, so the type cell got its
+own instantiation, layout pass and heap allocation (`RtlpLowFragHeapAllocFromContext` +55
+exclusive in run 2) on top of the text it drew before. The brief had asked for exactly that `if`,
+on the theory that only a non-instantiated cell gives the 3.4 points back when the column is off;
+the default-on row paid for it instead.
+
+The fix (the commit after d70c3c5): the row's type cell is the reference's single `Text` again,
+with `text: root.show-type ? row.type-text : ""` and `width: root.show-type ? 120px : 0px`. The
+item count per row is the reference's; off, nothing is drawn (draw_text was the bulk of the
+column's M1 cost) and the Name column takes the width as before. The header cell keeps its `if`
+(one per pane). The scripted Type-off check was re-run on the fixed build (`settings open;
+settings set type_column false; settings ok; nav 0 C:\Windows; quit`: `dialog: show_type true ->
+false`, `Type column removed from the header and the rows`, exit 0, no panic). Traces
+`C:/traces/twinfm-ab8-{p2m5,p3m1}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+**Second run: pending.** `target-p3m1` rebuilt from the fixed head; Jeremy runs the triplets
+against `target-p2m5` again (`-Etl C:	races	winfm-ab9-<build>-<n>.etl`).

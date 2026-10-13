@@ -139,7 +139,7 @@ component HeaderCell inherits Rectangle {
 component FileListBase inherits ListView {
     in property <[Row]> rows;
     in-out property <int> current-row: -1;
-    // The Type column; off, the row's type text is not instantiated (Pane show-type).
+    // The Type column; off, the row's type cell is empty and zero wide (Pane show-type).
     in property <bool> show-type: true;
     callback open-row(int);
     callback focus-requested();
@@ -188,7 +188,9 @@ component FileListBase inherits ListView {
             padding-left: 28px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            if root.show-type: Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            // Off, the cell stays (one item per row, as before P3-M1: a conditional element here
+            // cost about a point on the gate) but is empty and zero wide, so nothing is drawn.
+            Text { text: root.show-type ? row.type-text : ""; width: root.show-type ? 120px : 0px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
             Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
             Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
         }
@@ -365,8 +367,8 @@ export component Pane inherits Rectangle {
     in property <int> sort-col: 0;
     in property <bool> sort-asc: true;
     in-out property <int> current-row: -1;
-    // The Type column (settings `show_type`). Off, its header cell and every row's type text are
-    // not instantiated at all, and the Name column takes the 120 px.
+    // The Type column (settings `show_type`). Off, its header cell is not instantiated, every row's
+    // type cell is empty and zero wide, and the Name column takes the 120 px.
     in property <bool> show-type: true;
 
     callback navigate(string);
