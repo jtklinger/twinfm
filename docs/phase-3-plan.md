@@ -449,4 +449,4 @@ false`, `Type column removed from the header and the rows`, exit 0, no panic). T
 `C:/traces/twinfm-ab8-{p2m5,p3m1}-{1,2,3}.etl`, reports under `C:/traces/export/`.
 
 **Second run: pending.** `target-p3m1` rebuilt from the fixed head; Jeremy runs the triplets
-against `target-p2m5` again (`-Etl C:	races	winfm-ab9-<build>-<n>.etl`).
+against `target-p2m5` again (`-Etl C:\traces\twinfm-ab9-<build>-<n>.etl`).
