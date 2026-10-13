@@ -833,6 +833,11 @@ said "only if wanted") was not asked for and is deferred.
   ...`, `[tab] ... for a search`, `[dnd] ... no drop there`.
 
 ### Deferred
+- **Result names are cut short** in a search tab: the Name column shows the relative path and
+  elides it from the right (`Windows\WinSxS...` in Jeremy's console check, 2026-10-13); a wider
+  Name column for search tabs, or the folder in its own column, is a follow-up.
+- **Refusal notes stay in the status bar** (paste, new folder, copy and move into a search tab);
+  Jeremy is fine with that for now (2026-10-13); a louder message would be a product decision.
 
 - **Content search**: not asked for.
 - **A rename in a search tab does not move the cursor to the renamed row**: the pass looks for the
