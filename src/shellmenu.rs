@@ -519,11 +519,28 @@ fn check(hr: HRESULT, what: &str) -> Result<(), String> {
     if hr < 0 { Err(format!("{what} failed: 0x{:08X}", hr as u32)) } else { Ok(()) }
 }
 
+/// `names` relative to `folder`, which may hold a `\` (a search tab's results, `sub\file.txt`), as
+/// the one folder they are in and their own names. Err when they are in different folders.
+pub(crate) fn common_parent(folder: &Path, names: &[String]) -> Result<(PathBuf, Vec<String>), String> {
+    fn split(n: &str) -> (&str, &str) {
+        n.rsplit_once('\\').unwrap_or(("", n))
+    }
+    let parent = names.first().map_or("", |n| split(n).0);
+    if names.iter().any(|n| !split(n).0.eq_ignore_ascii_case(parent)) {
+        return Err("the items are in different folders; select items from one folder".into());
+    }
+    let dir = if parent.is_empty() { folder.to_path_buf() } else { folder.join(parent) };
+    Ok((dir, names.iter().map(|n| split(n).1.to_string()).collect()))
+}
+
 /// The folder's absolute PIDL, its `IShellFolder`, and one child PIDL per name, as
 /// `GetUIObjectOf` and `SHCreateDataObject` take them. `This PC` means the drive list (This PC's
 /// shell folder, so drives get their own menus and data objects). Drop order: declare the result
 /// in this order so the children go first, then the folder, then its PIDL.
 pub(crate) fn parse_items(hwnd: HWND, folder: &Path, names: &[String]) -> Result<(Pidl, Com, Vec<Pidl>), String> {
+    // A search tab's names are paths relative to its root: the items' own folder and their own
+    // names, since a child PIDL must be one level deep.
+    let (folder, names) = &common_parent(folder, names)?;
     let folder_name = if crate::fs::enumerate::is_this_pc(&folder.to_string_lossy()) {
         wide(std::ffi::OsStr::new(THIS_PC_PARSING_NAME))
     } else {
@@ -686,6 +703,21 @@ pub fn show(req: &Request) -> Result<Picked, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_names_resolve_to_their_own_folder() {
+        let s = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<Vec<String>>();
+        let root = Path::new(r"C:\Windows");
+        assert_eq!(common_parent(root, &s(&["a.txt", "b"])), Ok((root.to_path_buf(), s(&["a.txt", "b"]))));
+        assert_eq!(common_parent(root, &[]), Ok((root.to_path_buf(), vec![])));
+        assert_eq!(
+            common_parent(root, &s(&[r"System32\kernel32.dll", r"system32\ntdll.dll"])),
+            Ok((PathBuf::from(r"C:\Windows\System32"), s(&["kernel32.dll", "ntdll.dll"])))
+        );
+        assert_eq!(common_parent(root, &s(&[r"a\b\c.txt"])), Ok((PathBuf::from(r"C:\Windows\a\b"), s(&["c.txt"]))));
+        assert!(common_parent(root, &s(&[r"System32\kernel32.dll", r"SysWOW64\kernel32.dll"])).is_err());
+        assert!(common_parent(root, &s(&["top.txt", r"sub\x.txt"])).is_err());
+    }
 
     #[test]
     fn menu_ids_partition_into_own_and_shell_ranges() {

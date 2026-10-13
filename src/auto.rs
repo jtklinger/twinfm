@@ -16,7 +16,9 @@
 //!                                    the context menu and take in-menu steps like rclick); CtrlT,
 //!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
 //!                                    CtrlShiftPageUp, CtrlShiftPageDown, AltLeft, AltRight (back
-//!                                    and forward in the tab's history), CtrlComma (settings)
+//!                                    and forward in the tab's history), CtrlComma (settings),
+//!                                    CtrlF (the filter box), CtrlShiftF (search), and any single
+//!                                    character, typed as itself (`key a`)
 //!   copy | move                      Shift+F5 / Shift+F6: the active pane's selection to the other pane
 //!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
 //!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
@@ -107,6 +109,13 @@
 //!                                    operations do; otherwise use them on %TEMP% scratch folders only
 //!   waitwatch <ms>                   wait until the next refresh started by the directory watch has
 //!                                    listed its folder (at most <ms>), then 300 ms more for the pass
+//!   filter <pane> <text>             put <text> (the rest of the step, may be empty) in the pane's
+//!                                    filter box, opening it without the focus, and call the box's
+//!                                    `edited` callback, as typing does (applied 150 ms later)
+//!   search <pane>                    Ctrl+Shift+F's callback: a recursive name search for the
+//!                                    filter box's text in a new tab (an empty box opens, focused)
+//!   waitsearch <ms>                  wait until no search tab is still walking (at most <ms>), then
+//!                                    300 ms more for the pass
 //!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
 //!                                    the close button does (WM_CLOSE: settings saved, app exits)
 //!   quit                             exit the event loop
@@ -208,6 +217,13 @@ enum Step {
     /// `touch` (create or update) or `rmfile` (delete) a file in the pane's folder.
     ScriptFile { pane: usize, name: String, remove: bool },
     WaitWatch(u64),
+    /// Set the pane's filter box to `text` (opening it, without the focus) and call its `edited`
+    /// callback, as typing does.
+    Filter { pane: usize, text: String },
+    /// Ctrl+Shift+F's callback on the pane.
+    Search(usize),
+    /// Wait until no search tab is still walking (at most `ms`), then 300 ms for the pass.
+    WaitSearch(u64),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
     /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
     Window(String),
@@ -320,6 +336,13 @@ fn parse(script: &str) -> Vec<Step> {
                 "touch" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: false },
                 "rmfile" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: true },
                 "waitwatch" => Step::WaitWatch(num(1).max(1) as u64),
+                // The text is the rest of the step after the pane, trimmed (may be empty).
+                "filter" => Step::Filter {
+                    pane: num(1) as usize,
+                    text: s.trim().splitn(3, char::is_whitespace).nth(2).unwrap_or("").to_string(),
+                },
+                "search" => Step::Search(num(1) as usize),
+                "waitsearch" => Step::WaitSearch(num(1).max(1) as u64),
                 "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
@@ -691,6 +714,8 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlV" => vec![k(Key::Control), "v".into()],
         "CtrlZ" => vec![k(Key::Control), "z".into()],
         "CtrlShiftN" => vec![k(Key::Control), k(Key::Shift), "N".into()],
+        "CtrlF" => vec![k(Key::Control), "f".into()],
+        "CtrlShiftF" => vec![k(Key::Control), k(Key::Shift), "F".into()],
         "Down" => vec![k(Key::DownArrow)],
         "ShiftUp" => vec![k(Key::Shift), k(Key::UpArrow)],
         "ShiftDown" => vec![k(Key::Shift), k(Key::DownArrow)],
@@ -712,6 +737,8 @@ fn chord(name: &str) -> Vec<SharedString> {
         n if n.len() == 5 && n.starts_with("Ctrl") && n.as_bytes()[4].is_ascii_digit() && n.as_bytes()[4] != b'0' => {
             vec![k(Key::Control), n[4..].into()]
         }
+        // One character typed as itself (into the filter box, say).
+        n if n.chars().count() == 1 => vec![n.into()],
         other => {
             eprintln!("[auto] unknown key {other}");
             vec![]
@@ -945,6 +972,35 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 if seen || std::time::Instant::now() >= deadline {
                     if !seen {
                         eprintln!("[auto] waitwatch: no watch-driven refresh within {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 300);
+                }
+            });
+        }
+        Step::Filter { pane, text } => {
+            if pane == 0 {
+                app.set_left_filter_open(true);
+                app.set_left_filter_text(text.as_str().into());
+            } else {
+                app.set_right_filter_open(true);
+                app.set_right_filter_text(text.as_str().into());
+            }
+            app.invoke_filter_edited(pane as i32, text.as_str().into());
+            schedule(runner, 1);
+        }
+        Step::Search(pane) => {
+            app.invoke_search(pane as i32);
+            schedule(runner, 1);
+        }
+        Step::WaitSearch(max_ms) => {
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                let running = crate::search_running();
+                if !running || std::time::Instant::now() >= deadline {
+                    if running {
+                        eprintln!("[auto] waitsearch: still searching after {max_ms} ms");
                     }
                     r2.borrow().sub.stop();
                     schedule(r2.clone(), 300);

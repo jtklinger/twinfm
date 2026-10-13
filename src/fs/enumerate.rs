@@ -88,8 +88,61 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         wake();
         return;
     }
+    let mut types = TypeNames::default();
+    let mut icon_keys = crate::icons::IconKeys::new(path.clone());
+    let zone = crate::model::LocalZone::current();
+    let mut batch: Vec<Entry> = Vec::with_capacity(BATCH_SIZE);
+    let mut total = 0usize;
+    let mut reparse = ReparseCounts::default();
+    let listed = list_dir(&path, &mut types, &mut icon_keys, &zone, |e| {
+        reparse.add(e.kind);
+        batch.push(e);
+        if batch.len() >= BATCH_SIZE {
+            total += batch.len();
+            let full = std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
+            if tx.send(Msg::Batch { pane, generation, entries: full }).is_err() {
+                return false;
+            }
+            wake();
+        }
+        true
+    });
+    match listed {
+        Err(code) => {
+            let error = Some(std::io::Error::from_raw_os_error(code as i32).to_string());
+            let reparse = ReparseCounts::default();
+            let _ = tx.send(Msg::Done { pane, generation, total: 0, elapsed: t0.elapsed(), error, free: None, reparse });
+            wake();
+            return;
+        }
+        Ok(false) => return,
+        Ok(true) => {}
+    }
+    if !batch.is_empty() {
+        total += batch.len();
+        let _ = tx.send(Msg::Batch { pane, generation, entries: batch });
+    }
+    // Timed before the free-space query, so the [enum] worker time is the listing alone.
+    let elapsed = t0.elapsed();
+    let free = crate::statusbar::disk_free(&path);
+    let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error: None, free, reparse });
+    wake();
+}
+
+/// One folder's entries through FindFirstFileExW/FindNextFileW (`.` and `..` left out), each
+/// handed to `f`; `f` returning false stops the listing (Ok(false)). Err with the Win32 error code
+/// when the folder cannot be listed; ERROR_FILE_NOT_FOUND from the first call (a drive root with
+/// nothing in it has no "." entry either) is an empty listing, as read_dir gave. The one listing
+/// loop: the folder enumeration and the recursive search both use it.
+fn list_dir(
+    path: &Path,
+    types: &mut TypeNames,
+    icon_keys: &mut crate::icons::IconKeys,
+    zone: &crate::model::LocalZone,
+    mut f: impl FnMut(Entry) -> bool,
+) -> Result<bool, u32> {
     let mut data = WIN32_FIND_DATAW::default();
-    let pattern = find_pattern(&path);
+    let pattern = find_pattern(path);
     // SAFETY: `pattern` is a NUL-terminated wide string and `data` a WIN32_FIND_DATAW, both alive
     // for the call. Basic info (no 8.3 name) and large fetch.
     let find = unsafe {
@@ -105,55 +158,213 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
     if find == INVALID_HANDLE_VALUE {
         // SAFETY: no arguments; read right after the failing call on this thread.
         let code = unsafe { GetLastError() };
-        // A drive root with nothing in it has no "." entry either: an empty listing, as read_dir
-        // gave; anything else is the error read_dir reported ("... (os error 3)").
-        if code != ERROR_FILE_NOT_FOUND {
-            let error = Some(std::io::Error::from_raw_os_error(code as i32).to_string());
-            let reparse = ReparseCounts::default();
-            let _ = tx.send(Msg::Done { pane, generation, total: 0, elapsed: t0.elapsed(), error, free: None, reparse });
-            wake();
-            return;
-        }
+        return if code == ERROR_FILE_NOT_FOUND { Ok(true) } else { Err(code) };
     }
-    let mut types = TypeNames::default();
-    let mut icon_keys = crate::icons::IconKeys::new(path.clone());
-    let zone = crate::model::LocalZone::current();
-    let mut batch: Vec<Entry> = Vec::with_capacity(BATCH_SIZE);
-    let mut total = 0usize;
-    let mut reparse = ReparseCounts::default();
-    let mut more = find != INVALID_HANDLE_VALUE;
-    while more {
-        if let Some(e) = entry_of(&data, &mut types, &mut icon_keys, &zone) {
-            reparse.add(e.kind);
-            batch.push(e);
-        }
-        if batch.len() >= BATCH_SIZE {
-            total += batch.len();
-            let full = std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
-            if tx.send(Msg::Batch { pane, generation, entries: full }).is_err() {
-                // SAFETY: `find` is the live search handle from FindFirstFileExW, closed once.
-                unsafe { FindClose(find) };
-                return;
+    let mut complete = true;
+    loop {
+        if let Some(e) = entry_of(&data, types, icon_keys, zone) {
+            if !f(e) {
+                complete = false;
+                break;
             }
-            wake();
         }
         // SAFETY: `find` is a live search handle and `data` is writable. Any failure ends the
         // listing (ERROR_NO_MORE_FILES at the end; read_dir's iterator skipped other errors).
-        more = unsafe { FindNextFileW(find, &mut data) } != 0;
+        if unsafe { FindNextFileW(find, &mut data) } == 0 {
+            break;
+        }
     }
-    if find != INVALID_HANDLE_VALUE {
-        // SAFETY: as above, closed exactly once.
-        unsafe { FindClose(find) };
+    // SAFETY: `find` is the live search handle from FindFirstFileExW, closed exactly once.
+    unsafe { FindClose(find) };
+    Ok(complete)
+}
+
+/// The recursive name search's batches: at most this many entries, or whatever matched in the last
+/// `SEARCH_FLUSH`, whichever comes first, so results stream in.
+pub const SEARCH_BATCH: usize = 256;
+pub const SEARCH_FLUSH: Duration = Duration::from_millis(100);
+/// Folders deeper than this under the search's root are not entered.
+pub const SEARCH_MAX_DEPTH: usize = 64;
+
+/// A search's cancel flag: 0 while it runs; the UI thread stores why it stopped it.
+pub const SEARCH_RUNNING: u8 = 0;
+pub const SEARCH_CLOSED: u8 = 1;
+pub const SEARCH_NAVIGATED: u8 = 2;
+pub const SEARCH_REPLACED: u8 = 3;
+pub const SEARCH_ESCAPE: u8 = 4;
+pub const SEARCH_REFRESH: u8 = 5;
+
+pub fn cancel_reason(code: u8) -> &'static str {
+    match code {
+        SEARCH_CLOSED => "tab closed",
+        SEARCH_NAVIGATED => "navigated away",
+        SEARCH_REPLACED => "new search",
+        SEARCH_ESCAPE => "Escape",
+        SEARCH_REFRESH => "F5",
+        _ => "stopped",
+    }
+}
+
+/// What a walk did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WalkStats {
+    /// Entries that matched and were handed out.
+    pub found: usize,
+    /// Folders listed, the root included, and folders that could not be listed (skipped).
+    pub walked: usize,
+    pub skipped: usize,
+    /// The cancel flag's value when the walk stopped early (None: it ran to the end).
+    pub cancelled: Option<u8>,
+}
+
+/// The recursive name search: list `root` and every folder under it with `list_dir`, depth first,
+/// and hand each entry whose own name `matcher` accepts to `emit`, in batches of up to
+/// `SEARCH_BATCH` or every `SEARCH_FLUSH`. An entry's name is its path relative to `root`
+/// (`sub\dir\file.txt`). Never enters a reparse point (junction, symbolic link, cloud
+/// placeholder, app alias: only `Kind::Directory` is entered, so a loop through a link cannot
+/// happen), a hidden or system folder unless `show_hidden`, or a folder deeper than
+/// `SEARCH_MAX_DEPTH`. Hidden matches in the folders it enters are handed out too (the tab's
+/// hidden-file switch shows or hides them, as in a folder). `cancel` is read before each folder
+/// and after each batch. `emit` returning false (the receiver is gone) ends the walk. Err with
+/// the error text when `root` itself cannot be listed; a folder below it that cannot be listed is
+/// counted as skipped.
+pub fn walk(
+    root: &Path,
+    matcher: &crate::model::NameMatch,
+    show_hidden: bool,
+    cancel: &std::sync::atomic::AtomicU8,
+    mut emit: impl FnMut(Vec<Entry>) -> bool,
+) -> Result<WalkStats, String> {
+    use std::sync::atomic::Ordering;
+    let mut types = TypeNames::default();
+    let zone = crate::model::LocalZone::current();
+    let mut stats = WalkStats::default();
+    let mut batch: Vec<Entry> = Vec::new();
+    let mut flushed = Instant::now();
+    // (folder, its path relative to the root with a trailing `\`, depth): depth first.
+    let mut stack: Vec<(PathBuf, String, usize)> = vec![(root.to_path_buf(), String::new(), 0)];
+    let mut gone = false;
+    while let Some((dir, rel, depth)) = stack.pop() {
+        let code = cancel.load(Ordering::Relaxed);
+        if code != SEARCH_RUNNING {
+            stats.cancelled = Some(code);
+            break;
+        }
+        let mut icon_keys = crate::icons::IconKeys::new(dir.clone());
+        let listed = list_dir(&dir, &mut types, &mut icon_keys, &zone, |mut e| {
+            let leaf = e.name.clone();
+            let enter = e.kind == Kind::Directory && depth < SEARCH_MAX_DEPTH && (show_hidden || !(e.is_hidden() || e.is_system()));
+            if enter {
+                stack.push((dir.join(leaf.as_str()), format!("{rel}{leaf}\\"), depth + 1));
+            }
+            if matcher.matches(&leaf) {
+                e.name = format!("{rel}{leaf}").into();
+                batch.push(e);
+                stats.found += 1;
+            }
+            if batch.len() >= SEARCH_BATCH || (!batch.is_empty() && flushed.elapsed() >= SEARCH_FLUSH) {
+                flushed = Instant::now();
+                if !emit(std::mem::take(&mut batch)) {
+                    gone = true;
+                    return false;
+                }
+                // Stop within the folder too: a single folder can hold tens of thousands of entries.
+                if cancel.load(Ordering::Relaxed) != SEARCH_RUNNING {
+                    return false;
+                }
+            }
+            true
+        });
+        match listed {
+            Err(code) if depth == 0 => return Err(std::io::Error::from_raw_os_error(code as i32).to_string()),
+            Err(_) => stats.skipped += 1,
+            Ok(_) => stats.walked += 1,
+        }
+        if gone {
+            return Ok(stats);
+        }
+        if !batch.is_empty() && flushed.elapsed() >= SEARCH_FLUSH {
+            flushed = Instant::now();
+            if !emit(std::mem::take(&mut batch)) {
+                return Ok(stats);
+            }
+        }
+    }
+    // A flag set during the last folder's listing stopped it part way.
+    let code = cancel.load(Ordering::Relaxed);
+    if stats.cancelled.is_none() && code != SEARCH_RUNNING {
+        stats.cancelled = Some(code);
     }
     if !batch.is_empty() {
-        total += batch.len();
-        let _ = tx.send(Msg::Batch { pane, generation, entries: batch });
+        emit(batch);
     }
-    // Timed before the free-space query, so the [enum] worker time is the listing alone.
-    let elapsed = t0.elapsed();
-    let free = crate::statusbar::disk_free(&path);
-    let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error: None, free, reparse });
-    wake();
+    Ok(stats)
+}
+
+/// Run `walk` on a worker thread for a search tab: its batches go to the enumeration channel as
+/// `Msg::Batch` with the tab's generation (so the UI handles them as a listing's), then one
+/// `Msg::Done` with the count, the time and the error if the root could not be listed. Logs the
+/// `[search]` batch (at most ten a second), done and cancelled lines.
+pub fn spawn_search(
+    root: PathBuf,
+    matcher: crate::model::NameMatch,
+    show_hidden: bool,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    pane: usize,
+    generation: u64,
+    tx: Sender<Msg>,
+    wake: impl Fn() + Send + 'static,
+) {
+    std::thread::Builder::new()
+        .name(format!("search-{pane}-{generation}"))
+        .spawn(move || {
+            // No "insert a disk" dialog for an empty drive met on the way.
+            // SAFETY: plain flag call on this (worker) thread; the old mode is not needed.
+            unsafe { SetThreadErrorMode(SEM_FAILCRITICALERRORS, std::ptr::null_mut()) };
+            let t0 = Instant::now();
+            let (mut batches, mut sent) = (0usize, 0usize);
+            let mut logged: Option<Instant> = None;
+            let res = walk(&root, &matcher, show_hidden, &cancel, |entries| {
+                batches += 1;
+                sent += entries.len();
+                if logged.is_none_or(|t| t.elapsed() >= SEARCH_FLUSH) {
+                    logged = Some(Instant::now());
+                    eprintln!("[search] pane={pane} gen={generation} batch {batches} ({sent} so far)");
+                }
+                let ok = tx.send(Msg::Batch { pane, generation, entries }).is_ok();
+                wake();
+                ok
+            });
+            let elapsed = t0.elapsed();
+            let (total, error) = match res {
+                Ok(s) => {
+                    if let Some(code) = s.cancelled {
+                        eprintln!("[search] pane={pane} gen={generation} cancelled after {} folders ({})", s.walked, cancel_reason(code));
+                    } else {
+                        eprintln!(
+                            "[search] pane={pane} gen={generation} done: {} found, {} folders walked, {} skipped, in {:.0} ms",
+                            s.found,
+                            s.walked,
+                            s.skipped,
+                            elapsed.as_secs_f64() * 1e3
+                        );
+                    }
+                    if s.skipped > 0 {
+                        eprintln!("[search] pane={pane} gen={generation} skipped {} folders", s.skipped);
+                    }
+                    (s.found, None)
+                }
+                Err(e) => {
+                    eprintln!("[search] pane={pane} gen={generation} cannot list {}: {e}", root.display());
+                    (0, Some(e))
+                }
+            };
+            let free = if error.is_none() { crate::statusbar::disk_free(&root) } else { None };
+            let reparse = ReparseCounts::default();
+            let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error, free, reparse });
+            wake();
+        })
+        .expect("spawn search thread");
 }
 
 /// `<path>\*` as a NUL-terminated wide string. A long path gets the `\\?\` prefix (`\\?\UNC\`
@@ -527,6 +738,91 @@ mod tests {
         assert_eq!(link.type_text, "Symbolic link");
         assert!(!link.is_dir());
         assert_eq!(link.icon_key.as_str(), dir.join("link.txt").to_string_lossy());
+    }
+
+    #[test]
+    fn search_walks_the_tree_without_links_or_hidden_folders() {
+        use crate::model::NameMatch;
+        use std::sync::atomic::AtomicU8;
+        let dir = std::env::temp_dir().join(format!("twinfm-p3m2-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("root");
+        std::fs::create_dir_all(root.join(r"d1\d2\d3")).unwrap();
+        std::fs::create_dir_all(root.join(r"d1\hit-dir")).unwrap();
+        std::fs::create_dir_all(root.join("secret")).unwrap();
+        for f in ["hit-top.txt", "miss.txt", r"d1\d2\d3\HIT-deep.txt", r"d1\d2\miss.log", r"secret\hit-hidden.txt"] {
+            std::fs::write(root.join(f), b"x").unwrap();
+        }
+        set_attrs(&root.join("secret"), FILE_ATTRIBUTE_HIDDEN);
+        // A junction to an ancestor: entering it would loop until the depth limit.
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(root.join(r"d1\hit-loop"))
+            .arg(&root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        // Cancellation: a folder of 600 matches and 20 subfolders with one each.
+        let bulk = dir.join("bulk");
+        for i in 0..20 {
+            std::fs::create_dir_all(bulk.join(format!("sub{i:02}"))).unwrap();
+            std::fs::write(bulk.join(format!(r"sub{i:02}\hit.txt")), b"x").unwrap();
+        }
+        for i in 0..600 {
+            std::fs::write(bulk.join(format!("hit{i:03}.txt")), b"x").unwrap();
+        }
+
+        let hit = NameMatch::new("hit");
+        let run = |root: &Path, show_hidden: bool, cancel_after_first: bool| {
+            let cancel = AtomicU8::new(SEARCH_RUNNING);
+            let mut batches: Vec<Vec<Entry>> = Vec::new();
+            let stats = walk(root, &hit, show_hidden, &cancel, |b| {
+                if cancel_after_first {
+                    cancel.store(SEARCH_ESCAPE, std::sync::atomic::Ordering::Relaxed);
+                }
+                batches.push(b);
+                true
+            });
+            (stats, batches)
+        };
+        let (plain, plain_batches) = run(&root, false, false);
+        let (hidden, hidden_batches) = run(&root, true, false);
+        let (cancelled, cancelled_batches) = run(&bulk, false, true);
+        let (bulk_all, _) = run(&bulk, false, false);
+        let missing = walk(&dir.join("nope"), &hit, false, &AtomicU8::new(0), |_| true);
+        set_attrs(&root.join("secret"), FILE_ATTRIBUTE_DIRECTORY);
+        std::fs::remove_dir_all(&dir).unwrap(); // removes the junction, not the tree twice
+
+        assert!(made, "mklink /J failed");
+        let names = |b: &[Vec<Entry>]| {
+            let mut v: Vec<String> = b.iter().flatten().map(|e| e.name.to_string()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names(&plain_batches), [r"d1\d2\d3\HIT-deep.txt", r"d1\hit-dir", r"d1\hit-loop", "hit-top.txt"]);
+        let plain = plain.unwrap();
+        // root, d1, d2, d3, hit-dir: not the hidden folder, not the junction.
+        assert_eq!((plain.found, plain.walked, plain.skipped, plain.cancelled), (4, 5, 0, None));
+        let all = plain_batches.concat();
+        let by = |n: &str| all.iter().find(|e| e.name == n).unwrap().clone();
+        assert_eq!(by(r"d1\hit-loop").kind, Kind::Junction);
+        assert_eq!(by(r"d1\hit-loop").icon_key.as_str(), root.join(r"d1\hit-loop").to_string_lossy(), "keyed by its real full path");
+        assert_eq!(by(r"d1\d2\d3\HIT-deep.txt").icon_key, "ext:.txt");
+        assert!(by(r"d1\hit-dir").is_dir());
+        let hidden = hidden.unwrap();
+        assert_eq!((hidden.found, hidden.walked), (5, 6), "with hidden files shown the hidden folder is entered");
+        assert!(names(&hidden_batches).contains(&r"secret\hit-hidden.txt".to_string()));
+
+        let all_bulk = bulk_all.unwrap();
+        assert_eq!((all_bulk.found, all_bulk.walked), (620, 21));
+        let cancelled = cancelled.unwrap();
+        assert_eq!(cancelled.cancelled, Some(SEARCH_ESCAPE));
+        // Stopped inside the first folder, after its first batch (SEARCH_BATCH entries, or fewer if
+        // listing them took longer than SEARCH_FLUSH).
+        assert_eq!(cancelled.walked, 1);
+        assert!(cancelled.found > 0 && cancelled.found <= SEARCH_BATCH, "found {}", cancelled.found);
+        assert_eq!((cancelled_batches.len(), cancelled_batches.concat().len()), (1, cancelled.found));
+        assert!(missing.is_err(), "a root that cannot be listed is an error");
     }
 
     #[test]

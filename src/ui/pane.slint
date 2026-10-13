@@ -521,6 +521,45 @@ export component Pane inherits Rectangle {
     // A drag is over tab `drop-tab` of the strip and would drop into its folder (-1: none).
     in property <int> drop-tab: -1;
 
+    // The name filter (Ctrl+F): a box at the right end of the path bar, created only while
+    // filter-open (an `if` here, never in a row). filter-text is the active tab's filter; main.rs
+    // sets both on a tab switch and a navigation. filter-edited(text) on every edit (main.rs
+    // applies it 150 ms after the last one); filter-apply(text) on Return or Down (at once, the
+    // focus goes to the list); filter-clear() on Escape or the clear glyph (the box closes).
+    in-out property <bool> filter-open: false;
+    in-out property <string> filter-text;
+    callback filter-edited(string);
+    callback filter-apply(string);
+    callback filter-clear();
+    // Bumped by open-filter: the box takes the focus (when it already exists; a new one takes it
+    // in its init while filter-grab is set). filter-focused: the box has the focus.
+    private property <int> filter-focus: 0;
+    private property <bool> filter-grab: false;
+    private property <bool> filter-focused: false;
+    private property <length> filter-w: root.filter-open ? 220px : 0px;
+
+    // Ctrl+F: show the box with the focus in it, its text selected.
+    public function open-filter() {
+        root.filter-grab = true;
+        root.filter-open = true;
+        root.filter-focus += 1;
+    }
+
+    function close-filter() {
+        root.filter-text = "";
+        root.filter-open = false;
+        root.filter-clear();
+        list.focus-list();
+    }
+
+    // The box closed under the focus (a navigation or a tab switch cleared it): back to the list.
+    changed filter-open => {
+        if (!root.filter-open && root.filter-focused) {
+            root.filter-focused = false;
+            list.focus-list();
+        }
+    }
+
     // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder.
     in-out property <int> edit-mode: 0;
     private property <string> edit-original;
@@ -687,7 +726,7 @@ export component Pane inherits Rectangle {
             Rectangle {
                 visible: root.path-entry;
                 x: 0;
-                width: parent.width - 26px;
+                width: parent.width - 26px - root.filter-w;
                 path-edit := LineEdit {
                     width: 100%;
                     height: 100%;
@@ -714,7 +753,7 @@ export component Pane inherits Rectangle {
             Rectangle {
                 visible: !root.path-entry;
                 x: 0;
-                width: parent.width - 26px;
+                width: parent.width - 26px - root.filter-w;
                 clip: true;
                 crumb-row := HorizontalLayout {
                     x: min(0px, parent.width - self.preferred-width);
@@ -728,6 +767,50 @@ export component Pane inherits Rectangle {
                         back => { root.back-button(); }
                         forward => { root.forward-button(); }
                     }
+                }
+            }
+            // The name filter's box and its clear glyph, left of the mode glyph.
+            if root.filter-open: HorizontalLayout {
+                x: parent.width - 26px - root.filter-w + 4px;
+                width: root.filter-w - 4px;
+                LineEdit {
+                    accessible-label: "Filter";
+                    placeholder-text: "Filter";
+                    text <=> root.filter-text;
+                    property <int> focus-token: root.filter-focus;
+                    init => {
+                        if (root.filter-grab) {
+                            root.filter-grab = false;
+                            self.focus();
+                            self.select-all();
+                        }
+                    }
+                    changed focus-token => {
+                        root.filter-grab = false;
+                        self.focus();
+                        self.select-all();
+                    }
+                    changed has-focus => { root.filter-focused = self.has-focus; }
+                    edited(t) => { root.filter-edited(t); }
+                    accepted(t) => {
+                        root.filter-apply(t);
+                        list.focus-list();
+                    }
+                    key-pressed(e) => {
+                        if (e.text == Key.Escape) { root.close-filter(); return accept; }
+                        if (e.text == Key.DownArrow) {
+                            root.filter-apply(self.text);
+                            list.focus-list();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+                Rectangle {
+                    width: 20px;
+                    background: clear-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+                    Text { text: "\u{00d7}"; horizontal-alignment: center; vertical-alignment: center; }
+                    clear-ta := TouchArea { clicked => { root.close-filter(); } }
                 }
             }
             // Switch the path bar between breadcrumb and text entry for good.
