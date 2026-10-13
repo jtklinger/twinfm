@@ -339,9 +339,9 @@ impl State {
             }
             return;
         }
-        // With folder sizes cached, every folder below is watched too (until two overflows in a
-        // row), so a change inside a sized folder drops its size.
-        let subtree = !t.sizes.cache.is_empty() && t.sizes.overflows < 2;
+        // With folder sizes cached or in flight, every folder below is watched too (until two
+        // overflows in a row), so a change inside a sized folder drops its size.
+        let subtree = t.sizes.any() && t.sizes.overflows < 2;
         self.watch.watch(pane, t.id, t.path.clone(), subtree);
     }
 
@@ -890,6 +890,7 @@ fn size_selection(st: &mut State, pane: usize) {
     if !t.sizable() {
         return;
     }
+    let before = t.sizes.any();
     let selected = t.model.selected_folders();
     let plan = t.sizes.plan(&selected, fs::sizes::SELECTION_CAP);
     for n in &plan.cancel {
@@ -904,6 +905,13 @@ fn size_selection(st: &mut State, pane: usize) {
     }
     if let (Some((k, m)), false) = (plan.capped, plan.queue.is_empty()) {
         eprintln!("[size] capped: {k} of {m} folders sized");
+    }
+    // The first request makes the watch a subtree watch; the last one cancelled with nothing
+    // cached makes it shallow again.
+    if t.sizes.any() != before {
+        if let Some(app) = st.app.upgrade() {
+            st.watch_active(&app, pane);
+        }
     }
 }
 
@@ -934,6 +942,7 @@ fn size_all(st: &mut State, app: &App, pane: usize) {
     for (_, n) in rows.iter().rev() {
         queue_size(sizer, pane, t, n, true);
     }
+    st.watch_active(app, pane);
     update_status(st, app, pane);
 }
 
@@ -944,7 +953,6 @@ fn drain_sizes() {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let mut touched = [false; 2];
-        let mut first = [false; 2];
         while let Ok(r) = st.size_rx.try_recv() {
             let Some(t) = st.find(r.pane, r.tab) else { continue };
             if t.sizes.generation != r.generation {
@@ -957,17 +965,12 @@ fn drain_sizes() {
                 continue;
             }
             t.sizes.pending.remove(&r.name);
-            first[r.pane] |= t.sizes.cache.is_empty();
             t.sizes.cache.insert(r.name.clone(), r.totals);
             t.model.set_size(&r.name, Some(r.totals.bytes));
         }
         for pane in 0..2 {
             if touched[pane] {
                 update_status(st, &app, pane);
-            }
-            // The first size in the cache: watch every folder below too.
-            if first[pane] {
-                st.watch_active(&app, pane);
             }
         }
     });

@@ -274,6 +274,11 @@ pub struct TabSizes {
 }
 
 impl TabSizes {
+    /// Sizes cached or in flight: the tab's folder is then watched with every folder below it.
+    pub fn any(&self) -> bool {
+        !self.cache.is_empty() || !self.pending.is_empty()
+    }
+
     /// The first `cap` selected folders (display order) are sized; those neither cached nor in
     /// flight are queued. Requests a selection made (not Alt+Return's) for folders no longer
     /// selected are cancelled.
