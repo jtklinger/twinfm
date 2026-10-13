@@ -136,11 +136,13 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   X bytes, F files, D folders` (at most four a second per path, from the worker), `done <path>: X
   bytes, F files, D folders in T ms (S skipped)` (`, truncated at depth 64` when it was), `cancelled
   <path> (<why>)` (deselected, navigation, F5, tab in the background, tab closed), `cache cleared
-  pane=N (<why>)`, `invalidated <path> (<change>)`, `capped: K of M folders sized`, `pane=N
-  Alt+Return: K of M folder(s) to size`. `[watch]` adds `subtree on <path>` / `subtree off <path>`
-  (a tab with sizes cached or in flight watches every folder below its folder), `changed below the folder: no
-  refresh`, `subtree overflow <path>: sizes dropped` and `subtree disabled for this tab after two
-  overflows`.
+  pane=N (<why>)`, `invalidated <path> (<change>)`, `stale <path>: re-walk in N s` (a changed sized
+  folder keeps its old size and is walked again after max(2 s, twice its last walk), once per
+  window; `waitsize` does not wait for that), `stale <path>: not selected any more, size dropped`,
+  `capped: K of M folders sized`, `pane=N Alt+Return: K of M folder(s) to size`. `[watch]` adds
+  `subtree on <path>` / `subtree off <path>` (a tab with sizes cached or in flight watches every
+  folder below its folder), `changed below the folder: no refresh`, `subtree overflow <path>: sizes
+  dropped` and `subtree disabled for this tab after two overflows`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
