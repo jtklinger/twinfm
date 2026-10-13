@@ -31,6 +31,9 @@ pub const PARTIAL_EVERY: Duration = Duration::from_millis(250);
 pub const SELECTION_CAP: usize = 100;
 /// Alt+Return sizes at most this many folders of the listing.
 pub const ALL_CAP: usize = 500;
+/// A sized folder that changed is walked again no sooner than this, or twice its last walk's
+/// duration if that is longer; further changes meanwhile wait for that one re-walk.
+pub const REWALK_MIN: Duration = Duration::from_secs(2);
 
 /// What a walk found.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -105,6 +108,8 @@ pub struct Reply {
     pub cancel: Arc<AtomicBool>,
     pub totals: Totals,
     pub done: bool,
+    /// The walk's duration so far, in ms.
+    pub ms: u64,
 }
 
 /// The shared queue: the newest request is served first; cancelled ones are dropped when met.
@@ -196,6 +201,7 @@ fn serve(r: Request, tx: &Sender<Reply>, wake: &impl Fn()) {
     let t0 = Instant::now();
     let mut last = Instant::now();
     let reply = |totals: Totals, done: bool| Reply {
+        ms: t0.elapsed().as_millis() as u64,
         pane: r.pane,
         tab: r.tab,
         generation: r.generation,
@@ -260,6 +266,9 @@ pub struct DirTotals {
     pub pending: usize,
     /// Selected folders that are neither sized nor being sized (past the cap).
     pub not_sized: usize,
+    /// Selected folders whose last size is shown while it is out of date (a change below them:
+    /// waiting for the re-walk, or being walked again).
+    pub updating: usize,
 }
 
 /// One tab's folder sizes (UI thread only), keyed by the folder's name in the tab's folder.
@@ -271,6 +280,13 @@ pub struct TabSizes {
     pub pending: HashMap<String, Pending>,
     /// Subtree watch overflows in a row; at two the tab's watch stays shallow.
     pub overflows: u8,
+    /// Cached sizes a change has made out of date, with when they are walked again. The cached
+    /// value stays (and is shown) until the re-walk lands.
+    pub stale: HashMap<String, Instant>,
+    /// Each sized folder's last walk duration, for the re-walk delay.
+    pub walk_ms: HashMap<String, u64>,
+    /// Folders Alt+Return sized: re-walked after a change even when not selected.
+    pub from_all: HashSet<String>,
 }
 
 impl TabSizes {
@@ -298,6 +314,9 @@ impl TabSizes {
         for n in selected {
             if let Some(t) = self.cache.get(n) {
                 d.bytes += t.bytes;
+                if self.stale.contains_key(n) || self.pending.contains_key(n) {
+                    d.updating += 1;
+                }
             } else if let Some(p) = self.pending.get(n) {
                 d.bytes += p.partial.bytes;
                 d.pending += 1;
@@ -309,12 +328,41 @@ impl TabSizes {
     }
 
     /// A change somewhere below the tab's folder, `child` being the first component of its path
-    /// (the folder's own name for `sub\dir\file.txt`): drop that folder's cached size. Returns the
-    /// cached name (names compare ignoring ASCII case, as the file system does).
-    pub fn invalidate(&mut self, child: &str) -> Option<String> {
+    /// (the folder's own name for `sub\dir\file.txt`): mark that folder's cached size stale, to be
+    /// walked again after `rewalk_delay`. Returns the cached name and the delay when it was not
+    /// stale yet; None when it has no size or is already waiting (the change joins that re-walk).
+    /// Names compare ignoring ASCII case, as the file system does.
+    pub fn invalidate(&mut self, child: &str, now: Instant) -> Option<(String, Duration)> {
         let key = self.cache.keys().find(|k| k.eq_ignore_ascii_case(child))?.clone();
-        self.cache.remove(&key);
-        Some(key)
+        if self.stale.contains_key(&key) {
+            return None;
+        }
+        let delay = rewalk_delay(self.walk_ms.get(&key).copied().unwrap_or(0));
+        self.stale.insert(key.clone(), now + delay);
+        Some((key, delay))
+    }
+
+    /// The stale folders whose re-walk is due at `now`, taken out of `stale`.
+    pub fn due(&mut self, now: Instant) -> Vec<String> {
+        let mut due: Vec<String> = self.stale.iter().filter(|(_, t)| **t <= now).map(|(n, _)| n.clone()).collect();
+        due.sort();
+        for n in &due {
+            self.stale.remove(n);
+        }
+        due
+    }
+
+    /// When the next re-walk is due.
+    pub fn next_due(&self) -> Option<Instant> {
+        self.stale.values().min().copied()
+    }
+
+    /// Forget one folder's size (it is no longer wanted, or out of date and not walked again).
+    pub fn forget(&mut self, name: &str) -> bool {
+        self.stale.remove(name);
+        self.walk_ms.remove(name);
+        self.from_all.remove(name);
+        self.cache.remove(name).is_some()
     }
 
     /// Forget everything: cancel every request (returned, for the log) and empty the cache
@@ -331,9 +379,18 @@ impl TabSizes {
         cancelled.sort();
         let cached = self.cache.len();
         self.cache.clear();
+        self.stale.clear();
+        self.walk_ms.clear();
+        self.from_all.clear();
         self.generation += 1;
         (cached, cancelled)
     }
+}
+
+/// How long a changed folder waits before it is walked again: `REWALK_MIN`, or twice its last
+/// walk's duration if that is longer.
+pub fn rewalk_delay(last_walk_ms: u64) -> Duration {
+    REWALK_MIN.max(Duration::from_millis(last_walk_ms.saturating_mul(2)))
 }
 
 /// The first component of a path relative to the watched folder (`sub` for `sub\dir\x.txt`).
@@ -466,7 +523,10 @@ mod tests {
         s.pending.insert("d002".into(), Pending { cancel: Arc::default(), partial, all: false });
         s.pending.insert("zz".into(), Pending { cancel: Arc::default(), partial: Totals::default(), all: true });
         let d = s.summary(&names);
-        assert_eq!(d, DirTotals { folders: 150, bytes: 22, pending: 1, not_sized: 147 });
+        assert_eq!(d, DirTotals { folders: 150, bytes: 22, pending: 1, not_sized: 147, updating: 0 });
+        // d000 changed: its old size still counts, as updating.
+        s.stale.insert("d000".into(), Instant::now());
+        assert_eq!(s.summary(&names[..2]), DirTotals { folders: 2, bytes: 15, pending: 0, not_sized: 0, updating: 1 });
         // A new selection: d001 and d003; d002 (selection) is cancelled, zz (Alt+Return) is not.
         let p = s.plan(&["d001".into(), "d003".into()], SELECTION_CAP);
         assert_eq!(p, Plan { queue: vec!["d003".into()], cancel: vec!["d002".into()], capped: None });
@@ -479,16 +539,27 @@ mod tests {
         s.cache.insert("sub2".into(), Totals::default());
         assert_eq!(child_of(r"sub\deep\x.txt"), "sub");
         assert_eq!(child_of("top.txt"), "top.txt");
-        assert_eq!(s.invalidate(child_of(r"sub\deep\x.txt")), Some("Sub".into()), "case-insensitive");
-        assert_eq!(s.invalidate(child_of(r"sub\deep\x.txt")), None, "already gone");
-        assert!(s.cache.contains_key("sub2"), "a longer name is not under sub");
-        assert_eq!(s.invalidate(child_of(r"sub2\y")), Some("sub2".into()));
+        let t0 = Instant::now();
+        s.walk_ms.insert("Sub".into(), 15_000);
+        assert_eq!(s.invalidate(child_of(r"sub\deep\x.txt"), t0), Some(("Sub".into(), Duration::from_secs(30))), "case-insensitive; twice the walk");
+        assert_eq!(s.invalidate(child_of(r"sub\deep\y.txt"), t0), None, "joins the pending re-walk");
+        assert!(s.cache.contains_key("Sub"), "the old size stays until the re-walk lands");
+        assert!(!s.stale.contains_key("sub2"), "a longer name is not under sub");
+        assert_eq!(s.invalidate(child_of(r"sub2\y"), t0), Some(("sub2".into(), REWALK_MIN)), "at least 2 s");
+        assert_eq!(s.invalidate("nothing", t0), None);
+        assert_eq!(s.next_due(), Some(t0 + REWALK_MIN));
+        assert!(s.due(t0 + Duration::from_secs(1)).is_empty());
+        assert_eq!(s.due(t0 + REWALK_MIN), vec!["sub2".to_string()]);
+        assert_eq!(s.due(t0 + Duration::from_secs(30)), vec!["Sub".to_string()]);
+        assert_eq!(s.next_due(), None);
+        assert_eq!(rewalk_delay(500), REWALK_MIN);
+        assert_eq!(rewalk_delay(1500), Duration::from_secs(3));
         let flag: Arc<AtomicBool> = Arc::default();
         s.pending.insert("p".into(), Pending { cancel: flag.clone(), partial: Totals::default(), all: false });
         s.cache.insert("c".into(), Totals::default());
         let g = s.generation;
-        assert_eq!(s.clear(), (1, vec!["p".into()]));
-        assert!(flag.load(Ordering::Relaxed) && s.cache.is_empty() && s.pending.is_empty());
+        assert_eq!(s.clear(), (3, vec!["p".into()]), "Sub, sub2 (their old sizes stayed) and c");
+        assert!(flag.load(Ordering::Relaxed) && s.cache.is_empty() && s.pending.is_empty() && s.walk_ms.is_empty());
         assert_eq!(s.generation, g + 1);
     }
 }

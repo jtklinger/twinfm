@@ -246,6 +246,8 @@ struct State {
     /// The folder size worker and its replies.
     sizer: fs::sizes::Sizer,
     size_rx: Receiver<fs::sizes::Reply>,
+    /// Each pane's re-walk timer: fires once when the earliest stale size of its active tab is due.
+    size_timer: [slint::Timer; 2],
 }
 
 /// A tab with no folder yet, its model sharing the icon table.
@@ -800,7 +802,7 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
     };
     let active = st.is_active(pane, tab_id);
     let Some(t) = st.find(pane, tab_id) else { return };
-    let mut resize = false;
+    let (mut resize, mut stale) = (false, false);
     match ev {
         fs::watch::Event::Lost { error, .. } => {
             eprintln!("[watch] pane={pane} tab={tab_id} watch lost ({error}){}", if active { ": refresh" } else { "" });
@@ -813,8 +815,9 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
         fs::watch::Event::Subtree { top, changes, overflow, .. } => {
             if overflow {
                 t.sizes.overflows += 1;
-                let names: Vec<String> = t.sizes.cache.drain().map(|(n, _)| n).collect();
+                let names: Vec<String> = t.sizes.cache.keys().cloned().collect();
                 for n in &names {
+                    t.sizes.forget(n);
                     t.model.set_size(n, None);
                 }
                 eprintln!("[watch] pane={pane} tab={tab_id} subtree overflow {}: sizes dropped", t.path.display());
@@ -824,13 +827,20 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                 resize = true;
             } else {
                 t.sizes.overflows = 0;
+                // A sized folder that changed keeps showing its size and is walked again after a
+                // delay; changes meanwhile join that one re-walk (no line for them).
+                let now = Instant::now();
                 for (child, change) in &changes {
-                    if let Some(name) = t.sizes.invalidate(child) {
-                        eprintln!("[size] invalidated {} ({change})", t.path.join(&name).display());
-                        t.model.set_size(&name, None);
-                        resize = true;
+                    if let Some((name, delay)) = t.sizes.invalidate(child, now) {
+                        let path = t.path.join(&name);
+                        eprintln!("[size] invalidated {} ({change})", path.display());
+                        eprintln!("[size] stale {}: re-walk in {:.1} s", path.display(), delay.as_secs_f64());
+                        stale = true;
                     }
                 }
+            }
+            if stale {
+                arm_rewalk(st, pane);
             }
             if !(top || overflow || !active) {
                 eprintln!("[watch] pane={pane} tab={tab_id} changed below the folder: no refresh");
@@ -858,6 +868,43 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
     if resize {
         resize_after_change(st, pane);
     }
+}
+
+/// Start (or move) the pane's re-walk timer to the earliest stale size of its active tab, and show
+/// the folders as updating. One single-shot timer per pane, restarted on each new stale size.
+fn arm_rewalk(st: &mut State, pane: usize) {
+    let Some(app) = st.app.upgrade() else { return };
+    if let Some(due) = st.tab(pane).sizes.next_due() {
+        let wait = due.saturating_duration_since(Instant::now());
+        st.size_timer[pane].start(slint::TimerMode::SingleShot, wait, move || rewalk_due(pane));
+    }
+    update_status(st, &app, pane);
+}
+
+/// The re-walk timer fired: walk the due stale folders again if they are still wanted (selected,
+/// or sized by Alt+Return in this listing); forget the others. Their old size stays shown until
+/// the new one lands.
+fn rewalk_due(pane: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let State { panes, sizer, .. } = &mut *st;
+        let t = panes[pane].active_mut();
+        let selected: std::collections::HashSet<String> = t.model.selected_folders().into_iter().collect();
+        for n in t.sizes.due(Instant::now()) {
+            if t.sizes.pending.contains_key(&n) {
+                continue; // being walked already (Alt+Return, a selection)
+            }
+            let all = t.sizes.from_all.contains(&n);
+            if all || selected.contains(&n) {
+                queue_size(sizer, pane, t, &n, all);
+            } else if t.sizes.forget(&n) {
+                eprintln!("[size] stale {}: not selected any more, size dropped", t.path.join(&n).display());
+                t.model.set_size(&n, None);
+            }
+        }
+        st.watch_active(&app, pane);
+        arm_rewalk(st, pane);
+    });
 }
 
 /// After sizes were dropped by the watch: size the selected folders again, point the watch at the
@@ -897,6 +944,10 @@ fn size_selection(st: &mut State, pane: usize) {
         if let Some(p) = t.sizes.pending.remove(n) {
             p.cancel.store(true, Ordering::Relaxed);
             eprintln!("[size] cancelled {} (deselected)", t.path.join(n).display());
+            // A cancelled re-walk leaves an out-of-date size: drop it.
+            if t.sizes.forget(n) {
+                t.model.set_size(n, None);
+            }
         }
     }
     // Newest first: the first selected folder goes in last and is served first.
@@ -964,7 +1015,11 @@ fn drain_sizes() {
                 p.partial = r.totals;
                 continue;
             }
+            if p.all {
+                t.sizes.from_all.insert(r.name.clone());
+            }
             t.sizes.pending.remove(&r.name);
+            t.sizes.walk_ms.insert(r.name.clone(), r.ms);
             t.sizes.cache.insert(r.name.clone(), r.totals);
             t.model.set_size(&r.name, Some(r.totals.bytes));
         }
@@ -3148,6 +3203,7 @@ fn main() -> Result<(), slint::PlatformError> {
             no_watch_logged: [None; 2],
             sizer,
             size_rx,
+            size_timer: Default::default(),
         })
     });
     with_state(rebuild_sidebar);
