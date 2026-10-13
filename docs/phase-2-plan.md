@@ -1340,6 +1340,39 @@ Screenshots and logs (session scratchpad, not in the repo): `shots/manual.png` a
 `shots/users.png`, `shots/windowsapps.png`, `shots/onedrive-{old,new}.png`; `logs/enum-*.log`,
 `logs/s32-*.log`, `logs/gate-*.log`.
 
+### Gate
+
+**Passed (2026-10-13), the first milestone judged under the interleaved-triplet protocol.** Console
+WPR, Jeremy elevated, `tools/wpr-gate.ps1`, accessibility on, Narrator off, no other TwinFM window,
+six runs back to back from 09:37 to 09:53, reference and candidate alternating: `target-p2m4`
+(551625a, the P2-M4 merge build) and `target-p2m5` (011430e, the PR head, built from a detached
+checkout). Analysed with `tools/analyze-trace.py --symbols --exe`.
+
+| Run | P2-M4 (`target-p2m4`) | P2-M5 (`target-p2m5`) |
+|---|---|---|
+| 1 | 20.9% (2086 ms; in-app 21.1) | 20.4% (2040 ms; in-app 23.1) |
+| 2 | 21.6% (2157 ms; in-app 21.6) | 20.9% (2088 ms; in-app 20.9) |
+| 3 | 21.0% (2099 ms; in-app 20.6) | 20.1% (2009 ms; in-app 20.5) |
+| **median** | **21.0%** | **20.4%** |
+
+The candidate's median is 0.6 below the reference's and no P2-M5 run sits above any P2-M4 run
+(its highest, 20.9, equals the reference's lowest). Under the rule (a gap counts only when every
+reference run sits below every candidate run or the medians differ by more than one point) there
+is no cost attributable to P2-M5. Frame shares match within a few samples in every pair
+(accessibility 225 / 209, 226 / 216, 234 / 225 ms; render 1197 / 1186, 1260 / 1234, 1200 / 1142;
+draw_text 693 / 686, 689 / 677, 696 / 665; ListView rows 383 / 382, 394 / 379, 377 / 386; timers
+723 / 705, 731 / 712, 730 / 718; heap 216 / 232, 235 / 212, 220 / 206), and no icon-pool, overlay
+or enumeration frame appears in any window: on bigdir one key (`ext:.txt`) renders once (56 to 63
+ms on the first shell call), `overlays 0, slow 0`, and the strips compose at 24 to 26 us as before.
+The whole machine sat about half a point above the previous day's bisect session (P2-M4 read 20.3
+there), one more data point for comparing within a session only. No `panicked` line in any of the
+six logs. Traces `C:/traces/twinfm-ab7-{p2m4,p2m5}-{1,2,3}.etl`, reports under
+`C:/traces/export/`.
+
+Jeremy reported the console checks (junction and shortcut arrows, the Type column on `C:\Users`,
+a slow icon not holding the rest) done on 2026-10-13 on `target-p2m5`.
+
+
 ## Open questions
 
 - **Phase 2 scope.** Confirmed by the lead as the recommended order above, directory watching
@@ -1360,3 +1393,58 @@ Screenshots and logs (session scratchpad, not in the repo): `shots/manual.png` a
   TwinFM; worth one check without Logi Options+ running if Jeremy cares.
 - **Upstreaming the two Slint accessibility patches** (`docs/upstream-issue-draft.md`,
   `docs/patches/`): still deferred; Jeremy decides when.
+
+## Phase 2 close
+
+P2-M1 to P2-M5 are in: directory watching, operations inside TwinFM (real names, cursor, cut
+marks, Undo, the queue), the daily-use polish (tabs restored and reorderable, the crumb dropdown,
+the maximised state, bookmark editing, the Back button), the drag and drop finish (drag images, the
+right-button menu, auto-scroll, the sidebar and tabs as targets, the highlight during our own
+drags), and icons (reparse kinds, overlays, two workers, the find loop). Phase 2's goal held:
+the list stays true to the disk without F5, operations are visible and undoable inside the app,
+and the gate gave nothing back. Every milestone passed inside its same-session reference's spread:
+P2-M1 20.0 against M6 19.9 / 20.2; P2-M2 20.3 against P2-M1 20.4; P2-M3 20.6 against P2-M2 21.0;
+P2-M4 +1.5, +0.8 and -0.9 over three sessions (mean +0.5, no frame of its own in eight profiles);
+P2-M5 median 20.4 against 21.0 under the triplet protocol. Two 30-minute soaks (P2-M1, P2-M4)
+ran clean. The protocol itself was the lesson of the phase: a single console run resolves about
+two points on a busy day, so from P2-M5 on the gate is three interleaved runs per binary compared
+by median.
+
+Deferred to Phase 3, pulled together from every milestone and deduplicated:
+
+- **Directory watching**: parsing the change records for targeted row updates instead of a
+  re-listing; watching background tabs; subtree watches (for folder sizes); network shares with a
+  timeout; removable drives through `RegisterDeviceNotification` with `DBT_DEVTYP_HANDLE`;
+  noticing the watched folder itself being renamed; the double refresh after our own operations;
+  a back-off for folders that change continuously (P2-M1).
+- **File operations**: Redo; undo of a delete to the Recycle Bin and of a move that renamed on
+  collision; restoring a file a copy or move replaced; dimming the cut row's icon; progress inside
+  TwinFM (`UpdateProgress`); a Narrator check of the notes (P2-M2).
+- **Shell and settings**: folder sizes in the status bar (needs the size worker and subtree
+  watches); a settings dialog; Explorer's protected-operating-system-files switch; the compact
+  Windows 11 menu (`IExplorerCommand`) and icons on TwinFM's own menu items; a designed icon and
+  the toolbar; re-revealing the active tab on resize; keyboard navigation and drops in the crumb
+  dropdown; F2 for a bookmark; restored tabs keeping their sort, filter, cursor and scroll; a
+  back/forward history per tab (the mouse's Forward button, and Back as history back); the Back
+  button over text entries, the tab strip and the scrollbar (P2-M3).
+- **Drag and drop**: spring-loaded folders; virtual files (`CFSTR_FILEDESCRIPTOR`) and
+  asynchronous data objects; mounted folders counted as their own volume; a scripted pane-to-pane
+  OLE drop; drop descriptions; drops on a crumb; auto-scroll of the sidebar and the tab strip;
+  warming the shell's icon path so the first drag image does not wait 0.1 s (P2-M4).
+- **Icons**: cloud status overlays (OneDrive's check and cloud marks, which need a per-file key or
+  a per-row status mark); exposing placeholders (`PHCM_EXPOSE_PLACEHOLDERS`) so files inside a sync
+  root are seen as cloud reparse points; the `SHGetFileInfoW` call per overlaid key (a folder of
+  thousands of shortcuts); whether the shell overlays "other" reparse points; not rendering icons
+  for rows scrolled past; 32 px icons and the large-icon view Jeremy declined for Phase 2; scale
+  factor changes flushing the table (M2, P2-M5).
+- **Checks that need Jeremy at the console**: a Narrator pass over the Phase 2 notes and the new
+  Type texts; the OneDrive folder with placeholders exposed, if that is ever turned on; a
+  right-button drag out of Explorer on a machine where Explorer starts one.
+
+Phase 3 candidates, in no agreed order: search (a name filter in the pane first, then content),
+archives (zip folders as navigable, which also needs the virtual-file drop path), thumbnails (and
+with them the large-icon view, the first per-row rendering since M1, trace first), history and the
+Forward button, the settings dialog, folder sizes, the compact context menu, and upstreaming the
+two Slint accessibility patches (`docs/upstream-issue-draft.md`, `docs/patches/`), which Jeremy
+decides on. Phase 3's kickoff brief should set the gate protocol as the triplet rule from the
+start and name the reference binary (`target-p2m5`, 011430e).
