@@ -551,6 +551,27 @@ choose the row layout once per pane, outside the `for` (two ListViews under a pa
 which the driver's and the focus layering's references to the one `list` element rule out for
 this milestone). Traces `C:/traces/twinfm-ab9-{p2m5,p3m1}-{1,2,3}.etl`.
 
+**Elimination run (2026-10-13, 12:14 to 12:21): nothing else in P3-M1 costs anything.** Before
+betting a gate run on the rewrite, a binary `target-p3m1x` was built from cba777e with only the
+row's Type cell, the Type header cell and the rename editor's width put back to 0ba542c's
+constants (a dirty detached checkout, never committed), and run against `target-p2m5` under the
+same protocol. The second candidate run had a false start (the exe was still linking; the script
+threw on the missing process and left a WPR session open until `wpr -cancel`), and was re-run.
+
+| Run | P2-M5 (`target-p2m5`) | P3-M1x (cba777e, reference row) |
+|---|---|---|
+| 1 | 21.2% (2120 ms) | 21.2% (2123 ms) |
+| 2 | 40.0% (4002 ms), disturbed | 21.9% (2185 ms) |
+| 3 | 22.7% (2268 ms) | 20.7% (2066 ms) |
+| **median** | **22.7%** (22.0 without run 2) | **21.2%** |
+
+The reference's run 2 doubled in every category at once (machine, not app; the open WPR session
+is the likely cause). Run 1 is equal, run 3 has the candidate 2.0 below, and the medians favour the
+candidate with or without the disturbed run: no gap. So history, the dialog, the Forward handling
+and the start-folder change cost nothing per frame, and the second run's 0.7 was the two per-row
+bindings alone. The machine sat about 1.3 points above the second run's session. Traces
+`C:/traces/twinfm-ab10x-{p2m5,p3m1x}-{1,2,3}.etl`.
+
 **Third run: pending.** Jeremy chose the zero-cost switch over dropping it (2026-10-13). A host
 element keeps the one `list` the driver and the pane's overlays name, and the two ListViews sit
 inside it, which removes the obstacle named above. What changed since cba777e: no row binds to
