@@ -572,13 +572,29 @@ and the start-folder change cost nothing per frame, and the second run's 0.7 was
 bindings alone. The machine sat about 1.3 points above the second run's session. Traces
 `C:/traces/twinfm-ab10x-{p2m5,p3m1x}-{1,2,3}.etl`.
 
-**Third run: pending.** Jeremy chose the zero-cost switch over dropping it (2026-10-13). A host
-element keeps the one `list` the driver and the pane's overlays name, and the two ListViews sit
-inside it, which removes the obstacle named above. What changed since cba777e: no row binds to
-`show-type` any more, and `FileRows`' generated row is the reference's but for the body of its
-press handler; per pane, the list and the header each sit in one `if`, and the host adds one
-`Rectangle` around the ListView. In-app `[busy]` from the gate script under RDP, a sanity check
-and not a gate number: `target-p2m5` 19.5, this build 18.9, `target-p2m5` 18.6, this build 16.7,
-and with `show_type = false` 14.8 and 13.9. `target-p3m1` is to be rebuilt from the new head;
-Jeremy runs the triplets against `target-p2m5` (`-Etl C:\traces\twinfm-ab10-<build>-<n>.etl`).
+**Third run (2026-10-13, Jeremy at the console with `tools/wpr-triplet.ps1`): passed.** Same
+protocol, `target-p2m5` (011430e) against `target-p3m1` built from 537f606 (the per-pane switch,
+f21c036, plus docs). Analysed with `tools/analyze-trace.py --symbols --exe`.
+
+| Run | P2-M5 (`target-p2m5`) | P3-M1 537f606 |
+|---|---|---|
+| 1 | 21.2% (2125 ms) | 20.8% (2080 ms) |
+| 2 | 20.3% (2029 ms) | 21.8% (2180 ms) |
+| 3 | 28.2% (2823 ms) | 27.7% (2767 ms) |
+| **median** | **21.2%** | **21.8%** |
+
+The medians differ by 0.6, and the candidate sits below the reference in runs 1 and 3, so neither
+half of the rule calls a gap. The third pair ran about seven points high for both binaries (the
+machine, in step; both shares identical), which the pairwise reading tolerates and a single run
+would not have. Frame shares match within a few samples in every pair (accessibility 219 / 224,
+211 / 239, 280 / 262; render 1246 / 1181, 1175 / 1260, 1606 / 1622; draw_text 700 / 691, 659 / 701,
+918 / 876; rows 371 / 390, 350 / 386, 544 / 529; timers 723 / 732, 692 / 756, 968 / 935; heap
+205 / 200, 192 / 197, 249 / 225), and no `Conditional::visit`, host or dialog frame appears in any
+candidate window. Together with the elimination run this closes the gate for P3-M1: the cost was
+the per-row switch in its two earlier forms, and the per-pane form has none. Traces
+`C:/traces/twinfm-ab10-{p2m5,p3m1}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+Jeremy's console checks on `target-p3m1` (2026-10-13): the side buttons, Alt+Left/Right and the
+dialog work; switching the Type column off moved the list up by one row (switching it back on
+kept its place), see the fix below.
 
