@@ -6,6 +6,7 @@
 //!   drag <pane> <dy> <ms>            press the pane's scrollbar thumb and drag it <dy> px in 16 ms steps
 //!   nav <pane> <path>                navigate a pane
 //!   up <pane>                        go to the parent directory
+//!   scrollpos <pane>                 log the pane's list scroll (content-y) and cursor row
 //!   sort <pane> <0|1|2|3>            click a column header (name/size/modified/type)
 //!   key <name>                       press a key through the Slint key path; names: F3, F5,
 //!                                    Backspace, Return, Space, AltUp, CtrlShiftRight, CtrlH
@@ -161,6 +162,7 @@ enum Step {
     Drag { pane: usize, dy: f32, ms: u64 },
     Nav { pane: usize, path: String },
     Up(usize),
+    ScrollPos(usize),
     Sort { pane: usize, col: i32 },
     Key(String),
     Click { pane: usize, row: usize, modifier: Option<Key> },
@@ -225,6 +227,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "drag" => Step::Drag { pane: num(1) as usize, dy: num(2) as f32, ms: num(3).max(1) as u64 },
                 "nav" => Step::Nav { pane: num(1) as usize, path: a[2..].join(" ") },
                 "up" => Step::Up(num(1) as usize),
+                "scrollpos" => Step::ScrollPos(num(1) as usize),
                 "sort" => Step::Sort { pane: num(1) as usize, col: num(2) as i32 },
                 "key" => Step::Key(a.get(1).unwrap_or(&"").to_string()),
                 "click" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: None },
@@ -751,6 +754,11 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::Up(pane) => {
             app.invoke_go_up(pane as i32);
+            schedule(runner, 1);
+        }
+        Step::ScrollPos(pane) => {
+            let row = if pane == 0 { app.get_left_current_row() } else { app.get_right_current_row() };
+            eprintln!("[auto] scrollpos pane={pane} content-y {:.1} current-row {row}", app.invoke_get_scroll(pane as i32));
             schedule(runner, 1);
         }
         Step::Sort { pane, col } => {
