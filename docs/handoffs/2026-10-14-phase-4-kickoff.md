@@ -81,9 +81,8 @@ Half-done or unverified: none in code.
    decided). Present them as listed there, with their origins; do not pick.
 4. Write `docs/phase-4-plan.md` in the shape of `phase-3-plan.md`'s intro: the goal as accepted,
    the milestones in Jeremy's order, the gate protocol (reference `target-p3m5`, ee0be21), the
-   architecture rules carried with both amendments, and the open questions. In the same PR update
-   `CLAUDE.md`: its Measuring paragraph still names `target-p3m4` (07ca56c) as the reference
-   binary, and the intro paragraph gains the Phase 4 record. Delete this handoff in that PR.
+   architecture rules carried with both amendments, and the open questions. In the same PR the
+   `CLAUDE.md` intro paragraph gains the Phase 4 record. Delete this handoff in that PR.
 5. If the large-icon grid is chosen: the trace is done (§ P3-M5 Trace, branch `trace/p3-m5-b-grid`,
    075f85a); the first work is the strip (its recompose rate, `GRID_MARGIN_ROWS = 1`, and the
    texture upload per compose, 36% of the grid's busy in ab14), then the view switch chosen once
