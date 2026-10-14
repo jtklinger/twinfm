@@ -86,7 +86,9 @@
 //!                                    zip pane carries). `waitops` waits for an async drop to end.
 //!                                    `ownzip` in place of `zip` marks the drop as our own drag
 //!                                    out of the archive (the paths are its sources), which the
-//!                                    target turns into the extraction job
+//!                                    target turns into the extraction job; `idlist` drops the
+//!                                    shell's generic data object over those items instead
+//!                                    (`SHCreateDataObject`: a Shell IDList Array only)
 //!   dragover <pane> <top|bottom> <ms> <path|path|...>
 //!                                    a drag of the paths enters the window 6 px inside the pane
 //!                                    list's top or bottom edge and hovers there for <ms> (our drop
@@ -218,7 +220,7 @@ enum Step {
     /// `dropvirtual`: virtual files (`name=size`, a folder `name\`; with `async` from a source that
     /// asks for asynchronous extraction), or with `zip` the shell's data object for paths inside an
     /// archive.
-    DropVirtual { pane: usize, row: i32, zip: bool, own: bool, asynced: bool, items: Vec<String> },
+    DropVirtual { pane: usize, row: i32, zip: bool, own: bool, idlist: bool, asynced: bool, items: Vec<String> },
     /// Hover a drag of `paths` near the pane list's top or bottom edge for `ms`, then leave.
     DragOver { pane: usize, top: bool, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
@@ -327,14 +329,15 @@ fn parse(script: &str) -> Vec<Step> {
                     }
                 }
                 "dropvirtual" => {
-                    let own = a.get(3) == Some(&"ownzip");
-                    let (zip, asynced) = (own || a.get(3) == Some(&"zip"), a.get(3) == Some(&"async"));
+                    let (own, idlist) = (a.get(3) == Some(&"ownzip"), a.get(3) == Some(&"idlist"));
+                    let (zip, asynced) = (own || idlist || a.get(3) == Some(&"zip"), a.get(3) == Some(&"async"));
                     let first = if zip || asynced { 4 } else { 3 };
                     Step::DropVirtual {
                         pane: num(1) as usize,
                         row: num(2) as i32,
                         zip,
                         own,
+                        idlist,
                         asynced,
                         items: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                     }
@@ -1206,7 +1209,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             }
             schedule(runner, 1);
         }
-        Step::DropVirtual { pane, row, zip, own, asynced, items } => {
+        Step::DropVirtual { pane, row, zip, own, idlist, asynced, items } => {
             let Some(pos) = drop_point(&app, DropAt::Row(pane, row)) else {
                 schedule(runner, 1);
                 return;
@@ -1218,7 +1221,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 let paths: Vec<std::path::PathBuf> = items.iter().map(std::path::PathBuf::from).collect();
                 let folder = paths.first().and_then(|p| p.parent()).map(std::path::Path::to_path_buf).unwrap_or_default();
                 let names: Vec<String> = paths.iter().filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned())).collect();
-                crate::dnd::archive_data(hwnd_of(&app), &folder, &names)
+                if idlist { crate::dnd::idlist_data(hwnd_of(&app), &folder, &names) } else { crate::dnd::archive_data(hwnd_of(&app), &folder, &names) }
             } else {
                 // Generated contents: `name=size` bytes of a pattern; `name\` a folder.
                 let listed: Vec<(String, Option<Vec<u8>>)> = items
@@ -1236,7 +1239,11 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             match dropped {
                 Ok(Some((enter, dropped))) => eprintln!(
                     "[auto] dropvirtual pane {pane} row {row}{}: {} item(s), DragEnter effect {}, Drop reported {}",
-                    if own { " (the zip folder's data object, as our own drag)" } else if zip { " (the zip folder's data object)" } else if asynced { " (async source)" } else { "" },
+                    if own {
+                        " (the zip folder's data object, as our own drag)"
+                    } else if idlist {
+                        " (SHCreateDataObject: a Shell IDList Array only)"
+                    } else if zip { " (the zip folder's data object)" } else if asynced { " (async source)" } else { "" },
                     items.len(),
                     crate::dnd::effect_name(enter),
                     crate::dnd::effect_name(dropped)

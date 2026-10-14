@@ -71,8 +71,11 @@ use windows_sys::Win32::System::Ole::{
     RevokeDragDrop,
 };
 use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MK_RBUTTON, MK_SHIFT};
+use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
+use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows_sys::Win32::UI::Shell::{
-    CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORW, CFSTR_LOGICALPERFORMEDDROPEFFECT, CFSTR_PERFORMEDDROPEFFECT, DefSubclassProc,
+    CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORA, CFSTR_FILEDESCRIPTORW, CFSTR_SHELLIDLIST, ILCombine, ILFree, SHGetNameFromIDList,
+    SIGDN_DESKTOPABSOLUTEPARSING, CFSTR_LOGICALPERFORMEDDROPEFFECT, CFSTR_PERFORMEDDROPEFFECT, DefSubclassProc,
     FD_ATTRIBUTES, FD_FILESIZE, FD_PROGRESSUI, RemoveWindowSubclass, SHCreateDataObject, SHCreateMemStream, SHDRAGIMAGE,
     SetWindowSubclass,
 };
@@ -973,18 +976,30 @@ pub fn descriptor_block(items: &[(&str, Option<u64>)]) -> Vec<u8> {
 
 /// The items of a `FileGroupDescriptorW` block, None when it is cut short. An item whose name is
 /// empty or not a valid file name once cleaned (a drive, `:` for a stream, a wildcard) is left out.
+#[cfg(test)]
 pub fn parse_descriptors(b: &[u8]) -> Option<Vec<VirtualItem>> {
+    parse_descriptors_as(b, true)
+}
+
+/// `parse_descriptors` for `FileGroupDescriptorW` (`wide`) or the ANSI `FileGroupDescriptor`, whose
+/// records are 332 bytes with a 260-byte name in the ANSI code page.
+fn parse_descriptors_as(b: &[u8], wide_names: bool) -> Option<Vec<VirtualItem>> {
+    let len = if wide_names { FD_LEN } else { FD_LEN_A };
     let n = u32::from_le_bytes(b.get(0..4)?.try_into().ok()?) as usize;
-    if b.len() < 4 + n.checked_mul(FD_LEN)? {
+    if b.len() < 4 + n.checked_mul(len)? {
         return None;
     }
     let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
     let mut out = Vec::with_capacity(n);
     for index in 0..n {
-        let o = 4 + index * FD_LEN;
+        let o = 4 + index * len;
         let flags = u32_at(o) as i32;
-        let wide: Vec<u16> = (0..260).map(|k| u16::from_le_bytes([b[o + 72 + 2 * k], b[o + 73 + 2 * k]])).take_while(|&u| u != 0).collect();
-        let raw = String::from_utf16_lossy(&wide);
+        let raw = if wide_names {
+            let wide: Vec<u16> = (0..260).map(|k| u16::from_le_bytes([b[o + 72 + 2 * k], b[o + 73 + 2 * k]])).take_while(|&u| u != 0).collect();
+            String::from_utf16_lossy(&wide)
+        } else {
+            ansi_to_string(&b[o + 72..o + 332])
+        };
         let parts: Vec<&str> = raw.split(['\\', '/']).filter(|p| !p.is_empty() && *p != "." && *p != "..").collect();
         if parts.is_empty() || parts.iter().any(|p| crate::fileops::invalid_name(p).is_some()) {
             eprintln!("[dnd] virtual drop: item {index} \"{raw}\" left out (not a file name)");
@@ -997,9 +1012,66 @@ pub fn parse_descriptors(b: &[u8]) -> Option<Vec<VirtualItem>> {
     Some(out)
 }
 
-/// The virtual items a data object offers, or None when it offers no `FileGroupDescriptorW`.
+/// The ANSI `FILEDESCRIPTORA`'s length: the same fields up to the name, then 260 bytes.
+const FD_LEN_A: usize = 332;
+
+/// A NUL-terminated name in the ANSI code page.
+fn ansi_to_string(b: &[u8]) -> String {
+    let b = &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())];
+    let mut w = vec![0u16; b.len().max(1)];
+    // SAFETY: input and output buffers of the given lengths.
+    let n = unsafe { MultiByteToWideChar(CP_ACP, 0, b.as_ptr(), b.len() as i32, w.as_mut_ptr(), w.len() as i32) };
+    String::from_utf16_lossy(&w[..n.max(0) as usize])
+}
+
+/// The virtual items a data object offers (`FileGroupDescriptorW`, else the ANSI
+/// `FileGroupDescriptor`), or None when it offers neither.
 pub fn read_descriptors(data: *mut c_void) -> Option<Vec<VirtualItem>> {
-    parse_descriptors(&read_hglobal(data, registered_format(CFSTR_FILEDESCRIPTORW))?)
+    if let Some(b) = read_hglobal(data, registered_format(CFSTR_FILEDESCRIPTORW)) {
+        return parse_descriptors_as(&b, true);
+    }
+    parse_descriptors_as(&read_hglobal(data, registered_format(CFSTR_FILEDESCRIPTORA))?, false)
+}
+
+/// The items of a `Shell IDList Array` (a CIDA: the folder's PIDL, then each item's relative to
+/// it) when every one of them lies inside a zip archive: their parsing paths, which the extraction
+/// job takes. None otherwise. A shell data object made over items of a zip folder
+/// (`SHCreateDataObject`) offers nothing else.
+fn read_archive_idlist(data: *mut c_void) -> Option<Vec<PathBuf>> {
+    let b = read_hglobal(data, registered_format(CFSTR_SHELLIDLIST))?;
+    let u32_at = |o: usize| -> Option<usize> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize) };
+    let n = u32_at(0)?;
+    let at = |i: usize| -> Option<*const ITEMIDLIST> {
+        let off = u32_at(4 + 4 * i)?;
+        (off < b.len()).then(|| b[off..].as_ptr() as *const ITEMIDLIST)
+    };
+    let folder = at(0)?;
+    let mut paths = Vec::with_capacity(n);
+    for i in 1..=n {
+        // SAFETY: PIDLs inside the CIDA block (bounds-checked offsets; the shell reads each up to
+        // its terminating zero-length id); the combined PIDL and the name are freed here.
+        let path = unsafe {
+            let abs = ILCombine(folder, at(i)?);
+            if abs.is_null() {
+                return None;
+            }
+            let mut s: *mut u16 = std::ptr::null_mut();
+            let hr = SHGetNameFromIDList(abs, SIGDN_DESKTOPABSOLUTEPARSING, &mut s);
+            ILFree(abs);
+            if hr < 0 || s.is_null() {
+                return None;
+            }
+            let len = (0..).take_while(|&k| *s.add(k) != 0).count();
+            let p = PathBuf::from(String::from_utf16_lossy(std::slice::from_raw_parts(s, len)));
+            windows_sys::Win32::System::Com::CoTaskMemFree(s as *const c_void);
+            p
+        };
+        if !crate::fs::archive::inside(&path) {
+            return None;
+        }
+        paths.push(path);
+    }
+    (!paths.is_empty()).then_some(paths)
 }
 
 /// What a drop offers. Files on disk (`CF_HDROP`) win over virtual files when both are there.
@@ -1007,8 +1079,8 @@ pub fn read_descriptors(data: *mut c_void) -> Option<Vec<VirtualItem>> {
 pub enum Offer {
     Files(Vec<PathBuf>),
     Virtual(Vec<VirtualItem>),
-    /// Virtual files from our own drag out of an archive: the in-archive paths we dragged, copied
-    /// by the extraction job rather than read here.
+    /// Items inside a zip archive, by their in-archive paths, copied by the extraction job rather
+    /// than read here: our own drag out of an archive, or a source offering only their PIDLs.
     Archive(Vec<PathBuf>),
     Nothing,
 }
@@ -1019,7 +1091,8 @@ pub fn offer(data: *mut c_void) -> Offer {
     }
     match read_descriptors(data) {
         Some(items) if !items.is_empty() => Offer::Virtual(items),
-        _ => Offer::Nothing,
+        // Items of a zip folder offered as PIDLs only: the extraction job, as for our own drags.
+        _ => read_archive_idlist(data).map_or(Offer::Nothing, Offer::Archive),
     }
 }
 
@@ -1457,16 +1530,78 @@ unsafe extern "system" fn dt_drag_enter(this: *mut c_void, data: *mut c_void, ke
         match &offered {
             Offer::Files(s) => format!("{} file(s), first {}", s.len(), s.first().map(|p| p.display().to_string()).unwrap_or_default()),
             Offer::Virtual(v) => format!("{} virtual item(s) (FileGroupDescriptorW, no CF_HDROP), first {}", v.len(), v[0].name),
-            Offer::Archive(p) => format!("our own drag of {} item(s) out of an archive, first {}", p.len(), p[0].display()),
+            Offer::Archive(p) => format!("{} item(s) inside an archive (extraction job), first {}", p.len(), p[0].display()),
             Offer::Nothing => "no CF_HDROP and no virtual files, refused".into(),
         }
     );
+    let files = matches!(offered, Offer::Files(_));
     *t.offered.borrow_mut() = offered;
     *t.last.borrow_mut() = None;
+    // SAFETY: COM contract: a valid in/out pointer (checked for null).
+    let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
     t.over(keys, pt, effect);
+    // A drag we refuse that offers no files: say what it does offer, once per DragEnter (P3-M4: a
+    // drag from Explorer's zip view was refused at the console).
+    if !files && out_effect(effect) == NONE {
+        eprintln!("[dnd] DragEnter refused: allowed=0x{allowed:x} keys=0x{keys:x}; {}", format_report(data));
+    }
     // The shell paints the source's drag image over our window (after our own work for the call).
     target_helper_call(HelperCall::Enter(t.hwnd, data), pt, out_effect(effect));
     S_OK
+}
+
+/// Every format a data object enumerates (name or standard id, tymed mask, lindex, aspect) and
+/// `QueryGetData` for the formats a file drop can come in, for the refusal log.
+fn format_report(data: *mut c_void) -> String {
+    let name = |cf: u16| -> String {
+        let mut buf = [0u16; 128];
+        // SAFETY: a writable buffer of the advertised length.
+        let n = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardFormatNameW(cf as u32, buf.as_mut_ptr(), buf.len() as i32) };
+        if n > 0 { String::from_utf16_lossy(&buf[..n as usize]) } else { format!("CF {cf}") }
+    };
+    let mut listed = Vec::new();
+    // SAFETY: a live IDataObject; the enumerator is released by `Com`; each FORMATETC's `ptd` (a
+    // target device, never asked for here) is freed with CoTaskMemFree.
+    unsafe {
+        let mut e: *mut c_void = std::ptr::null_mut();
+        let hr = (data_vtbl(data).enum_format_etc)(data, 1, &mut e); // DATADIR_GET
+        if hr < 0 || e.is_null() {
+            listed.push(format!("EnumFormatEtc failed 0x{:08X}", hr as u32));
+        } else {
+            let en = Com(e);
+            let next: unsafe extern "system" fn(*mut c_void, u32, *mut FORMATETC, *mut u32) -> HRESULT =
+                std::mem::transmute((**(en.0 as *const *const [*const c_void; 4]))[3]);
+            loop {
+                let mut f: FORMATETC = std::mem::zeroed();
+                let mut got = 0u32;
+                if next(en.0, 1, &mut f, &mut got) != S_OK || got == 0 {
+                    break;
+                }
+                if !f.ptd.is_null() {
+                    windows_sys::Win32::System::Com::CoTaskMemFree(f.ptd as *const c_void);
+                }
+                listed.push(format!("{} tymed=0x{:x} lindex={} aspect={}", name(f.cfFormat), f.tymed, f.lindex, f.dwAspect));
+            }
+        }
+    }
+    let both = (TYMED_ISTREAM | TYMED_HGLOBAL) as u32;
+    let asks = [
+        (registered_format(CFSTR_FILEDESCRIPTORW), -1, TYMED_HGLOBAL as u32),
+        (registered_format(CFSTR_FILEDESCRIPTORA), -1, TYMED_HGLOBAL as u32),
+        (registered_format(CFSTR_FILECONTENTS), 0, both),
+        (CF_HDROP, -1, TYMED_HGLOBAL as u32),
+        (registered_format(CFSTR_SHELLIDLIST), -1, TYMED_HGLOBAL as u32),
+    ];
+    let queried: Vec<String> = asks
+        .iter()
+        .map(|&(cf, lindex, tymed)| {
+            let f = FORMATETC { cfFormat: cf, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT, lindex, tymed };
+            // SAFETY: a live IDataObject and a valid FORMATETC.
+            let hr = unsafe { (data_vtbl(data).query_get_data)(data, &f) };
+            format!("{}={:#010x}", name(cf), hr as u32)
+        })
+        .collect();
+    format!("formats [{}]; QueryGetData {}", listed.join(", "), queried.join(" "))
 }
 
 unsafe extern "system" fn dt_drag_over(this: *mut c_void, keys: u32, pt: POINTL, effect: *mut u32) -> HRESULT {
@@ -1594,7 +1729,7 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
         match &fresh {
             Offer::Files(f) => format!("{} file(s)", f.len()),
             Offer::Virtual(v) => format!("{} virtual item(s)", v.len()),
-            Offer::Archive(p) => format!("{} item(s) of our own archive drag", p.len()),
+            Offer::Archive(p) => format!("{} in-archive item(s)", p.len()),
             Offer::Nothing => "0 file(s)".into(),
         },
         effect_name(e),
@@ -1609,7 +1744,7 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
             }
             // Written here (or, for an async source, on a worker once Drop has returned).
             Offer::Virtual(items) => virtual_drop(data, items, spot.pane, spot.dest),
-            // Our own drag out of an archive: the extraction job, queued as a files drop is.
+            // Items inside an archive: the extraction job, queued as a files drop is.
             Offer::Archive(sources) => {
                 let _ = slint::invoke_from_event_loop(move || crate::drop_files(spot.pane, sources, spot.dest, COPY));
             }
@@ -1676,6 +1811,21 @@ fn log_paint_inside_drag() {
         PAINT_LOGGED.with(|p| p.set(true));
         eprintln!("[dnd] highlight painted inside our own drag loop (frame {} after the change at frame {at})", crate::perf::frames());
     }
+}
+
+/// The shell's generic data object (`SHCreateDataObject`) for `names` in `folder`: for items of a
+/// zip folder it offers only a Shell IDList Array (the driver's `dropvirtual ... idlist`).
+pub fn idlist_data(hwnd: isize, folder: &Path, names: &[String]) -> Result<Com, String> {
+    shellmenu::ensure_com()?;
+    let (folder_pidl, _folder, children) = shellmenu::parse_items(hwnd as HWND, folder, names)?;
+    let apidl: Vec<*const _> = children.iter().map(|c| c.0 as *const _).collect();
+    let mut p: *mut c_void = std::ptr::null_mut();
+    // SAFETY: as in `drag`.
+    let hr = unsafe { SHCreateDataObject(folder_pidl.0, apidl.len() as u32, apidl.as_ptr(), std::ptr::null_mut(), &IID_IDATAOBJECT, &mut p) };
+    if hr < 0 || p.is_null() {
+        return Err(format!("SHCreateDataObject failed: 0x{:08X}", hr as u32));
+    }
+    Ok(Com(p))
 }
 
 /// The driver's `dropvirtual ... ownzip`: `drop_data` with `paths` standing in for our own drag
@@ -2809,6 +2959,14 @@ mod tests {
         assert_eq!(over_cap(&big), Some(SYNC_CAP + 1));
         assert_eq!(over_cap(&big[..1]), None, "exactly the cap is allowed");
         assert_eq!(parse_descriptors(&descriptor_block(&[("x", Some(1))])[..100]), None, "a cut block");
+        // The ANSI FileGroupDescriptor: 332-byte records, the name in the ANSI code page.
+        let mut a = 1u32.to_le_bytes().to_vec();
+        let mut rec = vec![0u8; FD_LEN_A];
+        rec[0..4].copy_from_slice(&((FD_FILESIZE) as u32).to_le_bytes());
+        rec[68..72].copy_from_slice(&7u32.to_le_bytes());
+        rec[72..80].copy_from_slice(b"ansi.txt");
+        a.extend(rec);
+        assert_eq!(parse_descriptors_as(&a, false), Some(vec![VirtualItem { index: 0, name: "ansi.txt".into(), dir: false, size: Some(7) }]));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2864,6 +3022,20 @@ mod tests {
                 "{listed:?}"
             );
             assert!(data.query(&IID_IDATAOBJECTASYNCCAPABILITY).is_some(), "the zip folder supports async drops");
+            // A shell data object over the same items offers only a Shell IDList Array: their
+            // in-archive paths, for the extraction job.
+            let (fp, _folder, children) = shellmenu::parse_items(std::ptr::null_mut(), &zip.join("sub"), &["a.txt".to_string()]).unwrap();
+            let apidl: Vec<*const _> = children.iter().map(|c| c.0 as *const _).collect();
+            let mut q: *mut c_void = std::ptr::null_mut();
+            // SAFETY: as in `drag`.
+            let hr = unsafe { SHCreateDataObject(fp.0, 1, apidl.as_ptr(), std::ptr::null_mut(), &IID_IDATAOBJECT, &mut q) };
+            assert!(hr >= 0 && !q.is_null());
+            let idl = Com(q);
+            assert!(read_descriptors(idl.0).is_none(), "no descriptors");
+            match offer(idl.0) {
+                Offer::Archive(p) => assert!(p.len() == 1 && p[0].to_string_lossy().eq_ignore_ascii_case(&zip.join("sub").join("a.txt").to_string_lossy()), "{p:?}"),
+                other => panic!("{other:?}"),
+            }
             assert_eq!(extract(data.0, &items, &root.join("out"), Some(SYNC_CAP), |_, _, _| {}), Ok((2, 14)));
             assert_eq!(std::fs::read(root.join("out").join("a.txt")).unwrap(), b"alpha");
             assert_eq!(std::fs::read(root.join("out").join("inner").join("b.txt")).unwrap(), b"beta beta");
@@ -2919,3 +3091,4 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
+

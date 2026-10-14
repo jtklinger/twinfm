@@ -1697,6 +1697,25 @@ archive: 0 `[archive]` lines.
   or an HGLOBAL (cut to the descriptor's size). Names that are not file names once `.` and `..`
   parts are dropped (a drive, a stream's `:`) are left out with a log line. The note ends "Extracted
   N files" or "Extracting failed: <why>"; the refresh is the watch's.
+- **Drags from Explorer's zip view (fix after the console check).** The drop target refused one at
+  DragEnter (the deny cursor). In process, the shell's generic data object over a zip folder's
+  items (`SHCreateDataObject`) offers only `Shell IDList Array` (`formats [Shell IDList Array
+  tymed=0x1 lindex=-1 aspect=1]`, `QueryGetData` S_FALSE for both descriptors, `FileContents` and
+  `CF_HDROP`), which `offer` turned into nothing; the zip folder's own object (`GetUIObjectOf`, and
+  `SHCreateShellItemArray` + `BindToHandler(BHID_DataObject)`) offers `Shell IDList Array`,
+  `FileGroupDescriptorW` and `FileContents` and was accepted. So `offer` now falls back, after
+  `CF_HDROP` and the descriptors, to the `Shell IDList Array`: when every item's parsing path
+  (`ILCombine` with the folder's PIDL, `SHGetNameFromIDList(SIGDN_DESKTOPABSOLUTEPARSING)`) lies
+  inside a zip archive, the drop is `Offer::Archive` with those paths, the extraction job as for
+  our own drags. The descriptors are also read from the ANSI `FileGroupDescriptor` when
+  `FileGroupDescriptorW` is missing (332-byte records, names through `MultiByteToWideChar(CP_ACP)`).
+  A DragEnter that ends with effect none for a data object without files now logs one `[dnd]
+  DragEnter refused: allowed=0x.. keys=0x..; formats [...]; QueryGetData ...` line (every format
+  `EnumFormatEtc` lists with its tymed, lindex and aspect, and `QueryGetData` for
+  `FileGroupDescriptorW`, `FileGroupDescriptor`, `FileContents` at lindex 0, `CF_HDROP` and `Shell
+  IDList Array`). Which object Explorer's zip view hands out is not confirmed from here (a real
+  drag from Explorer cannot be scripted); the console log will show it. Driver: `dropvirtual <pane>
+  <row> idlist <path|...>` drops the `SHCreateDataObject` object.
 - **The minimal data object** (`dnd.rs`, the driver's and the tests') now serves `CF_HDROP`,
   virtual files (descriptors built by `descriptor_block`, contents as HGLOBALs or as IStreams from
   `SHCreateMemStream`), or both, and with `can_async` an `IDataObjectAsyncCapability` face (a
@@ -1796,8 +1815,12 @@ archive: 0 `[archive]` lines.
 - **No IContextMenu2/3 routing inside archives** (the crash, above): a change to `shellmenu::show`.
 - **Extra lines**: `[archive] refused: folder sizes ...`, `[menu] inside an archive: ...`, the
   `GetAsyncMode` / `EndOperation` / `SetAsyncMode` lines, `virtual drop done in T ms`.
-- **A new `windows-sys` feature**, `Win32_System_Com_Marshal` (for
-  `CoMarshalInterThreadInterfaceInStream`).
+- **New `windows-sys` features**, `Win32_System_Com_Marshal` (for
+  `CoMarshalInterThreadInterfaceInStream`) and, with the console fix, `Win32_Globalization` (for
+  `MultiByteToWideChar`, the ANSI descriptors).
+- **After the console check**: a `Shell IDList Array` of items inside an archive is accepted as an
+  extraction job, the ANSI descriptor is read, refused drags log their formats, and `dropvirtual`
+  gained the `idlist` form.
 
 ### Deferred
 
@@ -2047,3 +2070,12 @@ Jeremy's console checks (2026-10-14) on `target-p3m4`: entering the 40k zip, bro
 one, opening a file inside, Ctrl+C/Ctrl+V extraction with the shell's progress and Ctrl+Z, a real
 pane-to-pane drag out of a zip, and the in-zip delete and rename refusals all passed; a drag from
 Explorer's zip view onto a TwinFM pane showed the deny cursor (see the fix below).
+
+The fix (after the triplet, not re-gated: it touches only the drop target's DragEnter and Drop): a
+data object offering only a `Shell IDList Array` of items inside an archive, which the shell's
+generic data object over zip items is (`SHCreateDataObject`, measured in process), is now accepted
+and extracted by the copy job; the ANSI `FileGroupDescriptor` is read; and a refused drag logs its
+formats (`[dnd] DragEnter refused: ...`), so Jeremy's next drag from Explorer's zip view either
+shows `[dnd] DragEnter: N item(s) inside an archive (extraction job)` or `[dnd] DragEnter: N
+virtual item(s) ...`, or the refusal line with what Explorer offered. The gate script on the fix's
+build: `gate: archive lines 0, virtual 0, refused 0, panicked 0`.

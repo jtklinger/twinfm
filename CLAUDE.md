@@ -150,8 +150,11 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   (`FileGroupDescriptorW` + `FileContents`, `name\` a folder, `async` a source asking for
   asynchronous extraction) and `dropvirtual <pane> <row> zip <path|...>` the shell zip folder's own
   data object for paths inside one folder of an archive (`ownzip` in place of `zip`: as our own drag
-  out of the archive, which the target turns into the extraction job, `[dnd] DragEnter: our own
-  drag of N item(s) out of an archive`); `waitops` also waits for an async drop.
+  out of the archive, which the target turns into the extraction job, `[dnd] DragEnter: N
+  item(s) inside an archive (extraction job)`; `idlist`: the shell's `SHCreateDataObject` over those items,
+  a Shell IDList Array only); `waitops` also waits for an async drop. A drag our target refuses
+  with no files in it logs `[dnd] DragEnter refused: allowed=... keys=...; formats [...];
+  QueryGetData ...`.
   The `[enum] ... done:` line of an archive level reads `done: N entries (archive level, central
   directory C entries, read in R ms, cached|fresh), worker ...`. `[archive]` lines: `open <zip>: C
   entries, central directory R ms`, `cache evicted <zip>` (8 archives are cached), `refused: <what>
