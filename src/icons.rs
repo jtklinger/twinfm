@@ -32,7 +32,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::UI::Shell::{
     SHCreateItemFromParsingName, SHFILEINFOW, SHGFI_ADDOVERLAYS, SHGFI_ICON, SHGFI_OVERLAYINDEX, SHGFI_SMALLICON, SHGetFileInfoW,
-    SHGetImageList, SHIL_LARGE, SHIL_SMALL, SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
+    SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_LARGE, SHIL_SMALL, SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON};
 use windows_sys::core::{GUID, HRESULT};
@@ -48,6 +48,17 @@ pub const ICON_LOGICAL_PX: f32 = 16.0;
 
 /// Row height in the list, in logical pixels (pane.slint).
 pub const ROW_PX: f32 = 22.0;
+
+/// The large-icon grid (P3-M5 trace, variant b): tiles of TILE_W x TILE_H logical px, N to a
+/// grid row (N = floor(list width / TILE_W), at least 1), each with a GRID_ICON_PX icon centred
+/// horizontally GRID_ICON_TOP px below the tile's top and the name under it (pane.slint FileGrid).
+pub const TILE_W: f32 = 96.0;
+pub const TILE_H: f32 = 120.0;
+pub const GRID_ICON_PX: f32 = 96.0;
+pub const GRID_ICON_TOP: f32 = 2.0;
+/// Grid rows composed into the strip above and below the visible ones: one 120 px row, about the
+/// details strip's 88 px (4 rows of 22) of scroll before a recompose, at a fraction of the size.
+pub const GRID_MARGIN_ROWS: usize = 1;
 
 /// Extensions whose icon lives in the file itself, so they are keyed by full path.
 const OWN_ICON_EXTS: [&str; 5] = ["exe", "lnk", "ico", "url", "cur"];
@@ -190,13 +201,19 @@ impl IconKeys {
 /// First and last row (inclusive) whose 22 px band intersects the viewport, for a list of
 /// `len` rows scrolled to `content_y` (zero or negative, as Slint reports it) with `height`
 /// visible. None for an empty list.
+#[cfg_attr(not(test), allow(dead_code))] // the details view; the grid trace uses visible_rows
 pub fn visible_range(content_y: f32, height: f32, len: usize) -> Option<(usize, usize)> {
+    visible_rows(content_y, height, len, ROW_PX)
+}
+
+/// `visible_range` for rows `row_px` high (the grid's TILE_H rows).
+pub fn visible_rows(content_y: f32, height: f32, len: usize, row_px: f32) -> Option<(usize, usize)> {
     if len == 0 {
         return None;
     }
     let top = (-content_y).max(0.0);
-    let first = ((top / ROW_PX).floor() as usize).min(len - 1);
-    let last = (((top + height.max(0.0)) / ROW_PX).ceil() as usize).clamp(first, len - 1);
+    let first = ((top / row_px).floor() as usize).min(len - 1);
+    let last = (((top + height.max(0.0)) / row_px).ceil() as usize).clamp(first, len - 1);
     Some((first, last))
 }
 
@@ -207,12 +224,14 @@ pub const STRIP_MARGIN_ROWS: usize = 4;
 /// Physical geometry of an icon strip at one window scale factor. Sizes are rounded once, so
 /// the strip is composed at integer pixels whatever the scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // the details strip, unused in the grid trace
 pub struct StripGeom {
     /// Icon edge in physical pixels (16 logical px times the scale factor, rounded).
     pub icon_px: u32,
     pub scale: f32,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl StripGeom {
     pub fn new(scale: f32) -> StripGeom {
         StripGeom { icon_px: ((ICON_LOGICAL_PX * scale).round() as u32).max(1), scale }
@@ -232,6 +251,7 @@ impl StripGeom {
 
 /// The rows (inclusive) a strip covers for the visible range `(first, last)` of a list of `len`
 /// rows: the visible rows plus `STRIP_MARGIN_ROWS` each side, clamped to the list.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn strip_range((first, last): (usize, usize), len: usize) -> (usize, usize) {
     (first.saturating_sub(STRIP_MARGIN_ROWS), (last + STRIP_MARGIN_ROWS).min(len.saturating_sub(1)))
 }
@@ -258,6 +278,7 @@ pub fn needs_recompose(c: Option<Composed>, visible: (usize, usize), len: usize,
 /// Compose a strip: `icons[k]` (each `g.icon_px` square, premultiplied) is copied, one scanline
 /// at a time, to `y = g.icon_y(k)` of a buffer `g.icon_px` wide and `g.height(icons.len())`
 /// tall. An icon of any other size is left out (the table hands out fitted buffers).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn compose(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &StripGeom) -> SharedPixelBuffer<Rgba8Pixel> {
     let w = g.icon_px as usize;
     let h = g.height(icons.len()) as usize;
@@ -274,6 +295,75 @@ pub fn compose(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &StripGeom) -> Shared
                 break;
             }
             dst[at..at + w].copy_from_slice(line);
+        }
+    }
+    buf
+}
+
+/// The grid rows (inclusive) a grid strip covers for the visible grid rows `(first, last)` of a
+/// grid of `rows` rows: the visible ones plus `GRID_MARGIN_ROWS` each side, clamped.
+pub fn grid_strip_range((first, last): (usize, usize), rows: usize) -> (usize, usize) {
+    (first.saturating_sub(GRID_MARGIN_ROWS), (last + GRID_MARGIN_ROWS).min(rows.saturating_sub(1)))
+}
+
+/// Physical geometry of a grid strip: `cols` tiles to a grid row, at one scale factor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridGeom {
+    /// Icon edge in physical pixels (GRID_ICON_PX times the scale factor, rounded).
+    pub icon_px: u32,
+    pub cols: usize,
+    pub scale: f32,
+}
+
+impl GridGeom {
+    pub fn new(scale: f32, cols: usize) -> GridGeom {
+        GridGeom { icon_px: ((GRID_ICON_PX * scale).round() as u32).max(1), cols: cols.max(1), scale }
+    }
+
+    /// Physical (x, y) of the icon of the k-th entry of the strip (grid row k / cols, column
+    /// k % cols): its tile's corner plus the centring offset and the top margin.
+    pub fn icon_pos(&self, k: usize) -> (u32, u32) {
+        let (r, c) = (k / self.cols, k % self.cols);
+        let x = ((c as f32 * TILE_W + (TILE_W - GRID_ICON_PX) / 2.0) * self.scale).round() as u32;
+        let y = ((r as f32 * TILE_H + GRID_ICON_TOP) * self.scale).round() as u32;
+        (x, y)
+    }
+
+    /// Physical width of the strip: `cols` tiles.
+    pub fn width(&self) -> u32 {
+        (self.cols as f32 * TILE_W * self.scale).round() as u32
+    }
+
+    /// Physical height of a strip of `rows` grid rows.
+    pub fn height(&self, rows: usize) -> u32 {
+        (rows as f32 * TILE_H * self.scale).round() as u32
+    }
+}
+
+/// Compose a grid strip of `rows` grid rows: `icons[k]` (each `g.icon_px` square,
+/// premultiplied; entry k of the strip) is copied scanline by scanline to `g.icon_pos(k)`. An
+/// icon of any other size is left out; anything past the buffer's edge is clipped.
+pub fn compose_grid(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &GridGeom, rows: usize) -> SharedPixelBuffer<Rgba8Pixel> {
+    let (w, h) = (g.width() as usize, g.height(rows) as usize);
+    let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(w as u32, h as u32);
+    let dst = buf.make_mut_slice();
+    let n = g.icon_px as usize;
+    for (k, icon) in icons.iter().enumerate() {
+        if icon.width() != g.icon_px || icon.height() != g.icon_px {
+            continue;
+        }
+        let (x0, y0) = g.icon_pos(k);
+        let (x0, y0) = (x0 as usize, y0 as usize);
+        if x0 >= w {
+            continue;
+        }
+        let span = n.min(w - x0);
+        for (r, line) in icon.as_slice().chunks_exact(n).enumerate() {
+            if y0 + r >= h {
+                break;
+            }
+            let at = (y0 + r) * w + x0;
+            dst[at..at + span].copy_from_slice(&line[..span]);
         }
     }
     buf
@@ -637,8 +727,8 @@ fn overlay_index(path: &Path) -> Option<i32> {
     (ok != 0 && index != 0).then_some(index)
 }
 
-/// Overlay `index`'s image from the system image list, drawn at `size_px` square: the small
-/// list when its icons are at least that big, else the large one (`DrawIconEx` scales).
+/// Overlay `index`'s image from the system image list, drawn at `size_px` square: from the
+/// smallest list whose icons are at least that big (`DrawIconEx` scales).
 fn overlay_pixels(index: i32, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let list_of = |which: u32| {
         let mut list: *mut c_void = std::ptr::null_mut();
@@ -648,15 +738,19 @@ fn overlay_pixels(index: i32, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pix
     };
     // SAFETY: `list` is a live IImageList from SHGetImageList, whose vtable is `ImageListVtbl`.
     let vt = |list: *mut c_void| unsafe { &**(list as *const *const ImageListVtbl) };
+    // The smallest of the small, large, extra-large and jumbo lists whose icons are at least
+    // `size_px` (the grid asks for 96 px and more), else the biggest there is.
     let mut list = list_of(SHIL_SMALL)?;
-    let (mut cx, mut cy) = (0, 0);
-    // SAFETY: a live list; `cx` and `cy` are writable.
-    if unsafe { (vt(list).get_icon_size)(list, &mut cx, &mut cy) } >= 0 && (cx as u32) < size_px {
-        if let Some(large) = list_of(SHIL_LARGE) {
-            // SAFETY: the small list is released once and replaced by the large one.
-            unsafe { (vt(list).release)(list) };
-            list = large;
+    for which in [SHIL_LARGE, SHIL_EXTRALARGE, SHIL_JUMBO] {
+        let (mut cx, mut cy) = (0, 0);
+        // SAFETY: a live list; `cx` and `cy` are writable.
+        if unsafe { (vt(list).get_icon_size)(list, &mut cx, &mut cy) } >= 0 && (cx as u32) >= size_px {
+            break;
         }
+        let Some(bigger) = list_of(which) else { break };
+        // SAFETY: the smaller list is released once and replaced by the bigger one.
+        unsafe { (vt(list).release)(list) };
+        list = bigger;
     }
     let mut image = -1;
     let mut hicon: HICON = std::ptr::null_mut();
@@ -1047,6 +1141,55 @@ mod tests {
         // An empty strip, and an icon of the wrong size left out.
         assert_eq!(compose(&[], &g).height(), 0);
         assert!(compose(&[solid(1)], &StripGeom { icon_px: 4, scale: 1.0 }).as_slice().iter().all(|p| p.a == 0));
+    }
+
+    #[test]
+    fn grid_compose_places_icons_in_their_tiles() {
+        for scale in [1.0f32, 1.25, 1.5, 2.0] {
+            let g = GridGeom::new(scale, 3);
+            assert_eq!(g.icon_px, (96.0 * scale).round() as u32);
+            assert_eq!(g.width(), (3.0 * 96.0 * scale).round() as u32);
+            // Every icon lies inside its own tile: column band in x, grid-row band in y.
+            for k in 0..30 {
+                let (r, c) = (k / 3, k % 3);
+                let (x, y) = g.icon_pos(k);
+                let tile_x0 = (c as f32 * TILE_W * scale).round() as u32;
+                let tile_x1 = ((c + 1) as f32 * TILE_W * scale).round() as u32;
+                assert!(x >= tile_x0 && x + g.icon_px <= tile_x1 + 1, "scale {scale} entry {k} x {x}");
+                assert!(y >= g.height(r) && y + g.icon_px <= g.height(r + 1), "scale {scale} entry {k} y {y}");
+            }
+            // Compose five entries over two grid rows (the last partial): each icon's pixels land
+            // at its position, nothing else is drawn.
+            let n = g.icon_px;
+            let solid = |v: u8| {
+                let mut b = SharedPixelBuffer::<Rgba8Pixel>::new(n, n);
+                b.make_mut_slice().iter_mut().for_each(|p| *p = Rgba8Pixel { r: v, g: 0, b: 0, a: 255 });
+                b
+            };
+            let icons: Vec<_> = (1..=5).map(|v| solid(v * 10)).collect();
+            let strip = compose_grid(&icons, &g, 2);
+            assert_eq!((strip.width(), strip.height()), (g.width(), g.height(2)));
+            let w = strip.width() as usize;
+            let px = strip.as_slice();
+            let mut drawn = 0;
+            for (k, v) in (1..=5u8).enumerate() {
+                let (x, y) = g.icon_pos(k);
+                for (dx, dy) in [(0, 0), (n - 1, 0), (0, n - 1), (n - 1, n - 1)] {
+                    let p = px[(y + dy) as usize * w + (x + dx) as usize];
+                    assert_eq!(p.r, v * 10, "scale {scale} entry {k} corner ({dx}, {dy})");
+                }
+                drawn += (n * n) as usize;
+            }
+            assert_eq!(px.iter().filter(|p| p.a != 0).count(), drawn, "scale {scale}: only the icons are drawn");
+            // A wrong-sized icon is left out.
+            assert!(compose_grid(&[solid(1), SharedPixelBuffer::new(2, 2)], &g, 1).as_slice().iter().filter(|p| p.a != 0).count() == (n * n) as usize);
+        }
+        // Grid strip range: visible grid rows plus the margin, clamped.
+        let m = GRID_MARGIN_ROWS;
+        assert_eq!(grid_strip_range((10, 18), 1000), (10 - m, 18 + m));
+        assert_eq!(grid_strip_range((0, 3), 4), (0, 3));
+        assert_eq!(visible_rows(-120.0, 600.0, 1000, TILE_H), Some((1, 6)));
+        assert_eq!(GridGeom::new(1.0, 0).cols, 1, "no width yet reads as one column");
     }
 
     #[test]
