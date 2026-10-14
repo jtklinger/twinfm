@@ -67,6 +67,10 @@ pub fn subfolders(dir: &Path, show_hidden: bool, cap: usize) -> Result<(Vec<Stri
         let total = drives.len();
         return Ok((drives.into_iter().take(cap).collect(), total));
     }
+    // A zip archive's crumb lists the folders inside it.
+    if let Some((zip, inner)) = crate::fs::archive::split(dir) {
+        return crate::fs::archive::subfolders(&zip, &inner, cap);
+    }
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .map_err(|e| e.to_string())?
         .flatten()

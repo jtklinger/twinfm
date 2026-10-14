@@ -293,6 +293,59 @@ pub fn open_item(hwnd: isize, file: &Path, dir: &Path) -> Result<(), u32> {
     }
 }
 
+/// Open an item inside a zip archive as Explorer does: `ShellExecuteExW` with the item's PIDL
+/// (`SEE_MASK_IDLIST`), so the shell's zip folder extracts it to a temporary folder and opens it
+/// there. On the UI thread with no app-state borrow held, as `open_item`. Err is the HRESULT of a
+/// failed parse or the Win32 error code of a failed open.
+pub fn open_in_archive(hwnd: isize, path: &Path) -> Result<(), u32> {
+    use windows_sys::Win32::UI::Shell::{SEE_MASK_IDLIST, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
+    let w = wide(path.as_os_str());
+    let mut raw: *mut ITEMIDLIST = std::ptr::null_mut();
+    // SAFETY: NUL-terminated name; `raw` receives a PIDL we own or stays null.
+    let hr = unsafe { SHParseDisplayName(w.as_ptr(), std::ptr::null_mut(), &mut raw, 0, std::ptr::null_mut()) };
+    if hr < 0 || raw.is_null() {
+        eprintln!("[archive] parse \"{}\" -> item failed 0x{:08X}", path.display(), hr as u32);
+        return Err(hr as u32);
+    }
+    eprintln!("[archive] parse \"{}\" -> item ok", path.display());
+    let pidl = Pidl(raw);
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOASYNC | SEE_MASK_IDLIST,
+        hwnd: hwnd as HWND,
+        lpIDList: pidl.0 as *mut c_void,
+        nShow: SW_SHOWNORMAL,
+        ..Default::default()
+    };
+    // SAFETY: a sized, zero-initialised SHELLEXECUTEINFOW whose PIDL outlives the call.
+    if unsafe { ShellExecuteExW(&mut info) } != 0 {
+        return Ok(());
+    }
+    // SAFETY: plain Win32 query.
+    match unsafe { windows_sys::Win32::Foundation::GetLastError() } {
+        windows_sys::Win32::Foundation::ERROR_CANCELLED => Ok(()),
+        e => Err(e),
+    }
+}
+
+/// The folder's own data object for its children (`GetUIObjectOf(IID_IDataObject)`). For a folder
+/// inside a zip archive it serves `FileGroupDescriptorW` and `FileContents`, from which Explorer
+/// and other targets extract.
+pub(crate) fn ui_data_object(hwnd: HWND, folder: &Com, children: &[Pidl]) -> Result<Com, String> {
+    const IID_IDATAOBJECT: GUID = GUID::from_u128(0x0000010e_0000_0000_c000_000000000046);
+    let apidl: Vec<*const ITEMIDLIST> = children.iter().map(|c| c.0 as *const ITEMIDLIST).collect();
+    let mut p: *mut c_void = std::ptr::null_mut();
+    // SAFETY: `folder` is an IShellFolder; child PIDLs relative to it, alive for the call.
+    let hr = unsafe {
+        (folder.vtbl::<ShellFolderVtbl>().get_ui_object_of)(folder.0, hwnd, apidl.len() as u32, apidl.as_ptr(), &IID_IDATAOBJECT, std::ptr::null_mut(), &mut p)
+    };
+    check(hr, "GetUIObjectOf(IDataObject)")?;
+    if p.is_null() {
+        return Err("the shell returned no data object".into());
+    }
+    Ok(Com(p))
+}
+
 pub(crate) fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain([0]).collect()
 }
@@ -626,9 +679,16 @@ pub fn show(req: &Request) -> Result<Picked, String> {
         menu_items(menu.0).join(" | ")
     );
 
-    let (routed, v3) = match cm.query(&IID_ICONTEXTMENU3) {
-        Some(c) => (Some(c), true),
-        None => (cm.query(&IID_ICONTEXTMENU2), false),
+    // The zip folder's menus (items and background) crash inside their own QueryInterface for
+    // IContextMenu2 and IContextMenu3 (P3-M4); they have no owner-drawn submenus to route anyway.
+    let (routed, v3) = if crate::fs::archive::inside(&req.folder) {
+        eprintln!("[menu] inside an archive: no IContextMenu2/3 routing");
+        (None, false)
+    } else {
+        match cm.query(&IID_ICONTEXTMENU3) {
+            Some(c) => (Some(c), true),
+            None => (cm.query(&IID_ICONTEXTMENU2), false),
+        }
     };
     let routing = routed.as_ref().map(|c| Box::new(Routing { ptr: c.0, v3 }));
     if let Some(r) = &routing {

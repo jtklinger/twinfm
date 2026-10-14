@@ -2,6 +2,7 @@
 slint::include_modules!();
 
 mod fs {
+    pub mod archive;
     pub mod enumerate;
     pub mod sizes;
     pub mod watch;
@@ -123,9 +124,10 @@ impl Tab {
         Place { path: self.path.clone(), search: self.search.as_ref().map(|s| s.pattern.pattern.clone()) }
     }
 
-    /// Folder sizes are computed in folder tabs only (not for search results, not on This PC).
+    /// Folder sizes are computed in folder tabs only (not for search results, not on This PC, not
+    /// inside an archive).
     fn sizable(&self) -> bool {
-        self.search.is_none() && !is_this_pc(&self.path.to_string_lossy())
+        self.search.is_none() && !is_this_pc(&self.path.to_string_lossy()) && !fs::archive::inside(&self.path)
     }
 
     /// Forget the tab's folder sizes: cancel the walks in flight and empty the cache.
@@ -726,7 +728,7 @@ fn drain() {
                         update_status(st, &app, pane);
                     }
                 }
-                Msg::Done { pane, generation, total, elapsed, error, free, reparse } => {
+                Msg::Done { pane, generation, total, elapsed, error, free, reparse, archive } => {
                     let Some(t) = st.by_generation(pane, generation) else { continue };
                     let wall = t.timing.requested.map(perf::elapsed_ms).unwrap_or(0.0);
                     if t.model.is_refreshing() {
@@ -750,8 +752,16 @@ fn drain() {
                                     reparse.junction, reparse.symlink, reparse.cloud, reparse.alias, reparse.other
                                 )
                             };
+                            let level = archive.map_or(String::new(), |a| {
+                                format!(
+                                    " (archive level, central directory {} entries, read in {:.1} ms, {})",
+                                    a.count,
+                                    a.read_ms,
+                                    if a.cached { "cached" } else { "fresh" }
+                                )
+                            });
                             eprintln!(
-                                "[enum] pane={pane} done: {total} entries, worker {:.1} ms, request-to-done {wall:.1} ms{split}",
+                                "[enum] pane={pane} done: {total} entries{level}, worker {:.1} ms, request-to-done {wall:.1} ms{split}",
                                 elapsed.as_secs_f64() * 1e3
                             );
                             t.timing.done_ms = Some(wall);
@@ -935,6 +945,12 @@ fn size_selection(st: &mut State, pane: usize) {
     let State { panes, sizer, .. } = st;
     let t = panes[pane].active_mut();
     if !t.sizable() {
+        if t.search.is_none() && fs::archive::inside(&t.path) {
+            let n = t.model.selected_folders().len();
+            if n > 0 {
+                eprintln!("[archive] refused: folder sizes for {n} selected folder(s) in {} (inside an archive)", t.path.display());
+            }
+        }
         return;
     }
     let before = t.sizes.any();
@@ -971,7 +987,14 @@ fn size_selection(st: &mut State, pane: usize) {
 fn size_all(st: &mut State, app: &App, pane: usize) {
     let cursor = usize::try_from(current_row(app, pane)).unwrap_or(0);
     if !st.tab(pane).sizable() {
-        let why = if st.is_search(pane) { "search results have no folder sizes" } else { "drives show their free space" };
+        let why = if st.is_search(pane) {
+            "search results have no folder sizes"
+        } else if in_archive(st, pane) {
+            eprintln!("[archive] refused: folder sizes (inside an archive)");
+            "folders inside an archive are not sized"
+        } else {
+            "drives show their free space"
+        };
         return note(st, app, pane, why.into());
     }
     let State { panes, sizer, .. } = st;
@@ -1301,6 +1324,23 @@ fn note(st: &mut State, app: &App, pane: usize, text: String) {
     update_status(st, app, pane);
 }
 
+/// The pane's active tab shows a level of a zip archive.
+fn in_archive(st: &State, pane: usize) -> bool {
+    fs::archive::inside(&st.tab(pane).path)
+}
+
+/// Why an operation on an archive is refused (P3-M4).
+const INTO_ARCHIVE: &str = "writing into a zip archive is not supported";
+/// The shell's zip folder hangs on these through IFileOperation (0x80004005 in its own dialog).
+const EDIT_ARCHIVE: &str = "editing a zip archive is not supported";
+
+/// Nothing is written into or changed inside an archive yet (P3-M4): say so in the pane and the
+/// log, before any shell call.
+fn refuse_archive(st: &mut State, app: &App, pane: usize, what: &str, why: &str) {
+    eprintln!("[archive] refused: {what} ({why})");
+    note(st, app, pane, format!("{what}: {why}"));
+}
+
 /// `p` is `root` or lies under it (case-insensitive, whole components).
 fn inside(p: &Path, root: &Path) -> bool {
     let (p, r) = (p.to_string_lossy().to_lowercase(), root.to_string_lossy().trim_end_matches('\\').to_lowercase());
@@ -1373,6 +1413,14 @@ fn submit_removing(st: &mut State, app: &App, pane: usize, job: Job, fallback: O
 /// and new folder open the inline name editor, which commits through `edit_commit`.
 fn command(pane: usize, cmd: &str) {
     match cmd {
+        // A cut out of an archive would paste as a move out of it.
+        "cx" if with_state(|st| in_archive(st, pane)) => {
+            return with_state(|st| {
+                if let Some(app) = st.app.upgrade() {
+                    refuse_archive(st, &app, pane, "cut", EDIT_ARCHIVE);
+                }
+            });
+        }
         "cc" | "cx" => return clipboard_put(pane, cmd == "cx"),
         "cv" => return clipboard_paste(pane),
         "undo" => return undo(pane),
@@ -1387,7 +1435,16 @@ fn command(pane: usize, cmd: &str) {
             "sizeall" => size_all(st, &app, pane),
             "newfolder" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
             "newfolder" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a folder in it".into()),
+            "newfolder" if in_archive(st, pane) => refuse_archive(st, &app, pane, "new folder", EDIT_ARCHIVE),
             "newfolder" => return Some((app, 2, SharedString::from("New folder"))),
+            "rename" | "delete" | "sdelete" if in_archive(st, pane) => {
+                let what = match cmd {
+                    "sdelete" => "permanent delete",
+                    c => c,
+                };
+                refuse_archive(st, &app, pane, what, EDIT_ARCHIVE);
+            }
+            "move" if in_archive(st, pane) => refuse_archive(st, &app, pane, "move out of an archive", EDIT_ARCHIVE),
             "rename" => match usize::try_from(current_row(&app, pane)).ok().and_then(|r| st.model(pane).entry(r)) {
                 None => note(st, &app, pane, "nothing to rename".into()),
                 Some(e) if e.kind == Kind::Drive => note(st, &app, pane, "drives cannot be renamed here".into()),
@@ -1405,6 +1462,10 @@ fn command(pane: usize, cmd: &str) {
                 }
                 if is_this_pc(&dest.to_string_lossy()) {
                     note(st, &app, pane, "the other pane lists drives; open a folder there first".into());
+                    return None;
+                }
+                if in_archive(st, 1 - pane) {
+                    refuse_archive(st, &app, pane, &format!("{cmd} into {}", dest.display()), INTO_ARCHIVE);
                     return None;
                 }
                 if cmd == "move" && same_dir(&folder, &dest) {
@@ -1584,6 +1645,10 @@ fn clipboard_paste(pane: usize) {
         }
         if st.is_search(pane) {
             note(st, &app, pane, "search results: paste into a folder".into());
+            return None;
+        }
+        if in_archive(st, pane) {
+            refuse_archive(st, &app, pane, "paste", INTO_ARCHIVE);
             return None;
         }
         Some(main_hwnd(st, &app))
@@ -1835,7 +1900,8 @@ fn own_item(pane: usize, item: shellmenu::OwnItem, ctx: MenuContext) {
 }
 
 /// Return, or a double-click that was not the tail of a drag: enter the row's directory (also a
-/// reparse directory or a drive), or open the file with its default program.
+/// reparse directory or a drive) or zip archive, or open the file with its default program (a
+/// file inside an archive through its PIDL: the shell extracts it and opens the copy).
 fn open_row(pane: usize, row: i32) {
     let target = with_state(|st| {
         let e = st.model(pane).entry(usize::try_from(row).ok()?)?;
@@ -1845,13 +1911,16 @@ fn open_row(pane: usize, row: i32) {
         let path = folder.join(e.name.as_str());
         // The file's own folder (a search result's may lie below the tab's).
         let dir = path.parent().map_or(folder, Path::to_path_buf);
-        Some((e.is_dir(), path, dir, hwnd))
+        let archive = in_archive(st, pane);
+        // A zip in a folder opens as a folder; one inside an archive is a file the shell opens.
+        let enter = e.is_dir() || (!archive && fs::archive::is_zip_name(&e.name));
+        Some((enter, path, dir, hwnd, archive))
     });
     match target {
-        Some((true, p, _, _)) => navigate(pane, p),
-        Some((false, file, folder, hwnd)) => {
+        Some((true, p, _, _, _)) => navigate(pane, p),
+        Some((false, file, folder, hwnd, archive)) => {
             // No state borrow across ShellExecuteExW: the shell can show a dialog from inside it.
-            let res = shellmenu::open_item(hwnd, &file, &folder);
+            let res = if archive { shellmenu::open_in_archive(hwnd, &file) } else { shellmenu::open_item(hwnd, &file, &folder) };
             eprintln!("[open] pane={pane} {}: {res:?}", file.display());
             if let Err(code) = res {
                 with_state(|st| {
@@ -1932,12 +2001,13 @@ fn history_button(pane: usize, forward: bool) {
     history_move(pane, forward);
 }
 
-/// The middle button on a row: a folder (or a drive, or a reparse directory) opens in a new tab
-/// in the same pane, as a middle-click in the sidebar does; a file does nothing.
+/// The middle button on a row: a folder (or a drive, a reparse directory, a zip archive) opens in
+/// a new tab in the same pane, as a middle-click in the sidebar does; a file does nothing.
 fn middle_click_row(pane: usize, row: usize) {
     let target = with_state(|st| {
         let e = st.model(pane).entry(row)?;
-        Some((e.is_dir(), st.tab(pane).path.join(e.name.as_str())))
+        let zip = !in_archive(st, pane) && fs::archive::is_zip_name(&e.name);
+        Some((e.is_dir() || zip, st.tab(pane).path.join(e.name.as_str())))
     });
     match target {
         Some((true, path)) => {
@@ -2181,6 +2251,7 @@ pub fn drop_spot(px: i32, py: i32) -> Option<dnd::DropSpot> {
     let spot = drop_spot_at(px, py);
     if spot.is_some() {
         DROP_REFUSED.with(|c| c.set(None));
+        ARCHIVE_REFUSED.with(|c| c.borrow_mut().take());
     }
     spot
 }
@@ -2189,6 +2260,16 @@ thread_local! {
     /// The search tab (pane, tab id) a drag over it was last refused for, so the refusal is
     /// logged once per hover rather than on every DragOver.
     static DROP_REFUSED: std::cell::Cell<Option<(usize, u64)>> = const { std::cell::Cell::new(None) };
+    /// The folder inside an archive a drag was last refused for (logged once per hover).
+    static ARCHIVE_REFUSED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// No drop into an archive (P3-M4 writes nothing into archives): no spot, logged once per hover.
+fn refuse_archive_drop(dest: &Path) -> Option<dnd::DropSpot> {
+    if ARCHIVE_REFUSED.with(|c| c.borrow_mut().replace(dest.to_path_buf())).as_deref() != Some(dest) {
+        eprintln!("[archive] refused: drop into {} (writing into a zip archive is not supported)", dest.display());
+    }
+    None
 }
 
 /// A drop on a search tab (its list, or its tab in the strip) goes nowhere: its folder is the
@@ -2220,6 +2301,9 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             // A sidebar row's folder (a drive's root, a place, a bookmark), noted in the active pane.
             dnd::Spot::Side(i) => {
                 let dest = st.side.get(i)?.path.clone()?;
+                if fs::archive::inside(&dest) {
+                    return refuse_archive_drop(&dest);
+                }
                 return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest });
             }
             // A tab's folder; a tab on This PC is no folder.
@@ -2233,12 +2317,18 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 if dest.as_os_str().is_empty() || is_this_pc(&dest.to_string_lossy()) {
                     return None;
                 }
+                if fs::archive::inside(&dest) {
+                    return refuse_archive_drop(&dest);
+                }
                 return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Tab(i), dest });
             }
         };
         if st.is_search(pane) {
             refuse_search_drop(pane, st.tab(pane).id);
             return None;
+        }
+        if in_archive(st, pane) {
+            return refuse_archive_drop(&st.tab(pane).path);
         }
         let folder = &st.tab(pane).path;
         let entry = row.and_then(|r| st.model(pane).entry(r));
@@ -2365,13 +2455,27 @@ pub fn drop_files(pane: usize, sources: Vec<PathBuf>, dest: PathBuf, effect: u32
     });
 }
 
+/// A virtual-file drop's progress or result (posted through the event loop by the drop target or
+/// its worker): the note of the pane it was dropped on.
+pub fn drop_note(pane: usize, text: String) {
+    with_state(|st| {
+        if let Some(app) = st.app.upgrade() {
+            note(st, &app, pane, text);
+        }
+    });
+}
+
 /// For the scripted driver's in-menu steps: no borrow of the app state is held right now.
 pub fn state_is_free() -> bool {
     STATE.with(|s| s.try_borrow_mut().is_ok())
 }
 
-/// For the scripted driver: a job is in flight or a tab is still re-enumerating.
+/// For the scripted driver: a job is in flight, a tab is still re-enumerating, or a virtual-file
+/// drop is still writing.
 pub fn ops_busy() -> bool {
+    if dnd::virtual_drops_running() {
+        return true;
+    }
     STATE.with(|s| match s.try_borrow() {
         Ok(g) => g.as_ref().is_some_and(|st| !st.jobs.is_empty() || st.panes.iter().any(|p| p.iter().any(|t| t.model.is_refreshing()))),
         Err(_) => true,

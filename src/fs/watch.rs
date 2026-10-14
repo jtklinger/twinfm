@@ -211,6 +211,9 @@ fn unwatchable(path: &Path) -> Option<&'static str> {
     if crate::fs::enumerate::is_this_pc(&path.to_string_lossy()) {
         return Some("the drive list is not a folder");
     }
+    if crate::fs::archive::inside(path) {
+        return Some("inside an archive");
+    }
     let Some(Component::Prefix(p)) = path.components().next() else { return Some("not an absolute path") };
     match p.kind() {
         Prefix::UNC(..) | Prefix::VerbatimUNC(..) => Some("network share"),

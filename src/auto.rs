@@ -4,7 +4,8 @@
 //!   split                            toggle the second pane (same as F3)
 //!   wheel <pane> <ticks> <ms>        wheel ticks (negative = down) <ms> apart over the pane's list
 //!   drag <pane> <dy> <ms>            press the pane's scrollbar thumb and drag it <dy> px in 16 ms steps
-//!   nav <pane> <path>                navigate a pane
+//!   nav <pane> <path>                navigate a pane (a path inside a zip archive, `C:\dir\x.zip\sub`,
+//!                                    lists that level of the archive)
 //!   up <pane>                        go to the parent directory
 //!   scrollpos <pane>                 log the pane's list scroll (content-y) and cursor row
 //!   sort <pane> <0|1|2|3>            click a column header (name/size/modified/type)
@@ -26,8 +27,9 @@
 //!   undo                             Ctrl+Z: undo the newest recorded operation (fileops::undo)
 //!   newfolder <name>                 F7, type the name into the editor, Return
 //!   rename <name>                    F2 on the cursor row, type the new name, Return
-//!   waitops <ms>                     wait until no file operation runs and no pane refreshes
-//!                                    (at most <ms>), then 300 ms more for the pass to land
+//!   waitops <ms>                     wait until no file operation runs, no pane refreshes and no
+//!                                    virtual-file drop writes (at most <ms>), then 300 ms more for
+//!                                    the pass to land
 //!   click <pane> <row>               click a visible row (selects only it, moves the cursor)
 //!   ctrlclick <pane> <row>           Ctrl+click a visible row (toggles it)
 //!   shiftclick <pane> <row>          Shift+click a visible row (selects anchor..row)
@@ -72,6 +74,21 @@
 //!                                    so Drop opens the drop menu, and picks "Copy here", "Move
 //!                                    here" or "Cancel" from the in-menu timer. Paths are separated
 //!                                    by `|` because `;` separates steps
+//!   dropvirtual <pane> <row> [async] <name=size|name=size|...>
+//!                                    drop virtual files (FileGroupDescriptorW + FileContents, no
+//!                                    CF_HDROP) the same way: `name=size` is a file of generated
+//!                                    bytes (`sub\file.txt=100` makes `sub`), `name\` a folder;
+//!                                    with `async` the source asks for asynchronous extraction
+//!                                    (IDataObjectAsyncCapability). A copy, written by TwinFM
+//!   dropvirtual <pane> <row> zip <path|path|...>
+//!                                    the same with the shell zip folder's own data object for
+//!                                    paths inside one folder of an archive (what a drag out of a
+//!                                    zip pane carries). `waitops` waits for an async drop to end.
+//!                                    `ownzip` in place of `zip` marks the drop as our own drag
+//!                                    out of the archive (the paths are its sources), which the
+//!                                    target turns into the extraction job; `idlist` drops the
+//!                                    shell's generic data object over those items instead
+//!                                    (`SHCreateDataObject`: a Shell IDList Array only)
 //!   dragover <pane> <top|bottom> <ms> <path|path|...>
 //!                                    a drag of the paths enters the window 6 px inside the pane
 //!                                    list's top or bottom edge and hovers there for <ms> (our drop
@@ -200,6 +217,10 @@ enum Step {
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
     /// Mode `menu` is a right-button drop whose menu gets `pick` (copy, move or cancel).
     DropFiles { at: DropAt, mode: String, pick: String, paths: Vec<String> },
+    /// `dropvirtual`: virtual files (`name=size`, a folder `name\`; with `async` from a source that
+    /// asks for asynchronous extraction), or with `zip` the shell's data object for paths inside an
+    /// archive.
+    DropVirtual { pane: usize, row: i32, zip: bool, own: bool, idlist: bool, asynced: bool, items: Vec<String> },
     /// Hover a drag of `paths` near the pane list's top or bottom edge for `ms`, then leave.
     DragOver { pane: usize, top: bool, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
@@ -305,6 +326,20 @@ fn parse(script: &str) -> Vec<Step> {
                         mode,
                         pick,
                         paths: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
+                    }
+                }
+                "dropvirtual" => {
+                    let (own, idlist) = (a.get(3) == Some(&"ownzip"), a.get(3) == Some(&"idlist"));
+                    let (zip, asynced) = (own || idlist || a.get(3) == Some(&"zip"), a.get(3) == Some(&"async"));
+                    let first = if zip || asynced { 4 } else { 3 };
+                    Step::DropVirtual {
+                        pane: num(1) as usize,
+                        row: num(2) as i32,
+                        zip,
+                        own,
+                        idlist,
+                        asynced,
+                        items: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                     }
                 }
                 "dragover" => Step::DragOver {
@@ -1171,6 +1206,50 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     crate::dnd::effect_name(dropped)
                 ),
                 None => eprintln!("[auto] dropfiles: no drop target registered yet"),
+            }
+            schedule(runner, 1);
+        }
+        Step::DropVirtual { pane, row, zip, own, idlist, asynced, items } => {
+            let Some(pos) = drop_point(&app, DropAt::Row(pane, row)) else {
+                schedule(runner, 1);
+                return;
+            };
+            let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), pos.x, pos.y, app.window().scale_factor());
+            let data = if zip {
+                // Paths inside one folder of an archive: the zip folder's own data object, as a
+                // drag out of a zip pane carries it.
+                let paths: Vec<std::path::PathBuf> = items.iter().map(std::path::PathBuf::from).collect();
+                let folder = paths.first().and_then(|p| p.parent()).map(std::path::Path::to_path_buf).unwrap_or_default();
+                let names: Vec<String> = paths.iter().filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned())).collect();
+                if idlist { crate::dnd::idlist_data(hwnd_of(&app), &folder, &names) } else { crate::dnd::archive_data(hwnd_of(&app), &folder, &names) }
+            } else {
+                // Generated contents: `name=size` bytes of a pattern; `name\` a folder.
+                let listed: Vec<(String, Option<Vec<u8>>)> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(k, it)| match it.rsplit_once('=') {
+                        Some((n, size)) => (n.to_string(), Some((0..size.parse::<usize>().unwrap_or(0)).map(|i| (i * 7 + k) as u8).collect())),
+                        None => (it.trim_end_matches('\\').to_string(), None),
+                    })
+                    .collect();
+                Ok(crate::dnd::virtual_data(&listed, false, None, asynced))
+            };
+            let own_paths: Vec<std::path::PathBuf> = items.iter().map(std::path::PathBuf::from).collect();
+            let dropped = data.map(|d| if own { crate::dnd::drop_as_own_archive_drag(&d, own_paths, 0, sx, sy) } else { crate::dnd::drop_data(&d, 0, sx, sy) });
+            match dropped {
+                Ok(Some((enter, dropped))) => eprintln!(
+                    "[auto] dropvirtual pane {pane} row {row}{}: {} item(s), DragEnter effect {}, Drop reported {}",
+                    if own {
+                        " (the zip folder's data object, as our own drag)"
+                    } else if idlist {
+                        " (SHCreateDataObject: a Shell IDList Array only)"
+                    } else if zip { " (the zip folder's data object)" } else if asynced { " (async source)" } else { "" },
+                    items.len(),
+                    crate::dnd::effect_name(enter),
+                    crate::dnd::effect_name(dropped)
+                ),
+                Ok(None) => eprintln!("[auto] dropvirtual: no drop target registered yet"),
+                Err(e) => eprintln!("[auto] dropvirtual: {e}"),
             }
             schedule(runner, 1);
         }

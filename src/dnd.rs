@@ -28,6 +28,12 @@
 //! `Drop` hands the job to `slint::invoke_from_event_loop`, which runs after the drag loop has
 //! returned (our own drag) or at the next turn of the event loop (another program's drag).
 //!
+//! **Virtual files** (P3-M4). A data object with `FileGroupDescriptorW` and `FileContents` but no
+//! `CF_HDROP` (a zip folder's items, a mail attachment) is a copy that TwinFM writes itself: inside
+//! `Drop` for a synchronous source (it touches the file system and the data object only, never the
+//! app state; its note goes through the event loop), or on a worker for a source that asks for
+//! asynchronous extraction. Our own drags out of a zip folder carry the zip folder's data object.
+//!
 //! **Moves are optimized moves.** A move dropped on TwinFM is performed by TwinFM's file
 //! operation worker, later. So `Drop` reports `DROPEFFECT_NONE` to the source, with "Performed
 //! DropEffect" `DROPEFFECT_NONE` and "Logical Performed DropEffect" `DROPEFFECT_MOVE` on the data
@@ -51,7 +57,13 @@ use windows_sys::Win32::Graphics::Gdi::{
     DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, GdiFlush, HBITMAP, ScreenToClient, SelectObject,
     RDW_INTERNALPAINT, RedrawWindow, SetBkMode, SetTextColor, TRANSPARENT,
 };
-use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, DVASPECT_CONTENT, FORMATETC, STGMEDIUM, TYMED_HGLOBAL};
+use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL};
+use windows_sys::Win32::System::Com::Marshal::CoMarshalInterThreadInterfaceInStream;
+use windows_sys::Win32::System::Com::StructuredStorage::CoGetInterfaceAndReleaseStream;
+use windows_sys::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize, DVASPECT_CONTENT, FORMATETC, STGMEDIUM,
+    TYMED_HGLOBAL, TYMED_ISTREAM,
+};
 use windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows_sys::Win32::System::Ole::{
@@ -59,9 +71,13 @@ use windows_sys::Win32::System::Ole::{
     RevokeDragDrop,
 };
 use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MK_RBUTTON, MK_SHIFT};
+use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
+use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows_sys::Win32::UI::Shell::{
-    CFSTR_LOGICALPERFORMEDDROPEFFECT, CFSTR_PERFORMEDDROPEFFECT, DefSubclassProc, RemoveWindowSubclass, SHCreateDataObject,
-    SHDRAGIMAGE, SetWindowSubclass,
+    CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORA, CFSTR_FILEDESCRIPTORW, CFSTR_SHELLIDLIST, ILCombine, ILFree, SHGetNameFromIDList,
+    SIGDN_DESKTOPABSOLUTEPARSING, CFSTR_LOGICALPERFORMEDDROPEFFECT, CFSTR_PERFORMEDDROPEFFECT, DefSubclassProc,
+    FD_ATTRIBUTES, FD_FILESIZE, FD_PROGRESSUI, RemoveWindowSubclass, SHCreateDataObject, SHCreateMemStream, SHDRAGIMAGE,
+    SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, MF_GRAYED, MF_SEPARATOR, MF_STRING, SetForegroundWindow, SetMenuDefaultItem,
@@ -579,10 +595,15 @@ fn registered_format(name: PCWSTR) -> u16 {
 
 /// The paths a data object offers as `CF_HDROP`, or None when it offers no files.
 pub fn read_hdrop(data: *mut c_void) -> Option<Vec<PathBuf>> {
+    clipboard::parse_dropfiles(&read_hglobal(data, CF_HDROP)?)
+}
+
+/// The bytes a data object offers in format `cf` in an HGLOBAL, or None.
+fn read_hglobal(data: *mut c_void, cf: u16) -> Option<Vec<u8>> {
     if data.is_null() {
         return None;
     }
-    let fmt = hdrop_format();
+    let fmt = FORMATETC { cfFormat: cf, ..hdrop_format() };
     // SAFETY: a live IDataObject; the medium is released with ReleaseStgMedium after copying.
     unsafe {
         let v = data_vtbl(data);
@@ -603,7 +624,7 @@ pub fn read_hdrop(data: *mut c_void) -> Option<Vec<PathBuf>> {
             }
         }
         ReleaseStgMedium(&mut medium);
-        bytes.and_then(|b| clipboard::parse_dropfiles(&b))
+        bytes
     }
 }
 
@@ -659,16 +680,30 @@ fn set_dword(data: *mut c_void, name: PCWSTR, value: u32) {
     }
 }
 
-// --- A minimal IDataObject serving CF_HDROP (the driver's `dropfiles`, and the tests) ---------
+// --- A minimal IDataObject: CF_HDROP and/or virtual files (the driver's `dropfiles` and
+// `dropvirtual`, and the tests) ------------------------------------------------------------------
 
 #[repr(C)]
-struct HdropData {
+struct MiniData {
     header: Header,
-    /// The `CF_HDROP` block (`clipboard::dropfiles_block`).
-    block: Vec<u8>,
+    /// The vtable of its `IDataObjectAsyncCapability` face: QueryInterface hands out a pointer to
+    /// this field when `can_async` (a source that asks for asynchronous extraction).
+    async_vtbl: *const AsyncVtbl,
+    can_async: bool,
+    /// StartOperation was called and EndOperation not yet; what EndOperation reported.
+    in_op: AtomicBool,
+    ended: std::sync::Mutex<Option<(HRESULT, u32)>>,
+    /// The `CF_HDROP` block (`clipboard::dropfiles_block`), if it offers files.
+    hdrop: Option<Vec<u8>>,
+    /// The `FileGroupDescriptorW` block (`descriptor_block`), if it offers virtual files, and
+    /// each item's `FileContents`.
+    descriptor: Option<Vec<u8>>,
+    contents: Vec<Vec<u8>>,
+    /// Serve `FileContents` as an `IStream` (`SHCreateMemStream`) rather than an HGLOBAL.
+    stream: bool,
 }
 
-static HDROP_DATA_VTBL: DataObjectVtbl = DataObjectVtbl {
+static MINI_DATA_VTBL: DataObjectVtbl = DataObjectVtbl {
     query_interface: hd_query,
     add_ref: hd_add_ref,
     release: hd_release,
@@ -684,13 +719,77 @@ static HDROP_DATA_VTBL: DataObjectVtbl = DataObjectVtbl {
 };
 
 unsafe fn hd_free(this: *mut c_void) {
-    // SAFETY: created by `hdrop_data` with Box::into_raw.
-    drop(unsafe { Box::from_raw(this as *mut HdropData) });
+    // SAFETY: created by `mini_data` with Box::into_raw.
+    drop(unsafe { Box::from_raw(this as *mut MiniData) });
 }
 
 unsafe extern "system" fn hd_query(this: *mut c_void, iid: *const GUID, out: *mut *mut c_void) -> HRESULT {
-    unsafe { query_impl(this, iid, &IID_IDATAOBJECT, out) }
+    // SAFETY: `this` is a MiniData; the async face is a field of it, kept alive by its count.
+    unsafe {
+        let d = this as *mut MiniData;
+        if (*d).can_async && same_guid(&*iid, &IID_IDATAOBJECTASYNCCAPABILITY) {
+            add_ref_impl(this);
+            *out = std::ptr::addr_of_mut!((*d).async_vtbl) as *mut c_void;
+            return S_OK;
+        }
+        query_impl(this, iid, &IID_IDATAOBJECT, out)
+    }
 }
+
+// The async face: `this` points at `MiniData::async_vtbl`.
+unsafe fn face_base(this: *mut c_void) -> *mut MiniData {
+    // SAFETY: the caller passes the async face of a MiniData.
+    unsafe { (this as *mut u8).sub(std::mem::offset_of!(MiniData, async_vtbl)) as *mut MiniData }
+}
+unsafe extern "system" fn ha_query(this: *mut c_void, iid: *const GUID, out: *mut *mut c_void) -> HRESULT {
+    unsafe { hd_query(face_base(this) as *mut c_void, iid, out) }
+}
+unsafe extern "system" fn ha_add_ref(this: *mut c_void) -> u32 {
+    unsafe { add_ref_impl(face_base(this) as *mut c_void) }
+}
+unsafe extern "system" fn ha_release(this: *mut c_void) -> u32 {
+    unsafe { release_impl(face_base(this) as *mut c_void, hd_free) }
+}
+unsafe extern "system" fn ha_set_async_mode(_: *mut c_void, _: BOOL) -> HRESULT {
+    S_OK
+}
+unsafe extern "system" fn ha_get_async_mode(_: *mut c_void, on: *mut BOOL) -> HRESULT {
+    // SAFETY: COM contract: a valid out-pointer (checked for null).
+    if !on.is_null() {
+        unsafe { *on = 1 };
+    }
+    S_OK
+}
+unsafe extern "system" fn ha_start_operation(this: *mut c_void, _: *mut c_void) -> HRESULT {
+    // SAFETY: `this` is a MiniData's async face.
+    unsafe { (*face_base(this)).in_op.store(true, Ordering::Release) };
+    S_OK
+}
+unsafe extern "system" fn ha_in_operation(this: *mut c_void, on: *mut BOOL) -> HRESULT {
+    // SAFETY: as above; a valid out-pointer (checked for null).
+    if !on.is_null() {
+        unsafe { *on = (*face_base(this)).in_op.load(Ordering::Acquire) as BOOL };
+    }
+    S_OK
+}
+unsafe extern "system" fn ha_end_operation(this: *mut c_void, hr: HRESULT, _: *mut c_void, effect: u32) -> HRESULT {
+    // SAFETY: as above.
+    let d = unsafe { &*face_base(this) };
+    d.in_op.store(false, Ordering::Release);
+    *d.ended.lock().unwrap_or_else(|e| e.into_inner()) = Some((hr, effect));
+    S_OK
+}
+
+static MINI_ASYNC_VTBL: AsyncVtbl = AsyncVtbl {
+    query_interface: ha_query,
+    add_ref: ha_add_ref,
+    release: ha_release,
+    set_async_mode: ha_set_async_mode,
+    get_async_mode: ha_get_async_mode,
+    start_operation: ha_start_operation,
+    in_operation: ha_in_operation,
+    end_operation: ha_end_operation,
+};
 unsafe extern "system" fn hd_add_ref(this: *mut c_void) -> u32 {
     unsafe { add_ref_impl(this) }
 }
@@ -698,33 +797,61 @@ unsafe extern "system" fn hd_release(this: *mut c_void) -> u32 {
     unsafe { release_impl(this, hd_free) }
 }
 
-fn serves_hdrop(fmt: *const FORMATETC) -> bool {
+/// What a MiniData serves for `fmt`: the bytes, and whether as an IStream. None: not offered.
+fn mini_serves(d: &MiniData, fmt: *const FORMATETC) -> Option<(&[u8], bool)> {
+    if fmt.is_null() {
+        return None;
+    }
     // SAFETY: COM contract: a valid FORMATETC pointer (checked for null).
-    !fmt.is_null() && unsafe { (*fmt).cfFormat == CF_HDROP && (*fmt).tymed & TYMED_HGLOBAL as u32 != 0 }
+    let f = unsafe { &*fmt };
+    let hglobal = f.tymed & TYMED_HGLOBAL as u32 != 0;
+    if f.cfFormat == CF_HDROP {
+        return d.hdrop.as_deref().filter(|_| hglobal).map(|b| (b, false));
+    }
+    if f.cfFormat == registered_format(CFSTR_FILEDESCRIPTORW) {
+        return d.descriptor.as_deref().filter(|_| hglobal).map(|b| (b, false));
+    }
+    if f.cfFormat == registered_format(CFSTR_FILECONTENTS) && d.descriptor.is_some() {
+        let bytes = d.contents.get(usize::try_from(f.lindex).ok()?)?;
+        let stream = d.stream && f.tymed & TYMED_ISTREAM as u32 != 0;
+        return (stream || hglobal).then_some((bytes.as_slice(), stream));
+    }
+    None
 }
 
 unsafe extern "system" fn hd_get_data(this: *mut c_void, fmt: *const FORMATETC, medium: *mut STGMEDIUM) -> HRESULT {
-    if !serves_hdrop(fmt) || medium.is_null() {
+    // SAFETY: `this` is a MiniData.
+    let d = unsafe { &*(this as *const MiniData) };
+    let Some((block, stream)) = mini_serves(d, fmt) else { return DV_E_FORMATETC };
+    if medium.is_null() {
         return DV_E_FORMATETC;
     }
-    // SAFETY: `this` is an HdropData; a fresh moveable block the caller frees with
-    // ReleaseStgMedium (pUnkForRelease null).
+    // SAFETY: a fresh moveable block (or memory stream) the caller frees with ReleaseStgMedium
+    // (pUnkForRelease null).
     unsafe {
-        let block = &(*(this as *const HdropData)).block;
-        let h = GlobalAlloc(GMEM_MOVEABLE, block.len());
-        if h.is_null() {
-            return windows_sys::Win32::Foundation::E_OUTOFMEMORY;
-        }
-        let p = GlobalLock(h) as *mut u8;
-        if p.is_null() {
-            GlobalFree(h);
-            return windows_sys::Win32::Foundation::E_OUTOFMEMORY;
-        }
-        std::ptr::copy_nonoverlapping(block.as_ptr(), p, block.len());
-        GlobalUnlock(h);
         let mut m: STGMEDIUM = std::mem::zeroed();
-        m.tymed = TYMED_HGLOBAL as u32;
-        m.u.hGlobal = h;
+        if stream {
+            let s = SHCreateMemStream(block.as_ptr(), block.len() as u32);
+            if s.is_null() {
+                return windows_sys::Win32::Foundation::E_OUTOFMEMORY;
+            }
+            m.tymed = TYMED_ISTREAM as u32;
+            m.u.pstm = s;
+        } else {
+            let h = GlobalAlloc(GMEM_MOVEABLE, block.len().max(1));
+            if h.is_null() {
+                return windows_sys::Win32::Foundation::E_OUTOFMEMORY;
+            }
+            let p = GlobalLock(h) as *mut u8;
+            if p.is_null() {
+                GlobalFree(h);
+                return windows_sys::Win32::Foundation::E_OUTOFMEMORY;
+            }
+            std::ptr::copy_nonoverlapping(block.as_ptr(), p, block.len());
+            GlobalUnlock(h);
+            m.tymed = TYMED_HGLOBAL as u32;
+            m.u.hGlobal = h;
+        }
         *medium = m;
     }
     S_OK
@@ -732,8 +859,9 @@ unsafe extern "system" fn hd_get_data(this: *mut c_void, fmt: *const FORMATETC, 
 unsafe extern "system" fn hd_get_data_here(_: *mut c_void, _: *const FORMATETC, _: *mut STGMEDIUM) -> HRESULT {
     E_NOTIMPL
 }
-unsafe extern "system" fn hd_query_get_data(_: *mut c_void, fmt: *const FORMATETC) -> HRESULT {
-    if serves_hdrop(fmt) { S_OK } else { DV_E_FORMATETC }
+unsafe extern "system" fn hd_query_get_data(this: *mut c_void, fmt: *const FORMATETC) -> HRESULT {
+    // SAFETY: `this` is a MiniData.
+    if mini_serves(unsafe { &*(this as *const MiniData) }, fmt).is_some() { S_OK } else { DV_E_FORMATETC }
 }
 unsafe extern "system" fn hd_canonical(_: *mut c_void, _: *const FORMATETC, out: *mut FORMATETC) -> HRESULT {
     if !out.is_null() {
@@ -762,13 +890,511 @@ unsafe extern "system" fn hd_enum_d_advise(_: *mut c_void, _: *mut *mut c_void) 
     OLE_E_ADVISENOTSUPPORTED
 }
 
+fn mini_data(hdrop: Option<Vec<u8>>, descriptor: Option<Vec<u8>>, contents: Vec<Vec<u8>>, stream: bool, can_async: bool) -> Com {
+    let header = Header { vtbl: &MINI_DATA_VTBL as *const DataObjectVtbl as *const c_void, refs: AtomicU32::new(1) };
+    let d = MiniData {
+        header,
+        async_vtbl: &MINI_ASYNC_VTBL,
+        can_async,
+        in_op: AtomicBool::new(false),
+        ended: std::sync::Mutex::new(None),
+        hdrop,
+        descriptor,
+        contents,
+        stream,
+    };
+    Com(Box::into_raw(Box::new(d)) as *mut c_void)
+}
+
+/// What a data object made by `virtual_data` with `can_async` was told by EndOperation.
+#[cfg(test)]
+pub fn mini_ended(data: &Com) -> Option<(HRESULT, u32)> {
+    // SAFETY: the caller passes a MiniData.
+    *unsafe { &*(data.0 as *const MiniData) }.ended.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A data object that serves `paths` as `CF_HDROP` and nothing else.
 pub fn hdrop_data(paths: &[PathBuf]) -> Com {
-    let obj = Box::new(HdropData {
-        header: Header { vtbl: &HDROP_DATA_VTBL as *const DataObjectVtbl as *const c_void, refs: AtomicU32::new(1) },
-        block: clipboard::dropfiles_block(paths),
-    });
-    Com(Box::into_raw(obj) as *mut c_void)
+    mini_data(Some(clipboard::dropfiles_block(paths)), None, Vec::new(), false, false)
+}
+
+/// A data object that serves virtual files, as a zip view in Explorer or a mail attachment does:
+/// `FileGroupDescriptorW` for `items` (a relative name, and the contents of a file or None for a
+/// folder) and each file's `FileContents`, as an `IStream` with `stream` or else an HGLOBAL; with
+/// `hdrop`, `CF_HDROP` too; with `can_async`, `IDataObjectAsyncCapability` in async mode.
+pub fn virtual_data(items: &[(String, Option<Vec<u8>>)], stream: bool, hdrop: Option<&[PathBuf]>, can_async: bool) -> Com {
+    let listed: Vec<(&str, Option<u64>)> = items.iter().map(|(n, c)| (n.as_str(), c.as_ref().map(|c| c.len() as u64))).collect();
+    let contents = items.iter().map(|(_, c)| c.clone().unwrap_or_default()).collect();
+    mini_data(hdrop.map(clipboard::dropfiles_block), Some(descriptor_block(&listed)), contents, stream, can_async)
+}
+
+// --- Virtual files: FileGroupDescriptorW + FileContents ------------------------------------------
+//
+// A source with no files on disk (a zip folder's items, a mail attachment) offers a descriptor per
+// item and the contents of each by index. On Drop TwinFM writes them into the target folder itself
+// (copies only, no shell dialog). A source that supports `IDataObjectAsyncCapability` and asks for
+// it is read on a worker thread after Drop has returned; any other is read inside Drop, as the
+// source requires, up to `SYNC_CAP` bytes per drop.
+
+/// Bytes a synchronous virtual drop may write; a larger one is refused before anything is written.
+pub const SYNC_CAP: u64 = 256 * 1024 * 1024;
+
+/// One `FILEDESCRIPTORW` (shlobj_core.h, packed): flags at 0, attributes at 36, size (high, low) at
+/// 64 and 68, the name (260 wide chars) at 72.
+const FD_LEN: usize = 592;
+
+/// One virtual item: its index in the descriptor array (the `lindex` of its contents), its name
+/// relative to the drop folder (`\` separated, `.`, `..` and empty parts removed), whether it is a
+/// folder, and its size when the source gave one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VirtualItem {
+    pub index: usize,
+    pub name: String,
+    pub dir: bool,
+    pub size: Option<u64>,
+}
+
+/// The `FileGroupDescriptorW` block for `items` (name, size; None is a folder).
+pub fn descriptor_block(items: &[(&str, Option<u64>)]) -> Vec<u8> {
+    let mut b = (items.len() as u32).to_le_bytes().to_vec();
+    for (name, size) in items {
+        let mut d = vec![0u8; FD_LEN];
+        let flags = (FD_ATTRIBUTES | FD_FILESIZE | FD_PROGRESSUI) as u32;
+        d[0..4].copy_from_slice(&flags.to_le_bytes());
+        let attrs = if size.is_none() { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
+        d[36..40].copy_from_slice(&attrs.to_le_bytes());
+        let n = size.unwrap_or(0);
+        d[64..68].copy_from_slice(&((n >> 32) as u32).to_le_bytes());
+        d[68..72].copy_from_slice(&(n as u32).to_le_bytes());
+        for (k, u) in name.encode_utf16().take(259).enumerate() {
+            d[72 + 2 * k..74 + 2 * k].copy_from_slice(&u.to_le_bytes());
+        }
+        b.extend(d);
+    }
+    b
+}
+
+/// The items of a `FileGroupDescriptorW` block, None when it is cut short. An item whose name is
+/// empty or not a valid file name once cleaned (a drive, `:` for a stream, a wildcard) is left out.
+#[cfg(test)]
+pub fn parse_descriptors(b: &[u8]) -> Option<Vec<VirtualItem>> {
+    parse_descriptors_as(b, true)
+}
+
+/// `parse_descriptors` for `FileGroupDescriptorW` (`wide`) or the ANSI `FileGroupDescriptor`, whose
+/// records are 332 bytes with a 260-byte name in the ANSI code page.
+fn parse_descriptors_as(b: &[u8], wide_names: bool) -> Option<Vec<VirtualItem>> {
+    let len = if wide_names { FD_LEN } else { FD_LEN_A };
+    let n = u32::from_le_bytes(b.get(0..4)?.try_into().ok()?) as usize;
+    if b.len() < 4 + n.checked_mul(len)? {
+        return None;
+    }
+    let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+    let mut out = Vec::with_capacity(n);
+    for index in 0..n {
+        let o = 4 + index * len;
+        let flags = u32_at(o) as i32;
+        let raw = if wide_names {
+            let wide: Vec<u16> = (0..260).map(|k| u16::from_le_bytes([b[o + 72 + 2 * k], b[o + 73 + 2 * k]])).take_while(|&u| u != 0).collect();
+            String::from_utf16_lossy(&wide)
+        } else {
+            ansi_to_string(&b[o + 72..o + 332])
+        };
+        let parts: Vec<&str> = raw.split(['\\', '/']).filter(|p| !p.is_empty() && *p != "." && *p != "..").collect();
+        if parts.is_empty() || parts.iter().any(|p| crate::fileops::invalid_name(p).is_some()) {
+            eprintln!("[dnd] virtual drop: item {index} \"{raw}\" left out (not a file name)");
+            continue;
+        }
+        let dir = flags & FD_ATTRIBUTES != 0 && u32_at(o + 36) & FILE_ATTRIBUTE_DIRECTORY != 0;
+        let size = (flags & FD_FILESIZE != 0).then(|| (u32_at(o + 64) as u64) << 32 | u32_at(o + 68) as u64);
+        out.push(VirtualItem { index, name: parts.join("\\"), dir, size });
+    }
+    Some(out)
+}
+
+/// The ANSI `FILEDESCRIPTORA`'s length: the same fields up to the name, then 260 bytes.
+const FD_LEN_A: usize = 332;
+
+/// A NUL-terminated name in the ANSI code page.
+fn ansi_to_string(b: &[u8]) -> String {
+    let b = &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())];
+    let mut w = vec![0u16; b.len().max(1)];
+    // SAFETY: input and output buffers of the given lengths.
+    let n = unsafe { MultiByteToWideChar(CP_ACP, 0, b.as_ptr(), b.len() as i32, w.as_mut_ptr(), w.len() as i32) };
+    String::from_utf16_lossy(&w[..n.max(0) as usize])
+}
+
+/// The virtual items a data object offers (`FileGroupDescriptorW`, else the ANSI
+/// `FileGroupDescriptor`), or None when it offers neither.
+pub fn read_descriptors(data: *mut c_void) -> Option<Vec<VirtualItem>> {
+    if let Some(b) = read_hglobal(data, registered_format(CFSTR_FILEDESCRIPTORW)) {
+        return parse_descriptors_as(&b, true);
+    }
+    parse_descriptors_as(&read_hglobal(data, registered_format(CFSTR_FILEDESCRIPTORA))?, false)
+}
+
+/// The items of a `Shell IDList Array` (a CIDA: the folder's PIDL, then each item's relative to
+/// it) when every one of them lies inside a zip archive: their parsing paths, which the extraction
+/// job takes. None otherwise. A shell data object made over items of a zip folder
+/// (`SHCreateDataObject`) offers nothing else.
+fn read_archive_idlist(data: *mut c_void) -> Option<Vec<PathBuf>> {
+    let b = read_hglobal(data, registered_format(CFSTR_SHELLIDLIST))?;
+    let u32_at = |o: usize| -> Option<usize> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize) };
+    let n = u32_at(0)?;
+    let at = |i: usize| -> Option<*const ITEMIDLIST> {
+        let off = u32_at(4 + 4 * i)?;
+        (off < b.len()).then(|| b[off..].as_ptr() as *const ITEMIDLIST)
+    };
+    let folder = at(0)?;
+    let mut paths = Vec::with_capacity(n);
+    for i in 1..=n {
+        // SAFETY: PIDLs inside the CIDA block (bounds-checked offsets; the shell reads each up to
+        // its terminating zero-length id); the combined PIDL and the name are freed here.
+        let path = unsafe {
+            let abs = ILCombine(folder, at(i)?);
+            if abs.is_null() {
+                return None;
+            }
+            let mut s: *mut u16 = std::ptr::null_mut();
+            let hr = SHGetNameFromIDList(abs, SIGDN_DESKTOPABSOLUTEPARSING, &mut s);
+            ILFree(abs);
+            if hr < 0 || s.is_null() {
+                return None;
+            }
+            let len = (0..).take_while(|&k| *s.add(k) != 0).count();
+            let p = PathBuf::from(String::from_utf16_lossy(std::slice::from_raw_parts(s, len)));
+            windows_sys::Win32::System::Com::CoTaskMemFree(s as *const c_void);
+            p
+        };
+        if !crate::fs::archive::inside(&path) {
+            return None;
+        }
+        paths.push(path);
+    }
+    (!paths.is_empty()).then_some(paths)
+}
+
+/// What a drop offers. Files on disk (`CF_HDROP`) win over virtual files when both are there.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Offer {
+    Files(Vec<PathBuf>),
+    Virtual(Vec<VirtualItem>),
+    /// Items inside a zip archive, by their in-archive paths, copied by the extraction job rather
+    /// than read here: our own drag out of an archive, or a source offering only their PIDLs.
+    Archive(Vec<PathBuf>),
+    Nothing,
+}
+
+pub fn offer(data: *mut c_void) -> Offer {
+    if let Some(paths) = read_hdrop(data) {
+        return Offer::Files(paths);
+    }
+    match read_descriptors(data) {
+        Some(items) if !items.is_empty() => Offer::Virtual(items),
+        // Items of a zip folder offered as PIDLs only: the extraction job, as for our own drags.
+        _ => read_archive_idlist(data).map_or(Offer::Nothing, Offer::Archive),
+    }
+}
+
+thread_local! {
+    /// While our own drag out of an archive runs: the in-archive paths its data object was made
+    /// from. Any drag reaching our target meanwhile is that drag (OLE's loop is ours).
+    static OWN_ARCHIVE_SOURCES: RefCell<Option<Vec<PathBuf>>> = const { RefCell::new(None) };
+}
+
+/// What the drop target makes of a data object: `offer`, except that our own drag out of an
+/// archive is its in-archive paths, for the extraction job (the shell's progress dialog, off the
+/// UI thread, with an undo record) instead of the synchronous virtual-file reader.
+fn target_offer(data: *mut c_void) -> Offer {
+    match offer(data) {
+        Offer::Virtual(v) => OWN_ARCHIVE_SOURCES.with(|s| s.borrow().clone()).map_or(Offer::Virtual(v), Offer::Archive),
+        o => o,
+    }
+}
+
+/// A virtual drop is a copy whatever the source allows (a move is done, and reported, as a copy).
+pub fn virtual_effect(allowed: u32) -> u32 {
+    if allowed & (COPY | MOVE) != 0 { COPY } else { NONE }
+}
+
+/// The known bytes of a drop, when they exceed `SYNC_CAP`.
+pub fn over_cap(items: &[VirtualItem]) -> Option<u64> {
+    let total: u64 = items.iter().filter_map(|i| i.size).sum();
+    (total > SYNC_CAP).then_some(total)
+}
+
+/// `leaf` in `dir`, or `leaf (2)`, `leaf (3)`... (before a file's extension) when it is taken.
+pub fn free_name(dir: &Path, leaf: &str, is_dir: bool) -> PathBuf {
+    let first = dir.join(leaf);
+    if std::fs::symlink_metadata(&first).is_err() {
+        return first;
+    }
+    let (stem, ext) = match leaf.rfind('.') {
+        Some(i) if !is_dir && i > 0 => (&leaf[..i], &leaf[i..]),
+        _ => (leaf, ""),
+    };
+    (2..).map(|k| dir.join(format!("{stem} ({k}){ext}"))).find(|p| std::fs::symlink_metadata(p).is_err()).unwrap_or(first)
+}
+
+/// Write the items into `dest`: folders made as needed, a name already taken getting " (2)" (a
+/// folder renamed so takes its contents with it), each file's contents read from the data object
+/// (`FileContents`, an IStream or an HGLOBAL). `progress(k, n, path)` after each file. Stops at the
+/// first failure, or when the bytes written pass `cap`. Ok((files, bytes)).
+pub fn extract(
+    data: *mut c_void,
+    items: &[VirtualItem],
+    dest: &Path,
+    cap: Option<u64>,
+    mut progress: impl FnMut(usize, usize, &Path),
+) -> Result<(usize, u64), String> {
+    let files = items.iter().filter(|i| !i.dir).count();
+    // A folder of the drop (its lowercase relative name) and where it went.
+    let mut made: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+    let (mut written, mut bytes) = (0usize, 0u64);
+    for it in items {
+        let (parent, leaf) = it.name.rsplit_once('\\').unwrap_or(("", &it.name));
+        let dir = match made.get(&parent.to_lowercase()) {
+            _ if parent.is_empty() => dest.to_path_buf(),
+            Some(d) => d.clone(),
+            None => {
+                // A folder the descriptors imply but do not list: below the nearest one they do
+                // list (which may have been renamed), else below `dest`.
+                let parts: Vec<&str> = parent.split('\\').collect();
+                let d = (1..parts.len())
+                    .rev()
+                    .find_map(|k| Some(made.get(&parts[..k].join("\\").to_lowercase())?.join(parts[k..].join("\\"))))
+                    .unwrap_or_else(|| dest.join(parent));
+                std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+                made.insert(parent.to_lowercase(), d.clone());
+                d
+            }
+        };
+        let target = free_name(&dir, leaf, it.dir);
+        if it.dir {
+            std::fs::create_dir(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+            made.insert(it.name.to_lowercase(), target);
+            continue;
+        }
+        let mut out = std::fs::File::create(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+        let limit = cap.map(|c| c.saturating_sub(bytes));
+        bytes += read_contents(data, it, &mut out, limit).map_err(|e| format!("{}: {e}", target.display()))?;
+        written += 1;
+        progress(written, files, &target);
+    }
+    Ok((written, bytes))
+}
+
+/// One item's `FileContents` into `out`; the bytes written. `limit`: refuse past that many.
+fn read_contents(data: *mut c_void, it: &VirtualItem, out: &mut std::fs::File, limit: Option<u64>) -> Result<u64, String> {
+    use std::io::Write;
+    let fmt = FORMATETC {
+        cfFormat: registered_format(CFSTR_FILECONTENTS),
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT,
+        lindex: it.index as i32,
+        tymed: (TYMED_ISTREAM | TYMED_HGLOBAL) as u32,
+    };
+    let over = |n: u64| limit.is_some_and(|l| n > l);
+    // SAFETY: a live IDataObject; the medium is released with ReleaseStgMedium on every path.
+    unsafe {
+        let mut medium: STGMEDIUM = std::mem::zeroed();
+        let hr = (data_vtbl(data).get_data)(data, &fmt, &mut medium);
+        if hr < 0 {
+            return Err(format!("FileContents {} failed: 0x{:08X}", it.index, hr as u32));
+        }
+        let mut n = 0u64;
+        let res = if medium.tymed == TYMED_ISTREAM as u32 && !medium.u.pstm.is_null() {
+            let s = medium.u.pstm;
+            let read = (**(s as *const *const StreamVtbl)).read;
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let mut got = 0u32;
+                let hr = read(s, buf.as_mut_ptr() as *mut c_void, buf.len() as u32, &mut got);
+                if hr < 0 {
+                    break Err(format!("reading the contents failed: 0x{:08X}", hr as u32));
+                }
+                if got == 0 {
+                    break Ok(());
+                }
+                n += got as u64;
+                if over(n) {
+                    break Err("over the drop's size limit".to_string());
+                }
+                if let Err(e) = out.write_all(&buf[..got as usize]) {
+                    break Err(e.to_string());
+                }
+            }
+        } else if medium.tymed == TYMED_HGLOBAL as u32 && !medium.u.hGlobal.is_null() {
+            let h = medium.u.hGlobal;
+            let p = GlobalLock(h) as *const u8;
+            // The block may be larger than the file: the descriptor's size, when given, is the file's.
+            let len = it.size.map_or(GlobalSize(h), |s| (s as usize).min(GlobalSize(h)));
+            n = len as u64;
+            let r = if p.is_null() {
+                Err("GlobalLock failed".to_string())
+            } else if over(n) {
+                Err("over the drop's size limit".to_string())
+            } else {
+                out.write_all(std::slice::from_raw_parts(p, len)).map_err(|e| e.to_string())
+            };
+            if !p.is_null() {
+                GlobalUnlock(h);
+            }
+            r
+        } else {
+            Err(format!("FileContents {} came in an unsupported medium ({})", it.index, medium.tymed))
+        };
+        ReleaseStgMedium(&mut medium);
+        res.map(|()| n)
+    }
+}
+
+/// ISequentialStream, up to Read (every IStream starts with it).
+#[repr(C)]
+struct StreamVtbl {
+    _query_interface: *const c_void,
+    _add_ref: *const c_void,
+    _release: *const c_void,
+    read: unsafe extern "system" fn(*mut c_void, *mut c_void, u32, *mut u32) -> HRESULT,
+}
+
+const IID_IDATAOBJECTASYNCCAPABILITY: GUID = GUID::from_u128(0x3d8b0590_f691_11d2_8ea9_006097df5bd4);
+
+/// IDataObjectAsyncCapability (shldisp.h).
+#[repr(C)]
+struct AsyncVtbl {
+    query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    set_async_mode: unsafe extern "system" fn(*mut c_void, BOOL) -> HRESULT,
+    get_async_mode: unsafe extern "system" fn(*mut c_void, *mut BOOL) -> HRESULT,
+    start_operation: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT,
+    in_operation: unsafe extern "system" fn(*mut c_void, *mut BOOL) -> HRESULT,
+    end_operation: unsafe extern "system" fn(*mut c_void, HRESULT, *mut c_void, u32) -> HRESULT,
+}
+
+/// Virtual drops still writing on a worker (the driver's `waitops` waits for them).
+static VIRTUAL_RUNNING: AtomicU32 = AtomicU32::new(0);
+
+pub fn virtual_drops_running() -> bool {
+    VIRTUAL_RUNNING.load(Ordering::Acquire) > 0
+}
+
+/// "Extracted N files" or the failure, for the pane's note.
+fn virtual_result(res: &Result<(usize, u64), String>) -> String {
+    match res {
+        Ok((n, _)) => format!("Extracted {n} file{}", if *n == 1 { "" } else { "s" }),
+        Err(e) => format!("Extracting failed: {e}"),
+    }
+}
+
+/// The drop of virtual files into `dest` (the spot's folder, noted in `pane`). Async when the source
+/// asks for it: `StartOperation`, the data object marshalled to a worker that writes the files,
+/// reports "Extracting N of M..." through the event loop, and ends with `EndOperation`. Otherwise
+/// inside this call (the source's requirement), refused over `SYNC_CAP`. **Called from Drop** with
+/// no app-state borrow held; it touches no app state (notes go through the event loop).
+fn virtual_drop(data: *mut c_void, items: Vec<VirtualItem>, pane: usize, dest: PathBuf) {
+    let files = items.iter().filter(|i| !i.dir).count();
+    let known: u64 = items.iter().filter_map(|i| i.size).sum();
+    let note = move |text: String| {
+        let _ = slint::invoke_from_event_loop(move || crate::drop_note(pane, text));
+    };
+    // SAFETY: a live IDataObject for the duration of Drop; the async interface is released here.
+    let asynced = unsafe {
+        let mut p: *mut c_void = std::ptr::null_mut();
+        if (data_vtbl(data).query_interface)(data, &IID_IDATAOBJECTASYNCCAPABILITY, &mut p) < 0 || p.is_null() {
+            false
+        } else {
+            let a = Com(p);
+            let v = a.vtbl::<AsyncVtbl>();
+            let mut on: BOOL = 0;
+            let got = (v.get_async_mode)(a.0, &mut on);
+            let started = if got >= 0 && on != 0 { (v.start_operation)(a.0, std::ptr::null_mut()) } else { -1 };
+            eprintln!("[dnd] virtual drop: GetAsyncMode = 0x{:08X} ({on}), StartOperation = 0x{:08X}", got as u32, started as u32);
+            started >= 0
+        }
+    };
+    eprintln!("[dnd] virtual drop: {files} file(s), {known} bytes, {}", if asynced { "async" } else { "sync" });
+    if !asynced {
+        if let Some(total) = over_cap(&items) {
+            eprintln!("[dnd] virtual drop refused: {total} bytes is over the {SYNC_CAP}-byte limit for a synchronous source");
+            return note(format!("Not extracted: {} is over the 256 MB limit for this source", crate::model::format_size(total)));
+        }
+        let t0 = std::time::Instant::now();
+        let res = extract(data, &items, &dest, Some(SYNC_CAP), |k, n, p| eprintln!("[dnd] virtual drop wrote {} ({k} of {n})", p.display()));
+        eprintln!("[dnd] virtual drop done in {:.0} ms: {res:?}", crate::perf::elapsed_ms(t0));
+        return note(virtual_result(&res));
+    }
+    let mut stream: *mut c_void = std::ptr::null_mut();
+    // SAFETY: marshals the live IDataObject for one unmarshal on the worker.
+    let hr = unsafe { CoMarshalInterThreadInterfaceInStream(&IID_IDATAOBJECT, data, &mut stream) };
+    if hr < 0 {
+        eprintln!("[dnd] virtual drop refused: CoMarshalInterThreadInterfaceInStream 0x{:08X}", hr as u32);
+        // SAFETY: ends the operation StartOperation began, on the object Drop was handed.
+        unsafe { end_async(data, hr, NONE) };
+        return note(format!("Extracting failed: 0x{:08X}", hr as u32));
+    }
+    let stream = stream as usize;
+    VIRTUAL_RUNNING.fetch_add(1, Ordering::AcqRel);
+    std::thread::Builder::new()
+        .name("virtual-drop".into())
+        .spawn(move || {
+            // SAFETY: COM for this worker (multithreaded: the proxy needs no message pump here); the
+            // stream is unmarshalled once (which releases it) and the proxy released before
+            // CoUninitialize.
+            unsafe {
+                let init = CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED as u32);
+                let mut p: *mut c_void = std::ptr::null_mut();
+                let hr = CoGetInterfaceAndReleaseStream(stream as *mut c_void, &IID_IDATAOBJECT, &mut p);
+                let res = if hr < 0 || p.is_null() {
+                    Err(format!("CoGetInterfaceAndReleaseStream 0x{:08X}", hr as u32))
+                } else {
+                    let proxy = Com(p);
+                    let t0 = std::time::Instant::now();
+                    let res = extract(proxy.0, &items, &dest, None, |k, n, path| {
+                        eprintln!("[dnd] virtual drop wrote {} ({k} of {n})", path.display());
+                        note(format!("Extracting {k} of {n}..."));
+                    });
+                    eprintln!("[dnd] virtual drop done in {:.0} ms: {res:?}", crate::perf::elapsed_ms(t0));
+                    let (hr, effect) = if res.is_ok() { (S_OK, COPY) } else { (windows_sys::Win32::Foundation::E_FAIL, NONE) };
+                    end_async(proxy.0, hr, effect);
+                    res
+                };
+                note(virtual_result(&res));
+                if init >= 0 {
+                    CoUninitialize();
+                }
+            }
+            VIRTUAL_RUNNING.fetch_sub(1, Ordering::AcqRel);
+        })
+        .expect("spawn virtual drop thread");
+}
+
+/// As a drag source: tell targets they may extract from the data object asynchronously
+/// (`SetAsyncMode(TRUE)`; the zip folder's object supports it but starts out synchronous).
+fn allow_async(data: *mut c_void) {
+    // SAFETY: a live IDataObject; the interface is released by `Com`.
+    unsafe {
+        let mut p: *mut c_void = std::ptr::null_mut();
+        if (data_vtbl(data).query_interface)(data, &IID_IDATAOBJECTASYNCCAPABILITY, &mut p) >= 0 && !p.is_null() {
+            let a = Com(p);
+            let hr = (a.vtbl::<AsyncVtbl>().set_async_mode)(a.0, 1);
+            eprintln!("[dnd] the zip folder's data object: SetAsyncMode(TRUE) = 0x{:08X}", hr as u32);
+        }
+    }
+}
+
+/// `IDataObjectAsyncCapability::EndOperation` on a data object (or its proxy).
+unsafe fn end_async(data: *mut c_void, hr: HRESULT, effect: u32) {
+    // SAFETY: the caller passes a live IDataObject; the interface is released by `Com`.
+    unsafe {
+        let mut p: *mut c_void = std::ptr::null_mut();
+        if (data_vtbl(data).query_interface)(data, &IID_IDATAOBJECTASYNCCAPABILITY, &mut p) >= 0 && !p.is_null() {
+            let a = Com(p);
+            let r = (a.vtbl::<AsyncVtbl>().end_operation)(a.0, hr, std::ptr::null_mut(), effect);
+            eprintln!("[dnd] virtual drop: EndOperation(0x{:08X}, {}) = 0x{:08X}", hr as u32, effect_name(effect), r as u32);
+        }
+    }
 }
 
 // --- The drop target ----------------------------------------------------------------------------
@@ -795,9 +1421,9 @@ pub struct DropSpot {
 struct DropTarget {
     header: Header,
     hwnd: isize,
-    /// The files of the data object being dragged over us, read at DragEnter (None: it offers
-    /// no `CF_HDROP`, so every point refuses it).
-    sources: RefCell<Option<Vec<PathBuf>>>,
+    /// What the data object being dragged over us offers, read at DragEnter: files (`CF_HDROP`),
+    /// virtual files (`FileGroupDescriptorW`), or nothing, which every point refuses.
+    offered: RefCell<Offer>,
     /// The last (spot, effect) logged by DragOver, so it logs changes only.
     last: RefCell<Option<(Option<DropSpot>, u32)>>,
     /// The last DragEnter or DragOver had the right button down: a right-button drag, whose
@@ -845,9 +1471,9 @@ impl DropTarget {
     fn evaluate(&self, keys: u32, pt: POINTL, allowed: u32) -> (Option<DropSpot>, u32) {
         let p = self.client(pt);
         let spot = crate::drop_spot(p.x, p.y);
-        let sources = self.sources.borrow();
-        let effect = match (&*sources, &spot) {
-            (Some(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed),
+        let effect = match (&*self.offered.borrow(), &spot) {
+            (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed),
+            (Offer::Virtual(_) | Offer::Archive(_), Some(_)) => virtual_effect(allowed),
             _ => NONE,
         };
         (spot, effect)
@@ -898,20 +1524,84 @@ pub fn effect_name(e: u32) -> &'static str {
 unsafe extern "system" fn dt_drag_enter(this: *mut c_void, data: *mut c_void, keys: u32, pt: POINTL, effect: *mut u32) -> HRESULT {
     // SAFETY: `this` is our DropTarget (OLE calls us through the vtable we registered).
     let t = unsafe { &*(this as *const DropTarget) };
-    let sources = read_hdrop(data);
+    let offered = target_offer(data);
     eprintln!(
         "[dnd] DragEnter: {}",
-        match &sources {
-            Some(s) => format!("{} file(s), first {}", s.len(), s.first().map(|p| p.display().to_string()).unwrap_or_default()),
-            None => "no CF_HDROP, refused".into(),
+        match &offered {
+            Offer::Files(s) => format!("{} file(s), first {}", s.len(), s.first().map(|p| p.display().to_string()).unwrap_or_default()),
+            Offer::Virtual(v) => format!("{} virtual item(s) (FileGroupDescriptorW, no CF_HDROP), first {}", v.len(), v[0].name),
+            Offer::Archive(p) => format!("{} item(s) inside an archive (extraction job), first {}", p.len(), p[0].display()),
+            Offer::Nothing => "no CF_HDROP and no virtual files, refused".into(),
         }
     );
-    *t.sources.borrow_mut() = sources;
+    let nothing = matches!(offered, Offer::Nothing);
+    *t.offered.borrow_mut() = offered;
     *t.last.borrow_mut() = None;
+    // SAFETY: COM contract: a valid in/out pointer (checked for null).
+    let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
     t.over(keys, pt, effect);
+    // A drag whose data object offers nothing we take (no files, no virtual files, no items inside
+    // an archive): say what it does offer, once per DragEnter. A spot that refuses is not this.
+    if nothing {
+        eprintln!("[dnd] DragEnter refused: allowed=0x{allowed:x} keys=0x{keys:x}; {}", format_report(data));
+    }
     // The shell paints the source's drag image over our window (after our own work for the call).
     target_helper_call(HelperCall::Enter(t.hwnd, data), pt, out_effect(effect));
     S_OK
+}
+
+/// Every format a data object enumerates (name or standard id, tymed mask, lindex, aspect) and
+/// `QueryGetData` for the formats a file drop can come in, for the refusal log.
+fn format_report(data: *mut c_void) -> String {
+    let name = |cf: u16| -> String {
+        let mut buf = [0u16; 128];
+        // SAFETY: a writable buffer of the advertised length.
+        let n = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardFormatNameW(cf as u32, buf.as_mut_ptr(), buf.len() as i32) };
+        if n > 0 { String::from_utf16_lossy(&buf[..n as usize]) } else { format!("CF {cf}") }
+    };
+    let mut listed = Vec::new();
+    // SAFETY: a live IDataObject; the enumerator is released by `Com`; each FORMATETC's `ptd` (a
+    // target device, never asked for here) is freed with CoTaskMemFree.
+    unsafe {
+        let mut e: *mut c_void = std::ptr::null_mut();
+        let hr = (data_vtbl(data).enum_format_etc)(data, 1, &mut e); // DATADIR_GET
+        if hr < 0 || e.is_null() {
+            listed.push(format!("EnumFormatEtc failed 0x{:08X}", hr as u32));
+        } else {
+            let en = Com(e);
+            let next: unsafe extern "system" fn(*mut c_void, u32, *mut FORMATETC, *mut u32) -> HRESULT =
+                std::mem::transmute((**(en.0 as *const *const [*const c_void; 4]))[3]);
+            loop {
+                let mut f: FORMATETC = std::mem::zeroed();
+                let mut got = 0u32;
+                if next(en.0, 1, &mut f, &mut got) != S_OK || got == 0 {
+                    break;
+                }
+                if !f.ptd.is_null() {
+                    windows_sys::Win32::System::Com::CoTaskMemFree(f.ptd as *const c_void);
+                }
+                listed.push(format!("{} tymed=0x{:x} lindex={} aspect={}", name(f.cfFormat), f.tymed, f.lindex, f.dwAspect));
+            }
+        }
+    }
+    let both = (TYMED_ISTREAM | TYMED_HGLOBAL) as u32;
+    let asks = [
+        (registered_format(CFSTR_FILEDESCRIPTORW), -1, TYMED_HGLOBAL as u32),
+        (registered_format(CFSTR_FILEDESCRIPTORA), -1, TYMED_HGLOBAL as u32),
+        (registered_format(CFSTR_FILECONTENTS), 0, both),
+        (CF_HDROP, -1, TYMED_HGLOBAL as u32),
+        (registered_format(CFSTR_SHELLIDLIST), -1, TYMED_HGLOBAL as u32),
+    ];
+    let queried: Vec<String> = asks
+        .iter()
+        .map(|&(cf, lindex, tymed)| {
+            let f = FORMATETC { cfFormat: cf, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT, lindex, tymed };
+            // SAFETY: a live IDataObject and a valid FORMATETC.
+            let hr = unsafe { (data_vtbl(data).query_get_data)(data, &f) };
+            format!("{}={:#010x}", name(cf), hr as u32)
+        })
+        .collect();
+    format!("formats [{}]; QueryGetData {}", listed.join(", "), queried.join(" "))
 }
 
 unsafe extern "system" fn dt_drag_over(this: *mut c_void, keys: u32, pt: POINTL, effect: *mut u32) -> HRESULT {
@@ -934,7 +1624,7 @@ unsafe extern "system" fn dt_drag_over(this: *mut c_void, keys: u32, pt: POINTL,
 unsafe extern "system" fn dt_drag_leave(this: *mut c_void) -> HRESULT {
     // SAFETY: as in `dt_drag_enter`.
     let t = unsafe { &*(this as *const DropTarget) };
-    *t.sources.borrow_mut() = None;
+    *t.offered.borrow_mut() = Offer::Nothing;
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
     eprintln!("[dnd] DragLeave");
@@ -1006,13 +1696,14 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
     // SAFETY: as in `dt_drag_enter`.
     let t = unsafe { &*(this as *const DropTarget) };
     // Read the files again from the data object OLE hands to Drop: the authoritative list.
-    let fresh = read_hdrop(data);
-    *t.sources.borrow_mut() = fresh.clone();
+    *t.offered.borrow_mut() = target_offer(data);
     // SAFETY: COM contract: a valid in/out pointer (checked for null).
     let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
     let (spot, mut e) = t.evaluate(keys, pt, allowed);
     let right = keys & MK_RBUTTON != 0 || t.right.replace(false);
-    *t.sources.borrow_mut() = None;
+    let fresh = std::mem::replace(&mut *t.offered.borrow_mut(), Offer::Nothing);
+    // Virtual files are only ever copied: the menu greys "Move here".
+    let menu_allowed = if matches!(fresh, Offer::Virtual(_) | Offer::Archive(_)) { allowed & COPY } else { allowed };
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
     // The shell takes its drag image down (before the menu, as Explorer does).
@@ -1021,8 +1712,8 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
         // A right-button drop asks: Move here, Copy here or Cancel, the default in bold. A modal
         // loop inside Drop (itself inside the source's DoDragDrop): nothing is borrowed here,
         // `drop_spot`'s borrow ended inside `evaluate` and the target's own cells are free.
-        let cmd = drop_menu(t.hwnd, pt, menu_default(e), allowed);
-        let chosen = menu_effect(cmd, allowed);
+        let cmd = drop_menu(t.hwnd, pt, menu_default(e), menu_allowed);
+        let chosen = menu_effect(cmd, menu_allowed);
         eprintln!(
             "[dnd] drop menu: default {}, chose {} -> effect {}",
             MENU_LABELS[menu_default(e) as usize - 1],
@@ -1033,20 +1724,34 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
     }
     let reported = reported_effect(e);
     eprintln!(
-        "[dnd] Drop at {} keys=0x{keys:x} allowed=0x{allowed:x}: {} file(s), effect {} (reported to the source: {})",
+        "[dnd] Drop at {} keys=0x{keys:x} allowed=0x{allowed:x}: {}, effect {} (reported to the source: {})",
         describe(&spot),
-        fresh.as_ref().map_or(0, Vec::len),
+        match &fresh {
+            Offer::Files(f) => format!("{} file(s)", f.len()),
+            Offer::Virtual(v) => format!("{} virtual item(s)", v.len()),
+            Offer::Archive(p) => format!("{} in-archive item(s)", p.len()),
+            Offer::Nothing => "0 file(s)".into(),
+        },
         effect_name(e),
         effect_name(reported)
     );
-    if let (Some(sources), Some(spot)) = (fresh, spot) {
-        if e != NONE {
+    if let (Some(spot), true) = (spot, e != NONE) {
+        match fresh {
             // The job (and every app-state change) runs from the event loop: after our own
             // DoDragDrop has returned, or at the next loop turn for another program's drag.
-            let _ = slint::invoke_from_event_loop(move || crate::drop_files(spot.pane, sources, spot.dest, e));
-            set_dword(data, CFSTR_PERFORMEDDROPEFFECT, reported);
-            set_dword(data, CFSTR_LOGICALPERFORMEDDROPEFFECT, e);
+            Offer::Files(sources) => {
+                let _ = slint::invoke_from_event_loop(move || crate::drop_files(spot.pane, sources, spot.dest, e));
+            }
+            // Written here (or, for an async source, on a worker once Drop has returned).
+            Offer::Virtual(items) => virtual_drop(data, items, spot.pane, spot.dest),
+            // Items inside an archive: the extraction job, queued as a files drop is.
+            Offer::Archive(sources) => {
+                let _ = slint::invoke_from_event_loop(move || crate::drop_files(spot.pane, sources, spot.dest, COPY));
+            }
+            Offer::Nothing => {}
         }
+        set_dword(data, CFSTR_PERFORMEDDROPEFFECT, reported);
+        set_dword(data, CFSTR_LOGICALPERFORMEDDROPEFFECT, e);
     }
     if !effect.is_null() {
         // SAFETY: as above.
@@ -1108,13 +1813,47 @@ fn log_paint_inside_drag() {
     }
 }
 
+/// The shell's generic data object (`SHCreateDataObject`) for `names` in `folder`: for items of a
+/// zip folder it offers only a Shell IDList Array (the driver's `dropvirtual ... idlist`).
+pub fn idlist_data(hwnd: isize, folder: &Path, names: &[String]) -> Result<Com, String> {
+    shellmenu::ensure_com()?;
+    let (folder_pidl, _folder, children) = shellmenu::parse_items(hwnd as HWND, folder, names)?;
+    let apidl: Vec<*const _> = children.iter().map(|c| c.0 as *const _).collect();
+    let mut p: *mut c_void = std::ptr::null_mut();
+    // SAFETY: as in `drag`.
+    let hr = unsafe { SHCreateDataObject(folder_pidl.0, apidl.len() as u32, apidl.as_ptr(), std::ptr::null_mut(), &IID_IDATAOBJECT, &mut p) };
+    if hr < 0 || p.is_null() {
+        return Err(format!("SHCreateDataObject failed: 0x{:08X}", hr as u32));
+    }
+    Ok(Com(p))
+}
+
+/// The driver's `dropvirtual ... ownzip`: `drop_data` with `paths` standing in for our own drag
+/// out of an archive, as `drag` records them for its DoDragDrop.
+pub fn drop_as_own_archive_drag(data: &Com, paths: Vec<PathBuf>, keys: u32, x: i32, y: i32) -> Option<(u32, u32)> {
+    OWN_ARCHIVE_SOURCES.with(|s| *s.borrow_mut() = Some(paths));
+    let r = drop_data(data, keys, x, y);
+    OWN_ARCHIVE_SOURCES.with(|s| s.borrow_mut().take());
+    r
+}
+
+/// The shell's own data object for `names` in `folder` (a folder inside a zip archive): what a
+/// drag out of that folder carries.
+pub fn archive_data(hwnd: isize, folder: &Path, names: &[String]) -> Result<Com, String> {
+    shellmenu::ensure_com()?;
+    let (_folder_pidl, folder, children) = shellmenu::parse_items(hwnd as HWND, folder, names)?;
+    let d = shellmenu::ui_data_object(hwnd as HWND, &folder, &children)?;
+    allow_async(d.0);
+    Ok(d)
+}
+
 /// Replace winit's drop target with ours on `hwnd`. Returns (RevokeDragDrop, RegisterDragDrop)
 /// results. Call once, on the UI thread, when the window exists.
 pub fn register(hwnd: isize) -> (HRESULT, HRESULT) {
     let obj = Box::new(DropTarget {
         header: Header { vtbl: &DROP_TARGET_VTBL as *const DropTargetVtbl as *const c_void, refs: AtomicU32::new(1) },
         hwnd,
-        sources: RefCell::new(None),
+        offered: RefCell::new(Offer::Nothing),
         last: RefCell::new(None),
         right: Cell::new(false),
         scrolled_at: Cell::new(None),
@@ -1139,11 +1878,16 @@ pub fn register(hwnd: isize) -> (HRESULT, HRESULT) {
 /// serving `paths`, at screen point (x, y), as OLE would. Returns (DragEnter effect, Drop
 /// effect), or None when no target is registered.
 pub fn drop_direct(paths: &[PathBuf], keys: u32, x: i32, y: i32) -> Option<(u32, u32)> {
+    drop_data(&hdrop_data(paths), keys, x, y)
+}
+
+/// The driver's `dropvirtual`: as `drop_direct` with a data object of virtual files (ours from
+/// `virtual_data`, or the shell's zip folder's from `archive_data`).
+pub fn drop_data(data: &Com, keys: u32, x: i32, y: i32) -> Option<(u32, u32)> {
     let t = TARGET.with(Cell::get);
     if t.is_null() {
         return None;
     }
-    let data = hdrop_data(paths);
     let pt = POINTL { x, y };
     // SAFETY: `t` is our live DropTarget (TARGET holds a reference); `data` is a live
     // IDataObject for both calls.
@@ -1639,15 +2383,24 @@ pub struct DragRequest {
 pub fn drag(req: &DragRequest) -> Result<bool, String> {
     shellmenu::ensure_com()?;
     let hwnd = req.hwnd as HWND;
-    let (folder_pidl, _folder, children) = shellmenu::parse_items(hwnd, &req.folder, &req.names)?;
-    let apidl: Vec<*const _> = children.iter().map(|c| c.0 as *const _).collect();
-    let mut p: *mut c_void = std::ptr::null_mut();
-    // SAFETY: an absolute folder PIDL and child PIDLs relative to it, alive for the call.
-    let hr = unsafe { SHCreateDataObject(folder_pidl.0, apidl.len() as u32, apidl.as_ptr(), std::ptr::null_mut(), &IID_IDATAOBJECT, &mut p) };
-    if hr < 0 || p.is_null() {
-        return Err(format!("SHCreateDataObject failed: 0x{:08X}", hr as u32));
-    }
-    let data = Com(p);
+    let (folder_pidl, folder, children) = shellmenu::parse_items(hwnd, &req.folder, &req.names)?;
+    let archive = crate::fs::archive::inside(&req.folder);
+    let data = if archive {
+        // The zip folder's own data object: virtual files (FileGroupDescriptorW + FileContents),
+        // which Explorer and our own drop target extract, asynchronously where they can.
+        let d = shellmenu::ui_data_object(hwnd, &folder, &children)?;
+        allow_async(d.0);
+        d
+    } else {
+        let apidl: Vec<*const _> = children.iter().map(|c| c.0 as *const _).collect();
+        let mut p: *mut c_void = std::ptr::null_mut();
+        // SAFETY: an absolute folder PIDL and child PIDLs relative to it, alive for the call.
+        let hr = unsafe { SHCreateDataObject(folder_pidl.0, apidl.len() as u32, apidl.as_ptr(), std::ptr::null_mut(), &IID_IDATAOBJECT, &mut p) };
+        if hr < 0 || p.is_null() {
+            return Err(format!("SHCreateDataObject failed: 0x{:08X}", hr as u32));
+        }
+        Com(p)
+    };
     if let Some(img) = &req.image {
         attach_drag_image(data.0, img);
     }
@@ -1666,6 +2419,9 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
         req.folder.display()
     );
     let t0 = std::time::Instant::now();
+    if archive {
+        OWN_ARCHIVE_SOURCES.with(|s| *s.borrow_mut() = Some(req.names.iter().map(|n| req.folder.join(n)).collect()));
+    }
     OWN_DRAG.with(|d| d.set(Some((req.hwnd, crate::perf::frames()))));
     HIGHLIGHT_AT.with(|h| h.set(None));
     PAINT_LOGGED.with(|p| p.set(false));
@@ -1674,6 +2430,7 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
     // is called from inside this loop when the cursor is over our window.
     // SAFETY: live IDataObject and IDropSource; `effect` is a valid out-pointer.
     let hr = unsafe { DoDragDrop(data.0, source.0, COPY | MOVE, &mut effect) };
+    OWN_ARCHIVE_SOURCES.with(|s| s.borrow_mut().take());
     let logical = read_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT);
     eprintln!(
         "[dnd] DoDragDrop returned 0x{:08X} ({}) after {:.0} ms: effect {}, logical performed effect {}",
@@ -2120,4 +2877,218 @@ mod tests {
         }
         std::fs::remove_dir_all(&root).unwrap();
     }
+
+    fn tree(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let rel = e.path().strip_prefix(root).unwrap().to_string_lossy().into_owned();
+                if e.path().is_dir() {
+                    stack.push(e.path());
+                    out.push((rel, None));
+                } else {
+                    out.push((rel, Some(std::fs::read(e.path()).unwrap())));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Virtual files through our minimal data object, served as HGLOBALs and as IStreams: the
+    /// descriptors round-trip, a nested path makes its folders, a taken name gets " (2)" (a folder
+    /// so renamed takes its contents with it), names that are no file names are left out.
+    #[test]
+    fn virtual_files_round_trip() {
+        let root = std::env::temp_dir().join(format!("twinfm-p3m4-virtual-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let items: Vec<(String, Option<Vec<u8>>)> = vec![
+            ("top.txt".into(), Some(b"hello".to_vec())),
+            ("dir".into(), None),
+            (r"dir\nested\deep.bin".into(), Some((0..70_000u32).map(|i| i as u8).collect())),
+            (r"..\escape.txt".into(), Some(b"stays inside".to_vec())),
+            (r"C:\abs.txt".into(), Some(b"left out".to_vec())),
+            ("empty.dat".into(), Some(Vec::new())),
+        ];
+        for stream in [false, true] {
+            let dest = root.join(if stream { "stream" } else { "hglobal" });
+            std::fs::create_dir_all(&dest).unwrap();
+            let data = virtual_data(&items, stream, None, false);
+            let Offer::Virtual(got) = offer(data.0) else { panic!("virtual files offered") };
+            assert_eq!(
+                got.iter().map(|i| (i.index, i.name.as_str(), i.dir, i.size)).collect::<Vec<_>>(),
+                vec![
+                    (0, "top.txt", false, Some(5)),
+                    (1, "dir", true, Some(0)),
+                    (2, r"dir\nested\deep.bin", false, Some(70_000)),
+                    (3, "escape.txt", false, Some(12)),
+                    (5, "empty.dat", false, Some(0)),
+                ],
+                "`..` dropped, a drive-qualified name left out, the indexes kept"
+            );
+            let mut seen = Vec::new();
+            let r = extract(data.0, &got, &dest, Some(SYNC_CAP), |k, n, p| seen.push((k, n, p.strip_prefix(&dest).unwrap().to_path_buf())));
+            assert_eq!(r, Ok((4, 70_017)), "stream={stream}");
+            assert_eq!(seen.last().map(|s| (s.0, s.1)), Some((4, 4)));
+            let want: Vec<(String, Option<Vec<u8>>)> = vec![
+                ("dir".into(), None),
+                (r"dir\nested".into(), None),
+                (r"dir\nested\deep.bin".into(), items[2].1.clone()),
+                ("empty.dat".into(), Some(Vec::new())),
+                ("escape.txt".into(), Some(b"stays inside".to_vec())),
+                ("top.txt".into(), Some(b"hello".to_vec())),
+            ];
+            assert_eq!(tree(&dest), want);
+            // The same drop again: every top-level name is taken.
+            assert_eq!(extract(data.0, &got, &dest, Some(SYNC_CAP), |_, _, _| {}), Ok((4, 70_017)));
+            let names: Vec<String> = tree(&dest).into_iter().map(|(n, _)| n).collect();
+            for n in ["top (2).txt", "dir (2)", r"dir (2)\nested\deep.bin", "escape (2).txt", "empty (2).dat"] {
+                assert!(names.contains(&n.to_string()), "{n} in {names:?}");
+            }
+            // Past the cap: refused while reading.
+            let small = root.join(format!("cap-{stream}"));
+            std::fs::create_dir_all(&small).unwrap();
+            let e = extract(data.0, &got, &small, Some(100), |_, _, _| {}).unwrap_err();
+            assert!(e.contains("over the drop's size limit"), "{e}");
+        }
+        let big = [
+            VirtualItem { index: 0, name: "a".into(), dir: false, size: Some(SYNC_CAP) },
+            VirtualItem { index: 1, name: "b".into(), dir: false, size: Some(1) },
+        ];
+        assert_eq!(over_cap(&big), Some(SYNC_CAP + 1));
+        assert_eq!(over_cap(&big[..1]), None, "exactly the cap is allowed");
+        assert_eq!(parse_descriptors(&descriptor_block(&[("x", Some(1))])[..100]), None, "a cut block");
+        // The ANSI FileGroupDescriptor: 332-byte records, the name in the ANSI code page.
+        let mut a = 1u32.to_le_bytes().to_vec();
+        let mut rec = vec![0u8; FD_LEN_A];
+        rec[0..4].copy_from_slice(&((FD_FILESIZE) as u32).to_le_bytes());
+        rec[68..72].copy_from_slice(&7u32.to_le_bytes());
+        rec[72..80].copy_from_slice(b"ansi.txt");
+        a.extend(rec);
+        assert_eq!(parse_descriptors_as(&a, false), Some(vec![VirtualItem { index: 0, name: "ansi.txt".into(), dir: false, size: Some(7) }]));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A data object with both files and virtual files is a drop of the files; the virtual effect
+    /// is a copy whatever the source allows.
+    #[test]
+    fn hdrop_wins_over_virtual_files() {
+        let paths = vec![p(r"C:\real\one.txt")];
+        let items = vec![("one.txt".to_string(), Some(b"1".to_vec()))];
+        assert_eq!(offer(virtual_data(&items, false, Some(&paths), false).0), Offer::Files(paths.clone()));
+        assert!(matches!(offer(virtual_data(&items, true, None, false).0), Offer::Virtual(v) if v.len() == 1));
+        assert_eq!(offer(virtual_data(&[], false, None, false).0), Offer::Nothing, "no items, nothing to drop");
+        assert_eq!(offer(hdrop_data(&paths).0), Offer::Files(paths.clone()));
+        // During our own drag out of an archive its virtual files are its in-archive paths.
+        let own = vec![PathBuf::from("C:/d/x.zip/sub/one.txt")];
+        OWN_ARCHIVE_SOURCES.with(|s| *s.borrow_mut() = Some(own.clone()));
+        assert_eq!(target_offer(virtual_data(&items, false, None, false).0), Offer::Archive(own));
+        assert_eq!(target_offer(hdrop_data(&paths).0), Offer::Files(paths.clone()), "files stay files");
+        OWN_ARCHIVE_SOURCES.with(|s| s.borrow_mut().take());
+        assert!(matches!(target_offer(virtual_data(&items, false, None, false).0), Offer::Virtual(_)), "a foreign source");
+        assert_eq!(
+            (virtual_effect(COPY | MOVE), virtual_effect(MOVE), virtual_effect(COPY), virtual_effect(NONE)),
+            (COPY, COPY, COPY, NONE)
+        );
+    }
+
+    /// The shell's zip folder's own data object (what a drag out of a zip pane carries) offers
+    /// virtual files and no CF_HDROP, can be read asynchronously, and extracts through `extract`.
+    #[test]
+    fn zip_folder_data_object_offers_virtual_files() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!("twinfm-p3m4-dnd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        let zip = root.join("t.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
+        for (name, data) in [("sub/a.txt", &b"alpha"[..]), ("sub/inner/b.txt", b"beta beta")] {
+            w.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            w.write_all(data).unwrap();
+        }
+        w.finish().unwrap();
+        // SAFETY: an STA for this test thread, balanced below.
+        let com = unsafe {
+            windows_sys::Win32::System::Com::CoInitializeEx(std::ptr::null(), windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32)
+        };
+        {
+            let data = archive_data(0, &zip.join("sub"), &["a.txt".to_string(), "inner".to_string()]).unwrap();
+            assert_eq!(read_hdrop(data.0), None, "no CF_HDROP from a zip folder");
+            let Offer::Virtual(items) = offer(data.0) else { panic!("virtual files offered") };
+            let listed: Vec<(&str, bool)> = items.iter().map(|i| (i.name.as_str(), i.dir)).collect();
+            assert!(
+                listed.contains(&("a.txt", false)) && listed.contains(&("inner", true)) && listed.contains(&(r"inner\b.txt", false)),
+                "{listed:?}"
+            );
+            assert!(data.query(&IID_IDATAOBJECTASYNCCAPABILITY).is_some(), "the zip folder supports async drops");
+            // A shell data object over the same items offers only a Shell IDList Array: their
+            // in-archive paths, for the extraction job.
+            let (fp, _folder, children) = shellmenu::parse_items(std::ptr::null_mut(), &zip.join("sub"), &["a.txt".to_string()]).unwrap();
+            let apidl: Vec<*const _> = children.iter().map(|c| c.0 as *const _).collect();
+            let mut q: *mut c_void = std::ptr::null_mut();
+            // SAFETY: as in `drag`.
+            let hr = unsafe { SHCreateDataObject(fp.0, 1, apidl.as_ptr(), std::ptr::null_mut(), &IID_IDATAOBJECT, &mut q) };
+            assert!(hr >= 0 && !q.is_null());
+            let idl = Com(q);
+            assert!(read_descriptors(idl.0).is_none(), "no descriptors");
+            match offer(idl.0) {
+                Offer::Archive(p) => assert!(p.len() == 1 && p[0].to_string_lossy().eq_ignore_ascii_case(&zip.join("sub").join("a.txt").to_string_lossy()), "{p:?}"),
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(extract(data.0, &items, &root.join("out"), Some(SYNC_CAP), |_, _, _| {}), Ok((2, 14)));
+            assert_eq!(std::fs::read(root.join("out").join("a.txt")).unwrap(), b"alpha");
+            assert_eq!(std::fs::read(root.join("out").join("inner").join("b.txt")).unwrap(), b"beta beta");
+        }
+        if com >= 0 {
+            // SAFETY: pairs the CoInitializeEx above.
+            unsafe { windows_sys::Win32::System::Com::CoUninitialize() };
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A source that asks for asynchronous extraction: Drop starts the operation, a worker reads
+    /// the contents through the marshalled data object (each call comes back to this STA, which
+    /// pumps), writes the files and ends the operation with a copy.
+    #[test]
+    fn async_virtual_drop_on_a_worker() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage};
+        let root = std::env::temp_dir().join(format!("twinfm-p3m4-async-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // SAFETY: an STA for this test thread, balanced below.
+        let com = unsafe {
+            windows_sys::Win32::System::Com::CoInitializeEx(std::ptr::null(), windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32)
+        };
+        {
+            let items: Vec<(String, Option<Vec<u8>>)> =
+                (0..20).map(|k| (format!(r"sub\f{k}.bin"), Some(vec![k as u8; 1000 + k]))).collect();
+            let data = virtual_data(&items, true, None, true);
+            let Offer::Virtual(listed) = offer(data.0) else { panic!("virtual files offered") };
+            virtual_drop(data.0, listed, 0, root.clone());
+            let t0 = std::time::Instant::now();
+            while virtual_drops_running() && t0.elapsed() < std::time::Duration::from_secs(30) {
+                let mut msg: MSG = MSG::default();
+                // SAFETY: plain message pump on this thread.
+                while unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+                    unsafe {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!virtual_drops_running(), "the worker finished within 30 s");
+            assert_eq!(mini_ended(&data), Some((S_OK, COPY)), "EndOperation reported the copy");
+            for k in 0..20 {
+                assert_eq!(std::fs::read(root.join("sub").join(format!("f{k}.bin"))).unwrap(), vec![k as u8; 1000 + k]);
+            }
+        }
+        if com >= 0 {
+            // SAFETY: pairs the CoInitializeEx above.
+            unsafe { windows_sys::Win32::System::Com::CoUninitialize() };
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }
+

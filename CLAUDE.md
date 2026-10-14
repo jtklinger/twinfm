@@ -9,9 +9,10 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
 `docs/phase-3-plan.md` the Phase 3 plan and record. Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (111 tests; five touch the real shell and clipboard, and nine of the ten
+- `cargo test --release` (118 tests; seven touch the real shell and clipboard, and nine of the ten
   `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
-  the search walker's test and the size walker's test write to scratch folders, see below)
+  the search walker's test, the size walker's test, the two archive tests and two virtual-drop
+  tests write to scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -35,7 +36,7 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
 ## Measuring
 - In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
   `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]`,
-  `[filter]`, `[search]`, `[size]` lines.
+  `[filter]`, `[search]`, `[size]`, `[archive]` lines.
   Since P2-M5 the `[enum] ... done:` line ends with `, reparse: J junction, S symlink, C cloud, A app
   alias, O other` when the listing has reparse points, and the once-a-second `[icons]` line
   carries `overlays N` (icons given the shell's overlay) and `slow N` (renders of 100 ms or
@@ -143,6 +144,30 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   `subtree on <path>` / `subtree off <path>` (a tab with sizes cached or in flight watches every
   folder below its folder), `changed below the folder: no refresh`, `subtree overflow <path>: sizes
   dropped` and `subtree disabled for this tab after two overflows`.
+  Since P3-M4, zip archives: `nav <pane> C:\dir\x.zip\sub` lists a level of an archive (a zip is
+  entered by `key Return` on its row too; `key Return` on a file inside one opens it through its
+  PIDL); `dropvirtual <pane> <row> [async] <name=size|...>` drops generated virtual files
+  (`FileGroupDescriptorW` + `FileContents`, `name\` a folder, `async` a source asking for
+  asynchronous extraction) and `dropvirtual <pane> <row> zip <path|...>` the shell zip folder's own
+  data object for paths inside one folder of an archive (`ownzip` in place of `zip`: as our own drag
+  out of the archive, which the target turns into the extraction job, `[dnd] DragEnter: N
+  item(s) inside an archive (extraction job)`; `idlist`: the shell's `SHCreateDataObject` over those items,
+  a Shell IDList Array only); `waitops` also waits for an async drop. A drag our target refuses
+  with no files in it logs `[dnd] DragEnter refused: allowed=... keys=...; formats [...];
+  QueryGetData ...`.
+  The `[enum] ... done:` line of an archive level reads `done: N entries (archive level, central
+  directory C entries, read in R ms, cached|fresh), worker ...`. `[archive]` lines: `open <zip>: C
+  entries, central directory R ms`, `cache evicted <zip>` (8 archives are cached), `refused: <what>
+  (<why>)` (paste, copy or move into, drops into: "writing into"; rename, delete, permanent delete,
+  move out, cut, new folder: "editing a zip archive is not supported"; folder sizes), `parse "<path>" -> item ok|failed 0x...` (a shell item or PIDL for a path inside
+  an archive). `[dnd]` adds `DragEnter: N virtual item(s) (FileGroupDescriptorW, no CF_HDROP)`,
+  `virtual drop: N file(s), M bytes, sync|async`, `virtual drop wrote <path> (K of N)`, `virtual
+  drop done in T ms: Ok((files, bytes))`, `virtual drop refused: <why>` (a sync source over 256 MB),
+  `virtual drop: GetAsyncMode = ..., StartOperation = ...`, `EndOperation(...)`, `the zip folder's
+  data object: SetAsyncMode(TRUE) = ...`; `[watch] no watch for <path>: inside an archive`; `[menu]
+  inside an archive: no IContextMenu2/3 routing`. Fixtures Jeremy keeps for this:
+  `C:\traces\bigdir.zip` (the 40,000 files of `C:\traces\bigdir`, made with
+  `[System.IO.Compression.ZipFile]::CreateFromDirectory`; not in the repo).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -208,6 +233,16 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   (`icacls /deny *S-1-1-0:(RD)`, removed again before the tree is deleted) in
   `%TEMP%\twinfm-p3m3-test-<pid>\`, and removes it. The subtree watch's test
   (`subtree_watch_tells_deep_changes_from_top_ones`) uses the `fs::watch` scratch folder.
+  `fs::archive::tests::central_directory_levels` writes zips (nested, folder only, empty,
+  non-ASCII, zip64, corrupt, and nine more for the cache's eviction) in
+  `%TEMP%\twinfm-p3m4-test-<pid>\`, `archive_paths_are_decided_by_the_file_system` a zip-named file
+  and folder in `%TEMP%\twinfm-p3m4-split-<pid>\`; `fileops::tests::shell_items_inside_a_zip_extract`
+  asks the shell's zip folder for shell items inside a zip and extracts two of them with a real
+  `IFileOperation` copy in `%TEMP%\twinfm-p3m4-shell-<pid>\` (no Recycle Bin);
+  `dnd::tests::zip_folder_data_object_offers_virtual_files` asks the zip folder for its data object
+  and extracts from it in `%TEMP%\twinfm-p3m4-dnd-<pid>\`; `virtual_files_round_trip` and
+  `async_virtual_drop_on_a_worker` write virtual drops into `%TEMP%\twinfm-p3m4-virtual-<pid>\` and
+  `%TEMP%\twinfm-p3m4-async-<pid>\`. All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

@@ -359,12 +359,21 @@ fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain([0]).collect()
 }
 
+/// The shell item for a path. A path inside a zip archive (`C:\dir\x.zip\sub\file.txt`) is parsed
+/// by the shell's zip folder, so a copy out of it is an extraction.
 fn shell_item(path: &Path) -> Result<Com, HRESULT> {
     let w = wide(path.as_os_str());
     let mut p: *mut c_void = std::ptr::null_mut();
     // SAFETY: `w` is NUL-terminated and outlives the call; `p` receives an IShellItem or stays null.
     let hr = unsafe { SHCreateItemFromParsingName(w.as_ptr(), std::ptr::null_mut(), &IID_ISHELLITEM, &mut p) };
-    if hr < 0 || p.is_null() { Err(if hr < 0 { hr } else { -1 }) } else { Ok(Com(p)) }
+    let res = if hr < 0 || p.is_null() { Err(if hr < 0 { hr } else { -1 }) } else { Ok(Com(p)) };
+    if crate::fs::archive::inside(path) {
+        match &res {
+            Ok(_) => eprintln!("[archive] parse \"{}\" -> item ok", path.display()),
+            Err(hr) => eprintln!("[archive] parse \"{}\" -> item failed 0x{:08X}", path.display(), *hr as u32),
+        }
+    }
+    res
 }
 
 fn check(hr: HRESULT) -> Result<(), HRESULT> {
@@ -376,8 +385,10 @@ fn check(hr: HRESULT) -> Result<(), HRESULT> {
 const IID_IUNKNOWN: GUID = GUID::from_u128(0x00000000_0000_0000_c000_000000000046);
 const IID_IFILEOPERATIONPROGRESSSINK: GUID = GUID::from_u128(0x04b0f1a7_9490_44bc_96e1_4296a31252e2);
 
-/// SIGDN_FILESYSPATH.
+/// SIGDN_FILESYSPATH, and SIGDN_DESKTOPABSOLUTEPARSING for an item that has no file system path
+/// (inside a zip archive: `C:\dir\x.zip\sub\file.txt`).
 const SIGDN_FILESYSPATH: i32 = 0x8005_8000u32 as i32;
+const SIGDN_DESKTOPABSOLUTEPARSING: i32 = 0x8002_8000u32 as i32;
 
 type Item = *mut c_void;
 type Wstr = *const u16;
@@ -451,7 +462,8 @@ fn same_guid(a: &GUID, b: &GUID) -> bool {
     a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
 }
 
-/// The file system path of a shell item we were handed (not owned), if it has one.
+/// The file system path of a shell item we were handed (not owned), or its parsing path when it
+/// has none (an item inside a zip archive), if either.
 fn item_path(item: Item) -> Option<PathBuf> {
     if item.is_null() {
         return None;
@@ -461,7 +473,9 @@ fn item_path(item: Item) -> Option<PathBuf> {
     // allocates `s` with the COM allocator, freed below.
     unsafe {
         let v = &**(item as *const *const ShellItemVtbl);
-        if (v.get_display_name)(item, SIGDN_FILESYSPATH, &mut s) < 0 || s.is_null() {
+        if ((v.get_display_name)(item, SIGDN_FILESYSPATH, &mut s) < 0 || s.is_null())
+            && ((v.get_display_name)(item, SIGDN_DESKTOPABSOLUTEPARSING, &mut s) < 0 || s.is_null())
+        {
             return None;
         }
         let len = (0..).take_while(|&i| *s.add(i) != 0).count();
@@ -868,6 +882,72 @@ mod tests {
         }
 
         drop(run);
+        drop(worker);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The shell's zip folder parses paths inside an archive into shell items, and a copy of them
+    /// is an extraction whose sink results name the in-archive sources, so the undo record
+    /// recycles the extracted copies.
+    #[test]
+    fn shell_items_inside_a_zip_extract() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!("twinfm-p3m4-shell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        let zip = root.join("t.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, data) in [("sub/file.txt", &b"from the zip"[..]), ("sub/deep/two.bin", b"22")] {
+            w.start_file(name, opts).unwrap();
+            w.write_all(data).unwrap();
+        }
+        w.finish().unwrap();
+        let child = zip.join("sub").join("file.txt");
+        // SAFETY: an STA for this test thread, balanced below; the item is released before.
+        let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+        {
+            let item = shell_item(&child).expect("the zip folder parses a path inside the archive");
+            let mut s: *mut u16 = std::ptr::null_mut();
+            // SAFETY: a live IShellItem; the string is freed with CoTaskMemFree.
+            let name = unsafe {
+                let v = &**(item.0 as *const *const ShellItemVtbl);
+                assert!((v.get_display_name)(item.0, SIGDN_FILESYSPATH, &mut s) < 0, "no file system path inside a zip");
+                assert!((v.get_display_name)(item.0, SIGDN_DESKTOPABSOLUTEPARSING, &mut s) >= 0);
+                let len = (0..).take_while(|&i| *s.add(i) != 0).count();
+                let n = String::from_utf16_lossy(std::slice::from_raw_parts(s, len));
+                windows_sys::Win32::System::Com::CoTaskMemFree(s as *const c_void);
+                n
+            };
+            assert!(name.eq_ignore_ascii_case(&child.to_string_lossy()), "{name}");
+            assert_eq!(item_path(item.0).as_deref(), Some(child.as_path()), "the sink's path for it");
+        }
+        if com >= 0 {
+            // SAFETY: pairs the CoInitializeEx above.
+            unsafe { windows_sys::Win32::System::Com::CoUninitialize() };
+        }
+        let (tx, rx) = unbounded();
+        let worker = Worker::spawn(move |d| {
+            let _ = tx.send(d);
+        });
+        let job = Job::Copy { sources: vec![child.clone(), zip.join("sub").join("deep")], dest_dir: root.join("out") };
+        assert!(worker.submit(Request { id: 1, job: job.clone(), hwnd: 0, no_confirm: true }));
+        let d = rx.recv_timeout(Duration::from_secs(30)).expect("the extraction finishes within 30 s");
+        assert_eq!(d.outcome, Outcome::Done);
+        assert_eq!(std::fs::read(root.join("out").join("file.txt")).unwrap(), b"from the zip");
+        assert_eq!(std::fs::read(root.join("out").join("deep").join("two.bin")).unwrap(), b"22");
+        let sources: Vec<&Path> = d.results.iter().map(|r| r.source.as_path()).collect();
+        assert_eq!(sources.len(), 2, "one result per source: {:?}", d.results);
+        let u = undo::undo_for(&job, &d.results).expect("an extraction is undoable");
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+        match &u.job {
+            Job::Delete { sources, permanent: false } => {
+                let mut got: Vec<PathBuf> = sources.iter().map(|p| canon(p)).collect();
+                got.sort();
+                assert_eq!(got, vec![canon(&root.join("out").join("deep")), canon(&root.join("out").join("file.txt"))]);
+            }
+            other => panic!("undo of an extraction: {other:?}"),
+        }
         drop(worker);
         std::fs::remove_dir_all(&root).unwrap();
     }
