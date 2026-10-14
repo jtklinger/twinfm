@@ -6,7 +6,8 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
 `PROTOTYPE-RESULT.md` is the gate record, `docs/week-one-plan.md` the week-one record
 (accessibility fix, renderer decision), `docs/phase-1-plan.md` the Phase 1 record (six
 milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
-`docs/phase-3-plan.md` the Phase 3 plan and record. Read them before changing the list.
+`docs/phase-3-plan.md` the Phase 3 record (closed 2026-10-14; § Phase 3 close holds what is
+deferred and the Phase 4 candidates). Read them before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (122 tests; seven touch the real shell and clipboard, and nine of the ten
