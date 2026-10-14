@@ -13,6 +13,21 @@ export struct Row {
     cut: bool,
 }
 
+// The large-icon grid (P3-M5 trace, variant b): one tile per entry, `GridRow.tiles` of them to
+// a grid row, the grid row's first entry index in `first` (model.rs GridModel). The tile carries
+// what it draws; `current` is the cursor, decided in Rust, so no tile binds to a root property.
+export struct Tile {
+    name: string,
+    selected: bool,
+    cut: bool,
+    current: bool,
+}
+
+export struct GridRow {
+    first: int,
+    tiles: [Tile],
+}
+
 // One tab in a pane's tab strip (main.rs rebuilds the list on change only).
 export struct TabInfo {
     title: string,
@@ -133,122 +148,66 @@ component HeaderCell inherits Rectangle {
 
 // Same structure as Slint's StandardListView: a component inheriting ListView carries the list
 // role itself, a zero-width FocusScope inside it holds keyboard focus, and
-// accessible-delegate-focus makes assistive clients see focus on the current row.
-// The base holds the single `for` a ListView allows; the derived component adds the focus scope,
-// which is how StandardListView is layered too.
-// Two such lists exist, with the Type column (FileRows, FileList) and without it (FileRowsNoType,
-// FileListNoType); FileListHost shows one per pane, so no row binds to the switch (a binding on
-// it per row cost 0.7 of a point on the gate, a conditional cell per row 1.5). The rows and the
-// focus layer are all each variant holds; the state and the logic live in the host, once.
-component FileRows inherits ListView {
-    in property <[Row]> rows;
+// accessible-delegate-focus makes assistive clients see focus on the current grid row.
+// The large-icon grid (P3-M5 trace, variant b): the ListView's single `for` runs over GRID ROWS
+// (120 px), each holding a nested `for` over its tiles (96 px wide). Tiles carry no image: the
+// pane's strip draws the icons. Accessibility: each grid row is one list-item node (the item
+// count is the grid-row count); the tiles add no role of their own, only their name Text.
+component FileGrid inherits ListView {
+    in property <[GridRow]> grid;
     in property <int> current-row: -1;
-    // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
-    // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
+    in property <int> cols: 1;
+    // row-pointer(entry, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
+    // window y of the tile's TouchArea): FileListHost.row-pointer decides what it means.
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
 
     accessible-label: "Files";
-    accessible-item-count: rows.length;
-    accessible-delegate-focus: max(0, current-row);
+    accessible-item-count: grid.length;
+    accessible-delegate-focus: max(0, floor(current-row / max(1, cols)));
 
-    for row[i] in rows: Rectangle {
-        height: 22px;
+    for grow[r] in grid: Rectangle {
+        height: 120px;
         accessible-role: AccessibleRole.list-item;
-        // Files of every kind (plain, cloud placeholder, link, alias) have a size and a time;
-        // folders have no size, drives no time. The type text names a junction or a link.
-        accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
-            : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
-        accessible-item-selectable: true;
-        accessible-item-selected: row.selected;
-        accessible-item-index: i;
-        background: row.selected ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
-        // The cursor is an outline, so it stays visible on selected and unselected rows alike.
-        border-width: i == current-row ? 1px : 0px;
-        border-color: Palette.accent-background;
-        HorizontalLayout {
-            // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip.
-            padding-left: 28px;
-            padding-right: 6px;
-            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-        }
-        TouchArea {
-            pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
-            double-clicked => { root.row-gesture(i, 3, false, false); }
+        accessible-item-index: r;
+        for t[c] in grow.tiles: Rectangle {
+            x: c * 96px;
+            y: 0px;
+            width: 96px;
+            height: 120px;
+            background: t.selected ? Palette.selection-background : transparent;
+            border-width: t.current ? 1px : 0px;
+            border-color: Palette.accent-background;
+            // The icon (the strip's) fills 2..98 px; the name sits under it.
+            Text {
+                x: 2px;
+                y: 99px;
+                width: 92px;
+                height: 19px;
+                text: t.name;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+                color: t.cut ? Palette.foreground.transparentize(55%) : Palette.foreground;
+            }
+            TouchArea {
+                pointer-event(ev) => { root.row-pointer(grow.first + c, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
+                double-clicked => { root.row-gesture(grow.first + c, 3, false, false); }
+            }
         }
     }
 }
 
-// FileRows without the Type cell; the Name column takes its width. The accessible label still
-// names the type (it is evaluated only when the accessibility tree asks for it).
-component FileRowsNoType inherits ListView {
-    in property <[Row]> rows;
-    in property <int> current-row: -1;
-    callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
-    callback row-gesture(int, int, bool, bool);
-
-    accessible-label: "Files";
-    accessible-item-count: rows.length;
-    accessible-delegate-focus: max(0, current-row);
-
-    for row[i] in rows: Rectangle {
-        height: 22px;
-        accessible-role: AccessibleRole.list-item;
-        accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
-            : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
-        accessible-item-selectable: true;
-        accessible-item-selected: row.selected;
-        accessible-item-index: i;
-        background: row.selected ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
-        border-width: i == current-row ? 1px : 0px;
-        border-color: Palette.accent-background;
-        HorizontalLayout {
-            padding-left: 28px;
-            padding-right: 6px;
-            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-        }
-        TouchArea {
-            pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
-            double-clicked => { root.row-gesture(i, 3, false, false); }
-        }
-    }
-}
-
-// The focus layer. FileListHost cannot reach inside its `if`, so it asks for the focus by bumping
-// focus-request; a list created while its pane is active (the Type column switched, which drops
-// the list that had the focus, or the pane split) takes the focus itself.
-// A new list starts at the host's content-y, but the Flickable checks its bounds on the next turn
-// of the event loop, before the ListView's first layout has set content-height, and would scroll
-// it back to the top; so init sets content-height to what that layout will (22 px rows).
-component FileList inherits FileRows {
+// The focus layer. FileListHost asks for the focus by bumping focus-request; a list created while
+// its pane is active takes the focus itself. init sets content-height to what the first layout
+// will (120 px grid rows), so the Flickable does not scroll a new list back to the top.
+component FileGridList inherits FileGrid {
     in property <int> focus-request;
     in property <bool> focus-on-init;
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 22px;
-        if (root.focus-on-init) { key-area.focus(); }
-    }
-    changed focus-request => { key-area.focus(); }
-    key-area := FocusScope {
-        x: 0;
-        width: 0;
-        key-pressed(e) => { return root.key(e); }
-    }
-}
-
-component FileListNoType inherits FileRowsNoType {
-    in property <int> focus-request;
-    in property <bool> focus-on-init;
-    callback key(KeyEvent) -> EventResult;
-    forward-focus: key-area;
-    init => {
-        root.content-height = root.rows.length * 22px;
+        root.content-height = root.grid.length * 120px;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -267,8 +226,16 @@ component FileListNoType inherits FileRowsNoType {
 // from it as before. No accessible role: assistive clients see the inner list only.
 component FileListHost inherits Rectangle {
     in property <[Row]> rows;
+    in property <[GridRow]> grid;
+    // Tiles to a grid row, from the width (at least 1); reported to Rust on change (grid-cols),
+    // which re-maps the grid model. Changes on split and window resize only.
+    out property <int> cols: max(1, floor(self.width / 96px));
+    callback grid-cols(int);
+    // The cursor moved (any path: keys, clicks, Rust): Rust marks the tile (grid-cursor).
+    callback grid-cursor(int);
+    changed cols => { root.grid-cols(root.cols); }
+    changed current-row => { root.grid-cursor(root.current-row); }
     in-out property <int> current-row: -1;
-    in property <bool> show-type: true;
     // The pane is active: a list created now takes the focus.
     in property <bool> active;
     in-out property <length> content-y;
@@ -310,7 +277,7 @@ component FileListHost inherits Rectangle {
     private property <length> right-x;
     private property <length> right-y;
     private property <int> focus-request: 0;
-    private property <int> row-count: root.rows.length;
+    private property <int> row-count: root.grid.length;
     changed content-y => { root.viewport-changed(root.content-y, root.visible-height); }
     changed visible-height => { root.viewport-changed(root.content-y, root.visible-height); }
     changed row-count => { root.viewport-changed(root.content-y, root.visible-height); }
@@ -320,15 +287,16 @@ component FileListHost inherits Rectangle {
 
     public function focus-list() { root.focus-request += 1; }
 
-    // Same arithmetic as StandardListView's bring-into-view, for our 22px rows: scroll just far
-    // enough that the cursor row is fully inside the viewport, then apply the selection gesture.
+    // Same arithmetic as StandardListView's bring-into-view, for the cursor's 120 px grid row:
+    // scroll just far enough that it is fully inside the viewport.
     public function bring-into-view() {
         if (root.current-row < 0) { return; }
-        if (root.content-y + root.current-row * 22px < 0px) {
-            root.content-y = -root.current-row * 22px;
+        let g = floor(root.current-row / root.cols);
+        if (root.content-y + g * 120px < 0px) {
+            root.content-y = -g * 120px;
         }
-        if (root.content-y + (root.current-row + 1) * 22px > root.visible-height) {
-            root.content-y = root.visible-height - (root.current-row + 1) * 22px;
+        if (root.content-y + (g + 1) * 120px > root.visible-height) {
+            root.content-y = root.visible-height - (g + 1) * 120px;
         }
     }
 
@@ -403,13 +371,24 @@ component FileListHost inherits Rectangle {
         // Alt+Return: the size of every folder in the listing (P3-M3).
         if (e.text == Key.Return && e.modifiers.alt) { root.command("sizeall"); return EventResult.accept; }
         if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return EventResult.accept; }
-        if (e.text == Key.UpArrow) {
+        // The grid: Left and Right move one entry, Up and Down one grid row (cols entries).
+        if (e.text == Key.LeftArrow) {
             if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }
             root.cursor-moved(e.modifiers.shift);
             return EventResult.accept;
         }
-        if (e.text == Key.DownArrow) {
+        if (e.text == Key.RightArrow) {
             if (root.current-row + 1 < root.rows.length) { root.current-row += 1; }
+            root.cursor-moved(e.modifiers.shift);
+            return EventResult.accept;
+        }
+        if (e.text == Key.UpArrow) {
+            if (root.current-row >= root.cols) { root.current-row -= root.cols; } else if (root.current-row < 0 && root.rows.length > 0) { root.current-row = 0; }
+            root.cursor-moved(e.modifiers.shift);
+            return EventResult.accept;
+        }
+        if (e.text == Key.DownArrow) {
+            if (root.current-row < 0 && root.rows.length > 0) { root.current-row = 0; } else if (root.current-row + root.cols < root.rows.length) { root.current-row += root.cols; }
             root.cursor-moved(e.modifiers.shift);
             return EventResult.accept;
         }
@@ -442,22 +421,11 @@ component FileListHost inherits Rectangle {
         return EventResult.reject;
     }
 
-    if root.show-type: FileList {
+    FileGridList {
         width: root.width;
         height: root.height;
-        rows: root.rows;
-        current-row: root.current-row;
-        content-y <=> root.content-y;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-    }
-    if !root.show-type: FileListNoType {
-        width: root.width;
-        height: root.height;
-        rows: root.rows;
+        grid: root.grid;
+        cols: root.cols;
         current-row: root.current-row;
         content-y <=> root.content-y;
         focus-request: root.focus-request;
@@ -470,6 +438,9 @@ component FileListHost inherits Rectangle {
 
 export component Pane inherits Rectangle {
     in property <[Row]> rows;
+    in property <[GridRow]> grid;
+    callback grid-cols(int);
+    callback grid-cursor(int);
     // The folder the active tab shows (set from Rust on navigation and tab switch).
     in property <string> path;
     in property <StatusInfo> status;
@@ -834,26 +805,18 @@ export component Pane inherits Rectangle {
                 }
             }
         }
-        // One header per Type column state, chosen per pane like the list below: on, it is the
-        // header as it was before the switch; off, the Type cell does not exist, so a header click
-        // cannot sort by it.
-        if root.show-type: HorizontalLayout {
+        // The grid has no columns; the header keeps only Name (the sort), and its 24 px keep the
+        // list's top where dnd.rs LIST_TOP and the driver (auto.rs) expect it.
+        HorizontalLayout {
             height: 24px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
-        }
-        if !root.show-type: HorizontalLayout {
-            height: 24px;
-            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
         list := FileListHost {
             rows: root.rows;
+            grid: root.grid;
+            grid-cols(n) => { root.grid-cols(n); }
+            grid-cursor(c) => { root.grid-cursor(c); }
             current-row <=> root.current-row;
-            show-type: root.show-type;
             active: root.active;
             go-up => { root.go-up(); }
             history(f) => { root.history(f); }
@@ -889,8 +852,8 @@ export component Pane inherits Rectangle {
         clip: true;
         visible: root.strip-shown;
         Image {
-            x: 6px;
-            y: list.content-y + root.strip-first * 22px;
+            x: 0px;
+            y: list.content-y + root.strip-first * 120px;
             width: root.strip-width;
             height: root.strip-height;
             source: root.strip;
@@ -930,7 +893,7 @@ export component Pane inherits Rectangle {
 
     // The empty space below the last row (none when the rows fill the viewport): a right-click
     // there opens the folder's background menu ("New", "Paste", "Properties").
-    private property <length> rows-end: max(0px, min(list.visible-height, list.content-y + root.rows.length * 22px));
+    private property <length> rows-end: max(0px, min(list.visible-height, list.content-y + root.grid.length * 120px));
     TouchArea {
         x: list.x;
         y: list.y + root.rows-end;

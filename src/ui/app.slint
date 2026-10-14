@@ -1,6 +1,6 @@
-import { Pane, Row, TabInfo, Crumb, StatusInfo } from "pane.slint";
+import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile } from "pane.slint";
 import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox } from "std-widgets.slint";
-export { Row, TabInfo, Crumb, StatusInfo }
+export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
 // the bookmark's index in the bookmark list.
@@ -102,6 +102,9 @@ export component App inherits Window {
 
     in property <[Row]> left-rows;
     in property <[Row]> right-rows;
+    // The large-icon grid's rows for each pane (model.rs GridModel over the pane's entries).
+    in property <[GridRow]> left-grid;
+    in property <[GridRow]> right-grid;
     in property <string> left-path;
     in property <string> right-path;
     in property <StatusInfo> left-status;
@@ -165,6 +168,10 @@ export component App inherits Window {
     callback select(int, int, int);
     // viewport-changed(pane, content-y, visible-height)
     callback viewport-changed(int, length, length);
+    // grid-cols(pane, n): the pane's list now fits n tiles to a grid row; grid-cursor(pane, row):
+    // its cursor entry changed.
+    callback grid-cols(int, int);
+    callback grid-cursor(int, int);
     // command(pane, name): a file operation key in that pane's list (pane.slint FileList).
     callback command(int, string);
     // edit-commit(pane, mode, original, typed): the inline name editor's Return.
@@ -502,7 +509,7 @@ export component App inherits Window {
             left := Pane {
                 x: 0; y: 0; height: parent.height;
                 width: split ? parent.width * split-ratio - 3px : parent.width;
-                rows: left-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
+                rows: left-rows; grid: left-grid; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
@@ -517,6 +524,8 @@ export component App inherits Window {
                 navigate(p) => { root.navigate(0, p); }
                 select(op, i) => { root.select(0, op, i); }
                 viewport-changed(y, h) => { root.viewport-changed(0, y, h); }
+                grid-cols(n) => { root.grid-cols(0, n); }
+                grid-cursor(c) => { root.grid-cursor(0, c); }
                 command(c) => { root.command(0, c); }
                 edit-commit(m, o, t) => { root.edit-commit(0, m, o, t); }
                 context-menu(r, x, y, s) => { root.context-menu(0, r, x, y, s); }
@@ -544,7 +553,7 @@ export component App inherits Window {
                 visible: split;
                 x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
                 width: split ? parent.width - self.x : 0px;
-                rows: right-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
+                rows: right-rows; grid: right-grid; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;
@@ -559,6 +568,8 @@ export component App inherits Window {
                 navigate(p) => { root.navigate(1, p); }
                 select(op, i) => { root.select(1, op, i); }
                 viewport-changed(y, h) => { root.viewport-changed(1, y, h); }
+                grid-cols(n) => { root.grid-cols(1, n); }
+                grid-cursor(c) => { root.grid-cursor(1, c); }
                 command(c) => { root.command(1, c); }
                 edit-commit(m, o, t) => { root.edit-commit(1, m, o, t); }
                 context-menu(r, x, y, s) => { root.context-menu(1, r, x, y, s); }
