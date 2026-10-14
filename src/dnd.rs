@@ -3002,6 +3002,15 @@ mod tests {
         );
     }
 
+    /// `p` with its 8.3 components expanded (`canonicalize` without the `\\?\` prefix), so paths
+    /// built from it compare equal to what the shell hands back for items inside a zip, which
+    /// cannot be canonicalised themselves. The CI runner's %TEMP% is an 8.3 path (RUNNER~1).
+    fn long_path(p: &std::path::Path) -> PathBuf {
+        let c = std::fs::canonicalize(p).unwrap();
+        let s = c.to_string_lossy();
+        PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s))
+    }
+
     /// The shell's zip folder's own data object (what a drag out of a zip pane carries) offers
     /// virtual files and no CF_HDROP, can be read asynchronously, and extracts through `extract`.
     #[test]
@@ -3010,6 +3019,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("twinfm-p3m4-dnd-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("out")).unwrap();
+        let root = long_path(&root);
         let zip = root.join("t.zip");
         let mut w = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
         for (name, data) in [("sub/a.txt", &b"alpha"[..]), ("sub/inner/b.txt", b"beta beta")] {
