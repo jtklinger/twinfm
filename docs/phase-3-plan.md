@@ -2548,3 +2548,30 @@ triplet (recorded above as such). Fixed in 27e79a2: the triplet runs the `wpr-ga
 
 Jeremy's console checks (2026-10-14) on `target-p3m5`: the Thumbnails setting, the 32 px list, the
 thumbnails in a photo folder and the 4 px gap: "console checks look good".
+
+**Thumbnails on (2026-10-14, ab16): passed.** Same protocol and binaries, `tools/wpr-triplet.ps1
+-Reference p3m4 -Candidate p3m5@C:\traces\thumbs.toml -Tag ab16` from the worktree's `tools/` (the
+fixed script), `C:\traces\thumbs.toml` read-only with `thumbnails = true`; every candidate stderr
+carries `[settings] file C:\traces\thumbs.toml (read)` and `[icons] list geometry: 32 px rows, 32
+px icons`. Six runs; console checks already done.
+
+| Run | P3-M4 (`target-p3m4`) | P3-M5 thumbnails on, `target-p3m5` |
+|---|---|---|
+| 1 | 17.1% (1708 ms) | 13.9% (1394 ms) |
+| 2 | 17.3% (1727 ms) | 13.8% (1381 ms) |
+| 3 | 17.4% (1736 ms) | 13.4% (1343 ms) |
+| **median** | **17.3%** | **13.8%** |
+
+The candidate sits 3.5 points below the reference in every pair, the same figure as the trace's
+variant (a) (17.4 against 13.7 in ab14), for the same reason: 32 px rows show fewer rows per screen
+and pass fewer per pixel scrolled (rows 328 / 241, 337 / 234, 338 / 223; draw_text 592 / 479, 583 /
+485, 582 / 493; accessibility 178 / 148, 179 / 149, 172 / 141; render 1002 / 811, 1012 / 811, 1019 /
+793; timers 600 / 481, 603 / 470, 613 / 439; heap 181 / 127, 170 / 133, 171 / 140). The 32 px strip
+(251 composes at 45 to 46 us, `thumbs 0` on bigdir) and the thumbnail path's resolve (3.5 to 3.7 us
+against 2.7 to 3.2) are below this resolution. 0 `panicked`. Traces
+`C:/traces/twinfm-ab16-{p3m4,p3m5-thumbs}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+P3-M5 is closed on both gates: the defaults are the reference within 0.2 of a point, and the
+setting that puts the first per-row image since M2 on screen buys back more than it costs. The
+milestone's row and default resolve path are the reference's, so `target-p3m5` (ee0be21) is the
+reference for whatever comes next; `target-p3m4` is deleted once it has served as one.
