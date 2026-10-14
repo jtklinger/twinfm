@@ -244,11 +244,12 @@ impl PaneModel {
     }
 
     /// Give the rows in `first..=last` (clamped to the list) their shell icon at `px` where the
-    /// table has it, and call `request` once for each key it has not seen. Only placeholder rows
-    /// are looked at, so a screenful that is already resolved costs a few dozen integer compares.
+    /// table has it, and call `request` once for each key it has not seen, with its row. Only
+    /// placeholder rows are looked at, so a screenful that is already resolved costs a few dozen
+    /// integer compares. A thumbnail key past the table's cap becomes its extension's key here.
     /// Returns the rows that changed (no row notification: rows carry no icon, the pane's
     /// strip does).
-    pub fn resolve_icons(&self, first: usize, last: usize, px: u32, mut request: impl FnMut(&Entry)) -> Vec<usize> {
+    pub fn resolve_icons(&self, first: usize, last: usize, px: u32, mut request: impl FnMut(usize, &Entry)) -> Vec<usize> {
         let mut changed = Vec::new();
         let mut table = self.icons.borrow_mut();
         let mut shown = self.shown.borrow_mut();
@@ -258,14 +259,21 @@ impl PaneModel {
             if e.icon >= PLACEHOLDERS || e.icon_key.is_empty() {
                 continue;
             }
-            match table.state(&e.icon_key, px) {
+            let mut state = table.state(&e.icon_key, px);
+            if state == KeyState::Missing {
+                if let Some(k) = table.capped(&e.icon_key) {
+                    e.icon_key = k;
+                    state = table.state(&e.icon_key, px);
+                }
+            }
+            match state {
                 KeyState::Ready(idx) => {
                     e.icon = idx;
                     changed.push(i);
                 }
                 KeyState::Missing => {
                     table.begin(&e.icon_key, px);
-                    request(e);
+                    request(i, e);
                 }
                 KeyState::Pending | KeyState::Failed => {}
             }
@@ -1468,21 +1476,21 @@ mod tests {
         m.append(vec![keyed("a.txt", "ext:.txt"), keyed("b.txt", "ext:.txt"), keyed("c.png", "ext:.png"), keyed("d.txt", "ext:.txt")]);
         let mut asked = Vec::new();
         // Rows 0..=2 are on screen: two keys, each requested once.
-        assert!(m.resolve_icons(0, 2, 16, |e| asked.push(e.icon_key.to_string())).is_empty());
+        assert!(m.resolve_icons(0, 2, 16, |_, e| asked.push(e.icon_key.to_string())).is_empty());
         assert_eq!(asked, ["ext:.txt", "ext:.png"]);
         // Scrolling over a pending key asks nothing more.
-        m.resolve_icons(0, 3, 16, |e| asked.push(e.icon_key.to_string()));
+        m.resolve_icons(0, 3, 16, |_, e| asked.push(e.icon_key.to_string()));
         assert_eq!(asked.len(), 2);
         m.icons.borrow_mut().complete("ext:.txt".into(), 16, Outcome::Pixels(slint::SharedPixelBuffer::new(1, 1)));
         // The reply lands: the visible .txt rows switch; row 3 is off screen and keeps its placeholder.
-        assert_eq!(m.resolve_icons(0, 2, 16, |_| panic!("nothing new to request")), [0, 1]);
+        assert_eq!(m.resolve_icons(0, 2, 16, |_, _| panic!("nothing new to request")), [0, 1]);
         assert_eq!(m.icon_indices(0, 99), [PLACEHOLDERS, PLACEHOLDERS, PLACEHOLDER_FILE, PLACEHOLDER_FILE]);
         assert_eq!(m.icon_indices(1, 2), [PLACEHOLDERS, PLACEHOLDER_FILE]);
         // A failed key is not asked for again and keeps its placeholder.
         m.icons.borrow_mut().complete("ext:.png".into(), 16, Outcome::Failed);
-        assert_eq!(m.resolve_icons(0, 99, 16, |_| panic!("failed keys are not retried")), [3]);
+        assert_eq!(m.resolve_icons(0, 99, 16, |_, _| panic!("failed keys are not retried")), [3]);
         assert_eq!(m.icon_indices(2, 2), [PLACEHOLDER_FILE]);
-        assert!(m.resolve_icons(5, 9, 16, |_| panic!("out of range")).is_empty());
+        assert!(m.resolve_icons(5, 9, 16, |_, _| panic!("out of range")).is_empty());
         assert!(m.icon_indices(5, 9).is_empty());
     }
 

@@ -95,6 +95,41 @@ pub struct Request {
     /// The shell's thumbnail, letterboxed into the `size_px` square (a `thumb:` key), with the
     /// icon as the fallback.
     pub thumbnail: bool,
+    /// For a thumbnail: the row it was asked for and the pane's resolve it was asked in
+    /// (`Views`), so a worker can drop it once the list has scrolled away. 0 otherwise.
+    pub row: usize,
+    pub wanted: u64,
+}
+
+/// What each pane shows, published by the UI once per resolve while thumbnails are on, so the
+/// workers can drop thumbnail requests for rows a scroll has passed (`passed`). Plain icon
+/// requests (shared keys, cheap) are never dropped.
+#[derive(Default)]
+pub struct Views {
+    /// Each pane's last resolve number.
+    seq: [AtomicU64; 2],
+    /// Each pane's visible rows then, first << 32 | last.
+    range: [AtomicU64; 2],
+}
+
+impl Views {
+    /// The pane's resolve `seq` shows rows `first..=last`.
+    pub fn publish(&self, pane: usize, seq: u64, (first, last): (usize, usize)) {
+        self.range[pane].store((first as u64) << 32 | (last as u64 & 0xFFFF_FFFF), Ordering::Relaxed);
+        self.seq[pane].store(seq, Ordering::Release);
+    }
+
+    /// A thumbnail for `row`, asked for in resolve `wanted`, is not wanted any more: the pane has
+    /// resolved since, and the row lies more than `STRIP_MARGIN_ROWS` outside the rows on screen.
+    /// The UI asks again if the row comes back (the reply is `Skipped`).
+    fn passed(&self, pane: usize, row: usize, wanted: u64) -> bool {
+        if self.seq[pane].load(Ordering::Acquire) == wanted {
+            return false;
+        }
+        let r = self.range[pane].load(Ordering::Relaxed);
+        let (first, last) = ((r >> 32) as usize, (r & 0xFFFF_FFFF) as usize);
+        row + STRIP_MARGIN_ROWS < first || row > last + STRIP_MARGIN_ROWS
+    }
 }
 
 pub enum Outcome {
@@ -125,6 +160,8 @@ pub struct Stats {
     /// not counted in `rendered`.
     pub thumbs: AtomicU64,
     pub thumb_ns: AtomicU64,
+    /// Thumbnail requests dropped because the list scrolled away from their row (`Views`).
+    pub dropped: AtomicU64,
 }
 
 /// Lowercase extension after the last dot, as Explorer and `TypeNames` read it, or None.
@@ -651,10 +688,11 @@ pub fn spawn(
     rx: Receiver<Request>,
     tx: Sender<Reply>,
     generations: Arc<[AtomicU64; 2]>,
+    views: Arc<Views>,
     stats: Arc<Stats>,
     wake: impl Fn() + Send + Sync + 'static,
 ) {
-    spawn_with(rx, tx, generations, stats, wake, render_request);
+    spawn_with(rx, tx, generations, views, stats, wake, render_request);
 }
 
 /// `spawn` with the render function as a parameter, so a test can make one render slow.
@@ -662,6 +700,7 @@ fn spawn_with(
     rx: Receiver<Request>,
     tx: Sender<Reply>,
     generations: Arc<[AtomicU64; 2]>,
+    views: Arc<Views>,
     stats: Arc<Stats>,
     wake: impl Fn() + Send + Sync + 'static,
     render: RenderFn,
@@ -684,10 +723,11 @@ fn spawn_with(
         .expect("spawn icon feeder thread");
     let wake = Arc::new(wake);
     for i in 0..ICON_WORKERS {
-        let (pool, tx, generations, stats, wake) = (pool.clone(), tx.clone(), generations.clone(), stats.clone(), wake.clone());
+        let (pool, tx, generations, views, stats, wake) =
+            (pool.clone(), tx.clone(), generations.clone(), views.clone(), stats.clone(), wake.clone());
         std::thread::Builder::new()
             .name(format!("icons-{i}"))
-            .spawn(move || work(&pool, &tx, &generations, &stats, &*wake, render))
+            .spawn(move || work(&pool, &tx, &generations, &views, &stats, &*wake, render))
             .expect("spawn icon thread");
     }
 }
@@ -708,15 +748,20 @@ fn next(pool: &Pool) -> Option<(Request, bool)> {
 }
 
 /// One worker thread: COM (MTA) for itself, then requests until the channel closes.
-fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], stats: &Stats, wake: &dyn Fn(), render: RenderFn) {
+fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &Views, stats: &Stats, wake: &dyn Fn(), render: RenderFn) {
     // SAFETY: initialises COM for this thread only; balanced by CoUninitialize below.
     let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED as u32) };
     // Newest first: the latest requests are the rows on screen now, while older ones may be
-    // rows a fast scroll passed over (still rendered, later, for the cache).
+    // rows a fast scroll passed over (still rendered, later, for the cache; a thumbnail for a
+    // row the list has left is dropped).
     while let Some((r, idle)) = next(pool) {
         let stale = generations[r.pane].load(Ordering::Relaxed) != r.generation;
+        let passed = r.thumbnail && views.passed(r.pane, r.row, r.wanted);
+        if passed {
+            stats.dropped.fetch_add(1, Ordering::Relaxed);
+        }
         let taken = (r.key.clone(), r.size_px);
-        if stale || !lock(&pool.taken).insert(taken.clone()) {
+        if stale || passed || !lock(&pool.taken).insert(taken.clone()) {
             if tx.send(Reply { key: r.key, size_px: r.size_px, outcome: Outcome::Skipped }).is_err() {
                 break;
             }
@@ -919,6 +964,21 @@ fn icon_pixels(hicon: HICON, px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     Some(bgra_to_rgba(&bgra, px, px))
 }
 
+/// Thumbnails the table holds at most (each 32 x scale px square, 4 bytes a pixel: 4 KB at 100%,
+/// 16 KB at 200%, so 80 to 320 MB at the cap); past it a file's thumbnail key falls back to its
+/// extension's icon (`thumb_fallback`).
+pub const THUMB_TABLE_CAP: usize = 20_000;
+
+/// The extension key a thumbnail key falls back to past `THUMB_TABLE_CAP`. Thumbnail
+/// extensions are never keyed by full path, so this is the key the file has with thumbnails off.
+pub fn thumb_fallback(key: &str) -> SharedString {
+    let path = key.trim_start_matches("thumb:").rsplitn(3, '|').last().unwrap_or_default();
+    match extension(path) {
+        Some(e) => format!("ext:.{}", e.to_ascii_lowercase()).into(),
+        None => path.into(),
+    }
+}
+
 /// What the table knows about a key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyState {
@@ -940,6 +1000,10 @@ pub struct IconTable {
     index: HashMap<(SharedString, u32), u16>,
     pending: HashSet<(SharedString, u32)>,
     failed: HashSet<(SharedString, u32)>,
+    /// Thumbnails interned (`thumb:` keys), against `THUMB_TABLE_CAP`; and whether the cap was
+    /// logged.
+    thumbs: usize,
+    cap_logged: bool,
 }
 
 impl Default for IconTable {
@@ -951,6 +1015,8 @@ impl Default for IconTable {
             index: HashMap::new(),
             pending: HashSet::new(),
             failed: HashSet::new(),
+            thumbs: 0,
+            cap_logged: false,
         }
     }
 }
@@ -996,6 +1062,19 @@ impl IconTable {
         }
     }
 
+    /// Past `THUMB_TABLE_CAP`, a thumbnail key not yet held becomes its extension's key (logged
+    /// once); any other key is returned as it is.
+    pub fn capped(&mut self, key: &SharedString) -> Option<SharedString> {
+        if self.thumbs < THUMB_TABLE_CAP || !key.starts_with("thumb:") {
+            return None;
+        }
+        if !self.cap_logged {
+            self.cap_logged = true;
+            eprintln!("[icons] thumbnail cap reached: {} thumbnails held, new ones get their type's icon", self.thumbs);
+        }
+        Some(thumb_fallback(key))
+    }
+
     /// Mark a key as requested at `px`.
     pub fn begin(&mut self, key: &SharedString, px: u32) {
         self.pending.insert((key.clone(), px));
@@ -1010,6 +1089,7 @@ impl IconTable {
                 if self.index.contains_key(&key) || self.bufs.len() >= u16::MAX as usize {
                     return false;
                 }
+                self.thumbs += usize::from(key.0.starts_with("thumb:"));
                 self.index.insert(key, self.bufs.len() as u16);
                 self.bufs.push(p);
                 true
@@ -1396,7 +1476,7 @@ mod tests {
     }
 
     fn req(generation: u64, key: &str, path: &str) -> Request {
-        Request { generation, pane: 0, key: key.into(), path: PathBuf::from(path), size_px: 1, overlay: false, thumbnail: false }
+        Request { generation, pane: 0, key: key.into(), path: PathBuf::from(path), size_px: 1, overlay: false, thumbnail: false, row: 0, wanted: 0 }
     }
 
     /// A stand-in render: "slow" takes 2 s, "busy" 50 ms (counted in BUSY_RENDERS), others none.
@@ -1421,7 +1501,7 @@ mod tests {
         let (rep_tx, rep_rx) = unbounded();
         let gens = Arc::new([AtomicU64::new(1), AtomicU64::new(0)]);
         let stats = Arc::new(Stats::default());
-        spawn_with(req_rx, rep_tx, gens.clone(), stats.clone(), || {}, fake_render);
+        spawn_with(req_rx, rep_tx, gens.clone(), Arc::default(), stats.clone(), || {}, fake_render);
 
         // One slow render takes a thread; three requests sent after it go to the other one.
         req_tx.send(req(1, "slow", "slow")).unwrap();
@@ -1461,7 +1541,7 @@ mod tests {
         let (req_tx, req_rx) = unbounded();
         let (rep_tx, rep_rx) = unbounded();
         let gens = Arc::new([AtomicU64::new(1), AtomicU64::new(0)]);
-        spawn_with(req_rx, rep_tx, gens, Arc::new(Stats::default()), || {}, fake_render);
+        spawn_with(req_rx, rep_tx, gens, Arc::default(), Arc::new(Stats::default()), || {}, fake_render);
         for _ in 0..20 {
             req_tx.send(req(1, "same", "busy")).unwrap();
         }
@@ -1530,11 +1610,77 @@ mod tests {
     }
 
     #[test]
+    fn pool_drops_thumbnails_scrolled_past() {
+        let (req_tx, req_rx) = unbounded();
+        let (rep_tx, rep_rx) = unbounded();
+        let gens = Arc::new([AtomicU64::new(1), AtomicU64::new(0)]);
+        let views = Arc::new(Views::default());
+        let stats = Arc::new(Stats::default());
+        // The list resolved again (resolve 2) and shows rows 150..=190 by the time the workers
+        // take the 200 thumbnails asked for in resolve 1, rows 0..200.
+        views.publish(0, 2, (150, 190));
+        spawn_with(req_rx, rep_tx, gens, views.clone(), stats.clone(), || {}, fake_render);
+        let thumb = |row: usize, wanted: u64| Request {
+            generation: 1,
+            pane: 0,
+            key: format!("thumb:{row}").into(),
+            path: PathBuf::from("thumb"),
+            size_px: 1,
+            overlay: false,
+            thumbnail: true,
+            row,
+            wanted,
+        };
+        for row in 0..200 {
+            req_tx.send(thumb(row, 1)).unwrap();
+        }
+        let mut rendered = Vec::new();
+        for _ in 0..200 {
+            let r = rep_rx.recv_timeout(Duration::from_secs(2)).expect("200 replies");
+            if matches!(r.outcome, Outcome::Pixels(_)) {
+                rendered.push(r.key[6..].parse::<usize>().unwrap());
+            }
+        }
+        rendered.sort();
+        // The visible rows plus STRIP_MARGIN_ROWS each side are rendered, the rest dropped.
+        assert_eq!(rendered, (146..=194).collect::<Vec<_>>());
+        assert_eq!((stats.thumbs.load(Ordering::Relaxed), stats.dropped.load(Ordering::Relaxed)), (49, 151));
+        // Scrolled back to the top (resolve 3): row 10's thumbnail, dropped before, renders now.
+        views.publish(0, 3, (0, 40));
+        req_tx.send(thumb(10, 3)).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Pixels(_)));
+        // A request of the current resolve renders even outside the range (the UI's icon margin).
+        req_tx.send(thumb(60, 3)).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Pixels(_)));
+        // A plain icon request is never dropped, wherever its row is.
+        req_tx.send(Request { thumbnail: false, key: "ext:.txt".into(), ..thumb(199, 1) }).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Pixels(_)));
+        assert_eq!(stats.dropped.load(Ordering::Relaxed), 151);
+    }
+
+    #[test]
+    fn thumbnail_cap_falls_back_to_the_extension() {
+        assert_eq!(thumb_fallback(r"thumb:C:\p\Photo.JPG|1700000000|12345"), "ext:.jpg");
+        assert_eq!(thumb_fallback(r"thumb:C:\a|b\x.mp4|5|6"), "ext:.mp4", "the last two fields are the time and size");
+        let mut t = IconTable::default();
+        let key: SharedString = r"thumb:C:\p\new.png|1|2".into();
+        assert_eq!(t.capped(&key), None);
+        for i in 0..THUMB_TABLE_CAP {
+            assert!(t.complete(format!("thumb:{i}|0|0").into(), 32, px()));
+        }
+        assert!(t.complete("ext:.txt".into(), 32, px()), "icons are not counted against the cap");
+        assert_eq!(t.thumbs, THUMB_TABLE_CAP);
+        assert_eq!(t.capped(&key).as_deref(), Some("ext:.png"));
+        assert_eq!(t.capped(&"ext:.png".into()), None);
+        assert_eq!(t.state(&"thumb:7|0|0".into(), 32), KeyState::Ready(PLACEHOLDERS + 7), "held thumbnails stay");
+    }
+
+    #[test]
     fn worker_renders_exe_drive_and_extension() {
         let (req_tx, req_rx) = unbounded();
         let (rep_tx, rep_rx) = unbounded();
         let gens = Arc::new([AtomicU64::new(1), AtomicU64::new(0)]);
-        spawn(req_rx, rep_tx, gens.clone(), Arc::new(Stats::default()), || {});
+        spawn(req_rx, rep_tx, gens.clone(), Arc::default(), Arc::new(Stats::default()), || {});
         let txt = std::env::temp_dir().join(format!("twinfm-icon-{}.txt", std::process::id()));
         std::fs::write(&txt, b"x").unwrap();
         // A junction, asked for twice: plain and with the shell's overlay (the link arrow).
@@ -1559,14 +1705,14 @@ mod tests {
             ("junction".to_string(), junction.clone()),
         ];
         for (key, path) in &jobs {
-            req_tx.send(Request { generation: 1, pane: 0, key: key.as_str().into(), path: path.clone(), size_px: 16, overlay: false, thumbnail: false }).unwrap();
+            req_tx.send(Request { generation: 1, pane: 0, key: key.as_str().into(), path: path.clone(), size_px: 16, overlay: false, thumbnail: false, row: 0, wanted: 0 }).unwrap();
         }
         let key = "junction+overlay";
-        req_tx.send(Request { generation: 1, pane: 0, key: key.into(), path: junction.clone(), size_px: 16, overlay: true, thumbnail: false }).unwrap();
+        req_tx.send(Request { generation: 1, pane: 0, key: key.into(), path: junction.clone(), size_px: 16, overlay: true, thumbnail: false, row: 0, wanted: 0 }).unwrap();
         let thumb: SharedString = thumb_key(&png, 0, 0).into();
-        req_tx.send(Request { generation: 1, pane: 0, key: thumb.clone(), path: png.clone(), size_px: 32, overlay: false, thumbnail: true }).unwrap();
+        req_tx.send(Request { generation: 1, pane: 0, key: thumb.clone(), path: png.clone(), size_px: 32, overlay: false, thumbnail: true, row: 0, wanted: 0 }).unwrap();
         // A stale request (pane 1 is at generation 0) is skipped, not rendered.
-        req_tx.send(Request { generation: 5, pane: 1, key: "stale".into(), path: txt.clone(), size_px: 16, overlay: false, thumbnail: false }).unwrap();
+        req_tx.send(Request { generation: 5, pane: 1, key: "stale".into(), path: txt.clone(), size_px: 16, overlay: false, thumbnail: false, row: 0, wanted: 0 }).unwrap();
         let mut got = HashMap::new();
         while got.len() < 7 {
             let r = rep_rx.recv_timeout(Duration::from_secs(5)).expect("reply within 5 s");

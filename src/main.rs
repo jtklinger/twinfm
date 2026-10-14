@@ -53,8 +53,8 @@ struct IconCounts {
     composes: u64,
     compose_ns: u64,
     /// (requests, replies, worker renders, worker ns, composes, overlays, slow renders,
-    /// thumbnails, thumbnail ns) at the last report.
-    reported: (u64, u64, u64, u64, u64, u64, u64, u64, u64),
+    /// thumbnails, thumbnail ns, thumbnails dropped) at the last report.
+    reported: (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64),
 }
 
 /// Per-tab timing bookkeeping for the gate measurements.
@@ -177,6 +177,10 @@ struct State {
     icon_rx: Receiver<icons::Reply>,
     /// Each pane's active-tab generation, read by the icon worker to skip stale requests.
     icon_gens: Arc<[AtomicU64; 2]>,
+    /// With thumbnails on: each pane's rows on screen at its last resolve (numbered by
+    /// `resolve_seq`), read by the icon workers to drop thumbnails for rows scrolled past.
+    icon_views: Arc<icons::Views>,
+    resolve_seq: [u64; 2],
     icon_stats: Arc<icons::Stats>,
     icon_counts: IconCounts,
     /// The (content-y, visible-height) each list last reported, in logical px.
@@ -1183,15 +1187,35 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let t0 = Instant::now();
     let size_px = geom.icon_px;
     let generation = model.generation.get();
+    let (lo, hi) = (first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS);
+    // With thumbnails on, the workers learn which rows are on screen (once per resolve), and the
+    // rows on screen are asked for last, so the workers (newest first) render them first.
+    let thumbs = st.config.thumbnails;
+    let wanted = if thumbs {
+        st.resolve_seq[pane] += 1;
+        st.icon_views.publish(pane, st.resolve_seq[pane], visible);
+        st.resolve_seq[pane]
+    } else {
+        0
+    };
     let (folder, tx) = (&t.path, &st.icon_tx);
     let mut sent = 0;
-    let changed = model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, size_px, |e| {
+    let mut ask = |i: usize, e: &model::Entry| {
         let path = if e.kind == Kind::Drive { PathBuf::from(e.name.as_str()) } else { folder.join(e.name.as_str()) };
         let overlay = icons::wants_overlay(e.kind, e.attrs, &e.name);
-        let thumbnail = e.icon_key.starts_with("thumb:");
-        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay, thumbnail });
+        let thumbnail = thumbs && e.icon_key.starts_with("thumb:");
+        let (row, wanted) = if thumbnail { (i, wanted) } else { (0, 0) };
+        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay, thumbnail, row, wanted });
         sent += 1;
-    });
+    };
+    let changed = if thumbs {
+        let mut changed = if first > lo { model.resolve_icons(lo, first - 1, size_px, &mut ask) } else { Vec::new() };
+        changed.extend(model.resolve_icons(last + 1, hi, size_px, &mut ask));
+        changed.extend(model.resolve_icons(first, last, size_px, &mut ask));
+        changed
+    } else {
+        model.resolve_icons(lo, hi, size_px, ask)
+    };
     if let Some(c) = st.strip[pane] {
         if changed.iter().any(|&i| (c.first..=c.last).contains(&i)) {
             st.strip_dirty[pane] = true;
@@ -1282,14 +1306,15 @@ fn report_icons() {
         let slow = st.icon_stats.slow.load(Ordering::Relaxed);
         let thumbs = st.icon_stats.thumbs.load(Ordering::Relaxed);
         let thumb_ns = st.icon_stats.thumb_ns.load(Ordering::Relaxed);
-        let (req0, rep0, ren0, ns0, comp0, ov0, slow0, th0, tns0) = c.reported;
+        let dropped = st.icon_stats.dropped.load(Ordering::Relaxed);
+        let (req0, rep0, ren0, ns0, comp0, ov0, slow0, th0, tns0, drop0) = c.reported;
         if c.requests == req0 && c.replies == rep0 && c.composes == comp0 {
             return;
         }
         let n = rendered - ren0;
         let t = thumbs - th0;
         eprintln!(
-            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, thumbs {t} avg {:.2} ms, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
+            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, thumbs {t} avg {:.2} ms dropped {}, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
             c.requests - req0,
             c.replies - rep0,
             c.requests,
@@ -1299,12 +1324,13 @@ fn report_icons() {
             overlays - ov0,
             slow - slow0,
             if t > 0 { (thumb_ns - tns0) as f64 / t as f64 / 1e6 } else { 0.0 },
+            dropped - drop0,
             c.resolves,
             if c.resolves > 0 { c.resolve_ns as f64 / c.resolves as f64 / 1e3 } else { 0.0 },
             c.composes,
             if c.composes > 0 { c.compose_ns as f64 / c.composes as f64 / 1e3 } else { 0.0 },
         );
-        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes, overlays, slow, thumbs, thumb_ns);
+        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes, overlays, slow, thumbs, thumb_ns, dropped);
     });
 }
 
@@ -3187,7 +3213,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let (icon_replies, icon_rx) = unbounded();
     let icon_gens = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
     let icon_stats = Arc::new(icons::Stats::default());
-    icons::spawn(icon_requests, icon_replies, icon_gens.clone(), icon_stats.clone(), || {
+    let icon_views = Arc::new(icons::Views::default());
+    icons::spawn(icon_requests, icon_replies, icon_gens.clone(), icon_views.clone(), icon_stats.clone(), || {
         let _ = slint::invoke_from_event_loop(drain_icons);
     });
     let (watch_tx, watch_rx) = unbounded();
@@ -3307,6 +3334,8 @@ fn main() -> Result<(), slint::PlatformError> {
             icon_tx,
             icon_rx,
             icon_gens,
+            icon_views,
+            resolve_seq: [0; 2],
             icon_stats,
             icon_counts: IconCounts::default(),
             view: [(0.0, 0.0); 2],
