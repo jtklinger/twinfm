@@ -10,9 +10,13 @@
 param(
     [string]$Exe = "C:\Users\jtkli\projects\twinfm\target\release\twinfm.exe",
     [string]$Dir = "C:\traces\bigdir",
-    [string]$Etl = "C:\traces\twinfm-proto.etl"
+    [string]$Etl = "C:\traces\twinfm-proto.etl",
+    # A settings file for the run (TWINFM_CONFIG; a scripted run reads no other): the gate on a
+    # non-default setting, e.g. thumbnails on. Make it read-only so the run cannot rewrite it.
+    [string]$Config = ""
 )
 $Stderr = [System.IO.Path]::ChangeExtension($Etl, "stderr.txt")
+if ($Config) { if (-not (Test-Path $Config)) { throw "$Config does not exist" }; $env:TWINFM_CONFIG = $Config } else { Remove-Item Env:TWINFM_CONFIG -ErrorAction SilentlyContinue }
 $elev = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $elev) { throw "Run this elevated (WPR needs administrator)." }
 if (-not $env:_NT_SYMBOL_PATH) { $env:_NT_SYMBOL_PATH = "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols" }

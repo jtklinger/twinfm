@@ -52,9 +52,9 @@ struct IconCounts {
     /// Icon strips composed, and the time spent composing them (fitted buffers plus copies).
     composes: u64,
     compose_ns: u64,
-    /// (requests, replies, worker renders, worker ns, composes, overlays, slow renders) at the
-    /// last report.
-    reported: (u64, u64, u64, u64, u64, u64, u64),
+    /// (requests, replies, worker renders, worker ns, composes, overlays, slow renders,
+    /// thumbnails, thumbnail ns, thumbnails dropped) at the last report.
+    reported: (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64),
 }
 
 /// Per-tab timing bookkeeping for the gate measurements.
@@ -177,6 +177,10 @@ struct State {
     icon_rx: Receiver<icons::Reply>,
     /// Each pane's active-tab generation, read by the icon worker to skip stale requests.
     icon_gens: Arc<[AtomicU64; 2]>,
+    /// With thumbnails on: each pane's rows on screen at its last resolve (numbered by
+    /// `resolve_seq`), read by the icon workers to drop thumbnails for rows scrolled past.
+    icon_views: Arc<icons::Views>,
+    resolve_seq: [u64; 2],
     icon_stats: Arc<icons::Stats>,
     icon_counts: IconCounts,
     /// The (content-y, visible-height) each list last reported, in logical px.
@@ -420,7 +424,7 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         app.invoke_reset_scroll(pane as i32);
         eprintln!("[nav] pane={pane} gen={generation} path={shown}");
         let tx = st.tx.clone();
-        fs::enumerate::spawn(path, pane, generation, tx, wake);
+        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, tx, wake);
         schedule_save(st);
     });
 }
@@ -451,7 +455,7 @@ fn refresh(pane: usize) {
             fs::enumerate::spawn_search(path, pattern, hidden, cancel, pane, generation, st.tx.clone(), wake);
             return;
         }
-        fs::enumerate::spawn(path, pane, generation, st.tx.clone(), wake);
+        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, st.tx.clone(), wake);
     });
 }
 
@@ -1154,7 +1158,7 @@ fn land_pass(
     // Once per pass swap, never per frame: bring an operation's cursor row into view.
     if let (true, Some(row)) = (reveal, cursor) {
         let y = app.invoke_get_scroll(pane as i32);
-        if let Some(to) = model::reveal_row(y, st.view[pane].1, row, icons::ROW_PX) {
+        if let Some(to) = model::reveal_row(y, st.view[pane].1, row, icons::ListGeom::new(st.config.thumbnails).row_px) {
             app.invoke_set_scroll(pane as i32, to);
             eprintln!("[refresh] pane={pane} cursor row {row} scrolled into view: {y:.0} -> {to:.0}");
         }
@@ -1174,23 +1178,44 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let t = st.panes[pane].active();
     let model = t.model.clone();
     let (y, h) = st.view[pane];
-    let Some(visible) = icons::visible_range(y, h, model.len()) else {
+    let geom = icons::StripGeom::new(app.window().scale_factor(), st.config.thumbnails);
+    let Some(visible) = icons::visible_range(y, h, model.len(), geom.list.row_px) else {
         hide_strip(st, app, pane);
         return;
     };
     let (first, last) = visible;
     let t0 = Instant::now();
-    let geom = icons::StripGeom::new(app.window().scale_factor());
     let size_px = geom.icon_px;
     let generation = model.generation.get();
+    let (lo, hi) = (first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS);
+    // With thumbnails on, the workers learn which rows this resolve asks for (once per resolve),
+    // and the rows on screen are asked for last, so the workers (newest first) render them first.
+    let thumbs = st.config.thumbnails;
+    let wanted = if thumbs {
+        st.resolve_seq[pane] += 1;
+        st.icon_views.publish(pane, st.resolve_seq[pane], (lo, hi.min(model.len() - 1)));
+        st.resolve_seq[pane]
+    } else {
+        0
+    };
     let (folder, tx) = (&t.path, &st.icon_tx);
     let mut sent = 0;
-    let changed = model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, |e| {
+    let mut ask = |i: usize, e: &model::Entry| {
         let path = if e.kind == Kind::Drive { PathBuf::from(e.name.as_str()) } else { folder.join(e.name.as_str()) };
         let overlay = icons::wants_overlay(e.kind, e.attrs, &e.name);
-        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay });
+        let thumbnail = thumbs && e.icon_key.starts_with("thumb:");
+        let (row, wanted) = if thumbnail { (i, wanted) } else { (0, 0) };
+        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay, thumbnail, row, wanted });
         sent += 1;
-    });
+    };
+    let changed = if thumbs {
+        let mut changed = if first > lo { model.resolve_icons(lo, first - 1, size_px, &mut ask) } else { Vec::new() };
+        changed.extend(model.resolve_icons(last + 1, hi, size_px, &mut ask));
+        changed.extend(model.resolve_icons(first, last, size_px, &mut ask));
+        changed
+    } else {
+        model.resolve_icons(lo, hi, size_px, ask)
+    };
     if let Some(c) = st.strip[pane] {
         if changed.iter().any(|&i| (c.first..=c.last).contains(&i)) {
             st.strip_dirty[pane] = true;
@@ -1219,7 +1244,8 @@ fn compose_strip(st: &mut State, app: &App, pane: usize, visible: (usize, usize)
     st.icon_counts.composes += 1;
     st.icon_counts.compose_ns += t0.elapsed().as_nanos() as u64;
     let (w, h) = (strip.width() as f32 / geom.scale, strip.height() as f32 / geom.scale);
-    app.invoke_set_strip(pane as i32, Image::from_rgba8_premultiplied(strip), first as i32, w, h, true);
+    let top = first as f32 * geom.list.row_px;
+    app.invoke_set_strip(pane as i32, Image::from_rgba8_premultiplied(strip), top, w, h, true);
     st.strip[pane] = Some(icons::Composed { first, last, icon_px: geom.icon_px });
     st.strip_dirty[pane] = false;
 }
@@ -1227,7 +1253,7 @@ fn compose_strip(st: &mut State, app: &App, pane: usize, visible: (usize, usize)
 /// Hide the pane's icon strip (empty list, or a navigation under way).
 fn hide_strip(st: &mut State, app: &App, pane: usize) {
     if st.strip[pane].take().is_some() {
-        app.invoke_set_strip(pane as i32, Image::default(), 0, 0.0, 0.0, false);
+        app.invoke_set_strip(pane as i32, Image::default(), 0.0, 0.0, 0.0, false);
     }
 }
 
@@ -1257,7 +1283,7 @@ fn drain_icons() {
         {
             let mut table = st.icons.borrow_mut();
             while let Ok(r) = st.icon_rx.try_recv() {
-                table.complete(r.key, r.outcome);
+                table.complete(r.key, r.size_px, r.outcome);
                 st.icon_counts.replies += 1;
                 any = true;
             }
@@ -1279,13 +1305,17 @@ fn report_icons() {
         let render_ns = st.icon_stats.render_ns.load(Ordering::Relaxed);
         let overlays = st.icon_stats.overlays.load(Ordering::Relaxed);
         let slow = st.icon_stats.slow.load(Ordering::Relaxed);
-        let (req0, rep0, ren0, ns0, comp0, ov0, slow0) = c.reported;
+        let thumbs = st.icon_stats.thumbs.load(Ordering::Relaxed);
+        let thumb_ns = st.icon_stats.thumb_ns.load(Ordering::Relaxed);
+        let dropped = st.icon_stats.dropped.load(Ordering::Relaxed);
+        let (req0, rep0, ren0, ns0, comp0, ov0, slow0, th0, tns0, drop0) = c.reported;
         if c.requests == req0 && c.replies == rep0 && c.composes == comp0 {
             return;
         }
         let n = rendered - ren0;
+        let t = thumbs - th0;
         eprintln!(
-            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
+            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, thumbs {t} avg {:.2} ms dropped {}, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
             c.requests - req0,
             c.replies - rep0,
             c.requests,
@@ -1294,12 +1324,14 @@ fn report_icons() {
             if n > 0 { (render_ns - ns0) as f64 / n as f64 / 1e6 } else { 0.0 },
             overlays - ov0,
             slow - slow0,
+            if t > 0 { (thumb_ns - tns0) as f64 / t as f64 / 1e6 } else { 0.0 },
+            dropped - drop0,
             c.resolves,
             if c.resolves > 0 { c.resolve_ns as f64 / c.resolves as f64 / 1e3 } else { 0.0 },
             c.composes,
             if c.composes > 0 { c.compose_ns as f64 / c.composes as f64 / 1e3 } else { 0.0 },
         );
-        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes, overlays, slow);
+        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes, overlays, slow, thumbs, thumb_ns, dropped);
     });
 }
 
@@ -1848,13 +1880,13 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
 /// Shift+F10 or the Menu key in a pane's list: the menu for the cursor row's selection, under
 /// that row (already scrolled into view), or the background menu when there is no cursor row.
 fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, visible_h: f32) {
-    let len = with_state(|st| st.model(pane).len());
+    let (len, g) = with_state(|st| (st.model(pane).len(), icons::ListGeom::new(st.config.thumbnails)));
     match usize::try_from(row).ok().filter(|&r| r < len) {
         Some(r) => {
-            let (x, y) = shellmenu::row_menu_point(list_x, list_y, content_y, visible_h, r);
+            let (x, y) = shellmenu::row_menu_point(list_x, list_y, content_y, visible_h, r, g);
             context_menu(pane, row, x, y, false);
         }
-        None => context_menu(pane, -1, list_x + 28.0, list_y, false),
+        None => context_menu(pane, -1, list_x + g.name_x(), list_y, false),
     }
 }
 
@@ -2240,6 +2272,7 @@ pub fn window_layout(app: &App) -> dnd::Layout {
         ratio: app.get_split_ratio(),
         tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
         left: if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 },
+        row_px: icons::ListGeom::new(app.get_thumbnails()).row_px,
     }
 }
 
@@ -2395,7 +2428,7 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
     });
     let Some((app, pane, dir, len, visible)) = found else { return false };
     let from = app.invoke_get_scroll(pane as i32);
-    let to = dnd::scrolled(from, dir, len, visible);
+    let to = dnd::scrolled(from, dir, len, visible, icons::ListGeom::new(app.get_thumbnails()).row_px);
     if to == from {
         return false;
     }
@@ -3024,6 +3057,26 @@ fn set_show_type(st: &mut State, app: &App, on: bool) {
     }
 }
 
+/// Thumbnails on or off in both panes: each pane's list becomes the 32 px (or the 22 px) variant
+/// and its strip is cleared. The icon keys are made on the enumeration worker, so every tab lists
+/// its folder again: the panes on screen at once (the panes returned, for `refresh`), the others
+/// when they come to the front.
+fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
+    st.config.thumbnails = on;
+    app.set_thumbnails(on);
+    log_list_geom(on);
+    for pane in 0..2 {
+        hide_strip(st, app, pane);
+    }
+    mark_background_stale(st);
+    if app.get_split() { vec![0, 1] } else { vec![0] }
+}
+
+fn log_list_geom(thumbnails: bool) {
+    let g = icons::ListGeom::new(thumbnails);
+    eprintln!("[icons] list geometry: {} px rows, {} px icons", g.row_px, g.icon_px);
+}
+
 /// Ctrl+, or "Settings": copy the live values into the dialog and show it.
 fn settings_open() {
     let Some((app, d, note)) = with_state(|st| {
@@ -3037,6 +3090,7 @@ fn settings_open() {
             show_hidden_left: st.model(0).show_hidden.get(),
             show_hidden_right: st.model(1).show_hidden.get(),
             show_type: st.config.show_type,
+            thumbnails: st.config.thumbnails,
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
         };
@@ -3054,6 +3108,7 @@ fn settings_open() {
     app.set_dlg_hidden_left(d.show_hidden_left);
     app.set_dlg_hidden_right(d.show_hidden_right);
     app.set_dlg_type_column(d.show_type);
+    app.set_dlg_thumbnails(d.thumbnails);
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
     app.set_settings_note(note.into());
@@ -3073,6 +3128,7 @@ fn settings_closed(ok: bool) {
         show_hidden_left: app.get_dlg_hidden_left(),
         show_hidden_right: app.get_dlg_hidden_right(),
         show_type: app.get_dlg_type_column(),
+        thumbnails: app.get_dlg_thumbnails(),
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
     }
@@ -3094,6 +3150,11 @@ fn settings_closed(ok: bool) {
                 }
             }
             "show_type" => with_state(|st| set_show_type(st, &app, staged.show_type)),
+            "thumbnails" => {
+                for pane in with_state(|st| set_thumbnails(st, &app, staged.thumbnails)) {
+                    refresh(pane);
+                }
+            }
             "sidebar_visible" => {
                 if app.get_sidebar_visible() != staged.sidebar_visible {
                     app.invoke_toggle_sidebar();
@@ -3153,7 +3214,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let (icon_replies, icon_rx) = unbounded();
     let icon_gens = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
     let icon_stats = Arc::new(icons::Stats::default());
-    icons::spawn(icon_requests, icon_replies, icon_gens.clone(), icon_stats.clone(), || {
+    let icon_views = Arc::new(icons::Views::default());
+    icons::spawn(icon_requests, icon_replies, icon_gens.clone(), icon_views.clone(), icon_stats.clone(), || {
         let _ = slint::invoke_from_event_loop(drain_icons);
     });
     let (watch_tx, watch_rx) = unbounded();
@@ -3244,6 +3306,10 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
     app.set_show_type(config.show_type);
+    app.set_thumbnails(config.thumbnails);
+    if config.thumbnails {
+        log_list_geom(true);
+    }
     app.set_version(env!("CARGO_PKG_VERSION").into());
     if let Some(g) = config.window {
         app.window().set_size(slint::LogicalSize::new(g.width, g.height));
@@ -3269,6 +3335,8 @@ fn main() -> Result<(), slint::PlatformError> {
             icon_tx,
             icon_rx,
             icon_gens,
+            icon_views,
+            resolve_seq: [0; 2],
             icon_stats,
             icon_counts: IconCounts::default(),
             view: [(0.0, 0.0); 2],

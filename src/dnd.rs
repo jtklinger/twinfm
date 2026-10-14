@@ -224,6 +224,8 @@ pub struct Layout {
     /// Where the panes start: right of the sidebar and its 4 px resize edge, or of the 12 px
     /// strip of a collapsed sidebar.
     pub left: f32,
+    /// The lists' row height (`icons::ListGeom`: 22 px, or 32 px with thumbnails on).
+    pub row_px: f32,
 }
 
 /// The list's top inside a pane (pane.slint): 3 px padding, 32 px path entry, 2 px spacing,
@@ -232,7 +234,6 @@ pub struct Layout {
 pub const LIST_TOP: f32 = 63.0;
 pub const LIST_BOTTOM_GAP: f32 = 23.0;
 pub const PANE_PAD: f32 = 3.0;
-pub const ROW_PX: f32 = crate::icons::ROW_PX;
 /// The tab strip above the path bar (26 px) and the layout spacing under it (2 px), present only
 /// when the pane has more than one tab.
 pub const TAB_STRIP: f32 = 28.0;
@@ -346,7 +347,7 @@ pub fn hit(l: &Layout, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> 
     if !in_list {
         return Spot::Pane(pane);
     }
-    let r = ((y - list_top(l, pane) - content_y[pane]) / ROW_PX).floor();
+    let r = ((y - list_top(l, pane) - content_y[pane]) / l.row_px).floor();
     if r >= 0.0 && (r as usize) < len[pane] { Spot::Row(pane, r as usize) } else { Spot::Pane(pane) }
 }
 
@@ -376,10 +377,10 @@ pub fn edge_scroll(l: &Layout, x: f32, y: f32) -> Option<(usize, i32)> {
 }
 
 /// The list's scroll offset after one row's scroll in `dir` from `content_y` (zero or negative),
-/// kept in range for `len` rows in a viewport `visible_h` tall.
-pub fn scrolled(content_y: f32, dir: i32, len: usize, visible_h: f32) -> f32 {
-    let lowest = (visible_h - len as f32 * ROW_PX).min(0.0);
-    (content_y - dir as f32 * ROW_PX).clamp(lowest, 0.0)
+/// kept in range for `len` rows of `row_px` in a viewport `visible_h` tall.
+pub fn scrolled(content_y: f32, dir: i32, len: usize, visible_h: f32, row_px: f32) -> f32 {
+    let lowest = (visible_h - len as f32 * row_px).min(0.0);
+    (content_y - dir as f32 * row_px).clamp(lowest, 0.0)
 }
 
 /// The folder a drop goes to: the row's directory when the row is one (a drive row's name is its
@@ -2564,7 +2565,7 @@ mod tests {
 
     #[test]
     fn hit_testing_and_drop_folder() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0 };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
         // Rows start at y 63, 22 px each; the list ends 23 px above the bottom (y 577).
@@ -2581,6 +2582,11 @@ mod tests {
         // Scrolled by 100 rows: the first visible row is row 100.
         assert_eq!(hit(&one, 500.0, 70.0, [-2200.0, 0.0], [1000, 0]), Spot::Row(0, 100));
         assert_eq!(hit(&one, 500.0, 70.0 + 22.0 * 3.0, [-2200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
+        // 32 px rows (thumbnails on): row 0 ends at 95, and 100 rows are 3200 px.
+        let tall = Layout { row_px: 32.0, ..one };
+        assert_eq!(hit(&tall, 500.0, 94.9, none, [10, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&tall, 500.0, 95.0, none, [10, 0]), Spot::Row(0, 1));
+        assert_eq!(hit(&tall, 500.0, 70.0 + 32.0 * 3.0, [-3200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
         // Split at 0.5: left pane to x 497, splitter 497..503, right pane from 503.
         assert_eq!(hit(&two, 100.0, 70.0, none, [5, 7]), Spot::Row(0, 0));
         assert_eq!(hit(&two, 496.0, 70.0, none, [5, 7]), Spot::Pane(0), "the left pane's padding");
@@ -2623,7 +2629,7 @@ mod tests {
     #[test]
     fn hit_sidebar_rows_and_tabs() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000.
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0 };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0 };
         // Header 26, two drives 24, header 26, a place 24, header 26, a bookmark being renamed 30.
         let rows = [(26.0, false), (24.0, true), (24.0, true), (26.0, false), (24.0, true), (26.0, false), (30.0, true)];
         let s = Strips { side_w: 180.0, side_scroll: 0.0, side_rows: &rows, tabs: [(1, 160.0, 0.0), (3, 120.0, 0.0)] };
@@ -2671,7 +2677,7 @@ mod tests {
 
     #[test]
     fn auto_scroll_near_the_list_edges() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0 };
         // The list runs from y 63 to 577; the edge zones are 24 px inside it.
         assert_eq!(edge_scroll(&one, 500.0, 63.0), Some((0, -1)), "the top edge scrolls up");
         assert_eq!(edge_scroll(&one, 500.0, 86.9), Some((0, -1)));
@@ -2690,12 +2696,15 @@ mod tests {
         assert_eq!(edge_scroll(&two, 700.0, 560.0), Some((1, 1)));
         assert_eq!(edge_scroll(&two, 500.0, 560.0), None, "the splitter");
         // One row per step, kept in range.
-        assert_eq!(scrolled(0.0, 1, 100, 440.0), -22.0);
-        assert_eq!(scrolled(-22.0, -1, 100, 440.0), 0.0);
-        assert_eq!(scrolled(0.0, -1, 100, 440.0), 0.0, "already at the top");
-        assert_eq!(scrolled(-1760.0, 1, 100, 440.0), -1760.0, "already at the bottom (2200 - 440)");
-        assert_eq!(scrolled(-1750.0, 1, 100, 440.0), -1760.0, "clamped to the bottom");
-        assert_eq!(scrolled(0.0, 1, 10, 440.0), 0.0, "rows that fit do not scroll");
+        assert_eq!(scrolled(0.0, 1, 100, 440.0, 22.0), -22.0);
+        assert_eq!(scrolled(-22.0, -1, 100, 440.0, 22.0), 0.0);
+        assert_eq!(scrolled(0.0, -1, 100, 440.0, 22.0), 0.0, "already at the top");
+        assert_eq!(scrolled(-1760.0, 1, 100, 440.0, 22.0), -1760.0, "already at the bottom (2200 - 440)");
+        assert_eq!(scrolled(-1750.0, 1, 100, 440.0, 22.0), -1760.0, "clamped to the bottom");
+        assert_eq!(scrolled(0.0, 1, 10, 440.0, 22.0), 0.0, "rows that fit do not scroll");
+        // 32 px rows (thumbnails on): one 32 px row per step, the bottom at 3200 - 440.
+        assert_eq!(scrolled(0.0, 1, 100, 440.0, 32.0), -32.0);
+        assert_eq!(scrolled(-2750.0, 1, 100, 440.0, 32.0), -2760.0, "clamped to the bottom");
     }
 
     #[test]

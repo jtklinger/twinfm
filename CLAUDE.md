@@ -9,7 +9,7 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
 `docs/phase-3-plan.md` the Phase 3 plan and record. Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (118 tests; seven touch the real shell and clipboard, and nine of the ten
+- `cargo test --release` (122 tests; seven touch the real shell and clipboard, and nine of the ten
   `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
   tests write to scratch folders, see below)
@@ -101,8 +101,8 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   row's title editor commits; empty goes back to the folder's name), `bookmark move <index>
   up|down`, `about open` (F1) and `about close`, `settings open` (Ctrl+, , key name `CtrlComma`),
   `settings set <field> <value>` (stages a value through the function the dialog's control calls:
-  `start_left`, `start_right` take a path, `hidden_left`, `hidden_right`, `type_column`, `sidebar`
-  take `true|false`, `path_bar` takes `entry|crumb`), `settings ok` and `settings close` (the OK
+  `start_left`, `start_right` take a path, `hidden_left`, `hidden_right`, `type_column`,
+  `thumbnails`, `sidebar` take `true|false`, `path_bar` takes `entry|crumb`), `settings ok` and `settings close` (the OK
   and Cancel buttons; `key Escape` cancels through the key path); `window max|restore|close` maximises or restores
   the window, or closes it through `WM_CLOSE` (the close button's path, which saves the settings;
   `quit` does not); `[sidebar]` and `[settings]` lines on stderr, the dialog's among them:
@@ -168,6 +168,19 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   inside an archive: no IContextMenu2/3 routing`. Fixtures Jeremy keeps for this:
   `C:\traces\bigdir.zip` (the 40,000 files of `C:\traces\bigdir`, made with
   `[System.IO.Compression.ZipFile]::CreateFromDirectory`; not in the repo).
+  Since P3-M5, thumbnails: `settings set thumbnails true|false` then `settings ok` (or
+  `TWINFM_CONFIG=<a read-only file with thumbnails = true>`) switches both panes to the 32 px lists
+  and lists them again; no new driver step. `[settings] dialog: thumbnails <old> -> <new>`; `[icons]
+  list geometry: 32 px rows, 32 px icons` (or `22 px rows, 16 px icons`) once per change and at a
+  start with thumbnails on; `[icons] thumbnail <ms> ms: <path>` for a thumbnail of 100 ms or more
+  (counted in `slow`, as `slow icon` lines are); `[icons] thumbnail cap reached: N thumbnails held,
+  new ones get their type's icon` once (20,000). The once-a-second `[icons]` line carries `thumbs N
+  avg M ms dropped D` after `slow N`: thumbnail requests rendered in the period (from the shell's
+  thumbnail cache, or the icon when there is none; not counted in `rendered`) and their average,
+  and thumbnail requests the workers dropped because the list had scrolled away from their row
+  (`thumbs 0 avg 0.00 ms dropped 0` with thumbnails off). Fixture: `%TEMP%\twinfm-p3m5-thumbs\`
+  (200 copies of `C:\Windows\Web\Wallpaper`, `Screen` and `4K` JPEGs, `photo-000.jpg` on; made
+  by hand, not in the repo; a new copy is cold in the system thumbnail cache).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -184,7 +197,9 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   hidden files per pane, `show_type` (the Type column, default true; each pane chooses its header and
   its list (`FileListHost`), with or without the Type cell, once, never per row; off, a saved
   `type` sort becomes `name`), `sidebar_visible` and
-  `path_bar`. `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  `path_bar`; since P3-M5 `thumbnails` (default false: 22 px rows and 16 px icons; true: 32 px rows,
+  32 px icons, and thumbnails for files in `icons::THUMB_EXTS`; both panes, four list components
+  chosen per pane by `show_type` x `thumbnails`, never per row). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -224,8 +239,9 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   `fs::enumerate::tests::tells_reparse_points_apart` makes a junction (`cmd /c mklink /J`) and
   tries a file symbolic link in `%TEMP%\twinfm-enum-reparse-test-<pid>\`, and
   `icons::tests::worker_renders_exe_drive_and_extension` makes a junction in
-  `%TEMP%\twinfm-p2m5-test-<pid>\` and asks the shell for its icon and overlay; both remove
-  their folders. `fs::enumerate::tests::search_walks_the_tree_without_links_or_hidden_folders`
+  `%TEMP%\twinfm-p2m5-test-<pid>\` and asks the shell for its icon and overlay, and since P3-M5
+  writes a 16 x 16 PNG there and asks for its thumbnail (which adds an entry to the system
+  thumbnail cache); both remove their folders. `fs::enumerate::tests::search_walks_the_tree_without_links_or_hidden_folders`
   makes a tree with a hidden folder, a junction to an ancestor (`cmd /c mklink /J`) and 620 small
   files in `%TEMP%\twinfm-p3m2-test-<pid>\`, and removes it.
   `fs::sizes::tests::walker_counts_hidden_files_and_skips_links` makes a tree with hidden and

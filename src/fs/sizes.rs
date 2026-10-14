@@ -61,7 +61,7 @@ pub fn measure(root: &Path, max_depth: usize, cancel: &AtomicBool, mut each_dir:
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
-        let mut icon_keys = crate::icons::IconKeys::new(dir.clone());
+        let mut icon_keys = crate::icons::IconKeys::new(dir.clone(), false);
         let listed = super::enumerate::list_dir(&dir, &mut types, &mut icon_keys, &zone, |e| {
             if e.attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
                 t.folders += 1;

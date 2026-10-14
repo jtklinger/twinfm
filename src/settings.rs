@@ -100,6 +100,9 @@ pub struct Config {
     pub sort_ascending: bool,
     /// The Type column in both panes (the settings dialog sets it). Missing in an older file: on.
     pub show_type: bool,
+    /// Thumbnails for image, video and document files, in 32 px rows with 32 px icons, in both
+    /// panes (the settings dialog sets it). Missing in an older file: off (22 px rows).
+    pub thumbnails: bool,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
     /// "breadcrumb" or "entry" (the text entry for good).
@@ -146,6 +149,7 @@ impl Default for Config {
             sort_column: "name".into(),
             sort_ascending: true,
             show_type: true,
+            thumbnails: false,
             sidebar_visible: true,
             sidebar_width: 180.0,
             path_bar: "breadcrumb".into(),
@@ -187,6 +191,7 @@ pub struct Dialog {
     pub show_hidden_left: bool,
     pub show_hidden_right: bool,
     pub show_type: bool,
+    pub thumbnails: bool,
     pub sidebar_visible: bool,
     /// "breadcrumb" or "entry", as in `Config::path_bar`.
     pub path_bar: String,
@@ -204,13 +209,14 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 7] {
+    fn fields(&self) -> [(&'static str, String); 8] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
             ("show_hidden_left", self.show_hidden_left.to_string()),
             ("show_hidden_right", self.show_hidden_right.to_string()),
             ("show_type", self.show_type.to_string()),
+            ("thumbnails", self.thumbnails.to_string()),
             ("sidebar_visible", self.sidebar_visible.to_string()),
             ("path_bar", self.path_bar.clone()),
         ]
@@ -469,6 +475,19 @@ mod tests {
     }
 
     #[test]
+    fn thumbnails_default_off_and_round_trip_on() {
+        // A file from before the key existed: no thumbnails, 22 px rows.
+        assert!(!Config::parse("split = true
+show_type = false
+").unwrap().thumbnails);
+        assert!(!Config::default().thumbnails);
+        let c = Config { thumbnails: true, ..Config::default() };
+        let text = c.to_toml();
+        assert!(text.contains("thumbnails = true"), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+    }
+
+    #[test]
     fn dialog_changes_are_the_differing_fields() {
         let open = Dialog {
             start_left: r"C:\".into(),
@@ -476,16 +495,18 @@ mod tests {
             show_hidden_left: false,
             show_hidden_right: false,
             show_type: true,
+            thumbnails: false,
             sidebar_visible: true,
             path_bar: "breadcrumb".into(),
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, show_type: false, path_bar: "entry".into(), ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_type: false, thumbnails: true, path_bar: "entry".into(), ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
                 ("show_hidden_left", "false".into(), "true".into()),
                 ("show_type", "true".into(), "false".into()),
+                ("thumbnails", "false".into(), "true".into()),
                 ("path_bar", "breadcrumb".into(), "entry".into()),
             ]
         );

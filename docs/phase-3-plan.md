@@ -2091,3 +2091,487 @@ accepted before the fix, so the deny cursor first reported was probably the spot
 `over nowhere ... -> effect none` on entry, then `effect copy` over the pane), not the offer; not
 confirmed. Since then the `DragEnter refused` line is logged only when the data object offers
 nothing TwinFM takes.
+
+## P3-M5: thumbnails and the large-icon view
+
+The last agreed milestone of the phase, "trace first" (2026-10-13): the first per-row rendering
+since M1, so it starts with a trace of per-row layouts against the reference before any thumbnail
+UI is built, and the strip pattern (`phase-1-plan.md` § M2 Rework: rows carry no image, one
+composed image per pane) must carry it or the milestone stops at the trace with the numbers
+recorded. The large-icon view, declined for Phase 2, is in this milestone only because thumbnails
+share its work; whether it is wanted at all is Jeremy's call once its trace is read.
+
+The open questions carried from the kickoff handoff (`docs/handoffs/2026-10-14-p3-m5-kickoff.md`,
+deleted in this PR):
+- **Thumbnails default on or off** once they exist: the gate decides on the defaults, so if the
+  thumbnail strip costs anything the default is off and the setting carries it.
+- **Whether the large-icon view is wanted at all** if its trace holds: confirm before building the
+  real grid (view switch, keyboard by tile, selection and drops).
+- **The Slint whole-row snap patch** (P3-M1 Deferred): the fork is touched next when upstreaming or
+  when P3-M5 needs a Slint change; Jeremy decides. A view switch rebuilds the list: expect the snap.
+- **Upstreaming the two accessibility patches**: Jeremy decides when.
+
+### Trace (2026-10-14): two throwaway variants
+
+Two throwaway builds, each from `origin/main` at 085be4d, each the ONLY list in its build (so
+"chosen once per pane" holds trivially: no per-row conditional, no per-row binding on a runtime
+property, no view switch, no setting), each built into its own gate dir with `--locked` from a
+clean committed tree, branches pushed and never merged:
+
+- **(a) `target-p3m5a`, the details view at 32 px rows with a 32 px icon strip.** Branch
+  `trace/p3-m5-a-32px`, commit 9598f79, 72 lines changed each way in five files. `ROW_PX` 22 to 32
+  and `ICON_LOGICAL_PX` 16 to 32 in `icons.rs` (the workers ask the shell for 32 x scale px through
+  `geom.icon_px`; the overlay path takes `SHIL_LARGE`, `overlay index 2 fetched at 32 px`); every
+  row-height `22px` in `pane.slint` to `32px` (both row components, `content-height`, bring-into-view,
+  the strip's `y`, the drop highlight, `rows-end`, the rename editor, whose `y` offset moved from
+  -3 px to +2 px to stay centred); the rows' `padding-left` 28 to 38 px; the driver's and the
+  keyboard menu's row arithmetic read `ROW_PX`; five test expectations moved to 32 px rows. The row
+  structure is the reference's. 118 tests pass.
+- **(b) `target-p3m5b`, a large-icon grid under the strip pattern.** Branch `trace/p3-m5-b-grid`,
+  commits 0528066 and 075f85a, 502 lines in, 170 out. The `ListView` keeps its single `for`, now over
+  GRID ROWS: `GridModel(Rc<PaneModel>)` in `model.rs` adapts the pane's shown entries into
+  `GridRow { first, tiles: [Tile] }` with `Tile { name, selected, cut, current }`, N = max(1,
+  floor(list width / 96 px)) set once per pane from a `changed cols` on the host (startup, split,
+  resize only). Each grid row holds a NESTED `for t[c] in tiles`: a `Rectangle` at `x: c * 96px`
+  with the selection background, a 1 px cursor border from the tile's own `current` field (no tile
+  binds to a root property), one elided `Text` below the icon area, and a `TouchArea` reporting entry
+  `first + c` through the existing `row-pointer`. Tiles 96 x 120 px, no tile has an `Image`. The
+  strip is one image per pane of N x 96 x scale by rows x 120 x scale px (`GridGeom`,
+  `compose_grid`, `GRID_MARGIN_ROWS = 1`: one grid row of slack each side, close to the details
+  strip's 88 px, about 2 MB per compose), at `x: 0`, `y: content-y + strip-first * 120px`; icons are
+  requested at 96 x scale px and `overlay_pixels` steps SMALL, LARGE, EXTRALARGE, JUMBO until the
+  list's icons are at least that size. Accessibility: `accessible-item-count` is the grid-row count,
+  each grid row one `list-item`, tiles have no role of their own. Keys: Left/Right one entry, Up/Down
+  N. Left unmapped (no panic in any run): the drop highlight and rename editor `y`, `dnd::hit`, the
+  shell menu point and the driver's `click` still use 22 px rows (the gate scenario uses none of
+  them); the sort arrow shows only for Name; a 24 px Name header was kept so `dnd::LIST_TOP` and the
+  driver's thumb point stay valid. 120 tests pass (two added: grid compose placement at 1.0, 1.25,
+  1.5 and 2.0 scale; entry to row/column mapping with the last partial row, N = 1 and the N = 0
+  guard).
+
+**In-app, relative only** (harness session, 1216 x 839 window, scale 1.0, accessibility on, the
+gate scenario on `C:\traces\bigdir`, `[busy]` over the 10 s after the split, each variant run
+interleaved with `target-p3m4` by its own implementer; the two implementers' builds and runs
+overlapped in time, so the session was noisier than a gate session and the reference sat several
+points above its usual in-app 17):
+
+| Run | p3m4 (ref, with a) | (a) 32 px details | p3m4 (ref, with b) | (b) grid |
+|---|---|---|---|---|
+| 1 | 32.8 (cold) | 15.9 | 19.5 | 17.8 |
+| 2 | 22.0 | 17.8 | 23.9 | 15.8 |
+| 3 | 24.1 | 17.5 | 23.3 | 16.1 |
+| 4 | 22.0 | 17.7 | 24.5 | 16.6 |
+| **median** | **23.05** | **17.6** | **23.6** | **16.35** |
+
+Every candidate run sat below every reference run for both variants, 0 panics in every run. The
+reading is NOT "32 px rows are cheaper": the scenario scrolls by pixels, and a 32 px row shows
+about 31% fewer rows per screen and passes fewer rows per wheel tick, so each variant does less
+per-row work in the same 10 s than the reference does. What the in-app numbers do say is that
+neither variant's new per-frame cost shows above that saving:
+
+- (a): 251 strips composed per run (reference 371) at 48.5 to 55.2 us each (reference 25 to 40):
+  each strip 1.7x the reference's, fewer of them. `[perf]` agrees: about 5.0 to 5.2 ms of UI CPU
+  per frame and render p50 about 2.6 ms, against 6.3 to 6.6 and 3.4 for the reference.
+- (b): 252 strips per run at 1,312 to 1,390 us each: the composed strip is the grid's one real new
+  cost, about 0.34 s of the 10 s, roughly 3.4 of its 16.35 points by the counters (bigdir has one
+  icon key, so these composes are pure copies plus allocation and zeroing of a 480 x 1080 px
+  buffer). Resolve calls stay at about 5 us. No elimination pass was run, since the grid was not
+  the more expensive build; if the console triplet disagrees, the first elimination is the strip
+  hidden, the second the labels removed.
+
+**Icons at the larger sizes** (`C:\Windows\System32`, scroll scenario, worker ms per icon): (a)
+4.83 ms over 53 icons at 32 px, the first batch 65.5 ms with two 149 ms renders of image files
+(`@facial-recognition-windows-hello-rejuv.gif`, `@AdvancedKeySettingsNotification.png`: the shell
+renders a thumbnail for those even with `SIIGBF_ICONONLY` at this size, worth knowing for the
+thumbnail step); (b) 542 icons at 96 px at 10.05 and 11.12 ms per icon (reference 555 at 16 px, 6.07
+and 11.73), slow renders 0 in the measured runs (exploratory runs: the first `.gif` 141 ms,
+`ieuinit.inf` 106 ms, `OneDrive` 104 ms), composes on System32 about 300 per run at 1.54 ms (the
+fit of each new icon is on the UI thread), in-app busy there 21.2 and 21.4 against the reference's
+26.1 (and one disturbed 39.4). `C:\Users\jtkli` with hidden files: `OneDrive` 103 and 153 ms,
+`netbird-0.80.0-ipv6fix.exe` 1,302 ms at 32 px (1,057 ms at 16 px in P2-M5).
+
+**Screenshots** (software renderer, `tools/shot.ps1`, session scratchpad, not in the repo): (a)
+the 32 px icons sit centred and aligned with their rows in both panes, at the top and scrolled; the
+icon fills the row height; sharp, no blurry upscale except the first frame's stretched 16 px
+placeholders; the junction arrow on `Application Data` and `Cookies` at a sensible size;
+`Downloads` shows its custom icon; `Contacts`, `Documents`, `Favorites` and `Links` show plain
+folders in this build AND in the reference (pre-existing, not this change). (b) icons centred in
+their tiles and aligned with their labels in both panes, long names elided, custom folder icons
+(Contacts, Favorites, Links, Music, Searches, Saved Games, Downloads, OneDrive) and the junction
+arrow at 96 px on the nine profile junctions; bigdir after the scenario near entry 24,606 in both
+panes. Not investigated: a thin green fringe along the top edge of the shell's 96 px folder icon in
+every grid screenshot (possibly non-premultiplied edge pixels from `GetImage` at that size); the
+16 x 16 placeholders stretched to 96 px before the first icon lands.
+
+**Gate (2026-10-14, Jeremy at the console): both variants hold the bar.** One command, three
+builds, nine runs from 11:52 to 12:00, reference first in each round (`tools/wpr-triplet.ps1
+-Reference p3m4 -Candidate p3m5a,p3m5b -Tag ab14`; the script now takes a comma-separated candidate
+list), accessibility on, Narrator off, no other TwinFM window, console checks after. `target-p3m4`
+(07ca56c) against `target-p3m5a` (9598f79) and `target-p3m5b` (075f85a). Analysed with
+`tools/analyze-trace.py --symbols --exe`.
+
+| Run | P3-M4 (`target-p3m4`) | (a) 32 px details, `target-p3m5a` | (b) grid, `target-p3m5b` |
+|---|---|---|---|
+| 1 | 19.0% (1896 ms) | 13.6% (1359 ms) | 13.3% (1330 ms) |
+| 2 | 17.4% (1738 ms) | 13.7% (1371 ms) | 13.2% (1325 ms) |
+| 3 | 16.7% (1672 ms) | 13.8% (1381 ms) | 13.2% (1316 ms) |
+| **median** | **17.4%** | **13.7%** | **13.2%** |
+
+Every candidate run sits below every reference run, both medians are more than three points under
+the reference's and six under the bar, and the candidates' spreads are the tightest ever recorded
+(0.2 and 0.1); the in-app lines agree (reference 19.8, 20.2, 18.0; (a) 14.8, 14.4, 15.5; (b) 15.6,
+14.5, 12.5), 0 `panicked` in every log. The session itself sat a quiet two to three points below
+the P3-M4 gate's (the reference read 20.8 there), which the pairwise reading tolerates. Traces
+`C:/traces/twinfm-ab14-{p3m4,p3m5a,p3m5b}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+What the symbolized windows say (inclusive samples, run 1; runs 2 and 3 match within a few):
+
+- **(a) costs nothing new.** No `twinfm` frame reaches the table: `icons::compose` 1 sample,
+  `resolve_view` 1, `Texture::new_from_image` absent (the reference's 19). The whole difference is
+  fewer rows on screen: `ensure_updated_listview` 225 against 364, `draw_text` 486 against 637,
+  accessibility 148 against 195, heap 118 against 195. The 32 px strip (251 composes at 47 us) is
+  invisible at this resolution. A 32 px details view holds the bar with the same margin the
+  reference has, plus what the taller rows save.
+- **(b) spends about a third of its busy on the strip and still holds.** `compose_grid` 254 samples
+  (19.1% of the window) and the femtovg texture path for the composed image `Texture::new_from_image`
+  227 (17.1%, of it `ImageStore::alloc` 169): the M2 mechanism again (a pixel-buffer `Image` has no
+  cache key, so every compose uploads a fresh 480 x 1080 px texture), about 480 ms of the 1,330,
+  roughly 4.8 points, matching the in-app 252 composes at 1.2 ms. It is paid for by the grid drawing
+  far less: `ensure_updated_listview` 42 against 364, `draw_text` 304 against 637, accessibility 65
+  against 195 (6 grid rows of 5 tiles against about 33 rows of 4 texts; the console window is 1920
+  px wide, so more tiles per row than the harness's 5). `row_data` 2 samples. If the grid is built
+  for real, the strip's recompose rate (one grid row of margin, `GRID_MARGIN_ROWS = 1`) and the
+  texture upload per compose are the first things to trim; neither is needed to pass.
+
+By the kickoff's decision tree both hold, so P3-M5 is thumbnails first (step 3 of the handoff) and
+the grid only if Jeremy wants it. Two decisions for Jeremy before the thumbnail brief: whether
+the large-icon view is wanted at all, and how the details view's row height is chosen (32 px for
+everyone, or 22 px as today with 32 px rows only when thumbnails are on, a per-pane list variant
+like the Type column's, so the default stays the reference row).
+
+Jeremy's decisions (2026-10-14), read from the trace: **thumbnails only, the large-icon grid
+deferred**; and **32 px rows only when thumbnails are on**, a per-pane list variant as the Type
+column's is, so the default list stays the reference's row.
+
+### What landed (2026-10-14)
+
+- **The setting** (`settings.rs`, `app.slint`, `main.rs`). `thumbnails` in `Config` (default
+  false, so a file without the key loads with 22 px rows) and in `Dialog`; a "Thumbnails (32 px
+  rows)" checkbox in the settings dialog under the Type column's, staged through `settings-stage`
+  (field `thumbnails`) and applied on OK (`[settings] dialog: thumbnails false -> true`) by
+  `set_thumbnails`: the window's `thumbnails` property (both panes), the config, `[icons] list
+  geometry: 32 px rows, 32 px icons` (or `22 px rows, 16 px icons`), both strips hidden, every
+  background tab marked stale, and `refresh` of the panes on screen, since icon keys are made on
+  the enumeration worker (`fs::enumerate::spawn` takes the flag). Restored at start (the geometry
+  line is logged then too when it is on).
+- **Four list components, chosen once per pane** (`pane.slint`). `FileRows32`, `FileRowsNoType32`,
+  `FileList32` and `FileListNoType32` are copies of the 22 px four with the constants of the trace
+  variant (a) (9598f79): row `height: 32px`, `padding-left: 42px` (the trace's 38 plus a 4 px gap,
+  see Deviations), `content-height` initialised to
+  rows x 32 px. `FileListHost` gains `in property <bool> thumbnails` and `out property <length>
+  row-h: root.thumbnails ? 32px : 22px`, and its two `if`s become four, one per combination of
+  `show-type` x `thumbnails`, each on a host-level expression, none inside a `for`; no row reads
+  `row-h`. The host's `bring-into-view` and the pane's overlays that do not follow every scroll read
+  `list.row-h`: the drop highlight's `y` and height (during a drag), the rename editor's `x`, `y`
+  (`(row-h - 28px) / 2`, -3 px or +2 px as in the trace) and width, and `rows-h` (rows x row
+  height, no content-y in it, so cached while the list scrolls). The two overlay bindings that
+  re-evaluate on every content-y change read no row height (after the review): the strip's `y` is
+  `list.content-y + strip-top`, where `set-strip` now takes the strip's logical top (first row x
+  row height, computed in `compose_strip`) in place of the first row's index (`strip-first` is
+  gone), and `rows-end` is `list.content-y + rows-h`. The 22 px components are the reference's byte
+  for byte (below).
+- **Row height in Rust.** `icons::ROW_PX` and `ICON_LOGICAL_PX` are gone: `icons::ListGeom::new(
+  thumbnails)` gives `row_px` and `icon_px` (22 and 16, or 32 and 32) and `name_x()` (6 px plus a
+  row: 28 or 38). `StripGeom::new(scale, thumbnails)` carries it (`icon_y` centres the icon as
+  before: 3 px in a 22 px row, 0 in a 32 px one); `visible_range` takes the row height;
+  `dnd::Layout` gains `row_px` (from the window's `thumbnails` in `window_layout`), read by `hit`;
+  `dnd::scrolled`, `shellmenu::row_menu_point` and the keyboard menu's empty-list point take it;
+  `reveal_row` after a pass uses it; the driver's `row_pos`, `empty_pos` and the `rclickempty`
+  fallback read `window_layout(app).row_px`.
+- **Icon sizes kept apart.** The `IconTable` holds one `SizeKeys` (index, pending and failed sets,
+  keyed by `SharedString` as before) per icon size, in a small `Vec` searched linearly;
+  `resolve_icons` takes the size's sets once per call (`IconTable::keys(px)`, with the thumbnail
+  `Cap`), so each row's lookup is a borrowed `&SharedString` one as in the reference (the first
+  version keyed one map by `(key, px)`, cloning the key per lookup: changed after the review). The
+  workers' taken set is keyed by (key, px); `Reply` carries `size_px`. So `ext:.txt` at 16 px and at
+  32 px are two renders and two buffers, and switching back finds the 16 px ones ready (the System32
+  check below: one new request, `dir` at 32 px). Thumbnails are 32 x scale px only.
+- **Thumbnail keys** (`icons.rs`, on the enumeration worker). With thumbnails on, a `Kind::File`
+  whose extension is in `THUMB_EXTS` (`jpg jpeg jpe png gif bmp webp tif tiff heic heif avif`,
+  `mp4 m4v mov mkv avi wmv webm`, `pdf docx doc pptx ppt xlsx xls`) gets `thumb:<full path>|<modified
+  unix secs>|<size>` (`thumb_key`) instead of `ext:.<ext>`; folders (a folder named `x.jpg` too),
+  links, reparse points and cloud placeholders (a thumbnail would download the file) keep their
+  P2-M5 keys, as does everything else. `IconKeys::new(folder, thumbnails)`, `for_entry(.., modified,
+  size)`. The search walker, the size walker and archive levels make no thumbnail keys.
+- **The thumbnail render** (workers). `Request` gains `thumbnail` (set for `thumb:` keys). Such a
+  request goes to `thumbnail()`: the worker thread's own `IThumbnailCache` (`CLSID_LocalThumbnailCache`,
+  made on its first thumbnail, released before `CoUninitialize`), `SHCreateItemFromParsingName` for
+  an `IShellItem`, `GetThumbnail(item, size_px, WTS_EXTRACT)`, `ISharedBitmap::GetSharedBitmap`
+  read through `hbitmap_pixels` (the bitmap stays the shared bitmap's), then `letterbox`: the
+  longer side fitted to `size_px` (box filter, aspect kept), centred in a transparent square, so
+  `compose` is unchanged. No thumbnail (no handler, an error) falls back to the `SIIGBF_ICONONLY`
+  render, so the row shows its type's icon. Hand-written vtables (`ThumbnailCacheVtbl`,
+  `SharedBitmapVtbl`, `UnknownVtbl`); `CoCreateInstance` from the existing `Win32_System_Com`
+  feature, no `Cargo.toml` change. `fit` is now `resample` to a square.
+- **Rows on screen first, rows scrolled past dropped** (the P2-M5 deferral, for thumbnails). With
+  thumbnails on, each `resolve_view` bumps the pane's resolve number and publishes it with the rows
+  it asks for (visible plus `ICON_MARGIN_ROWS`) in `icons::Views` (two atomics per pane, one store
+  each per resolve); a thumbnail `Request` carries its row and resolve number. It asks for the
+  margin rows first and the visible rows last, so the newest-first workers render the visible rows
+  first. A worker drops a thumbnail request (`Skipped`, counted in `Stats::dropped`) when the pane has
+  resolved since AND the row lies more than `STRIP_MARGIN_ROWS` outside the rows asked for; the UI
+  asks again if the row comes back, as for any `Skipped`. Plain icon requests are never dropped.
+  With thumbnails off `resolve_view` makes the one `resolve_icons` call it made before and no store.
+- **Cap.** `THUMB_TABLE_CAP = 20_000` thumbnails interned per process; past it `resolve_icons`
+  turns a missing `thumb:` key into its extension's key (`thumb_fallback`) and the row gets the
+  type's icon; logged once (`[icons] thumbnail cap reached: ...`). A held thumbnail stays.
+- **Logging.** The `[icons]` line gains `thumbs N avg M ms dropped D` after `slow N` (thumbnail
+  requests rendered in the period, kept out of `rendered`, and their average; drops of requests not
+  already stale by navigation); a thumbnail of
+  100 ms or more logs `[icons] thumbnail <ms> ms: <path>` and counts in `slow`.
+- **Driver**: `settings set thumbnails true|false`; no new step.
+- **Tests**, 118 to 122: `thumbnails_default_off_and_round_trip_on`; `letterbox_keeps_the_aspect_
+  with_transparent_bands` (2 x 1 and 1 x 2 into 4 x 4, a square unchanged, 400 x 300 to 32 x 24 in
+  rows 4 to 27); `pool_drops_thumbnails_scrolled_past` (200 thumbnail requests from resolve 1 while
+  resolve 2 asks for rows 150 to 190: rows 146 to 194 render, 49, and 151 are dropped; row 10 asked
+  again in resolve 3 renders; a request of the current resolve renders outside the range; a plain
+  icon request is never dropped); `thumbnail_cap_falls_back_to_the_extension`. Extended:
+  `key_rules` (thumbnail keys on and off, a `.jpg` folder `dir`, `x.jpg.lnk` by path, links and
+  cloud placeholders not thumbnailed, a changed time a new key), `dialog_changes_are_the_differing_
+  fields`, `visible_range_arithmetic` and `strip_layout_arithmetic` (32 px rows; both geometries
+  at 1, 1.25, 1.5, 1.75 and 2), `compose_places_icons_at_row_offsets` (32 px rows),
+  `table_interns_once_and_tracks_pending_and_failed` (a key at 32 px is its own entry),
+  `hit_testing_and_drop_folder`, `auto_scroll_near_the_list_edges` and
+  `keyboard_menu_point_sits_under_the_row_inside_the_viewport` (32 px rows), and the real-shell
+  `worker_renders_exe_drive_and_extension`, which writes a 16 x 16 red PNG (hand-built: stored
+  deflate, CRCs) into its scratch folder and asks for its thumbnail at 32 px: a 32 x 32 opaque red
+  square came back (it skips with a message if the shell gives the icon instead).
+
+### Decisions
+
+- **Decision 1: `IThumbnailCache::GetThumbnail(WTS_EXTRACT)`**, not `IShellItemImageFactory::GetImage(
+  SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT)`: faster warm (7.3 against 8.9 ms per thumbnail) and
+  cold (36.2 against 38.0), equal at 32 and 64 px (Measurements). It hands back its stored size (32
+  x 20 for 32 px, 96 x 60 for 64), which `letterbox` fits.
+- **Icon sizes are part of the table's key**, not of the icon key: the enumeration worker's keys
+  stay what P2-M5 made (plus `thumb:`), and neither list's icons are upscaled or downscaled from
+  the other's.
+- **The drop range is the rows a resolve asks for, not the visible rows.** First built with the
+  visible rows (the brief's suggestion): every icon reply runs a resolve, so the margin rows (5 to
+  10 past the screen) were dropped and asked again in a loop until the screen settled (9 drops in
+  the first second of a cold run with no scrolling). Publishing the requested range ends that; the
+  test and the rule are otherwise as suggested.
+- **Visible rows last in the request order** (thumbnails on only): with newest-first workers this
+  is what puts them first. With thumbnails off the order is the reference's.
+- **No thumbnails in search results**, archives, or the drag image: the search walker and the size
+  walker build `IconKeys` with thumbnails off, archive levels have their own keys, and the drag
+  image renders the item as before.
+- **Cloud placeholders and links are never thumbnailed**: `GetThumbnail` on a placeholder may
+  hydrate it; a link's own icon is what P2-M5 shows.
+
+### Deviations
+
+- **`Views` publishes the requested rows, not the visible ones** (Decisions).
+- **`Reply` gained `size_px`**, and the table and taken set are keyed per size: not in the brief,
+  needed so the 32 px list does not show 16 px icons stretched.
+- **`[icons]` line**: `thumbs N avg M ms dropped D` (the brief named `thumbs N avg M ms`); the drop
+  count gives check (iii)'s Skipped figure directly.
+- **`spawn` takes `Arc<Views>`**, and `RenderFn` a third argument (thumbnail or not).
+- **A 4 px gap after the thumbnail** (Jeremy, 2026-10-14, after the first screenshots showed the
+  name text starting at the thumbnail's edge): the 32 px rows' `padding-left` is 42 px (6 px, the
+  32 px column, 4 px), not the trace's 38; the rename editor and the keyboard menu's point
+  (`ListGeom::name_x`) follow.
+
+### Deferred
+
+- **Thumbnails in search result tabs** (they show the type's icon in the 32 px list).
+- **The large-icon grid** (Jeremy, 2026-10-14).
+- **Thumbnail alpha**: the cache's bitmaps are read as premultiplied, as icons are; not checked
+  on a translucent PNG.
+- **Scale changes**: a move to another monitor's scale asks for new sizes from the next listing on
+  (keys are per size now), but rows already resolved keep their index until their tab lists again.
+- **A thumbnail table that shrinks**: entries for changed files stay until the process ends (the
+  cap bounds them).
+- **Not checked by a person**: thumbnails at the console (60 Hz, a real wheel), video and Office
+  documents (no fixture here has them; the shell decides), Narrator on the 32 px lists.
+- **The P3-M1 whole-row snap** on a rebuilt list happens on this switch too (expected; fork
+  change, Jeremy's decision).
+
+### Scripted checks
+
+RDP session, this worktree's `target\release\twinfm.exe` built from f0a7970 (the commit before
+this record), every run with `TWINFM_SCRIPT` and without `TWINFM_SOAK`; thumbnails on through
+`TWINFM_CONFIG=<scratchpad>\thumbs-on.toml` (`thumbnails = true`, read-only: each such run logs
+`[settings] could not save: ... Access is denied`, as expected); no run read or wrote
+`%APPDATA%\twinfm\config.toml`. `tasklist | grep -i twinfm` was empty after every run. All exit code
+0, no `panicked` line.
+
+- **(i) The gate scenario, defaults**, `C:\traces\bigdir`, against `target-p3m4`. The `[icons]`
+  line has the reference's shape: `total 1 / 1, table 4 images, ... thumbs 0 avg 0.00 ms dropped 0,
+  resolve 377 calls avg 3.2 us, compose 371 strips avg 23.9 us` (reference: `resolve 377 calls avg
+  2.9 us, compose 371 strips avg 23.1 us`); 0 `thumb` lines. Busy, Measurements. After the review's
+  fixes (table per size, strip top from Rust, cached `rows-h`, `dropped` not counted for stale
+  requests), five more interleaved pairs: resolve 3.5, 3.3, 3.4 us with the size sets in a
+  `HashMap<u32, _>` (reference 2.9, 2.9, 2.9), then 3.1 and 3.1 with them in a `Vec` (reference 2.8,
+  3.0); last pair `[icons] +0 requests +0 replies (total 1 / 1), table 4 images, ... thumbs 0 avg
+  0.00 ms dropped 0, resolve 377 calls avg 3.1 us, compose 371 strips avg 23.9 us`. The remaining 0.1
+  to 0.3 us a call (under 0.1 ms over the 377 calls of a run) was not traced to a line; busy in
+  those five pairs: reference 19.1, 17.3, 19.4, 17.2, 18.4; candidate 18.4, 17.2, 18.3, 19.2, 18.9.
+- **(ii) The gate scenario with thumbnails on**: `[icons] list geometry: 32 px rows, 32 px icons`,
+  `table 4 images, ... thumbs 0`, `compose 251 strips avg 47.6 to 53.4 us` (the trace's (a): 251 at
+  48.5 to 55.2); `[perf]` render p50 1.95 ms against 2.63 with them off.
+- **(iii) The photo folder** (`%TEMP%\twinfm-p3m5-thumbs\`, 200 JPEGs, freshly copied so cold),
+  thumbnails on, `sleep 2500; wheel 0 -120 20; scrollpos 0; sleep 4000; drag 0 300 1500; sleep 6000;
+  scrollpos 0; quit`, stderr time-stamped:
+
+  ```
+    0.669 [enum] pane=0 done: 200 entries, worker 8.4 ms, request-to-done 175.8 ms
+    0.870 [icons] thumbnail 198 ms: ...\photo-001.jpg
+    0.877 [icons] thumbnail 205 ms: ...\photo-000.jpg
+    1.494 [icons] +34 requests +30 replies (total 34 / 30), table 33 images, ... slow 2, thumbs 30 avg 52.98 ms dropped 0, ...
+    2.494 [icons] +0 requests +4 replies (total 34 / 34), table 37 images, ... thumbs 4 avg 41.67 ms dropped 0, ...
+    4.500 [icons] +166 requests +48 replies (total 200 / 82), table 85 images, ... thumbs 49 avg 39.67 ms dropped 0, ...
+    5.500 [icons] +0 requests +118 replies (total 200 / 200), table 111 images, ... thumbs 25 avg 39.16 ms dropped 92, ...
+    6.027 [auto] scrollpos pane=0 content-y -5686.0 current-row -1
+  ```
+
+  200 thumbnail requests, 108 rendered, 92 dropped (Skipped = requests minus replies with pixels =
+  92); slow 2 (the first two, 198 and 205 ms: the cache's start). The wheel reached the bottom
+  (rows 177 to 199 on screen, 23 rows) before 5.0 s; 25 thumbnails were rendered in the second
+  after it, about that screen and its margin, and nothing was rendered or asked for after 5.5 s:
+  the 92 rows passed over were dropped instead of rendered. Which rows the 25 were is inferred, not
+  logged (the scrolled screenshot below shows every visible row with its thumbnail). Before the drop-range change, the same
+  run cold showed `dropped 9` in its first second with no scrolling (Decisions).
+  Screenshots (software renderer, `tools/shot.ps1`, session scratchpad, not in the repo), both
+  panes on the folder: thumbnails on, at the top (`thumbs-on-top.png`: rows 0 to 21 in both panes,
+  each JPEG's thumbnail letterboxed at 32 x 20 in its 32 px row, aligned with its row) and scrolled
+  (`thumbs-on-scrolled.png`: left pane rows 150 to 171, right pane 56 to 78, every visible row with
+  its thumbnail, the right pane's partly scrolled top row clipped at the header); thumbnails off
+  (`thumbs-off-top.png`, `thumbs-off-scrolled.png`): 22 px rows with the JPG type icon, one request
+  (`ext:.jpg`) for the whole folder.
+- **(iv) The switch, four variants** on `C:\Windows\System32`: `settings open; settings set
+  thumbnails true; settings ok; sleep 2000; key Down; scrollpos 0; settings open; settings set
+  thumbnails false; settings ok; sleep 1500; key Down; scrollpos 0; quit`, with the Type column on,
+  and again after `settings set type_column false` (so FileList, FileList32, FileListNoType and
+  FileListNoType32 were each created): each switch logs `[settings] dialog: thumbnails false -> true`
+  (or back), `[icons] list geometry: 32 px rows, 32 px icons` (or `22 px rows, 16 px icons`),
+  `[refresh] pane=0 gen=N path=C:\Windows\System32`, `[sort] pane=0 4902 of 4910 entries`; the
+  `key Down` after each takes effect (`[select] pane=0 Only row=K`, cursor rows 0, 1, 2 in turn), so
+  each new list took the focus; the 32 px list asked for one new icon (`dir` at 32 px), the switch
+  back none (the 16 px ones were held).
+- **(v) A changed thumbnailed file** in a watched folder (`%TEMP%\twinfm-p3m5-watch\`, five JPEGs),
+  thumbnails on, `touch 0 photo-002.jpg; waitwatch 3000`: `[watch] pane=0 tab=1 changed: refresh`,
+  `[refresh] pane=0 gen=2`, then `[icons] +1 requests +1 replies (total 6 / 6), table 9 images, ...
+  thumbs 1 avg 32.67 ms`: the new time made a new key, rendered once; the old entry stays unused.
+
+### Measurements
+
+This machine, RDP. Decision 1 (a throwaway test, not committed): 200 JPEGs copied from
+`C:\Windows\Web` into a fresh `%TEMP%` folder per run (cold in the system thumbnail cache), one
+thread, MTA; "warm" is the same 200 again right after; ms per thumbnail including the pixel read:
+
+| Path | 32 px cold | 32 px warm | 64 px cold | 64 px warm |
+|---|---|---|---|---|
+| `GetImage(SIIGBF_THUMBNAILONLY \| SIIGBF_RESIZETOFIT)` | 40.51 / 38.24 / 37.78 | 9.61 / 8.90 / 8.93 | 37.99 / 37.96 / 37.88 | 8.99 / 8.92 / 8.97 |
+| `IThumbnailCache::GetThumbnail(WTS_EXTRACT)` | 36.28 / 36.17 / 36.06 | 7.32 / 7.40 / 7.36 | 36.38 / 36.27 / 36.39 | 7.32 / 7.36 / 7.26 |
+
+All 200 succeeded every run on both paths. In the app (two workers): 38 to 53 ms per thumbnail cold,
+15 to 36 ms partly warm.
+
+In-app busy over the 10 s after the split, the gate scenario on `C:\traces\bigdir` (RELATIVE only:
+harness session, 1216 x 839, scale 1.0, accessibility on). (i) Defaults against `target-p3m4`,
+interleaved, three batches of four (reference first, candidate first, reference first):
+
+| Pair | p3m4 | P3-M5 defaults |
+|---|---|---|
+| 1 to 4 | 18.9, 18.3, 18.7, 18.0 | 19.7, 23.6, 19.7, 19.8 |
+| 5 to 8 (candidate first) | 16.7, 19.8, 18.1, 18.3 | 18.4, 18.1, 18.6, 16.9 |
+| 9 to 12 | 19.5, 18.7, 17.8, 17.8 | 19.8, 17.8, 18.9, 18.0 |
+| **median of 12** | **18.3** | **18.75** |
+
+The first batch had every candidate run above every reference run (0.8 to 1.8 points, one run
+disturbed at 23.6); the next two did not (medians 18.2 against 18.25, and 18.3 against 18.45). In-app
+numbers do not decide; the gate triplet does. What differed on the default per-frame path in these
+runs was the host's four `if`s (two of them empty) and the strip's `y` and `rows-end` reading
+`list.row-h`; the review's fix removed the latter (What landed), the rows' generated code is the
+reference's (below).
+
+(ii) Thumbnails on against off, same build, interleaved: off 18.4, 18.6, 17.5, 19.2 (median 18.5); on
+14.4, 14.7, 15.6, 14.4 (median 14.55); fewer, taller rows, as in the trace.
+
+**The 22 px row is the reference's.** `pane.slint`'s `FileRows`, `FileRowsNoType`, `FileList` and
+`FileListNoType` are identical to 085be4d's (120 lines, `diff` empty). The generated Rust
+(`target/release/build/twinfm-*/out/app.rs`) from 085be4d's sources and from this branch: the 3,045
+lines from `InnerFileList_root_60` to the next component (FileList, its row `InnerComponent_rectangle_63`,
+FileListNoType and its row `_101`) differ only in the Fluent palette global's number (`_417` to
+`_499`) and the numbering of generated temporaries (`returned_expression20` to `24`); with those
+normalised, the diff is empty. The new components follow as `InnerFileList32_root_135` and the
+rest.
+
+Memory per thumbnail: 32 x scale px square, 4 bytes a pixel: 4,096 B at 100%, 6,400 at 125%, 9,216 at
+150%, 12,544 at 175%, 16,384 at 200%; at the 20,000 cap 82 MB to 328 MB.
+
+### Gate
+
+**Defaults (2026-10-14, Jeremy at the console): passed, the tightest session yet.** Console WPR,
+`tools/wpr-triplet.ps1 -Reference p3m4 -Candidate p3m5,p3m5@C:\traces\thumbs.toml -Tag ab15`,
+accessibility on, Narrator off, no other TwinFM window, nine runs from 14:44 to 14:52, console checks
+after: `target-p3m4` (07ca56c) against `target-p3m5` (ee0be21, the PR head with the review fixes and
+the 4 px gap, built from a detached checkout with `--locked`). Analysed with
+`tools/analyze-trace.py --symbols --exe`.
+
+| Run | P3-M4 (`target-p3m4`) | P3-M5 defaults, `target-p3m5` | P3-M5 again (see below) |
+|---|---|---|---|
+| 1 | 18.0% (1796 ms) | 18.4% (1837 ms) | 18.4% (1839 ms) |
+| 2 | 18.1% (1805 ms) | 17.9% (1790 ms) | 18.0% (1796 ms) |
+| 3 | 17.9% (1791 ms) | 18.2% (1820 ms) | 18.6% (1858 ms) |
+| **median** | **18.0%** | **18.2%** | **18.4%** |
+
+The medians differ by 0.2 (and 0.4), and the candidate's run 2 sits below the reference's runs 1
+and 2 in both triplets, so neither half of the rule calls a gap; every one of the nine runs lies
+within 0.7 of a point, the quietest session recorded. Frame shares match within a few samples in
+every pair (accessibility 202 / 211, 213 / 212, 206 / 219; render 1056 / 1070, 1043 / 1052, 1054 /
+1020; draw_text 643 / 604, 640 / 602, 611 / 621; rows 344 / 358, 336 / 322, 337 / 346; timers 642 /
+670, 655 / 631, 646 / 672; heap 178 / 183, 172 / 184, 180 / 176), and no `resolve_view`, `compose`,
+thumbnail or table frame reaches five samples in any candidate window: the default row and the
+default resolve path are the reference's, as the four-component proof said. In-app the candidate
+read 19.1, 18.4, 18.1 against 18.3, 18.7, 16.9, `thumbs 0 ... dropped 0`, `resolve 375 calls avg
+2.8 to 3.0 us` (reference 2.9 to 3.2), 371 strips at 23.5 to 24.4 us, 0 `panicked`. Traces
+`C:/traces/twinfm-ab15-{p3m4,p3m5,p3m5-thumbs}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+The third column was meant to be thumbnails on and was not: the worktree's `wpr-triplet.ps1` ran
+`$Root\tools\wpr-gate.ps1`, the main checkout's copy, which does not know `-Config`, and a plain
+PowerShell script puts an unknown parameter in `$args` without a word, so the three
+`p3m5-thumbs` runs started with `[settings] scripted run: defaults` and are a second defaults
+triplet (recorded above as such). Fixed in 27e79a2: the triplet runs the `wpr-gate.ps1` beside it
+(`$PSScriptRoot`). The thumbnails-on triplet is re-run as ab16 below.
+
+Jeremy's console checks (2026-10-14) on `target-p3m5`: the Thumbnails setting, the 32 px list, the
+thumbnails in a photo folder and the 4 px gap: "console checks look good".
+
+**Thumbnails on (2026-10-14, ab16): passed.** Same protocol and binaries, `tools/wpr-triplet.ps1
+-Reference p3m4 -Candidate p3m5@C:\traces\thumbs.toml -Tag ab16` from the worktree's `tools/` (the
+fixed script), `C:\traces\thumbs.toml` read-only with `thumbnails = true`; every candidate stderr
+carries `[settings] file C:\traces\thumbs.toml (read)` and `[icons] list geometry: 32 px rows, 32
+px icons`. Six runs; console checks already done.
+
+| Run | P3-M4 (`target-p3m4`) | P3-M5 thumbnails on, `target-p3m5` |
+|---|---|---|
+| 1 | 17.1% (1708 ms) | 13.9% (1394 ms) |
+| 2 | 17.3% (1727 ms) | 13.8% (1381 ms) |
+| 3 | 17.4% (1736 ms) | 13.4% (1343 ms) |
+| **median** | **17.3%** | **13.8%** |
+
+The candidate sits 3.5 points below the reference in every pair, the same figure as the trace's
+variant (a) (17.4 against 13.7 in ab14), for the same reason: 32 px rows show fewer rows per screen
+and pass fewer per pixel scrolled (rows 328 / 241, 337 / 234, 338 / 223; draw_text 592 / 479, 583 /
+485, 582 / 493; accessibility 178 / 148, 179 / 149, 172 / 141; render 1002 / 811, 1012 / 811, 1019 /
+793; timers 600 / 481, 603 / 470, 613 / 439; heap 181 / 127, 170 / 133, 171 / 140). The 32 px strip
+(251 composes at 45 to 46 us, `thumbs 0` on bigdir) and the thumbnail path's resolve (3.5 to 3.7 us
+against 2.7 to 3.2) are below this resolution. 0 `panicked`. Traces
+`C:/traces/twinfm-ab16-{p3m4,p3m5-thumbs}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+P3-M5 is closed on both gates: the defaults are the reference within 0.2 of a point, and the
+setting that puts the first per-row image since M2 on screen buys back more than it costs. The
+milestone's row and default resolve path are the reference's, so `target-p3m5` (ee0be21) is the
+reference for whatever comes next; `target-p3m4` is deleted once it has served as one.

@@ -123,6 +123,8 @@ export component App inherits Window {
     in property <string> version;
     // The Type column in both panes (settings `show_type`; set at start and by the dialog).
     in property <bool> show-type: true;
+    // Thumbnails and 32 px rows in both panes (settings `thumbnails`; set at start and by the dialog).
+    in property <bool> thumbnails: false;
     in property <int> left-sort-col;
     in property <bool> left-sort-asc;
     in property <int> right-sort-col;
@@ -250,6 +252,7 @@ export component App inherits Window {
     in-out property <bool> dlg-hidden-left;
     in-out property <bool> dlg-hidden-right;
     in-out property <bool> dlg-type-column;
+    in-out property <bool> dlg-thumbnails;
     in-out property <bool> dlg-sidebar;
     in-out property <bool> dlg-crumbs;
     // "Saved to <file>", or that a scripted run saves nothing.
@@ -271,14 +274,15 @@ export component App inherits Window {
     public function settings-ok() { finish-settings(true); }
     public function settings-cancel() { finish-settings(false); }
     // What each control calls when the user changes it (and the driver's `settings set`): field
-    // start_left, start_right (a path), hidden_left, hidden_right, type_column, sidebar ("true" or
-    // "false"), path_bar ("entry" or "crumb").
+    // start_left, start_right (a path), hidden_left, hidden_right, type_column, thumbnails, sidebar
+    // ("true" or "false"), path_bar ("entry" or "crumb").
     public function settings-stage(field: string, value: string) {
         if (field == "start_left") { dlg-start-left = value; }
         if (field == "start_right") { dlg-start-right = value; }
         if (field == "hidden_left") { dlg-hidden-left = value == "true"; }
         if (field == "hidden_right") { dlg-hidden-right = value == "true"; }
         if (field == "type_column") { dlg-type-column = value == "true"; }
+        if (field == "thumbnails") { dlg-thumbnails = value == "true"; }
         if (field == "sidebar") { dlg-sidebar = value == "true"; }
         if (field == "path_bar") { dlg-crumbs = value != "entry"; }
     }
@@ -332,9 +336,10 @@ export component App inherits Window {
         if (p == 0) { left.begin-edit(mode, text); } else { right.begin-edit(mode, text); }
     }
 
-    // set-strip(pane, image, first row, width, height, shown): the pane's icon strip.
-    public function set-strip(p: int, img: image, first: int, w: length, h: length, shown: bool) {
-        if (p == 0) { left.set-strip(img, first, w, h, shown); } else { right.set-strip(img, first, w, h, shown); }
+    // set-strip(pane, image, top of its first row in the list's content, width, height, shown):
+    // the pane's icon strip.
+    public function set-strip(p: int, img: image, top: length, w: length, h: length, shown: bool) {
+        if (p == 0) { left.set-strip(img, top, w, h, shown); } else { right.set-strip(img, top, w, h, shown); }
     }
 
     forward-focus: outer;
@@ -533,6 +538,7 @@ export component App inherits Window {
                 forward-button => { root.pane-forward(0); }
                 history(f) => { root.pane-history(0, f); }
                 show-type: root.show-type;
+                thumbnails: root.thumbnails;
                 focus-requested => { active-pane = 0; }
                 filter-open <=> root.left-filter-open;
                 filter-text <=> root.left-filter-text;
@@ -575,6 +581,7 @@ export component App inherits Window {
                 forward-button => { root.pane-forward(1); }
                 history(f) => { root.pane-history(1, f); }
                 show-type: root.show-type;
+                thumbnails: root.thumbnails;
                 focus-requested => { active-pane = 1; }
                 filter-open <=> root.right-filter-open;
                 filter-text <=> root.right-filter-text;
@@ -777,6 +784,15 @@ export component App inherits Window {
                                 checked: root.dlg-type-column;
                                 accessible-label: "Show the Type column";
                                 toggled => { root.settings-stage("type_column", self.checked ? "true" : "false"); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Thumbnails"; vertical-alignment: center; }
+                            CheckBox {
+                                text: "Thumbnails (32 px rows)";
+                                checked: root.dlg-thumbnails;
+                                accessible-label: "Show thumbnails in 32 px rows";
+                                toggled => { root.settings-stage("thumbnails", self.checked ? "true" : "false"); }
                             }
                         }
                         Row {
