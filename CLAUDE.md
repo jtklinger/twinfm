@@ -266,7 +266,12 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   from one elevated console, builds named by their `target-<name>` dir, and refuses to start
   while a TwinFM window is open); a gap counts only when every reference run sits below every candidate run or the
   medians differ by more than one point. The reference binary is the last merged milestone's
-  gate build (`target-p2m5`, 011430e, after Phase 2).
+  gate build (`target-p3m4`, 07ca56c, after P3-M4); the previous one is deleted once the new one
+  has served as a reference. Console checks run AFTER the triplet, never before: a recursive
+  search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
+  points for the run, while sessions with the checks after were the quietest yet. A running
+  TwinFM locks its exe, so a rebuild into `target-<name>` fails with "Access is denied" while
+  Jeremy's console window from that build is open: ask him to close it first.
 - Paths handed to `twinfm.exe` from Git Bash must be Windows-style (`cygpath -w`): a
   forward-slash path fails in `SHParseDisplayName` (0x80070057) and a scripted drag never starts.
 - PowerShell's `2>` redirect writes UTF-16 with wrapped lines; convert with
