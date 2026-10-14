@@ -2203,12 +2203,48 @@ panes. Not investigated: a thin green fringe along the top edge of the shell's 9
 every grid screenshot (possibly non-premultiplied edge pixels from `GetImage` at that size); the
 16 x 16 placeholders stretched to 96 px before the first icon lands.
 
-**Gate: pending Jeremy at the console.** One command, three builds, nine runs (reference first in
-each round, `tools/wpr-triplet.ps1` now takes a comma-separated candidate list):
-`tools/wpr-triplet.ps1 -Reference p3m4 -Candidate p3m5a,p3m5b -Tag ab14`, Narrator off, every TwinFM
-window closed, console checks after. The rule is applied per candidate against the reference's three
-runs. The decision tree from the kickoff: (a) holds and (b) does not, P3-M5 is thumbnails in the
-details view at 32 px only; neither holds, the milestone stops here and this record says so; both
-hold, thumbnails first, then the grid only if Jeremy wants it. The symbolized traces are the
-check on the in-app reading: a `compose_grid` or `fit` frame of about 3 points is expected in (b);
-nothing new is expected in (a) beyond a slightly larger `compose`.
+**Gate (2026-10-14, Jeremy at the console): both variants hold the bar.** One command, three
+builds, nine runs from 11:52 to 12:00, reference first in each round (`tools/wpr-triplet.ps1
+-Reference p3m4 -Candidate p3m5a,p3m5b -Tag ab14`; the script now takes a comma-separated candidate
+list), accessibility on, Narrator off, no other TwinFM window, console checks after. `target-p3m4`
+(07ca56c) against `target-p3m5a` (9598f79) and `target-p3m5b` (075f85a). Analysed with
+`tools/analyze-trace.py --symbols --exe`.
+
+| Run | P3-M4 (`target-p3m4`) | (a) 32 px details, `target-p3m5a` | (b) grid, `target-p3m5b` |
+|---|---|---|---|
+| 1 | 19.0% (1896 ms) | 13.6% (1359 ms) | 13.3% (1330 ms) |
+| 2 | 17.4% (1738 ms) | 13.7% (1371 ms) | 13.2% (1325 ms) |
+| 3 | 16.7% (1672 ms) | 13.8% (1381 ms) | 13.2% (1316 ms) |
+| **median** | **17.4%** | **13.7%** | **13.2%** |
+
+Every candidate run sits below every reference run, both medians are more than three points under
+the reference's and six under the bar, and the candidates' spreads are the tightest ever recorded
+(0.2 and 0.1); the in-app lines agree (reference 19.8, 20.2, 18.0; (a) 14.8, 14.4, 15.5; (b) 15.6,
+14.5, 12.5), 0 `panicked` in every log. The session itself sat a quiet two to three points below
+the P3-M4 gate's (the reference read 20.8 there), which the pairwise reading tolerates. Traces
+`C:/traces/twinfm-ab14-{p3m4,p3m5a,p3m5b}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+What the symbolized windows say (inclusive samples, run 1; runs 2 and 3 match within a few):
+
+- **(a) costs nothing new.** No `twinfm` frame reaches the table: `icons::compose` 1 sample,
+  `resolve_view` 1, `Texture::new_from_image` absent (the reference's 19). The whole difference is
+  fewer rows on screen: `ensure_updated_listview` 225 against 364, `draw_text` 486 against 637,
+  accessibility 148 against 195, heap 118 against 195. The 32 px strip (251 composes at 47 us) is
+  invisible at this resolution. A 32 px details view holds the bar with the same margin the
+  reference has, plus what the taller rows save.
+- **(b) spends about a third of its busy on the strip and still holds.** `compose_grid` 254 samples
+  (19.1% of the window) and the femtovg texture path for the composed image `Texture::new_from_image`
+  227 (17.1%, of it `ImageStore::alloc` 169): the M2 mechanism again (a pixel-buffer `Image` has no
+  cache key, so every compose uploads a fresh 480 x 1080 px texture), about 480 ms of the 1,330,
+  roughly 4.8 points, matching the in-app 252 composes at 1.2 ms. It is paid for by the grid drawing
+  far less: `ensure_updated_listview` 42 against 364, `draw_text` 304 against 637, accessibility 65
+  against 195 (6 grid rows of 5 tiles against about 33 rows of 4 texts; the console window is 1920
+  px wide, so more tiles per row than the harness's 5). `row_data` 2 samples. If the grid is built
+  for real, the strip's recompose rate (one grid row of margin, `GRID_MARGIN_ROWS = 1`) and the
+  texture upload per compose are the first things to trim; neither is needed to pass.
+
+By the kickoff's decision tree both hold, so P3-M5 is thumbnails first (step 3 of the handoff) and
+the grid only if Jeremy wants it. Two decisions for Jeremy before the thumbnail brief: whether
+the large-icon view is wanted at all, and how the details view's row height is chosen (32 px for
+everyone, or 22 px as today with 32 px rows only when thumbnails are on, a per-pane list variant
+like the Type column's, so the default stays the reference row).
