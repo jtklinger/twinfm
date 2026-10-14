@@ -2270,10 +2270,15 @@ column's is, so the default list stays the reference's row.
   rows x 32 px. `FileListHost` gains `in property <bool> thumbnails` and `out property <length>
   row-h: root.thumbnails ? 32px : 22px`, and its two `if`s become four, one per combination of
   `show-type` x `thumbnails`, each on a host-level expression, none inside a `for`; no row reads
-  `row-h`. The host's `bring-into-view` and the pane's overlays read `list.row-h`, one binding each:
-  the strip's `y`, the drop highlight's `y` and height, `rows-end`, and the rename editor's `x`, `y`
-  (`(row-h - 28px) / 2`, -3 px or +2 px as in the trace) and width. The 22 px components are the
-  reference's byte for byte (below).
+  `row-h`. The host's `bring-into-view` and the pane's overlays that do not follow every scroll read
+  `list.row-h`: the drop highlight's `y` and height (during a drag), the rename editor's `x`, `y`
+  (`(row-h - 28px) / 2`, -3 px or +2 px as in the trace) and width, and `rows-h` (rows x row
+  height, no content-y in it, so cached while the list scrolls). The two overlay bindings that
+  re-evaluate on every content-y change read no row height (after the review): the strip's `y` is
+  `list.content-y + strip-top`, where `set-strip` now takes the strip's logical top (first row x
+  row height, computed in `compose_strip`) in place of the first row's index (`strip-first` is
+  gone), and `rows-end` is `list.content-y + rows-h`. The 22 px components are the reference's byte
+  for byte (below).
 - **Row height in Rust.** `icons::ROW_PX` and `ICON_LOGICAL_PX` are gone: `icons::ListGeom::new(
   thumbnails)` gives `row_px` and `icon_px` (22 and 16, or 32 and 32) and `name_x()` (6 px plus a
   row: 28 or 38). `StripGeom::new(scale, thumbnails)` carries it (`icon_y` centres the icon as
@@ -2282,8 +2287,12 @@ column's is, so the default list stays the reference's row.
   `dnd::scrolled`, `shellmenu::row_menu_point` and the keyboard menu's empty-list point take it;
   `reveal_row` after a pass uses it; the driver's `row_pos`, `empty_pos` and the `rclickempty`
   fallback read `window_layout(app).row_px`.
-- **Icon sizes kept apart.** The `IconTable` keys its index, pending and failed sets by (key, px)
-  and the workers' taken set likewise; `Reply` carries `size_px`. So `ext:.txt` at 16 px and at
+- **Icon sizes kept apart.** The `IconTable` holds one `SizeKeys` (index, pending and failed sets,
+  keyed by `SharedString` as before) per icon size, in a small `Vec` searched linearly;
+  `resolve_icons` takes the size's sets once per call (`IconTable::keys(px)`, with the thumbnail
+  `Cap`), so each row's lookup is a borrowed `&SharedString` one as in the reference (the first
+  version keyed one map by `(key, px)`, cloning the key per lookup: changed after the review). The
+  workers' taken set is keyed by (key, px); `Reply` carries `size_px`. So `ext:.txt` at 16 px and at
   32 px are two renders and two buffers, and switching back finds the 16 px ones ready (the System32
   check below: one new request, `dir` at 32 px). Thumbnails are 32 x scale px only.
 - **Thumbnail keys** (`icons.rs`, on the enumeration worker). With thumbnails on, a `Kind::File`
@@ -2316,7 +2325,8 @@ column's is, so the default list stays the reference's row.
   turns a missing `thumb:` key into its extension's key (`thumb_fallback`) and the row gets the
   type's icon; logged once (`[icons] thumbnail cap reached: ...`). A held thumbnail stays.
 - **Logging.** The `[icons]` line gains `thumbs N avg M ms dropped D` after `slow N` (thumbnail
-  requests rendered in the period, kept out of `rendered`, and their average; drops); a thumbnail of
+  requests rendered in the period, kept out of `rendered`, and their average; drops of requests not
+  already stale by navigation); a thumbnail of
   100 ms or more logs `[icons] thumbnail <ms> ms: <path>` and counts in `slow`.
 - **Driver**: `settings set thumbnails true|false`; no new step.
 - **Tests**, 118 to 122: `thumbnails_default_off_and_round_trip_on`; `letterbox_keeps_the_aspect_
@@ -2397,7 +2407,14 @@ this record), every run with `TWINFM_SCRIPT` and without `TWINFM_SOAK`; thumbnai
 - **(i) The gate scenario, defaults**, `C:\traces\bigdir`, against `target-p3m4`. The `[icons]`
   line has the reference's shape: `total 1 / 1, table 4 images, ... thumbs 0 avg 0.00 ms dropped 0,
   resolve 377 calls avg 3.2 us, compose 371 strips avg 23.9 us` (reference: `resolve 377 calls avg
-  2.9 us, compose 371 strips avg 23.1 us`); 0 `thumb` lines. Busy, Measurements.
+  2.9 us, compose 371 strips avg 23.1 us`); 0 `thumb` lines. Busy, Measurements. After the review's
+  fixes (table per size, strip top from Rust, cached `rows-h`, `dropped` not counted for stale
+  requests), five more interleaved pairs: resolve 3.5, 3.3, 3.4 us with the size sets in a
+  `HashMap<u32, _>` (reference 2.9, 2.9, 2.9), then 3.1 and 3.1 with them in a `Vec` (reference 2.8,
+  3.0); last pair `[icons] +0 requests +0 replies (total 1 / 1), table 4 images, ... thumbs 0 avg
+  0.00 ms dropped 0, resolve 377 calls avg 3.1 us, compose 371 strips avg 23.9 us`. The remaining 0.1
+  to 0.3 us a call (under 0.1 ms over the 377 calls of a run) was not traced to a line; busy in
+  those five pairs: reference 19.1, 17.3, 19.4, 17.2, 18.4; candidate 18.4, 17.2, 18.3, 19.2, 18.9.
 - **(ii) The gate scenario with thumbnails on**: `[icons] list geometry: 32 px rows, 32 px icons`,
   `table 4 images, ... thumbs 0`, `compose 251 strips avg 47.6 to 53.4 us` (the trace's (a): 251 at
   48.5 to 55.2); `[perf]` render p50 1.95 ms against 2.63 with them off.
@@ -2472,9 +2489,10 @@ interleaved, three batches of four (reference first, candidate first, reference 
 
 The first batch had every candidate run above every reference run (0.8 to 1.8 points, one run
 disturbed at 23.6); the next two did not (medians 18.2 against 18.25, and 18.3 against 18.45). In-app
-numbers do not decide; the gate triplet does. What differs on the default per-frame path is the host's
-four `if`s (two of them empty) and the overlays' reads of `list.row-h`; the rows' generated code is
-the reference's (below).
+numbers do not decide; the gate triplet does. What differed on the default per-frame path in these
+runs was the host's four `if`s (two of them empty) and the strip's `y` and `rows-end` reading
+`list.row-h`; the review's fix removed the latter (What landed), the rows' generated code is the
+reference's (below).
 
 (ii) Thumbnails on against off, same build, interleaved: off 18.4, 18.6, 17.5, 19.2 (median 18.5); on
 14.4, 14.7, 15.6, 14.4 (median 14.55); fewer, taller rows, as in the trace.
