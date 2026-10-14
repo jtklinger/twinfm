@@ -400,6 +400,8 @@ component FileListHost inherits Rectangle {
         if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return EventResult.accept; }
         if (e.text == Key.LeftArrow && e.modifiers.alt) { root.history(false); return EventResult.accept; }
         if (e.text == Key.RightArrow && e.modifiers.alt) { root.history(true); return EventResult.accept; }
+        // Alt+Return: the size of every folder in the listing (P3-M3).
+        if (e.text == Key.Return && e.modifiers.alt) { root.command("sizeall"); return EventResult.accept; }
         if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return EventResult.accept; }
         if (e.text == Key.UpArrow) {
             if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }

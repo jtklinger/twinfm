@@ -133,8 +133,8 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
 /// handed to `f`; `f` returning false stops the listing (Ok(false)). Err with the Win32 error code
 /// when the folder cannot be listed; ERROR_FILE_NOT_FOUND from the first call (a drive root with
 /// nothing in it has no "." entry either) is an empty listing, as read_dir gave. The one listing
-/// loop: the folder enumeration and the recursive search both use it.
-fn list_dir(
+/// loop: the folder enumeration, the recursive search and the folder sizes (`fs::sizes`) use it.
+pub(crate) fn list_dir(
     path: &Path,
     types: &mut TypeNames,
     icon_keys: &mut crate::icons::IconKeys,

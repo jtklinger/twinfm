@@ -834,7 +834,7 @@ said "only if wanted") was not asked for and is deferred.
 
 ### Deferred
 - **Result names are cut short** in a search tab: the Name column shows the relative path and
-  elides it from the right (`Windows\WinSxS...` in Jeremy's console check, 2026-10-13); a wider
+  elides it from the right (`Windows\WinSxS\a...` in Jeremy's console check, 2026-10-13); a wider
   Name column for search tabs, or the folder in its own column, is a follow-up.
 - **Refusal notes stay in the status bar** (paste, new folder, copy and move into a search tab);
   Jeremy is fine with that for now (2026-10-13); a louder message would be a product decision.
@@ -1135,3 +1135,449 @@ when Rust closes an open filter box, F7 forwarded from the box, and the pane's `
 property and `changed filter-open` handler removed. None of it touches the rows. In the gate
 scenario (no box, no search) what runs differently is a `Place` cloned per navigation instead of a
 `PathBuf` (per navigation, not per frame) and one change handler fewer per pane.
+
+## P3-M3: folder sizes
+
+The backlog was two deferrals: M6a's "the status bar sums file sizes only; folder sizes are not
+computed" (`phase-1-plan.md` § M6a Deferred) and P2-M1's "subtree watches (sizes or counts of
+subfolders), not needed until folder sizes exist" (`phase-2-plan.md` § P2-M1 Deferred). TwinFM now
+adds up the folders the user selects (or, with Alt+Return, every folder of the listing) on one
+worker, shows the totals in the status bar while they grow and in the Size column once they are
+known, and watches the whole tree below the folder while any size is cached or being computed, so
+a change inside a sized folder drops its size. The gate scenario never meets any of it: nothing is
+sized without a selection or Alt+Return, and the row is unchanged.
+
+### What landed (2026-10-13)
+
+- **The size worker** (`src/fs/sizes.rs`). `measure(root, max_depth, cancel, each_dir)` walks
+  `root` depth first from an explicit stack with `enumerate::list_dir` (now `pub(crate)`; no second
+  find loop) and adds up every file's size, hidden and system files included (disk usage, not what
+  the list shows). Only `Kind::Directory` is entered; a junction, symbolic link, cloud placeholder
+  or app alias is counted (as a folder or a file by its attributes) at 0 bytes and never entered.
+  Folders deeper than 64 (`SIZE_MAX_DEPTH`) are counted and not entered (`truncated`). A folder
+  that cannot be listed counts as skipped. The cancel flag (`AtomicBool`) is read before each
+  folder; `each_dir` gets the totals after each folder. Result: `Totals { bytes, files, folders,
+  truncated, skipped }`, None when cancelled. One thread ("sizes") serves a shared
+  `Mutex<Queue>` + `Condvar`, newest first (`Queue::pop` takes the last request and drops cancelled
+  ones it meets), like the icon pool's queue; the UI pushes into it directly (one worker, so no
+  feeder thread). A request is (pane, tab id, the tab's size generation, folder name, path, cancel
+  flag); replies (partial every 250 ms, `PARTIAL_EVERY`, and the final one) go over a channel and
+  wake the UI with `invoke_from_event_loop(drain_sizes)`. A cancelled walk sends nothing.
+- **Per-tab bookkeeping** (`fs::sizes::TabSizes`, pure, on `Tab::sizes`): `cache` (folder name to
+  totals), `pending` (name to cancel flag, latest partial totals, and whether Alt+Return asked for
+  it), `generation` (bumped whenever the cache is cleared), `overflows` (subtree overflows in a
+  row). `plan(selected, 100)` says what a selection change queues (the first 100 selected folders in
+  display order that are neither cached nor in flight) and cancels (requests a selection made for
+  folders no longer selected); `summary(selected)` gives the status bar's folder part (known bytes:
+  finished sizes plus partial totals; how many are pending; how many are not sized);
+  `invalidate(child, now)` marks a cached size stale by the first component of a changed path,
+  ignoring ASCII case, with its re-walk time (`stale`), and returns nothing when it is stale already;
+  `due(now)` and `next_due()` hand out the re-walks; `walk_ms` holds each folder's last walk time and
+  `from_all` the folders Alt+Return sized; `forget(name)` drops one size; `clear()` cancels
+  everything and empties the cache. `drain_sizes` drops a reply whose tab is
+  gone, whose generation is old, or whose cancel flag is not the pending request's own.
+- **What the user sees.** Selecting folders (click, Ctrl+click, Shift+click, Ctrl+A, Space,
+  Shift+arrows, a plain arrow onto a folder) queues the selected plain folders that have no size
+  yet; a selection change cancels the walks for folders no longer selected. The status bar's middle
+  text (`statusbar::mid_text`, now with a `DirTotals` argument) reads "N selected, X" once every
+  selected folder is sized (files and folders together), "N selected, X so far..." while some are
+  walking (X grows with the partial totals four times a second), and "N selected, X so far (K
+  folders not sized)" past the 100-folder cap, "N selected, X (updating...)" when every selected
+  folder has a size and some are out of date; with only files selected it reads as before. The Size
+  column shows a folder's size when its walk ends: `PaneModel::set_size` writes the entry in the
+  listing (`all`) and in the shown rows and notifies that one row; the row and its Slint side are
+  unchanged (the cell is the same `row.size` text files use). A folder with no computed size shows an
+  empty cell as before. A cached folder shows its size at once when selected again. Alt+Return in
+  the list (`pane.slint`'s key function, `command("sizeall")`) sizes every folder of the listing
+  that has no size, at most 500, the ones nearest the cursor first. Search tabs and This PC get no
+  sizes (Alt+Return there leaves a note in the status bar).
+- **When sizes are forgotten.** Navigation, F5 / Ctrl+R, a tab leaving the foreground (its watch
+  goes with it, as P2-M1 made it stale) and closing a tab clear the tab's cache and cancel its walks
+  (`Tab::drop_sizes`). A refresh started by the directory watch or after a file operation keeps
+  them: `Msg::Done` puts the cached sizes back into the new listing (`PaneModel::apply_sizes`, one
+  pass over it, only when the cache is not empty), so the pass that follows shows and sorts them.
+- **Subtree watches** (`src/fs/watch.rs`). `Watcher::watch` takes `subtree`; `watch_active` asks
+  for it while the tab has sizes cached or in flight (`TabSizes::any`) and has not overflowed twice
+  in a row, so the watch is re-armed with `bWatchSubtree = TRUE` when the first folder is queued and
+  goes back to shallow when the cache is cleared or the last request is cancelled with nothing
+  cached (`[watch] subtree on|off <path>`). Only a subtree watch parses its records
+  (`parse_records`: `NextEntryOffset`, `Action`, `FileNameLength`, the UTF-16 name, bounds-checked)
+  and delivers `Event::Subtree { top, changes, overflow }` instead of `Changed`: `top` when a record
+  names an entry of the folder itself, `changes` one (child, first record) pair per child of the
+  folder that a record lay below or added, removed or renamed (a record that only modified a
+  subfolder's own entry, `modified a`, does not count: see Decisions), `overflow` for
+  `ERROR_NOTIFY_ENUM_DIR` or an empty completion. The 250 ms coalescing is unchanged. On the UI side
+  (`watch_event`): a change below a sized subfolder marks its size stale (next bullet); only `top`
+  or an overflow refreshes the listing, otherwise one line says
+  `changed below the folder: no refresh`. An overflow drops every cached size, re-queues the
+  selected ones and refreshes; after two in a row (no parsed event between) the tab's watch stays
+  shallow (`subtree disabled for this tab after two overflows`); navigation resets the count.
+- **Re-walks after a change, with a back-off** (added after the lead's review, c5f29c4). A change
+  below a sized folder does not re-queue it at once: the size is marked stale (`[size] invalidated
+  <path> (<change>)` and `[size] stale <path>: re-walk in N s`, once per window) and walked again
+  after max(2 s, twice its last walk's duration) (`REWALK_MIN`, `rewalk_delay`); further changes in
+  that window join the one re-walk and log nothing. One single-shot `slint::Timer` per pane
+  (`State::size_timer`) is started for the earliest stale size of the active tab and restarted when
+  a new one is marked; when it fires (`rewalk_due`), each due folder is walked again if it is still
+  selected or was sized by Alt+Return (the tab is still on its folder: navigation clears it all), and
+  otherwise forgotten (`[size] stale <path>: not selected any more, size dropped`, its cell
+  emptied). Meanwhile the old size stays in the cell and counts in the status bar, which reads "N
+  selected, X (updating...)" (see Decisions); deselecting a folder whose re-walk is running cancels
+  it and drops the out-of-date size. A change during a re-walk marks the size stale again, for the
+  next window.
+- **Logging.** `[size] queued <path> (K in queue)`, `partial <path>: X bytes, F files, D folders`
+  (from the worker, every 250 ms of a walk), `done <path>: X bytes, F files, D folders in T ms (S
+  skipped)` (`, truncated at depth 64` when it was), `cancelled <path> (<why>)` (deselected,
+  navigation, F5, tab in the background, tab closed), `cache cleared pane=N (<why>)`, `invalidated
+  <path> (<change>)`, `stale <path>: re-walk in N s`, `stale <path>: not selected any more, size
+  dropped`, `capped: K of M folders sized`, `pane=N Alt+Return: K of M folder(s) to size`;
+  `[watch] subtree on <path>`, `subtree off <path>`, `changed below the folder: no refresh`,
+  `subtree overflow <path>: sizes dropped`, `subtree disabled for this tab after two overflows`.
+- **Driver** (`auto.rs`): `sizeall <pane>` (focuses the pane's list and presses Alt+Return, key name
+  `AltReturn`), `waitsize <ms>` (until no tab has a size queued or walking, so the last reply has
+  landed, then 300 ms; `main::sizes_busy`).
+- **Tests**, 104 to 111: `walker_counts_hidden_files_and_skips_links` on a tree in
+  `%TEMP%\twinfm-p3m3-test-<pid>\` (hidden and system files counted, 1,192 bytes in 6 files; a
+  junction to the root counted as a folder and not entered; a folder whose listing is denied to
+  Everyone with `icacls /deny *S-1-1-0:(RD)` counted as skipped, the deny removed before the tree is
+  deleted; a depth limit of 2 truncates and leaves the deepest file out; a flag set after the first
+  folder stops the walk there; a missing root gives one skipped);
+  `queue_serves_newest_first_and_drops_cancelled`; `selection_plan_caps_and_cancels` (150 selected
+  folders: 100 queued from the top, `capped (100, 150)`; the summary with two sized, one walking and
+  the rest not sized; a new selection cancels the selection's request and keeps Alt+Return's);
+  `cache_invalidates_by_first_component` (`sub\deep\x.txt` marks `Sub` stale, not `sub2`, with a
+  30 s re-walk after a 15 s walk and 2 s after a short one; a second change in the window returns
+  nothing; the old size stays cached; `due` hands them out at their times; `clear` cancels, empties
+  and bumps the generation); `folder_sizes_in_the_middle_text` (also "(updating...)", and "so far..."
+  winning when one folder has no size); the summary counts a stale size as updating; `records_parse` (a two-record buffer, a cut record dropped);
+  `subtree_watch_tells_deep_changes_from_top_ones` (a file two levels down gives `Subtree` with
+  `top` false and the child `sub`; a top-level file gives `top` true; back to shallow, a deep file
+  gives nothing and a top-level one a plain `Changed`).
+- **Docs**: `CLAUDE.md` (test count, `sizeall`, `waitsize`, `AltReturn`, the `[size]` lines and the
+  `[watch]` additions, the new scratch folder); the stray BEL in the P3-M2 Deferred bullet above is
+  now `Windows\WinSxS\a...` (`grep -c $'\x07' docs/phase-3-plan.md` gives 0).
+
+### Decisions
+
+- **Records are parsed**, not "invalidate every size on any event": the parser is twenty lines and
+  the first component of a record's path is the sized child it lies under.
+- **A record that only modifies a subfolder's own entry (`modified a`) does not drop `a`'s size.**
+  NTFS updates a folder's entry in its parent lazily, after something has opened the folder, so the
+  first walk of a freshly changed folder produces one; dropping the size for it re-walked every
+  newly sized folder once more (seen in the first scripted run: `invalidated ...\c (modified c)`
+  right after `c`'s walk). A content change always comes with a record below the child. The record
+  still sets `top`, so the listing refreshes as a shallow watch would have.
+- **A refresh by the watch or after a file operation keeps the sizes; F5 drops them.** The brief
+  said the cache is cleared on refresh. Clearing on the watch's refreshes would restart every walk
+  whenever anything at the top of the folder changes (`NTUSER.DAT`'s logs in `C:\Users\jtkli`), and
+  the subtree watch already drops what an operation changed.
+- **A tab leaving the foreground forgets its sizes** (and cancels its walks): its watch moves to the
+  tab that takes its place, so its sizes could go stale unseen, as its listing does (P2-M1).
+- **The Size column shows finished sizes only**; partial totals are in the status bar ("so far...").
+  A cell never shows a number that is still growing or that a cancel would leave behind.
+- **No automatic re-sort on a reply.** The size goes into the listing's entry, so it takes part the
+  next time the user sorts (by Size or anything else); rows do not jump while sizes arrive.
+- **Alt+Return, no menu item.** One key in the list, beside Return. Its requests are not cancelled
+  by selection changes (the user asked for all of them); navigation, F5, a tab switch or close do.
+- **Only plain folders are sized.** A selected junction, directory link, cloud folder or drive counts
+  no bytes, as before, and is never queued: sizing it would walk what it points to.
+- **Hard links count once per link** (no file IDs are read): `C:\Windows` reads 43.8 GiB, most of it
+  `WinSxS` links to files that also sit in `System32`.
+- **The request carries the tab's size generation, not the listing's.** The listing generation
+  changes on every refresh, which would drop a walk's result whenever the watch refreshes the folder;
+  the size generation changes only when the cache is cleared. The cancel flag's identity is checked
+  too, so a reply for a request cancelled and queued again is dropped.
+- **Newest first, cursor first.** A selection pushes its folders last first, so the topmost selected
+  folder is served first; Alt+Return pushes the farthest from the cursor first.
+- **The worker logs `partial` and `done`** (it has the times and counts), as the search worker logs
+  its own lines; the UI logs queue, cancel, cache and invalidation lines.
+- **One worker, no feeder thread.** The UI pushes into the mutex-guarded queue and signals the
+  condition variable itself; the icon pool's feeder exists to wake one of two workers.
+- **A changed folder is walked again after max(2 s, twice its last walk)**, once per window (the
+  lead's rule after review): `C:\Windows`, invalidated by Prefetch within a second of each 15.6 s
+  walk, is walked at most every 31 s instead of back to back. One timer per pane rather than per
+  folder: only the active tab has sizes, and one single-shot timer aimed at the earliest due time
+  covers any number of stale folders.
+- **The status texts with out-of-date sizes**: the old size counts and the text is "N selected, X
+  (updating...)" while every selected folder has some size; as soon as one has none at all (walking
+  for the first time, or past the cap) the "so far" forms apply as before ("X so far...", "X so far
+  (K folders not sized)") and "(updating...)" is not added. The Size cell keeps the last finished
+  size until the new one lands.
+- **A stale size that is no longer wanted is dropped, not kept**: when its re-walk is due and the
+  folder is neither selected nor Alt+Return's, or when a running re-walk is cancelled by a
+  deselection, its cell is emptied, since nothing will bring it up to date.
+
+### Deviations
+
+- **The subtree watch is on while sizes are cached or in flight**, not only while cached. With
+  "cached" alone, a selected folder whose size was dropped emptied the cache, the watch went shallow
+  (closing the handle), the re-queued walk ended, and the watch went subtree again (a new handle): in
+  a scripted burst below a sized folder the log showed `subtree off` / `subtree on` around every one
+  of the re-walks, with the changes in between unseen. Now the handle stays while anything is sized
+  or being sized.
+- **One row is updated through the model's own `row_changed`** (`PaneModel::set_size`), not
+  `set_row_data`: `PaneModel` is our own `Model`, and a rename re-lists the folder rather than
+  updating a row.
+- **The cache is not cleared on every refresh, and is cleared when a tab leaves the foreground**
+  (see Decisions).
+- **Extra lines**: `[size] pane=N Alt+Return: K of M folder(s) to size`, `[watch] ... changed below
+  the folder: no refresh`, and `, truncated at depth 64` after a `done` line.
+- **"100 folders in projects"**: `C:\Users\jtkli\projects` holds 20 folders, so Ctrl+A there sized
+  20; the cap of 100 was shown in `C:\Windows\WinSxS` instead (Scripted checks).
+
+### Deferred
+
+- **`waitsize` does not wait for a stale size's re-walk** (it waits for queued and walking sizes
+  only); a script that needs the re-walk sleeps past the delay.
+- **The first walk of a freshly changed folder costs one more walk** (`invalidated ...\a (modified
+  a\sub)` after it, the same lazy NTFS entry update one level down) and one listing refresh (the
+  top-level `modified a`).
+- **The overflow path was not triggered.** Four threads creating 32,000 files with long names below
+  a sized folder gave 66 parsed events and no overflow: the watcher thread re-arms its read faster
+  than that. "Disabled after two overflows" is therefore unexercised.
+- **The walk pays for what the listing needs**: `list_dir` builds each entry's type name and icon key
+  (cached per extension) and formats its time. Measured as it is (`C:\Windows` in 15.6 s); a leaner
+  callback for the size worker would need a second shape of the loop.
+- **A huge selection rebuilds its folder list on every status update** (`selected_folders` and
+  `summary`): with Ctrl+A in `WinSxS` (26,867 folders) that is once per reply and per partial total,
+  on the UI thread. Not measured; per selection change and per reply, never per frame.
+- **A subtree watch on a drive root sees the whole volume.** On `C:\` the watcher parsed every change
+  on the drive while `C:\Windows` walked (47 coalesced events in the run below, none refreshed).
+- **A walk cancelled during its last folder still logs `done`** (the flag is read before each folder);
+  its reply is dropped. Seen once in the WinSxS run (548 done and 53 cancelled for 600 queued).
+- **No "size on disk"** (allocation size, compression), no sizes for search results, background
+  tabs, or the other drives on This PC (which show their free space).
+
+### Scripted checks
+
+RDP session, this worktree's `target\release\twinfm.exe`: the final build, c5f29c4 (with the
+re-walk back-off), for the gate scenario, the scratch-tree check, the back-off check and the
+`C:\Users\jtkli` run; 7aacc01 for the burst; 1ed54d3, the build before the Deviation, for the
+others (the worker, the caps and the cache are the same in all three), every run
+with `TWINFM_SCRIPT` inline and without `TWINFM_SOAK`; no run read or wrote
+`%APPDATA%\twinfm\config.toml` (`[settings] scripted run: defaults, nothing saved`). Scratch trees
+under `%TEMP%`, removed afterwards. All exit code 0, no `panicked` line.
+
+- **The gate scenario meets no size code.** The gate script's steps (`sleep 2000; split; sleep 500;
+  wheel 1 -120 16; wheel 0 -120 16; drag 1 400 1000; drag 0 400 1000; sleep 6000; sort 0 1; sleep
+  1000; sort 1 2; sleep 3000; quit` on `C:\traces\bigdir`) select nothing and press no Alt+Return.
+  A run of it on the final build: `size lines: 0, subtree lines: 0, panicked: 0`; the four `[sort]`
+  lines as before (`40000 of 40000 entries ... selected=0`).
+- **Selection, cache, invalidation, Alt+Return, sort, F5** (`%TEMP%\twinfm-p3m3-check\root`: `a`
+  with `a1.bin` 1,000 bytes and `sub\x0.bin` 24, `b` with 5,000 and a hidden 120, `c` with 300,
+  `f.txt`), script `sleep 1000; click 0 0; waitsize 5000; ctrlclick 0 1; waitsize 5000; click 0 3;
+  sleep 300; click 0 0; sleep 300; touch 0 a\sub\new.txt; sleep 1500; waitsize 5000; touch 0 top.txt;
+  waitwatch 3000; sizeall 0; waitsize 5000; sort 0 1; sleep 800; click 0 0; ctrlclick 0 1; ctrlclick
+  0 2; sleep 4000; key F5; sleep 1500; quit` (the driver refuses `touch` with a path, so the deep
+  change came from the shell: `a\sub\new.bin`, 2,000 bytes, written 5 s after the start):
+
+  ```
+  [size] queued ...\root\a (1 in queue)
+  [watch] pane=0 subtree on ...\root
+  [size] done ...\root\a: 1024 bytes, 2 files, 1 folders in 3 ms (0 skipped)
+  [size] invalidated ...\root\a (modified a\sub)            (the lazy entry update, Deferred)
+  [size] stale ...\root\a: re-walk in 2.0 s
+  [select] pane=0 Toggle row=1 selected=2
+  [size] queued ...\root\b (1 in queue)
+  [size] done ...\root\b: 5120 bytes, 2 files, 0 folders in 1 ms (0 skipped)
+  [select] pane=0 Only row=3 selected=1
+  [size] stale ...\root\a: not selected any more, size dropped
+  [select] pane=0 Only row=0 selected=1
+  [size] queued ...\root\a (1 in queue)
+  [size] done ...\root\a: 1024 bytes, 2 files, 1 folders in 2 ms (0 skipped)
+  [size] invalidated ...\root\a (added a\sub\new.bin)
+  [size] stale ...\root\a: re-walk in 2.0 s
+  [watch] pane=0 tab=1 changed below the folder: no refresh
+  [size] queued ...\root\a (1 in queue)                     (2 s later)
+  [size] done ...\root\a: 3024 bytes, 3 files, 1 folders in 2 ms (0 skipped)
+  [size] invalidated ...\root\a (modified a\sub)
+  [size] stale ...\root\a: re-walk in 2.0 s
+  [watch] pane=0 tab=1 changed: refresh                      (top.txt; sizes kept)
+  [size] pane=0 Alt+Return: 1 of 1 folder(s) to size
+  [size] queued ...\root\c (1 in queue)
+  [size] done ...\root\c: 300 bytes, 1 files, 0 folders in 2 ms (0 skipped)
+  [auto] Sort { pane: 0, col: 1 }
+  [select] pane=0 Only row=0 selected=1
+  [size] stale ...\root\a: not selected any more, size dropped
+  [select] pane=0 Toggle row=1 selected=2
+  [size] queued ...\root\a (1 in queue)
+  [size] done ...\root\a: 3024 bytes, 3 files, 1 folders in 2 ms (0 skipped)
+  [select] pane=0 Toggle row=2 selected=3
+  [auto] Key("F5")
+  [size] cache cleared pane=0 (F5)
+  [watch] pane=0 subtree off ...\root
+  [size] queued ...\root\c (1 in queue)
+  [size] queued ...\root\b (1 in queue)
+  [size] queued ...\root\a (2 in queue)
+  [watch] pane=0 subtree on ...\root
+  [size] done ...\root\c: 300 bytes, 1 files, 0 folders in 1 ms (0 skipped)
+  [size] done ...\root\a: 3024 bytes, 3 files, 1 folders in 1 ms (0 skipped)
+  [size] done ...\root\b: 5120 bytes, 2 files, 0 folders in 1 ms (0 skipped)
+  ```
+
+  A screenshot (`tools/shot.ps1`) after the sort and the three clicks shows the folders sorted by
+  their computed sizes, `c` 300 B, `a` 3.0 KB, `b` 5.0 KB, in the Size column, and the status bar
+  "3 selected, 8.2 KB" (300 + 3,024 + 5,120 bytes). Hidden files counted: `b` is 5,120 bytes with
+  its hidden file.
+- **Cancellation, partial totals and `C:\Windows`** (TwinFM on `C:\`, rows 3 `home`, 16 `Users`,
+  17 `Windows`): `sleep 1500; click 0 17; sleep 2000; click 0 16; sleep 1500; click 0 3; waitsize
+  20000; click 0 17; waitsize 600000; click 0 3; sleep 300; click 0 17; sleep 7000; nav 0
+  C:\Users\jtkli\projects; sleep 1500; key CtrlA; waitsize 600000; sleep 7000; quit`:
+
+  ```
+  [size] queued C:\Windows (1 in queue)
+  [size] partial C:\Windows: 508155492 bytes, 2091 files, 26991 folders
+  ...
+  [size] cancelled C:\Windows (deselected)
+  [size] queued C:\Users (1 in queue)
+  [size] cancelled C:\Users (deselected)
+  [size] queued C:\home (1 in queue)
+  [size] done C:\home: 4475 bytes, 1 files, 4 folders in 3 ms (0 skipped)
+  [watch] pane=0 subtree on C:\
+  [size] queued C:\Windows (1 in queue)
+  [size] done C:\Windows: 47062949257 bytes, 184374 files, 157383 folders in 15581 ms (50 skipped)
+  [select] pane=0 Only row=3 selected=1
+  [select] pane=0 Only row=17 selected=1                     (cached: nothing queued)
+  [size] invalidated C:\Windows (modified Windows\Prefetch\CVTRES.EXE-BBD3ED93.pf)
+  [size] queued C:\Windows (1 in queue)
+  [size] cancelled C:\Windows (navigation)
+  [size] cache cleared pane=0 (navigation)
+  [select] pane=0 All row=-1 selected=27
+  [size] queued C:\Users\jtkli\projects\twinfm (1 in queue)
+  ... 20 folders queued, 20 done
+  ```
+
+  86 `partial` lines over the three walks of `C:\Windows` (at most four a second). While `C:\`
+  carried the subtree watch, 47 `changed below the folder: no refresh` lines and no `[refresh]`
+  line at all. A screenshot 1 s into the last 7 s sleep on `C:\` shows `Windows` already dropped by
+  the Prefetch write: an empty cell and "1 selected, 0 B so far..." (that build; the back-off below
+  keeps the old size and re-walks `C:\Windows` no sooner than 31 s later).
+- **Cached re-selection** (TwinFM on `C:\Users\jtkli\projects`, row 11 `Homelab`, row 2 `applyctl`):
+  `sleep 1500; click 0 11; waitsize 20000; click 0 2; waitsize 20000; click 0 11; sleep 4000; quit`:
+
+  ```
+  [size] queued C:\Users\jtkli\projects\Homelab (1 in queue)
+  [size] done C:\Users\jtkli\projects\Homelab: 20294221 bytes, 1605 files, 479 folders in 130 ms (0 skipped)
+  [size] queued C:\Users\jtkli\projects\applyctl (1 in queue)
+  [size] done C:\Users\jtkli\projects\applyctl: 172588058 bytes, 10243 files, 1465 folders in 220 ms (0 skipped)
+  [auto] Click { pane: 0, row: 11, modifier: None }
+  [select] pane=0 Only row=11 selected=1
+  ```
+
+  No `queued` line after the third click; the screenshot taken as soon as its `Click` line appeared
+  shows `Homelab` selected, 19.4 MB in its Size cell (and 164.6 MB in `applyctl`'s), and the status
+  bar "1 selected, 19.4 MB": the status bar is composed in the click's own handler from the cache.
+- **The caps** (TwinFM on `C:\Windows\WinSxS`, 26,869 entries): `sleep 2500; key CtrlA; waitsize
+  120000; sleep 5000; click 0 0; sizeall 0; sleep 1500; nav 0 C:\; sleep 1000; quit`:
+
+  ```
+  [select] pane=0 All row=-1 selected=26869
+  [size] capped: 100 of 26867 folders sized
+  [select] pane=0 Only row=0 selected=1
+  [size] pane=0 Alt+Return: 500 of 26767 folder(s) to size
+  [size] capped: 500 of 26767 folders sized
+  [size] cache cleared pane=0 (navigation)
+  ```
+
+  600 `queued`, 548 `done`, 53 `cancelled ... (navigation)`. The screenshot during the 5 s sleep shows
+  the first rows' sizes (1.1 KB, 3.8 KB, 708 B, ...) and "26869 selected, 2.1 MB so far (26767 folders
+  not sized)".
+- **The subtree watch on `C:\Users\jtkli` while the worker walks it** (hidden files shown, so
+  `AppData` too): `sleep 1500; key CtrlH; sleep 1000; sizeall 0; waitsize 900000; sleep 15000; quit`
+  on the final build:
+
+  ```
+  [size] pane=0 Alt+Return: 52 of 52 folder(s) to size
+  [watch] pane=0 subtree on C:\Users\jtkli
+  [size] done C:\Users\jtkli\AppData: 115565267969 bytes, 492243 files, 95359 folders in 17472 ms (1 skipped)
+  [size] invalidated C:\Users\jtkli\AppData (added AppData\Local\BraveSoftware\...\Network Persistent State...tmp)
+  [size] stale C:\Users\jtkli\AppData: re-walk in 34.9 s
+  [size] invalidated C:\Users\jtkli\projects (modified projects\.repowise\sessions)
+  [size] stale C:\Users\jtkli\projects: re-walk in 3.7 s
+  ```
+
+  Counted over the whole run (final build): 53 `queued`, 53 `done` (the 52 folders and one re-walk
+  of `projects`, which Alt+Return sized, 3.7 s after its change; `AppData`'s re-walk was due 34.9 s
+  later, after the script had quit), 88 `partial`, 2 `invalidated` with 2 `stale ... re-walk in`;
+  23 `[watch]` lines: 2 `watching`, 1 `subtree on`, 20 `changed below the folder: no refresh`, no
+  `changed: refresh`, no overflow; **0 `[refresh]` lines**. Every change the profile saw during the
+  walks (browser and Claude caches, `.repowise`) lay below a subfolder, so none re-listed
+  `C:\Users\jtkli`. Earlier runs on 7aacc01 (23 `[watch]`, 0 `[refresh]`, 52 `done`) and on 1ed54d3
+  (24 `[watch]`, 1 `[refresh]` from a top-level change, 3 `invalidated`) gave the same picture.
+
+- **A burst below a sized, selected folder** (`%TEMP%\twinfm-p3m3-overflow\root\a`, four Python
+  threads creating 32,000 one-byte files with long names in `a\sub`): `sleep 1000; click 0 0;
+  waitsize 5000; sleep 20000; waitsize 60000; sleep 1000; quit`. One `subtree on`, no `subtree off`,
+  66 `invalidated` and 66 `changed below the folder: no refresh` lines, each followed by a re-walk
+  (`done ...\a: 884 bytes, 786 files` up to `32100 bytes, 32001 files`), one `[refresh]` (the lazy
+  `modified a` after the first walk), no overflow. The earlier build (subtree only while cached)
+  logged `subtree off` / `subtree on` around every re-walk (Deviations). This run predates the
+  back-off; the back-off check below is its replacement.
+- **The re-walk back-off** (final build; `%TEMP%\twinfm-p3m3-backoff\root`, folder `a` holding a
+  1 MiB file): `sleep 1000; click 0 0; waitsize 5000; sleep 10000; waitsize 10000; sleep 500;
+  quit`, and once `a` was sized a shell loop wrote a 100,000-byte file into `a` every 300 ms, 17
+  times (5.1 s):
+
+  ```
+  [size] done ...\root\a: 1048576 bytes, 1 files, 0 folders in 3 ms (0 skipped)
+  [size] invalidated ...\root\a (added a\w1.bin)
+  [size] stale ...\root\a: re-walk in 2.0 s
+  [size] queued ...\root\a (1 in queue)
+  [size] done ...\root\a: 1748576 bytes, 8 files, 0 folders in 2 ms (0 skipped)
+  [size] invalidated ...\root\a (added a\w7.bin)
+  [size] stale ...\root\a: re-walk in 2.0 s
+  [size] queued ...\root\a (1 in queue)
+  [size] done ...\root\a: 2348576 bytes, 14 files, 0 folders in 2 ms (0 skipped)
+  [size] invalidated ...\root\a (added a\w13.bin)
+  [size] stale ...\root\a: re-walk in 2.0 s
+  [size] queued ...\root\a (1 in queue)
+  [size] done ...\root\a: 2748576 bytes, 18 files, 0 folders in 2 ms (0 skipped)
+  ```
+
+  3 `stale ... re-walk in` lines (one per 2 s window; the writes between them logged nothing) and 4
+  `done` lines (the first walk and 3 re-walks; the bound is ceil(5 s / 2 s) + 1 = 4); the second run
+  of the same script gave the same counts. The last size is the 1 MiB file plus 17 x 100,000 bytes.
+  The writes into `a` itself also change `a`'s own entry, so the listing refreshed with each 250 ms
+  batch (16 `[refresh]` lines), as a shallow watch would. Four screenshots taken one after another
+  while the writes ran show, in the status bar and `a`'s Size cell: "1 selected, 1.0 MB
+  (updating...)" with 1.0 MB in the cell, "1 selected, 1.6 MB" (just after a re-walk), "1 selected,
+  1.6 MB (updating...)" with 1.6 MB, "1 selected, 2.2 MB (updating...)" with 2.2 MB: the cell never
+  empties and the old size counts while the folder waits for its re-walk.
+
+### Measurements
+
+This machine, RDP, builds as in Scripted checks:
+
+| What | Result |
+|---|---|
+| `C:\Windows` | 47,062,949,257 bytes (43.8 GiB, hard links counted per link), 184,374 files, 157,383 folders, 15.6 s, 50 folders skipped |
+| `C:\Users\jtkli\projects`, Ctrl+A (20 folders, 27 items) | 10.78 GB, 168,837 files, 17,421 folders; 2.54 s of worker time summed over the 20 walks (largest `twinfm`, 9.2 GB in 454 ms) |
+| Cached re-selection | no walk, no queue; the status bar is composed in the click handler from the cache |
+| `C:\Users\jtkli\AppData` (in the Alt+Return of the profile) | 115,561,672,643 bytes (107.6 GiB), 492,192 files, 95,350 folders, 21.8 s, 1 folder skipped |
+| Partial totals | 86 lines over three walks of `C:\Windows` (about 4 a second) |
+
+### Gate
+
+**Passed (2026-10-13 evening), one triplet.** Console WPR, Jeremy elevated, `tools/wpr-triplet.ps1
+-Reference p3m2 -Candidate p3m3 -Tag ab12`, accessibility on, Narrator off, no other TwinFM
+window, console checks run AFTER the triplet this time: `target-p3m2` (05c52a3) against
+`target-p3m3` (1dd2820, the PR head, built from a detached checkout). Analysed with
+`tools/analyze-trace.py --symbols --exe`.
+
+| Run | P3-M2 (`target-p3m2`) | P3-M3 1dd2820 |
+|---|---|---|
+| 1 | 20.5% (2052 ms) | 20.6% (2063 ms) |
+| 2 | 20.9% (2087 ms) | 21.7% (2170 ms) |
+| 3 | 20.7% (2072 ms) | 20.5% (2048 ms) |
+| **median** | **20.7%** | **20.6%** |
+
+The medians are 0.1 apart in the candidate's favour and the candidate's run 3 sits below every
+reference run: no gap by either half of the rule. The session was quiet (every run within 1.2
+points), the first since the triplet protocol began with no disturbed run. Frame shares match
+within a few samples in every pair (accessibility 219 / 209, 232 / 231, 218 / 229; render 1194 /
+1205, 1212 / 1249, 1198 / 1164; draw_text 696 / 675, 699 / 702, 699 / 665; rows 370 / 370, 373 /
+391, 378 / 366; timers 703 / 696, 712 / 739, 716 / 700; heap 218 / 212, 231 / 214, 228 / 184),
+and no size, subtree or walk frame of ours appears in any candidate window, as expected from the
+0 `[size]` lines the gate script logs. Jeremy's console checks (folder selection, Ctrl+A, Alt+Return
+in System32, a change inside a sized folder) passed, "very fast". Traces
+`C:/traces/twinfm-ab12-{p3m2,p3m3}-{1,2,3}.etl`, reports under `C:/traces/export/`.

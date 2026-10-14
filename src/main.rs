@@ -3,6 +3,7 @@ slint::include_modules!();
 
 mod fs {
     pub mod enumerate;
+    pub mod sizes;
     pub mod watch;
 }
 mod auto;
@@ -106,6 +107,8 @@ struct Tab {
     /// A search tab (Ctrl+Shift+F): its listing is a recursive name search under `path`, its
     /// root. None for a folder tab.
     search: Option<Search>,
+    /// Folder sizes computed for this tab (selected folders, Alt+Return), and those in flight.
+    sizes: fs::sizes::TabSizes,
 }
 
 /// What a search tab searches for, and its worker's cancel flag (`fs::enumerate::SEARCH_*`).
@@ -118,6 +121,22 @@ impl Tab {
     /// Where the tab is, as its history records it: its folder, or its search and root.
     fn place(&self) -> Place {
         Place { path: self.path.clone(), search: self.search.as_ref().map(|s| s.pattern.pattern.clone()) }
+    }
+
+    /// Folder sizes are computed in folder tabs only (not for search results, not on This PC).
+    fn sizable(&self) -> bool {
+        self.search.is_none() && !is_this_pc(&self.path.to_string_lossy())
+    }
+
+    /// Forget the tab's folder sizes: cancel the walks in flight and empty the cache.
+    fn drop_sizes(&mut self, pane: usize, why: &str) {
+        let (cached, cancelled) = self.sizes.clear();
+        for n in &cancelled {
+            eprintln!("[size] cancelled {} ({why})", self.path.join(n).display());
+        }
+        if cached > 0 || !cancelled.is_empty() {
+            eprintln!("[size] cache cleared pane={pane} ({why})");
+        }
     }
 }
 
@@ -224,6 +243,11 @@ struct State {
     search_armed: [bool; 2],
     /// The search tab whose "no watch" line each pane logged last (logged once per tab).
     no_watch_logged: [Option<u64>; 2],
+    /// The folder size worker and its replies.
+    sizer: fs::sizes::Sizer,
+    size_rx: Receiver<fs::sizes::Reply>,
+    /// Each pane's re-walk timer: fires once when the earliest stale size of its active tab is due.
+    size_timer: [slint::Timer; 2],
 }
 
 /// A tab with no folder yet, its model sharing the icon table.
@@ -245,6 +269,7 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         watch_refresh: false,
         history: tabs::History::default(),
         search: None,
+        sizes: fs::sizes::TabSizes::default(),
     }
 }
 
@@ -316,7 +341,10 @@ impl State {
             }
             return;
         }
-        self.watch.watch(pane, t.id, t.path.clone());
+        // With folder sizes cached or in flight, every folder below is watched too (until two
+        // overflows in a row), so a change inside a sized folder drops its size.
+        let subtree = t.sizes.any() && t.sizes.overflows < 2;
+        self.watch.watch(pane, t.id, t.path.clone(), subtree);
     }
 
     /// The pane's active tab is a search tab.
@@ -345,6 +373,8 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         if push && t.history.push(&from, &Place::folder(path.clone())) {
             eprintln!("[nav] pane={pane} history push {from} ({} back)", t.history.back_len());
         }
+        t.drop_sizes(pane, "navigation");
+        t.sizes.overflows = 0;
         t.model.generation.set(generation);
         t.model.clear();
         t.timing = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
@@ -446,9 +476,10 @@ fn update_status(st: &State, app: &App, pane: usize) {
         }
     };
     let (n, bytes, any_file) = m.selection_summary();
+    let dirs = if t.sizable() { t.sizes.summary(&m.selected_folders()) } else { fs::sizes::DirTotals::default() };
     let s = StatusInfo {
         left: left.into(),
-        mid: statusbar::mid_text(n, bytes, any_file).into(),
+        mid: statusbar::mid_text(n, bytes, any_file, dirs).into(),
         right: statusbar::free_text(t.free).into(),
     };
     if pane == 0 { app.set_left_status(s) } else { app.set_right_status(s) }
@@ -701,6 +732,10 @@ fn drain() {
                     if t.model.is_refreshing() {
                         t.model.finish_refresh();
                         t.keep_scroll = true;
+                        // A refresh that kept the folder sizes (the watch's, an operation's).
+                        if !t.sizes.cache.is_empty() {
+                            t.model.apply_sizes(|n| t.sizes.cache.get(n).map(|s| s.bytes));
+                        }
                     }
                     t.free = free;
                     let id = t.id;
@@ -756,36 +791,244 @@ fn drain() {
 
 /// A directory watch event (on the UI thread, inside `drain`). A change to the active tab
 /// refreshes it (after the listing in flight, if there is one); a tab that is no longer active
-/// goes stale. A lost watch refreshes the active tab once, so its error shows.
+/// goes stale. A lost watch refreshes the active tab once, so its error shows. A subtree watch's
+/// change below the folder only drops the sizes of the subfolders it lay under (and sizes them
+/// again if they are selected); only a change in the folder itself, or an overflow, refreshes.
 fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
     let (pane, tab_id) = match &ev {
-        fs::watch::Event::Changed { pane, tab_id } | fs::watch::Event::Lost { pane, tab_id, .. } => (*pane, *tab_id),
+        fs::watch::Event::Changed { pane, tab_id }
+        | fs::watch::Event::Lost { pane, tab_id, .. }
+        | fs::watch::Event::Subtree { pane, tab_id, .. } => (*pane, *tab_id),
     };
     let active = st.is_active(pane, tab_id);
     let Some(t) = st.find(pane, tab_id) else { return };
+    let (mut resize, mut stale) = (false, false);
     match ev {
-        fs::watch::Event::Changed { .. } if !active => {
-            t.stale = true;
-            eprintln!("[watch] pane={pane} tab={tab_id} changed in the background: stale");
-        }
-        fs::watch::Event::Changed { .. } if t.timing.done_ms.is_none() && t.timing.error.is_none() => {
-            t.refresh_pending = true;
-            eprintln!("[watch] pane={pane} tab={tab_id} changed while listing: refresh after it");
-        }
-        fs::watch::Event::Changed { .. } => {
-            t.watch_refresh = true;
-            eprintln!("[watch] pane={pane} tab={tab_id} changed: refresh");
-            if !again.contains(&pane) {
-                again.push(pane);
-            }
-        }
         fs::watch::Event::Lost { error, .. } => {
             eprintln!("[watch] pane={pane} tab={tab_id} watch lost ({error}){}", if active { ": refresh" } else { "" });
             if active && !again.contains(&pane) {
                 again.push(pane);
             }
+            return;
+        }
+        fs::watch::Event::Changed { .. } => {}
+        fs::watch::Event::Subtree { top, changes, overflow, .. } => {
+            if overflow {
+                t.sizes.overflows += 1;
+                let names: Vec<String> = t.sizes.cache.keys().cloned().collect();
+                for n in &names {
+                    t.sizes.forget(n);
+                    t.model.set_size(n, None);
+                }
+                eprintln!("[watch] pane={pane} tab={tab_id} subtree overflow {}: sizes dropped", t.path.display());
+                if t.sizes.overflows >= 2 {
+                    eprintln!("[watch] pane={pane} tab={tab_id} subtree disabled for this tab after two overflows");
+                }
+                resize = true;
+            } else {
+                t.sizes.overflows = 0;
+                // A sized folder that changed keeps showing its size and is walked again after a
+                // delay; changes meanwhile join that one re-walk (no line for them).
+                let now = Instant::now();
+                for (child, change) in &changes {
+                    if let Some((name, delay)) = t.sizes.invalidate(child, now) {
+                        let path = t.path.join(&name);
+                        eprintln!("[size] invalidated {} ({change})", path.display());
+                        eprintln!("[size] stale {}: re-walk in {:.1} s", path.display(), delay.as_secs_f64());
+                        stale = true;
+                    }
+                }
+            }
+            if stale {
+                arm_rewalk(st, pane);
+            }
+            if !(top || overflow || !active) {
+                eprintln!("[watch] pane={pane} tab={tab_id} changed below the folder: no refresh");
+                if resize {
+                    resize_after_change(st, pane);
+                }
+                return;
+            }
         }
     }
+    let Some(t) = st.find(pane, tab_id) else { return };
+    if !active {
+        t.stale = true;
+        eprintln!("[watch] pane={pane} tab={tab_id} changed in the background: stale");
+    } else if t.timing.done_ms.is_none() && t.timing.error.is_none() {
+        t.refresh_pending = true;
+        eprintln!("[watch] pane={pane} tab={tab_id} changed while listing: refresh after it");
+    } else {
+        t.watch_refresh = true;
+        eprintln!("[watch] pane={pane} tab={tab_id} changed: refresh");
+        if !again.contains(&pane) {
+            again.push(pane);
+        }
+    }
+    if resize {
+        resize_after_change(st, pane);
+    }
+}
+
+/// Start (or move) the pane's re-walk timer to the earliest stale size of its active tab, and show
+/// the folders as updating. One single-shot timer per pane, restarted on each new stale size.
+fn arm_rewalk(st: &mut State, pane: usize) {
+    let Some(app) = st.app.upgrade() else { return };
+    if let Some(due) = st.tab(pane).sizes.next_due() {
+        let wait = due.saturating_duration_since(Instant::now());
+        st.size_timer[pane].start(slint::TimerMode::SingleShot, wait, move || rewalk_due(pane));
+    }
+    update_status(st, &app, pane);
+}
+
+/// The re-walk timer fired: walk the due stale folders again if they are still wanted (selected,
+/// or sized by Alt+Return in this listing); forget the others. Their old size stays shown until
+/// the new one lands.
+fn rewalk_due(pane: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let State { panes, sizer, .. } = &mut *st;
+        let t = panes[pane].active_mut();
+        let selected: std::collections::HashSet<String> = t.model.selected_folders().into_iter().collect();
+        for n in t.sizes.due(Instant::now()) {
+            if t.sizes.pending.contains_key(&n) {
+                continue; // being walked already (Alt+Return, a selection)
+            }
+            let all = t.sizes.from_all.contains(&n);
+            if all || selected.contains(&n) {
+                queue_size(sizer, pane, t, &n, all);
+            } else if t.sizes.forget(&n) {
+                eprintln!("[size] stale {}: not selected any more, size dropped", t.path.join(&n).display());
+                t.model.set_size(&n, None);
+            }
+        }
+        st.watch_active(&app, pane);
+        arm_rewalk(st, pane);
+    });
+}
+
+/// After sizes were dropped by the watch: size the selected folders again, point the watch at the
+/// folder the new way (shallow once the cache is empty) and show the new totals.
+fn resize_after_change(st: &mut State, pane: usize) {
+    let Some(app) = st.app.upgrade() else { return };
+    size_selection(st, pane);
+    st.watch_active(&app, pane);
+    update_status(st, &app, pane);
+}
+
+/// Queue one folder of the pane's active tab for the size worker.
+fn queue_size(sizer: &fs::sizes::Sizer, pane: usize, t: &mut Tab, name: &str, all: bool) {
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let path = t.path.join(name);
+    let shown = path.display().to_string();
+    let generation = t.sizes.generation;
+    let r = fs::sizes::Request { pane, tab: t.id, generation, name: name.to_string(), path, cancel: cancel.clone() };
+    let n = sizer.push(r);
+    eprintln!("[size] queued {shown} ({n} in queue)");
+    t.sizes.pending.insert(name.to_string(), fs::sizes::Pending { cancel, partial: Default::default(), all });
+}
+
+/// The selection changed (or a pass restored it): size the selected folders that have no size
+/// yet (at most `SELECTION_CAP`), and cancel the walks for folders no longer selected. Does
+/// nothing, and logs nothing, when nothing changes.
+fn size_selection(st: &mut State, pane: usize) {
+    let State { panes, sizer, .. } = st;
+    let t = panes[pane].active_mut();
+    if !t.sizable() {
+        return;
+    }
+    let before = t.sizes.any();
+    let selected = t.model.selected_folders();
+    let plan = t.sizes.plan(&selected, fs::sizes::SELECTION_CAP);
+    for n in &plan.cancel {
+        if let Some(p) = t.sizes.pending.remove(n) {
+            p.cancel.store(true, Ordering::Relaxed);
+            eprintln!("[size] cancelled {} (deselected)", t.path.join(n).display());
+            // A cancelled re-walk leaves an out-of-date size: drop it.
+            if t.sizes.forget(n) {
+                t.model.set_size(n, None);
+            }
+        }
+    }
+    // Newest first: the first selected folder goes in last and is served first.
+    for n in plan.queue.iter().rev() {
+        queue_size(sizer, pane, t, n, false);
+    }
+    if let (Some((k, m)), false) = (plan.capped, plan.queue.is_empty()) {
+        eprintln!("[size] capped: {k} of {m} folders sized");
+    }
+    // The first request makes the watch a subtree watch; the last one cancelled with nothing
+    // cached makes it shallow again.
+    if t.sizes.any() != before {
+        if let Some(app) = st.app.upgrade() {
+            st.watch_active(&app, pane);
+        }
+    }
+}
+
+/// Alt+Return in the list: size every folder of the listing (at most `ALL_CAP`), the ones nearest
+/// the cursor first.
+fn size_all(st: &mut State, app: &App, pane: usize) {
+    let cursor = usize::try_from(current_row(app, pane)).unwrap_or(0);
+    if !st.tab(pane).sizable() {
+        let why = if st.is_search(pane) { "search results have no folder sizes" } else { "drives show their free space" };
+        return note(st, app, pane, why.into());
+    }
+    let State { panes, sizer, .. } = st;
+    let t = panes[pane].active_mut();
+    let mut rows: Vec<(usize, String)> = t
+        .model
+        .folder_rows()
+        .into_iter()
+        .filter(|(_, n)| !t.sizes.cache.contains_key(n) && !t.sizes.pending.contains_key(n))
+        .collect();
+    let m = rows.len();
+    rows.sort_by_key(|(i, _)| i.abs_diff(cursor));
+    rows.truncate(fs::sizes::ALL_CAP);
+    eprintln!("[size] pane={pane} Alt+Return: {} of {} folder(s) to size", rows.len(), m);
+    if m > fs::sizes::ALL_CAP {
+        eprintln!("[size] capped: {} of {m} folders sized", fs::sizes::ALL_CAP);
+    }
+    // The farthest go in first, so the nearest are the newest and served first.
+    for (_, n) in rows.iter().rev() {
+        queue_size(sizer, pane, t, n, true);
+    }
+    st.watch_active(app, pane);
+    update_status(st, app, pane);
+}
+
+/// Take every size reply: a partial total updates the status bar, a final one goes into the tab's
+/// cache and its row (that one row). Replies for an older generation, or for a request since
+/// cancelled, are dropped.
+fn drain_sizes() {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let mut touched = [false; 2];
+        while let Ok(r) = st.size_rx.try_recv() {
+            let Some(t) = st.find(r.pane, r.tab) else { continue };
+            if t.sizes.generation != r.generation {
+                continue;
+            }
+            let Some(p) = t.sizes.pending.get_mut(&r.name).filter(|p| Arc::ptr_eq(&p.cancel, &r.cancel)) else { continue };
+            touched[r.pane] = true;
+            if !r.done {
+                p.partial = r.totals;
+                continue;
+            }
+            if p.all {
+                t.sizes.from_all.insert(r.name.clone());
+            }
+            t.sizes.pending.remove(&r.name);
+            t.sizes.walk_ms.insert(r.name.clone(), r.ms);
+            t.sizes.cache.insert(r.name.clone(), r.totals);
+            t.model.set_size(&r.name, Some(r.totals.bytes));
+        }
+        for pane in 0..2 {
+            if touched[pane] {
+                update_status(st, &app, pane);
+            }
+        }
+    });
 }
 
 /// Filter and sort on a worker over a snapshot of the tab's full listing; swap the shown Vec in
@@ -893,6 +1136,7 @@ fn land_pass(
             eprintln!("[refresh] pane={pane} cursor row {row} scrolled into view: {y:.0} -> {to:.0}");
         }
     }
+    size_selection(st, pane);
     update_status(st, &app, pane);
     st.strip_dirty[pane] = true;
     resolve_view(st, &app, pane);
@@ -1140,6 +1384,7 @@ fn command(pane: usize, cmd: &str) {
         let folder = st.tab(pane).path.clone();
         let at_drives = is_this_pc(&folder.to_string_lossy());
         match cmd {
+            "sizeall" => size_all(st, &app, pane),
             "newfolder" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
             "newfolder" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a folder in it".into()),
             "newfolder" => return Some((app, 2, SharedString::from("New folder"))),
@@ -1717,6 +1962,7 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
             if let Some(op) = st.gesture[pane].press(row, selected, ctrl, shift) {
                 model.select(op, row);
                 log_select(&model, pane, op, row);
+                size_selection(st, pane);
                 if let Some(app) = st.app.upgrade() {
                     update_status(st, &app, pane);
                 }
@@ -1726,6 +1972,7 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
             if let Some((r, op)) = st.gesture[pane].release() {
                 st.model(pane).select(op, r);
                 log_select(st.model(pane), pane, op, r);
+                size_selection(st, pane);
                 if let Some(app) = st.app.upgrade() {
                     update_status(st, &app, pane);
                 }
@@ -2212,6 +2459,7 @@ fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
         // search tab has no watch to lose (and going stale would run its search again).
         if let Some(t) = st.panes[pane].iter_mut().nth(before).filter(|t| t.search.is_none()) {
             t.stale = true;
+            t.drop_sizes(pane, "tab in the background");
         }
         show_tab(st, &app, pane);
         schedule_save(st);
@@ -2241,6 +2489,7 @@ fn open_tab(pane: usize, path: Option<PathBuf>) {
         // Leaves the foreground and loses its watch (see switch_tab); a search tab has none.
         if !st.is_search(pane) {
             st.tab_mut(pane).stale = true;
+            st.tab_mut(pane).drop_sizes(pane, "tab in the background");
         }
         let cur = st.tab(pane);
         let (col, asc, hidden) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get());
@@ -2268,7 +2517,7 @@ fn close_tab(pane: usize, i: usize) {
         if was_active {
             save_view(st, &app, pane);
         }
-        let Some(closed) = st.panes[pane].close(i) else {
+        let Some(mut closed) = st.panes[pane].close(i) else {
             eprintln!("[tab] pane={pane} close tab {}: the last tab stays", i + 1);
             return None;
         };
@@ -2277,6 +2526,7 @@ fn close_tab(pane: usize, i: usize) {
         if let Some(s) = &closed.search {
             s.cancel(fs::enumerate::SEARCH_CLOSED);
         }
+        closed.drop_sizes(pane, "tab closed");
         eprintln!("[tab] pane={pane} closed tab {} (id {}), {} left", i + 1, closed.id, st.panes[pane].len());
         schedule_save(st);
         if was_active {
@@ -2755,6 +3005,14 @@ fn settings_closed(ok: bool) {
     eprintln!("[settings] dialog closed (ok), {} change(s)", changes.len());
 }
 
+/// For the scripted driver's `waitsize`: a folder size is still queued or walking.
+pub fn sizes_busy() -> bool {
+    STATE.with(|s| match s.try_borrow() {
+        Ok(g) => g.as_ref().is_some_and(|st| st.panes.iter().any(|p| p.iter().any(|t| !t.sizes.pending.is_empty()))),
+        Err(_) => true,
+    })
+}
+
 /// For the scripted driver: watch-driven refreshes completed so far.
 pub fn watch_refreshes() -> u64 {
     STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().map(|st| st.watch_refreshes)).unwrap_or(0))
@@ -2796,6 +3054,10 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     let (watch_tx, watch_rx) = unbounded();
     let watch = fs::watch::Watcher::spawn(watch_tx, wake);
+    let (size_tx, size_rx) = unbounded();
+    let sizer = fs::sizes::Sizer::spawn(size_tx, || {
+        let _ = slint::invoke_from_event_loop(drain_sizes);
+    });
     let ops = fileops::Worker::spawn(|d| {
         let _ = slint::invoke_from_event_loop(move || job_done(d));
     });
@@ -2939,6 +3201,9 @@ fn main() -> Result<(), slint::PlatformError> {
             filter_timer: Default::default(),
             search_armed: [false; 2],
             no_watch_logged: [None; 2],
+            sizer,
+            size_rx,
+            size_timer: Default::default(),
         })
     });
     with_state(rebuild_sidebar);
@@ -2996,12 +3261,15 @@ fn main() -> Result<(), slint::PlatformError> {
             let model = st.model(pane as usize);
             model.select(op, row.max(0) as usize);
             eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
+            size_selection(st, pane as usize);
             if let Some(app) = st.app.upgrade() {
                 update_status(st, &app, pane as usize);
             }
         });
     });
     app.on_refresh(|pane| {
+        // F5 sizes folders afresh; a refresh by the watch or after an operation keeps the sizes.
+        with_state(|st| st.tab_mut(pane as usize).drop_sizes(pane as usize, "F5"));
         refresh(pane as usize);
         if with_state(|st| st.app.upgrade().is_some_and(|a| a.get_sidebar_visible())) {
             refresh_drives();
