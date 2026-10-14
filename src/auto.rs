@@ -117,7 +117,8 @@
 //!   settings set <field> <value>     stage a value in the open dialog through the function its control
 //!                                    calls: fields start_left, start_right (a path; the rest of the
 //!                                    step, may be empty), hidden_left, hidden_right, type_column,
-//!                                    sidebar (true|false), path_bar (entry|crumb)
+//!                                    thumbnails (32 px rows with thumbnails; applied on OK, it lists
+//!                                    both panes again), sidebar (true|false), path_bar (entry|crumb)
 //!   settings ok | settings close     the OK button (apply the staged changes) / the Cancel button
 //!                                    (discard them); `key Escape` cancels through the key path
 //!   touch <pane> <name>              create an empty file in the pane's folder, or set an existing
@@ -473,10 +474,11 @@ fn thumb(app: &App, pane: usize) -> LogicalPosition {
 }
 
 /// Centre of a visible row: rows start under the 3 px padding, the tab strip when there is one,
-/// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing.
+/// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing; 22 px each (32 px with thumbnails on).
 fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
     let (_, _, mid) = geometry(app, pane);
-    LogicalPosition::new(mid.x, list_top(app, pane) + row as f32 * 22.0 + 11.0)
+    let row_px = crate::window_layout(app).row_px;
+    LogicalPosition::new(mid.x, list_top(app, pane) + row as f32 * row_px + row_px / 2.0)
 }
 
 /// Where an `rclickempty` lands: halfway down the empty space below the last row, or None when
@@ -486,7 +488,7 @@ fn empty_pos(app: &App, pane: usize) -> Option<LogicalPosition> {
     use slint::Model;
     let (_, h, mid) = geometry(app, pane);
     let rows = if pane == 0 { app.get_left_rows().row_count() } else { app.get_right_rows().row_count() };
-    let end = list_top(app, pane) + app.invoke_get_scroll(pane as i32) + rows as f32 * 22.0;
+    let end = list_top(app, pane) + app.invoke_get_scroll(pane as i32) + rows as f32 * crate::window_layout(app).row_px;
     let bottom = h - 23.0;
     (end + 4.0 < bottom).then(|| LogicalPosition::new(mid.x, (end + bottom) * 0.5))
 }
@@ -1267,7 +1269,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 // What the empty space's right press does first: clear the selection.
                 app.invoke_select(pane as i32, 5, -1);
                 arm_menu_steps(&app, menu_steps);
-                app.invoke_context_menu(pane as i32, -1, mid.x, list_top(&app, pane) + 11.0, false);
+                app.invoke_context_menu(pane as i32, -1, mid.x, list_top(&app, pane) + crate::window_layout(&app).row_px / 2.0, false);
                 disarm_menu_steps();
                 schedule(runner, 1);
                 return;

@@ -1154,7 +1154,7 @@ fn land_pass(
     // Once per pass swap, never per frame: bring an operation's cursor row into view.
     if let (true, Some(row)) = (reveal, cursor) {
         let y = app.invoke_get_scroll(pane as i32);
-        if let Some(to) = model::reveal_row(y, st.view[pane].1, row, icons::ROW_PX) {
+        if let Some(to) = model::reveal_row(y, st.view[pane].1, row, icons::ListGeom::new(st.config.thumbnails).row_px) {
             app.invoke_set_scroll(pane as i32, to);
             eprintln!("[refresh] pane={pane} cursor row {row} scrolled into view: {y:.0} -> {to:.0}");
         }
@@ -1174,13 +1174,13 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let t = st.panes[pane].active();
     let model = t.model.clone();
     let (y, h) = st.view[pane];
-    let Some(visible) = icons::visible_range(y, h, model.len()) else {
+    let geom = icons::StripGeom::new(app.window().scale_factor(), st.config.thumbnails);
+    let Some(visible) = icons::visible_range(y, h, model.len(), geom.list.row_px) else {
         hide_strip(st, app, pane);
         return;
     };
     let (first, last) = visible;
     let t0 = Instant::now();
-    let geom = icons::StripGeom::new(app.window().scale_factor());
     let size_px = geom.icon_px;
     let generation = model.generation.get();
     let (folder, tx) = (&t.path, &st.icon_tx);
@@ -1848,13 +1848,13 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
 /// Shift+F10 or the Menu key in a pane's list: the menu for the cursor row's selection, under
 /// that row (already scrolled into view), or the background menu when there is no cursor row.
 fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, visible_h: f32) {
-    let len = with_state(|st| st.model(pane).len());
+    let (len, g) = with_state(|st| (st.model(pane).len(), icons::ListGeom::new(st.config.thumbnails)));
     match usize::try_from(row).ok().filter(|&r| r < len) {
         Some(r) => {
-            let (x, y) = shellmenu::row_menu_point(list_x, list_y, content_y, visible_h, r);
+            let (x, y) = shellmenu::row_menu_point(list_x, list_y, content_y, visible_h, r, g);
             context_menu(pane, row, x, y, false);
         }
-        None => context_menu(pane, -1, list_x + 28.0, list_y, false),
+        None => context_menu(pane, -1, list_x + g.name_x(), list_y, false),
     }
 }
 
@@ -2240,6 +2240,7 @@ pub fn window_layout(app: &App) -> dnd::Layout {
         ratio: app.get_split_ratio(),
         tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
         left: if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 },
+        row_px: icons::ListGeom::new(app.get_thumbnails()).row_px,
     }
 }
 
@@ -2395,7 +2396,7 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
     });
     let Some((app, pane, dir, len, visible)) = found else { return false };
     let from = app.invoke_get_scroll(pane as i32);
-    let to = dnd::scrolled(from, dir, len, visible);
+    let to = dnd::scrolled(from, dir, len, visible, icons::ListGeom::new(app.get_thumbnails()).row_px);
     if to == from {
         return false;
     }
@@ -3024,6 +3025,26 @@ fn set_show_type(st: &mut State, app: &App, on: bool) {
     }
 }
 
+/// Thumbnails on or off in both panes: each pane's list becomes the 32 px (or the 22 px) variant
+/// and its strip is cleared. The icon keys are made on the enumeration worker, so every tab lists
+/// its folder again: the panes on screen at once (the panes returned, for `refresh`), the others
+/// when they come to the front.
+fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
+    st.config.thumbnails = on;
+    app.set_thumbnails(on);
+    log_list_geom(on);
+    for pane in 0..2 {
+        hide_strip(st, app, pane);
+    }
+    mark_background_stale(st);
+    if app.get_split() { vec![0, 1] } else { vec![0] }
+}
+
+fn log_list_geom(thumbnails: bool) {
+    let g = icons::ListGeom::new(thumbnails);
+    eprintln!("[icons] list geometry: {} px rows, {} px icons", g.row_px, g.icon_px);
+}
+
 /// Ctrl+, or "Settings": copy the live values into the dialog and show it.
 fn settings_open() {
     let Some((app, d, note)) = with_state(|st| {
@@ -3037,6 +3058,7 @@ fn settings_open() {
             show_hidden_left: st.model(0).show_hidden.get(),
             show_hidden_right: st.model(1).show_hidden.get(),
             show_type: st.config.show_type,
+            thumbnails: st.config.thumbnails,
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
         };
@@ -3054,6 +3076,7 @@ fn settings_open() {
     app.set_dlg_hidden_left(d.show_hidden_left);
     app.set_dlg_hidden_right(d.show_hidden_right);
     app.set_dlg_type_column(d.show_type);
+    app.set_dlg_thumbnails(d.thumbnails);
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
     app.set_settings_note(note.into());
@@ -3073,6 +3096,7 @@ fn settings_closed(ok: bool) {
         show_hidden_left: app.get_dlg_hidden_left(),
         show_hidden_right: app.get_dlg_hidden_right(),
         show_type: app.get_dlg_type_column(),
+        thumbnails: app.get_dlg_thumbnails(),
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
     }
@@ -3094,6 +3118,11 @@ fn settings_closed(ok: bool) {
                 }
             }
             "show_type" => with_state(|st| set_show_type(st, &app, staged.show_type)),
+            "thumbnails" => {
+                for pane in with_state(|st| set_thumbnails(st, &app, staged.thumbnails)) {
+                    refresh(pane);
+                }
+            }
             "sidebar_visible" => {
                 if app.get_sidebar_visible() != staged.sidebar_visible {
                     app.invoke_toggle_sidebar();
@@ -3244,6 +3273,10 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
     app.set_show_type(config.show_type);
+    app.set_thumbnails(config.thumbnails);
+    if config.thumbnails {
+        log_list_geom(true);
+    }
     app.set_version(env!("CARGO_PKG_VERSION").into());
     if let Some(g) = config.window {
         app.window().set_size(slint::LogicalSize::new(g.width, g.height));

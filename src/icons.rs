@@ -43,11 +43,26 @@ pub const PLACEHOLDER_FOLDER: u16 = 1;
 pub const PLACEHOLDER_DRIVE: u16 = 2;
 pub const PLACEHOLDERS: u16 = 3;
 
-/// The logical size icons are drawn at; the buffer is this times the window scale factor.
-pub const ICON_LOGICAL_PX: f32 = 16.0;
+/// The details list's row height and icon size in logical px (pane.slint): 22 px rows with 16 px
+/// icons, or with thumbnails on (settings `thumbnails`) 32 px rows with 32 px icons. The icon
+/// buffer is the icon size times the window scale factor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ListGeom {
+    pub row_px: f32,
+    pub icon_px: f32,
+}
 
-/// Row height in the list, in logical pixels (pane.slint).
-pub const ROW_PX: f32 = 22.0;
+impl ListGeom {
+    pub const fn new(thumbnails: bool) -> ListGeom {
+        if thumbnails { ListGeom { row_px: 32.0, icon_px: 32.0 } } else { ListGeom { row_px: 22.0, icon_px: 16.0 } }
+    }
+
+    /// The name column's left edge in a row: 6 px padding plus the icon column, one row high
+    /// (the rows' `padding-left`, 28 or 38 px).
+    pub fn name_x(&self) -> f32 {
+        6.0 + self.row_px
+    }
+}
 
 /// Extensions whose icon lives in the file itself, so they are keyed by full path.
 const OWN_ICON_EXTS: [&str; 5] = ["exe", "lnk", "ico", "url", "cur"];
@@ -187,16 +202,16 @@ impl IconKeys {
     }
 }
 
-/// First and last row (inclusive) whose 22 px band intersects the viewport, for a list of
+/// First and last row (inclusive) whose `row_px` band intersects the viewport, for a list of
 /// `len` rows scrolled to `content_y` (zero or negative, as Slint reports it) with `height`
 /// visible. None for an empty list.
-pub fn visible_range(content_y: f32, height: f32, len: usize) -> Option<(usize, usize)> {
+pub fn visible_range(content_y: f32, height: f32, len: usize, row_px: f32) -> Option<(usize, usize)> {
     if len == 0 {
         return None;
     }
     let top = (-content_y).max(0.0);
-    let first = ((top / ROW_PX).floor() as usize).min(len - 1);
-    let last = (((top + height.max(0.0)) / ROW_PX).ceil() as usize).clamp(first, len - 1);
+    let first = ((top / row_px).floor() as usize).min(len - 1);
+    let last = (((top + height.max(0.0)) / row_px).ceil() as usize).clamp(first, len - 1);
     Some((first, last))
 }
 
@@ -208,25 +223,30 @@ pub const STRIP_MARGIN_ROWS: usize = 4;
 /// the strip is composed at integer pixels whatever the scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StripGeom {
-    /// Icon edge in physical pixels (16 logical px times the scale factor, rounded).
+    /// Icon edge in physical pixels (the list's logical icon size times the scale factor, rounded).
     pub icon_px: u32,
     pub scale: f32,
+    pub list: ListGeom,
 }
 
 impl StripGeom {
-    pub fn new(scale: f32) -> StripGeom {
-        StripGeom { icon_px: ((ICON_LOGICAL_PX * scale).round() as u32).max(1), scale }
+    /// The strip for the details list with thumbnails off (22 px rows, 16 px icons) or on (32 px
+    /// rows, 32 px icons) at window scale `scale`.
+    pub fn new(scale: f32, thumbnails: bool) -> StripGeom {
+        let list = ListGeom::new(thumbnails);
+        StripGeom { icon_px: ((list.icon_px * scale).round() as u32).max(1), scale, list }
     }
 
     /// Physical y of the icon of the k-th row of the strip: the row's top plus the centering
-    /// offset of a 16 px icon in a 22 px row.
+    /// offset of the icon in its row (3 px of a 22 px row, none in a 32 px one).
     pub fn icon_y(&self, k: usize) -> u32 {
-        ((k as f32 * ROW_PX + (ROW_PX - ICON_LOGICAL_PX) / 2.0) * self.scale).round() as u32
+        let ListGeom { row_px, icon_px } = self.list;
+        ((k as f32 * row_px + (row_px - icon_px) / 2.0) * self.scale).round() as u32
     }
 
     /// Physical height of a strip of `rows` rows.
     pub fn height(&self, rows: usize) -> u32 {
-        (rows as f32 * ROW_PX * self.scale).round() as u32
+        (rows as f32 * self.list.row_px * self.scale).round() as u32
     }
 }
 
@@ -926,13 +946,17 @@ mod tests {
 
     #[test]
     fn visible_range_arithmetic() {
-        assert_eq!(visible_range(0.0, 220.0, 0), None);
-        assert_eq!(visible_range(0.0, 220.0, 1000), Some((0, 10)));
-        assert_eq!(visible_range(-22.0, 220.0, 1000), Some((1, 11)));
-        assert_eq!(visible_range(-30.0, 100.0, 1000), Some((1, 6))); // 30..130 px: rows 1..=5, ceil to 6
-        assert_eq!(visible_range(0.0, 220.0, 5), Some((0, 4)), "clamped to the last row");
-        assert_eq!(visible_range(-100_000.0, 220.0, 5), Some((4, 4)), "scrolled past the end");
-        assert_eq!(visible_range(10.0, 44.0, 100), Some((0, 2)), "overscroll at the top");
+        assert_eq!(visible_range(0.0, 220.0, 0, 22.0), None);
+        assert_eq!(visible_range(0.0, 220.0, 1000, 22.0), Some((0, 10)));
+        assert_eq!(visible_range(-22.0, 220.0, 1000, 22.0), Some((1, 11)));
+        assert_eq!(visible_range(-30.0, 100.0, 1000, 22.0), Some((1, 6))); // 30..130 px: rows 1..=5, ceil to 6
+        assert_eq!(visible_range(0.0, 220.0, 5, 22.0), Some((0, 4)), "clamped to the last row");
+        assert_eq!(visible_range(-100_000.0, 220.0, 5, 22.0), Some((4, 4)), "scrolled past the end");
+        assert_eq!(visible_range(10.0, 44.0, 100, 22.0), Some((0, 2)), "overscroll at the top");
+        // 32 px rows (thumbnails on).
+        assert_eq!(visible_range(0.0, 220.0, 1000, 32.0), Some((0, 7)));
+        assert_eq!(visible_range(-32.0, 220.0, 1000, 32.0), Some((1, 8)));
+        assert_eq!(visible_range(-40.0, 100.0, 1000, 32.0), Some((1, 5))); // 40..140 px: rows 1..=4, ceil to 5
     }
 
     fn px() -> Outcome {
@@ -970,24 +994,43 @@ mod tests {
 
     #[test]
     fn strip_layout_arithmetic() {
-        let g1 = StripGeom::new(1.0);
+        let g1 = StripGeom::new(1.0, false);
         assert_eq!(g1.icon_px, 16);
         assert_eq!((g1.icon_y(0), g1.icon_y(1), g1.icon_y(10)), (3, 25, 223), "row top plus (22 - 16) / 2");
         assert_eq!((g1.height(0), g1.height(1), g1.height(50)), (0, 22, 1100));
-        let g15 = StripGeom::new(1.5);
+        let g15 = StripGeom::new(1.5, false);
         assert_eq!(g15.icon_px, 24);
         assert_eq!((g15.icon_y(0), g15.icon_y(1), g15.icon_y(3)), (5, 38, 104)); // 4.5 rounds to 5
         assert_eq!(g15.height(3), 99);
-        let g125 = StripGeom::new(1.25);
+        let g125 = StripGeom::new(1.25, false);
         assert_eq!(g125.icon_px, 20);
         assert_eq!(g125.height(3), 83); // 82.5, rounded once for the whole strip
-        // Every icon lies inside its own row band at any of these scales.
-        for g in [g1, g15, g125, StripGeom::new(1.75), StripGeom::new(2.0)] {
-            for k in 0..200 {
-                assert!(g.icon_y(k) >= g.height(k), "scale {} row {k}", g.scale);
-                assert!(g.icon_y(k) + g.icon_px <= g.height(k + 1), "scale {} row {k}", g.scale);
+        // Thumbnails on: 32 px icons filling 32 px rows.
+        let t1 = StripGeom::new(1.0, true);
+        assert_eq!(t1.icon_px, 32);
+        assert_eq!((t1.icon_y(0), t1.icon_y(1), t1.icon_y(10)), (0, 32, 320), "row top plus (32 - 32) / 2");
+        assert_eq!((t1.height(0), t1.height(1), t1.height(50)), (0, 32, 1600));
+        let t15 = StripGeom::new(1.5, true);
+        assert_eq!(t15.icon_px, 48);
+        assert_eq!((t15.icon_y(0), t15.icon_y(1), t15.icon_y(3)), (0, 48, 144));
+        assert_eq!(t15.height(3), 144);
+        let t125 = StripGeom::new(1.25, true);
+        assert_eq!(t125.icon_px, 40);
+        assert_eq!((t125.icon_y(1), t125.height(3)), (40, 120));
+        let t175 = StripGeom::new(1.75, true);
+        assert_eq!((t175.icon_px, t175.icon_y(1), t175.height(3)), (56, 56, 168));
+        assert_eq!(StripGeom::new(2.0, true).icon_px, 64);
+        // Every icon lies inside its own row band at any of these scales, in both geometries.
+        for thumbs in [false, true] {
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                let g = StripGeom::new(scale, thumbs);
+                for k in 0..200 {
+                    assert!(g.icon_y(k) >= g.height(k), "scale {scale} thumbnails {thumbs} row {k}");
+                    assert!(g.icon_y(k) + g.icon_px <= g.height(k + 1), "scale {scale} thumbnails {thumbs} row {k}");
+                }
             }
         }
+        assert_eq!((ListGeom::new(false).name_x(), ListGeom::new(true).name_x()), (28.0, 38.0), "the rows' padding-left");
         // Range: the visible rows plus the margin, clamped to the list.
         let m = STRIP_MARGIN_ROWS;
         assert_eq!(strip_range((10, 40), 1000), (10 - m, 40 + m));
@@ -1025,7 +1068,7 @@ mod tests {
         t.complete("a".into(), Outcome::Pixels(solid(10)));
         t.complete("b".into(), Outcome::Pixels(solid(20)));
         // Three rows: key a, a row with no icon yet (the file placeholder), key b.
-        let g = StripGeom { icon_px: 2, scale: 1.0 };
+        let g = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(false) };
         let icons: Vec<_> = [PLACEHOLDERS, PLACEHOLDER_FILE, PLACEHOLDERS + 1].iter().map(|&i| t.fitted(i, 2)).collect();
         let strip = compose(&icons, &g);
         assert_eq!((strip.width(), strip.height()), (2, 66));
@@ -1046,7 +1089,19 @@ mod tests {
         assert_eq!(filled, [3, 4, 25, 26, 47, 48]);
         // An empty strip, and an icon of the wrong size left out.
         assert_eq!(compose(&[], &g).height(), 0);
-        assert!(compose(&[solid(1)], &StripGeom { icon_px: 4, scale: 1.0 }).as_slice().iter().all(|p| p.a == 0));
+        assert!(compose(&[solid(1)], &StripGeom { icon_px: 4, scale: 1.0, ..g }).as_slice().iter().all(|p| p.a == 0));
+        // 32 px rows with 32 px icons: each icon at its row's top, rows 32 px apart.
+        let g32 = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(true) };
+        let strip = compose(&icons, &g32);
+        assert_eq!((strip.width(), strip.height()), (2, 96));
+        let px = strip.as_slice();
+        let at = |x: usize, y: usize| px[y * 2 + x];
+        assert_eq!(at(0, 0), Rgba8Pixel { r: 10, g: 0, b: 0, a: 255 });
+        assert_eq!(at(1, 1), Rgba8Pixel { r: 10, g: 3, b: 0, a: 255 });
+        assert_eq!(&px[32 * 2..34 * 2], t.fitted(PLACEHOLDER_FILE, 2).as_slice());
+        assert_eq!(at(0, 64), Rgba8Pixel { r: 20, g: 0, b: 0, a: 255 });
+        let filled: Vec<usize> = (0..96).filter(|&y| at(0, y).a != 0 || at(1, y).a != 0).collect();
+        assert_eq!(filled, [0, 1, 32, 33, 64, 65]);
     }
 
     #[test]
