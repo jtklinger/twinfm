@@ -1713,8 +1713,10 @@ archive: 0 `[archive]` lines.
   DragEnter refused: allowed=0x.. keys=0x..; formats [...]; QueryGetData ...` line (every format
   `EnumFormatEtc` lists with its tymed, lindex and aspect, and `QueryGetData` for
   `FileGroupDescriptorW`, `FileGroupDescriptor`, `FileContents` at lindex 0, `CF_HDROP` and `Shell
-  IDList Array`). Which object Explorer's zip view hands out is not confirmed from here (a real
-  drag from Explorer cannot be scripted); the console log will show it. Driver: `dropvirtual <pane>
+  IDList Array`), only when the object offers nothing TwinFM takes (not when the spot under the
+  pointer refuses an acceptable one). Explorer's zip view did not need the fallback (confirmed at
+  the console, see Gate: it offers the W descriptors and takes the async virtual path); the
+  fallback covers `SHCreateDataObject`-style sources. Driver: `dropvirtual <pane>
   <row> idlist <path|...>` drops the `SHCreateDataObject` object.
 - **The minimal data object** (`dnd.rs`, the driver's and the tests') now serves `CF_HDROP`,
   virtual files (descriptors built by `descriptor_block`, contents as HGLOBALs or as IStreams from
@@ -2079,3 +2081,11 @@ formats (`[dnd] DragEnter refused: ...`), so Jeremy's next drag from Explorer's 
 shows `[dnd] DragEnter: N item(s) inside an archive (extraction job)` or `[dnd] DragEnter: N
 virtual item(s) ...`, or the refusal line with what Explorer offered. The gate script on the fix's
 build: `gate: archive lines 0, virtual 0, refused 0, panicked 0`.
+Confirmed at the console 2026-10-14 (07ca56c, `C:\traces\p3m4-drop.stderr.txt`): Explorer's zip
+view offers `FileGroupDescriptorW` + `FileContents` (ISTREAM) + `Shell IDList Array` with
+`IDataObjectAsyncCapability`; a drag of `README-original.txt` out of `acidwarp-win64-static.zip`
+onto a pane on `Downloads` was accepted on the async virtual path (`GetAsyncMode = 0x00000000 (1),
+StartOperation = 0x00000000`, `virtual drop: 1 file(s), 3249 bytes, async`, `done in 16 ms`,
+`EndOperation(0x00000000, copy) = 0x00000000`), 16 ms for one file. The console's deny cursor had
+come from the spot (the pointer over no target on entry), not the offer; since then the `DragEnter
+refused` line is logged only when the data object offers nothing TwinFM takes.

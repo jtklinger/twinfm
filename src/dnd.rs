@@ -1534,15 +1534,15 @@ unsafe extern "system" fn dt_drag_enter(this: *mut c_void, data: *mut c_void, ke
             Offer::Nothing => "no CF_HDROP and no virtual files, refused".into(),
         }
     );
-    let files = matches!(offered, Offer::Files(_));
+    let nothing = matches!(offered, Offer::Nothing);
     *t.offered.borrow_mut() = offered;
     *t.last.borrow_mut() = None;
     // SAFETY: COM contract: a valid in/out pointer (checked for null).
     let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
     t.over(keys, pt, effect);
-    // A drag we refuse that offers no files: say what it does offer, once per DragEnter (P3-M4: a
-    // drag from Explorer's zip view was refused at the console).
-    if !files && out_effect(effect) == NONE {
+    // A drag whose data object offers nothing we take (no files, no virtual files, no items inside
+    // an archive): say what it does offer, once per DragEnter. A spot that refuses is not this.
+    if nothing {
         eprintln!("[dnd] DragEnter refused: allowed=0x{allowed:x} keys=0x{keys:x}; {}", format_report(data));
     }
     // The shell paints the source's drag image over our window (after our own work for the call).
