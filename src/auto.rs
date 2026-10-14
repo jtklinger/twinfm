@@ -476,7 +476,7 @@ fn thumb(app: &App, pane: usize) -> LogicalPosition {
 /// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing.
 fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
     let (_, _, mid) = geometry(app, pane);
-    LogicalPosition::new(mid.x, list_top(app, pane) + row as f32 * 22.0 + 11.0)
+    LogicalPosition::new(mid.x, list_top(app, pane) + row as f32 * crate::icons::ROW_PX + crate::icons::ROW_PX / 2.0)
 }
 
 /// Where an `rclickempty` lands: halfway down the empty space below the last row, or None when
@@ -486,7 +486,7 @@ fn empty_pos(app: &App, pane: usize) -> Option<LogicalPosition> {
     use slint::Model;
     let (_, h, mid) = geometry(app, pane);
     let rows = if pane == 0 { app.get_left_rows().row_count() } else { app.get_right_rows().row_count() };
-    let end = list_top(app, pane) + app.invoke_get_scroll(pane as i32) + rows as f32 * 22.0;
+    let end = list_top(app, pane) + app.invoke_get_scroll(pane as i32) + rows as f32 * crate::icons::ROW_PX;
     let bottom = h - 23.0;
     (end + 4.0 < bottom).then(|| LogicalPosition::new(mid.x, (end + bottom) * 0.5))
 }

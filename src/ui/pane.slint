@@ -153,7 +153,7 @@ component FileRows inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 22px;
+        height: 32px;
         accessible-role: AccessibleRole.list-item;
         // Files of every kind (plain, cloud placeholder, link, alias) have a size and a time;
         // folders have no size, drives no time. The type text names a junction or a link.
@@ -167,8 +167,8 @@ component FileRows inherits ListView {
         border-width: i == current-row ? 1px : 0px;
         border-color: Palette.accent-background;
         HorizontalLayout {
-            // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip.
-            padding-left: 28px;
+            // 6 px padding plus the 32 px icon column; the icons are drawn by the pane's strip.
+            padding-left: 38px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
             Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
@@ -195,7 +195,7 @@ component FileRowsNoType inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 22px;
+        height: 32px;
         accessible-role: AccessibleRole.list-item;
         accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
             : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
@@ -206,7 +206,7 @@ component FileRowsNoType inherits ListView {
         border-width: i == current-row ? 1px : 0px;
         border-color: Palette.accent-background;
         HorizontalLayout {
-            padding-left: 28px;
+            padding-left: 38px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
             Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
@@ -231,7 +231,7 @@ component FileList inherits FileRows {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 22px;
+        root.content-height = root.rows.length * 32px;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -248,7 +248,7 @@ component FileListNoType inherits FileRowsNoType {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 22px;
+        root.content-height = root.rows.length * 32px;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -320,15 +320,15 @@ component FileListHost inherits Rectangle {
 
     public function focus-list() { root.focus-request += 1; }
 
-    // Same arithmetic as StandardListView's bring-into-view, for our 22px rows: scroll just far
+    // Same arithmetic as StandardListView's bring-into-view, for our 32px rows: scroll just far
     // enough that the cursor row is fully inside the viewport, then apply the selection gesture.
     public function bring-into-view() {
         if (root.current-row < 0) { return; }
-        if (root.content-y + root.current-row * 22px < 0px) {
-            root.content-y = -root.current-row * 22px;
+        if (root.content-y + root.current-row * 32px < 0px) {
+            root.content-y = -root.current-row * 32px;
         }
-        if (root.content-y + (root.current-row + 1) * 22px > root.visible-height) {
-            root.content-y = root.visible-height - (root.current-row + 1) * 22px;
+        if (root.content-y + (root.current-row + 1) * 32px > root.visible-height) {
+            root.content-y = root.visible-height - (root.current-row + 1) * 32px;
         }
     }
 
@@ -890,7 +890,7 @@ export component Pane inherits Rectangle {
         visible: root.strip-shown;
         Image {
             x: 6px;
-            y: list.content-y + root.strip-first * 22px;
+            y: list.content-y + root.strip-first * 32px;
             width: root.strip-width;
             height: root.strip-height;
             source: root.strip;
@@ -913,9 +913,9 @@ export component Pane inherits Rectangle {
         Rectangle {
             visible: root.drop-row >= 0;
             x: 0;
-            y: list.content-y + root.drop-row * 22px;
+            y: list.content-y + root.drop-row * 32px;
             width: parent.width;
-            height: 22px;
+            height: 32px;
             background: Palette.accent-background.transparentize(65%);
             border-width: 2px;
             border-color: Palette.accent-background;
@@ -930,7 +930,7 @@ export component Pane inherits Rectangle {
 
     // The empty space below the last row (none when the rows fill the viewport): a right-click
     // there opens the folder's background menu ("New", "Paste", "Properties").
-    private property <length> rows-end: max(0px, min(list.visible-height, list.content-y + root.rows.length * 22px));
+    private property <length> rows-end: max(0px, min(list.visible-height, list.content-y + root.rows.length * 32px));
     TouchArea {
         x: list.x;
         y: list.y + root.rows-end;
@@ -956,14 +956,14 @@ export component Pane inherits Rectangle {
     }
 
     // Return commits, Escape cancels, focus loss cancels. Over the name cell: 6 px row padding
-    // plus the 22 px icon slot from the left, the fixed columns (350 px, 230 px without Type) from
+    // plus the 32 px icon slot from the left, the fixed columns (350 px, 230 px without Type) from
     // the right.
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
-        x: list.x + 24px;
-        y: list.y - 3px + (root.edit-mode == 1 ? list.content-y + list.current-row * 22px : 0px);
-        width: max(160px, list.width - 24px - (root.show-type ? 350px : 230px) - 12px);
+        x: list.x + 34px;
+        y: list.y + 2px + (root.edit-mode == 1 ? list.content-y + list.current-row * 32px : 0px);
+        width: max(160px, list.width - 34px - (root.show-type ? 350px : 230px) - 12px);
         height: 28px;
         background: Palette.background;
         edit := LineEdit {

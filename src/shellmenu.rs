@@ -188,12 +188,12 @@ pub(crate) fn ensure_com() -> Result<(), String> {
 }
 
 /// Where the keyboard menu (Shift+F10, the Menu key) opens for `row`, in window logical px:
-/// at the name column's left edge (28 px into the list) under the row, kept inside the list's
+/// at the name column's left edge (38 px into the list) under the row, kept inside the list's
 /// viewport. `list_x`/`list_y` are the list's window position, `content_y` its scroll offset
 /// (zero or negative), `visible_h` its viewport height.
 pub fn row_menu_point(list_x: f32, list_y: f32, content_y: f32, visible_h: f32, row: usize) -> (f32, f32) {
     let bottom = list_y + content_y + (row as f32 + 1.0) * ROW_PX;
-    (list_x + 28.0, bottom.clamp(list_y, list_y + visible_h.max(0.0)))
+    (list_x + 38.0, bottom.clamp(list_y, list_y + visible_h.max(0.0)))
 }
 
 /// Window logical px to screen physical px.
@@ -822,13 +822,13 @@ mod tests {
 
     #[test]
     fn keyboard_menu_point_sits_under_the_row_inside_the_viewport() {
-        // List at (10, 63), not scrolled, 400 px tall: row 0's bottom is 22 px down.
-        assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 0), (38.0, 85.0));
-        assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 3), (38.0, 63.0 + 88.0));
+        // List at (10, 63), not scrolled, 400 px tall: row 0's bottom is 32 px down.
+        assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 0), (48.0, 95.0));
+        assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 3), (48.0, 63.0 + 128.0));
         // Scrolled by 100 rows: row 105 is the sixth on screen.
-        assert_eq!(row_menu_point(10.0, 63.0, -2200.0, 400.0, 105), (38.0, 63.0 + 6.0 * 22.0));
+        assert_eq!(row_menu_point(10.0, 63.0, -3200.0, 400.0, 105), (48.0, 63.0 + 6.0 * 32.0));
         // Rows above or below the viewport clamp to its edges.
-        assert_eq!(row_menu_point(10.0, 63.0, -2200.0, 400.0, 0).1, 63.0);
+        assert_eq!(row_menu_point(10.0, 63.0, -3200.0, 400.0, 0).1, 63.0);
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 500).1, 463.0);
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, -5.0, 2).1, 63.0, "a collapsed list");
     }

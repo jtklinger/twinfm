@@ -44,10 +44,10 @@ pub const PLACEHOLDER_DRIVE: u16 = 2;
 pub const PLACEHOLDERS: u16 = 3;
 
 /// The logical size icons are drawn at; the buffer is this times the window scale factor.
-pub const ICON_LOGICAL_PX: f32 = 16.0;
+pub const ICON_LOGICAL_PX: f32 = 32.0;
 
 /// Row height in the list, in logical pixels (pane.slint).
-pub const ROW_PX: f32 = 22.0;
+pub const ROW_PX: f32 = 32.0;
 
 /// Extensions whose icon lives in the file itself, so they are keyed by full path.
 const OWN_ICON_EXTS: [&str; 5] = ["exe", "lnk", "ico", "url", "cur"];
@@ -208,7 +208,7 @@ pub const STRIP_MARGIN_ROWS: usize = 4;
 /// the strip is composed at integer pixels whatever the scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StripGeom {
-    /// Icon edge in physical pixels (16 logical px times the scale factor, rounded).
+    /// Icon edge in physical pixels (32 logical px times the scale factor, rounded).
     pub icon_px: u32,
     pub scale: f32,
 }
@@ -219,7 +219,7 @@ impl StripGeom {
     }
 
     /// Physical y of the icon of the k-th row of the strip: the row's top plus the centering
-    /// offset of a 16 px icon in a 22 px row.
+    /// offset of a 32 px icon in a 32 px row.
     pub fn icon_y(&self, k: usize) -> u32 {
         ((k as f32 * ROW_PX + (ROW_PX - ICON_LOGICAL_PX) / 2.0) * self.scale).round() as u32
     }
@@ -927,9 +927,9 @@ mod tests {
     #[test]
     fn visible_range_arithmetic() {
         assert_eq!(visible_range(0.0, 220.0, 0), None);
-        assert_eq!(visible_range(0.0, 220.0, 1000), Some((0, 10)));
-        assert_eq!(visible_range(-22.0, 220.0, 1000), Some((1, 11)));
-        assert_eq!(visible_range(-30.0, 100.0, 1000), Some((1, 6))); // 30..130 px: rows 1..=5, ceil to 6
+        assert_eq!(visible_range(0.0, 220.0, 1000), Some((0, 7)));
+        assert_eq!(visible_range(-32.0, 220.0, 1000), Some((1, 8)));
+        assert_eq!(visible_range(-40.0, 100.0, 1000), Some((1, 5))); // 40..140 px: rows 1..=4, ceil to 5
         assert_eq!(visible_range(0.0, 220.0, 5), Some((0, 4)), "clamped to the last row");
         assert_eq!(visible_range(-100_000.0, 220.0, 5), Some((4, 4)), "scrolled past the end");
         assert_eq!(visible_range(10.0, 44.0, 100), Some((0, 2)), "overscroll at the top");
@@ -971,16 +971,16 @@ mod tests {
     #[test]
     fn strip_layout_arithmetic() {
         let g1 = StripGeom::new(1.0);
-        assert_eq!(g1.icon_px, 16);
-        assert_eq!((g1.icon_y(0), g1.icon_y(1), g1.icon_y(10)), (3, 25, 223), "row top plus (22 - 16) / 2");
-        assert_eq!((g1.height(0), g1.height(1), g1.height(50)), (0, 22, 1100));
+        assert_eq!(g1.icon_px, 32);
+        assert_eq!((g1.icon_y(0), g1.icon_y(1), g1.icon_y(10)), (0, 32, 320), "row top plus (32 - 32) / 2");
+        assert_eq!((g1.height(0), g1.height(1), g1.height(50)), (0, 32, 1600));
         let g15 = StripGeom::new(1.5);
-        assert_eq!(g15.icon_px, 24);
-        assert_eq!((g15.icon_y(0), g15.icon_y(1), g15.icon_y(3)), (5, 38, 104)); // 4.5 rounds to 5
-        assert_eq!(g15.height(3), 99);
+        assert_eq!(g15.icon_px, 48);
+        assert_eq!((g15.icon_y(0), g15.icon_y(1), g15.icon_y(3)), (0, 48, 144));
+        assert_eq!(g15.height(3), 144);
         let g125 = StripGeom::new(1.25);
-        assert_eq!(g125.icon_px, 20);
-        assert_eq!(g125.height(3), 83); // 82.5, rounded once for the whole strip
+        assert_eq!(g125.icon_px, 40);
+        assert_eq!(g125.height(3), 120);
         // Every icon lies inside its own row band at any of these scales.
         for g in [g1, g15, g125, StripGeom::new(1.75), StripGeom::new(2.0)] {
             for k in 0..200 {
@@ -1028,22 +1028,22 @@ mod tests {
         let g = StripGeom { icon_px: 2, scale: 1.0 };
         let icons: Vec<_> = [PLACEHOLDERS, PLACEHOLDER_FILE, PLACEHOLDERS + 1].iter().map(|&i| t.fitted(i, 2)).collect();
         let strip = compose(&icons, &g);
-        assert_eq!((strip.width(), strip.height()), (2, 66));
+        assert_eq!((strip.width(), strip.height()), (2, 96));
         let px = strip.as_slice();
         let at = |x: usize, y: usize| px[y * 2 + x];
-        // Row 0 at y 3..5 and row 2 at y 47..49, scanlines in order.
-        assert_eq!(at(0, 3), Rgba8Pixel { r: 10, g: 0, b: 0, a: 255 });
-        assert_eq!(at(1, 3), Rgba8Pixel { r: 10, g: 1, b: 0, a: 255 });
-        assert_eq!(at(0, 4), Rgba8Pixel { r: 10, g: 2, b: 0, a: 255 });
-        assert_eq!(at(1, 4), Rgba8Pixel { r: 10, g: 3, b: 0, a: 255 });
-        assert_eq!(at(0, 47), Rgba8Pixel { r: 20, g: 0, b: 0, a: 255 });
-        assert_eq!(at(1, 48), Rgba8Pixel { r: 20, g: 3, b: 0, a: 255 });
-        // Row 1 at y 25..27 holds the file placeholder fitted to 2 x 2.
-        assert_eq!(&px[25 * 2..27 * 2], t.fitted(PLACEHOLDER_FILE, 2).as_slice());
-        assert!(at(0, 25).a > 0, "the placeholder is visible");
+        // Row 0 at y 0..2 and row 2 at y 64..66, scanlines in order.
+        assert_eq!(at(0, 0), Rgba8Pixel { r: 10, g: 0, b: 0, a: 255 });
+        assert_eq!(at(1, 0), Rgba8Pixel { r: 10, g: 1, b: 0, a: 255 });
+        assert_eq!(at(0, 1), Rgba8Pixel { r: 10, g: 2, b: 0, a: 255 });
+        assert_eq!(at(1, 1), Rgba8Pixel { r: 10, g: 3, b: 0, a: 255 });
+        assert_eq!(at(0, 64), Rgba8Pixel { r: 20, g: 0, b: 0, a: 255 });
+        assert_eq!(at(1, 65), Rgba8Pixel { r: 20, g: 3, b: 0, a: 255 });
+        // Row 1 at y 32..34 holds the file placeholder fitted to 2 x 2.
+        assert_eq!(&px[32 * 2..34 * 2], t.fitted(PLACEHOLDER_FILE, 2).as_slice());
+        assert!(at(0, 32).a > 0, "the placeholder is visible");
         // Everything else is transparent.
-        let filled: Vec<usize> = (0..66).filter(|&y| at(0, y).a != 0 || at(1, y).a != 0).collect();
-        assert_eq!(filled, [3, 4, 25, 26, 47, 48]);
+        let filled: Vec<usize> = (0..96).filter(|&y| at(0, y).a != 0 || at(1, y).a != 0).collect();
+        assert_eq!(filled, [0, 1, 32, 33, 64, 65]);
         // An empty strip, and an icon of the wrong size left out.
         assert_eq!(compose(&[], &g).height(), 0);
         assert!(compose(&[solid(1)], &StripGeom { icon_px: 4, scale: 1.0 }).as_slice().iter().all(|p| p.a == 0));

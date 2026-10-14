@@ -2567,29 +2567,29 @@ mod tests {
         let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0 };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
-        // Rows start at y 63, 22 px each; the list ends 23 px above the bottom (y 577).
+        // Rows start at y 63, 32 px each; the list ends 23 px above the bottom (y 577).
         assert_eq!(hit(&one, 500.0, 63.0, none, [10, 0]), Spot::Row(0, 0));
-        assert_eq!(hit(&one, 500.0, 84.9, none, [10, 0]), Spot::Row(0, 0));
-        assert_eq!(hit(&one, 500.0, 85.0, none, [10, 0]), Spot::Row(0, 1));
-        assert_eq!(hit(&one, 500.0, 63.0 + 9.5 * 22.0, none, [10, 0]), Spot::Row(0, 9));
-        assert_eq!(hit(&one, 500.0, 63.0 + 10.5 * 22.0, none, [10, 0]), Spot::Pane(0), "below the last row");
+        assert_eq!(hit(&one, 500.0, 94.9, none, [10, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&one, 500.0, 95.0, none, [10, 0]), Spot::Row(0, 1));
+        assert_eq!(hit(&one, 500.0, 63.0 + 9.5 * 32.0, none, [10, 0]), Spot::Row(0, 9));
+        assert_eq!(hit(&one, 500.0, 63.0 + 10.5 * 32.0, none, [10, 0]), Spot::Pane(0), "below the last row");
         assert_eq!(hit(&one, 500.0, 50.0, none, [10, 0]), Spot::Pane(0), "the header");
         assert_eq!(hit(&one, 500.0, 590.0, none, [1000, 0]), Spot::Pane(0), "the status line");
         assert_eq!(hit(&one, 1.0, 100.0, none, [10, 0]), Spot::Pane(0), "the pane's padding");
         assert_eq!(hit(&one, 500.0, -1.0, none, [10, 0]), Spot::Outside);
         assert_eq!(hit(&one, 1000.0, 100.0, none, [10, 0]), Spot::Outside);
         // Scrolled by 100 rows: the first visible row is row 100.
-        assert_eq!(hit(&one, 500.0, 70.0, [-2200.0, 0.0], [1000, 0]), Spot::Row(0, 100));
-        assert_eq!(hit(&one, 500.0, 70.0 + 22.0 * 3.0, [-2200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
+        assert_eq!(hit(&one, 500.0, 70.0, [-3200.0, 0.0], [1000, 0]), Spot::Row(0, 100));
+        assert_eq!(hit(&one, 500.0, 70.0 + 32.0 * 3.0, [-3200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
         // Split at 0.5: left pane to x 497, splitter 497..503, right pane from 503.
         assert_eq!(hit(&two, 100.0, 70.0, none, [5, 7]), Spot::Row(0, 0));
         assert_eq!(hit(&two, 496.0, 70.0, none, [5, 7]), Spot::Pane(0), "the left pane's padding");
         assert_eq!(hit(&two, 497.0, 70.0, none, [5, 7]), Spot::Outside, "the splitter");
         assert_eq!(hit(&two, 502.9, 70.0, none, [5, 7]), Spot::Outside);
         assert_eq!(hit(&two, 503.0, 70.0, none, [5, 7]), Spot::Pane(1), "the right pane's padding");
-        assert_eq!(hit(&two, 700.0, 70.0 + 22.0 * 6.0, none, [5, 7]), Spot::Row(1, 6));
-        assert_eq!(hit(&two, 700.0, 70.0 + 22.0 * 7.0, none, [5, 7]), Spot::Pane(1));
-        assert_eq!(hit(&two, 700.0, 70.0, [-44.0, -22.0], [5, 7]), Spot::Row(1, 1), "each pane its own scroll");
+        assert_eq!(hit(&two, 700.0, 70.0 + 32.0 * 6.0, none, [5, 7]), Spot::Row(1, 6));
+        assert_eq!(hit(&two, 700.0, 70.0 + 32.0 * 7.0, none, [5, 7]), Spot::Pane(1));
+        assert_eq!(hit(&two, 700.0, 70.0, [-64.0, -32.0], [5, 7]), Spot::Row(1, 1), "each pane its own scroll");
         let ratio = Layout { ratio: 0.25, ..two };
         assert_eq!(pane_x(&ratio, 0), (0.0, 247.0));
         assert_eq!(pane_x(&ratio, 1), (253.0, 1000.0));
@@ -2597,7 +2597,7 @@ mod tests {
         let tabbed = Layout { tabs: [true, false], ..two };
         assert_eq!(hit(&tabbed, 100.0, 70.0, none, [5, 7]), Spot::Pane(0), "the tab strip pushed row 0 down");
         assert_eq!(hit(&tabbed, 100.0, 91.0, none, [5, 7]), Spot::Row(0, 0));
-        assert_eq!(hit(&tabbed, 100.0, 113.0, none, [5, 7]), Spot::Row(0, 1));
+        assert_eq!(hit(&tabbed, 100.0, 123.0, none, [5, 7]), Spot::Row(0, 1));
         assert_eq!(hit(&tabbed, 700.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
         assert_eq!((list_top(&tabbed, 0), list_top(&tabbed, 1)), (91.0, 63.0));
         // A sidebar 180 px wide (plus its 4 px edge): the panes start at 184 and split their own width.
@@ -2690,11 +2690,11 @@ mod tests {
         assert_eq!(edge_scroll(&two, 700.0, 560.0), Some((1, 1)));
         assert_eq!(edge_scroll(&two, 500.0, 560.0), None, "the splitter");
         // One row per step, kept in range.
-        assert_eq!(scrolled(0.0, 1, 100, 440.0), -22.0);
-        assert_eq!(scrolled(-22.0, -1, 100, 440.0), 0.0);
+        assert_eq!(scrolled(0.0, 1, 100, 440.0), -32.0);
+        assert_eq!(scrolled(-32.0, -1, 100, 440.0), 0.0);
         assert_eq!(scrolled(0.0, -1, 100, 440.0), 0.0, "already at the top");
-        assert_eq!(scrolled(-1760.0, 1, 100, 440.0), -1760.0, "already at the bottom (2200 - 440)");
-        assert_eq!(scrolled(-1750.0, 1, 100, 440.0), -1760.0, "clamped to the bottom");
+        assert_eq!(scrolled(-2760.0, 1, 100, 440.0), -2760.0, "already at the bottom (3200 - 440)");
+        assert_eq!(scrolled(-2750.0, 1, 100, 440.0), -2760.0, "clamped to the bottom");
         assert_eq!(scrolled(0.0, 1, 10, 440.0), 0.0, "rows that fit do not scroll");
     }
 
