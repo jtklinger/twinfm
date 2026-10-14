@@ -5,6 +5,9 @@
 # Several candidates (P3-M5's two trace variants) are a comma-separated list; every round runs
 # the reference first, then each candidate in the order given:
 #   ... -Reference p3m4 -Candidate p3m5a,p3m5b -Tag ab14
+# A candidate run with a settings file (the gate on a non-default setting) is <name>@<toml path>;
+# its traces are named <name>-<toml basename>, so one binary can run with and without it:
+#   ... -Reference p3m4 -Candidate p3m5,p3m5@C:\traces\thumbs.toml -Tag ab15
 # Builds are named by their target dir (target-<name>\release\twinfm.exe). Traces land at
 # C:\traces\twinfm-<tag>-<name>-<n>.etl with the in-app lines beside them (.stderr.txt).
 # Analyse afterwards without elevation:
@@ -18,10 +21,15 @@ param(
 )
 $elev = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $elev) { throw "Run this elevated (WPR needs administrator)." }
-$builds = @($Reference) + @($Candidate -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-foreach ($b in $builds) {
-    $exe = "$Root\target-$b\release\twinfm.exe"
+# Each entry: name, the settings file (or ""), and the label the trace files carry.
+$builds = @()
+foreach ($spec in @($Reference) + @($Candidate -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+    $name, $cfg = $spec -split '@', 2
+    $label = if ($cfg) { "$name-" + [System.IO.Path]::GetFileNameWithoutExtension($cfg) } else { $name }
+    $exe = "$Root\target-$name\release\twinfm.exe"
     if (-not (Test-Path $exe)) { throw "$exe is not built" }
+    if ($cfg -and -not (Test-Path $cfg)) { throw "$cfg does not exist" }
+    $builds += [pscustomobject]@{ Name = $name; Config = [string]$cfg; Label = $label; Exe = $exe }
 }
 if (Get-Process -Name twinfm -ErrorAction SilentlyContinue) {
     throw "a TwinFM window is open: close every one before the gate (it would share the machine and appear in the trace)"
@@ -29,10 +37,9 @@ if (Get-Process -Name twinfm -ErrorAction SilentlyContinue) {
 $started = Get-Date
 for ($n = 1; $n -le $Runs; $n++) {
     foreach ($b in $builds) {
-        $exe = "$Root\target-$b\release\twinfm.exe"
-        $etl = "C:\traces\twinfm-$Tag-$b-$n.etl"
-        "=== run $n of $Runs, $b ($(Get-Date -Format HH:mm:ss))"
-        & "$Root\tools\wpr-gate.ps1" -Exe $exe -Etl $etl | Select-String -Pattern "busy|split\]|peak|panicked"
+        $etl = "C:\traces\twinfm-$Tag-$($b.Label)-$n.etl"
+        "=== run $n of $Runs, $($b.Label) ($(Get-Date -Format HH:mm:ss))"
+        & "$Root\tools\wpr-gate.ps1" -Exe $b.Exe -Etl $etl -Config $b.Config | Select-String -Pattern "busy|split\]|peak|panicked"
         Start-Sleep -Seconds 3
     }
 }
