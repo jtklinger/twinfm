@@ -101,26 +101,26 @@ pub struct Request {
     pub wanted: u64,
 }
 
-/// What each pane shows, published by the UI once per resolve while thumbnails are on, so the
-/// workers can drop thumbnail requests for rows a scroll has passed (`passed`). Plain icon
-/// requests (shared keys, cheap) are never dropped.
+/// The rows each pane asks icons for (the rows on screen and the UI's margin), published by the
+/// UI once per resolve while thumbnails are on, so the workers can drop thumbnail requests for
+/// rows a scroll has passed (`passed`). Plain icon requests (shared keys, cheap) are never dropped.
 #[derive(Default)]
 pub struct Views {
     /// Each pane's last resolve number.
     seq: [AtomicU64; 2],
-    /// Each pane's visible rows then, first << 32 | last.
+    /// The rows each pane asked for then, first << 32 | last.
     range: [AtomicU64; 2],
 }
 
 impl Views {
-    /// The pane's resolve `seq` shows rows `first..=last`.
+    /// The pane's resolve `seq` asks for rows `first..=last`.
     pub fn publish(&self, pane: usize, seq: u64, (first, last): (usize, usize)) {
         self.range[pane].store((first as u64) << 32 | (last as u64 & 0xFFFF_FFFF), Ordering::Relaxed);
         self.seq[pane].store(seq, Ordering::Release);
     }
 
     /// A thumbnail for `row`, asked for in resolve `wanted`, is not wanted any more: the pane has
-    /// resolved since, and the row lies more than `STRIP_MARGIN_ROWS` outside the rows on screen.
+    /// resolved since, and the row lies more than `STRIP_MARGIN_ROWS` outside the rows it asks for.
     /// The UI asks again if the row comes back (the reply is `Skipped`).
     fn passed(&self, pane: usize, row: usize, wanted: u64) -> bool {
         if self.seq[pane].load(Ordering::Acquire) == wanted {
@@ -1616,7 +1616,7 @@ mod tests {
         let gens = Arc::new([AtomicU64::new(1), AtomicU64::new(0)]);
         let views = Arc::new(Views::default());
         let stats = Arc::new(Stats::default());
-        // The list resolved again (resolve 2) and shows rows 150..=190 by the time the workers
+        // The list resolved again (resolve 2) and asks for rows 150..=190 by the time the workers
         // take the 200 thumbnails asked for in resolve 1, rows 0..200.
         views.publish(0, 2, (150, 190));
         spawn_with(req_rx, rep_tx, gens, views.clone(), stats.clone(), || {}, fake_render);
@@ -1642,7 +1642,7 @@ mod tests {
             }
         }
         rendered.sort();
-        // The visible rows plus STRIP_MARGIN_ROWS each side are rendered, the rest dropped.
+        // The rows asked for plus STRIP_MARGIN_ROWS each side are rendered, the rest dropped.
         assert_eq!(rendered, (146..=194).collect::<Vec<_>>());
         assert_eq!((stats.thumbs.load(Ordering::Relaxed), stats.dropped.load(Ordering::Relaxed)), (49, 151));
         // Scrolled back to the top (resolve 3): row 10's thumbnail, dropped before, renders now.

@@ -1188,12 +1188,12 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let size_px = geom.icon_px;
     let generation = model.generation.get();
     let (lo, hi) = (first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS);
-    // With thumbnails on, the workers learn which rows are on screen (once per resolve), and the
-    // rows on screen are asked for last, so the workers (newest first) render them first.
+    // With thumbnails on, the workers learn which rows this resolve asks for (once per resolve),
+    // and the rows on screen are asked for last, so the workers (newest first) render them first.
     let thumbs = st.config.thumbnails;
     let wanted = if thumbs {
         st.resolve_seq[pane] += 1;
-        st.icon_views.publish(pane, st.resolve_seq[pane], visible);
+        st.icon_views.publish(pane, st.resolve_seq[pane], (lo, hi.min(model.len() - 1)));
         st.resolve_seq[pane]
     } else {
         0
