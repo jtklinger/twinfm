@@ -9,13 +9,19 @@
 //! plain directories share `dir`; files whose icon is their own (`.exe`, `.lnk`, `.ico`, `.url`,
 //! `.cur`, no extension), customised folders (a `desktop.ini` that the shell honours), reparse
 //! points and drives are keyed by full path. A cloud placeholder (OneDrive) is keyed as if it
-//! were no reparse point: its icon is its type's, or the folder's.
+//! were no reparse point: its icon is its type's, or the folder's. With thumbnails on (settings
+//! `thumbnails`), a plain file whose extension is in `THUMB_EXTS` is keyed by itself
+//! (`thumb:<full path>|<modified>|<size>`) and rendered from the shell's thumbnail cache
+//! (`IThumbnailCache`), letterboxed into the icon square; without a thumbnail it gets its icon.
+//! The table and the workers keep each key per icon size in px, so the 16 px and 32 px lists'
+//! icons never stand in for each other.
 
 use crate::model::Kind;
 use crossbeam_channel::{Receiver, Sender};
 use slint::{Rgba8Pixel, SharedPixelBuffer, SharedString};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use std::cell::Cell;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,7 +35,7 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM,
 };
-use windows_sys::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::UI::Shell::{
     SHCreateItemFromParsingName, SHFILEINFOW, SHGFI_ADDOVERLAYS, SHGFI_ICON, SHGFI_OVERLAYINDEX, SHGFI_SMALLICON, SHGetFileInfoW,
     SHGetImageList, SHIL_LARGE, SHIL_SMALL, SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
@@ -67,6 +73,15 @@ impl ListGeom {
 /// Extensions whose icon lives in the file itself, so they are keyed by full path.
 const OWN_ICON_EXTS: [&str; 5] = ["exe", "lnk", "ico", "url", "cur"];
 
+/// Extensions a plain file gets a thumbnail for when thumbnails are on: images, video, documents.
+/// Whether the shell has a thumbnail handler for one is its business; without one the row shows
+/// the type's icon.
+pub const THUMB_EXTS: &[&str] = &[
+    "jpg", "jpeg", "jpe", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "avif", // images
+    "mp4", "m4v", "mov", "mkv", "avi", "wmv", "webm", // video
+    "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", // documents
+];
+
 /// One icon fetch. `generation` is the requesting pane's navigation generation; the worker
 /// skips the request when the pane has moved on.
 pub struct Request {
@@ -77,6 +92,9 @@ pub struct Request {
     pub size_px: u32,
     /// Draw the shell's overlay (a link's arrow) over the icon (`wants_overlay`).
     pub overlay: bool,
+    /// The shell's thumbnail, letterboxed into the `size_px` square (a `thumb:` key), with the
+    /// icon as the fallback.
+    pub thumbnail: bool,
 }
 
 pub enum Outcome {
@@ -89,6 +107,8 @@ pub enum Outcome {
 
 pub struct Reply {
     pub key: SharedString,
+    /// The size asked for: the table keeps each key per size.
+    pub size_px: u32,
     pub outcome: Outcome,
 }
 
@@ -101,6 +121,10 @@ pub struct Stats {
     pub overlays: AtomicU64,
     /// Renders (overlay included) over `SLOW_MS`.
     pub slow: AtomicU64,
+    /// Thumbnail requests rendered (from a thumbnail or, without one, the icon) and their time;
+    /// not counted in `rendered`.
+    pub thumbs: AtomicU64,
+    pub thumb_ns: AtomicU64,
 }
 
 /// Lowercase extension after the last dot, as Explorer and `TypeNames` read it, or None.
@@ -163,20 +187,38 @@ pub fn custom_folder(folder: &Path, name: &str, attrs: u32) -> bool {
         && folder.join(name).join("desktop.ini").exists()
 }
 
+/// Whether a file of this name gets a thumbnail when thumbnails are on (its extension is in
+/// `THUMB_EXTS`; `x.jpg.lnk` is a shortcut, not an image).
+pub fn is_thumbnail(name: &str) -> bool {
+    extension(name).is_some_and(|e| THUMB_EXTS.iter().any(|t| t.eq_ignore_ascii_case(e)))
+}
+
+/// A file's thumbnail key: its full path, modified time (unix seconds) and size, so a changed file
+/// gets a new key (rendered again after the watch's refresh) and the old entry is simply unused.
+pub fn thumb_key(full: &Path, modified: i64, size: u64) -> String {
+    format!("thumb:{}|{modified}|{size}", full.display())
+}
+
 /// Per-enumeration key builder: extension keys and `dir` are shared SharedStrings, so most
 /// entries get a refcount bump rather than an allocation. Lives on the enumeration worker.
+/// `thumbnails`: plain files in `THUMB_EXTS` get their own `thumb:` key (`thumb_key`).
 pub struct IconKeys {
     folder: PathBuf,
     dir: SharedString,
     ext: HashMap<String, SharedString>,
+    thumbnails: bool,
 }
 
 impl IconKeys {
-    pub fn new(folder: PathBuf) -> IconKeys {
-        IconKeys { folder, dir: "dir".into(), ext: HashMap::new() }
+    pub fn new(folder: PathBuf, thumbnails: bool) -> IconKeys {
+        IconKeys { folder, dir: "dir".into(), ext: HashMap::new(), thumbnails }
     }
 
-    pub fn for_entry(&mut self, name: &str, attrs: u32, kind: Kind) -> SharedString {
+    /// `modified` (unix seconds) and `size` go into a thumbnail's key only.
+    pub fn for_entry(&mut self, name: &str, attrs: u32, kind: Kind, modified: i64, size: u64) -> SharedString {
+        if self.thumbnails && kind == Kind::File && is_thumbnail(name) {
+            return thumb_key(&self.folder.join(name), modified, size).into();
+        }
         let attrs = key_attrs(attrs, kind);
         let custom = custom_folder(&self.folder, name, attrs);
         if attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) == FILE_ATTRIBUTE_DIRECTORY && !custom {
@@ -302,24 +344,29 @@ pub fn compose(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &StripGeom) -> Shared
 /// Box-filter resample of a premultiplied buffer to `px` square: each target pixel averages
 /// the source pixels its area covers (at least one). Used once per icon and size.
 pub fn fit(src: &SharedPixelBuffer<Rgba8Pixel>, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    resample(src, px, px)
+}
+
+/// `fit` to `w` x `h`.
+fn resample(src: &SharedPixelBuffer<Rgba8Pixel>, w: u32, h: u32) -> SharedPixelBuffer<Rgba8Pixel> {
     let (sw, sh) = (src.width() as usize, src.height() as usize);
     if sw == 0 || sh == 0 {
-        return SharedPixelBuffer::new(px, px);
+        return SharedPixelBuffer::new(w, h);
     }
-    if (sw, sh) == (px as usize, px as usize) {
+    if (sw, sh) == (w as usize, h as usize) {
         return src.clone();
     }
-    let n = px as usize;
+    let (nw, nh) = (w as usize, h as usize);
     let s = src.as_slice();
-    let mut out = SharedPixelBuffer::<Rgba8Pixel>::new(px, px);
-    let span = |i: usize, len: usize| {
+    let mut out = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
+    let span = |i: usize, len: usize, n: usize| {
         let a = i * len / n;
         (a, ((i + 1) * len / n).max(a + 1).min(len))
     };
-    for (y, row) in out.make_mut_slice().chunks_exact_mut(n).enumerate() {
-        let (y0, y1) = span(y, sh);
+    for (y, row) in out.make_mut_slice().chunks_exact_mut(nw).enumerate() {
+        let (y0, y1) = span(y, sh, nh);
         for (x, d) in row.iter_mut().enumerate() {
-            let (x0, x1) = span(x, sw);
+            let (x0, x1) = span(x, sw, nw);
             let mut acc = [0u32; 4];
             for yy in y0..y1 {
                 for p in &s[yy * sw + x0..yy * sw + x1] {
@@ -332,6 +379,27 @@ pub fn fit(src: &SharedPixelBuffer<Rgba8Pixel>, px: u32) -> SharedPixelBuffer<Rg
             let c = ((y1 - y0) * (x1 - x0)) as u32;
             *d = Rgba8Pixel { r: (acc[0] / c) as u8, g: (acc[1] / c) as u8, b: (acc[2] / c) as u8, a: (acc[3] / c) as u8 };
         }
+    }
+    out
+}
+
+/// A thumbnail in a `px` square: its longer side fitted to `px` (box filter, aspect kept), centred,
+/// with transparent bands, so it composes into the strip like any icon.
+pub fn letterbox(src: &SharedPixelBuffer<Rgba8Pixel>, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    let (sw, sh) = (src.width() as u64, src.height() as u64);
+    if sw == 0 || sh == 0 {
+        return SharedPixelBuffer::new(px, px);
+    }
+    let long = sw.max(sh);
+    let side = |d: u64| ((d * px as u64 + long / 2) / long).clamp(1, px as u64) as u32;
+    let (w, h) = (side(sw), side(sh));
+    let scaled = resample(src, w, h);
+    let mut out = SharedPixelBuffer::<Rgba8Pixel>::new(px, px);
+    let (x0, y0, n) = (((px - w) / 2) as usize, ((px - h) / 2) as usize, px as usize);
+    let dst = out.make_mut_slice();
+    for (r, line) in scaled.as_slice().chunks_exact(w as usize).enumerate() {
+        let at = (y0 + r) * n + x0;
+        dst[at..at + w as usize].copy_from_slice(line);
     }
     out
 }
@@ -437,6 +505,113 @@ fn hbitmap_pixels(hbm: HBITMAP) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     (lines == h).then(|| bgra_to_rgba(&bgra, w as u32, h as u32))
 }
 
+#[repr(C)]
+struct UnknownVtbl {
+    _query_interface: usize,
+    _add_ref: usize,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+}
+
+/// IThumbnailCache (thumbcache.h): IUnknown, then GetThumbnail (GetThumbnailByID unused).
+#[repr(C)]
+struct ThumbnailCacheVtbl {
+    _query_interface: usize,
+    _add_ref: usize,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    get_thumbnail: unsafe extern "system" fn(*mut c_void, *mut c_void, u32, u32, *mut *mut c_void, *mut u32, *mut c_void) -> HRESULT,
+}
+
+/// ISharedBitmap (thumbcache.h): IUnknown, then GetSharedBitmap (the rest unused).
+#[repr(C)]
+struct SharedBitmapVtbl {
+    _query_interface: usize,
+    _add_ref: usize,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    get_shared_bitmap: unsafe extern "system" fn(*mut c_void, *mut HBITMAP) -> HRESULT,
+}
+
+const CLSID_LOCAL_THUMBNAIL_CACHE: GUID = GUID::from_u128(0x50ef4544_ac9f_4a8e_b21b_8a26180db13f);
+const IID_ITHUMBNAILCACHE: GUID = GUID::from_u128(0xf676c15d_596a_4ce2_8234_33996f445db1);
+const IID_ISHELLITEM: GUID = GUID::from_u128(0x43826d1e_e718_42ee_bc55_a1e261c37bfe);
+/// WTS_EXTRACT (thumbcache.h): from the cache, or extracted (and cached) when it is not there.
+const WTS_EXTRACT: u32 = 0;
+
+thread_local! {
+    /// This worker thread's IThumbnailCache, made on its first thumbnail and released before the
+    /// thread leaves COM (`release_thumbnail_cache`): a COM object stays on the thread that made it.
+    static THUMB_CACHE: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// The shell's thumbnail for `path` from the system thumbnail cache (extracted and cached on a
+/// miss), letterboxed into a `size_px` square, or None (no handler, or the extraction failed).
+/// The cache hands back its own stored size (32, 96, 256 px ...), fitted here. Measured against
+/// `IShellItemImageFactory::GetImage(SIIGBF_THUMBNAILONLY)` on 200 JPEGs (P3-M5 decision 1): 7.3 ms
+/// against 8.9 warm and 36 against 38 cold per thumbnail. Worker threads only (COM, MTA).
+fn thumbnail(path: &Path, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    let cache = THUMB_CACHE.with(|c| {
+        if c.get().is_null() {
+            let mut p: *mut c_void = std::ptr::null_mut();
+            // SAFETY: `p` receives an IThumbnailCache pointer or stays null.
+            let hr = unsafe { CoCreateInstance(&CLSID_LOCAL_THUMBNAIL_CACHE, std::ptr::null_mut(), CLSCTX_INPROC_SERVER, &IID_ITHUMBNAILCACHE, &mut p) };
+            if hr >= 0 {
+                c.set(p);
+            }
+        }
+        c.get()
+    });
+    if cache.is_null() {
+        return None;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut item: *mut c_void = std::ptr::null_mut();
+    // SAFETY: `wide` is NUL-terminated and outlives the call; `item` receives an IShellItem or stays null.
+    if unsafe { SHCreateItemFromParsingName(wide.as_ptr(), std::ptr::null_mut(), &IID_ISHELLITEM, &mut item) } < 0 || item.is_null() {
+        return None;
+    }
+    let mut shared: *mut c_void = std::ptr::null_mut();
+    let mut flags = 0u32;
+    // SAFETY: `cache` is this thread's live IThumbnailCache and `item` a live IShellItem, released
+    // once here; `shared` receives an ISharedBitmap or stays null.
+    let hr = unsafe {
+        let hr = ((**(cache as *const *const ThumbnailCacheVtbl)).get_thumbnail)(cache, item, size_px, WTS_EXTRACT, &mut shared, &mut flags, std::ptr::null_mut());
+        ((**(item as *const *const UnknownVtbl)).release)(item);
+        hr
+    };
+    if hr < 0 || shared.is_null() {
+        return None;
+    }
+    let mut hbm: HBITMAP = std::ptr::null_mut();
+    // SAFETY: `shared` is a live ISharedBitmap; the bitmap it lends stays its own (read, never
+    // deleted here) until the release, which happens exactly once.
+    let pixels = unsafe {
+        let vt = &**(shared as *const *const SharedBitmapVtbl);
+        let p = if (vt.get_shared_bitmap)(shared, &mut hbm) >= 0 && !hbm.is_null() { hbitmap_pixels(hbm) } else { None };
+        (vt.release)(shared);
+        p
+    };
+    pixels.map(|p| letterbox(&p, size_px))
+}
+
+/// Release this thread's IThumbnailCache, if it made one.
+fn release_thumbnail_cache() {
+    let cache = THUMB_CACHE.with(|c| c.replace(std::ptr::null_mut()));
+    if !cache.is_null() {
+        // SAFETY: made on this thread by `thumbnail`, released exactly once.
+        unsafe { ((**(cache as *const *const UnknownVtbl)).release)(cache) };
+    }
+}
+
+/// What a worker renders for a request: with `thumbnail` the shell's thumbnail (`thumbnail`),
+/// else, or when there is none, the icon (`render`).
+fn render_request(path: &Path, size_px: u32, thumb: bool) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    if thumb {
+        if let Some(t) = thumbnail(path, size_px) {
+            return Some(t);
+        }
+    }
+    render(path, size_px)
+}
+
 /// Threads that render icons. Two, so one slow shell call (a network path, a dead share, a
 /// placeholder the sync engine must answer) does not hold the icons queued behind it: a
 /// synchronous shell call cannot be abandoned, so the other thread serves the queue meanwhile.
@@ -445,8 +620,9 @@ pub const ICON_WORKERS: usize = 2;
 /// A render (overlay included) at least this long is logged as `[icons] slow icon`.
 const SLOW_MS: u64 = 100;
 
-/// How a worker turns a path into pixels: `render`, or a stand-in in the tests.
-type RenderFn = fn(&Path, u32) -> Option<SharedPixelBuffer<Rgba8Pixel>>;
+/// How a worker turns a path (a size in px, thumbnail or not) into pixels: `render_request`, or a
+/// stand-in in the tests.
+type RenderFn = fn(&Path, u32, bool) -> Option<SharedPixelBuffer<Rgba8Pixel>>;
 
 /// What the worker threads share.
 #[derive(Default)]
@@ -454,10 +630,10 @@ struct Pool {
     /// Requests not yet taken, served newest first, and whether the request channel has closed.
     queue: Mutex<(Vec<Request>, bool)>,
     ready: Condvar,
-    /// Keys rendered or being rendered: a key is taken when a thread pops it, so the two threads
-    /// never render one key twice. A failed key is given back (the UI's `failed` set is what stops
-    /// it being asked for again).
-    taken: Mutex<HashSet<SharedString>>,
+    /// Keys rendered or being rendered, per size in px: a key is taken when a thread pops it, so
+    /// the two threads never render one key twice at one size. A failed key is given back (the
+    /// UI's `failed` set is what stops it being asked for again).
+    taken: Mutex<HashSet<(SharedString, u32)>>,
     /// Overlay images by (overlay index, size in px), fetched once per process (`overlay_image`).
     overlays: Mutex<HashMap<(i32, u32), Option<SharedPixelBuffer<Rgba8Pixel>>>>,
 }
@@ -478,7 +654,7 @@ pub fn spawn(
     stats: Arc<Stats>,
     wake: impl Fn() + Send + Sync + 'static,
 ) {
-    spawn_with(rx, tx, generations, stats, wake, render);
+    spawn_with(rx, tx, generations, stats, wake, render_request);
 }
 
 /// `spawn` with the render function as a parameter, so a test can make one render slow.
@@ -539,8 +715,9 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], stats: &S
     // rows a fast scroll passed over (still rendered, later, for the cache).
     while let Some((r, idle)) = next(pool) {
         let stale = generations[r.pane].load(Ordering::Relaxed) != r.generation;
-        if stale || !lock(&pool.taken).insert(r.key.clone()) {
-            if tx.send(Reply { key: r.key, outcome: Outcome::Skipped }).is_err() {
+        let taken = (r.key.clone(), r.size_px);
+        if stale || !lock(&pool.taken).insert(taken.clone()) {
+            if tx.send(Reply { key: r.key, size_px: r.size_px, outcome: Outcome::Skipped }).is_err() {
                 break;
             }
             if idle {
@@ -549,7 +726,7 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], stats: &S
             continue;
         }
         let t0 = Instant::now();
-        let mut pixels = if com >= 0 { render(&r.path, r.size_px) } else { None };
+        let mut pixels = if com >= 0 { render(&r.path, r.size_px, r.thumbnail) } else { None };
         if r.overlay {
             if let (Some(p), Some(over)) = (&pixels, overlay_image(pool, &r.path, r.size_px)) {
                 pixels = Some(overlay(&fit(p, r.size_px), &over));
@@ -557,24 +734,27 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], stats: &S
             }
         }
         let took = t0.elapsed();
-        stats.rendered.fetch_add(1, Ordering::Relaxed);
-        stats.render_ns.fetch_add(took.as_nanos() as u64, Ordering::Relaxed);
+        let (n, ns) = if r.thumbnail { (&stats.thumbs, &stats.thumb_ns) } else { (&stats.rendered, &stats.render_ns) };
+        n.fetch_add(1, Ordering::Relaxed);
+        ns.fetch_add(took.as_nanos() as u64, Ordering::Relaxed);
         if took.as_millis() as u64 >= SLOW_MS {
             stats.slow.fetch_add(1, Ordering::Relaxed);
-            eprintln!("[icons] slow icon {} ms: {}", took.as_millis(), r.path.display());
+            let what = if r.thumbnail { "thumbnail" } else { "slow icon" };
+            eprintln!("[icons] {what} {} ms: {}", took.as_millis(), r.path.display());
         }
         let outcome = match pixels {
             Some(p) => Outcome::Pixels(p),
             None => {
-                lock(&pool.taken).remove(&r.key);
+                lock(&pool.taken).remove(&taken);
                 Outcome::Failed
             }
         };
-        if tx.send(Reply { key: r.key, outcome }).is_err() {
+        if tx.send(Reply { key: r.key, size_px: r.size_px, outcome }).is_err() {
             break;
         }
         wake();
     }
+    release_thumbnail_cache();
     if com >= 0 {
         // SAFETY: pairs the successful CoInitializeEx above, on the same thread.
         unsafe { CoUninitialize() };
@@ -750,15 +930,16 @@ pub enum KeyState {
 
 /// UI-thread icon table shared by both panes: pixel buffers by index (the first
 /// `PLACEHOLDERS` are the placeholders), the key of every interned buffer, and the keys in
-/// flight or failed, so each key is requested once however many rows show it. `fitted` caches
+/// flight or failed, so each key is requested once however many rows show it. Keys are kept per
+/// icon size in px (16 px rows' icons and 32 px rows' are different buffers). `fitted` caches
 /// each buffer resampled to the strip's icon size, for the size last asked for.
 pub struct IconTable {
     bufs: Vec<SharedPixelBuffer<Rgba8Pixel>>,
     fitted: Vec<Option<SharedPixelBuffer<Rgba8Pixel>>>,
     fitted_px: u32,
-    index: HashMap<SharedString, u16>,
-    pending: HashSet<SharedString>,
-    failed: HashSet<SharedString>,
+    index: HashMap<(SharedString, u32), u16>,
+    pending: HashSet<(SharedString, u32)>,
+    failed: HashSet<(SharedString, u32)>,
 }
 
 impl Default for IconTable {
@@ -801,25 +982,28 @@ impl IconTable {
         self.bufs.len()
     }
 
-    pub fn state(&self, key: &SharedString) -> KeyState {
-        if let Some(&i) = self.index.get(key) {
+    /// What the table knows about `key` at `px`.
+    pub fn state(&self, key: &SharedString, px: u32) -> KeyState {
+        let k = (key.clone(), px);
+        if let Some(&i) = self.index.get(&k) {
             KeyState::Ready(i)
-        } else if self.pending.contains(key) {
+        } else if self.pending.contains(&k) {
             KeyState::Pending
-        } else if self.failed.contains(key) {
+        } else if self.failed.contains(&k) {
             KeyState::Failed
         } else {
             KeyState::Missing
         }
     }
 
-    /// Mark a key as requested.
-    pub fn begin(&mut self, key: &SharedString) {
-        self.pending.insert(key.clone());
+    /// Mark a key as requested at `px`.
+    pub fn begin(&mut self, key: &SharedString, px: u32) {
+        self.pending.insert((key.clone(), px));
     }
 
-    /// Apply a worker reply. Returns true when a new image was interned.
-    pub fn complete(&mut self, key: SharedString, outcome: Outcome) -> bool {
+    /// Apply a worker reply for `key` at `px`. Returns true when a new image was interned.
+    pub fn complete(&mut self, key: SharedString, px: u32, outcome: Outcome) -> bool {
+        let key = (key, px);
         self.pending.remove(&key);
         match outcome {
             Outcome::Pixels(p) => {
@@ -898,19 +1082,36 @@ mod tests {
         assert_eq!(icon_key(Path::new(r"C:\"), "x.exe", 0, file, false), r"C:\x.exe");
 
         // The cached builder agrees with the pure rules and shares extension keys.
-        let mut keys = IconKeys::new(f.to_path_buf());
-        let a = keys.for_entry("a.txt", 0, file);
-        let b = keys.for_entry("b.txt", 0, file);
+        let mut keys = IconKeys::new(f.to_path_buf(), false);
+        let a = keys.for_entry("a.txt", 0, file, 0, 0);
+        let b = keys.for_entry("b.txt", 0, file, 0, 0);
         assert_eq!((a.as_str(), b.as_str()), ("ext:.txt", "ext:.txt"));
-        assert_eq!(keys.for_entry("B.TXT", 0, file), "ext:.txt");
-        assert_eq!(keys.for_entry("sub", FILE_ATTRIBUTE_DIRECTORY, dir), "dir");
-        assert_eq!(keys.for_entry("x.exe", 0, file), r"C:\some\dir\x.exe");
+        assert_eq!(keys.for_entry("B.TXT", 0, file, 0, 0), "ext:.txt");
+        assert_eq!(keys.for_entry("sub", FILE_ATTRIBUTE_DIRECTORY, dir, 0, 0), "dir");
+        assert_eq!(keys.for_entry("x.exe", 0, file, 0, 0), r"C:\some\dir\x.exe");
         // A read-only folder with no desktop.ini (this path does not exist) stays `dir`.
-        assert_eq!(keys.for_entry("ro", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, dir), "dir");
-        assert_eq!(keys.for_entry("cloud.txt", rfile, Kind::Cloud), "ext:.txt");
-        assert_eq!(keys.for_entry("csub", rdir | FILE_ATTRIBUTE_READONLY, Kind::Cloud), "dir");
-        assert_eq!(keys.for_entry("j", rdir, Kind::Junction), r"C:\some\dir\j");
-        assert_eq!(keys.for_entry("l.txt", rfile, Kind::Symlink), r"C:\some\dir\l.txt");
+        assert_eq!(keys.for_entry("ro", FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, dir, 0, 0), "dir");
+        assert_eq!(keys.for_entry("cloud.txt", rfile, Kind::Cloud, 0, 0), "ext:.txt");
+        assert_eq!(keys.for_entry("csub", rdir | FILE_ATTRIBUTE_READONLY, Kind::Cloud, 0, 0), "dir");
+        assert_eq!(keys.for_entry("j", rdir, Kind::Junction, 0, 0), r"C:\some\dir\j");
+        assert_eq!(keys.for_entry("l.txt", rfile, Kind::Symlink, 0, 0), r"C:\some\dir\l.txt");
+        assert_eq!(keys.for_entry("Photo.JPG", 0, file, 1, 2), "ext:.jpg", "thumbnails off: the extension's key");
+
+        // Thumbnails on: a plain file in THUMB_EXTS is keyed by its path, modified time and size.
+        let mut thumbs = IconKeys::new(f.to_path_buf(), true);
+        assert_eq!(thumbs.for_entry("Photo.JPG", 0, file, 1_700_000_000, 12345), r"thumb:C:\some\dir\Photo.JPG|1700000000|12345");
+        assert_eq!(thumbs.for_entry("clip.mp4", 0, file, 5, 6), r"thumb:C:\some\dir\clip.mp4|5|6");
+        assert_eq!(thumbs.for_entry("report.pdf", FILE_ATTRIBUTE_READONLY, file, 5, 6), r"thumb:C:\some\dir\report.pdf|5|6");
+        let older = thumbs.for_entry("Photo.JPG", 0, file, 1_699_999_999, 12345);
+        assert_ne!(older, thumbs.for_entry("Photo.JPG", 0, file, 1_700_000_000, 12345), "a changed file gets a new key");
+        assert_eq!(thumbs.for_entry("a.txt", 0, file, 5, 6), "ext:.txt", "not a thumbnail type");
+        assert_eq!(thumbs.for_entry("x.exe", 0, file, 5, 6), r"C:\some\dir\x.exe");
+        assert_eq!(thumbs.for_entry("pics.jpg", FILE_ATTRIBUTE_DIRECTORY, dir, 5, 0), "dir", "a folder named .jpg");
+        assert_eq!(thumbs.for_entry("x.jpg.lnk", 0, file, 5, 6), r"C:\some\dir\x.jpg.lnk", "a shortcut, not an image");
+        // Never a thumbnail for a link or a cloud placeholder (that would download the file).
+        assert_eq!(thumbs.for_entry("l.png", rfile, Kind::Symlink, 5, 6), r"C:\some\dir\l.png");
+        assert_eq!(thumbs.for_entry("cloud.jpg", rfile, Kind::Cloud, 5, 6), "ext:.jpg");
+        assert!(is_thumbnail("a.HEIC") && is_thumbnail("b.webm") && is_thumbnail("c.xlsx") && !is_thumbnail("jpg"));
     }
 
     #[test]
@@ -968,21 +1169,22 @@ mod tests {
         let mut t = IconTable::default();
         assert_eq!(t.len(), PLACEHOLDERS as usize);
         let txt: SharedString = "ext:.txt".into();
-        assert_eq!(t.state(&txt), KeyState::Missing);
-        t.begin(&txt);
-        assert_eq!(t.state(&txt), KeyState::Pending);
-        assert!(t.complete(txt.clone(), px()));
-        assert_eq!(t.state(&txt), KeyState::Ready(PLACEHOLDERS));
-        assert!(!t.complete(txt.clone(), px()), "a duplicate reply does not intern twice");
+        assert_eq!(t.state(&txt, 16), KeyState::Missing);
+        t.begin(&txt, 16);
+        assert_eq!(t.state(&txt, 16), KeyState::Pending);
+        assert!(t.complete(txt.clone(), 16, px()));
+        assert_eq!(t.state(&txt, 16), KeyState::Ready(PLACEHOLDERS));
+        assert!(!t.complete(txt.clone(), 16, px()), "a duplicate reply does not intern twice");
+        assert_eq!(t.state(&txt, 32), KeyState::Missing, "each size is its own entry");
         assert_eq!(t.len(), PLACEHOLDERS as usize + 1);
         let gone: SharedString = r"C:\gone.exe".into();
-        t.begin(&gone);
-        assert!(!t.complete(gone.clone(), Outcome::Failed));
-        assert_eq!(t.state(&gone), KeyState::Failed);
+        t.begin(&gone, 16);
+        assert!(!t.complete(gone.clone(), 16, Outcome::Failed));
+        assert_eq!(t.state(&gone, 16), KeyState::Failed);
         let skip: SharedString = "dir".into();
-        t.begin(&skip);
-        t.complete(skip.clone(), Outcome::Skipped);
-        assert_eq!(t.state(&skip), KeyState::Missing, "a skipped key may be requested again");
+        t.begin(&skip, 16);
+        t.complete(skip.clone(), 16, Outcome::Skipped);
+        assert_eq!(t.state(&skip, 16), KeyState::Missing, "a skipped key may be requested again");
         assert_eq!(t.buffer(PLACEHOLDERS).width(), 2);
         assert_eq!(t.buffer(PLACEHOLDER_FOLDER).width(), 16);
         // Fitted to the strip's icon size, once per size.
@@ -1065,8 +1267,8 @@ mod tests {
             b
         };
         let mut t = IconTable::default();
-        t.complete("a".into(), Outcome::Pixels(solid(10)));
-        t.complete("b".into(), Outcome::Pixels(solid(20)));
+        t.complete("a".into(), 2, Outcome::Pixels(solid(10)));
+        t.complete("b".into(), 2, Outcome::Pixels(solid(20)));
         // Three rows: key a, a row with no icon yet (the file placeholder), key b.
         let g = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(false) };
         let icons: Vec<_> = [PLACEHOLDERS, PLACEHOLDER_FILE, PLACEHOLDERS + 1].iter().map(|&i| t.fitted(i, 2)).collect();
@@ -1124,6 +1326,34 @@ mod tests {
     }
 
     #[test]
+    fn letterbox_keeps_the_aspect_with_transparent_bands() {
+        let p = |r: u8| Rgba8Pixel { r, g: 0, b: 0, a: 255 };
+        let buf = |w: u32, h: u32, px: &[Rgba8Pixel]| {
+            let mut b = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
+            b.make_mut_slice().copy_from_slice(px);
+            b
+        };
+        let alpha = |b: &SharedPixelBuffer<Rgba8Pixel>| b.as_slice().iter().map(|q| q.a).collect::<Vec<u8>>();
+        // 2 x 1 into 4 x 4: rows 1 and 2, each source pixel two wide; rows 0 and 3 transparent.
+        let wide = letterbox(&buf(2, 1, &[p(10), p(20)]), 4);
+        assert_eq!((wide.width(), wide.height()), (4, 4));
+        assert_eq!(alpha(&wide), [0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0]);
+        assert_eq!(&wide.as_slice()[4..8], [p(10), p(10), p(20), p(20)]);
+        assert_eq!(&wide.as_slice()[8..12], [p(10), p(10), p(20), p(20)]);
+        // 1 x 2 into 4 x 4: columns 1 and 2, the top half from the first pixel.
+        let tall = letterbox(&buf(1, 2, &[p(10), p(20)]), 4);
+        assert_eq!(alpha(&tall), [0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0]);
+        assert_eq!((tall.as_slice()[1], tall.as_slice()[5], tall.as_slice()[9], tall.as_slice()[14]), (p(10), p(10), p(20), p(20)));
+        // A square of the size already: unchanged.
+        assert_eq!(letterbox(&wide, 4).as_slice(), wide.as_slice());
+        // 400 x 300 down to 32: 32 x 24, rows 4 to 27.
+        let big = letterbox(&buf(400, 300, &vec![p(50); 120_000]), 32);
+        let rows: Vec<usize> = (0..32).filter(|&y| big.as_slice()[y * 32 + 16].a != 0).collect();
+        assert_eq!(rows, (4..28).collect::<Vec<_>>());
+        assert!(big.as_slice()[4 * 32..28 * 32].iter().all(|&q| q == p(50)));
+    }
+
+    #[test]
     fn overlay_blends_source_over_premultiplied() {
         let buf = |px: [Rgba8Pixel; 4]| {
             let mut b = SharedPixelBuffer::<Rgba8Pixel>::new(2, 2);
@@ -1166,11 +1396,11 @@ mod tests {
     }
 
     fn req(generation: u64, key: &str, path: &str) -> Request {
-        Request { generation, pane: 0, key: key.into(), path: PathBuf::from(path), size_px: 1, overlay: false }
+        Request { generation, pane: 0, key: key.into(), path: PathBuf::from(path), size_px: 1, overlay: false, thumbnail: false }
     }
 
     /// A stand-in render: "slow" takes 2 s, "busy" 50 ms (counted in BUSY_RENDERS), others none.
-    fn fake_render(path: &Path, _size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    fn fake_render(path: &Path, _size_px: u32, _thumbnail: bool) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
         match path.to_str() {
             Some("slow") => std::thread::sleep(Duration::from_secs(2)),
             Some("busy") => {
@@ -1252,6 +1482,53 @@ mod tests {
         assert!(rep_rx.recv_timeout(Duration::from_secs(2)).is_err(), "the workers exit when the channel closes");
     }
 
+    /// A `side` x `side` opaque PNG of one colour: RGBA, unfiltered rows in one stored deflate block.
+    fn solid_png(side: u32, rgb: [u8; 3]) -> Vec<u8> {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut c = !0u32;
+            for &b in bytes {
+                c ^= b as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                }
+            }
+            !c
+        }
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend((data.len() as u32).to_be_bytes());
+            let body: Vec<u8> = kind.iter().chain(data).copied().collect();
+            out.extend(&body);
+            out.extend(crc32(&body).to_be_bytes());
+        }
+        let mut raw = Vec::new();
+        for _ in 0..side {
+            raw.push(0); // filter: none
+            for _ in 0..side {
+                raw.extend([rgb[0], rgb[1], rgb[2], 255]);
+            }
+        }
+        let (mut a, mut b) = (1u32, 0u32);
+        for &x in &raw {
+            a = (a + x as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        let len = raw.len() as u16;
+        let mut z = vec![0x78, 0x01, 0x01];
+        z.extend(len.to_le_bytes());
+        z.extend((!len).to_le_bytes());
+        z.extend(&raw);
+        z.extend(((b << 16) | a).to_be_bytes());
+        let mut ihdr = Vec::new();
+        ihdr.extend(side.to_be_bytes());
+        ihdr.extend(side.to_be_bytes());
+        ihdr.extend([8, 6, 0, 0, 0]);
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        chunk(&mut png, b"IHDR", &ihdr);
+        chunk(&mut png, b"IDAT", &z);
+        chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
     #[test]
     fn worker_renders_exe_drive_and_extension() {
         let (req_tx, req_rx) = unbounded();
@@ -1272,6 +1549,9 @@ mod tests {
             .output()
             .is_ok_and(|o| o.status.success());
         assert!(made, "mklink /J failed");
+        // A red PNG, asked for as a thumbnail at 32 px.
+        let png = dir.join("red.png");
+        std::fs::write(&png, solid_png(16, [220, 20, 20])).unwrap();
         let jobs = [
             (r"C:\Windows\notepad.exe".to_string(), PathBuf::from(r"C:\Windows\notepad.exe")),
             (r"C:\".to_string(), PathBuf::from(r"C:\")),
@@ -1279,14 +1559,16 @@ mod tests {
             ("junction".to_string(), junction.clone()),
         ];
         for (key, path) in &jobs {
-            req_tx.send(Request { generation: 1, pane: 0, key: key.as_str().into(), path: path.clone(), size_px: 16, overlay: false }).unwrap();
+            req_tx.send(Request { generation: 1, pane: 0, key: key.as_str().into(), path: path.clone(), size_px: 16, overlay: false, thumbnail: false }).unwrap();
         }
         let key = "junction+overlay";
-        req_tx.send(Request { generation: 1, pane: 0, key: key.into(), path: junction.clone(), size_px: 16, overlay: true }).unwrap();
+        req_tx.send(Request { generation: 1, pane: 0, key: key.into(), path: junction.clone(), size_px: 16, overlay: true, thumbnail: false }).unwrap();
+        let thumb: SharedString = thumb_key(&png, 0, 0).into();
+        req_tx.send(Request { generation: 1, pane: 0, key: thumb.clone(), path: png.clone(), size_px: 32, overlay: false, thumbnail: true }).unwrap();
         // A stale request (pane 1 is at generation 0) is skipped, not rendered.
-        req_tx.send(Request { generation: 5, pane: 1, key: "stale".into(), path: txt.clone(), size_px: 16, overlay: false }).unwrap();
+        req_tx.send(Request { generation: 5, pane: 1, key: "stale".into(), path: txt.clone(), size_px: 16, overlay: false, thumbnail: false }).unwrap();
         let mut got = HashMap::new();
-        while got.len() < 6 {
+        while got.len() < 7 {
             let r = rep_rx.recv_timeout(Duration::from_secs(5)).expect("reply within 5 s");
             got.insert(r.key.to_string(), r.outcome);
         }
@@ -1313,6 +1595,20 @@ mod tests {
                 assert_ne!(fit(plain, 16).as_slice(), with.as_slice(), "the overlay changed the junction's icon");
             }
             _ => panic!("the junction's icons did not both arrive"),
+        }
+        match got.get(thumb.as_str()) {
+            Some(Outcome::Pixels(p)) => {
+                assert_eq!((p.width(), p.height()), (32, 32), "letterboxed into the size asked for");
+                let centre = p.as_slice()[16 * 32 + 16];
+                if (centre.r, centre.g, centre.b, centre.a) == (220, 20, 20, 255) {
+                    assert!(p.as_slice().iter().all(|q| q.a == 255), "a square image fills the square");
+                } else {
+                    // The shell gave the type's icon (no thumbnail handler or cache here).
+                    eprintln!("skipping the thumbnail check: the shell returned no thumbnail (centre pixel {centre:?})");
+                    assert!(p.as_slice().iter().any(|q| q.a != 0));
+                }
+            }
+            _ => panic!("the PNG got no thumbnail and no icon"),
         }
     }
 }

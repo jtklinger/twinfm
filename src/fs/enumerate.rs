@@ -63,10 +63,12 @@ impl ReparseCounts {
     }
 }
 
-pub fn spawn(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl Fn() + Send + 'static) {
+/// List `path` on a worker thread; `thumbnails`: thumbnail files get their own icon keys
+/// (`icons::IconKeys`).
+pub fn spawn(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, tx: Sender<Msg>, wake: impl Fn() + Send + 'static) {
     std::thread::Builder::new()
         .name(format!("enum-{pane}-{generation}"))
-        .spawn(move || run(path, pane, generation, tx, wake))
+        .spawn(move || run(path, pane, generation, thumbnails, tx, wake))
         .expect("spawn enumeration thread");
 }
 
@@ -79,7 +81,7 @@ pub fn is_this_pc(path: &str) -> bool {
     t.is_empty() || t.eq_ignore_ascii_case(THIS_PC)
 }
 
-fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl Fn()) {
+fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, tx: Sender<Msg>, wake: impl Fn()) {
     let t0 = Instant::now();
     if is_this_pc(&path.to_string_lossy()) {
         let entries = drive_entries();
@@ -94,7 +96,7 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         return run_archive(&zip, &inner, pane, generation, tx, wake, t0);
     }
     let mut types = TypeNames::default();
-    let mut icon_keys = crate::icons::IconKeys::new(path.clone());
+    let mut icon_keys = crate::icons::IconKeys::new(path.clone(), thumbnails);
     let zone = crate::model::LocalZone::current();
     let mut batch: Vec<Entry> = Vec::with_capacity(BATCH_SIZE);
     let mut total = 0usize;
@@ -289,7 +291,7 @@ pub fn walk(
             stats.cancelled = Some(code);
             break;
         }
-        let mut icon_keys = crate::icons::IconKeys::new(dir.clone());
+        let mut icon_keys = crate::icons::IconKeys::new(dir.clone(), false);
         let listed = list_dir(&dir, &mut types, &mut icon_keys, &zone, |mut e| {
             let leaf = e.name.clone();
             let enter = e.kind == Kind::Directory && depth < SEARCH_MAX_DEPTH && (show_hidden || !(e.is_hidden() || e.is_system()));
@@ -457,8 +459,9 @@ fn entry_of(
         Kind::AppAlias => SharedString::from("Application"),
         _ => types.for_entry(&name, attrs & FILE_ATTRIBUTE_DIRECTORY != 0),
     };
-    let icon_key = icon_keys.for_entry(&name, attrs, kind);
-    Some(Entry::with_zone(name.into(), size, unix_secs(d.ftLastWriteTime), attrs, kind, type_text, icon_key, zone))
+    let modified = unix_secs(d.ftLastWriteTime);
+    let icon_key = icon_keys.for_entry(&name, attrs, kind, modified, size);
+    Some(Entry::with_zone(name.into(), size, modified, attrs, kind, type_text, icon_key, zone))
 }
 
 // GetDriveTypeW results (WinBase.h). Declared here rather than enabling windows-sys's large
@@ -666,7 +669,7 @@ mod tests {
 
     fn collect(path: PathBuf) -> Vec<Msg> {
         let (tx, rx) = unbounded();
-        spawn(path, 1, 7, tx, || {});
+        spawn(path, 1, 7, false, tx, || {});
         let mut out = Vec::new();
         loop {
             let m = rx.recv().expect("worker sends Done before exiting");

@@ -52,9 +52,9 @@ struct IconCounts {
     /// Icon strips composed, and the time spent composing them (fitted buffers plus copies).
     composes: u64,
     compose_ns: u64,
-    /// (requests, replies, worker renders, worker ns, composes, overlays, slow renders) at the
-    /// last report.
-    reported: (u64, u64, u64, u64, u64, u64, u64),
+    /// (requests, replies, worker renders, worker ns, composes, overlays, slow renders,
+    /// thumbnails, thumbnail ns) at the last report.
+    reported: (u64, u64, u64, u64, u64, u64, u64, u64, u64),
 }
 
 /// Per-tab timing bookkeeping for the gate measurements.
@@ -420,7 +420,7 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         app.invoke_reset_scroll(pane as i32);
         eprintln!("[nav] pane={pane} gen={generation} path={shown}");
         let tx = st.tx.clone();
-        fs::enumerate::spawn(path, pane, generation, tx, wake);
+        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, tx, wake);
         schedule_save(st);
     });
 }
@@ -451,7 +451,7 @@ fn refresh(pane: usize) {
             fs::enumerate::spawn_search(path, pattern, hidden, cancel, pane, generation, st.tx.clone(), wake);
             return;
         }
-        fs::enumerate::spawn(path, pane, generation, st.tx.clone(), wake);
+        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, st.tx.clone(), wake);
     });
 }
 
@@ -1185,10 +1185,11 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let generation = model.generation.get();
     let (folder, tx) = (&t.path, &st.icon_tx);
     let mut sent = 0;
-    let changed = model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, |e| {
+    let changed = model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, size_px, |e| {
         let path = if e.kind == Kind::Drive { PathBuf::from(e.name.as_str()) } else { folder.join(e.name.as_str()) };
         let overlay = icons::wants_overlay(e.kind, e.attrs, &e.name);
-        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay });
+        let thumbnail = e.icon_key.starts_with("thumb:");
+        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay, thumbnail });
         sent += 1;
     });
     if let Some(c) = st.strip[pane] {
@@ -1257,7 +1258,7 @@ fn drain_icons() {
         {
             let mut table = st.icons.borrow_mut();
             while let Ok(r) = st.icon_rx.try_recv() {
-                table.complete(r.key, r.outcome);
+                table.complete(r.key, r.size_px, r.outcome);
                 st.icon_counts.replies += 1;
                 any = true;
             }
@@ -1279,13 +1280,16 @@ fn report_icons() {
         let render_ns = st.icon_stats.render_ns.load(Ordering::Relaxed);
         let overlays = st.icon_stats.overlays.load(Ordering::Relaxed);
         let slow = st.icon_stats.slow.load(Ordering::Relaxed);
-        let (req0, rep0, ren0, ns0, comp0, ov0, slow0) = c.reported;
+        let thumbs = st.icon_stats.thumbs.load(Ordering::Relaxed);
+        let thumb_ns = st.icon_stats.thumb_ns.load(Ordering::Relaxed);
+        let (req0, rep0, ren0, ns0, comp0, ov0, slow0, th0, tns0) = c.reported;
         if c.requests == req0 && c.replies == rep0 && c.composes == comp0 {
             return;
         }
         let n = rendered - ren0;
+        let t = thumbs - th0;
         eprintln!(
-            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
+            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, thumbs {t} avg {:.2} ms, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
             c.requests - req0,
             c.replies - rep0,
             c.requests,
@@ -1294,12 +1298,13 @@ fn report_icons() {
             if n > 0 { (render_ns - ns0) as f64 / n as f64 / 1e6 } else { 0.0 },
             overlays - ov0,
             slow - slow0,
+            if t > 0 { (thumb_ns - tns0) as f64 / t as f64 / 1e6 } else { 0.0 },
             c.resolves,
             if c.resolves > 0 { c.resolve_ns as f64 / c.resolves as f64 / 1e3 } else { 0.0 },
             c.composes,
             if c.composes > 0 { c.compose_ns as f64 / c.composes as f64 / 1e3 } else { 0.0 },
         );
-        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes, overlays, slow);
+        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes, overlays, slow, thumbs, thumb_ns);
     });
 }
 
