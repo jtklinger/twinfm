@@ -2021,5 +2021,29 @@ In the app (`[enum]` lines above): `bigdir.zip` fresh worker 96.1 and 133.7 ms i
 
 ### Gate
 
-Pending: the lead builds `target-p3m4` from the PR head and Jeremy runs `tools/wpr-triplet.ps1
--Reference p3m3 -Candidate p3m4 -Tag ab13`; console checks after the triplet.
+**Passed (2026-10-14), one triplet.** Console WPR, Jeremy elevated, `tools/wpr-triplet.ps1
+-Reference p3m3 -Candidate p3m4 -Tag ab13`, accessibility on, Narrator off, no other TwinFM
+window, console checks after the triplet: `target-p3m3` (1dd2820) against `target-p3m4`
+(b6bfd73, the PR head, built from a detached checkout with `--locked`). Analysed with
+`tools/analyze-trace.py --symbols --exe`.
+
+| Run | P3-M3 (`target-p3m3`) | P3-M4 b6bfd73 |
+|---|---|---|
+| 1 | 20.3% (2030 ms) | 20.6% (2061 ms) |
+| 2 | 20.9% (2086 ms) | 20.7% (2074 ms) |
+| 3 | 20.8% (2082 ms) | 21.3% (2132 ms) |
+| **median** | **20.8%** | **20.7%** |
+
+The medians are 0.1 apart in the candidate's favour and the candidate's run 2 sits below the
+reference's, so neither half of the rule calls a gap; a quiet session (every run within one
+point). Frame shares match within a few samples in every pair (accessibility 223 / 227, 239 /
+219, 233 / 220; render 1172 / 1198, 1204 / 1199, 1198 / 1226; draw_text 678 / 687, 680 / 683,
+666 / 680; rows 346 / 373, 383 / 356, 388 / 405; timers 686 / 706, 734 / 689, 722 / 745; heap
+206 / 182, 207 / 230, 213 / 210); no archive, zip-reader or virtual-drop frame appears in any
+candidate window, as expected from the 0 `[archive]` lines the gate script logs. Traces
+`C:/traces/twinfm-ab13-{p3m3,p3m4}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+Jeremy's console checks (2026-10-14) on `target-p3m4`: entering the 40k zip, browsing a nested
+one, opening a file inside, Ctrl+C/Ctrl+V extraction with the shell's progress and Ctrl+Z, a real
+pane-to-pane drag out of a zip, and the in-zip delete and rename refusals all passed; a drag from
+Explorer's zip view onto a TwinFM pane showed the deny cursor (see the fix below).
