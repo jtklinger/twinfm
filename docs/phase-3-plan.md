@@ -1558,6 +1558,26 @@ This machine, RDP, builds as in Scripted checks:
 
 ### Gate
 
-Pending: the lead builds `target-p3m3` from the PR head and Jeremy runs `tools/wpr-triplet.ps1
--Reference p3m2 -Candidate p3m3 -Tag ab12`; console checks come AFTER the triplet (a recursive walk
-before the gate lifts the whole machine for minutes).
+**Passed (2026-10-13 evening), one triplet.** Console WPR, Jeremy elevated, `tools/wpr-triplet.ps1
+-Reference p3m2 -Candidate p3m3 -Tag ab12`, accessibility on, Narrator off, no other TwinFM
+window, console checks run AFTER the triplet this time: `target-p3m2` (05c52a3) against
+`target-p3m3` (1dd2820, the PR head, built from a detached checkout). Analysed with
+`tools/analyze-trace.py --symbols --exe`.
+
+| Run | P3-M2 (`target-p3m2`) | P3-M3 1dd2820 |
+|---|---|---|
+| 1 | 20.5% (2052 ms) | 20.6% (2063 ms) |
+| 2 | 20.9% (2087 ms) | 21.7% (2170 ms) |
+| 3 | 20.7% (2072 ms) | 20.5% (2048 ms) |
+| **median** | **20.7%** | **20.6%** |
+
+The medians are 0.1 apart in the candidate's favour and the candidate's run 3 sits below every
+reference run: no gap by either half of the rule. The session was quiet (every run within 1.2
+points), the first since the triplet protocol began with no disturbed run. Frame shares match
+within a few samples in every pair (accessibility 219 / 209, 232 / 231, 218 / 229; render 1194 /
+1205, 1212 / 1249, 1198 / 1164; draw_text 696 / 675, 699 / 702, 699 / 665; rows 370 / 370, 373 /
+391, 378 / 366; timers 703 / 696, 712 / 739, 716 / 700; heap 218 / 212, 231 / 214, 228 / 184),
+and no size, subtree or walk frame of ours appears in any candidate window, as expected from the
+0 `[size]` lines the gate script logs. Jeremy's console checks (folder selection, Ctrl+A, Alt+Return
+in System32, a change inside a sized folder) passed, "very fast". Traces
+`C:/traces/twinfm-ab12-{p3m2,p3m3}-{1,2,3}.etl`, reports under `C:/traces/export/`.
