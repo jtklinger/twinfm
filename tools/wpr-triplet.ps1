@@ -2,6 +2,9 @@
 # candidate, reference, candidate, reference, candidate), each through wpr-gate.ps1.
 # Elevated PowerShell at the physical console, every TwinFM window closed, Narrator off:
 #   powershell -ExecutionPolicy Bypass -File C:\Users\jtkli\projects\twinfm\tools\wpr-triplet.ps1 -Reference p2m5 -Candidate p3m1 -Tag ab10
+# Several candidates (P3-M5's two trace variants) are a comma-separated list; every round runs
+# the reference first, then each candidate in the order given:
+#   ... -Reference p3m4 -Candidate p3m5a,p3m5b -Tag ab14
 # Builds are named by their target dir (target-<name>\release\twinfm.exe). Traces land at
 # C:\traces\twinfm-<tag>-<name>-<n>.etl with the in-app lines beside them (.stderr.txt).
 # Analyse afterwards without elevation:
@@ -15,7 +18,7 @@ param(
 )
 $elev = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $elev) { throw "Run this elevated (WPR needs administrator)." }
-$builds = @($Reference, $Candidate)
+$builds = @($Reference) + @($Candidate -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 foreach ($b in $builds) {
     $exe = "$Root\target-$b\release\twinfm.exe"
     if (-not (Test-Path $exe)) { throw "$exe is not built" }
@@ -33,4 +36,4 @@ for ($n = 1; $n -le $Runs; $n++) {
         Start-Sleep -Seconds 3
     }
 }
-"done: $($Runs * 2) runs, $([int]((Get-Date) - $started).TotalMinutes) min; traces C:\traces\twinfm-$Tag-*.etl"
+"done: $($Runs * $builds.Count) runs, $([int]((Get-Date) - $started).TotalMinutes) min; traces C:\traces\twinfm-$Tag-*.etl"
