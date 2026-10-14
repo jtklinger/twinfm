@@ -886,6 +886,15 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// `p` with its 8.3 components expanded (`canonicalize` without the `\\?\` prefix): the CI
+    /// runner's %TEMP% is an 8.3 path (RUNNER~1) and the shell hands back long paths, which a
+    /// path inside a zip cannot be canonicalised to afterwards.
+    fn long_path(p: &Path) -> PathBuf {
+        let c = std::fs::canonicalize(p).unwrap();
+        let s = c.to_string_lossy();
+        PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s))
+    }
+
     /// The shell's zip folder parses paths inside an archive into shell items, and a copy of them
     /// is an extraction whose sink results name the in-archive sources, so the undo record
     /// recycles the extracted copies.
@@ -895,6 +904,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("twinfm-p3m4-shell-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("out")).unwrap();
+        let root = long_path(&root);
         let zip = root.join("t.zip");
         let mut w = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
         let opts = zip::write::SimpleFileOptions::default();
