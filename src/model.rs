@@ -960,6 +960,12 @@ impl LocalZone {
         if dst { self.dst_off } else { self.std_off }
     }
 
+    /// Unix seconds of a wall-clock date and time in this zone (a zip entry's MS-DOS time is local).
+    pub fn from_local(&self, y: i64, m: u32, d: u32, secs_of_day: i64) -> i64 {
+        let local = days_from_civil(y, m, d) * 86_400 + secs_of_day;
+        local + self.offset(local + self.std_off)
+    }
+
     /// `YYYY-MM-DD HH:MM` in this zone, or an empty string where the Win32 path also fails.
     /// Written straight into the SharedString, with no intermediate String.
     pub fn format(&self, secs: i64) -> SharedString {

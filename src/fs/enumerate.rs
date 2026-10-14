@@ -31,6 +31,8 @@ pub enum Msg {
         error: Option<String>,
         free: Option<(u64, u64)>,
         reparse: ReparseCounts,
+        /// A level of a zip archive: what its central directory read cost (P3-M4).
+        archive: Option<crate::fs::archive::LevelInfo>,
     },
 }
 
@@ -84,9 +86,12 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         let total = entries.len();
         let _ = tx.send(Msg::Batch { pane, generation, entries });
         let reparse = ReparseCounts::default();
-        let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None, free: None, reparse });
+        let _ = tx.send(Msg::Done { pane, generation, total, elapsed: t0.elapsed(), error: None, free: None, reparse, archive: None });
         wake();
         return;
+    }
+    if let Some((zip, inner)) = crate::fs::archive::split(&path) {
+        return run_archive(&zip, &inner, pane, generation, tx, wake, t0);
     }
     let mut types = TypeNames::default();
     let mut icon_keys = crate::icons::IconKeys::new(path.clone());
@@ -111,7 +116,7 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
         Err(code) => {
             let error = Some(std::io::Error::from_raw_os_error(code as i32).to_string());
             let reparse = ReparseCounts::default();
-            let _ = tx.send(Msg::Done { pane, generation, total: 0, elapsed: t0.elapsed(), error, free: None, reparse });
+            let _ = tx.send(Msg::Done { pane, generation, total: 0, elapsed: t0.elapsed(), error, free: None, reparse, archive: None });
             wake();
             return;
         }
@@ -125,7 +130,36 @@ fn run(path: PathBuf, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl 
     // Timed before the free-space query, so the [enum] worker time is the listing alone.
     let elapsed = t0.elapsed();
     let free = crate::statusbar::disk_free(&path);
-    let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error: None, free, reparse });
+    let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error: None, free, reparse, archive: None });
+    wake();
+}
+
+/// A level of a zip archive, streamed in batches as a folder's listing is; no free space.
+fn run_archive(zip: &Path, inner: &str, pane: usize, generation: u64, tx: Sender<Msg>, wake: impl Fn(), t0: Instant) {
+    let reparse = ReparseCounts::default();
+    let zone = crate::model::LocalZone::current();
+    let (entries, info) = match crate::fs::archive::list(zip, inner, &mut TypeNames::default(), &zone) {
+        Ok(l) => l,
+        Err(e) => {
+            let error = Some(e);
+            let _ = tx.send(Msg::Done { pane, generation, total: 0, elapsed: t0.elapsed(), error, free: None, reparse, archive: None });
+            return wake();
+        }
+    };
+    let total = entries.len();
+    let mut entries = entries.into_iter();
+    loop {
+        let batch: Vec<Entry> = entries.by_ref().take(BATCH_SIZE).collect();
+        if batch.is_empty() {
+            break;
+        }
+        if tx.send(Msg::Batch { pane, generation, entries: batch }).is_err() {
+            return;
+        }
+        wake();
+    }
+    let elapsed = t0.elapsed();
+    let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error: None, free: None, reparse, archive: Some(info) });
     wake();
 }
 
@@ -236,6 +270,11 @@ pub fn walk(
     mut emit: impl FnMut(Vec<Entry>) -> bool,
 ) -> Result<WalkStats, String> {
     use std::sync::atomic::Ordering;
+    // Inside a zip archive the walk is a pass over its cached levels.
+    if let Some((zip, inner)) = crate::fs::archive::split(root) {
+        let (found, walked) = crate::fs::archive::walk(&zip, &inner, matcher, emit)?;
+        return Ok(WalkStats { found, walked, ..Default::default() });
+    }
     let mut types = TypeNames::default();
     let zone = crate::model::LocalZone::current();
     let mut stats = WalkStats::default();
@@ -359,9 +398,10 @@ pub fn spawn_search(
                     (0, Some(e))
                 }
             };
-            let free = if error.is_none() { crate::statusbar::disk_free(&root) } else { None };
+            // No free-space figure inside an archive.
+            let free = if error.is_none() && !crate::fs::archive::inside(&root) { crate::statusbar::disk_free(&root) } else { None };
             let reparse = ReparseCounts::default();
-            let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error, free, reparse });
+            let _ = tx.send(Msg::Done { pane, generation, total, elapsed, error, free, reparse, archive: None });
             wake();
         })
         .expect("spawn search thread");

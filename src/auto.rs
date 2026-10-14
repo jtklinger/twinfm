@@ -200,6 +200,10 @@ enum Step {
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
     /// Mode `menu` is a right-button drop whose menu gets `pick` (copy, move or cancel).
     DropFiles { at: DropAt, mode: String, pick: String, paths: Vec<String> },
+    /// `dropvirtual`: virtual files (`name=size`, a folder `name\`; with `async` from a source that
+    /// asks for asynchronous extraction), or with `zip` the shell's data object for paths inside an
+    /// archive.
+    DropVirtual { pane: usize, row: i32, zip: bool, asynced: bool, items: Vec<String> },
     /// Hover a drag of `paths` near the pane list's top or bottom edge for `ms`, then leave.
     DragOver { pane: usize, top: bool, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
@@ -305,6 +309,17 @@ fn parse(script: &str) -> Vec<Step> {
                         mode,
                         pick,
                         paths: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
+                    }
+                }
+                "dropvirtual" => {
+                    let (zip, asynced) = (a.get(3) == Some(&"zip"), a.get(3) == Some(&"async"));
+                    let first = if zip || asynced { 4 } else { 3 };
+                    Step::DropVirtual {
+                        pane: num(1) as usize,
+                        row: num(2) as i32,
+                        zip,
+                        asynced,
+                        items: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                     }
                 }
                 "dragover" => Step::DragOver {
@@ -1171,6 +1186,44 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     crate::dnd::effect_name(dropped)
                 ),
                 None => eprintln!("[auto] dropfiles: no drop target registered yet"),
+            }
+            schedule(runner, 1);
+        }
+        Step::DropVirtual { pane, row, zip, asynced, items } => {
+            let Some(pos) = drop_point(&app, DropAt::Row(pane, row)) else {
+                schedule(runner, 1);
+                return;
+            };
+            let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), pos.x, pos.y, app.window().scale_factor());
+            let data = if zip {
+                // Paths inside one folder of an archive: the zip folder's own data object, as a
+                // drag out of a zip pane carries it.
+                let paths: Vec<std::path::PathBuf> = items.iter().map(std::path::PathBuf::from).collect();
+                let folder = paths.first().and_then(|p| p.parent()).map(std::path::Path::to_path_buf).unwrap_or_default();
+                let names: Vec<String> = paths.iter().filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned())).collect();
+                crate::dnd::archive_data(hwnd_of(&app), &folder, &names)
+            } else {
+                // Generated contents: `name=size` bytes of a pattern; `name\` a folder.
+                let listed: Vec<(String, Option<Vec<u8>>)> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(k, it)| match it.rsplit_once('=') {
+                        Some((n, size)) => (n.to_string(), Some((0..size.parse::<usize>().unwrap_or(0)).map(|i| (i * 7 + k) as u8).collect())),
+                        None => (it.trim_end_matches('\\').to_string(), None),
+                    })
+                    .collect();
+                Ok(crate::dnd::virtual_data(&listed, false, None, asynced))
+            };
+            match data.map(|d| crate::dnd::drop_data(&d, 0, sx, sy)) {
+                Ok(Some((enter, dropped))) => eprintln!(
+                    "[auto] dropvirtual pane {pane} row {row}{}: {} item(s), DragEnter effect {}, Drop reported {}",
+                    if zip { " (the zip folder's data object)" } else if asynced { " (async source)" } else { "" },
+                    items.len(),
+                    crate::dnd::effect_name(enter),
+                    crate::dnd::effect_name(dropped)
+                ),
+                Ok(None) => eprintln!("[auto] dropvirtual: no drop target registered yet"),
+                Err(e) => eprintln!("[auto] dropvirtual: {e}"),
             }
             schedule(runner, 1);
         }
