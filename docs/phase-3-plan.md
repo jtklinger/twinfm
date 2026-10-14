@@ -2086,6 +2086,8 @@ view offers `FileGroupDescriptorW` + `FileContents` (ISTREAM) + `Shell IDList Ar
 `IDataObjectAsyncCapability`; a drag of `README-original.txt` out of `acidwarp-win64-static.zip`
 onto a pane on `Downloads` was accepted on the async virtual path (`GetAsyncMode = 0x00000000 (1),
 StartOperation = 0x00000000`, `virtual drop: 1 file(s), 3249 bytes, async`, `done in 16 ms`,
-`EndOperation(0x00000000, copy) = 0x00000000`), 16 ms for one file. The console's deny cursor had
-come from the spot (the pointer over no target on entry), not the offer; since then the `DragEnter
-refused` line is logged only when the data object offers nothing TwinFM takes.
+`EndOperation(0x00000000, copy) = 0x00000000`), 16 ms for one file. That object was already
+accepted before the fix, so the deny cursor first reported was probably the spot (the capture shows
+`over nowhere ... -> effect none` on entry, then `effect copy` over the pane), not the offer; not
+confirmed. Since then the `DragEnter refused` line is logged only when the data object offers
+nothing TwinFM takes.
