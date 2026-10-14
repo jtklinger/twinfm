@@ -260,7 +260,7 @@ component FileListNoType inherits FileRowsNoType {
     }
 }
 
-// The four components above with 32 px rows and a 32 px icon column (38 px of left padding), for
+// The four components above with 32 px rows and a 32 px icon column and a 4 px gap (42 px of left padding), for
 // thumbnails (settings `thumbnails`). Copies, not a row height bound to a property: the height of
 // a row is a constant of its component, and FileListHost chooses the component once per pane.
 component FileRows32 inherits ListView {
@@ -291,7 +291,7 @@ component FileRows32 inherits ListView {
         border-color: Palette.accent-background;
         HorizontalLayout {
             // 6 px padding plus the 32 px icon column; the icons are drawn by the pane's strip.
-            padding-left: 38px;
+            padding-left: 42px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
             Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
@@ -327,7 +327,7 @@ component FileRowsNoType32 inherits ListView {
         border-width: i == current-row ? 1px : 0px;
         border-color: Palette.accent-background;
         HorizontalLayout {
-            padding-left: 38px;
+            padding-left: 42px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
             Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
@@ -1113,9 +1113,9 @@ export component Pane inherits Rectangle {
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
-        x: list.x + list.row-h + 2px;
+        x: list.x + list.row-h + 2px + (root.thumbnails ? 4px : 0px);
         y: list.y + (list.row-h - 28px) / 2 + (root.edit-mode == 1 ? list.content-y + list.current-row * list.row-h : 0px);
-        width: max(160px, list.width - list.row-h - 2px - (root.show-type ? 350px : 230px) - 12px);
+        width: max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - (root.show-type ? 350px : 230px) - 12px);
         height: 28px;
         background: Palette.background;
         edit := LineEdit {

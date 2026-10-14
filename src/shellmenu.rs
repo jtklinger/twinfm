@@ -188,7 +188,7 @@ pub(crate) fn ensure_com() -> Result<(), String> {
 }
 
 /// Where the keyboard menu (Shift+F10, the Menu key) opens for `row`, in window logical px:
-/// at the name column's left edge (28 px into the list, 38 with thumbnails on) under the row,
+/// at the name column's left edge (28 px into the list, 42 with thumbnails on) under the row,
 /// kept inside the list's viewport. `list_x`/`list_y` are the list's window position, `content_y`
 /// its scroll offset (zero or negative), `visible_h` its viewport height, `g` its row geometry.
 pub fn row_menu_point(list_x: f32, list_y: f32, content_y: f32, visible_h: f32, row: usize, g: ListGeom) -> (f32, f32) {
@@ -832,9 +832,9 @@ mod tests {
         assert_eq!(row_menu_point(10.0, 63.0, -2200.0, 400.0, 0, g).1, 63.0);
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 500, g).1, 463.0);
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, -5.0, 2, g).1, 63.0, "a collapsed list");
-        // 32 px rows (thumbnails on): the name column starts 38 px in.
+        // 32 px rows (thumbnails on): the name column starts 42 px in (a 4 px gap after the thumbnail).
         let t = ListGeom::new(true);
-        assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 0, t), (48.0, 95.0));
-        assert_eq!(row_menu_point(10.0, 63.0, -3200.0, 400.0, 105, t), (48.0, 63.0 + 6.0 * 32.0));
+        assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 0, t), (52.0, 95.0));
+        assert_eq!(row_menu_point(10.0, 63.0, -3200.0, 400.0, 105, t), (52.0, 63.0 + 6.0 * 32.0));
     }
 }

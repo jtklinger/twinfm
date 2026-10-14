@@ -2266,7 +2266,8 @@ column's is, so the default list stays the reference's row.
   line is logged then too when it is on).
 - **Four list components, chosen once per pane** (`pane.slint`). `FileRows32`, `FileRowsNoType32`,
   `FileList32` and `FileListNoType32` are copies of the 22 px four with the constants of the trace
-  variant (a) (9598f79): row `height: 32px`, `padding-left: 38px`, `content-height` initialised to
+  variant (a) (9598f79): row `height: 32px`, `padding-left: 42px` (the trace's 38 plus a 4 px gap,
+  see Deviations), `content-height` initialised to
   rows x 32 px. `FileListHost` gains `in property <bool> thumbnails` and `out property <length>
   row-h: root.thumbnails ? 32px : 22px`, and its two `if`s become four, one per combination of
   `show-type` x `thumbnails`, each on a host-level expression, none inside a `for`; no row reads
@@ -2376,9 +2377,10 @@ column's is, so the default list stays the reference's row.
 - **`[icons]` line**: `thumbs N avg M ms dropped D` (the brief named `thumbs N avg M ms`); the drop
   count gives check (iii)'s Skipped figure directly.
 - **`spawn` takes `Arc<Views>`**, and `RenderFn` a third argument (thumbnail or not).
-- **The name text starts right at the thumbnail's edge** (38 px padding is 6 px plus the 32 px
-  column, as in the trace's variant (a)): visible in the screenshots, a gap of 4 px would be one
-  constant in the two 32 px row components. Left as the trace's for Jeremy's call.
+- **A 4 px gap after the thumbnail** (Jeremy, 2026-10-14, after the first screenshots showed the
+  name text starting at the thumbnail's edge): the 32 px rows' `padding-left` is 42 px (6 px, the
+  32 px column, 4 px), not the trace's 38; the rename editor and the keyboard menu's point
+  (`ListGeom::name_x`) follow.
 
 ### Deferred
 

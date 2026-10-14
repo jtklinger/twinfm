@@ -63,10 +63,10 @@ impl ListGeom {
         if thumbnails { ListGeom { row_px: 32.0, icon_px: 32.0 } } else { ListGeom { row_px: 22.0, icon_px: 16.0 } }
     }
 
-    /// The name column's left edge in a row: 6 px padding plus the icon column, one row high
-    /// (the rows' `padding-left`, 28 or 38 px).
+    /// The name column's left edge in a row: 6 px padding plus the icon column, one row high,
+    /// plus a 4 px gap after a thumbnail (the rows' `padding-left`, 28 or 42 px).
     pub fn name_x(&self) -> f32 {
-        6.0 + self.row_px
+        6.0 + self.row_px + if self.row_px > 22.0 { 4.0 } else { 0.0 }
     }
 }
 
@@ -1348,7 +1348,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((ListGeom::new(false).name_x(), ListGeom::new(true).name_x()), (28.0, 38.0), "the rows' padding-left");
+        assert_eq!((ListGeom::new(false).name_x(), ListGeom::new(true).name_x()), (28.0, 42.0), "the rows' padding-left");
         // Range: the visible rows plus the margin, clamped to the list.
         let m = STRIP_MARGIN_ROWS;
         assert_eq!(strip_range((10, 40), 1000), (10 - m, 40 + m));
