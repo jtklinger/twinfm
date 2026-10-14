@@ -63,22 +63,35 @@ not a feature.
 
 ## Open questions
 
-- **Milestone order** was agreed on 2026-10-13 with P3-M1 first; Jeremy can still reorder or cut
-  P3-M2 to P3-M5.
-- **The Type column** stays on by default (3.4 gate points in M1). P3-M1 gives it a switch
-  (`show_type`, default true); turning it off by default is a later decision, taken only if a
-  milestone needs the headroom.
-- **Thumbnails and the large-icon view** (P3-M5) are in the phase; they start with a trace of a
-  32 px per-row layout against the reference before any UI is built.
-- **Exposing OneDrive placeholders** (`PHCM_EXPOSE_PLACEHOLDERS`, P2-M5 Deferred) changes what
-  every file API in the process reports; it needs its own check before it is turned on, and a
-  decision on whether cloud status marks are wanted at all. Not part of any milestone yet.
+Updated 2026-10-14 at the Phase 3 close (§ Phase 3 close).
+
+Resolved by the phase:
+- **Milestone order** (agreed 2026-10-13 with P3-M1 first): kept; all five ran in order and none
+  was cut.
+- **The Type column** stays on by default (3.4 gate points in M1). P3-M1 gave it its switch
+  (`show_type`, default true, in the settings dialog); no milestone needed the headroom, so it was
+  never turned off by default.
+- **Thumbnails and the large-icon view** (P3-M5): traced first as planned (ab14: reference 17.4,
+  32 px details 13.7, grid 13.2). Jeremy decided on 2026-10-14: thumbnails only, behind a setting
+  that is off by default, with 32 px rows only when they are on; the large-icon grid deferred with
+  its trace numbers (a Phase 4 candidate).
+
+Still open:
+- **The Slint whole-row snap patch** (P3-M1 Deferred, 2026-10-13): Jeremy accepted the snap and
+  takes the one-line fork patch when the fork is next touched; it would need its own triplet.
 - **Upstreaming the two Slint accessibility patches** (`docs/upstream-issue-draft.md`,
   `docs/patches/`): still deferred; Jeremy decides when.
+- **Content search** (P3-M2): Jeremy, 2026-10-13: out for now.
+- **Exposing OneDrive placeholders** (`PHCM_EXPOSE_PLACEHOLDERS`, P2-M5 Deferred) changes what
+  every file API in the process reports; it needs its own check before it is turned on, and a
+  decision on whether cloud status marks are wanted at all. Not part of any milestone.
+- **The compact Windows 11 context menu (`IExplorerCommand`)**: cut from Phase 3 on 2026-10-13;
+  a Phase 4 candidate.
 - **Explorer's right-button drag never starts on this desktop**: outside TwinFM; worth one check
   without Logi Options+ running if Jeremy cares.
-- **The compact Windows 11 context menu (`IExplorerCommand`)**: cut from Phase 3 on 2026-10-13;
-  stays on the deferred list from M4.
+- **CI on `main`**, red since b0c1ff3 (P3-M4) on two zip tests that compared the runner's 8.3
+  `%TEMP%` paths with the shell's long ones: the test-only fix is PR #35, green on the runner
+  (2026-10-14), to merge on Jeremy's word.
 
 ## P3-M1: history and the settings dialog
 
@@ -2575,3 +2588,171 @@ P3-M5 is closed on both gates: the defaults are the reference within 0.2 of a po
 setting that puts the first per-row image since M2 on screen buys back more than it costs. The
 milestone's row and default resolve path are the reference's, so `target-p3m5` (ee0be21) is the
 reference for whatever comes next; `target-p3m4` is deleted once it has served as one.
+
+## Phase 3 close
+
+Written 2026-10-14. P3-M1 to P3-M5 are in, each squash-merged on Jeremy's word: P3-M1 history and
+the settings dialog (#29, e19a32a, 2026-10-13), P3-M2 search (#30, d2a96c1, 2026-10-13), P3-M3
+folder sizes (#31, 6dd7797, 2026-10-14), P3-M4 archives (#32, b0c1ff3, 2026-10-14) and P3-M5
+thumbnails (#34, 45b5bfb, 2026-10-14; the gate build was ee0be21, the PR head before its last docs
+and tools commits). The P3-M5 kickoff handoff (#33, 085be4d) was deleted in #34. Tests went from 95
+at the start of P3-M1 to 122.
+
+Phase 3's goal, "TwinFM finds and shows what Explorer can" (accepted 2026-10-13), held: a
+back/forward history per tab and the mouse's side buttons, a settings dialog for what was only in
+`config.toml`, a name filter in the pane and a recursive name search into a tab, folder sizes in
+the status bar and the Size column with subtree watches, zip archives as folders with extraction
+through the shell and virtual-file drops from anywhere, and shell thumbnails in 32 px rows behind a
+setting. The gate gave nothing back. Every milestone passed by the triplet rule against the
+previous milestone's build (medians, reference / candidate):
+
+| Milestone | Tag | Reference | Medians | Note |
+|---|---|---|---|---|
+| P3-M1 | ab10 | `target-p2m5` | 21.2 / 21.8 | the fourth triplet: the per-row `if` (20.2 / 21.7) and the two per-row bindings (19.9 / 20.7) failed first, an elimination run found nothing else, the per-pane choice passed |
+| P3-M2 | ab11 | `target-p3m1` | 26.2 / 26.9 | a Defender-disturbed session, about five points high for both binaries |
+| P3-M3 | ab12 | `target-p3m2` | 20.7 / 20.6 | the first session with no disturbed run |
+| P3-M4 | ab13 | `target-p3m3` | 20.8 / 20.7 | |
+| P3-M5 defaults | ab15 | `target-p3m4` | 18.0 / 18.2 | the quietest session recorded; a second defaults triplet in it read 18.4 (the `-Config` slip, § P3-M5 Gate) |
+| P3-M5 thumbnails on | ab16 | `target-p3m4` | 17.3 / 13.8 | 32 px rows: fewer rows per screen and per pixel scrolled |
+
+The P3-M5 trace (ab14) put both per-row layouts under the reference before any thumbnail UI was
+built: `target-p3m4` 17.4, (a) 32 px details 13.7, (b) the large-icon grid 13.2, the grid spending
+about a third of its busy on its strip (`compose_grid` 19.1% and `Texture::new_from_image` 17.1%
+of the window in run 1). Jeremy's decisions on it (2026-10-14): thumbnails only, the grid deferred,
+32 px rows only with thumbnails on (default off).
+
+Two lessons of the phase, both in the records and in `CLAUDE.md`: **nothing in the row may depend
+on a runtime property** (P3-M1: a per-row `if` cost 1.5 points, two per-row bindings 0.7; the
+row's structure is chosen once per pane, outside the `for`, and proven by diffing the generated
+code against the reference's row, as P3-M5 did for its four list components); and **console
+checks run after the triplet**, never before (P3-M2: a search of `C:\` before the gate lifted the
+session five points). P3-M5 added one about the tooling: `tools/wpr-triplet.ps1` takes several
+candidates and `name@<toml>` (a settings file per candidate, through `wpr-gate.ps1 -Config`), and
+runs the `wpr-gate.ps1` beside itself (`$PSScriptRoot`, 27e79a2): a worktree's copy once ran the
+main checkout's older `wpr-gate.ps1`, which put the unknown `-Config` in `$args` without a word, so
+a "thumbnails on" triplet ran on defaults.
+
+CI on `main` has been red since b0c1ff3 (P3-M4): the two real-shell zip tests built their paths
+from the runner's 8.3 `%TEMP%` (`RUNNER~1`) and compared them with the shell's long paths. This
+machine's `%TEMP%` has no 8.3 alias, so the failure does not reproduce here. The fix is PR #35
+(`fix/ci-zip-tests`, test-only: the tests build their paths from the long form of `%TEMP%`),
+whose CI run passed on 2026-10-14; it was open, unmerged, when this was written.
+
+Deferred, pulled together from every Phase 3 milestone and from the Phase 2 close, deduplicated,
+each with where it came from. What Phase 3 finished is dropped: subtree watches and folder sizes
+(P3-M3), the settings dialog and the per-tab history (P3-M1), virtual files and asynchronous data
+objects (P3-M4), 32 px icons and not rendering rows scrolled past (P3-M5, for thumbnails only;
+plain icon requests are still never dropped).
+
+- **The list and Slint**: Slint snaps a ListView rebuilt while scrolled to a whole row, on a
+  settings switch (Type column, thumbnails), a tab switch and a thumb drag; the one-line fork patch
+  is proven (`target-zcfix`) and would be the third fork patch with its own triplet, Jeremy's call
+  (P3-M1, P3-M5). Scale changes: rows already resolved keep their icon index until their tab lists
+  again (M2, P2-M5, narrowed by P3-M5's per-size keys).
+- **History and navigation**: the mouse's Back and Forward over a text entry, the tab strip or the
+  list's scrollbar do nothing (P2-M3, P3-M1); no history menu, and history is not saved with
+  restored tabs (P3-M1); restored tabs do not keep their sort, filter, cursor and scroll;
+  re-revealing the active tab on resize; keyboard navigation and drops in the crumb dropdown; F2
+  for a bookmark (P2-M3).
+- **Settings dialog**: no browse button and no validation for the start folders; Tab order with
+  Narrator not checked by a person (P3-M1); Explorer's protected-operating-system-files switch
+  (P2-M3).
+- **Search**: content search (P3-M2; Jeremy, 2026-10-13: out for now); result names elided from the
+  right in the Name column (a wider column for search tabs, or a folder column); refusal notes only
+  in the status bar (Jeremy is fine with that); the cursor after a rename in a search tab; the
+  context menu and drags over results from different folders refused (needs absolute PIDLs);
+  results do not follow changes; no index, so `C:\Windows` takes about 39 s (P3-M2); thumbnails in
+  search tabs (P3-M5).
+- **Folder sizes**: the subtree watch's overflow path was never triggered (four threads and 32,000
+  files gave 66 events and no overflow), so "disabled after two overflows" is unexercised; a
+  subtree watch on a drive root sees the whole volume; the walk pays for what the listing needs
+  (type names, icon keys, times); a huge selection rebuilds its folder list per status update (not
+  measured); a walk cancelled in its last folder still logs `done`; the first walk of a freshly
+  changed folder costs one more walk; `waitsize` does not wait for a stale re-walk; no size on
+  disk, and no sizes for search results, background tabs or the other drives (P3-M3).
+- **Archives**: other formats (7z, rar, tar, gz); writing into archives (paste, drop, new folder)
+  and editing inside them (refused; the shell menu's own Delete and Cut verbs are not
+  intercepted); password-protected and nested zips (not tried); a foreign source that reads
+  synchronously (the zip folder's own data object) still blocks the UI thread inside Drop, 7 to 10
+  s per 1,000 small files (Explorer's zip view, which offers asynchronous extraction, does not);
+  the clipboard from an archive pasted into Explorer, and a virtual-file paste; `IStorage` contents
+  (an Outlook message); an archive tab does not follow changes to its archive (P3-M4); thumbnails
+  inside archives (P3-M5).
+- **Thumbnails**: the large-icon grid (Jeremy, 2026-10-14; trace numbers above); thumbnails in the
+  drag image; alpha on a translucent PNG not checked; the thumbnail table never shrinks (the
+  20,000 cap bounds it); the shell renders image files as thumbnails even with `SIIGBF_ICONONLY`
+  at 32 px (149 ms each in System32); not investigated in the grid trace: a thin green fringe on
+  the shell's 96 px folder icon, and 16 px placeholders stretched before the first icon lands
+  (P3-M5).
+- **Directory watching**: parsing the change records for targeted row updates instead of a
+  re-listing; watching background tabs; network shares with a timeout; removable drives through
+  `RegisterDeviceNotification` with `DBT_DEVTYP_HANDLE`; noticing the watched folder itself being
+  renamed; the double refresh after our own operations; a back-off for a listing that changes
+  continuously (P3-M3's back-off is for size re-walks only) (P2-M1).
+- **File operations**: Redo; undo of a delete to the Recycle Bin and of a move that renamed on
+  collision; restoring a file a copy or move replaced; dimming the cut row's icon; progress inside
+  TwinFM (`UpdateProgress`) (P2-M2).
+- **Shell, menus and look**: the compact Windows 11 context menu (`IExplorerCommand`; cut from
+  Phase 3 on 2026-10-13) and icons on TwinFM's own menu items; a designed icon and the toolbar
+  (P2-M3).
+- **Drag and drop**: spring-loaded folders; mounted folders counted as their own volume; a scripted
+  pane-to-pane OLE drop (a scripted drag can only be cancelled); drop descriptions; drops on a
+  crumb; auto-scroll of the sidebar and the tab strip; warming the shell's icon path for the first
+  drag image (P2-M4).
+- **Icons**: cloud status overlays and `PHCM_EXPOSE_PLACEHOLDERS` (it changes what every file API
+  in the process reports; it needs its own check and a decision on whether cloud marks are wanted
+  at all); the `SHGetFileInfoW` call per overlaid key; whether the shell overlays "other" reparse
+  points (P2-M5).
+- **Checks that need Jeremy at the console**: Narrator over the Phase 2 notes and the Type texts
+  (P2-M2, P2-M3), the settings dialog (P3-M1), the filter box (P3-M2), an archive tab (P3-M4) and
+  the 32 px lists (P3-M5); the filter box by keyboard and mouse and a long search left running
+  while working in the other pane (P3-M2's list; its console checks covered other ground); a drop
+  from Outlook and the shell's extraction collision dialogs (P3-M4); video and Office thumbnails,
+  for which no fixture here exists (P3-M5); the OneDrive folder with placeholders exposed, if that
+  is ever turned on (P2-M5); a right-button drag out of Explorer on a machine where Explorer starts
+  one (P2-M4).
+
+Phase 4 candidates, in no agreed order, for Jeremy's decision (none is decided):
+
+- **The large-icon grid as a real view** (P3-M5 Deferred): its trace held at 13.2 against 17.4,
+  with the strip at about a third of its busy; if built, the strip's recompose rate
+  (`GRID_MARGIN_ROWS = 1`) and the texture upload per compose (a pixel-buffer `Image` has no cache
+  key) are the first things to trim. It needs a view switch, keyboard by tile, selection and drops
+  (the trace build left the drop highlight, `dnd::hit`, the menu point and the driver at 22 px
+  rows); branch `trace/p3-m5-b-grid` (075f85a) is the starting point.
+- **Content search** (P3-M2; Jeremy said out for now on 2026-10-13).
+- **The Slint whole-row snap patch** (P3-M1): a third fork commit with its own triplet; the fork is
+  also what upstreaming the two accessibility patches touches (`docs/upstream-issue-draft.md`,
+  `docs/patches/`), which Jeremy decides on.
+- **Thumbnails beyond the folder listing** (P3-M5): search tabs, archives, the drag image.
+- **Archives, the rest** (P3-M4): other formats, writing into archives, a foreign synchronous zip
+  drop moved off the UI thread.
+- **The compact Windows 11 context menu** (P2-M3, cut from Phase 3).
+- **OneDrive status marks** through `PHCM_EXPOSE_PLACEHOLDERS` (P2-M5).
+- **Search polish** (P3-M2): the Name column width in search tabs, results from several folders in
+  one menu or drag.
+- **Folder sizes, the unexercised paths** (P3-M3): forcing the subtree-watch overflow in a test,
+  the drive-root subtree watch.
+- **The Phase 2 lists still open**: directory watching (change records, background tabs, shares,
+  removable drives), file operations (Redo, progress inside TwinFM), drag and drop (spring-loaded
+  folders, drop descriptions), as listed above.
+
+The gate protocol for Phase 4, unchanged from Phase 3: `tools/wpr-triplet.ps1` elevated at the
+console by Jeremy, accessibility on, Narrator off, no other TwinFM window, the split-and-scroll
+scenario on `C:\traces\bigdir`, clean binaries built with `--locked` into their own `--target-dir
+target-<name>` from detached checkouts with default features; three runs per binary interleaved,
+compared by median; a gap counts only when every reference run sits below every candidate run or
+the medians differ by more than one point; console checks after the triplet; bar: main thread
+under 20% busy over the 10 s after the split, judged against the reference's spread in the same
+session, never against a recorded number. Since P3-M5 a setting can be gated too (`-Candidate
+<name>@<toml>`, a read-only settings file); `C:\traces\thumbs.toml` (`thumbnails = true`) is the
+thumbnails-on file. Whether a Phase 4 milestone that touches the list or the icons also runs a
+thumbnails-on triplet is for the Phase 4 kickoff to settle.
+
+The fleet of gate binaries at the close (each `target-<name>\release\twinfm.exe` in the main
+checkout): `target-p3m5` (ee0be21, P3-M5's gate build) is the reference for Phase 4's first
+milestone; `target-p3m4` (07ca56c) was P3-M5's reference and is deleted once `target-p3m5` has
+served as one; `target-p3m5a` (9598f79) and `target-p3m5b` (075f85a) are the trace variants, from
+branches `trace/p3-m5-a-32px` and `trace/p3-m5-b-grid`, kept on origin and never merged, so both
+can be rebuilt; every older `target-*` is gone. The everyday `target\release` was rebuilt from
+45b5bfb on 2026-10-14 at 16:02.
