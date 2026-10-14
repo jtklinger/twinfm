@@ -39,7 +39,9 @@ for ($n = 1; $n -le $Runs; $n++) {
     foreach ($b in $builds) {
         $etl = "C:\traces\twinfm-$Tag-$($b.Label)-$n.etl"
         "=== run $n of $Runs, $($b.Label) ($(Get-Date -Format HH:mm:ss))"
-        & "$Root\tools\wpr-gate.ps1" -Exe $b.Exe -Etl $etl -Config $b.Config | Select-String -Pattern "busy|split\]|peak|panicked"
+        # The gate script beside this one, not $Root's: a worktree's triplet must run its own
+        # wpr-gate.ps1 (a plain script swallows a parameter it does not know, such as -Config).
+        & "$PSScriptRoot\wpr-gate.ps1" -Exe $b.Exe -Etl $etl -Config $b.Config | Select-String -Pattern "busy|split\]|peak|panicked"
         Start-Sleep -Seconds 3
     }
 }
