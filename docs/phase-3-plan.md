@@ -2091,3 +2091,124 @@ accepted before the fix, so the deny cursor first reported was probably the spot
 `over nowhere ... -> effect none` on entry, then `effect copy` over the pane), not the offer; not
 confirmed. Since then the `DragEnter refused` line is logged only when the data object offers
 nothing TwinFM takes.
+
+## P3-M5: thumbnails and the large-icon view
+
+The last agreed milestone of the phase, "trace first" (2026-10-13): the first per-row rendering
+since M1, so it starts with a trace of per-row layouts against the reference before any thumbnail
+UI is built, and the strip pattern (`phase-1-plan.md` § M2 Rework: rows carry no image, one
+composed image per pane) must carry it or the milestone stops at the trace with the numbers
+recorded. The large-icon view, declined for Phase 2, is in this milestone only because thumbnails
+share its work; whether it is wanted at all is Jeremy's call once its trace is read.
+
+The open questions carried from the kickoff handoff (`docs/handoffs/2026-10-14-p3-m5-kickoff.md`,
+deleted in this PR):
+- **Thumbnails default on or off** once they exist: the gate decides on the defaults, so if the
+  thumbnail strip costs anything the default is off and the setting carries it.
+- **Whether the large-icon view is wanted at all** if its trace holds: confirm before building the
+  real grid (view switch, keyboard by tile, selection and drops).
+- **The Slint whole-row snap patch** (P3-M1 Deferred): the fork is touched next when upstreaming or
+  when P3-M5 needs a Slint change; Jeremy decides. A view switch rebuilds the list: expect the snap.
+- **Upstreaming the two accessibility patches**: Jeremy decides when.
+
+### Trace (2026-10-14): two throwaway variants
+
+Two throwaway builds, each from `origin/main` at 085be4d, each the ONLY list in its build (so
+"chosen once per pane" holds trivially: no per-row conditional, no per-row binding on a runtime
+property, no view switch, no setting), each built into its own gate dir with `--locked` from a
+clean committed tree, branches pushed and never merged:
+
+- **(a) `target-p3m5a`, the details view at 32 px rows with a 32 px icon strip.** Branch
+  `trace/p3-m5-a-32px`, commit 9598f79, 72 lines changed each way in five files. `ROW_PX` 22 to 32
+  and `ICON_LOGICAL_PX` 16 to 32 in `icons.rs` (the workers ask the shell for 32 x scale px through
+  `geom.icon_px`; the overlay path takes `SHIL_LARGE`, `overlay index 2 fetched at 32 px`); every
+  row-height `22px` in `pane.slint` to `32px` (both row components, `content-height`, bring-into-view,
+  the strip's `y`, the drop highlight, `rows-end`, the rename editor, whose `y` offset moved from
+  -3 px to +2 px to stay centred); the rows' `padding-left` 28 to 38 px; the driver's and the
+  keyboard menu's row arithmetic read `ROW_PX`; five test expectations moved to 32 px rows. The row
+  structure is the reference's. 118 tests pass.
+- **(b) `target-p3m5b`, a large-icon grid under the strip pattern.** Branch `trace/p3-m5-b-grid`,
+  commits 0528066 and 075f85a, 502 lines in, 170 out. The `ListView` keeps its single `for`, now over
+  GRID ROWS: `GridModel(Rc<PaneModel>)` in `model.rs` adapts the pane's shown entries into
+  `GridRow { first, tiles: [Tile] }` with `Tile { name, selected, cut, current }`, N = max(1,
+  floor(list width / 96 px)) set once per pane from a `changed cols` on the host (startup, split,
+  resize only). Each grid row holds a NESTED `for t[c] in tiles`: a `Rectangle` at `x: c * 96px`
+  with the selection background, a 1 px cursor border from the tile's own `current` field (no tile
+  binds to a root property), one elided `Text` below the icon area, and a `TouchArea` reporting entry
+  `first + c` through the existing `row-pointer`. Tiles 96 x 120 px, no tile has an `Image`. The
+  strip is one image per pane of N x 96 x scale by rows x 120 x scale px (`GridGeom`,
+  `compose_grid`, `GRID_MARGIN_ROWS = 1`: one grid row of slack each side, close to the details
+  strip's 88 px, about 2 MB per compose), at `x: 0`, `y: content-y + strip-first * 120px`; icons are
+  requested at 96 x scale px and `overlay_pixels` steps SMALL, LARGE, EXTRALARGE, JUMBO until the
+  list's icons are at least that size. Accessibility: `accessible-item-count` is the grid-row count,
+  each grid row one `list-item`, tiles have no role of their own. Keys: Left/Right one entry, Up/Down
+  N. Left unmapped (no panic in any run): the drop highlight and rename editor `y`, `dnd::hit`, the
+  shell menu point and the driver's `click` still use 22 px rows (the gate scenario uses none of
+  them); the sort arrow shows only for Name; a 24 px Name header was kept so `dnd::LIST_TOP` and the
+  driver's thumb point stay valid. 120 tests pass (two added: grid compose placement at 1.0, 1.25,
+  1.5 and 2.0 scale; entry to row/column mapping with the last partial row, N = 1 and the N = 0
+  guard).
+
+**In-app, relative only** (harness session, 1216 x 839 window, scale 1.0, accessibility on, the
+gate scenario on `C:\traces\bigdir`, `[busy]` over the 10 s after the split, each variant run
+interleaved with `target-p3m4` by its own implementer; the two implementers' builds and runs
+overlapped in time, so the session was noisier than a gate session and the reference sat several
+points above its usual in-app 17):
+
+| Run | p3m4 (ref, with a) | (a) 32 px details | p3m4 (ref, with b) | (b) grid |
+|---|---|---|---|---|
+| 1 | 32.8 (cold) | 15.9 | 19.5 | 17.8 |
+| 2 | 22.0 | 17.8 | 23.9 | 15.8 |
+| 3 | 24.1 | 17.5 | 23.3 | 16.1 |
+| 4 | 22.0 | 17.7 | 24.5 | 16.6 |
+| **median** | **23.05** | **17.6** | **23.6** | **16.35** |
+
+Every candidate run sat below every reference run for both variants, 0 panics in every run. The
+reading is NOT "32 px rows are cheaper": the scenario scrolls by pixels, and a 32 px row shows
+about 31% fewer rows per screen and passes fewer rows per wheel tick, so each variant does less
+per-row work in the same 10 s than the reference does. What the in-app numbers do say is that
+neither variant's new per-frame cost shows above that saving:
+
+- (a): 251 strips composed per run (reference 371) at 48.5 to 55.2 us each (reference 25 to 40):
+  each strip 1.7x the reference's, fewer of them. `[perf]` agrees: about 5.0 to 5.2 ms of UI CPU
+  per frame and render p50 about 2.6 ms, against 6.3 to 6.6 and 3.4 for the reference.
+- (b): 252 strips per run at 1,312 to 1,390 us each: the composed strip is the grid's one real new
+  cost, about 0.34 s of the 10 s, roughly 3.4 of its 16.35 points by the counters (bigdir has one
+  icon key, so these composes are pure copies plus allocation and zeroing of a 480 x 1080 px
+  buffer). Resolve calls stay at about 5 us. No elimination pass was run, since the grid was not
+  the more expensive build; if the console triplet disagrees, the first elimination is the strip
+  hidden, the second the labels removed.
+
+**Icons at the larger sizes** (`C:\Windows\System32`, scroll scenario, worker ms per icon): (a)
+4.83 ms over 53 icons at 32 px, the first batch 65.5 ms with two 149 ms renders of image files
+(`@facial-recognition-windows-hello-rejuv.gif`, `@AdvancedKeySettingsNotification.png`: the shell
+renders a thumbnail for those even with `SIIGBF_ICONONLY` at this size, worth knowing for the
+thumbnail step); (b) 542 icons at 96 px at 10.05 and 11.12 ms per icon (reference 555 at 16 px, 6.07
+and 11.73), slow renders 0 in the measured runs (exploratory runs: the first `.gif` 141 ms,
+`ieuinit.inf` 106 ms, `OneDrive` 104 ms), composes on System32 about 300 per run at 1.54 ms (the
+fit of each new icon is on the UI thread), in-app busy there 21.2 and 21.4 against the reference's
+26.1 (and one disturbed 39.4). `C:\Users\jtkli` with hidden files: `OneDrive` 103 and 153 ms,
+`netbird-0.80.0-ipv6fix.exe` 1,302 ms at 32 px (1,057 ms at 16 px in P2-M5).
+
+**Screenshots** (software renderer, `tools/shot.ps1`, session scratchpad, not in the repo): (a)
+the 32 px icons sit centred and aligned with their rows in both panes, at the top and scrolled; the
+icon fills the row height; sharp, no blurry upscale except the first frame's stretched 16 px
+placeholders; the junction arrow on `Application Data` and `Cookies` at a sensible size;
+`Downloads` shows its custom icon; `Contacts`, `Documents`, `Favorites` and `Links` show plain
+folders in this build AND in the reference (pre-existing, not this change). (b) icons centred in
+their tiles and aligned with their labels in both panes, long names elided, custom folder icons
+(Contacts, Favorites, Links, Music, Searches, Saved Games, Downloads, OneDrive) and the junction
+arrow at 96 px on the nine profile junctions; bigdir after the scenario near entry 24,606 in both
+panes. Not investigated: a thin green fringe along the top edge of the shell's 96 px folder icon in
+every grid screenshot (possibly non-premultiplied edge pixels from `GetImage` at that size); the
+16 x 16 placeholders stretched to 96 px before the first icon lands.
+
+**Gate: pending Jeremy at the console.** One command, three builds, nine runs (reference first in
+each round, `tools/wpr-triplet.ps1` now takes a comma-separated candidate list):
+`tools/wpr-triplet.ps1 -Reference p3m4 -Candidate p3m5a,p3m5b -Tag ab14`, Narrator off, every TwinFM
+window closed, console checks after. The rule is applied per candidate against the reference's three
+runs. The decision tree from the kickoff: (a) holds and (b) does not, P3-M5 is thumbnails in the
+details view at 32 px only; neither holds, the milestone stops here and this record says so; both
+hold, thumbnails first, then the grid only if Jeremy wants it. The symbolized traces are the
+check on the in-app reading: a `compose_grid` or `fit` frame of about 3 points is expected in (b);
+nothing new is expected in (a) beyond a slightly larger `compose`.
