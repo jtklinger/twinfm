@@ -1329,10 +1329,16 @@ fn in_archive(st: &State, pane: usize) -> bool {
     fs::archive::inside(&st.tab(pane).path)
 }
 
-/// Nothing is written into an archive yet (P3-M4): say so in the pane and the log.
-fn refuse_archive(st: &mut State, app: &App, pane: usize, what: &str) {
-    eprintln!("[archive] refused: {what} (writing into a zip archive is not supported)");
-    note(st, app, pane, format!("{what}: writing into a zip archive is not supported"));
+/// Why an operation on an archive is refused (P3-M4).
+const INTO_ARCHIVE: &str = "writing into a zip archive is not supported";
+/// The shell's zip folder hangs on these through IFileOperation (0x80004005 in its own dialog).
+const EDIT_ARCHIVE: &str = "editing a zip archive is not supported";
+
+/// Nothing is written into or changed inside an archive yet (P3-M4): say so in the pane and the
+/// log, before any shell call.
+fn refuse_archive(st: &mut State, app: &App, pane: usize, what: &str, why: &str) {
+    eprintln!("[archive] refused: {what} ({why})");
+    note(st, app, pane, format!("{what}: {why}"));
 }
 
 /// `p` is `root` or lies under it (case-insensitive, whole components).
@@ -1407,6 +1413,14 @@ fn submit_removing(st: &mut State, app: &App, pane: usize, job: Job, fallback: O
 /// and new folder open the inline name editor, which commits through `edit_commit`.
 fn command(pane: usize, cmd: &str) {
     match cmd {
+        // A cut out of an archive would paste as a move out of it.
+        "cx" if with_state(|st| in_archive(st, pane)) => {
+            return with_state(|st| {
+                if let Some(app) = st.app.upgrade() {
+                    refuse_archive(st, &app, pane, "cut", EDIT_ARCHIVE);
+                }
+            });
+        }
         "cc" | "cx" => return clipboard_put(pane, cmd == "cx"),
         "cv" => return clipboard_paste(pane),
         "undo" => return undo(pane),
@@ -1421,8 +1435,16 @@ fn command(pane: usize, cmd: &str) {
             "sizeall" => size_all(st, &app, pane),
             "newfolder" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
             "newfolder" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a folder in it".into()),
-            "newfolder" if in_archive(st, pane) => refuse_archive(st, &app, pane, "new folder"),
+            "newfolder" if in_archive(st, pane) => refuse_archive(st, &app, pane, "new folder", EDIT_ARCHIVE),
             "newfolder" => return Some((app, 2, SharedString::from("New folder"))),
+            "rename" | "delete" | "sdelete" if in_archive(st, pane) => {
+                let what = match cmd {
+                    "sdelete" => "permanent delete",
+                    c => c,
+                };
+                refuse_archive(st, &app, pane, what, EDIT_ARCHIVE);
+            }
+            "move" if in_archive(st, pane) => refuse_archive(st, &app, pane, "move out of an archive", EDIT_ARCHIVE),
             "rename" => match usize::try_from(current_row(&app, pane)).ok().and_then(|r| st.model(pane).entry(r)) {
                 None => note(st, &app, pane, "nothing to rename".into()),
                 Some(e) if e.kind == Kind::Drive => note(st, &app, pane, "drives cannot be renamed here".into()),
@@ -1443,7 +1465,7 @@ fn command(pane: usize, cmd: &str) {
                     return None;
                 }
                 if in_archive(st, 1 - pane) {
-                    refuse_archive(st, &app, pane, &format!("{cmd} into {}", dest.display()));
+                    refuse_archive(st, &app, pane, &format!("{cmd} into {}", dest.display()), INTO_ARCHIVE);
                     return None;
                 }
                 if cmd == "move" && same_dir(&folder, &dest) {
@@ -1626,7 +1648,7 @@ fn clipboard_paste(pane: usize) {
             return None;
         }
         if in_archive(st, pane) {
-            refuse_archive(st, &app, pane, "paste");
+            refuse_archive(st, &app, pane, "paste", INTO_ARCHIVE);
             return None;
         }
         Some(main_hwnd(st, &app))

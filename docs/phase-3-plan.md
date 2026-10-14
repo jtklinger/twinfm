@@ -1653,7 +1653,13 @@ archive: 0 `[archive]` lines.
   a new folder in one, copy or move into one from the other pane, and drops into one (its list, its
   tab in the strip, or a sidebar bookmark of an archive path: DragEnter effect none). Each says why:
   `[archive] refused: <what> (writing into a zip archive is not supported)` and the same in the
-  status bar (drops log once per hover).
+  status bar (drops log once per hover). Editing inside an archive is refused the same way, before
+  any shell call (the lead's decision after the first report, since the shell's zip folder hangs on
+  these through `IFileOperation`, Decision 2): rename (F2, and the shell menu's "Rename", which
+  comes to TwinFM's editor), delete to the Recycle Bin, permanent delete, move out (Shift+F6), cut
+  (Ctrl+X, whose paste would be a move out) and new folder, each with `[archive] refused: <what>
+  (editing a zip archive is not supported)`. Copying out and opening stay. The shell menu's own
+  "Delete" and "Cut" verbs inside an archive go to the shell and are not intercepted.
 - **Context menus.** `parse_items` with the archive folder as the parent works as is
   (`SHParseDisplayName` of `C:\dir\x.zip\sub`, the zip folder's `ParseDisplayName` for the child
   names), so a zip entry gets the shell's item menu (Open, Explore, Cut, Copy, Delete, Properties)
@@ -1667,7 +1673,12 @@ archive: 0 `[archive]` lines.
   instead of `SHCreateDataObject`; it offers `FileGroupDescriptorW` and `FileContents` (HGLOBAL,
   IStream, IStorage) and no `CF_HDROP`, and folders expand into descriptors for their contents.
   Before the drag TwinFM calls its `SetAsyncMode(TRUE)` (`[dnd] the zip folder's data object:
-  SetAsyncMode(TRUE) = 0x00000000`); the drag image is composed as for any drag.
+  SetAsyncMode(TRUE) = 0x00000000`); the drag image is composed as for any drag. While the drag
+  runs, `dnd` keeps the in-archive paths it was made from (`OWN_ARCHIVE_SOURCES`); a drop of it on
+  our own other pane (`target_offer`: `Offer::Archive`) becomes the extraction job, a copy queued
+  through `invoke_from_event_loop` exactly as a files drop is (the shell's progress dialog, the
+  undo record, the UI thread free), and the virtual-file reader is not used (the lead's decision
+  after the first report: that reader held the UI thread for 7 to 10 s per 1,000 files).
 - **Virtual-file drops** (`dnd.rs`). The drop target reads what a data object offers once per
   `DragEnter` and `Drop` (`offer`): `Offer::Files` (`CF_HDROP`, which wins when both are there),
   `Offer::Virtual` (the parsed `FileGroupDescriptorW`) or nothing. A virtual drop is a copy whatever
@@ -1693,7 +1704,8 @@ archive: 0 `[archive]` lines.
   `EndOperation`.
 - **Driver** (`auto.rs`): `dropvirtual <pane> <row> [async] <name=size|...>` (generated contents,
   `name\` a folder), `dropvirtual <pane> <row> zip <path|...>` (the zip folder's own data object for
-  paths in one folder of an archive, what a drag out of a zip pane carries); `waitops` also waits
+  paths in one folder of an archive, what a drag out of a zip pane carries; `ownzip` in place of
+  `zip` marks it as our own drag, with those paths as its sources); `waitops` also waits
   for an async virtual drop (`dnd::virtual_drops_running`). `nav` takes archive paths as it is.
 - **Logging.** `[enum] pane=N done: N entries (archive level, central directory C entries, read in
   R ms, cached|fresh), worker ...`; `[archive] open <zip>: C entries, central directory R ms`,
@@ -1718,7 +1730,9 @@ archive: 0 `[archive]` lines.
   recycles the two copies); `virtual_files_round_trip` (HGLOBAL and IStream: descriptors with their
   indexes, `..` dropped, a drive-qualified name left out, a nested path, a 70,000-byte file and an
   empty one; the same drop twice gives `top (2).txt` and `dir (2)\nested\deep.bin`; a 100-byte cap
-  stops it; `over_cap` at and past 256 MB; a cut block); `hdrop_wins_over_virtual_files`;
+  stops it; `over_cap` at and past 256 MB; a cut block); `hdrop_wins_over_virtual_files` (also:
+  during our own archive drag virtual files become its in-archive paths, files stay files, and
+  without it they stay virtual);
   `zip_folder_data_object_offers_virtual_files` (the zip folder's data object has no `CF_HDROP`,
   offers `a.txt`, `inner` and `inner\b.txt`, has `IDataObjectAsyncCapability`, and extracts both
   files through `extract`); `async_virtual_drop_on_a_worker` (a source asking for async: Drop starts
@@ -1744,13 +1758,16 @@ archive: 0 `[archive]` lines.
   deleting the file ... Error 0x80004005: Unspecified error" (read through UI Automation in a
   throwaway test with no owner window); a rename, a delete to the Recycle Bin, a new folder and a
   move out of a zip did not finish within 15 s in the same test either (not inspected; the move had
-  extracted its file first). TwinFM does not refuse them up front (the brief's rule).
-- **Decision 3, drags: the zip folder's data object, and our own target writes virtual files.** The
-  zip folder's object offers no `CF_HDROP`, so every drop of zip entries onto TwinFM (from Explorer
-  or from our own other pane) takes the virtual path. It reports `IDataObjectAsyncCapability` but
-  answers `GetAsyncMode` with FALSE even after our `SetAsyncMode(TRUE)` returned S_OK, so in practice
-  it is read synchronously inside Drop; the async path is exercised by the minimal data object
-  (test and `dropvirtual ... async`).
+  extracted its file first). So TwinFM refuses them up front (the lead's decision, revising the
+  brief's "the shell's own error"): rename, delete, permanent delete, move out, cut and new folder
+  inside an archive, before any shell call.
+- **Decision 3, drags: the zip folder's data object; our own drag lands as the extraction job.** The
+  zip folder's object offers no `CF_HDROP`. It reports `IDataObjectAsyncCapability` but answers
+  `GetAsyncMode` with FALSE even after our `SetAsyncMode(TRUE)` returned S_OK, so a target reads it
+  synchronously inside Drop. Foreign sources (Explorer's zip view, mail programs, the driver's
+  `dropvirtual`) take the virtual-file path; our own drag out of a zip onto our other pane takes the
+  extraction job from the in-archive paths it was made from (the lead's decision). The async path
+  is exercised by the minimal data object (test and `dropvirtual ... async`).
 - **Collisions in a virtual drop get " (2)"** (`free_name`), files and folders alike, with no shell
   dialog; a renamed folder carries the items below it. Explorer would ask.
 - **A virtual drop is always a copy**, and is reported to the source as one (`Performed DropEffect`
@@ -1784,14 +1801,14 @@ archive: 0 `[archive]` lines.
 
 ### Deferred
 
-- **Other formats** (7z, rar, tar, gz), **writing into archives** (paste, drop, new folder, rename,
-  delete through TwinFM), **password-protected zips** (not tried; extraction is the shell's),
-  **nested archives** (a zip inside a zip is a file there: Return goes to the shell's open; not
-  tried).
-- **Our own drag from a zip pane onto the other pane blocks the UI thread while it extracts**: the
-  zip folder's object is read synchronously inside Drop, about 7 to 10 s for 1,000 small files
-  (Measurements). Routing our own zip drags to the extraction job (as Shift+F5 does) would move it
-  off the UI thread, with the shell's progress dialog; a decision for the lead.
+- **Other formats** (7z, rar, tar, gz), **writing into archives** (paste, drop, new folder),
+  **editing inside archives** (rename, delete, move out, cut: refused; the shell menu's own Delete
+  and Cut verbs are not intercepted), **password-protected zips** (not tried; extraction is the
+  shell's), **nested archives** (a zip inside a zip is a file there: Return goes to the shell's
+  open; not tried).
+- **A foreign zip source still blocks the UI thread inside Drop** (Explorer's zip view dropped on
+  TwinFM reads synchronously: about 7 to 10 s per 1,000 small files, Measurements); only our own
+  drags take the extraction job.
 - **The clipboard from an archive**: Ctrl+C writes `CF_HDROP` with in-archive paths, which TwinFM's
   own paste extracts (checked); a paste of them into Explorer, and TwinFM's paste after the zip
   menu's own Copy (which puts the zip folder's data object on the clipboard, while TwinFM's paste
@@ -1916,6 +1933,34 @@ inside the zip folder's background menu (`[menu] background menu for the folder 
   25 `[archive] parse ... -> item ok` lines, 25 `item` lines per job; after the undo `dest\x` held
   only its `keep.txt`. Each undo run (three in all) put its 25 extracted folders (1,000 small
   files) in the Recycle Bin.
+- **Editing refused, and our own zip drag as the extraction job** (after the lead's two fixes, the
+  final build; a fresh `nested.zip` in the scratch tree): `split; nav 1 ...\dest; nav 0
+  ...\nested.zip; click 0 0; key F2; key Delete; key ShiftDelete; key ShiftF6; key F7; key CtrlX;
+  dropvirtual 1 -1 ownzip ...\nested.zip\d26|...|...\nested.zip\d50; waitops 120000` (stderr
+  timestamped by a reader process):
+
+  ```
+  673.904 [archive] refused: rename (editing a zip archive is not supported)
+  674.106 [archive] refused: delete (editing a zip archive is not supported)
+  674.308 [archive] refused: permanent delete (editing a zip archive is not supported)
+  674.510 [archive] refused: move out of an archive (editing a zip archive is not supported)
+  674.712 [archive] refused: new folder (editing a zip archive is not supported)
+  674.915 [archive] refused: cut (editing a zip archive is not supported)
+  675.339 [dnd] DragEnter: our own drag of 25 item(s) out of an archive, first ...\nested.zip\d26
+  675.340 [dnd] Drop at pane 1 (...\dest) keys=0x0 allowed=0x3: 25 item(s) of our own archive drag, effect copy (reported to the source: copy)
+  675.341 [dnd] drop into pane 1: copy 25 item(s) to ...\dest
+  675.345 [fileops] submit id=1 pane=1 hwnd=0x4250852 Copy { sources: ["...\\nested.zip\\d26", ...
+  678.993 [perf] frames_total=68 render[n=39 p50=1.79ms ...] ui_cpu=391ms over 5s = 10.02ms/frame
+  680.994 [busy] 10 s after split: UI thread 5.9% busy over 10.0 s (cpu 0.594 s)
+  683.993 [perf] frames_total=102 render[n=34 p50=2.69ms ...] ui_cpu=188ms over 5s = 5.51ms/frame
+  686.242 [undo] recorded "Copied 25 items": Some(Delete { sources: ["...\\dest\\d26", ...
+  686.242 [fileops] done id=1 pane=1 tab=2 Done: Copied 25 items
+  ```
+
+  One `[fileops] submit` in the whole run (the drop's), no `virtual drop` line; the UI thread kept
+  rendering (34 to 39 frames per 5 s) and was 5.9% busy while the job ran 10.9 s; `dest` then held
+  1,000 extracted files and `keep.txt`. The gate script on this build: `gate: archive lines 0,
+  virtual 0, panicked 0`, the four `[sort]` lines as before.
 - **Virtual drops** (`nav 1 ...\dest\v100; dropvirtual 1 -1 sub\|sub\inner.txt=10|v001.bin=524288|...
   v100.bin=524288; waitops; nav 1 ...\dest\vasync; dropvirtual 1 -1 async v001.bin=524288|...; waitops;
   nav 1 ...\dest\vzip; dropvirtual 1 -1 zip ...\nested.zip\d26|...|...\nested.zip\d50; waitops;
@@ -1970,7 +2015,8 @@ In the app (`[enum]` lines above): `bigdir.zip` fresh worker 96.1 and 133.7 ms i
 | Its undo (recycle) | 13.8 s and 11.0 s |
 | Virtual drop, 101 files / 50 MB, sync (inside Drop) | 260 ms and 180 ms |
 | Virtual drop, 100 files / 50 MB, async source (worker) | 1,104 ms and 1,109 ms |
-| Virtual drop of the zip folder's object, 25 folders / 1,000 files, sync | 9.8 s, 7.2 s and 6.7 s (UI thread inside Drop throughout) |
+| Virtual drop of the zip folder's object, 25 folders / 1,000 files, sync | 9.8 s, 7.2 s and 6.7 s (UI thread inside Drop throughout; now only for foreign sources) |
+| Our own zip drag, 25 folders / 1,000 files, as the extraction job | 10.9 s, UI thread 5.9% busy |
 | Gate script | 0 `[archive]` lines |
 
 ### Gate

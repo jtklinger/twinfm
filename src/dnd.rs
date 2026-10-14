@@ -1007,6 +1007,9 @@ pub fn read_descriptors(data: *mut c_void) -> Option<Vec<VirtualItem>> {
 pub enum Offer {
     Files(Vec<PathBuf>),
     Virtual(Vec<VirtualItem>),
+    /// Virtual files from our own drag out of an archive: the in-archive paths we dragged, copied
+    /// by the extraction job rather than read here.
+    Archive(Vec<PathBuf>),
     Nothing,
 }
 
@@ -1017,6 +1020,22 @@ pub fn offer(data: *mut c_void) -> Offer {
     match read_descriptors(data) {
         Some(items) if !items.is_empty() => Offer::Virtual(items),
         _ => Offer::Nothing,
+    }
+}
+
+thread_local! {
+    /// While our own drag out of an archive runs: the in-archive paths its data object was made
+    /// from. Any drag reaching our target meanwhile is that drag (OLE's loop is ours).
+    static OWN_ARCHIVE_SOURCES: RefCell<Option<Vec<PathBuf>>> = const { RefCell::new(None) };
+}
+
+/// What the drop target makes of a data object: `offer`, except that our own drag out of an
+/// archive is its in-archive paths, for the extraction job (the shell's progress dialog, off the
+/// UI thread, with an undo record) instead of the synchronous virtual-file reader.
+fn target_offer(data: *mut c_void) -> Offer {
+    match offer(data) {
+        Offer::Virtual(v) => OWN_ARCHIVE_SOURCES.with(|s| s.borrow().clone()).map_or(Offer::Virtual(v), Offer::Archive),
+        o => o,
     }
 }
 
@@ -1381,7 +1400,7 @@ impl DropTarget {
         let spot = crate::drop_spot(p.x, p.y);
         let effect = match (&*self.offered.borrow(), &spot) {
             (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed),
-            (Offer::Virtual(_), Some(_)) => virtual_effect(allowed),
+            (Offer::Virtual(_) | Offer::Archive(_), Some(_)) => virtual_effect(allowed),
             _ => NONE,
         };
         (spot, effect)
@@ -1432,12 +1451,13 @@ pub fn effect_name(e: u32) -> &'static str {
 unsafe extern "system" fn dt_drag_enter(this: *mut c_void, data: *mut c_void, keys: u32, pt: POINTL, effect: *mut u32) -> HRESULT {
     // SAFETY: `this` is our DropTarget (OLE calls us through the vtable we registered).
     let t = unsafe { &*(this as *const DropTarget) };
-    let offered = offer(data);
+    let offered = target_offer(data);
     eprintln!(
         "[dnd] DragEnter: {}",
         match &offered {
             Offer::Files(s) => format!("{} file(s), first {}", s.len(), s.first().map(|p| p.display().to_string()).unwrap_or_default()),
             Offer::Virtual(v) => format!("{} virtual item(s) (FileGroupDescriptorW, no CF_HDROP), first {}", v.len(), v[0].name),
+            Offer::Archive(p) => format!("our own drag of {} item(s) out of an archive, first {}", p.len(), p[0].display()),
             Offer::Nothing => "no CF_HDROP and no virtual files, refused".into(),
         }
     );
@@ -1541,14 +1561,14 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
     // SAFETY: as in `dt_drag_enter`.
     let t = unsafe { &*(this as *const DropTarget) };
     // Read the files again from the data object OLE hands to Drop: the authoritative list.
-    *t.offered.borrow_mut() = offer(data);
+    *t.offered.borrow_mut() = target_offer(data);
     // SAFETY: COM contract: a valid in/out pointer (checked for null).
     let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
     let (spot, mut e) = t.evaluate(keys, pt, allowed);
     let right = keys & MK_RBUTTON != 0 || t.right.replace(false);
     let fresh = std::mem::replace(&mut *t.offered.borrow_mut(), Offer::Nothing);
     // Virtual files are only ever copied: the menu greys "Move here".
-    let menu_allowed = if matches!(fresh, Offer::Virtual(_)) { allowed & COPY } else { allowed };
+    let menu_allowed = if matches!(fresh, Offer::Virtual(_) | Offer::Archive(_)) { allowed & COPY } else { allowed };
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
     // The shell takes its drag image down (before the menu, as Explorer does).
@@ -1574,6 +1594,7 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
         match &fresh {
             Offer::Files(f) => format!("{} file(s)", f.len()),
             Offer::Virtual(v) => format!("{} virtual item(s)", v.len()),
+            Offer::Archive(p) => format!("{} item(s) of our own archive drag", p.len()),
             Offer::Nothing => "0 file(s)".into(),
         },
         effect_name(e),
@@ -1588,6 +1609,10 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
             }
             // Written here (or, for an async source, on a worker once Drop has returned).
             Offer::Virtual(items) => virtual_drop(data, items, spot.pane, spot.dest),
+            // Our own drag out of an archive: the extraction job, queued as a files drop is.
+            Offer::Archive(sources) => {
+                let _ = slint::invoke_from_event_loop(move || crate::drop_files(spot.pane, sources, spot.dest, COPY));
+            }
             Offer::Nothing => {}
         }
         set_dword(data, CFSTR_PERFORMEDDROPEFFECT, reported);
@@ -1651,6 +1676,15 @@ fn log_paint_inside_drag() {
         PAINT_LOGGED.with(|p| p.set(true));
         eprintln!("[dnd] highlight painted inside our own drag loop (frame {} after the change at frame {at})", crate::perf::frames());
     }
+}
+
+/// The driver's `dropvirtual ... ownzip`: `drop_data` with `paths` standing in for our own drag
+/// out of an archive, as `drag` records them for its DoDragDrop.
+pub fn drop_as_own_archive_drag(data: &Com, paths: Vec<PathBuf>, keys: u32, x: i32, y: i32) -> Option<(u32, u32)> {
+    OWN_ARCHIVE_SOURCES.with(|s| *s.borrow_mut() = Some(paths));
+    let r = drop_data(data, keys, x, y);
+    OWN_ARCHIVE_SOURCES.with(|s| s.borrow_mut().take());
+    r
 }
 
 /// The shell's own data object for `names` in `folder` (a folder inside a zip archive): what a
@@ -2200,7 +2234,8 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
     shellmenu::ensure_com()?;
     let hwnd = req.hwnd as HWND;
     let (folder_pidl, folder, children) = shellmenu::parse_items(hwnd, &req.folder, &req.names)?;
-    let data = if crate::fs::archive::inside(&req.folder) {
+    let archive = crate::fs::archive::inside(&req.folder);
+    let data = if archive {
         // The zip folder's own data object: virtual files (FileGroupDescriptorW + FileContents),
         // which Explorer and our own drop target extract, asynchronously where they can.
         let d = shellmenu::ui_data_object(hwnd, &folder, &children)?;
@@ -2234,6 +2269,9 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
         req.folder.display()
     );
     let t0 = std::time::Instant::now();
+    if archive {
+        OWN_ARCHIVE_SOURCES.with(|s| *s.borrow_mut() = Some(req.names.iter().map(|n| req.folder.join(n)).collect()));
+    }
     OWN_DRAG.with(|d| d.set(Some((req.hwnd, crate::perf::frames()))));
     HIGHLIGHT_AT.with(|h| h.set(None));
     PAINT_LOGGED.with(|p| p.set(false));
@@ -2242,6 +2280,7 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
     // is called from inside this loop when the cursor is over our window.
     // SAFETY: live IDataObject and IDropSource; `effect` is a valid out-pointer.
     let hr = unsafe { DoDragDrop(data.0, source.0, COPY | MOVE, &mut effect) };
+    OWN_ARCHIVE_SOURCES.with(|s| s.borrow_mut().take());
     let logical = read_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT);
     eprintln!(
         "[dnd] DoDragDrop returned 0x{:08X} ({}) after {:.0} ms: effect {}, logical performed effect {}",
@@ -2782,7 +2821,14 @@ mod tests {
         assert_eq!(offer(virtual_data(&items, false, Some(&paths), false).0), Offer::Files(paths.clone()));
         assert!(matches!(offer(virtual_data(&items, true, None, false).0), Offer::Virtual(v) if v.len() == 1));
         assert_eq!(offer(virtual_data(&[], false, None, false).0), Offer::Nothing, "no items, nothing to drop");
-        assert_eq!(offer(hdrop_data(&paths).0), Offer::Files(paths));
+        assert_eq!(offer(hdrop_data(&paths).0), Offer::Files(paths.clone()));
+        // During our own drag out of an archive its virtual files are its in-archive paths.
+        let own = vec![PathBuf::from("C:/d/x.zip/sub/one.txt")];
+        OWN_ARCHIVE_SOURCES.with(|s| *s.borrow_mut() = Some(own.clone()));
+        assert_eq!(target_offer(virtual_data(&items, false, None, false).0), Offer::Archive(own));
+        assert_eq!(target_offer(hdrop_data(&paths).0), Offer::Files(paths.clone()), "files stay files");
+        OWN_ARCHIVE_SOURCES.with(|s| s.borrow_mut().take());
+        assert!(matches!(target_offer(virtual_data(&items, false, None, false).0), Offer::Virtual(_)), "a foreign source");
         assert_eq!(
             (virtual_effect(COPY | MOVE), virtual_effect(MOVE), virtual_effect(COPY), virtual_effect(NONE)),
             (COPY, COPY, COPY, NONE)

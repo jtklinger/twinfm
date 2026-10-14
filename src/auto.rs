@@ -83,7 +83,10 @@
 //!   dropvirtual <pane> <row> zip <path|path|...>
 //!                                    the same with the shell zip folder's own data object for
 //!                                    paths inside one folder of an archive (what a drag out of a
-//!                                    zip pane carries). `waitops` waits for an async drop to end
+//!                                    zip pane carries). `waitops` waits for an async drop to end.
+//!                                    `ownzip` in place of `zip` marks the drop as our own drag
+//!                                    out of the archive (the paths are its sources), which the
+//!                                    target turns into the extraction job
 //!   dragover <pane> <top|bottom> <ms> <path|path|...>
 //!                                    a drag of the paths enters the window 6 px inside the pane
 //!                                    list's top or bottom edge and hovers there for <ms> (our drop
@@ -215,7 +218,7 @@ enum Step {
     /// `dropvirtual`: virtual files (`name=size`, a folder `name\`; with `async` from a source that
     /// asks for asynchronous extraction), or with `zip` the shell's data object for paths inside an
     /// archive.
-    DropVirtual { pane: usize, row: i32, zip: bool, asynced: bool, items: Vec<String> },
+    DropVirtual { pane: usize, row: i32, zip: bool, own: bool, asynced: bool, items: Vec<String> },
     /// Hover a drag of `paths` near the pane list's top or bottom edge for `ms`, then leave.
     DragOver { pane: usize, top: bool, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
@@ -324,12 +327,14 @@ fn parse(script: &str) -> Vec<Step> {
                     }
                 }
                 "dropvirtual" => {
-                    let (zip, asynced) = (a.get(3) == Some(&"zip"), a.get(3) == Some(&"async"));
+                    let own = a.get(3) == Some(&"ownzip");
+                    let (zip, asynced) = (own || a.get(3) == Some(&"zip"), a.get(3) == Some(&"async"));
                     let first = if zip || asynced { 4 } else { 3 };
                     Step::DropVirtual {
                         pane: num(1) as usize,
                         row: num(2) as i32,
                         zip,
+                        own,
                         asynced,
                         items: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                     }
@@ -1201,7 +1206,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             }
             schedule(runner, 1);
         }
-        Step::DropVirtual { pane, row, zip, asynced, items } => {
+        Step::DropVirtual { pane, row, zip, own, asynced, items } => {
             let Some(pos) = drop_point(&app, DropAt::Row(pane, row)) else {
                 schedule(runner, 1);
                 return;
@@ -1226,10 +1231,12 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     .collect();
                 Ok(crate::dnd::virtual_data(&listed, false, None, asynced))
             };
-            match data.map(|d| crate::dnd::drop_data(&d, 0, sx, sy)) {
+            let own_paths: Vec<std::path::PathBuf> = items.iter().map(std::path::PathBuf::from).collect();
+            let dropped = data.map(|d| if own { crate::dnd::drop_as_own_archive_drag(&d, own_paths, 0, sx, sy) } else { crate::dnd::drop_data(&d, 0, sx, sy) });
+            match dropped {
                 Ok(Some((enter, dropped))) => eprintln!(
                     "[auto] dropvirtual pane {pane} row {row}{}: {} item(s), DragEnter effect {}, Drop reported {}",
-                    if zip { " (the zip folder's data object)" } else if asynced { " (async source)" } else { "" },
+                    if own { " (the zip folder's data object, as our own drag)" } else if zip { " (the zip folder's data object)" } else if asynced { " (async source)" } else { "" },
                     items.len(),
                     crate::dnd::effect_name(enter),
                     crate::dnd::effect_name(dropped)

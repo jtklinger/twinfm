@@ -149,12 +149,14 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   PIDL); `dropvirtual <pane> <row> [async] <name=size|...>` drops generated virtual files
   (`FileGroupDescriptorW` + `FileContents`, `name\` a folder, `async` a source asking for
   asynchronous extraction) and `dropvirtual <pane> <row> zip <path|...>` the shell zip folder's own
-  data object for paths inside one folder of an archive; `waitops` also waits for an async drop.
+  data object for paths inside one folder of an archive (`ownzip` in place of `zip`: as our own drag
+  out of the archive, which the target turns into the extraction job, `[dnd] DragEnter: our own
+  drag of N item(s) out of an archive`); `waitops` also waits for an async drop.
   The `[enum] ... done:` line of an archive level reads `done: N entries (archive level, central
   directory C entries, read in R ms, cached|fresh), worker ...`. `[archive]` lines: `open <zip>: C
   entries, central directory R ms`, `cache evicted <zip>` (8 archives are cached), `refused: <what>
-  (<why>)` (paste, new folder, copy or move into, drops into: nothing is written into archives;
-  folder sizes), `parse "<path>" -> item ok|failed 0x...` (a shell item or PIDL for a path inside
+  (<why>)` (paste, copy or move into, drops into: "writing into"; rename, delete, permanent delete,
+  move out, cut, new folder: "editing a zip archive is not supported"; folder sizes), `parse "<path>" -> item ok|failed 0x...` (a shell item or PIDL for a path inside
   an archive). `[dnd]` adds `DragEnter: N virtual item(s) (FileGroupDescriptorW, no CF_HDROP)`,
   `virtual drop: N file(s), M bytes, sync|async`, `virtual drop wrote <path> (K of N)`, `virtual
   drop done in T ms: Ok((files, bytes))`, `virtual drop refused: <why>` (a sync source over 256 MB),
