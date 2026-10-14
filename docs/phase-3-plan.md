@@ -1581,3 +1581,399 @@ and no size, subtree or walk frame of ours appears in any candidate window, as e
 0 `[size]` lines the gate script logs. Jeremy's console checks (folder selection, Ctrl+A, Alt+Return
 in System32, a change inside a sized folder) passed, "very fast". Traces
 `C:/traces/twinfm-ab12-{p3m2,p3m3}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+## P3-M4: archives
+
+The backlog was two items: the Phase 2 close's archives candidate, "zip folders as navigable,
+which also needs the virtual-file drop path" (`phase-2-plan.md` § Phase 2 close), and P2-M4's
+deferral of virtual files, "`CFSTR_FILEDESCRIPTOR` / `CFSTR_FILECONTENTS`: a zip folder's items, an
+Outlook attachment ... still only `CF_HDROP`" (`phase-2-plan.md` § P2-M4 Deferred). TwinFM now opens
+a `.zip` as a folder (read with a Rust reader, cached per archive), copies out of it through the
+shell's own extraction (the same `IFileOperation` path as every copy, so the progress dialog,
+collisions and undo work), drags out of it with the shell zip folder's data object, and accepts
+virtual files dropped from anywhere (Explorer's zip view, a mail attachment, its own zip drags) by
+writing them itself. Nothing is written into an archive yet. The gate scenario never meets an
+archive: 0 `[archive]` lines.
+
+### What landed (2026-10-14)
+
+- **Archive paths** (`src/fs/archive.rs`, new). `split(path)` says whether a path lies inside a
+  zip: walking its components, the first one named `*.zip` (any case) that is a file on disk
+  (`GetFileAttributesW`: exists and is not a directory) is the archive, and the rest is the path
+  below its root (`C:\dir\x.zip\sub` gives `C:\dir\x.zip` and `sub`; `C:\dir\x.zip` gives the root,
+  `""`). A folder named `x.zip` is a folder, `C:\a.zipx` is not an archive, and a path with no
+  `.zip` in it costs one lowercase scan and no file system call. `inside(path)` is `split` as a
+  yes or no; `is_zip_name(name)` is the name test a row uses to open as a folder.
+- **The reader and the cache.** The `zip` crate (9.0.3, MIT, `default-features = false`: no
+  decompression code, the shell extracts) reads the central directory once (`ZipArchive::new` and
+  `by_index_data`, which touch no local headers) into levels: a map from each folder's lowercase
+  path below the root to its entries (name, folder or file, uncompressed size, modified time). A
+  folder implied only by its files' paths gets a level and an entry with no date; a stored folder
+  entry gives its folder its own date. Names are split on `/` and `\`, empty, `.` and `..` parts
+  dropped, decoded by the crate (UTF-8 when the flag says so, CP437 otherwise). The MS-DOS time is
+  local time: `LocalZone::from_local` (new, in `model.rs`) turns it into Unix seconds with the
+  zone's daylight rules. The levels are cached by archive path, size and modified time, the 8 most
+  recently used (`CACHE_MAX`; a `Mutex<Vec<_>>`, least recent first): a changed archive is read
+  again, a ninth evicts the oldest (`[archive] cache evicted <zip>`). A damaged central directory is
+  an error ("not a readable zip archive: ..."), never a panic. Only workers call it.
+- **Listing** (`fs/enumerate.rs`). `run` checks `split` first; an archive level is listed from the
+  cache (`archive::list`) and streamed as `Msg::Batch`es of 2,000 and one `Msg::Done`, exactly as a
+  folder is, with no free space and `Msg::Done::archive` carrying the central directory's entry
+  count, its read time and whether it came from the cache, for the `[enum]` line. Entries are
+  `Kind::Directory` or `Kind::File` with no attributes (no hidden flags, no reparse kinds), the Type
+  from the extension through `TypeNames`, icon keys `dir` and `ext:.<ext>` only (an `.exe` or `.lnk`
+  inside a zip has no file to take its own icon from; the icon worker renders the first of each
+  through the zip folder's shell item). The search walker (`walk`) inside an archive is a pass over
+  the cached levels (`archive::walk`: every entry below the level whose own name matches, named
+  `sub\file.txt`); from a folder it still lists only folders, so an archive is a file to it. The
+  breadcrumb dropdown of a zip crumb lists the archive's folders (`pathbar::subfolders`).
+- **Navigation** (`main.rs`). Return or a double-click on a `*.zip` file row (not inside an
+  archive) navigates into it, as does middle-click into a new tab; a folder row inside an archive
+  navigates as any folder; Backspace and Alt+Up go up through the archive's folders to its root and
+  out to the folder holding it (by path); crumbs, the path entry (`navigate`), the history and
+  bookmarks take archive paths like any other. The window and tab titles are the level's name.
+- **What an archive tab is not.** No directory watch: the watcher refuses archive paths
+  (`[watch] pane=N no watch for <path>: inside an archive`, once per pane and path, from
+  `unwatchable`). No folder sizes: `Tab::sizable` is false there, a selection with folders logs
+  `[archive] refused: folder sizes for N selected folder(s) in <path> (inside an archive)` and
+  Alt+Return leaves the note "folders inside an archive are not sized". No free-space figure. The
+  filter and the recursive search work on its listing like any other.
+- **Copying out is extraction.** `fileops::shell_item` already made sources with
+  `SHCreateItemFromParsingName`, which the zip folder parses for paths inside an archive (it now
+  logs `[archive] parse "<path>" -> item ok|failed 0x...` for those), so Shift+F5 / F6 to the other
+  pane, Ctrl+C then Ctrl+V into a folder, and the context menu's verbs reach the shell's own
+  extraction with its progress dialog and collision prompts. The progress sink's `item_path` falls
+  back to `SIGDN_DESKTOPABSOLUTEPARSING` when an item has no file system path, so an extraction's
+  results name their in-archive sources and the undo record is built: Ctrl+Z after an extraction
+  recycles the extracted copies (`Delete { permanent: false }` of the destination items).
+- **Open.** Return on a file inside an archive goes to `shellmenu::open_in_archive`: the item's PIDL
+  (`SHParseDisplayName`) to `ShellExecuteExW` with `SEE_MASK_IDLIST`, so the zip folder extracts it
+  to a temporary folder and opens it there, as Explorer does. Files elsewhere keep the path route.
+- **Refusals** (nothing is written into an archive in this milestone): paste into an archive tab,
+  a new folder in one, copy or move into one from the other pane, and drops into one (its list, its
+  tab in the strip, or a sidebar bookmark of an archive path: DragEnter effect none). Each says why:
+  `[archive] refused: <what> (writing into a zip archive is not supported)` and the same in the
+  status bar (drops log once per hover).
+- **Context menus.** `parse_items` with the archive folder as the parent works as is
+  (`SHParseDisplayName` of `C:\dir\x.zip\sub`, the zip folder's `ParseDisplayName` for the child
+  names), so a zip entry gets the shell's item menu (Open, Explore, Cut, Copy, Delete, Properties)
+  under TwinFM's own items, and empty space the folder menu ("Extract All..."). The zip folder's
+  menus crash inside their own `QueryInterface` for `IContextMenu2` and `IContextMenu3` (an access
+  violation in the first scripted run, reproduced in a throwaway test on both item and background
+  menus), so inside an archive `shellmenu::show` skips the IContextMenu2/3 routing (`[menu] inside
+  an archive: no IContextMenu2/3 routing`); those menus have no owner-drawn submenus to route.
+- **Drags out.** `dnd::drag` from a folder inside an archive asks the zip folder for its own data
+  object (`shellmenu::ui_data_object`: `GetUIObjectOf(IID_IDataObject)` with the children's PIDLs)
+  instead of `SHCreateDataObject`; it offers `FileGroupDescriptorW` and `FileContents` (HGLOBAL,
+  IStream, IStorage) and no `CF_HDROP`, and folders expand into descriptors for their contents.
+  Before the drag TwinFM calls its `SetAsyncMode(TRUE)` (`[dnd] the zip folder's data object:
+  SetAsyncMode(TRUE) = 0x00000000`); the drag image is composed as for any drag.
+- **Virtual-file drops** (`dnd.rs`). The drop target reads what a data object offers once per
+  `DragEnter` and `Drop` (`offer`): `Offer::Files` (`CF_HDROP`, which wins when both are there),
+  `Offer::Virtual` (the parsed `FileGroupDescriptorW`) or nothing. A virtual drop is a copy whatever
+  the source allows (`virtual_effect`; a right-button drop's menu greys "Move here"), into the same
+  spots as any drop and refused where they are (search tabs, archives, This PC). On Drop,
+  `virtual_drop` asks the source for `IDataObjectAsyncCapability`: when `GetAsyncMode` says yes and
+  `StartOperation` succeeds, the data object is marshalled (`CoMarshalInterThreadInterfaceInStream`)
+  to a `virtual-drop` worker (MTA) that writes the files, posts "Extracting K of N..." to the pane's
+  status bar through `invoke_from_event_loop` after each file, and ends with `EndOperation(S_OK,
+  DROPEFFECT_COPY)` (or `E_FAIL`, none); otherwise the files are written inside Drop (the source's
+  requirement), refused before anything is written when the descriptors' sizes add up to more than
+  256 MB (`SYNC_CAP`). `extract` writes the items in descriptor order: folders made as needed (a
+  folder the descriptors only imply goes below the nearest one they list), a name already taken
+  gets " (2)", " (3)"... before a file's extension (a folder so renamed takes its contents with
+  it), each file's contents read from `FileContents` with its `lindex` as an IStream (64 KB reads)
+  or an HGLOBAL (cut to the descriptor's size). Names that are not file names once `.` and `..`
+  parts are dropped (a drive, a stream's `:`) are left out with a log line. The note ends "Extracted
+  N files" or "Extracting failed: <why>"; the refresh is the watch's.
+- **The minimal data object** (`dnd.rs`, the driver's and the tests') now serves `CF_HDROP`,
+  virtual files (descriptors built by `descriptor_block`, contents as HGLOBALs or as IStreams from
+  `SHCreateMemStream`), or both, and with `can_async` an `IDataObjectAsyncCapability` face (a
+  second vtable pointer in the same object) that asks for asynchronous extraction and records
+  `EndOperation`.
+- **Driver** (`auto.rs`): `dropvirtual <pane> <row> [async] <name=size|...>` (generated contents,
+  `name\` a folder), `dropvirtual <pane> <row> zip <path|...>` (the zip folder's own data object for
+  paths in one folder of an archive, what a drag out of a zip pane carries); `waitops` also waits
+  for an async virtual drop (`dnd::virtual_drops_running`). `nav` takes archive paths as it is.
+- **Logging.** `[enum] pane=N done: N entries (archive level, central directory C entries, read in
+  R ms, cached|fresh), worker ...`; `[archive] open <zip>: C entries, central directory R ms`,
+  `[archive] cache evicted <zip>`, `[archive] refused: <what> (<why>)`, `[archive] parse "<path>" ->
+  item ok|failed 0x...`; `[dnd] DragEnter: N virtual item(s) (FileGroupDescriptorW, no CF_HDROP)`,
+  `[dnd] virtual drop: N file(s), M bytes, sync|async`, `[dnd] virtual drop wrote <path> (K of N)`,
+  `[dnd] virtual drop done in T ms: ...`, `[dnd] virtual drop refused: <why>`, `[dnd] virtual drop:
+  GetAsyncMode = ..., StartOperation = ...`, `[dnd] virtual drop: EndOperation(...)`; `[watch] ...
+  no watch for <path>: inside an archive`; `[menu] inside an archive: no IContextMenu2/3 routing`.
+- **Tests**, 111 to 118: `central_directory_levels` (zips the test writes in
+  `%TEMP%\twinfm-p3m4-test-<pid>\`: nested folders with a stored folder entry and implied ones, a
+  file at depth 3, a level asked for in another case, the MS-DOS time shown as written, `dir` and
+  `ext:.txt` keys, a missing level and a file as a level are errors, the second listing cached, the
+  crumb dropdown's folders, the archive walk's 3 matches in 5 folders; a zip with a top-level folder
+  only; an empty zip; non-ASCII names with the UTF-8 flag; a zip64 entry; a damaged end of central
+  directory and a file that is no zip at all as errors; a rewritten archive read fresh; eviction
+  after 8 newer archives); `archive_paths_are_decided_by_the_file_system` (inside, the root, any
+  case, `a.zipx`, a folder named `folder.zip`, a missing zip); the desktop test
+  `shell_items_inside_a_zip_extract` (the zip folder parses `t.zip\sub\file.txt`, which has no file
+  system path and a parsing path equal to it, `item_path` gives it; an `IFileOperation` copy of a
+  file and a folder out of the zip extracts both, one result per source, and the undo record
+  recycles the two copies); `virtual_files_round_trip` (HGLOBAL and IStream: descriptors with their
+  indexes, `..` dropped, a drive-qualified name left out, a nested path, a 70,000-byte file and an
+  empty one; the same drop twice gives `top (2).txt` and `dir (2)\nested\deep.bin`; a 100-byte cap
+  stops it; `over_cap` at and past 256 MB; a cut block); `hdrop_wins_over_virtual_files`;
+  `zip_folder_data_object_offers_virtual_files` (the zip folder's data object has no `CF_HDROP`,
+  offers `a.txt`, `inner` and `inner\b.txt`, has `IDataObjectAsyncCapability`, and extracts both
+  files through `extract`); `async_virtual_drop_on_a_worker` (a source asking for async: Drop starts
+  the operation, the worker reads through the marshalled object while the test's STA pumps, 20 files
+  land and `EndOperation` reports `S_OK` and a copy).
+- **Docs**: `CLAUDE.md` (test count, the P3-M4 driver steps and log lines, `C:\traces\bigdir.zip` as
+  a fixture, the new scratch folders), the `src/auto.rs` header.
+
+### Decisions
+
+- **Decision 1, listing: the Rust reader (b).** Measured on a worker before anything else was built
+  (Measurements, first table): the shell's zip folder (a) took 4.4 s cold and 0.55 s warm for the
+  40,000-entry `bigdir.zip`, 0.3 s cold for the 2,000-entry archive's top level and 0.27 s cold for a
+  subfolder; the `zip` crate took 0.10 s, 0.026 s, 0.004 s and 0.008 s. (b) is faster on every row,
+  by 7x to 45x, and needs no COM at all; (a) is not within 2x anywhere. The measuring code (an STA
+  worker running `SHParseDisplayName`, `SHBindToObject(IShellFolder2)`, `EnumObjects`,
+  `GetDisplayNameOf` and two `GetDetailsEx` per entry, beside `archive::list`) was a throwaway test,
+  not committed.
+- **Decision 2, operations: the shell.** Extraction is the existing copy job with in-archive sources
+  (above); the sink's parsing-path fallback is what makes its undo record. What the zip folder does
+  not do through `IFileOperation` shows the shell's own error: a permanent delete inside a zip
+  stopped in the shell's "1 Interrupted Action" window with "An unexpected error is keeping you from
+  deleting the file ... Error 0x80004005: Unspecified error" (read through UI Automation in a
+  throwaway test with no owner window); a rename, a delete to the Recycle Bin, a new folder and a
+  move out of a zip did not finish within 15 s in the same test either (not inspected; the move had
+  extracted its file first). TwinFM does not refuse them up front (the brief's rule).
+- **Decision 3, drags: the zip folder's data object, and our own target writes virtual files.** The
+  zip folder's object offers no `CF_HDROP`, so every drop of zip entries onto TwinFM (from Explorer
+  or from our own other pane) takes the virtual path. It reports `IDataObjectAsyncCapability` but
+  answers `GetAsyncMode` with FALSE even after our `SetAsyncMode(TRUE)` returned S_OK, so in practice
+  it is read synchronously inside Drop; the async path is exercised by the minimal data object
+  (test and `dropvirtual ... async`).
+- **Collisions in a virtual drop get " (2)"** (`free_name`), files and folders alike, with no shell
+  dialog; a renamed folder carries the items below it. Explorer would ask.
+- **A virtual drop is always a copy**, and is reported to the source as one (`Performed DropEffect`
+  and the return value `DROPEFFECT_COPY`, or `EndOperation`'s effect).
+- **Icon keys inside an archive are by extension only**, `.exe`, `.lnk` and `.ico` included: their
+  own icons would need the file.
+- **The path test asks the file system only for `*.zip` components**, on whichever thread needs it
+  (the enumeration and search workers, the watcher, and on the UI thread per navigation, operation
+  and drop spot, never per row or frame).
+- **Shell context menus inside archives run without IContextMenu2/3 routing** rather than TwinFM's
+  own items only: everything but the routing works.
+
+### Deviations
+
+- **Search inside an archive walks its cached levels.** The brief said the walker does not descend
+  into zips (kept: from a folder, an archive is a file); a search started in an archive tab would
+  otherwise fail to list its root, so `walk` answers it from the cache.
+- **`SetAsyncMode(TRUE)` on the zip folder's data object before our drags**: not in the brief; it
+  costs nothing and lets a target that honours it extract asynchronously. The zip folder itself
+  still reports synchronous (Decision 3).
+- **An async-capable face on the minimal data object** and the `async` form of `dropvirtual`, since
+  no real source here reads asynchronously; the brief allowed for none existing.
+- **A `zip` form of `dropvirtual`** (the zip folder's own data object, dropped on our target
+  directly): the only scripted way to drop what our own zip drags carry, since a scripted drag can
+  only be cancelled.
+- **No IContextMenu2/3 routing inside archives** (the crash, above): a change to `shellmenu::show`.
+- **Extra lines**: `[archive] refused: folder sizes ...`, `[menu] inside an archive: ...`, the
+  `GetAsyncMode` / `EndOperation` / `SetAsyncMode` lines, `virtual drop done in T ms`.
+- **A new `windows-sys` feature**, `Win32_System_Com_Marshal` (for
+  `CoMarshalInterThreadInterfaceInStream`).
+
+### Deferred
+
+- **Other formats** (7z, rar, tar, gz), **writing into archives** (paste, drop, new folder, rename,
+  delete through TwinFM), **password-protected zips** (not tried; extraction is the shell's),
+  **nested archives** (a zip inside a zip is a file there: Return goes to the shell's open; not
+  tried).
+- **Our own drag from a zip pane onto the other pane blocks the UI thread while it extracts**: the
+  zip folder's object is read synchronously inside Drop, about 7 to 10 s for 1,000 small files
+  (Measurements). Routing our own zip drags to the extraction job (as Shift+F5 does) would move it
+  off the UI thread, with the shell's progress dialog; a decision for the lead.
+- **The clipboard from an archive**: Ctrl+C writes `CF_HDROP` with in-archive paths, which TwinFM's
+  own paste extracts (checked); a paste of them into Explorer, and TwinFM's paste after the zip
+  menu's own Copy (which puts the zip folder's data object on the clipboard, while TwinFM's paste
+  reads `CF_HDROP` only), were not tried. A virtual-file paste would be the follow-up.
+- **`IStorage` contents** (an Outlook message dragged as a file) are not read: "unsupported medium".
+- **An archive tab does not follow changes to the archive** (no watch); F5 re-reads it when its size
+  or time changed.
+- **Not checked by a person**: a drop from Explorer's zip view and from Outlook, a real pane-to-pane
+  drag out of a zip, the shell's extraction progress and collision dialogs, Narrator in an archive
+  tab.
+
+### Scripted checks
+
+RDP session, this worktree's `target\release\twinfm.exe` built from 2ccc65d plus the comment-only
+`auto.rs` header change (the bookmark and `deep` search checks, and the screenshot, on earlier
+builds of the same listing and navigation code), every run with `TWINFM_SCRIPT` (inline or
+`@file` in the session scratchpad) and without `TWINFM_SOAK`; no run read or wrote
+`%APPDATA%\twinfm\config.toml`. Scratch tree `%TEMP%\twinfm-p3m4-check\` (`nested.zip`, a copy of the 2,000-entry archive: 50 folders `d01`
+to `d50` of 40 files, 1 to 4 KB each, 5,375,176 bytes; `small.zip` with `inner\deep.txt`,
+`note.txt` and `run-me.cmd`; a folder named `folder.zip`; `dest`), removed afterwards. All exit
+code 0, no `panicked` line. One earlier run, before the routing change, ended in an access violation
+inside the zip folder's background menu (`[menu] background menu for the folder in ...nested.zip:
+... | Extract All...` was its last line); that run is what found the crash.
+
+- **The gate scenario meets no archive code.** The gate script on `C:\traces\bigdir`: `archive
+  lines 0, virtual 0, panicked 0`; the four `[sort]` lines as before (`40000 of 40000 entries`).
+- **Navigation, crumbs, history, cache** (TwinFM on the scratch tree): `nav 0 C:\traces\bigdir.zip;
+  crumb 0 2; history back; nav 0 ...\nested.zip\d10; crumbmenu 0 8; crumbpick d20; key Backspace; key
+  Backspace; history back; history forward; nav 0 ...\folder.zip; nav 0 ...\small.zip\inner`:
+
+  ```
+  [watch] pane=0 no watch for C:\traces\bigdir.zip: inside an archive
+  [archive] open C:\traces\bigdir.zip: 40000 entries, central directory 86.6 ms
+  [enum] pane=0 done: 40000 entries (archive level, central directory 40000 entries, read in 86.6 ms, fresh), worker 133.7 ms, request-to-done 144.2 ms
+  [crumb] pane=0 index 2: C:\traces
+  [nav] pane=0 history back: C:\traces -> C:\traces\bigdir.zip (1 back, 1 forward left)
+  [enum] pane=0 done: 40000 entries (archive level, central directory 40000 entries, read in 86.6 ms, cached), worker 38.4 ms, request-to-done 57.0 ms
+  [archive] open ...\nested.zip: 2000 entries, central directory 6.0 ms
+  [enum] pane=0 done: 40 entries (archive level, central directory 2000 entries, read in 6.0 ms, fresh), worker 8.4 ms, request-to-done 9.5 ms
+  [crumb] pane=0 menu: 50 folder(s) in ...\nested.zip, listed in 0.6 ms
+  [crumb] pane=0 picked ...\nested.zip\d20
+  [nav] pane=0 gen=7 path=...\nested.zip                      (Backspace)
+  [nav] pane=0 gen=8 path=...\twinfm-p3m4-check               (Backspace: out of the archive)
+  [nav] pane=0 history back: ...\twinfm-p3m4-check -> ...\nested.zip (4 back, 1 forward left)
+  [nav] pane=0 history forward: ...\nested.zip -> ...\twinfm-p3m4-check (5 back, 0 forward left)
+  [watch] pane=0 tab=1 watching ...\folder.zip                (a folder named .zip is a folder)
+  [enum] pane=0 done: 1 entries (archive level, central directory 3 entries, read in 0.2 ms, fresh), ...   (small.zip\inner)
+  ```
+
+  A screenshot (`tools/shot.ps1`) of `nested.zip\d25` shows the crumbs `This PC > C: > ... >
+  twinfm-p3m4-nested > nested.zip > d25`, the title `TwinFM - d25`, 40 rows `f0001.bin`... with
+  Type "BIN File", sizes from 1.1 KB to 3.9 KB, Modified `2026-10-14 08:12` (when the files were
+  written), file icons, and "40 items" with no free-space figure.
+- **Open, Return on a zip, clipboard extraction**: `click 0 4; key Return` (small.zip) `; click 0 2;
+  key Return` (run-me.cmd, which writes a marker file) `; click 0 1; cc; nav 0 ...\dest; click 0 0;
+  cv; waitops 20000`:
+
+  ```
+  [nav] pane=0 gen=2 path=...\small.zip
+  [archive] parse "...\small.zip\run-me.cmd" -> item ok
+  [open] pane=0 ...\small.zip\run-me.cmd: Ok(())
+  [fileops] pane=0 note: Copied 1 item to the clipboard
+  [fileops] submit id=1 pane=0 hwnd=0xff083e Copy { sources: ["...\\small.zip\\note.txt"], dest_dir: "...\\dest" }
+  [archive] parse "...\small.zip\note.txt" -> item ok
+  [undo] recorded "Copied 1 item": Some(Delete { sources: ["...\\dest\\note.txt"], permanent: false })
+  [fileops] done id=1 pane=0 tab=1 Done: Copied 1 item
+  [fileops]   item 0x00000000 ...\small.zip\note.txt -> ...\dest\note.txt
+  ```
+
+  The marker file read "opened from the zip"; `dest` then held `keep.txt` and `note.txt`. The run
+  overwrote the clipboard.
+- **Refusals, sizes, filter, search, menus, drag** (`split; nav 1 ...\dest; nav 0 ...\nested.zip;
+  click 0 0; sizeall 0; key F7; key CtrlV; click 1 0; copy; dropfiles 0 -1 ...; dropfiles 0 3 ...;
+  dropvirtual 0 -1 into-zip.txt=5; filter 0 d1; filter 0 ; filter 0 f0007; search 0; waitsearch
+  5000; tab close; filter 0 ; rclick 0 2; menuclose; rclickempty 0; menuclose; nav 0 ...\d10; click 0
+  0; shiftclick 0 2; rclick 0 1; menuclose; dragrow 0 1 0 40; dragcancel`):
+
+  ```
+  [archive] refused: folder sizes for 1 selected folder(s) in ...\nested.zip (inside an archive)
+  [archive] refused: folder sizes (inside an archive)
+  [fileops] pane=0 note: folders inside an archive are not sized
+  [archive] refused: new folder (writing into a zip archive is not supported)
+  [archive] refused: paste (writing into a zip archive is not supported)
+  [archive] refused: copy into ...\nested.zip (writing into a zip archive is not supported)
+  [archive] refused: drop into ...\nested.zip (writing into a zip archive is not supported)
+  [auto] dropfiles Row(0, -1) copy: 1 path(s), DragEnter effect none, Drop reported none
+  [auto] dropfiles Row(0, 3) copy: 1 path(s), DragEnter effect none, Drop reported none
+  [dnd] DragEnter: 1 virtual item(s) (FileGroupDescriptorW, no CF_HDROP), first into-zip.txt
+  [auto] dropvirtual pane 0 row -1: 1 item(s), DragEnter effect none, Drop reported none
+  [filter] pane=0 "d1" (substring): 10 of 50 shown, pass 0.3 ms
+  [search] pane=0 gen=6 start "f0007" in ...\nested.zip
+  [search] pane=0 gen=6 done: 50 found, 51 folders walked, 0 skipped, in 5 ms
+  [menu] item menu for 1 item(s) in ...\nested.zip: Open in other pane | Open in terminal | Copy path | --- | Open | Explore | --- | Cut | Copy | --- | --- | Delete | --- | Properties
+  [menu] inside an archive: no IContextMenu2/3 routing
+  [menu] closed after 336 ms (UI thread cpu 16 ms in the loop): id 0 = Nothing
+  [menu] background menu for the folder in ...\nested.zip: Open in other pane | Open in terminal | Copy path | --- | --- | Extract All...
+  [menu] item menu for 3 item(s) in ...\nested.zip\d10: Open in terminal | Copy path | --- | Open | --- | Cut | Copy | --- | --- | Delete | --- | Properties
+  [dnd] pane=0 row=1: dragging 3 item(s)
+  [dnd] the zip folder's data object: SetAsyncMode(TRUE) = 0x00000000
+  [dnd] drag image 96x96 px, 3 item(s), icon from the shell, composed in 32.6 ms: InitializeFromBitmap = 0x00000000
+  [dnd] DoDragDrop starts (left button): 3 item(s) from ...\nested.zip\d10
+  [dnd] DoDragDrop returned 0x00040101 (cancelled) after 478 ms: effect none, logical performed effect none
+  ```
+
+  A bookmark of `nested.zip\d07` (`bookmark add`) opened from the sidebar (`[sidebar] row 12 click:
+  ...\nested.zip\d07`, listed from the cache) and refused a drop (`dropfiles side -1 ...`: `[archive]
+  refused: drop into ...\nested.zip\d07`, DragEnter effect none). A search for `deep` from the
+  scratch folder found only `src\inner\deep.txt` (`1 found, 5 folders walked`: the two zips were not
+  entered, `folder.zip` was).
+- **Extraction of 1,000 files and its undo** (`nav 1 ...\dest\x; nav 0 ...\nested.zip; click 0 0;
+  shiftclick 0 24; copy; waitops 120000; click 1 0; undo; waitops 120000`; stderr timestamped by a
+  reader process):
+
+  ```
+  904.220 [fileops] submit id=1 pane=0 hwnd=0xa20acc Copy { sources: ["...\\nested.zip\\d01", ... 25 folders
+  917.467 [undo] recorded "Copied 25 items": Some(Delete { sources: ["...\\dest\\x\\d01", ... permanent: false })
+  917.468 [fileops] done id=1 pane=0 tab=1 Done: Copied 25 items
+  918.906 [fileops] submit id=2 pane=1 hwnd=0xa20acc Delete { sources: ["...\\dest\\x\\d01", ...
+  932.751 [undo] done id=2 Done: Undid: Copied 25 items
+  ```
+
+  25 `[archive] parse ... -> item ok` lines, 25 `item` lines per job; after the undo `dest\x` held
+  only its `keep.txt`. Each undo run (three in all) put its 25 extracted folders (1,000 small
+  files) in the Recycle Bin.
+- **Virtual drops** (`nav 1 ...\dest\v100; dropvirtual 1 -1 sub\|sub\inner.txt=10|v001.bin=524288|...
+  v100.bin=524288; waitops; nav 1 ...\dest\vasync; dropvirtual 1 -1 async v001.bin=524288|...; waitops;
+  nav 1 ...\dest\vzip; dropvirtual 1 -1 zip ...\nested.zip\d26|...|...\nested.zip\d50; waitops;
+  dropvirtual 1 -1 huge.bin=270000000`):
+
+  ```
+  [dnd] virtual drop: 101 file(s), 52428810 bytes, sync
+  [dnd] virtual drop done in 260 ms: Ok((101, 52428810))
+  [dnd] virtual drop: GetAsyncMode = 0x00000000 (1), StartOperation = 0x00000000
+  [dnd] virtual drop: 100 file(s), 52428800 bytes, async
+  [auto] dropvirtual pane 1 row -1 (async source): 100 item(s), DragEnter effect copy, Drop reported copy
+  [dnd] virtual drop done in 1104 ms: Ok((100, 52428800))
+  [dnd] virtual drop: EndOperation(0x00000000, copy) = 0x00000000
+  [dnd] the zip folder's data object: SetAsyncMode(TRUE) = 0x00000000
+  [dnd] DragEnter: 1025 virtual item(s) (FileGroupDescriptorW, no CF_HDROP), first d26
+  [dnd] virtual drop: GetAsyncMode = 0x00000000 (0), StartOperation = 0xFFFFFFFF
+  [dnd] virtual drop: 1000 file(s), 2575335 bytes, sync
+  [dnd] virtual drop done in 9779 ms: Ok((1000, 2575335))
+  [dnd] virtual drop: 1 file(s), 270000000 bytes, sync
+  [dnd] virtual drop refused: 270000000 bytes is over the 268435456-byte limit for a synchronous source
+  ```
+
+  1,201 `virtual drop wrote` lines; 100 notes "Extracting K of 100..." (the async drop only), then
+  "Extracted 100 files"; the folders held 101 files of 52,428,810 bytes, 100 of 52,428,800, and
+  1,000 of 2,575,335 (the 25 folders' files, byte counts as in the archive); the refused drop wrote
+  nothing. The async drop returned from Drop at once (the `[auto]` line comes before the worker's
+  `done`).
+
+### Measurements
+
+This machine, RDP. Decision 1, on a worker thread, three runs each (a throwaway test; "cold" is the
+first listing of the archive in the process, the file itself in the OS cache; the subfolder's cold
+row from runs that listed only it):
+
+| Listing | (a) shell zip folder | (b) `zip` crate (central directory read) |
+|---|---|---|
+| 40k flat, top level, cold | 4,432 / 4,482 / 4,442 ms | 99.4 / 100.9 / 99.8 ms (62.2 / 64.3 / 61.6 ms) |
+| 40k flat, top level, warm | 570 / 548 / 559 ms | 26.6 / 25.4 / 26.0 ms |
+| 2k nested, top level (50 folders), cold | 302 / 312 / 314 ms | 4.1 / 3.9 / 4.1 ms (3.7 / 3.5 / 3.7 ms) |
+| 2k nested, top level, warm | 7.0 / 7.2 / 5.2 ms | 0.2 / 0.1 / 0.2 ms |
+| 2k nested, subfolder `d25` (40 files), cold | 268 / 273 / 266 ms | 8.4 / 8.4 / 8.5 ms (3.4 / 3.5 / 3.4 ms) |
+| 2k nested, subfolder `d25`, warm | 7.2 / 7.3 / 6.9 ms | 0.8 / 0.9 / 0.9 ms |
+
+In the app (`[enum]` lines above): `bigdir.zip` fresh worker 96.1 and 133.7 ms in two runs
+(central directory 65.0 and 86.6 ms), cached 29.5 and 38.4 ms; a `nested.zip` subfolder fresh
+8.4 to 14.8 ms, cached 1.7 to 3.7 ms, its top level cached 0.4 to 0.7 ms. The filter `*7*` over
+`bigdir.zip` kept 13,756 of 40,000 in a 24.9 ms pass (the same count as over `C:\traces\bigdir` in P3-M2).
+
+| Operation | Result |
+|---|---|
+| Extraction, 25 folders / 1,000 files / 2.5 MB from `nested.zip`, `IFileOperation` | 13.2 s and 11.1 s (two runs); undo record: recycle the 25 extracted folders |
+| Its undo (recycle) | 13.8 s and 11.0 s |
+| Virtual drop, 101 files / 50 MB, sync (inside Drop) | 260 ms and 180 ms |
+| Virtual drop, 100 files / 50 MB, async source (worker) | 1,104 ms and 1,109 ms |
+| Virtual drop of the zip folder's object, 25 folders / 1,000 files, sync | 9.8 s, 7.2 s and 6.7 s (UI thread inside Drop throughout) |
+| Gate script | 0 `[archive]` lines |
+
+### Gate
+
+Pending: the lead builds `target-p3m4` from the PR head and Jeremy runs `tools/wpr-triplet.ps1
+-Reference p3m3 -Candidate p3m4 -Tag ab13`; console checks after the triplet.

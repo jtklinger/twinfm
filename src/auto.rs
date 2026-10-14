@@ -4,7 +4,8 @@
 //!   split                            toggle the second pane (same as F3)
 //!   wheel <pane> <ticks> <ms>        wheel ticks (negative = down) <ms> apart over the pane's list
 //!   drag <pane> <dy> <ms>            press the pane's scrollbar thumb and drag it <dy> px in 16 ms steps
-//!   nav <pane> <path>                navigate a pane
+//!   nav <pane> <path>                navigate a pane (a path inside a zip archive, `C:\dir\x.zip\sub`,
+//!                                    lists that level of the archive)
 //!   up <pane>                        go to the parent directory
 //!   scrollpos <pane>                 log the pane's list scroll (content-y) and cursor row
 //!   sort <pane> <0|1|2|3>            click a column header (name/size/modified/type)
@@ -26,8 +27,9 @@
 //!   undo                             Ctrl+Z: undo the newest recorded operation (fileops::undo)
 //!   newfolder <name>                 F7, type the name into the editor, Return
 //!   rename <name>                    F2 on the cursor row, type the new name, Return
-//!   waitops <ms>                     wait until no file operation runs and no pane refreshes
-//!                                    (at most <ms>), then 300 ms more for the pass to land
+//!   waitops <ms>                     wait until no file operation runs, no pane refreshes and no
+//!                                    virtual-file drop writes (at most <ms>), then 300 ms more for
+//!                                    the pass to land
 //!   click <pane> <row>               click a visible row (selects only it, moves the cursor)
 //!   ctrlclick <pane> <row>           Ctrl+click a visible row (toggles it)
 //!   shiftclick <pane> <row>          Shift+click a visible row (selects anchor..row)
@@ -72,6 +74,16 @@
 //!                                    so Drop opens the drop menu, and picks "Copy here", "Move
 //!                                    here" or "Cancel" from the in-menu timer. Paths are separated
 //!                                    by `|` because `;` separates steps
+//!   dropvirtual <pane> <row> [async] <name=size|name=size|...>
+//!                                    drop virtual files (FileGroupDescriptorW + FileContents, no
+//!                                    CF_HDROP) the same way: `name=size` is a file of generated
+//!                                    bytes (`sub\file.txt=100` makes `sub`), `name\` a folder;
+//!                                    with `async` the source asks for asynchronous extraction
+//!                                    (IDataObjectAsyncCapability). A copy, written by TwinFM
+//!   dropvirtual <pane> <row> zip <path|path|...>
+//!                                    the same with the shell zip folder's own data object for
+//!                                    paths inside one folder of an archive (what a drag out of a
+//!                                    zip pane carries). `waitops` waits for an async drop to end
 //!   dragover <pane> <top|bottom> <ms> <path|path|...>
 //!                                    a drag of the paths enters the window 6 px inside the pane
 //!                                    list's top or bottom edge and hovers there for <ms> (our drop
