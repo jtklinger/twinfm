@@ -281,9 +281,12 @@ deferred and the Phase 4 candidates). Read them before changing the list.
   interleaved reference, candidate, reference, candidate, reference, candidate, compared by
   median (`tools/wpr-triplet.ps1 -Reference <name> -Candidate <name> -Tag <tag>` runs all six
   from one elevated console, builds named by their `target-<name>` dir, and refuses to start
-  while a TwinFM window is open); a gap counts only when every reference run sits below every candidate run or the
+  while a TwinFM window is open; `-Candidate` takes a comma-separated list, and a candidate may be
+  `name@C:\path.toml`, a settings file for that candidate's runs, e.g. `C:\traces\thumbs.toml`,
+  labelled `name-<basename>` in the trace names; run the script from the checkout whose `tools/`
+  it sits in, since it calls the `wpr-gate.ps1` beside it); a gap counts only when every reference run sits below every candidate run or the
   medians differ by more than one point. The reference binary is the last merged milestone's
-  gate build (`target-p3m4`, 07ca56c, after P3-M4); the previous one is deleted once the new one
+  gate build (`target-p3m5`, ee0be21, after P3-M5); the previous one is deleted once the new one
   has served as a reference. Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running
