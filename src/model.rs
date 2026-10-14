@@ -252,6 +252,7 @@ impl PaneModel {
     pub fn resolve_icons(&self, first: usize, last: usize, px: u32, mut request: impl FnMut(usize, &Entry)) -> Vec<usize> {
         let mut changed = Vec::new();
         let mut table = self.icons.borrow_mut();
+        let (keys, cap) = table.keys(px);
         let mut shown = self.shown.borrow_mut();
         let Some(end) = shown.len().checked_sub(1).map(|n| n.min(last)) else { return changed };
         for i in first..=end {
@@ -259,11 +260,11 @@ impl PaneModel {
             if e.icon >= PLACEHOLDERS || e.icon_key.is_empty() {
                 continue;
             }
-            let mut state = table.state(&e.icon_key, px);
+            let mut state = keys.state(&e.icon_key);
             if state == KeyState::Missing {
-                if let Some(k) = table.capped(&e.icon_key) {
+                if let Some(k) = cap.capped(&e.icon_key) {
                     e.icon_key = k;
-                    state = table.state(&e.icon_key, px);
+                    state = keys.state(&e.icon_key);
                 }
             }
             match state {
@@ -272,7 +273,7 @@ impl PaneModel {
                     changed.push(i);
                 }
                 KeyState::Missing => {
-                    table.begin(&e.icon_key, px);
+                    keys.begin(&e.icon_key);
                     request(i, e);
                 }
                 KeyState::Pending | KeyState::Failed => {}

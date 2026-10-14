@@ -336,9 +336,10 @@ export component App inherits Window {
         if (p == 0) { left.begin-edit(mode, text); } else { right.begin-edit(mode, text); }
     }
 
-    // set-strip(pane, image, first row, width, height, shown): the pane's icon strip.
-    public function set-strip(p: int, img: image, first: int, w: length, h: length, shown: bool) {
-        if (p == 0) { left.set-strip(img, first, w, h, shown); } else { right.set-strip(img, first, w, h, shown); }
+    // set-strip(pane, image, top of its first row in the list's content, width, height, shown):
+    // the pane's icon strip.
+    public function set-strip(p: int, img: image, top: length, w: length, h: length, shown: bool) {
+        if (p == 0) { left.set-strip(img, top, w, h, shown); } else { right.set-strip(img, top, w, h, shown); }
     }
 
     forward-focus: outer;

@@ -1244,7 +1244,8 @@ fn compose_strip(st: &mut State, app: &App, pane: usize, visible: (usize, usize)
     st.icon_counts.composes += 1;
     st.icon_counts.compose_ns += t0.elapsed().as_nanos() as u64;
     let (w, h) = (strip.width() as f32 / geom.scale, strip.height() as f32 / geom.scale);
-    app.invoke_set_strip(pane as i32, Image::from_rgba8_premultiplied(strip), first as i32, w, h, true);
+    let top = first as f32 * geom.list.row_px;
+    app.invoke_set_strip(pane as i32, Image::from_rgba8_premultiplied(strip), top, w, h, true);
     st.strip[pane] = Some(icons::Composed { first, last, icon_px: geom.icon_px });
     st.strip_dirty[pane] = false;
 }
@@ -1252,7 +1253,7 @@ fn compose_strip(st: &mut State, app: &App, pane: usize, visible: (usize, usize)
 /// Hide the pane's icon strip (empty list, or a navigation under way).
 fn hide_strip(st: &mut State, app: &App, pane: usize) {
     if st.strip[pane].take().is_some() {
-        app.invoke_set_strip(pane as i32, Image::default(), 0, 0.0, 0.0, false);
+        app.invoke_set_strip(pane as i32, Image::default(), 0.0, 0.0, 0.0, false);
     }
 }
 

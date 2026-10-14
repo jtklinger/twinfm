@@ -705,10 +705,12 @@ export component Pane inherits Rectangle {
     in-out property <int> edit-mode: 0;
     private property <string> edit-original;
 
-    // The icon strip (`set-strip`): one image holding the icons of rows strip-first onwards,
-    // composed in Rust, at strip-width x strip-height logical px (its exact physical size).
+    // The icon strip (`set-strip`): one image holding the icons of the rows from strip-top (the
+    // first one's top in the list's content, row x row height, computed in Rust, so the per-frame
+    // `y` binding reads no row height) onwards, composed in Rust, at strip-width x strip-height
+    // logical px (its exact physical size).
     private property <image> strip;
-    private property <int> strip-first;
+    private property <length> strip-top;
     private property <length> strip-width;
     private property <length> strip-height;
     private property <bool> strip-shown: false;
@@ -754,9 +756,9 @@ export component Pane inherits Rectangle {
     public function reset-scroll() { list.content-y = 0; current-row = -1; }
     public function get-scroll() -> length { return list.content-y; }
     public function set-scroll(y: length) { list.content-y = y; }
-    public function set-strip(img: image, first: int, w: length, h: length, shown: bool) {
+    public function set-strip(img: image, top: length, w: length, h: length, shown: bool) {
         strip = img;
-        strip-first = first;
+        strip-top = top;
         strip-width = w;
         strip-height = h;
         strip-shown = shown;
@@ -1038,7 +1040,7 @@ export component Pane inherits Rectangle {
         visible: root.strip-shown;
         Image {
             x: 6px;
-            y: list.content-y + root.strip-first * list.row-h;
+            y: list.content-y + root.strip-top;
             width: root.strip-width;
             height: root.strip-height;
             source: root.strip;
@@ -1078,7 +1080,9 @@ export component Pane inherits Rectangle {
 
     // The empty space below the last row (none when the rows fill the viewport): a right-click
     // there opens the folder's background menu ("New", "Paste", "Properties").
-    private property <length> rows-end: max(0px, min(list.visible-height, list.content-y + root.rows.length * list.row-h));
+    // The rows' total height: no content-y in it, so it stays cached while the list scrolls.
+    private property <length> rows-h: root.rows.length * list.row-h;
+    private property <length> rows-end: max(0px, min(list.visible-height, list.content-y + root.rows-h));
     TouchArea {
         x: list.x;
         y: list.y + root.rows-end;

@@ -756,7 +756,7 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
     // row the list has left is dropped).
     while let Some((r, idle)) = next(pool) {
         let stale = generations[r.pane].load(Ordering::Relaxed) != r.generation;
-        let passed = r.thumbnail && views.passed(r.pane, r.row, r.wanted);
+        let passed = !stale && r.thumbnail && views.passed(r.pane, r.row, r.wanted);
         if passed {
             stats.dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -991,19 +991,65 @@ pub enum KeyState {
 /// UI-thread icon table shared by both panes: pixel buffers by index (the first
 /// `PLACEHOLDERS` are the placeholders), the key of every interned buffer, and the keys in
 /// flight or failed, so each key is requested once however many rows show it. Keys are kept per
-/// icon size in px (16 px rows' icons and 32 px rows' are different buffers). `fitted` caches
+/// icon size in px (16 px rows' icons and 32 px rows' are different buffers): one `SizeKeys` per
+/// size, looked up once per resolve, so a row's lookup borrows its key as before. `fitted` caches
 /// each buffer resampled to the strip's icon size, for the size last asked for.
 pub struct IconTable {
     bufs: Vec<SharedPixelBuffer<Rgba8Pixel>>,
     fitted: Vec<Option<SharedPixelBuffer<Rgba8Pixel>>>,
     fitted_px: u32,
-    index: HashMap<(SharedString, u32), u16>,
-    pending: HashSet<(SharedString, u32)>,
-    failed: HashSet<(SharedString, u32)>,
-    /// Thumbnails interned (`thumb:` keys), against `THUMB_TABLE_CAP`; and whether the cap was
-    /// logged.
+    /// One entry per icon size asked for (one or two in practice), searched linearly.
+    sizes: Vec<(u32, SizeKeys)>,
+    cap: Cap,
+}
+
+/// The keys the table knows at one icon size: interned (to their buffer's index), in flight, failed.
+#[derive(Default)]
+pub struct SizeKeys {
+    index: HashMap<SharedString, u16>,
+    pending: HashSet<SharedString>,
+    failed: HashSet<SharedString>,
+}
+
+impl SizeKeys {
+    pub fn state(&self, key: &SharedString) -> KeyState {
+        if let Some(&i) = self.index.get(key) {
+            KeyState::Ready(i)
+        } else if self.pending.contains(key) {
+            KeyState::Pending
+        } else if self.failed.contains(key) {
+            KeyState::Failed
+        } else {
+            KeyState::Missing
+        }
+    }
+
+    /// Mark a key as requested.
+    pub fn begin(&mut self, key: &SharedString) {
+        self.pending.insert(key.clone());
+    }
+}
+
+/// Thumbnails interned (`thumb:` keys), against `THUMB_TABLE_CAP`, and whether the cap was logged.
+#[derive(Default)]
+pub struct Cap {
     thumbs: usize,
-    cap_logged: bool,
+    logged: bool,
+}
+
+impl Cap {
+    /// Past `THUMB_TABLE_CAP`, a thumbnail key not yet held becomes its extension's key (logged
+    /// once); any other key is returned as it is.
+    pub fn capped(&mut self, key: &SharedString) -> Option<SharedString> {
+        if self.thumbs < THUMB_TABLE_CAP || !key.starts_with("thumb:") {
+            return None;
+        }
+        if !self.logged {
+            self.logged = true;
+            eprintln!("[icons] thumbnail cap reached: {} thumbnails held, new ones get their type's icon", self.thumbs);
+        }
+        Some(thumb_fallback(key))
+    }
 }
 
 impl Default for IconTable {
@@ -1012,11 +1058,8 @@ impl Default for IconTable {
             bufs: vec![placeholder_file(), placeholder_folder(), placeholder_drive()],
             fitted: Vec::new(),
             fitted_px: 0,
-            index: HashMap::new(),
-            pending: HashSet::new(),
-            failed: HashSet::new(),
-            thumbs: 0,
-            cap_logged: false,
+            sizes: Vec::new(),
+            cap: Cap::default(),
         }
     }
 }
@@ -1048,54 +1091,38 @@ impl IconTable {
         self.bufs.len()
     }
 
-    /// What the table knows about `key` at `px`.
-    pub fn state(&self, key: &SharedString, px: u32) -> KeyState {
-        let k = (key.clone(), px);
-        if let Some(&i) = self.index.get(&k) {
-            KeyState::Ready(i)
-        } else if self.pending.contains(&k) {
-            KeyState::Pending
-        } else if self.failed.contains(&k) {
-            KeyState::Failed
-        } else {
-            KeyState::Missing
-        }
+    /// The keys known at `px` and the thumbnail cap: what a resolve needs, taken once per call.
+    pub fn keys(&mut self, px: u32) -> (&mut SizeKeys, &mut Cap) {
+        (Self::at(&mut self.sizes, px), &mut self.cap)
     }
 
-    /// Past `THUMB_TABLE_CAP`, a thumbnail key not yet held becomes its extension's key (logged
-    /// once); any other key is returned as it is.
-    pub fn capped(&mut self, key: &SharedString) -> Option<SharedString> {
-        if self.thumbs < THUMB_TABLE_CAP || !key.starts_with("thumb:") {
-            return None;
-        }
-        if !self.cap_logged {
-            self.cap_logged = true;
-            eprintln!("[icons] thumbnail cap reached: {} thumbnails held, new ones get their type's icon", self.thumbs);
-        }
-        Some(thumb_fallback(key))
-    }
-
-    /// Mark a key as requested at `px`.
-    pub fn begin(&mut self, key: &SharedString, px: u32) {
-        self.pending.insert((key.clone(), px));
+    fn at(sizes: &mut Vec<(u32, SizeKeys)>, px: u32) -> &mut SizeKeys {
+        let i = match sizes.iter().position(|(p, _)| *p == px) {
+            Some(i) => i,
+            None => {
+                sizes.push((px, SizeKeys::default()));
+                sizes.len() - 1
+            }
+        };
+        &mut sizes[i].1
     }
 
     /// Apply a worker reply for `key` at `px`. Returns true when a new image was interned.
     pub fn complete(&mut self, key: SharedString, px: u32, outcome: Outcome) -> bool {
-        let key = (key, px);
-        self.pending.remove(&key);
+        let keys = Self::at(&mut self.sizes, px);
+        keys.pending.remove(&key);
         match outcome {
             Outcome::Pixels(p) => {
-                if self.index.contains_key(&key) || self.bufs.len() >= u16::MAX as usize {
+                if keys.index.contains_key(&key) || self.bufs.len() >= u16::MAX as usize {
                     return false;
                 }
-                self.thumbs += usize::from(key.0.starts_with("thumb:"));
-                self.index.insert(key, self.bufs.len() as u16);
+                self.cap.thumbs += usize::from(key.starts_with("thumb:"));
+                keys.index.insert(key, self.bufs.len() as u16);
                 self.bufs.push(p);
                 true
             }
             Outcome::Failed => {
-                self.failed.insert(key);
+                keys.failed.insert(key);
                 false
             }
             Outcome::Skipped => false,
@@ -1249,22 +1276,31 @@ mod tests {
         let mut t = IconTable::default();
         assert_eq!(t.len(), PLACEHOLDERS as usize);
         let txt: SharedString = "ext:.txt".into();
-        assert_eq!(t.state(&txt, 16), KeyState::Missing);
-        t.begin(&txt, 16);
-        assert_eq!(t.state(&txt, 16), KeyState::Pending);
+        assert_eq!(t.keys(16).0.state(&txt), KeyState::Missing);
+        t.keys(16).0.begin(&txt);
+        assert_eq!(t.keys(16).0.state(&txt), KeyState::Pending);
+        assert_eq!(t.keys(32).0.state(&txt), KeyState::Missing, "pending at 16 px only");
         assert!(t.complete(txt.clone(), 16, px()));
-        assert_eq!(t.state(&txt, 16), KeyState::Ready(PLACEHOLDERS));
+        assert_eq!(t.keys(16).0.state(&txt), KeyState::Ready(PLACEHOLDERS));
         assert!(!t.complete(txt.clone(), 16, px()), "a duplicate reply does not intern twice");
-        assert_eq!(t.state(&txt, 32), KeyState::Missing, "each size is its own entry");
-        assert_eq!(t.len(), PLACEHOLDERS as usize + 1);
+        assert_eq!(t.keys(32).0.state(&txt), KeyState::Missing, "each size is its own entry");
+        // The same key at 32 px: its own buffer; failing at one size leaves the other alone.
+        t.keys(32).0.begin(&txt);
+        assert!(t.complete(txt.clone(), 32, px()));
+        assert_eq!(t.keys(32).0.state(&txt), KeyState::Ready(PLACEHOLDERS + 1));
+        assert_eq!(t.keys(16).0.state(&txt), KeyState::Ready(PLACEHOLDERS));
+        let half: SharedString = "ext:.half".into();
+        assert!(!t.complete(half.clone(), 32, Outcome::Failed));
+        assert_eq!((t.keys(32).0.state(&half), t.keys(16).0.state(&half)), (KeyState::Failed, KeyState::Missing));
+        assert_eq!(t.len(), PLACEHOLDERS as usize + 2, "one buffer per size");
         let gone: SharedString = r"C:\gone.exe".into();
-        t.begin(&gone, 16);
+        t.keys(16).0.begin(&gone);
         assert!(!t.complete(gone.clone(), 16, Outcome::Failed));
-        assert_eq!(t.state(&gone, 16), KeyState::Failed);
+        assert_eq!(t.keys(16).0.state(&gone), KeyState::Failed);
         let skip: SharedString = "dir".into();
-        t.begin(&skip, 16);
+        t.keys(16).0.begin(&skip);
         t.complete(skip.clone(), 16, Outcome::Skipped);
-        assert_eq!(t.state(&skip, 16), KeyState::Missing, "a skipped key may be requested again");
+        assert_eq!(t.keys(16).0.state(&skip), KeyState::Missing, "a skipped key may be requested again");
         assert_eq!(t.buffer(PLACEHOLDERS).width(), 2);
         assert_eq!(t.buffer(PLACEHOLDER_FOLDER).width(), 16);
         // Fitted to the strip's icon size, once per size.
@@ -1664,15 +1700,15 @@ mod tests {
         assert_eq!(thumb_fallback(r"thumb:C:\a|b\x.mp4|5|6"), "ext:.mp4", "the last two fields are the time and size");
         let mut t = IconTable::default();
         let key: SharedString = r"thumb:C:\p\new.png|1|2".into();
-        assert_eq!(t.capped(&key), None);
+        assert_eq!(t.cap.capped(&key), None);
         for i in 0..THUMB_TABLE_CAP {
             assert!(t.complete(format!("thumb:{i}|0|0").into(), 32, px()));
         }
         assert!(t.complete("ext:.txt".into(), 32, px()), "icons are not counted against the cap");
-        assert_eq!(t.thumbs, THUMB_TABLE_CAP);
-        assert_eq!(t.capped(&key).as_deref(), Some("ext:.png"));
-        assert_eq!(t.capped(&"ext:.png".into()), None);
-        assert_eq!(t.state(&"thumb:7|0|0".into(), 32), KeyState::Ready(PLACEHOLDERS + 7), "held thumbnails stay");
+        assert_eq!(t.cap.thumbs, THUMB_TABLE_CAP);
+        assert_eq!(t.cap.capped(&key).as_deref(), Some("ext:.png"));
+        assert_eq!(t.cap.capped(&"ext:.png".into()), None);
+        assert_eq!(t.keys(32).0.state(&"thumb:7|0|0".into()), KeyState::Ready(PLACEHOLDERS + 7), "held thumbnails stay");
     }
 
     #[test]
