@@ -2510,3 +2510,41 @@ rest.
 
 Memory per thumbnail: 32 x scale px square, 4 bytes a pixel: 4,096 B at 100%, 6,400 at 125%, 9,216 at
 150%, 12,544 at 175%, 16,384 at 200%; at the 20,000 cap 82 MB to 328 MB.
+
+### Gate
+
+**Defaults (2026-10-14, Jeremy at the console): passed, the tightest session yet.** Console WPR,
+`tools/wpr-triplet.ps1 -Reference p3m4 -Candidate p3m5,p3m5@C:\traces\thumbs.toml -Tag ab15`,
+accessibility on, Narrator off, no other TwinFM window, nine runs from 14:44 to 14:52, console checks
+after: `target-p3m4` (07ca56c) against `target-p3m5` (ee0be21, the PR head with the review fixes and
+the 4 px gap, built from a detached checkout with `--locked`). Analysed with
+`tools/analyze-trace.py --symbols --exe`.
+
+| Run | P3-M4 (`target-p3m4`) | P3-M5 defaults, `target-p3m5` | P3-M5 again (see below) |
+|---|---|---|---|
+| 1 | 18.0% (1796 ms) | 18.4% (1837 ms) | 18.4% (1839 ms) |
+| 2 | 18.1% (1805 ms) | 17.9% (1790 ms) | 18.0% (1796 ms) |
+| 3 | 17.9% (1791 ms) | 18.2% (1820 ms) | 18.6% (1858 ms) |
+| **median** | **18.0%** | **18.2%** | **18.4%** |
+
+The medians differ by 0.2 (and 0.4), and the candidate's run 2 sits below the reference's runs 1
+and 2 in both triplets, so neither half of the rule calls a gap; every one of the nine runs lies
+within 0.7 of a point, the quietest session recorded. Frame shares match within a few samples in
+every pair (accessibility 202 / 211, 213 / 212, 206 / 219; render 1056 / 1070, 1043 / 1052, 1054 /
+1020; draw_text 643 / 604, 640 / 602, 611 / 621; rows 344 / 358, 336 / 322, 337 / 346; timers 642 /
+670, 655 / 631, 646 / 672; heap 178 / 183, 172 / 184, 180 / 176), and no `resolve_view`, `compose`,
+thumbnail or table frame reaches five samples in any candidate window: the default row and the
+default resolve path are the reference's, as the four-component proof said. In-app the candidate
+read 19.1, 18.4, 18.1 against 18.3, 18.7, 16.9, `thumbs 0 ... dropped 0`, `resolve 375 calls avg
+2.8 to 3.0 us` (reference 2.9 to 3.2), 371 strips at 23.5 to 24.4 us, 0 `panicked`. Traces
+`C:/traces/twinfm-ab15-{p3m4,p3m5,p3m5-thumbs}-{1,2,3}.etl`, reports under `C:/traces/export/`.
+
+The third column was meant to be thumbnails on and was not: the worktree's `wpr-triplet.ps1` ran
+`$Root\tools\wpr-gate.ps1`, the main checkout's copy, which does not know `-Config`, and a plain
+PowerShell script puts an unknown parameter in `$args` without a word, so the three
+`p3m5-thumbs` runs started with `[settings] scripted run: defaults` and are a second defaults
+triplet (recorded above as such). Fixed in 27e79a2: the triplet runs the `wpr-gate.ps1` beside it
+(`$PSScriptRoot`). The thumbnails-on triplet is re-run as ab16 below.
+
+Jeremy's console checks (2026-10-14) on `target-p3m5`: the Thumbnails setting, the 32 px list, the
+thumbnails in a photo folder and the 4 px gap: "console checks look good".
