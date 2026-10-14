@@ -6,7 +6,8 @@ in `PROTOTYPE-RESULT.md`). Crate and exe are `twinfm`; the Slint fork branch kee
 `PROTOTYPE-RESULT.md` is the gate record, `docs/week-one-plan.md` the week-one record
 (accessibility fix, renderer decision), `docs/phase-1-plan.md` the Phase 1 record (six
 milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
-`docs/phase-3-plan.md` the Phase 3 plan and record. Read them before changing the list.
+`docs/phase-3-plan.md` the Phase 3 record (closed 2026-10-14; § Phase 3 close holds what is
+deferred and the Phase 4 candidates). Read them before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (122 tests; seven touch the real shell and clipboard, and nine of the ten
@@ -280,9 +281,12 @@ milestones, gate re-run after each), `docs/phase-2-plan.md` the Phase 2 record,
   interleaved reference, candidate, reference, candidate, reference, candidate, compared by
   median (`tools/wpr-triplet.ps1 -Reference <name> -Candidate <name> -Tag <tag>` runs all six
   from one elevated console, builds named by their `target-<name>` dir, and refuses to start
-  while a TwinFM window is open); a gap counts only when every reference run sits below every candidate run or the
+  while a TwinFM window is open; `-Candidate` takes a comma-separated list, and a candidate may be
+  `name@C:\path.toml`, a settings file for that candidate's runs, e.g. `C:\traces\thumbs.toml`,
+  labelled `name-<basename>` in the trace names; run the script from the checkout whose `tools/`
+  it sits in, since it calls the `wpr-gate.ps1` beside it); a gap counts only when every reference run sits below every candidate run or the
   medians differ by more than one point. The reference binary is the last merged milestone's
-  gate build (`target-p3m4`, 07ca56c, after P3-M4); the previous one is deleted once the new one
+  gate build (`target-p3m5`, ee0be21, after P3-M5); the previous one is deleted once the new one
   has served as a reference. Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running
