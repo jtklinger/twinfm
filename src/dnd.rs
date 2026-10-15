@@ -226,6 +226,16 @@ pub struct Layout {
     pub left: f32,
     /// The lists' row height (`icons::ListGeom`: 22 px, or 32 px with thumbnails on).
     pub row_px: f32,
+    /// Each pane showing the large-icon grid: its tiles to a grid row (`icons::TILE_W` wide,
+    /// `TILE_H` tall); None for a pane showing the details list.
+    pub grid: [Option<usize>; 2],
+}
+
+impl Layout {
+    /// The height of one line of the pane's list: a row, or a grid row of tiles.
+    pub fn row_px_of(&self, pane: usize) -> f32 {
+        if self.grid[pane].is_some() { crate::icons::TILE_H } else { self.row_px }
+    }
 }
 
 /// The list's top inside a pane (pane.slint): 3 px padding, 32 px path entry, 2 px spacing,
@@ -347,8 +357,23 @@ pub fn hit(l: &Layout, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> 
     if !in_list {
         return Spot::Pane(pane);
     }
-    let r = ((y - list_top(l, pane) - content_y[pane]) / l.row_px).floor();
-    if r >= 0.0 && (r as usize) < len[pane] { Spot::Row(pane, r as usize) } else { Spot::Pane(pane) }
+    let r = ((y - list_top(l, pane) - content_y[pane]) / l.row_px_of(pane)).floor();
+    if r < 0.0 {
+        return Spot::Pane(pane);
+    }
+    // The grid: the tile's column from x; past the last column of a grid row (the space right
+    // of the tiles) or past the last entry is the pane.
+    let i = match l.grid[pane] {
+        None => r as usize,
+        Some(cols) => {
+            let c = ((x - a - PANE_PAD) / crate::icons::TILE_W).floor() as usize;
+            if c >= cols {
+                return Spot::Pane(pane);
+            }
+            r as usize * cols + c
+        }
+    };
+    if i < len[pane] { Spot::Row(pane, i) } else { Spot::Pane(pane) }
 }
 
 /// How close to a list's top or bottom edge a hovering drag scrolls it, logical px.
@@ -2565,7 +2590,7 @@ mod tests {
 
     #[test]
     fn hit_testing_and_drop_folder() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2] };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
         // Rows start at y 63, 22 px each; the list ends 23 px above the bottom (y 577).
@@ -2587,6 +2612,27 @@ mod tests {
         assert_eq!(hit(&tall, 500.0, 94.9, none, [10, 0]), Spot::Row(0, 0));
         assert_eq!(hit(&tall, 500.0, 95.0, none, [10, 0]), Spot::Row(0, 1));
         assert_eq!(hit(&tall, 500.0, 70.0 + 32.0 * 3.0, [-3200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
+        // The large-icon grid, 5 tiles of 96 x 120 px to a grid row (the list is 994 px wide, so
+        // 10 would fit; the count is the pane's, read from Slint): tiles start at x 3, y 63.
+        let grid = Layout { grid: [Some(5), None], ..one };
+        assert_eq!(grid.row_px_of(0), 120.0);
+        assert_eq!(grid.row_px_of(1), 22.0);
+        assert_eq!(hit(&grid, 3.0, 63.0, none, [12, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&grid, 98.9, 182.9, none, [12, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(hit(&grid, 99.0, 100.0, none, [12, 0]), Spot::Row(0, 1));
+        assert_eq!(hit(&grid, 3.0 + 4.0 * 96.0 + 10.0, 100.0, none, [12, 0]), Spot::Row(0, 4), "the last column");
+        assert_eq!(hit(&grid, 3.0 + 5.0 * 96.0 + 10.0, 100.0, none, [12, 0]), Spot::Pane(0), "right of the tiles");
+        assert_eq!(hit(&grid, 50.0, 183.0, none, [12, 0]), Spot::Row(0, 5), "the second grid row");
+        assert_eq!(hit(&grid, 3.0 + 96.0 + 10.0, 183.0 + 120.0, none, [12, 0]), Spot::Row(0, 11), "the last entry");
+        assert_eq!(hit(&grid, 3.0 + 2.0 * 96.0 + 10.0, 183.0 + 120.0, none, [12, 0]), Spot::Pane(0), "past the last entry");
+        assert_eq!(hit(&grid, 50.0, 50.0, none, [12, 0]), Spot::Pane(0), "the header");
+        // Scrolled by ten grid rows: the first visible tile is entry 50.
+        assert_eq!(hit(&grid, 50.0, 70.0, [-1200.0, 0.0], [1000, 0]), Spot::Row(0, 50));
+        assert_eq!(hit(&grid, 3.0 + 3.0 * 96.0 + 1.0, 70.0 + 120.0 * 2.0, [-1200.0, 0.0], [1000, 0]), Spot::Row(0, 63));
+        // With the split, each pane has its own view: the right pane stays a 22 px list.
+        let both = Layout { split: true, grid: [Some(5), None], ..one };
+        assert_eq!(hit(&both, 50.0, 183.0, none, [12, 7]), Spot::Row(0, 5));
+        assert_eq!(hit(&both, 700.0, 70.0 + 22.0 * 6.0, none, [12, 7]), Spot::Row(1, 6));
         // Split at 0.5: left pane to x 497, splitter 497..503, right pane from 503.
         assert_eq!(hit(&two, 100.0, 70.0, none, [5, 7]), Spot::Row(0, 0));
         assert_eq!(hit(&two, 496.0, 70.0, none, [5, 7]), Spot::Pane(0), "the left pane's padding");
@@ -2629,7 +2675,7 @@ mod tests {
     #[test]
     fn hit_sidebar_rows_and_tabs() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000.
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0 };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2] };
         // Header 26, two drives 24, header 26, a place 24, header 26, a bookmark being renamed 30.
         let rows = [(26.0, false), (24.0, true), (24.0, true), (26.0, false), (24.0, true), (26.0, false), (30.0, true)];
         let s = Strips { side_w: 180.0, side_scroll: 0.0, side_rows: &rows, tabs: [(1, 160.0, 0.0), (3, 120.0, 0.0)] };
@@ -2677,7 +2723,7 @@ mod tests {
 
     #[test]
     fn auto_scroll_near_the_list_edges() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2] };
         // The list runs from y 63 to 577; the edge zones are 24 px inside it.
         assert_eq!(edge_scroll(&one, 500.0, 63.0), Some((0, -1)), "the top edge scrolls up");
         assert_eq!(edge_scroll(&one, 500.0, 86.9), Some((0, -1)));

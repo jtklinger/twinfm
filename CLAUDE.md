@@ -12,7 +12,7 @@ grid with thumbnails, three milestones, kicked off 2026-10-14; settings triplets
 gate). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (122 tests; seven touch the real shell and clipboard, and nine of the ten
+- `cargo test --release` (126 tests; seven touch the real shell and clipboard, and nine of the ten
   `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
   tests write to scratch folders, see below)
@@ -184,6 +184,24 @@ gate). Read them before changing the list.
   (`thumbs 0 avg 0.00 ms dropped 0` with thumbnails off). Fixture: `%TEMP%\twinfm-p3m5-thumbs\`
   (200 copies of `C:\Windows\Web\Wallpaper`, `Screen` and `4K` JPEGs, `photo-000.jpg` on; made
   by hand, not in the repo; a new copy is cold in the system thumbnail cache).
+  Since P4-M1, the large-icon grid: `view details|icons` presses Ctrl+Shift+1 / Ctrl+Shift+2 on the
+  active pane (key names `CtrlShift1`, `CtrlShift2`; the setting is per pane, `view_left` /
+  `view_right`, so a gate run with the grid on takes `TWINFM_CONFIG=C:\traces\grid.toml`, read-only,
+  both panes `"icons"`). In the grid every step that takes a row (`click`, `ctrlclick`, `shiftclick`,
+  `dblclick`, `midclick`, `rclick`, `dropfiles <pane> <row>`) aims at the tile of visible entry
+  `<row>` (`row / cols` grid rows down, `row % cols` tiles across, 96 x 120 px each); `rclickempty`
+  and `dropfiles <pane> -1` work as before. Key names `Up`, `Down`, `Left`, `Right`, `PageUp`,
+  `PageDown`, `Home`, `End`, `ShiftLeft`, `ShiftRight` move the cursor in the focused list (in the
+  grid: Left/Right one entry, Up/Down one grid row, PageUp/PageDown a viewport of grid rows; the
+  details list takes Up, Down, Home, End as before and ignores the rest). `[view]` lines on stderr:
+  `pane=N starts as large icons`, `pane=N details -> large icons (K tiles to a row, R grid rows),
+  scroll A -> B (entry E first)` (and back), `pane=N already <view>`; `[grid] pane=N K tiles to a
+  row, R grid rows` when the pane's width changes the count (split, resize, the first layout) while
+  it shows the grid. With the grid on, the once-a-second `[icons]` line's `compose N strips` counts
+  grid ROWS composed (one 96 x cols by 120 px image per grid row, in a ring of slots; a scroll of one
+  grid row composes one), not whole strips. Hit testing (`dnd::hit`), the drop highlight, the rename
+  editor, the keyboard menu point (`shellmenu::tile_menu_point`) and the driver read the pane's
+  view and tile count from the window (`window_layout`: `Layout::grid`).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -202,7 +220,10 @@ gate). Read them before changing the list.
   `type` sort becomes `name`), `sidebar_visible` and
   `path_bar`; since P3-M5 `thumbnails` (default false: 22 px rows and 16 px icons; true: 32 px rows,
   32 px icons, and thumbnails for files in `icons::THUMB_EXTS`; both panes, four list components
-  chosen per pane by `show_type` x `thumbnails`, never per row). `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  chosen per pane by `show_type` x `thumbnails`, never per row); since P4-M1 `view_left` and
+  `view_right` (`"details"`, the default, or `"icons"`, the large-icon grid: a fifth list component,
+  `FileGridList`, chosen under the same per-pane `if`s; Ctrl+Shift+1 / Ctrl+Shift+2 set and save it;
+  not in the settings dialog yet). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in

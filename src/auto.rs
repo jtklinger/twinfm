@@ -30,7 +30,9 @@
 //!   waitops <ms>                     wait until no file operation runs, no pane refreshes and no
 //!                                    virtual-file drop writes (at most <ms>), then 300 ms more for
 //!                                    the pass to land
-//!   click <pane> <row>               click a visible row (selects only it, moves the cursor)
+//!   click <pane> <row>               click a visible row (selects only it, moves the cursor); in the
+//!                                    large-icon grid, the tile of visible entry <row> (row / cols
+//!                                    down, row % cols across), as for every step that takes a row
 //!   ctrlclick <pane> <row>           Ctrl+click a visible row (toggles it)
 //!   shiftclick <pane> <row>          Shift+click a visible row (selects anchor..row)
 //!   dblclick <pane> <row>            double-click a visible row (enters the directory if it is one)
@@ -41,6 +43,11 @@
 //!                                    the pane becomes active and goes back in its tab's history
 //!   forwardclick <pane>              the same with the Forward button (XBUTTON2): forward in the history
 //!   history <back|forward>           Alt+Left / Alt+Right through the Slint key path, on the active pane
+//!   view <details|icons>             Ctrl+Shift+1 / Ctrl+Shift+2 (key names CtrlShift1, CtrlShift2): the
+//!                                    active pane's view, the details list or the large-icon grid
+//!                                    (P4-M1); `[view]` lines on stderr. Key names Up, Down, Left,
+//!                                    Right, PageUp, PageDown, Home, End (and ShiftLeft, ShiftRight)
+//!                                    move the cursor in the focused list
 //!   rclick <pane> <row>              right-click a visible row: press, 60 ms for a frame, release;
 //!                                    the release opens the real shell context menu
 //!   rclickempty <pane>               right-click the empty space below the last row (the folder's
@@ -285,6 +292,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "backclick" => Step::XButton { pane: num(1) as usize, forward: false },
                 "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true },
                 "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
+                "view" => Step::Key(if a.get(1) == Some(&"icons") { "CtrlShift2" } else { "CtrlShift1" }.into()),
                 "copy" => Step::Key("ShiftF5".into()),
                 "move" => Step::Key("ShiftF6".into()),
                 "delete" => Step::Key("Delete".into()),
@@ -475,20 +483,35 @@ fn thumb(app: &App, pane: usize) -> LogicalPosition {
 
 /// Centre of a visible row: rows start under the 3 px padding, the tab strip when there is one,
 /// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing; 22 px each (32 px with thumbnails on).
+/// In the large-icon grid, the centre of visible entry `row`'s tile (`row / cols` grid rows down,
+/// `row % cols` tiles across, 96 x 120 px each).
 fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
     let (_, _, mid) = geometry(app, pane);
-    let row_px = crate::window_layout(app).row_px;
-    LogicalPosition::new(mid.x, list_top(app, pane) + row as f32 * row_px + row_px / 2.0)
+    let l = crate::window_layout(app);
+    match l.grid[pane] {
+        None => LogicalPosition::new(mid.x, list_top(app, pane) + row as f32 * l.row_px + l.row_px / 2.0),
+        Some(cols) => {
+            let (r, c) = crate::model::grid_cell(row, cols);
+            let (left, _) = crate::dnd::pane_x(&l, pane);
+            let x = left + crate::dnd::PANE_PAD + (c as f32 + 0.5) * crate::icons::TILE_W;
+            LogicalPosition::new(x, list_top(app, pane) + (r as f32 + 0.5) * crate::icons::TILE_H)
+        }
+    }
 }
 
-/// Where an `rclickempty` lands: halfway down the empty space below the last row, or None when
-/// the rows fill the list (rows start at `list_top`; the list ends 23 px above the window bottom,
-/// over the 18 px status line, 2 px spacing and 3 px padding).
+/// Where an `rclickempty` lands: halfway down the empty space below the last row (the last grid
+/// row of tiles), or None when the rows fill the list (rows start at `list_top`; the list ends 23
+/// px above the window bottom, over the 18 px status line, 2 px spacing and 3 px padding).
 fn empty_pos(app: &App, pane: usize) -> Option<LogicalPosition> {
     use slint::Model;
     let (_, h, mid) = geometry(app, pane);
+    let l = crate::window_layout(app);
     let rows = if pane == 0 { app.get_left_rows().row_count() } else { app.get_right_rows().row_count() };
-    let end = list_top(app, pane) + app.invoke_get_scroll(pane as i32) + rows as f32 * crate::window_layout(app).row_px;
+    let lines = match l.grid[pane] {
+        None => rows,
+        Some(cols) => crate::model::grid_rows(rows, cols),
+    };
+    let end = list_top(app, pane) + app.invoke_get_scroll(pane as i32) + lines as f32 * l.row_px_of(pane);
     let bottom = h - 23.0;
     (end + 4.0 < bottom).then(|| LogicalPosition::new(mid.x, (end + bottom) * 0.5))
 }
@@ -766,8 +789,19 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlF" => vec![k(Key::Control), "f".into()],
         "CtrlShiftF" => vec![k(Key::Control), k(Key::Shift), "F".into()],
         "Down" => vec![k(Key::DownArrow)],
+        "Up" => vec![k(Key::UpArrow)],
+        "Left" => vec![k(Key::LeftArrow)],
+        "Right" => vec![k(Key::RightArrow)],
+        "PageUp" => vec![k(Key::PageUp)],
+        "PageDown" => vec![k(Key::PageDown)],
+        "Home" => vec![k(Key::Home)],
+        "End" => vec![k(Key::End)],
         "ShiftUp" => vec![k(Key::Shift), k(Key::UpArrow)],
         "ShiftDown" => vec![k(Key::Shift), k(Key::DownArrow)],
+        "ShiftLeft" => vec![k(Key::Shift), k(Key::LeftArrow)],
+        "ShiftRight" => vec![k(Key::Shift), k(Key::RightArrow)],
+        "CtrlShift1" => vec![k(Key::Control), k(Key::Shift), "1".into()],
+        "CtrlShift2" => vec![k(Key::Control), k(Key::Shift), "2".into()],
         "ShiftF5" => vec![k(Key::Shift), k(Key::F5)],
         "ShiftF6" => vec![k(Key::Shift), k(Key::F6)],
         "ShiftDelete" => vec![k(Key::Shift), k(Key::Delete)],
@@ -1269,7 +1303,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 // What the empty space's right press does first: clear the selection.
                 app.invoke_select(pane as i32, 5, -1);
                 arm_menu_steps(&app, menu_steps);
-                app.invoke_context_menu(pane as i32, -1, mid.x, list_top(&app, pane) + crate::window_layout(&app).row_px / 2.0, false);
+                app.invoke_context_menu(pane as i32, -1, mid.x, list_top(&app, pane) + crate::window_layout(&app).row_px_of(pane) / 2.0, false);
                 disarm_menu_steps();
                 schedule(runner, 1);
                 return;

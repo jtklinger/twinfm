@@ -103,6 +103,10 @@ pub struct Config {
     /// Thumbnails for image, video and document files, in 32 px rows with 32 px icons, in both
     /// panes (the settings dialog sets it). Missing in an older file: off (22 px rows).
     pub thumbnails: bool,
+    /// Each pane's view: "details" (the list) or "icons" (the large-icon grid, Ctrl+Shift+2).
+    /// Missing in an older file: details. Anything else reads as details.
+    pub view_left: String,
+    pub view_right: String,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
     /// "breadcrumb" or "entry" (the text entry for good).
@@ -150,6 +154,8 @@ impl Default for Config {
             sort_ascending: true,
             show_type: true,
             thumbnails: false,
+            view_left: "details".into(),
+            view_right: "details".into(),
             sidebar_visible: true,
             sidebar_width: 180.0,
             path_bar: "breadcrumb".into(),
@@ -158,6 +164,16 @@ impl Default for Config {
             legacy_bookmarks: Vec::new(),
         }
     }
+}
+
+/// The settings file's name for a pane's view (`view_left` / `view_right`), and back: "icons" is
+/// the large-icon grid, anything else the details list.
+pub fn view_name(grid: bool) -> &'static str {
+    if grid { "icons" } else { "details" }
+}
+
+pub fn view_is_grid(s: &str) -> bool {
+    s == "icons"
 }
 
 /// The settings file's name for a sort column, and back (anything unknown sorts by name).
@@ -461,6 +477,22 @@ mod tests {
         // Both in one file: the entries first, the old list after them, duplicates dropped.
         let both = Config::parse("bookmarks = ['C:\\a', 'c:\\b\\']\n[[bookmark]]\npath = 'C:\\b'\ntitle = 'B'\n").unwrap();
         assert_eq!(both.bookmarks, vec![Bookmark { path: r"C:\b".into(), title: Some("B".into()) }, Bookmark::new(r"C:\a")]);
+    }
+
+    #[test]
+    fn view_defaults_to_details_and_round_trips_icons() {
+        // A file from before the keys existed: both panes show the details list.
+        let old = Config::parse("split = true\n").unwrap();
+        assert!(!view_is_grid(&old.view_left) && !view_is_grid(&old.view_right));
+        assert_eq!(view_name(false), "details");
+        assert_eq!(view_name(true), "icons");
+        assert!(view_is_grid("icons"));
+        assert!(!view_is_grid("details") && !view_is_grid("") && !view_is_grid("tiles"));
+        let c = Config { view_right: view_name(true).into(), ..Config::default() };
+        let text = c.to_toml();
+        assert!(text.contains("view_left = \"details\"") && text.contains("view_right = \"icons\""), "{text}");
+        let back = Config::parse(&text).unwrap();
+        assert!(!view_is_grid(&back.view_left) && view_is_grid(&back.view_right));
     }
 
     #[test]

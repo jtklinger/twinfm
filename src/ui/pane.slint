@@ -13,6 +13,32 @@ export struct Row {
     cut: bool,
 }
 
+// The large-icon grid (P4-M1, from the P3-M5 trace's variant b): one tile per entry, `GridRow.tiles`
+// of them to a grid row, the grid row's first entry index in `first` (model.rs GridModel). The
+// tile carries what it draws; `current` is the cursor, decided in Rust, so no tile binds to a root
+// property.
+export struct Tile {
+    name: string,
+    selected: bool,
+    cut: bool,
+    current: bool,
+}
+
+export struct GridRow {
+    first: int,
+    tiles: [Tile],
+}
+
+// One grid row of the grid's icon strip (main.rs `compose_grid_row`): its image, the row's top in
+// the list's content, the image's logical size, and whether it holds a row at all.
+export struct StripRow {
+    img: image,
+    top: length,
+    w: length,
+    h: length,
+    shown: bool,
+}
+
 // One tab in a pane's tab strip (main.rs rebuilds the list on change only).
 export struct TabInfo {
     title: string,
@@ -374,8 +400,76 @@ component FileListNoType32 inherits FileRowsNoType32 {
     }
 }
 
-// A pane's file list: its state, callbacks and logic, and one of the four lists above, chosen by
-// the Type column and thumbnail switches once per pane, outside any `for`. Switching keeps the rows, the scroll
+// The large-icon grid (P4-M1; the P3-M5 trace's variant b): the ListView's single `for` runs over
+// GRID ROWS (120 px), each holding a nested `for` over its tiles (96 px wide). Tiles carry no
+// image: the pane's strip draws the icons. Accessibility: each grid row is one list-item node (the
+// item count is the grid-row count); the tiles add no role of their own, only their name Text.
+component FileGrid inherits ListView {
+    in property <[GridRow]> grid;
+    in property <int> current-row: -1;
+    in property <int> cols: 1;
+    // row-pointer(entry, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
+    // window y of the tile's TouchArea): FileListHost.row-pointer decides what it means.
+    callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
+    callback row-gesture(int, int, bool, bool);
+
+    accessible-label: "Files";
+    accessible-item-count: grid.length;
+    accessible-delegate-focus: max(0, floor(current-row / max(1, cols)));
+
+    for grow[r] in grid: Rectangle {
+        height: 120px;
+        accessible-role: AccessibleRole.list-item;
+        accessible-item-index: r;
+        for t[c] in grow.tiles: Rectangle {
+            x: c * 96px;
+            y: 0px;
+            width: 96px;
+            height: 120px;
+            background: t.selected ? Palette.selection-background : transparent;
+            border-width: t.current ? 1px : 0px;
+            border-color: Palette.accent-background;
+            // The icon (the strip's) fills 2..98 px; the name sits under it.
+            Text {
+                x: 2px;
+                y: 99px;
+                width: 92px;
+                height: 19px;
+                text: t.name;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+                color: t.cut ? Palette.foreground.transparentize(55%) : Palette.foreground;
+            }
+            TouchArea {
+                pointer-event(ev) => { root.row-pointer(grow.first + c, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
+                double-clicked => { root.row-gesture(grow.first + c, 3, false, false); }
+            }
+        }
+    }
+}
+
+// The grid's focus layer, as FileList is FileRows'. init sets content-height to what the first
+// layout will (120 px grid rows), so the Flickable does not scroll a new grid back to the top.
+component FileGridList inherits FileGrid {
+    in property <int> focus-request;
+    in property <bool> focus-on-init;
+    callback key(KeyEvent) -> EventResult;
+    forward-focus: key-area;
+    init => {
+        root.content-height = root.grid.length * 120px;
+        if (root.focus-on-init) { key-area.focus(); }
+    }
+    changed focus-request => { key-area.focus(); }
+    key-area := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(e) => { return root.key(e); }
+    }
+}
+
+// A pane's file list: its state, callbacks and logic, and one of the five lists above, chosen by
+// the Type column, thumbnail and view switches once per pane, outside any `for`. Switching keeps the rows, the scroll
 // (content-y), the cursor and the selection, which are the host's; the new list binds to them.
 // It has the ListView's geometry, so the pane's overlays (strip, drop highlight, empty space,
 // rename editor) read list.x, list.y, list.visible-width, list.visible-height and list.content-y
@@ -385,10 +479,28 @@ component FileListHost inherits Rectangle {
     in property <[Row]> rows;
     in-out property <int> current-row: -1;
     in property <bool> show-type: true;
-    // Thumbnails (settings `thumbnails`): the 32 px lists. row-h is the chosen list's row height,
-    // for the host's and the pane's per-pane arithmetic only; no row reads it.
+    // Thumbnails (settings `thumbnails`): the 32 px lists. row-h is the chosen list's row height
+    // (a grid row's with the grid), for the host's and the pane's per-pane arithmetic only; no row
+    // or tile reads it.
     in property <bool> thumbnails: false;
-    out property <length> row-h: root.thumbnails ? 32px : 22px;
+    // The large-icon grid (settings `view_left` / `view_right`, Ctrl+Shift+2): FileGridList over
+    // grid-rows, `cols` tiles to a grid row from the width (at least 1), reported to Rust on change
+    // while the grid shows (grid-cols: it re-maps the grid model; the width changes on split and
+    // window resize only). The cursor moved (any path: keys, clicks, Rust): Rust marks the tile
+    // (grid-cursor). line-of and col-of are an entry's grid row and column (in the details list,
+    // its row and 0), for the overlays.
+    in property <bool> grid: false;
+    in property <[GridRow]> grid-rows;
+    out property <int> cols: max(1, floor(self.width / 96px));
+    callback grid-cols(int);
+    callback grid-cursor(int);
+    changed cols => { if (root.grid) { root.grid-cols(root.cols); } }
+    changed current-row => { if (root.grid) { root.grid-cursor(root.current-row); } }
+    pure public function line-of(i: int) -> int { return root.grid ? floor(i / root.cols) : i; }
+    pure public function col-of(i: int) -> int { return root.grid ? mod(i, root.cols) : 0; }
+    // Entries a vertical arrow key moves by: one row, or one grid row of tiles.
+    private property <int> step: root.grid ? root.cols : 1;
+    out property <length> row-h: root.grid ? 120px : (root.thumbnails ? 32px : 22px);
     // The pane is active: a list created now takes the focus.
     in property <bool> active;
     in-out property <length> content-y;
@@ -440,15 +552,17 @@ component FileListHost inherits Rectangle {
 
     public function focus-list() { root.focus-request += 1; }
 
-    // Same arithmetic as StandardListView's bring-into-view, for our row-h rows: scroll just far
-    // enough that the cursor row is fully inside the viewport, then apply the selection gesture.
+    // Same arithmetic as StandardListView's bring-into-view, for our row-h rows (the cursor's
+    // grid row in the grid): scroll just far enough that the cursor row is fully inside the
+    // viewport, then apply the selection gesture.
     public function bring-into-view() {
         if (root.current-row < 0) { return; }
-        if (root.content-y + root.current-row * root.row-h < 0px) {
-            root.content-y = -root.current-row * root.row-h;
+        let g = root.line-of(root.current-row);
+        if (root.content-y + g * root.row-h < 0px) {
+            root.content-y = -g * root.row-h;
         }
-        if (root.content-y + (root.current-row + 1) * root.row-h > root.visible-height) {
-            root.content-y = root.visible-height - (root.current-row + 1) * root.row-h;
+        if (root.content-y + (g + 1) * root.row-h > root.visible-height) {
+            root.content-y = root.visible-height - (g + 1) * root.row-h;
         }
     }
 
@@ -523,14 +637,39 @@ component FileListHost inherits Rectangle {
         // Alt+Return: the size of every folder in the listing (P3-M3).
         if (e.text == Key.Return && e.modifiers.alt) { root.command("sizeall"); return EventResult.accept; }
         if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return EventResult.accept; }
-        if (e.text == Key.UpArrow) {
+        // The grid: Left and Right move one entry, Up and Down one grid row (step = cols entries;
+        // Down from the last full grid row lands on the last entry), PageUp and PageDown a
+        // viewport of grid rows. In the details list step is 1 and the rest is unchanged.
+        if (e.text == Key.LeftArrow && root.grid) {
             if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }
             root.cursor-moved(e.modifiers.shift);
             return EventResult.accept;
         }
-        if (e.text == Key.DownArrow) {
+        if (e.text == Key.RightArrow && root.grid) {
             if (root.current-row + 1 < root.rows.length) { root.current-row += 1; }
             root.cursor-moved(e.modifiers.shift);
+            return EventResult.accept;
+        }
+        if (e.text == Key.UpArrow) {
+            if (root.current-row >= root.step) { root.current-row -= root.step; } else if (root.current-row < 0 && root.rows.length > 0) { root.current-row = 0; }
+            root.cursor-moved(e.modifiers.shift);
+            return EventResult.accept;
+        }
+        if (e.text == Key.DownArrow) {
+            if (root.current-row < 0) { if (root.rows.length > 0) { root.current-row = 0; } }
+            else if (root.current-row + root.step < root.rows.length) { root.current-row += root.step; }
+            else if (root.grid && root.line-of(root.current-row) + 1 < root.grid-rows.length) { root.current-row = root.rows.length - 1; }
+            root.cursor-moved(e.modifiers.shift);
+            return EventResult.accept;
+        }
+        if ((e.text == Key.PageUp || e.text == Key.PageDown) && root.grid) {
+            if (root.rows.length > 0) {
+                let page = max(1, floor(root.visible-height / root.row-h)) * root.cols;
+                if (root.current-row < 0) { root.current-row = 0; }
+                else if (e.text == Key.PageUp) { root.current-row = max(0, root.current-row - page); }
+                else { root.current-row = min(root.rows.length - 1, root.current-row + page); }
+                root.cursor-moved(e.modifiers.shift);
+            }
             return EventResult.accept;
         }
         if (e.text == Key.Home) { if (root.rows.length > 0) { root.current-row = 0; root.cursor-moved(e.modifiers.shift); } return EventResult.accept; }
@@ -562,7 +701,7 @@ component FileListHost inherits Rectangle {
         return EventResult.reject;
     }
 
-    if root.show-type && !root.thumbnails: FileList {
+    if root.show-type && !root.thumbnails && !root.grid: FileList {
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -574,7 +713,7 @@ component FileListHost inherits Rectangle {
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
     }
-    if !root.show-type && !root.thumbnails: FileListNoType {
+    if !root.show-type && !root.thumbnails && !root.grid: FileListNoType {
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -586,7 +725,7 @@ component FileListHost inherits Rectangle {
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
     }
-    if root.show-type && root.thumbnails: FileList32 {
+    if root.show-type && root.thumbnails && !root.grid: FileList32 {
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -598,10 +737,23 @@ component FileListHost inherits Rectangle {
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
     }
-    if !root.show-type && root.thumbnails: FileListNoType32 {
+    if !root.show-type && root.thumbnails && !root.grid: FileListNoType32 {
         width: root.width;
         height: root.height;
         rows: root.rows;
+        current-row: root.current-row;
+        content-y <=> root.content-y;
+        focus-request: root.focus-request;
+        focus-on-init: root.active;
+        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+        key(e) => { return root.key(e); }
+    }
+    if root.grid: FileGridList {
+        width: root.width;
+        height: root.height;
+        grid: root.grid-rows;
+        cols: root.cols;
         current-row: root.current-row;
         content-y <=> root.content-y;
         focus-request: root.focus-request;
@@ -633,6 +785,14 @@ export component Pane inherits Rectangle {
     // Thumbnails (settings `thumbnails`): the 32 px lists (FileListHost); the overlays below read
     // the row height from list.row-h.
     in property <bool> thumbnails: false;
+    // The large-icon grid (settings `view_left` / `view_right`): FileListHost shows the grid over
+    // grid-rows (model.rs GridModel); tiles-per-row is its tile count per grid row (main.rs reads it
+    // for hit testing); the two callbacks are the host's.
+    in property <bool> grid: false;
+    in property <[GridRow]> grid-rows;
+    out property <int> tiles-per-row: list.cols;
+    callback grid-cols(int);
+    callback grid-cursor(int);
 
     callback navigate(string);
     callback open-row(int);
@@ -708,12 +868,19 @@ export component Pane inherits Rectangle {
     // The icon strip (`set-strip`): one image holding the icons of the rows from strip-top (the
     // first one's top in the list's content, row x row height, computed in Rust, so the per-frame
     // `y` binding reads no row height) onwards, composed in Rust, at strip-width x strip-height
-    // logical px (its exact physical size).
+    // logical px (its exact physical size), strip-left px into the list (6 px in the details list's
+    // icon column, 0 in the grid).
     private property <image> strip;
+    private property <length> strip-left;
     private property <length> strip-top;
     private property <length> strip-width;
     private property <length> strip-height;
     private property <bool> strip-shown: false;
+    // The grid's icon strip: one image per grid row, in a ring of slots Rust fills for the grid
+    // rows on screen and one each side (main.rs `grid_slots`), so a scroll of one grid row
+    // recomposes and uploads one 120 px row, not the whole strip; a slot's image changes only
+    // when its row does. Empty with the details list (the `for` makes nothing).
+    in property <[StripRow]> strip-rows;
 
     // The tab strip: every tab the same width, from 160 px down to 120 px as tabs are added, then
     // the strip scrolls instead (no scrollbar; the wheel scrolls it). tab-scroll is the content's
@@ -756,8 +923,9 @@ export component Pane inherits Rectangle {
     public function reset-scroll() { list.content-y = 0; current-row = -1; }
     public function get-scroll() -> length { return list.content-y; }
     public function set-scroll(y: length) { list.content-y = y; }
-    public function set-strip(img: image, top: length, w: length, h: length, shown: bool) {
+    public function set-strip(img: image, left: length, top: length, w: length, h: length, shown: bool) {
         strip = img;
+        strip-left = left;
         strip-top = top;
         strip-width = w;
         strip-height = h;
@@ -985,15 +1153,20 @@ export component Pane inherits Rectangle {
         }
         // One header per Type column state, chosen per pane like the list below: on, it is the
         // header as it was before the switch; off, the Type cell does not exist, so a header click
-        // cannot sort by it.
-        if root.show-type: HorizontalLayout {
+        // cannot sort by it. The grid has no columns: its header keeps only Name (the sort), and
+        // its 24 px keep the list's top where dnd.rs LIST_TOP and the driver (auto.rs) expect it.
+        if root.grid: HorizontalLayout {
+            height: 24px;
+            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
+        }
+        if root.show-type && !root.grid: HorizontalLayout {
             height: 24px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
-        if !root.show-type: HorizontalLayout {
+        if !root.show-type && !root.grid: HorizontalLayout {
             height: 24px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
@@ -1004,6 +1177,10 @@ export component Pane inherits Rectangle {
             current-row <=> root.current-row;
             show-type: root.show-type;
             thumbnails: root.thumbnails;
+            grid: root.grid;
+            grid-rows: root.grid-rows;
+            grid-cols(n) => { root.grid-cols(n); }
+            grid-cursor(c) => { root.grid-cursor(c); }
             active: root.active;
             go-up => { root.go-up(); }
             history(f) => { root.history(f); }
@@ -1039,7 +1216,7 @@ export component Pane inherits Rectangle {
         clip: true;
         visible: root.strip-shown;
         Image {
-            x: 6px;
+            x: root.strip-left;
             y: list.content-y + root.strip-top;
             width: root.strip-width;
             height: root.strip-height;
@@ -1049,10 +1226,28 @@ export component Pane inherits Rectangle {
             accessible-role: none;
         }
     }
+    Rectangle {
+        x: list.x;
+        y: list.y;
+        width: list.visible-width;
+        height: list.visible-height;
+        clip: true;
+        for s in root.strip-rows: Image {
+            x: 0px;
+            y: list.content-y + s.top;
+            width: s.w;
+            height: s.h;
+            visible: s.shown;
+            source: s.img;
+            image-fit: fill;
+            image-rendering: pixelated;
+            accessible-role: none;
+        }
+    }
 
-    // Drop highlight: the target row, or the whole list when the drop goes to the pane's folder.
-    // Overlays rather than per-row bindings, so the rows carry nothing new; no input handling and
-    // no accessibility node.
+    // Drop highlight: the target row (the target tile in the grid), or the whole list when the drop
+    // goes to the pane's folder. Overlays rather than per-row bindings, so the rows carry nothing
+    // new; no input handling and no accessibility node.
     Rectangle {
         x: list.x;
         y: list.y;
@@ -1062,9 +1257,9 @@ export component Pane inherits Rectangle {
         visible: root.drop-here;
         Rectangle {
             visible: root.drop-row >= 0;
-            x: 0;
-            y: list.content-y + root.drop-row * list.row-h;
-            width: parent.width;
+            x: list.col-of(root.drop-row) * 96px;
+            y: list.content-y + list.line-of(root.drop-row) * list.row-h;
+            width: root.grid ? 96px : parent.width;
             height: list.row-h;
             background: Palette.accent-background.transparentize(65%);
             border-width: 2px;
@@ -1081,7 +1276,7 @@ export component Pane inherits Rectangle {
     // The empty space below the last row (none when the rows fill the viewport): a right-click
     // there opens the folder's background menu ("New", "Paste", "Properties").
     // The rows' total height: no content-y in it, so it stays cached while the list scrolls.
-    private property <length> rows-h: root.rows.length * list.row-h;
+    private property <length> rows-h: (root.grid ? root.grid-rows.length : root.rows.length) * list.row-h;
     private property <length> rows-end: max(0px, min(list.visible-height, list.content-y + root.rows-h));
     TouchArea {
         x: list.x;
@@ -1109,13 +1304,14 @@ export component Pane inherits Rectangle {
 
     // Return commits, Escape cancels, focus loss cancels. Over the name cell: 6 px row padding
     // plus the icon slot (one row high, 22 or 32 px) from the left, the fixed columns (350 px, 230
-    // px without Type) from the right, centred on the row.
+    // px without Type) from the right, centred on the row. In the grid, over the tile's name (2 px
+    // in, 92 px wide, centred on the 19 px text at 99 px).
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
-        x: list.x + list.row-h + 2px + (root.thumbnails ? 4px : 0px);
-        y: list.y + (list.row-h - 28px) / 2 + (root.edit-mode == 1 ? list.content-y + list.current-row * list.row-h : 0px);
-        width: max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - (root.show-type ? 350px : 230px) - 12px);
+        x: list.x + (root.grid ? list.col-of(list.current-row) * 96px + 2px : list.row-h + 2px + (root.thumbnails ? 4px : 0px));
+        y: list.y + (root.grid ? 95px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
+        width: root.grid ? 92px : max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - (root.show-type ? 350px : 230px) - 12px);
         height: 28px;
         background: Palette.background;
         edit := LineEdit {

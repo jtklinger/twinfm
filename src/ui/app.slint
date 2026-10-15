@@ -1,6 +1,6 @@
-import { Pane, Row, TabInfo, Crumb, StatusInfo } from "pane.slint";
+import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow } from "pane.slint";
 import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox } from "std-widgets.slint";
-export { Row, TabInfo, Crumb, StatusInfo }
+export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
 // the bookmark's index in the bookmark list.
@@ -102,6 +102,18 @@ export component App inherits Window {
 
     in property <[Row]> left-rows;
     in property <[Row]> right-rows;
+    // The large-icon grid per pane (settings `view_left` / `view_right`; Ctrl+Shift+1 details,
+    // Ctrl+Shift+2 large icons): its rows (model.rs GridModel over the pane's entries) and, read by
+    // Rust for hit testing, the tiles to a grid row the pane's list fits.
+    in property <bool> left-grid: false;
+    in property <bool> right-grid: false;
+    in property <[GridRow]> left-grid-rows;
+    in property <[GridRow]> right-grid-rows;
+    out property <int> left-grid-cols: left.tiles-per-row;
+    out property <int> right-grid-cols: right.tiles-per-row;
+    // The grid's icon strip per pane: one image per grid row (main.rs `grid_slots`).
+    in property <[StripRow]> left-strip-rows;
+    in property <[StripRow]> right-strip-rows;
     in property <string> left-path;
     in property <string> right-path;
     in property <StatusInfo> left-status;
@@ -167,6 +179,12 @@ export component App inherits Window {
     callback select(int, int, int);
     // viewport-changed(pane, content-y, visible-height)
     callback viewport-changed(int, length, length);
+    // grid-cols(pane, n): the pane's grid now fits n tiles to a grid row; grid-cursor(pane, row):
+    // its cursor entry changed; set-view(pane, grid): Ctrl+Shift+1 (false) or Ctrl+Shift+2 (true)
+    // for the active pane.
+    callback grid-cols(int, int);
+    callback grid-cursor(int, int);
+    callback set-view(int, bool);
     // command(pane, name): a file operation key in that pane's list (pane.slint FileList).
     callback command(int, string);
     // edit-commit(pane, mode, original, typed): the inline name editor's Return.
@@ -336,10 +354,10 @@ export component App inherits Window {
         if (p == 0) { left.begin-edit(mode, text); } else { right.begin-edit(mode, text); }
     }
 
-    // set-strip(pane, image, top of its first row in the list's content, width, height, shown):
+    // set-strip(pane, image, left x in the list, top of its first row in the list's content, width, height, shown):
     // the pane's icon strip.
-    public function set-strip(p: int, img: image, top: length, w: length, h: length, shown: bool) {
-        if (p == 0) { left.set-strip(img, top, w, h, shown); } else { right.set-strip(img, top, w, h, shown); }
+    public function set-strip(p: int, img: image, left-x: length, top: length, w: length, h: length, shown: bool) {
+        if (p == 0) { left.set-strip(img, left-x, top, w, h, shown); } else { right.set-strip(img, left-x, top, w, h, shown); }
     }
 
     forward-focus: outer;
@@ -377,6 +395,10 @@ export component App inherits Window {
                 root.tab-key(active-pane, e.text);
                 return accept;
             }
+            // Explorer's view keys. With Shift held a US keyboard reports the digit's shifted
+            // character ("!" and "@"); the driver sends the digit.
+            if (e.modifiers.control && e.modifiers.shift && (e.text == "1" || e.text == "!")) { root.set-view(active-pane, false); return accept; }
+            if (e.modifiers.control && e.modifiers.shift && (e.text == "2" || e.text == "@")) { root.set-view(active-pane, true); return accept; }
             if (e.modifiers.control && (e.text == "l" || e.text == "L")) { root.set-path-mode(active-pane, true); return accept; }
             if (e.modifiers.control && (e.text == "f" || e.text == "F")) {
                 if (e.modifiers.shift) { root.search(active-pane); } else { root.open-filter(active-pane); }
@@ -507,7 +529,7 @@ export component App inherits Window {
             left := Pane {
                 x: 0; y: 0; height: parent.height;
                 width: split ? parent.width * split-ratio - 3px : parent.width;
-                rows: left-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
+                rows: left-rows; grid: left-grid; grid-rows: left-grid-rows; strip-rows: left-strip-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
@@ -522,6 +544,8 @@ export component App inherits Window {
                 navigate(p) => { root.navigate(0, p); }
                 select(op, i) => { root.select(0, op, i); }
                 viewport-changed(y, h) => { root.viewport-changed(0, y, h); }
+                grid-cols(n) => { root.grid-cols(0, n); }
+                grid-cursor(c) => { root.grid-cursor(0, c); }
                 command(c) => { root.command(0, c); }
                 edit-commit(m, o, t) => { root.edit-commit(0, m, o, t); }
                 context-menu(r, x, y, s) => { root.context-menu(0, r, x, y, s); }
@@ -550,7 +574,7 @@ export component App inherits Window {
                 visible: split;
                 x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
                 width: split ? parent.width - self.x : 0px;
-                rows: right-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
+                rows: right-rows; grid: right-grid; grid-rows: right-grid-rows; strip-rows: right-strip-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;
@@ -565,6 +589,8 @@ export component App inherits Window {
                 navigate(p) => { root.navigate(1, p); }
                 select(op, i) => { root.select(1, op, i); }
                 viewport-changed(y, h) => { root.viewport-changed(1, y, h); }
+                grid-cols(n) => { root.grid-cols(1, n); }
+                grid-cursor(c) => { root.grid-cursor(1, c); }
                 command(c) => { root.command(1, c); }
                 edit-commit(m, o, t) => { root.edit-commit(1, m, o, t); }
                 context-menu(r, x, y, s) => { root.context-menu(1, r, x, y, s); }
