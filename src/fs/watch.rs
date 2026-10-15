@@ -751,6 +751,13 @@ impl<W: Fn()> Dirwatch<W> {
             if w.path == path && !subtree {
                 eprintln!("[watch] pane={pane} subtree off {}", path.display());
             }
+            if w.path == path && w.due.is_some() {
+                // The same folder, watched another way (the subtree flag flipped): the window
+                // gathered so far is delivered now, not lost with the old watch.
+                if self.events.send(window_event(w, Instant::now())).is_ok() {
+                    (self.wake)();
+                }
+            }
             self.slots.remove(&tab_id);
             self.opening.retain(|_, o| o.tab_id != tab_id);
             self.retire(p);
@@ -1222,25 +1229,7 @@ impl<W: Fn()> Dirwatch<W> {
             // SAFETY: a live watch owned by this thread.
             let w = unsafe { &mut *p };
             if w.due.is_some_and(|d| d <= now) {
-                w.due = None;
-                w.backoff.delivered(now);
-                let ev = if w.subtree {
-                    let (top, changes, overflow) = (std::mem::take(&mut w.top), std::mem::take(&mut w.changes), std::mem::take(&mut w.overflow));
-                    Event::Subtree { pane: w.pane, tab_id: w.tab_id, top, changes, overflow }
-                } else {
-                    let (raw, records, overflow) = (std::mem::take(&mut w.raw), std::mem::take(&mut w.records), std::mem::take(&mut w.overflow));
-                    let changes = if overflow { Vec::new() } else { net_changes(raw) };
-                    eprintln!(
-                        "[watch] pane={} tab={} records {records}, changes {}, window {} ms{}",
-                        w.pane,
-                        w.tab_id,
-                        changes.len(),
-                        w.backoff.window.as_millis(),
-                        if overflow { ", overflow" } else { "" }
-                    );
-                    Event::Changed { pane: w.pane, tab_id: w.tab_id, changes, records, overflow }
-                };
-                sent |= self.events.send(ev).is_ok();
+                sent |= self.events.send(window_event(w, now)).is_ok();
             }
         }
         if sent {
@@ -1273,6 +1262,29 @@ impl<W: Fn()> Dirwatch<W> {
             }
         }
     }
+}
+
+/// A watch's gathered window as its event, now (`deliver`, or `start` replacing the watch): the
+/// subtree watch's `Subtree`, a plain watch's net changes as `Changed` (with its line). Clears the
+/// window and tells the back-off.
+fn window_event(w: &mut Watch, now: Instant) -> Event {
+    w.due = None;
+    w.backoff.delivered(now);
+    if w.subtree {
+        let (top, changes, overflow) = (std::mem::take(&mut w.top), std::mem::take(&mut w.changes), std::mem::take(&mut w.overflow));
+        return Event::Subtree { pane: w.pane, tab_id: w.tab_id, top, changes, overflow };
+    }
+    let (raw, records, overflow) = (std::mem::take(&mut w.raw), std::mem::take(&mut w.records), std::mem::take(&mut w.overflow));
+    let changes = if overflow { Vec::new() } else { net_changes(raw) };
+    eprintln!(
+        "[watch] pane={} tab={} records {records}, changes {}, window {} ms{}",
+        w.pane,
+        w.tab_id,
+        changes.len(),
+        w.backoff.window.as_millis(),
+        if overflow { ", overflow" } else { "" }
+    );
+    Event::Changed { pane: w.pane, tab_id: w.tab_id, changes, records, overflow }
 }
 
 /// The records of a completed read: (action, name relative to the watched folder) for each
@@ -1569,6 +1581,30 @@ mod tests {
         assert!(collect(&rx, Duration::from_millis(500)).is_empty(), "the old folder is no longer watched");
         std::fs::write(b.0.join("new.txt"), b"x").unwrap();
         assert_eq!(next_changed(&rx).1, 1);
+    }
+
+    #[test]
+    fn rewatching_the_same_folder_delivers_the_gathered_window() {
+        let dir = Scratch::new("rewatch");
+        let (w, rx) = watcher();
+        w.watch(0, 1, dir.0.clone(), false, false);
+        w.sync();
+        std::fs::write(dir.0.join("a.txt"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        // The subtree flag flips within the window: the plain watch's window comes at once.
+        w.watch(0, 1, dir.0.clone(), true, false);
+        w.sync();
+        let got = collect(&rx, Duration::from_millis(100));
+        assert!(
+            matches!(&got[..], [Event::Changed { tab_id: 1, changes, overflow: false, .. }] if *changes == vec![Change::Added(s("a.txt"))]),
+            "{got:?}"
+        );
+        std::fs::write(dir.0.join("b.txt"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        w.watch(0, 1, dir.0.clone(), false, false);
+        w.sync();
+        let got = collect(&rx, Duration::from_millis(100));
+        assert!(matches!(&got[..], [Event::Subtree { tab_id: 1, top: true, overflow: false, .. }]), "{got:?}");
     }
 
     #[test]
