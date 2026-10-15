@@ -4,22 +4,22 @@ Things left on the desktop by TwinFM gate runs and by the 2026-10-08 Files-app p
 that should not be forgotten. Sizes measured 2026-10-15. Tick items off (or delete the line) when
 done; add new ones at the bottom with a date.
 
-## Stale reference builds in this checkout (6.6 GB)
+## Stale reference builds in this checkout (done 2026-10-15)
 
 `CLAUDE.md` § Measuring: the reference binary is the last merged milestone's gate build and "the
 previous one is deleted once the new one has served as a reference". Four previous ones are still here:
 
 | Directory | Size | Status |
 |---|---|---|
-| `target-p3m4` | 1.65 GB | superseded (P3-M4 reference, done serving) |
-| `target-p3m5` | 1.65 GB | superseded |
-| `target-p3m5a` | 1.65 GB | superseded (P3-M5 candidate) |
-| `target-p3m5b` | 1.64 GB | superseded (P3-M5 candidate) |
+| `target-p3m4` | 1.65 GB | deleted 2026-10-15 |
+| `target-p3m5` | 1.65 GB | deleted 2026-10-15 |
+| `target-p3m5a` | 1.65 GB | deleted 2026-10-15 |
+| `target-p3m5b` | 1.64 GB | deleted 2026-10-15 |
 | `target-p4m1` | 1.65 GB | **keep** - current reference (cb589c8) |
 | `target-p4m2` | 1.65 GB | **keep** until P4-M2's gate closes and it becomes the reference |
 | `target` | 3.50 GB | ordinary dev builds; `cargo clean` any time |
 
-Delete the four superseded ones once no P3 re-run is wanted (from the checkout root):
+The four superseded ones were deleted on 2026-10-15 (6.6 GB freed). For the next round, from the checkout root:
 
 ```powershell
 Remove-Item -Recurse -Force .\target-p3m4, .\target-p3m5, .\target-p3m5a, .\target-p3m5b
