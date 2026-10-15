@@ -630,6 +630,7 @@ impl PaneModel {
     }
 
     /// Whether the listing has an entry of this name: exactly, or else ASCII-case-insensitively.
+    #[cfg(test)]
     pub fn has_name(&self, name: &str) -> bool {
         let all = self.all.borrow();
         all.iter().any(|e| e.name == name) || all.iter().any(|e| e.name.eq_ignore_ascii_case(name))

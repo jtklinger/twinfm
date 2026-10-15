@@ -916,6 +916,10 @@ fn drain() {
 /// single-row edits (each moves the rest of `shown` on a long listing).
 const EDIT_CAP: usize = 500;
 
+/// How many unknown names `land_edits` lets off (drops or turns into adds) in one window before it
+/// falls back.
+const LENIENT_TRIES: usize = 8;
+
 /// How long after a file operation finished a watch window it fully explains is ignored.
 const EXPLAINED_FOR: Duration = Duration::from_secs(3);
 
@@ -1246,7 +1250,6 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
 /// Why a window of changes for tab `t` cannot be applied as row edits (the fallback's reason); ""
 /// when a file operation's results explain all of it (nothing to do); None when it can.
 fn window_refusal(t: &mut Tab, active: bool, changes: &[fs::watch::Change]) -> Option<String> {
-    use fs::watch::Change;
     if active {
         match &t.explained {
             Some((_, at)) if at.elapsed() > EXPLAINED_FOR => t.explained = None,
@@ -1263,16 +1266,7 @@ fn window_refusal(t: &mut Tab, active: bool, changes: &[fs::watch::Change]) -> O
     if fs::watch::is_remote(&t.path) {
         return Some("network path".into());
     }
-    for c in changes {
-        let known = match c {
-            Change::Added(_) => continue,
-            Change::Removed(n) | Change::Modified(n) => n,
-            Change::Renamed { from, .. } => from,
-        };
-        if !t.model.has_name(known) && !vanished(t, known) && !young_listing(t) {
-            return Some(format!("unknown name {known}"));
-        }
-    }
+    // A name the listing does not have is `apply_edits`'s to find (`land_edits`), not a scan here.
     if changes.len() > EDIT_CAP {
         return Some(format!("{} changes over the cap", changes.len()));
     }
@@ -1287,10 +1281,10 @@ fn young_listing(t: &Tab) -> bool {
     t.timing.requested.is_some_and(|r| r.elapsed() < fs::watch::COALESCE_MAX + fs::watch::COALESCE)
 }
 
-/// `name` was added (or renamed to) by a watch window of the tab's current listing and gone when
-/// statted: the listing does not have it, and need not.
-fn vanished(t: &Tab, name: &str) -> bool {
-    t.vanished.0 == t.model.generation.get() && t.vanished.1.contains(&name.to_lowercase())
+/// The name an `apply_edits` error says the listing does not have (`remove of "n": not in the
+/// listing`, `rename of "n" to "m": not in the listing`). A Win32 file name holds no `"`.
+fn unknown_name(why: &str) -> Option<&str> {
+    why.ends_with(": not in the listing").then(|| why.split('"').nth(1)).flatten()
 }
 
 /// A window's edits came back from the edit worker (on the UI thread): apply them to the tab's
@@ -1331,49 +1325,54 @@ fn land_edits(job: StatJob, edits: Vec<model::Edit>, gone: Vec<String>, folder_g
         if t.vanished.0 != generation {
             t.vanished = (generation, HashSet::new());
         }
-        let edits: Vec<model::Edit> = edits
-            .into_iter()
-            .filter_map(|e| {
-                let from = match &e {
-                    model::Edit::Remove(n) => n,
-                    model::Edit::Rename { from, .. } => from,
-                    model::Edit::Upsert(entry) => {
-                        t.vanished.1.remove(&entry.name.to_lowercase());
-                        return Some(e);
-                    }
-                };
-                if t.model.has_name(from) || !(t.vanished.1.remove(&from.to_lowercase()) || young) {
-                    return Some(e);
-                }
-                match e {
-                    model::Edit::Rename { entry, .. } => Some(model::Edit::Upsert(entry)),
-                    _ => None,
-                }
-            })
-            .collect();
-        t.vanished.1.extend(gone.iter().map(|n| n.to_lowercase()));
-        // A folder that leaves the listing, or is renamed, loses its size (and its walk).
-        for e in &edits {
-            let (gone, now) = match e {
-                model::Edit::Remove(n) => (n.as_str(), None),
-                model::Edit::Rename { from, entry } => (from.as_str(), Some(entry.name.clone())),
-                model::Edit::Upsert(_) => continue,
-            };
-            if let Some(p) = t.sizes.pending.remove(gone) {
-                p.cancel.store(true, Ordering::Relaxed);
-            }
-            if t.sizes.forget(gone) {
-                if let Some(n) = now {
-                    t.model.set_size(&n, None);
-                }
-            }
-        }
         let cursor = if active { current_row(&app, pane) } else { t.cursor };
+        // `apply_edits` is all-or-nothing and names the first name the listing does not have. One
+        // that vanished before it was listed, or went before a young listing began, is no reason to
+        // list again: its removal is dropped, a rename from it becomes an add, and the rest is
+        // applied again (a few times at most). A name with a `~` is never let off: a record can
+        // carry a short name (`LONGFI~1.TXT`) for a file the listing has under its long one.
+        let mut edits = edits;
+        let mut tries = 0;
         let t0 = Instant::now();
-        let res = t.model.apply_edits(edits, cursor);
+        let res = loop {
+            let why = match t.model.apply_edits(edits.clone(), cursor) {
+                Ok(a) => break Ok(a),
+                Err(why) => why,
+            };
+            let Some(name) = unknown_name(&why).map(str::to_string) else { break Err(why) };
+            let lenient = !name.contains('~') && (t.vanished.1.remove(&name.to_lowercase()) || young);
+            let at = edits.iter().position(|e| matches!(e, model::Edit::Remove(n) | model::Edit::Rename { from: n, .. } if n.as_str() == name));
+            match at {
+                Some(i) if lenient && tries < LENIENT_TRIES => {
+                    tries += 1;
+                    if let model::Edit::Rename { entry, .. } = edits.remove(i) {
+                        edits.insert(i, model::Edit::Upsert(entry));
+                    }
+                }
+                _ => break Err(format!("unknown name {name} ({records} records)")),
+            }
+        };
         let apply_ms = perf::elapsed_ms(t0);
         match res {
             Ok(a) => {
+                for e in &edits {
+                    if let model::Edit::Upsert(entry) = e {
+                        t.vanished.1.remove(&entry.name.to_lowercase());
+                    }
+                }
+                t.vanished.1.extend(gone.iter().map(|n| n.to_lowercase()));
+                // A folder that leaves the listing, or is renamed, loses its size (and its walk);
+                // `apply_edits` carries no size across a rename.
+                for e in &edits {
+                    let gone = match e {
+                        model::Edit::Remove(n) | model::Edit::Rename { from: n, .. } => n.as_str(),
+                        model::Edit::Upsert(_) => continue,
+                    };
+                    if let Some(p) = t.sizes.pending.remove(gone) {
+                        p.cancel.store(true, Ordering::Relaxed);
+                    }
+                    t.sizes.forget(gone);
+                }
                 t.model.set_grid_cursor(a.cursor);
                 if !active {
                     t.cursor = a.cursor;
@@ -4632,6 +4631,13 @@ mod tests {
             })
             .collect();
         assert_eq!(shape, ["upsert new.txt", "remove old.txt", "upsert kept.txt", "remove vanished.txt", "rename a.txt -> b.txt", "remove c.txt"]);
+    }
+
+    #[test]
+    fn unknown_name_reads_apply_edits_errors() {
+        assert_eq!(unknown_name(r#"remove of "a b.txt": not in the listing"#), Some("a b.txt"));
+        assert_eq!(unknown_name(r#"rename of "x" to "y": not in the listing"#), Some("x"));
+        assert_eq!(unknown_name("a refresh is in flight"), None);
     }
 
     #[test]
