@@ -385,4 +385,7 @@ of it `ImageStore::alloc` 39 / 31 / 36; ab14: 227, 17.1%, of it 169). `resolve_v
 reports under `C:/traces/export/`.
 
 P4-M1 holds both gates: the default row is the reference's, and the grid, with its strip as a ring
-of per-row images, sits at 9.6 against the bar's 20. Console checks: Jeremy's, after the triplet.
+of per-row images, sits at 9.6 against the bar's 20. Jeremy's console checks (2026-10-15, after
+the triplet): "console checks look good". Merged as #38 (7ca4a5f, 2026-10-15); `targetelease`
+rebuilt from main. `target-p4m1` (cb589c8) is the reference for P4-M2; `target-p3m5` goes once it
+has served as one, and `target-p3m5b` (the grid's trace baseline) has no further use.
