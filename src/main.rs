@@ -413,11 +413,11 @@ impl State {
                 if set.contains(&t.id) {
                     continue;
                 }
-                if t.watched {
-                    self.watch.unwatch(t.id);
-                    t.watched = false;
-                    t.watched_bg = false;
-                }
+                // Always: a `Lost` drained after a re-watch clears `watched` while the watcher holds
+                // the new slot (an unwatch of a tab it does not watch is a no-op).
+                self.watch.unwatch(t.id);
+                t.watched = false;
+                t.watched_bg = false;
                 if i == active {
                     if t.search.is_some() && (pane == 0 || split) && self.no_watch_logged[pane] != Some(t.id) {
                         // A search's results come from many folders; F5 runs it again.
@@ -1143,8 +1143,23 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
             t.path = to;
             t.explained = None;
             eprintln!("[nav] pane={pane} path follows the rename: {}", t.path.display());
-            if let Some(app) = st.app.upgrade().filter(|_| active) {
-                set_path(st, &app, pane);
+            // A listing of the old path still in flight will fail: list the new one.
+            if t.timing.done_ms.is_none() {
+                if active {
+                    if !again.contains(&pane) {
+                        again.push(pane);
+                    }
+                } else if t.search.is_none() {
+                    t.stale = true;
+                }
+            }
+            if let Some(app) = st.app.upgrade() {
+                if active {
+                    set_path(st, &app, pane);
+                }
+                // A `watch_tabs` between the watcher's `Moved` and this asked for the old path,
+                // which the watcher refused: ask again, for the new one.
+                st.watch_tabs(&app);
             }
             update_tabs(st, pane);
             schedule_save(st);
