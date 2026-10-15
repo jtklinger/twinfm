@@ -25,7 +25,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use fileops::{Job, Outcome, clipboard, same_dir};
 use fs::enumerate::{Msg, THIS_PC, is_this_pc};
 use icons::IconTable;
-use model::{Kind, NameMatch, PaneModel, SelOp, SortCol, filter_sort};
+use model::{GridModel, Kind, NameMatch, PaneModel, SelOp, SortCol, filter_sort};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{ComponentHandle, Image, Model, ModelRc, RenderingState, SharedString, VecModel, Weak};
 use std::cell::RefCell;
@@ -208,6 +208,17 @@ struct State {
     /// rows changed since, so the next resolve recomposes it.
     strip: [Option<icons::Composed>; 2],
     strip_dirty: [bool; 2],
+    /// Each pane shows the large-icon grid (settings `view_left` / `view_right`, Ctrl+Shift+2), and
+    /// the tiles to a grid row its list fits (from the list's width, `grid-cols`). With the grid
+    /// on, `strip` holds grid rows and the strip is `compose_grid_strip`'s.
+    grid: [bool; 2],
+    grid_n: [usize; 2],
+    /// The grid's icon strip per pane: a ring of slots, one image per grid row, in the pane's
+    /// `strip-rows` model (slot k holds grid row g with g % slots == k; the ring holds the
+    /// visible grid rows plus the margin, so no two covered rows share a slot). `grid_slots[k]`
+    /// says which grid row slot k holds, at which icon size, and whether an icon in it changed.
+    grid_slots: [Vec<Option<GridSlot>>; 2],
+    strip_rows: [Rc<VecModel<StripRow>>; 2],
     /// Each pane's left-button gesture on a row (click, drag, double-click), dnd::Gesture.
     gesture: [dnd::Gesture; 2],
     /// Retries the drop target registration until the window exists, then stops.
@@ -1146,6 +1157,7 @@ fn land_pass(
     let keep = std::mem::take(&mut t.keep_scroll);
     let scroll = (keep && active).then(|| app.invoke_get_scroll(pane as i32));
     let cursor = model.replace(out);
+    model.set_grid_cursor(cursor.map_or(-1, |c| c as i32));
     if !active {
         t.cursor = cursor.map_or(-1, |c| c as i32);
         return;
@@ -1155,10 +1167,12 @@ fn land_pass(
         app.invoke_set_scroll(pane as i32, y);
         eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
     }
-    // Once per pass swap, never per frame: bring an operation's cursor row into view.
+    // Once per pass swap, never per frame: bring an operation's cursor row (its grid row in the
+    // grid) into view.
     if let (true, Some(row)) = (reveal, cursor) {
         let y = app.invoke_get_scroll(pane as i32);
-        if let Some(to) = model::reveal_row(y, st.view[pane].1, row, icons::ListGeom::new(st.config.thumbnails).row_px) {
+        let (line, line_px) = line_of(st, pane, row);
+        if let Some(to) = model::reveal_row(y, st.view[pane].1, line, line_px) {
             app.invoke_set_scroll(pane as i32, to);
             eprintln!("[refresh] pane={pane} cursor row {row} scrolled into view: {y:.0} -> {to:.0}");
         }
@@ -1167,6 +1181,24 @@ fn land_pass(
     update_status(st, &app, pane);
     st.strip_dirty[pane] = true;
     resolve_view(st, &app, pane);
+}
+
+/// What a slot of a pane's grid strip was composed from (`compose_grid_row`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GridSlot {
+    row: usize,
+    icon_px: u32,
+    dirty: bool,
+}
+
+/// The line of the pane's list that holds entry `row` (the row itself, or its grid row in the
+/// grid) and the line's height.
+fn line_of(st: &State, pane: usize, row: usize) -> (usize, f32) {
+    if st.grid[pane] {
+        (row / st.model(pane).grid_n(), icons::TILE_H)
+    } else {
+        (row, icons::ListGeom::new(st.config.thumbnails).row_px)
+    }
 }
 
 /// Fetch or apply icons for the rows on screen (plus a margin) in one pane, then recompose
@@ -1178,19 +1210,30 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let t = st.panes[pane].active();
     let model = t.model.clone();
     let (y, h) = st.view[pane];
-    let geom = icons::StripGeom::new(app.window().scale_factor(), st.config.thumbnails);
-    let Some(visible) = icons::visible_range(y, h, model.len(), geom.list.row_px) else {
+    let scale = app.window().scale_factor();
+    let geom = icons::StripGeom::new(scale, st.config.thumbnails);
+    // The grid: visible GRID rows of TILE_H, `n` entries each, icons at the grid's size; the strip
+    // covers whole grid rows. The details list: its rows, as before.
+    let grid = st.grid[pane];
+    let n = if grid { model.grid_n() } else { 1 };
+    let grid_geom = icons::GridGeom::new(scale, n);
+    let (lines, line_px, size_px) = if grid {
+        (model.grid_len(), icons::TILE_H, grid_geom.icon_px)
+    } else {
+        (model.len(), geom.list.row_px, geom.icon_px)
+    };
+    let Some(visible) = icons::visible_range(y, h, lines, line_px) else {
         hide_strip(st, app, pane);
         return;
     };
-    let (first, last) = visible;
+    let (first, last) = (visible.0 * n, ((visible.1 + 1) * n - 1).min(model.len() - 1));
     let t0 = Instant::now();
-    let size_px = geom.icon_px;
     let generation = model.generation.get();
     let (lo, hi) = (first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS);
     // With thumbnails on, the workers learn which rows this resolve asks for (once per resolve),
     // and the rows on screen are asked for last, so the workers (newest first) render them first.
-    let thumbs = st.config.thumbnails;
+    // The grid shows its entries' type icons in P4-M1 (thumbnails in the tiles are P4-M2).
+    let thumbs = st.config.thumbnails && !grid;
     let wanted = if thumbs {
         st.resolve_seq[pane] += 1;
         st.icon_views.publish(pane, st.resolve_seq[pane], (lo, hi.min(model.len() - 1)));
@@ -1216,7 +1259,17 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     } else {
         model.resolve_icons(lo, hi, size_px, ask)
     };
-    if let Some(c) = st.strip[pane] {
+    if grid {
+        // An icon landed for an entry: the slot holding its grid row is recomposed.
+        let slots = st.grid_slots[pane].len().max(1);
+        for &i in &changed {
+            if let Some(Some(s)) = st.grid_slots[pane].get_mut((i / n) % slots) {
+                if s.row == i / n {
+                    s.dirty = true;
+                }
+            }
+        }
+    } else if let Some(c) = st.strip[pane] {
         if changed.iter().any(|&i| (c.first..=c.last).contains(&i)) {
             st.strip_dirty[pane] = true;
         }
@@ -1225,7 +1278,9 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     c.requests += sent;
     c.resolves += 1;
     c.resolve_ns += t0.elapsed().as_nanos() as u64;
-    if icons::needs_recompose(st.strip[pane], visible, model.len(), geom.icon_px, st.strip_dirty[pane]) {
+    if grid {
+        compose_grid_rows(st, pane, visible, h, &grid_geom);
+    } else if icons::needs_recompose(st.strip[pane], visible, lines, size_px, st.strip_dirty[pane]) {
         compose_strip(st, app, pane, visible, &geom);
     }
 }
@@ -1245,15 +1300,61 @@ fn compose_strip(st: &mut State, app: &App, pane: usize, visible: (usize, usize)
     st.icon_counts.compose_ns += t0.elapsed().as_nanos() as u64;
     let (w, h) = (strip.width() as f32 / geom.scale, strip.height() as f32 / geom.scale);
     let top = first as f32 * geom.list.row_px;
-    app.invoke_set_strip(pane as i32, Image::from_rgba8_premultiplied(strip), top, w, h, true);
+    app.invoke_set_strip(pane as i32, Image::from_rgba8_premultiplied(strip), 6.0, top, w, h, true);
     st.strip[pane] = Some(icons::Composed { first, last, icon_px: geom.icon_px });
     st.strip_dirty[pane] = false;
 }
 
-/// Hide the pane's icon strip (empty list, or a navigation under way).
+/// `compose_strip` for the large-icon grid: the visible grid rows plus the grid margin, each as
+/// its own image of `cols` icons at the tiles' positions, in the ring of slots (`State::grid_slots`;
+/// `visible_h` sizes the ring: a viewport of grid rows, a partial row at each end, the margin). A
+/// slot already holding its row at this icon size, with no icon changed in it, is left alone, so a
+/// scroll of one grid row composes and uploads one row (the P3-M5 trace recomposed and uploaded
+/// the whole strip, about a third of the grid's busy, ab14).
+fn compose_grid_rows(st: &mut State, pane: usize, visible: (usize, usize), visible_h: f32, geom: &icons::GridGeom) {
+    let model = st.panes[pane].active().model.clone();
+    let (first, last) = icons::grid_strip_range(visible, model.grid_len());
+    let slots = (visible_h.max(0.0) / icons::TILE_H).ceil() as usize + 1 + 2 * icons::GRID_MARGIN_ROWS;
+    if st.grid_slots[pane].len() != slots || st.strip_dirty[pane] {
+        st.grid_slots[pane] = vec![None; slots];
+        if st.strip_rows[pane].row_count() != slots {
+            st.strip_rows[pane].set_vec(vec![StripRow::default(); slots]);
+        }
+        st.strip_dirty[pane] = false;
+    }
+    let n = geom.cols;
+    for g in first..=last {
+        let k = g % slots;
+        let want = GridSlot { row: g, icon_px: geom.icon_px, dirty: false };
+        if st.grid_slots[pane][k] == Some(want) {
+            continue;
+        }
+        let t0 = Instant::now();
+        let bufs: Vec<_> = {
+            let mut table = st.icons.borrow_mut();
+            model.icon_indices(g * n, (g + 1) * n - 1).into_iter().map(|i| table.fitted(i, geom.icon_px)).collect()
+        };
+        let row = icons::compose_grid(&bufs, geom, 1);
+        st.icon_counts.composes += 1;
+        st.icon_counts.compose_ns += t0.elapsed().as_nanos() as u64;
+        let (w, h) = (row.width() as f32 / geom.scale, row.height() as f32 / geom.scale);
+        st.strip_rows[pane].set_row_data(
+            k,
+            StripRow { img: Image::from_rgba8_premultiplied(row), top: g as f32 * icons::TILE_H, w, h, shown: true },
+        );
+        st.grid_slots[pane][k] = Some(want);
+    }
+}
+
+/// Hide the pane's icon strip (empty list, or a navigation under way): the details strip, and the
+/// grid's slots (their images are dropped; the next resolve fills the ring again).
 fn hide_strip(st: &mut State, app: &App, pane: usize) {
     if st.strip[pane].take().is_some() {
-        app.invoke_set_strip(pane as i32, Image::default(), 0.0, 0.0, 0.0, false);
+        app.invoke_set_strip(pane as i32, Image::default(), 0.0, 0.0, 0.0, 0.0, false);
+    }
+    if st.strip_rows[pane].row_count() > 0 {
+        st.strip_rows[pane].set_vec(Vec::new());
+        st.grid_slots[pane].clear();
     }
 }
 
@@ -1272,6 +1373,82 @@ fn on_viewport(pane: usize, y: f32, h: f32) {
     if busy {
         slint::Timer::single_shot(Duration::ZERO, move || on_viewport(pane, y, h));
     }
+}
+
+/// The pane's list now fits `n` tiles to a grid row (its width changed: split, resize; Slint
+/// reports it while the pane shows the grid): the active tab's grid re-maps and the strip is
+/// recomposed. Retried like `on_viewport`.
+fn on_grid_cols(pane: usize, n: usize) {
+    let busy = STATE.with(|s| {
+        let Ok(mut guard) = s.try_borrow_mut() else { return true };
+        let Some(st) = guard.as_mut() else { return false };
+        st.grid_n[pane] = n.max(1);
+        if st.grid[pane] && st.model(pane).set_grid_n(n) {
+            eprintln!("[grid] pane={pane} {n} tiles to a row, {} grid rows", st.model(pane).grid_len());
+            st.strip_dirty[pane] = true;
+            if let Some(app) = st.app.upgrade() {
+                resolve_view(st, &app, pane);
+            }
+        }
+        false
+    });
+    if busy {
+        slint::Timer::single_shot(Duration::ZERO, move || on_grid_cols(pane, n));
+    }
+}
+
+/// The pane's cursor entry changed (keys, clicks or Rust) while it shows the grid: its tile shows it.
+fn on_grid_cursor(pane: usize, row: i32) {
+    let busy = STATE.with(|s| {
+        let Ok(mut guard) = s.try_borrow_mut() else { return true };
+        let Some(st) = guard.as_mut() else { return false };
+        st.model(pane).set_grid_cursor(row);
+        false
+    });
+    if busy {
+        slint::Timer::single_shot(Duration::ZERO, move || on_grid_cursor(pane, row));
+    }
+}
+
+/// Ctrl+Shift+1 (details) or Ctrl+Shift+2 (large icons) on the active pane. The host swaps its
+/// list component for the pane (the rows, cursor and selection are the host's and stay); the
+/// scroll is re-aimed so the first visible line still starts at the same entry; the strip is
+/// hidden and recomposed at the new icon size (icons are kept per size, P3-M5); the setting is
+/// saved. The Slint whole-row snap on a rebuilt list shows here (phase-4-plan.md, open questions).
+fn set_view(pane: usize, grid: bool) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        fn name(grid: bool) -> &'static str {
+            if grid { "large icons" } else { "details" }
+        }
+        if st.grid[pane] == grid {
+            return eprintln!("[view] pane={pane} already {}", name(grid));
+        }
+        let model = st.panes[pane].active().model.clone();
+        let y = st.view[pane].0;
+        let (old_px, old_n) = if st.grid[pane] { (icons::TILE_H, model.grid_n()) } else { (icons::ListGeom::new(st.config.thumbnails).row_px, 1) };
+        let first_entry = ((-y).max(0.0) / old_px).floor() as usize * old_n;
+        let cols = (if pane == 0 { app.get_left_grid_cols() } else { app.get_right_grid_cols() }).max(1) as usize;
+        st.grid[pane] = grid;
+        st.grid_n[pane] = cols;
+        if pane == 0 { st.config.view_left = settings::view_name(grid).into() } else { st.config.view_right = settings::view_name(grid).into() }
+        model.set_grid_n(cols);
+        model.set_grid_cursor(current_row(&app, pane));
+        if pane == 0 { app.set_left_grid(grid) } else { app.set_right_grid(grid) }
+        let (new_px, new_n) = if grid { (icons::TILE_H, cols) } else { (icons::ListGeom::new(st.config.thumbnails).row_px, 1) };
+        let to = if first_entry == 0 { 0.0 } else { -((first_entry / new_n) as f32 * new_px) };
+        app.invoke_set_scroll(pane as i32, to);
+        hide_strip(st, &app, pane);
+        st.strip_dirty[pane] = true;
+        eprintln!(
+            "[view] pane={pane} {} -> {} ({cols} tiles to a row, {} grid rows), scroll {y:.0} -> {to:.0} (entry {first_entry} first)",
+            name(!grid),
+            name(grid),
+            model.grid_len()
+        );
+        resolve_view(st, &app, pane);
+        schedule_save(st);
+    });
 }
 
 /// Take every icon reply the worker has sent, intern the images, then re-resolve both panes'
@@ -1880,10 +2057,15 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
 /// Shift+F10 or the Menu key in a pane's list: the menu for the cursor row's selection, under
 /// that row (already scrolled into view), or the background menu when there is no cursor row.
 fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, visible_h: f32) {
-    let (len, g) = with_state(|st| (st.model(pane).len(), icons::ListGeom::new(st.config.thumbnails)));
+    let (len, g, grid) = with_state(|st| {
+        (st.model(pane).len(), icons::ListGeom::new(st.config.thumbnails), st.grid[pane].then(|| st.model(pane).grid_n()))
+    });
     match usize::try_from(row).ok().filter(|&r| r < len) {
         Some(r) => {
-            let (x, y) = shellmenu::row_menu_point(list_x, list_y, content_y, visible_h, r, g);
+            let (x, y) = match grid {
+                Some(cols) => shellmenu::tile_menu_point(list_x, list_y, content_y, visible_h, r, cols),
+                None => shellmenu::row_menu_point(list_x, list_y, content_y, visible_h, r, g),
+            };
             context_menu(pane, row, x, y, false);
         }
         None => context_menu(pane, -1, list_x + g.name_x(), list_y, false),
@@ -2273,6 +2455,10 @@ pub fn window_layout(app: &App) -> dnd::Layout {
         tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
         left: if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 },
         row_px: icons::ListGeom::new(app.get_thumbnails()).row_px,
+        grid: [
+            app.get_left_grid().then(|| app.get_left_grid_cols().max(1) as usize),
+            app.get_right_grid().then(|| app.get_right_grid_cols().max(1) as usize),
+        ],
     }
 }
 
@@ -2424,11 +2610,16 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
         let layout = window_layout(&app);
         let (pane, dir) = dnd::edge_scroll(&layout, px as f32 / scale, py as f32 / scale)?;
         let visible = layout.height - dnd::LIST_BOTTOM_GAP - dnd::list_top(&layout, pane);
-        Some((app, pane, dir, st.model(pane).len(), visible))
+        // The lines the list scrolls by: rows, or grid rows of tiles.
+        let lines = match layout.grid[pane] {
+            Some(cols) => model::grid_rows(st.model(pane).len(), cols),
+            None => st.model(pane).len(),
+        };
+        Some((app, pane, dir, lines, visible, layout.row_px_of(pane)))
     });
-    let Some((app, pane, dir, len, visible)) = found else { return false };
+    let Some((app, pane, dir, len, visible, line_px)) = found else { return false };
     let from = app.invoke_get_scroll(pane as i32);
-    let to = dnd::scrolled(from, dir, len, visible, icons::ListGeom::new(app.get_thumbnails()).row_px);
+    let to = dnd::scrolled(from, dir, len, visible, line_px);
     if to == from {
         return false;
     }
@@ -2551,6 +2742,10 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
     let (model, cursor, scroll) = (t.model.clone(), t.cursor, t.scroll);
     let rows = ModelRc::from(model.clone());
     if pane == 0 { app.set_left_rows(rows) } else { app.set_right_rows(rows) }
+    model.set_grid_n(st.grid_n[pane]);
+    model.set_grid_cursor(cursor);
+    let grid = ModelRc::new(GridModel(model.clone()));
+    if pane == 0 { app.set_left_grid_rows(grid) } else { app.set_right_grid_rows(grid) }
     let (col, asc) = (model.sort_col.get() as i32, model.sort_asc.get());
     if pane == 0 {
         app.set_left_sort_col(col);
@@ -3301,6 +3496,19 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     app.set_left_rows(ModelRc::from(panes[0].active().model.clone()));
     app.set_right_rows(ModelRc::from(panes[1].active().model.clone()));
+    app.set_left_grid_rows(ModelRc::new(GridModel(panes[0].active().model.clone())));
+    app.set_right_grid_rows(ModelRc::new(GridModel(panes[1].active().model.clone())));
+    let strip_rows: [Rc<VecModel<StripRow>>; 2] = Default::default();
+    app.set_left_strip_rows(ModelRc::from(strip_rows[0].clone()));
+    app.set_right_strip_rows(ModelRc::from(strip_rows[1].clone()));
+    let grid = [settings::view_is_grid(&config.view_left), settings::view_is_grid(&config.view_right)];
+    app.set_left_grid(grid[0]);
+    app.set_right_grid(grid[1]);
+    for (pane, on) in grid.iter().enumerate() {
+        if *on {
+            eprintln!("[view] pane={pane} starts as large icons");
+        }
+    }
     app.set_sidebar_visible(config.sidebar_visible);
     app.set_sidebar_width(config.sidebar_width);
     app.set_split_ratio(config.split_ratio);
@@ -3351,6 +3559,10 @@ fn main() -> Result<(), slint::PlatformError> {
             soak,
             strip: [None; 2],
             strip_dirty: [false; 2],
+            grid,
+            grid_n: [1; 2],
+            grid_slots: Default::default(),
+            strip_rows,
             gesture: Default::default(),
             dnd_timer: slint::Timer::default(),
             tab_models,
@@ -3399,6 +3611,9 @@ fn main() -> Result<(), slint::PlatformError> {
     let icon_timer = slint::Timer::default();
     icon_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), report_icons);
     app.on_viewport_changed(|pane, y, h| on_viewport(pane as usize, y, h));
+    app.on_grid_cols(|pane, n| on_grid_cols(pane as usize, n.max(1) as usize));
+    app.on_grid_cursor(|pane, row| on_grid_cursor(pane as usize, row));
+    app.on_set_view(|pane, grid| set_view(pane as usize, grid));
 
     app.on_navigate(|pane, path| navigate(pane as usize, PathBuf::from(path.as_str())));
     app.on_open_row(|pane, row| open_row(pane as usize, row));

@@ -196,6 +196,14 @@ pub fn row_menu_point(list_x: f32, list_y: f32, content_y: f32, visible_h: f32, 
     (list_x + g.name_x(), bottom.clamp(list_y, list_y + visible_h.max(0.0)))
 }
 
+/// `row_menu_point` for the large-icon grid: under the tile of entry `row` in a grid of `cols`
+/// tiles to a grid row, 2 px into the tile (the name's left edge), kept inside the viewport.
+pub fn tile_menu_point(list_x: f32, list_y: f32, content_y: f32, visible_h: f32, row: usize, cols: usize) -> (f32, f32) {
+    let (r, c) = crate::model::grid_cell(row, cols);
+    let bottom = list_y + content_y + (r as f32 + 1.0) * crate::icons::TILE_H;
+    (list_x + c as f32 * crate::icons::TILE_W + 2.0, bottom.clamp(list_y, list_y + visible_h.max(0.0)))
+}
+
 /// Window logical px to screen physical px.
 pub fn to_screen(hwnd: isize, x: f32, y: f32, scale: f32) -> (i32, i32) {
     let mut pt = POINT { x: (x * scale).round() as i32, y: (y * scale).round() as i32 };
@@ -836,5 +844,18 @@ mod tests {
         let t = ListGeom::new(true);
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 0, t), (52.0, 95.0));
         assert_eq!(row_menu_point(10.0, 63.0, -3200.0, 400.0, 105, t), (52.0, 63.0 + 6.0 * 32.0));
+    }
+
+    #[test]
+    fn tile_menu_point_sits_under_the_tile() {
+        // Five tiles to a grid row, 96 x 120 px: entry 7 is grid row 1, column 2.
+        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 0, 5), (12.0, 183.0));
+        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 7, 5), (10.0 + 2.0 * 96.0 + 2.0, 63.0 + 240.0));
+        // Scrolled by ten grid rows: entry 52 (grid row 10, column 2) is the first row on screen.
+        assert_eq!(tile_menu_point(10.0, 63.0, -1200.0, 600.0, 52, 5), (204.0, 183.0));
+        // Tiles above or below the viewport clamp to its edges; one column reads every entry as its own row.
+        assert_eq!(tile_menu_point(10.0, 63.0, -1200.0, 600.0, 0, 5).1, 63.0);
+        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 500, 5).1, 663.0);
+        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 3, 1), (12.0, 63.0 + 4.0 * 120.0));
     }
 }

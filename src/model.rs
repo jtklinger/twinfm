@@ -1,9 +1,9 @@
 //! PaneModel: a flat Vec of plain entries exposed to Slint as a virtualized model.
 //! Only the UI thread touches it. Workers hand over whole Vec<Entry> batches.
 
-use crate::Row;
+use crate::{GridRow, Row, Tile};
 use crate::icons::{IconTable, KeyState, PLACEHOLDER_DRIVE, PLACEHOLDER_FILE, PLACEHOLDER_FOLDER, PLACEHOLDERS};
-use slint::{Model, ModelNotify, ModelTracker, SharedString};
+use slint::{Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::collections::{BTreeSet, HashSet};
@@ -200,6 +200,13 @@ pub struct PaneModel {
     /// Names on the clipboard as a cut from this pane's folder; carried across passes by name.
     cut: RefCell<Vec<SharedString>>,
     notify: ModelNotify,
+    /// The large-icon grid over `shown` (P4-M1): `grid_n` entries to a grid row (set from the
+    /// list's width), the cursor's entry index (for the tile's `current`), and the grid model's
+    /// own notifications (`GridModel`), sent beside every `notify` the grid shows. With the pane in
+    /// the details view nothing listens to `grid_notify`, so its calls cost a peer-list check.
+    grid_n: Cell<usize>,
+    grid_cursor: Cell<i32>,
+    grid_notify: ModelNotify,
     /// Generation of the enumeration whose batches we accept; stale workers are ignored.
     pub generation: Cell<u64>,
     /// Bumped by every filter/sort request; only the newest pass may swap `shown`.
@@ -234,6 +241,9 @@ impl PaneModel {
             sel_version: Cell::new(0),
             cut: RefCell::new(Vec::new()),
             notify: ModelNotify::default(),
+            grid_n: Cell::new(1),
+            grid_cursor: Cell::new(-1),
+            grid_notify: ModelNotify::default(),
             generation: Cell::new(0),
             pass: Cell::new(0),
             sort_col: Cell::new(SortCol::Name),
@@ -300,6 +310,7 @@ impl PaneModel {
         self.sel_version.set(self.sel_version.get() + 1);
         self.cut.borrow_mut().clear();
         self.notify.reset();
+        self.grid_notify.reset();
     }
 
     /// Mark `names` as cut (empty: none); only rows whose mark changed are notified.
@@ -322,6 +333,7 @@ impl PaneModel {
         self.sel_version.set(self.sel_version.get() + 1);
         for i in changed {
             self.notify.row_changed(i);
+            self.grid_changed(i);
         }
     }
 
@@ -352,6 +364,7 @@ impl PaneModel {
         }
         for &i in &changed {
             self.notify.row_changed(i);
+            self.grid_changed(i);
         }
         self.sel_version.set(self.sel_version.get() + 1);
     }
@@ -470,6 +483,15 @@ impl PaneModel {
         self.all.borrow_mut().append(&mut batch);
         if added > 0 {
             self.notify.row_added(start, added);
+            // The grid: the partial grid row the batch fills out changed, the rest are new.
+            let n = self.grid_n.get();
+            let (old, new) = (grid_rows(start, n), grid_rows(start + added, n));
+            if start % n.max(1) != 0 {
+                self.grid_notify.row_changed(old - 1);
+            }
+            if new > old {
+                self.grid_notify.row_added(old, new - old);
+            }
         }
     }
 
@@ -482,6 +504,7 @@ impl PaneModel {
         *self.sel.borrow_mut() = Selection { set: out.selection, anchor: out.cursor };
         self.sel_version.set(self.sel_version.get() + 1);
         self.notify.reset();
+        self.grid_notify.reset();
         out.cursor
     }
 
@@ -527,6 +550,47 @@ impl PaneModel {
         self.filtered.get()
     }
 
+    /// Entries to a grid row; a change re-maps every grid row (a reset). Returns whether it changed.
+    pub fn set_grid_n(&self, n: usize) -> bool {
+        let n = n.max(1);
+        if self.grid_n.get() == n {
+            return false;
+        }
+        self.grid_n.set(n);
+        self.grid_notify.reset();
+        true
+    }
+
+    pub fn grid_n(&self) -> usize {
+        self.grid_n.get()
+    }
+
+    /// Grid rows shown.
+    pub fn grid_len(&self) -> usize {
+        grid_rows(self.len(), self.grid_n.get())
+    }
+
+    /// The cursor's entry index (-1: none); the grid rows holding the old and the new one are
+    /// notified, nothing else.
+    pub fn set_grid_cursor(&self, cursor: i32) {
+        let old = self.grid_cursor.replace(cursor);
+        if old == cursor {
+            return;
+        }
+        for c in [old, cursor] {
+            if let Ok(i) = usize::try_from(c) {
+                self.grid_changed(i);
+            }
+        }
+    }
+
+    /// Entry `i` changed: notify its grid row, if it exists.
+    fn grid_changed(&self, i: usize) {
+        if i < self.len() {
+            self.grid_notify.row_changed(grid_cell(i, self.grid_n.get()).0);
+        }
+    }
+
     pub fn entry(&self, i: usize) -> Option<Entry> {
         self.shown.borrow().get(i).cloned()
     }
@@ -555,6 +619,60 @@ impl Model for PaneModel {
 
     fn model_tracker(&self) -> &dyn ModelTracker {
         &self.notify
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Grid rows for `len` entries at `n` to a row (n = 0 reads as 1).
+pub fn grid_rows(len: usize, n: usize) -> usize {
+    len.div_ceil(n.max(1))
+}
+
+/// (grid row, column) of entry `i` at `n` to a row (n = 0 reads as 1).
+pub fn grid_cell(i: usize, n: usize) -> (usize, usize) {
+    let n = n.max(1);
+    (i / n, i % n)
+}
+
+/// The entries of grid row `r` at `n` to a row, for a list of `len` (empty past the end).
+pub fn grid_span(r: usize, n: usize, len: usize) -> std::ops::Range<usize> {
+    let n = n.max(1);
+    (r * n).min(len)..((r + 1) * n).min(len)
+}
+
+/// The pane's entries as grid rows of `grid_n` tiles (the large-icon view's ListView model).
+/// Notifications come from the PaneModel (`grid_notify`), which knows when entries change.
+pub struct GridModel(pub Rc<PaneModel>);
+
+impl Model for GridModel {
+    type Data = GridRow;
+
+    fn row_count(&self) -> usize {
+        self.0.grid_len()
+    }
+
+    fn row_data(&self, row: usize) -> Option<GridRow> {
+        let m = &self.0;
+        let shown = m.shown.borrow();
+        let span = grid_span(row, m.grid_n.get(), shown.len());
+        if span.is_empty() {
+            return None;
+        }
+        let cursor = m.grid_cursor.get();
+        let first = span.start;
+        let tiles: Vec<Tile> = shown[span]
+            .iter()
+            .enumerate()
+            .map(|(k, e)| Tile { name: e.name.clone(), selected: e.selected, cut: e.cut, current: (first + k) as i32 == cursor })
+            .collect();
+        Some(GridRow { first: first as i32, tiles: ModelRc::new(VecModel::from(tiles)) })
+    }
+
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.0.grid_notify
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1301,6 +1419,54 @@ mod tests {
         // No fallback: a gone cursor goes nowhere, as before.
         let r4 = Restore { cursor: Some("zz".into()), ..Default::default() };
         assert_eq!(restore_by_name(&r4, &after).0, None);
+    }
+
+    #[test]
+    fn grid_maps_entries_to_rows_and_columns() {
+        assert_eq!(grid_rows(0, 7), 0);
+        assert_eq!(grid_rows(14, 7), 2);
+        assert_eq!(grid_rows(15, 7), 3, "a last partial row");
+        assert_eq!(grid_rows(5, 1), 5);
+        assert_eq!(grid_rows(5, 0), 5, "n = 0 (no width yet) reads as one column");
+        assert_eq!(grid_cell(0, 7), (0, 0));
+        assert_eq!(grid_cell(6, 7), (0, 6));
+        assert_eq!(grid_cell(7, 7), (1, 0));
+        assert_eq!(grid_cell(15, 7), (2, 1));
+        assert_eq!(grid_cell(3, 1), (3, 0));
+        assert_eq!(grid_cell(3, 0), (3, 0));
+        assert_eq!(grid_span(0, 7, 15), 0..7);
+        assert_eq!(grid_span(2, 7, 15), 14..15, "the last partial row");
+        assert_eq!(grid_span(3, 7, 15), 15..15, "past the end");
+        assert_eq!(grid_span(4, 1, 15), 4..5);
+        assert_eq!(grid_span(4, 0, 15), 4..5);
+        // Round trip: every entry lies in the span of its own grid row, at its column.
+        for n in [1, 2, 7] {
+            for i in 0..30 {
+                let (r, c) = grid_cell(i, n);
+                assert_eq!(grid_span(r, n, 30).start + c, i);
+            }
+        }
+        // The adapter over a pane model: rows, tiles, the cursor, and a width change.
+        let m = Rc::new(PaneModel::default());
+        m.append((0..15).map(|i| Entry::new(format!("f{i:02}").into(), 1, 0, 0, "File".into())).collect());
+        assert!(m.set_grid_n(7));
+        assert!(!m.set_grid_n(7));
+        m.set_grid_cursor(8);
+        let g = GridModel(m.clone());
+        assert_eq!(g.row_count(), 3);
+        let r1 = g.row_data(1).unwrap();
+        assert_eq!(r1.first, 7);
+        assert_eq!(r1.tiles.row_count(), 7);
+        assert_eq!(r1.tiles.row_data(0).unwrap().name, "f07");
+        assert!(r1.tiles.row_data(1).unwrap().current, "entry 8 is row 1, column 1");
+        assert!(!r1.tiles.row_data(0).unwrap().current);
+        assert_eq!(g.row_data(2).unwrap().tiles.row_count(), 1);
+        assert!(g.row_data(3).is_none());
+        m.select(SelOp::Only, 14);
+        assert!(g.row_data(2).unwrap().tiles.row_data(0).unwrap().selected);
+        m.set_grid_n(4);
+        assert_eq!(g.row_count(), 4);
+        assert_eq!(g.row_data(3).unwrap().first, 12);
     }
 
     #[test]
