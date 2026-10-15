@@ -67,6 +67,8 @@ foreach ($d in $w1, $w2, $w3) {
 $cycle = @(
     "nav 0 $w1", "nav 1 $w2", 'sleep 1000',
     'wheel 0 -40 30', 'wheel 1 -40 30', 'wheel 0 40 30', 'wheel 1 40 30',
+    # The writer churns w1 too, so one of its windows can satisfy this `waitedit` before the
+    # touch's own window lands.
     'touch 0 soak-touch.txt', 'waitedit 3000',
     'mvfile 0 soak-touch.txt soak-moved.txt', 'waitwatch 3000',
     'touch 1 soak-touch.txt', 'waitwatch 3000',
@@ -163,7 +165,10 @@ $refreshLines = @($log | Select-String -SimpleMatch '[refresh]').Count
 $changed = @($log | Select-String -Pattern '\[watch\].* fallback: .*: refresh$').Count
 $deferred = @($log | Select-String -Pattern '\[watch\].* fallback: .*: refresh after it$').Count
 $staled = @($log | Select-String -Pattern '\[watch\].* fallback: .*: stale$').Count
-$lost = @($log | Select-String -SimpleMatch '] lost ').Count
+# Watches the watcher lost (`tab=N lost <path>: <error>`), and the UI's reaction to each
+# (`tab=N watch lost (<error>): refresh|stale`).
+$lost = @($log | Select-String -Pattern '\[watch\].* tab=\d+ lost ').Count
+$lostUi = @($log | Select-String -SimpleMatch 'watch lost (').Count
 $noWatch = @($log | Select-String -SimpleMatch 'no watch for').Count
 $waitTimeouts = @($log | Select-String -SimpleMatch 'waitwatch: no ').Count
 $editTimeouts = @($log | Select-String -SimpleMatch 'waitedit: no ').Count
@@ -207,7 +212,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "ran {0:N1} min, window closed by script: {1}, exit code {2}" -f ((Get-Date) - $t0).TotalMinutes, $closed, $p.ExitCode
 "panicked lines: $panics"
 "cycles started: $cyclesRun; writer operations: $writerOps; soak refusals: $refused"
-"[watch] lines: $watchLines (fallbacks refreshed $changed, deferred behind a listing $deferred, background stale $staled, lost $lost, no watch $noWatch); [refresh] lines: $refreshLines; waitwatch timeouts: $waitTimeouts; waitedit timeouts: $editTimeouts"
+"[watch] lines: $watchLines (fallbacks refreshed $changed, deferred behind a listing $deferred, background stale $staled, lost $lost (UI reacted $lostUi), no watch $noWatch); [refresh] lines: $refreshLines; waitwatch timeouts: $waitTimeouts; waitedit timeouts: $editTimeouts"
 "records delivered: $records; windows applied: $applied (+$plus -$minus ~$tilde); edits dropped: $dropped"
 "fallbacks by reason: $fallbacks"
 "netted to nothing: $netted; explained by the operation: $explained; watched in the background: $bgWatched; past the cap: $pastCap; back-off lines: $backoff; largest window: $largest ms"
