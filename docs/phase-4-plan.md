@@ -592,3 +592,45 @@ rows 42 / 56 / 52, draw_text 275 / 308 / 362, accessibility 102 / 91 / 79, timer
 P4-M2 holds all three gates: the default row is the reference's, the grid sits at 11.4 and the
 grid with thumbnails at 11.2 against the bar's 20. Jeremy's console checks (2026-10-15, after the
 triplet): "console checks nominal".
+
+## P4-M3: selection and drops by tile
+
+The third milestone of the phase (2026-10-15): the grid takes a rubber band, a drag out of it
+carries a tile-sized image, and the soak scripts get a grid cycle. Branch
+`claude/p4-m3-selection-drops-c028f0`, from 10cfb6b. Scope agreed with Jeremy on 2026-10-15 from a
+survey of main: Shift and Ctrl across tiles, drops onto a tile and onto empty space, and the drag
+auto-scroll by grid rows already work (P4-M1 Scripted checks (iii) and (iv)) and are re-checked
+here, not rewritten; the details list has no rubber band, so the grid gets one and the list none;
+a left press on the empty space right of the last column went to the list's scroll surface (a
+drag there scrolled the list) and one below the last grid row to the right-click area (nothing).
+
+The brief:
+
+1. **Rubber band in the grid.** A left press on empty grid space (right of the last column, or
+   below the last grid row) and a drag draw a translucent accent rectangle and select every tile
+   it touches: a plain drag replaces the selection, Ctrl toggles the touched tiles against the
+   selection at the press, Shift adds them. The band auto-scrolls at the list's top and bottom
+   edges as a hovering drag does (`dnd::edge_scroll`, `dnd::scrolled`). Release ends it; Escape
+   cancels and restores the selection from the press. The maths run in Rust (the touched tiles
+   from the band's rectangle in content coordinates), applied to the model as one batched change.
+   The band starts only from empty space: a press anywhere on a tile selects the tile (Explorer
+   lets a tile's blank corner start a band; telling the corner from the icon would need per-tile
+   hit maths). One small pointer area per visible grid row covers the gap right of the last
+   column, a per-row item in the grid's row component only; the details rows are proven untouched
+   by the generated-code diff, and the grid triplet decides its cost.
+2. **A tile-sized drag image out of the grid.** A drag out of a grid pane shows a 128 px square
+   (at 100%) holding the pressed tile's picture at 96 px, what the tile shows: the thumbnail when
+   the pane holds one, the type icon otherwise; the badge with the count stays. Drags out of the
+   details list are unchanged (96 px, a 64 px icon from the shell).
+3. **A grid cycle in the soak.** `tools/soak-p4m3.ps1`: the P2-M4 soak plus, per cycle, both
+   panes in the grid for tile drops, a drop on empty space, a scripted context menu on a tile, a
+   right-button drag cancelled, and a band selection, then back to details for the scroll
+   scenario; it reports band counts and the grid's drag images beside the P2-M4 counts.
+
+Driver: `band <pane> <x0> <y0> <x1> <y1> [ctrl|shift]` (press, moves and release through Slint's
+pointer path, as `tabdrag` does). `[band]` lines on stderr; the `[dnd] drag image` line gains the
+icon size. Tests for the band's tile intersection (edges, partial tiles, the gap right of the last
+column, a scrolled list, the Ctrl and Shift modes) and the two drag image geometries.
+
+Gate: `tools/wpr-triplet.ps1 -Reference p4m2 -Candidate p4m3,p4m3@C:\traces\grid.toml -Tag ab19`,
+`target-p4m2` (44d3a84) the reference, as the plan above says.
