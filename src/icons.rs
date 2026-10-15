@@ -14,7 +14,8 @@
 //! (`thumb:<full path>|<modified>|<size>`) and rendered from the shell's thumbnail cache
 //! (`IThumbnailCache`), letterboxed into the icon square; without a thumbnail it gets its icon.
 //! The table and the workers keep each key per icon size in px, so the 16 px and 32 px lists'
-//! icons never stand in for each other.
+//! icons and the grid's 96 px ones (tiles take thumbnails at that size, P4-M2) never stand in for
+//! each other.
 
 use crate::model::Kind;
 use crossbeam_channel::{Receiver, Sender};
@@ -522,12 +523,16 @@ pub fn letterbox(src: &SharedPixelBuffer<Rgba8Pixel>, px: u32) -> SharedPixelBuf
 }
 
 /// Convert GetDIBits output (top-down, 32-bit BGRA, premultiplied) to RGBA. Bitmaps from icons
-/// with no alpha channel come back with every alpha byte zero; those are opaque.
+/// with no alpha channel come back with every alpha byte zero; those are opaque. A channel above
+/// its alpha is clamped to it: the shell's 96 px folder icon has an edge row of straight (not
+/// premultiplied) colour at alpha 64, which the renderer, blending it as premultiplied, saturated
+/// into a thin pale lime fringe along the folder's top (P4-M2).
 pub fn bgra_to_rgba(bgra: &[u8], width: u32, height: u32) -> SharedPixelBuffer<Rgba8Pixel> {
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
     let opaque = bgra.chunks_exact(4).all(|p| p[3] == 0);
     for (dst, src) in buf.make_mut_slice().iter_mut().zip(bgra.chunks_exact(4)) {
-        *dst = Rgba8Pixel { r: src[2], g: src[1], b: src[0], a: if opaque { 255 } else { src[3] } };
+        let a = if opaque { 255 } else { src[3] };
+        *dst = Rgba8Pixel { r: src[2].min(a), g: src[1].min(a), b: src[0].min(a), a };
     }
     buf
 }
@@ -1139,7 +1144,7 @@ impl Cap {
 impl Default for IconTable {
     fn default() -> Self {
         IconTable {
-            bufs: vec![placeholder_file(), placeholder_folder(), placeholder_drive()],
+            bufs: vec![placeholder_file(16), placeholder_folder(16), placeholder_drive(16)],
             fitted: Vec::new(),
             fitted_px: 0,
             sizes: Vec::new(),
@@ -1155,9 +1160,9 @@ impl IconTable {
         self.bufs.get(i as usize).unwrap_or(&self.bufs[PLACEHOLDER_FILE as usize])
     }
 
-    /// The buffer at `i` resampled to `px` square, computed once per index and size (a
-    /// refcount bump after that). A new size drops the cache. An out-of-range index reads as
-    /// the file placeholder.
+    /// The buffer at `i` resampled to `px` square (a placeholder is drawn at `px` instead),
+    /// computed once per index and size (a refcount bump after that). A new size drops the cache.
+    /// An out-of-range index reads as the file placeholder.
     pub fn fitted(&mut self, i: u16, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
         if self.fitted_px != px {
             self.fitted.clear();
@@ -1167,7 +1172,9 @@ impl IconTable {
         if self.fitted.len() <= i {
             self.fitted.resize(self.bufs.len(), None);
         }
-        self.fitted[i].get_or_insert_with(|| fit(&self.bufs[i], px)).clone()
+        self.fitted[i]
+            .get_or_insert_with(|| if i < PLACEHOLDERS as usize { placeholder_at(i, px) } else { fit(&self.bufs[i], px) })
+            .clone()
     }
 
     /// Buffers held, placeholders included.
@@ -1214,30 +1221,45 @@ impl IconTable {
     }
 }
 
-/// A 16 x 16 opaque-on-transparent placeholder: `rects` are (x0, y0, x1, y1, rgb) filled in order.
-fn placeholder(rects: &[(u32, u32, u32, u32, [u8; 3])]) -> SharedPixelBuffer<Rgba8Pixel> {
-    let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(16, 16);
-    let px = buf.make_mut_slice();
-    for &(x0, y0, x1, y1, [r, g, b]) in rects {
+/// A `px` square opaque-on-transparent placeholder, drawn at that size rather than stretched from
+/// 16 px (P4-M2: a 96 px tile showed six-pixel blocks before its icon landed). `rects` are (x0, y0,
+/// x1, y1, inset, rgb) on a 16-unit grid, filled in order; `inset` pixels (at any size) are taken
+/// off every edge, so a one-pixel outline at 16 px stays one pixel at 96.
+fn placeholder(px: u32, rects: &[(u32, u32, u32, u32, u32, [u8; 3])]) -> SharedPixelBuffer<Rgba8Pixel> {
+    let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(px, px);
+    let out = buf.make_mut_slice();
+    let unit = |v: u32| (v as f32 * px as f32 / 16.0).round() as u32;
+    for &(x0, y0, x1, y1, inset, [r, g, b]) in rects {
+        let (x0, x1) = ((unit(x0) + inset).min(px), unit(x1).saturating_sub(inset).min(px));
+        let (y0, y1) = ((unit(y0) + inset).min(px), unit(y1).saturating_sub(inset).min(px));
         for y in y0..y1 {
             for x in x0..x1 {
-                px[(y * 16 + x) as usize] = Rgba8Pixel { r, g, b, a: 255 };
+                out[(y * px + x) as usize] = Rgba8Pixel { r, g, b, a: 255 };
             }
         }
     }
     buf
 }
 
-fn placeholder_file() -> SharedPixelBuffer<Rgba8Pixel> {
-    placeholder(&[(3, 1, 13, 15, [150, 150, 150]), (4, 2, 12, 14, [245, 245, 245])])
+fn placeholder_file(px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    placeholder(px, &[(3, 1, 13, 15, 0, [150, 150, 150]), (3, 1, 13, 15, 1, [245, 245, 245])])
 }
 
-fn placeholder_folder() -> SharedPixelBuffer<Rgba8Pixel> {
-    placeholder(&[(1, 3, 7, 5, [214, 170, 60]), (1, 5, 15, 14, [232, 190, 80])])
+fn placeholder_folder(px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    placeholder(px, &[(1, 3, 7, 5, 0, [214, 170, 60]), (1, 5, 15, 14, 0, [232, 190, 80])])
 }
 
-fn placeholder_drive() -> SharedPixelBuffer<Rgba8Pixel> {
-    placeholder(&[(1, 5, 15, 12, [120, 120, 120]), (2, 6, 14, 11, [200, 200, 200]), (11, 8, 13, 10, [60, 160, 60])])
+fn placeholder_drive(px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    placeholder(px, &[(1, 5, 15, 12, 0, [120, 120, 120]), (1, 5, 15, 12, 1, [200, 200, 200]), (11, 8, 13, 10, 0, [60, 160, 60])])
+}
+
+/// The placeholder at index `i` (one of `PLACEHOLDERS`) drawn at `px` square.
+fn placeholder_at(i: usize, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    match i as u16 {
+        PLACEHOLDER_FOLDER => placeholder_folder(px),
+        PLACEHOLDER_DRIVE => placeholder_drive(px),
+        _ => placeholder_file(px),
+    }
 }
 
 #[cfg(test)]
@@ -1334,6 +1356,12 @@ mod tests {
         let flat = bgra_to_rgba(&[10, 20, 30, 0, 40, 50, 60, 0, 0, 0, 0, 0, 1, 2, 3, 0], 2, 2);
         assert_eq!(flat.as_slice()[0], Rgba8Pixel { r: 30, g: 20, b: 10, a: 255 });
         assert!(flat.as_slice().iter().all(|p| p.a == 255));
+        // A channel above its alpha (the shell's 96 px folder icon has an edge row of
+        // (251, 187, 23) at alpha 64, P4-M2) is clamped to it: blended as premultiplied, such a
+        // pixel saturated into a pale lime fringe along the folder's top.
+        let edge = bgra_to_rgba(&[23, 187, 251, 64, 0, 127, 255, 2], 2, 1);
+        assert_eq!(edge.as_slice()[0], Rgba8Pixel { r: 64, g: 64, b: 23, a: 64 });
+        assert_eq!(edge.as_slice()[1], Rgba8Pixel { r: 2, g: 2, b: 0, a: 2 });
     }
 
     #[test]
@@ -1353,6 +1381,40 @@ mod tests {
 
     fn px() -> Outcome {
         Outcome::Pixels(SharedPixelBuffer::new(2, 2))
+    }
+
+    #[test]
+    fn placeholders_are_drawn_at_the_requested_size() {
+        // At 16 px the three placeholders are the pictures they have always been.
+        let at = |b: &SharedPixelBuffer<Rgba8Pixel>, x: u32, y: u32| {
+            let p = b.as_slice()[(y * b.width() + x) as usize];
+            (p.r, p.g, p.b, p.a)
+        };
+        let f16 = placeholder_file(16);
+        assert_eq!((f16.width(), f16.height()), (16, 16));
+        assert_eq!(at(&f16, 0, 0), (0, 0, 0, 0), "transparent outside");
+        assert_eq!(at(&f16, 3, 1), (150, 150, 150, 255), "the grey outline");
+        assert_eq!(at(&f16, 4, 2), (245, 245, 245, 255), "the light paper, one px in");
+        assert_eq!(at(&placeholder_folder(16), 1, 3), (214, 170, 60, 255));
+        assert_eq!(at(&placeholder_drive(16), 11, 8), (60, 160, 60, 255));
+        // At 96 px (the grid's tiles) the outline is still one pixel, not a six-pixel block, and the
+        // shapes sit at the same proportions.
+        let f96 = placeholder_file(96);
+        assert_eq!((f96.width(), f96.height()), (96, 96));
+        assert_eq!(at(&f96, 17, 5), (0, 0, 0, 0), "outside the paper");
+        assert_eq!(at(&f96, 18, 6), (150, 150, 150, 255), "the outline's corner");
+        assert_eq!(at(&f96, 19, 7), (245, 245, 245, 255), "paper one px inside the outline");
+        assert_eq!(at(&f96, 77, 89), (150, 150, 150, 255), "the far corner of the outline");
+        assert_eq!(at(&f96, 78, 90), (0, 0, 0, 0));
+        let d96 = placeholder_drive(96);
+        assert_eq!(at(&d96, 6, 30), (120, 120, 120, 255), "the drive's case");
+        assert_eq!(at(&d96, 7, 31), (200, 200, 200, 255), "its face one px in");
+        assert_eq!(at(&d96, 70, 50), (60, 160, 60, 255), "the light");
+        // The table hands a placeholder out at the size asked for, and a real icon fitted.
+        let mut t = IconTable::default();
+        assert_eq!(t.fitted(PLACEHOLDER_FOLDER, 96).as_slice(), placeholder_folder(96).as_slice());
+        assert_eq!(t.fitted(PLACEHOLDER_FILE, 32).as_slice(), placeholder_file(32).as_slice());
+        assert_eq!(t.buffer(PLACEHOLDER_FILE).width(), 16, "the raw buffer stays 16 px (drag images)");
     }
 
     #[test]
