@@ -232,7 +232,8 @@ pub fn stat_entry(
         return None;
     }
     // Always verbatim (`\\?\`): without it a name ending in a dot or a space is normalised to
-    // another name. `dir` must be absolute with backslashes, as a pane's folder is.
+    // another name. So Win32 normalises nothing in `dir` either: it must be absolute, with
+    // backslashes and no `.` or `..` (the edit worker's `stat_dir`); `\\?\C:/x\name` names nothing.
     let path = long_wide(dir.join(name).as_os_str().encode_wide().collect(), true);
     let mut data = WIN32_FIND_DATAW::default();
     // SAFETY: `path` is a NUL-terminated wide string and `data` a WIN32_FIND_DATAW, both alive for

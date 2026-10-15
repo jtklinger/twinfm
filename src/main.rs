@@ -1008,13 +1008,16 @@ fn edits_from(changes: &[fs::watch::Change], mut stat: impl FnMut(&str) -> Optio
     (edits, vanished)
 }
 
-/// A watch window for the edit worker: the tab, its folder, the changes, and the listing they
-/// were checked against (its generation and pass), which `land_edits` checks again.
+/// A watch window for the edit worker: the tab, its folder (as the tab held it when the window was
+/// sent), the changes, and the listing they were checked against (its generation and pass), which
+/// `land_edits` checks again.
 struct StatJob {
     pane: usize,
     tab: u64,
     path: PathBuf,
     changes: Vec<fs::watch::Change>,
+    /// The window's record count, for the fallback lines.
+    records: usize,
     generation: u64,
     pass: u64,
     thumbnails: bool,
@@ -1023,23 +1026,39 @@ struct StatJob {
     young: bool,
 }
 
+/// The folder the edit worker stats under: absolute, backslashes, no `.` or `..` (Win32's
+/// `GetFullPathNameW`, through `std::path::absolute`), as `stat_entry`'s verbatim prefix needs. A
+/// tab's path is kept as typed (`twinfm.exe C:/x`, `C:\a\..\b`, a saved tab).
+fn stat_dir(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// The edit worker: stats the names of each watch window (one window at a time, in order, so
 /// windows land in the order they came) and posts the edits to the UI thread. Never the UI thread
-/// or the watcher thread: a stat can block on a busy disk.
+/// or the watcher thread: a stat can block on a busy disk. When a stat fails and the folder itself
+/// is gone (deleted, or renamed since the window was sent), the window is no removal of its names:
+/// `land_edits` falls back instead.
 fn edit_worker() -> Sender<StatJob> {
     let (tx, rx) = unbounded::<StatJob>();
     std::thread::Builder::new()
         .name("watch-edits".into())
         .spawn(move || {
-            for job in rx {
+            for mut job in rx {
                 let t0 = Instant::now();
+                let dir = stat_dir(&job.path);
                 let mut types = fs::enumerate::TypeNames::default();
                 let mut keys = icons::IconKeys::new(job.path.clone(), job.thumbnails);
                 let zone = model::LocalZone::current();
-                let (edits, vanished) = edits_from(&job.changes, |n| fs::enumerate::stat_entry(&job.path, n, &mut types, &mut keys, &zone));
+                let mut failed = false;
+                let (edits, vanished) = edits_from(&job.changes, |n| {
+                    let entry = fs::enumerate::stat_entry(&dir, n, &mut types, &mut keys, &zone);
+                    failed |= entry.is_none();
+                    entry
+                });
+                let folder_gone = failed && std::fs::metadata(&dir).is_err();
                 let stat_ms = perf::elapsed_ms(t0);
-                let StatJob { pane, tab, generation, pass, young, .. } = job;
-                let _ = slint::invoke_from_event_loop(move || land_edits(pane, tab, (generation, pass, young), edits, vanished, stat_ms));
+                job.changes = Vec::new();
+                let _ = slint::invoke_from_event_loop(move || land_edits(job, edits, vanished, folder_gone, stat_ms));
             }
         })
         .expect("spawn watch edit thread");
@@ -1160,6 +1179,7 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                             tab: tab_id,
                             path: t.path.clone(),
                             changes,
+                            records,
                             generation: t.model.generation.get(),
                             pass: t.model.pass.get(),
                             young: young_listing(t),
@@ -1277,8 +1297,10 @@ fn vanished(t: &Tab, name: &str) -> bool {
 /// listing if it is still the one they were checked against, else drop them and refresh (the
 /// records are spent). A removal of a name the listing does not have because it vanished before
 /// it was listed (`Tab::vanished`), or went before a young listing began (`young`), is dropped, a
-/// rename from one is an add.
-fn land_edits(pane: usize, tab_id: u64, (generation, pass, young): (u64, u64, bool), edits: Vec<model::Edit>, gone: Vec<String>, stat_ms: f64) {
+/// rename from one is an add. A window statted under a folder that has gone (`folder_gone`), or
+/// under a path the tab no longer has (the folder renamed since), falls back.
+fn land_edits(job: StatJob, edits: Vec<model::Edit>, gone: Vec<String>, folder_gone: bool, stat_ms: f64) {
+    let StatJob { pane, tab: tab_id, path, records, generation, pass, young, .. } = job;
     let again = with_state(|st| {
         let mut again = Vec::new();
         let app = st.app.upgrade()?;
@@ -1291,12 +1313,19 @@ fn land_edits(pane: usize, tab_id: u64, (generation, pass, young): (u64, u64, bo
             Some("the listing changed")
         } else if t.model.pass.get() != pass {
             Some("a pass was requested")
+        } else if t.path != path {
+            Some("the path changed")
         } else {
             unsettled(t)
         };
         if let Some(why) = why {
             let outcome = fall_back(st, pane, tab_id, &mut again);
             eprintln!("[watch] pane={pane} tab={tab_id} edits dropped: {why}: {outcome}");
+            return Some(again);
+        }
+        if folder_gone {
+            let outcome = fall_back(st, pane, tab_id, &mut again);
+            eprintln!("[watch] pane={pane} tab={tab_id} fallback: folder gone ({records} records): {outcome}");
             return Some(again);
         }
         if t.vanished.0 != generation {
@@ -4603,5 +4632,13 @@ mod tests {
             })
             .collect();
         assert_eq!(shape, ["upsert new.txt", "remove old.txt", "upsert kept.txt", "remove vanished.txt", "rename a.txt -> b.txt", "remove c.txt"]);
+    }
+
+    #[test]
+    fn stat_dir_normalises_a_typed_path() {
+        // As strings: Path equality compares components, which hides the slashes and the `.`.
+        assert_eq!(stat_dir(Path::new("C:/x/./y")).to_str(), Some(r"C:\x\y"));
+        assert_eq!(stat_dir(Path::new(r"C:\a\..\b")).to_str(), Some(r"C:\b"));
+        assert_eq!(stat_dir(Path::new(r"C:\x\y")).to_str(), Some(r"C:\x\y"));
     }
 }
