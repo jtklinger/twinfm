@@ -829,3 +829,43 @@ below the list's bottom and above its top on `bigdir` (the auto-scroll both ways
 the grid (the tile-sized image with the thumbnail, and with a type icon), a click on empty grid
 space clearing the selection, and the details list's band-free behaviour unchanged (a left press
 below the rows does nothing, a drag out of a row carries the 96 px image).
+
+**Both triplets passed (2026-10-15, Jeremy at the console).** Nine runs from 12:17 to 12:25 in
+three rounds, each round reference, defaults, grid; `target-p4m2` (44d3a84) against `target-p4m3`
+(53dbc50, the PR head). Every grid run's stderr carries `[settings] file C:\traces\grid.toml
+(read)` and `[view] pane=0 starts as large icons`. Analysed with `tools/analyze-trace.py --symbols
+--exe`.
+
+| Run | P4-M2 (`target-p4m2`) | P4-M3 defaults, `target-p4m3` | P4-M3 grid on, `target-p4m3` |
+|---|---|---|---|
+| 1 | 18.1% (1810 ms) | 18.0% (1801 ms) | 10.3% (1030 ms) |
+| 2 | 18.0% (1796 ms) | 17.9% (1793 ms) | 10.2% (1022 ms) |
+| 3 | 17.6% (1756 ms) | 17.6% (1760 ms) | 10.2% (1018 ms) |
+| **median** | **18.0%** | **17.9%** | **10.2%** |
+
+**Defaults: the details list has not moved.** The medians differ by 0.1, and the candidate's runs
+2 and 3 (17.9, 17.6) sit below the reference's runs 1 and 2 (18.1, 18.0), so neither half of the
+rule calls a gap; the six runs lie within 0.5 of a point, every pair within 0.1 (18.1 / 18.0,
+18.0 / 17.9, 17.6 / 17.6). Frame shares match within a few samples in every pair (accessibility
+184 / 187, 184 / 182, 185 / 181; render 1064 / 1060, 1070 / 1062, 1042 / 1031; draw_text 596 /
+599, 594 / 618, 611 / 613; rows 334 / 313, 337 / 336, 321 / 316; timers 621 / 629, 625 / 617, 594
+/ 615; heap 160 / 177, 177 / 154, 161 / 160), and no frame of the band or the grid reaches the
+symbolised reports of a defaults window (the only "band" match is Slint's `GrabAndMove`). In-app
+the candidate read 17.8, 20.0, 19.2 against 18.1, 16.6, 17.7, the second slot of each round the
+higher again (P4-M2 Measurements), `compose 371 strips avg 24.0 to 24.9 us` (reference 23.3 to
+24.3), 0 `panicked`.
+
+**Grid on: 10.2, eight points under the reference and ten under the bar**, the tightest spread
+of any triplet (0.1), and a point under ab18's 11.4 with the session a half point under ab18's
+(the reference read 18.4 there, 18.0 here). The two band overlays and the `if root.grid` block
+cost nothing the trace can see: the grid's shape is ab18's (rows 40 / 38 / 40, draw_text 282 / 280
+/ 290, accessibility 74 / 75 / 66, timers 282 / 291 / 287), `compose_grid` 77 / 79 / 84 samples
+(7.5%, 7.7%, 8.3%), `Texture::new_from_image` 91 / 77 / 85 (of it `ImageStore::alloc` 44 / 43 /
+44), `resolve_view` inclusive 81 / 83 / 89. In-app 10.6, 10.9, 10.6, `compose 1422 strips avg
+71.6 to 73.5 us` (grid rows), 0 `panicked`. Traces `C:/traces/twinfm-ab19-{p4m2,p4m3,p4m3-grid}-{1,2,3}.etl`,
+reports under `C:/traces/export/`.
+
+P4-M3 holds both gates: the default row is the reference's, and the grid with the band's overlays
+sits at 10.2 against the bar's 20. Console checks and the merge are Jeremy's; once merged,
+`target-p4m3` (53dbc50) is the reference for whatever follows and `target-p4m2` goes once it has
+served as one.
