@@ -671,8 +671,9 @@ impl PaneModel {
         // Names are matched exactly, except where the record's casing may differ from the listing's:
         // a `Remove` or a `Rename.from` that misses exactly falls back to an ASCII-case-insensitive
         // match through `lower` (ASCII lowercase to the names that ever had it), built on the first
-        // such miss only (about 33 ms over 40k names), and a rename's target is matched the same
-        // way by a scan that allocates nothing (an overwrite under another casing). An `Upsert` is
+        // such miss only (about 33 ms over 40k names). A rename's target is matched exactly, and
+        // through `lower` only if that is built already (an overwrite under another casing; else
+        // the overwritten entry stays until the next listing). An `Upsert` is
         // matched exactly, by contract: a record carries the on-disk casing, so an Upsert whose
         // name differs from an entry's only in case is a new entry (an insert); a case-only rename
         // arrives as a `Rename`.
@@ -682,11 +683,9 @@ impl PaneModel {
             let mut lower: Option<HashMap<String, Vec<SharedString>>> = None;
             let present = |overlay: &HashMap<SharedString, bool>, n: &SharedString| overlay.get(n).copied().unwrap_or_else(|| idx.contains_key(n));
             let exact = |overlay: &HashMap<SharedString, bool>, n: &SharedString| present(overlay, n).then(|| n.clone());
+            // Only through `lower` when an earlier miss built it: never a scan of every name.
             let scan = |overlay: &HashMap<SharedString, bool>, lower: &Option<HashMap<String, Vec<SharedString>>>, n: &SharedString| {
-                if let Some(m) = lower {
-                    return m.get(&n.to_ascii_lowercase())?.iter().find(|k| present(overlay, k)).cloned();
-                }
-                idx.keys().chain(overlay.keys()).find(|k| k.eq_ignore_ascii_case(n) && present(overlay, k)).cloned()
+                lower.as_ref()?.get(&n.to_ascii_lowercase())?.iter().find(|k| present(overlay, k)).cloned()
             };
             let resolve = |overlay: &HashMap<SharedString, bool>, lower: &mut Option<HashMap<String, Vec<SharedString>>>, n: &SharedString| {
                 if present(overlay, n) {
@@ -805,7 +804,9 @@ impl PaneModel {
                     }
                     // What the fresh stat cannot know: a folder's computed size (and, below, the
                     // row's resolved icon).
-                    if entry.is_dir() && prev.is_dir() && !prev.size_text.is_empty() {
+                    // Not across a rename: the size was walked under the old name, and the caller
+                    // drops it.
+                    if !rename && entry.is_dir() && prev.is_dir() && !prev.size_text.is_empty() {
                         entry.size = prev.size;
                         entry.size_text = prev.size_text.clone();
                     }
@@ -2149,6 +2150,13 @@ mod tests {
         // A record's casing on a removal too.
         m.apply_edits(vec![Edit::Remove("Z9".into())], -1).unwrap();
         assert!(!m.has_name("z9"));
+        // A sized folder keeps its size across a replace, not across a rename.
+        m.apply_edits(vec![Edit::Upsert(e("d1", 0, true))], -1).unwrap();
+        m.set_size("d1", Some(2048));
+        m.apply_edits(vec![Edit::Upsert(e("d1", 0, true))], -1).unwrap();
+        assert_eq!(m.snapshot_all().iter().find(|x| x.name == "d1").unwrap().size_text.as_str(), "2.0 KB");
+        m.apply_edits(vec![Edit::Rename { from: "d1".into(), entry: e("d2", 0, true) }], -1).unwrap();
+        assert_eq!(m.snapshot_all().iter().find(|x| x.name == "d2").unwrap().size_text.as_str(), "");
     }
 
     #[test]
@@ -2225,11 +2233,17 @@ mod tests {
         assert_eq!(m.icon_indices(4, 4), [resolved]);
         m.apply_edits(vec![Edit::Upsert(keyed("a5", "ext:.log"))], -1).unwrap();
         assert_eq!(m.icon_indices(4, 4), [PLACEHOLDER_FILE]);
-        // A rename onto a name that exists under another casing overwrites it.
+        // A rename onto a name that exists under another casing overwrites it when an earlier
+        // case-insensitive lookup in the window built the lowercase map (here the Remove of "A8")...
         let total = m.total();
-        let a = m.apply_edits(vec![Edit::Rename { from: "a6".into(), entry: e("A7", 6, false) }], -1).unwrap();
-        assert_eq!((a.removed, a.changed, m.total()), (1, 1, total - 1));
+        let a = m.apply_edits(vec![Edit::Remove("A8".into()), Edit::Rename { from: "a6".into(), entry: e("A7", 6, false) }], -1).unwrap();
+        assert_eq!((a.removed, a.changed, m.total()), (2, 1, total - 2));
         assert_eq!(m.snapshot_all().iter().filter(|x| x.name.eq_ignore_ascii_case("a7")).map(|x| x.name.to_string()).collect::<Vec<_>>(), ["A7"]);
+        // ... and is not looked for otherwise (no scan of every name per rename): the twin stays
+        // until the next listing.
+        let a = m.apply_edits(vec![Edit::Rename { from: "a9".into(), entry: e("A10", 9, false) }], -1).unwrap();
+        assert_eq!((a.removed, a.changed), (0, 1));
+        assert_eq!(m.snapshot_all().iter().filter(|x| x.name.eq_ignore_ascii_case("a10")).count(), 2);
     }
 
     #[test]
