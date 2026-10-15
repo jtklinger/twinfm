@@ -218,8 +218,9 @@ pub(crate) fn list_dir(
 /// One entry of `dir` by name, as `list_dir` would have built it: `FindFirstFileExW` on the exact
 /// path (no wildcard), so a name with wildcard characters is looked up as itself. None when the
 /// file is gone or cannot be read. The name returned is the on-disk casing (`cFileName`). A name
-/// that is empty, `.`, `..`, or holds a separator or a character the find call reads as a wildcard
-/// (`* ? < > "`, none of which a Win32 file name can hold) gives None: it names no entry of `dir`.
+/// that is empty, `.`, `..`, or holds a separator, a colon (a stream or a drive) or a character
+/// the find call reads as a wildcard (`* ? < > "`; no Win32 file name holds any of these) gives
+/// None: it names no entry of `dir`.
 pub fn stat_entry(
     dir: &Path,
     name: &str,
@@ -227,10 +228,12 @@ pub fn stat_entry(
     icon_keys: &mut crate::icons::IconKeys,
     zone: &crate::model::LocalZone,
 ) -> Option<Entry> {
-    if name.is_empty() || name == "." || name == ".." || name.contains(['\\', '/', '*', '?', '<', '>', '"']) {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['\\', '/', ':', '*', '?', '<', '>', '"']) {
         return None;
     }
-    let path = long_wide(dir.join(name).as_os_str().encode_wide().collect());
+    // Always verbatim (`\\?\`): without it a name ending in a dot or a space is normalised to
+    // another name. `dir` must be absolute with backslashes, as a pane's folder is.
+    let path = long_wide(dir.join(name).as_os_str().encode_wide().collect(), true);
     let mut data = WIN32_FIND_DATAW::default();
     // SAFETY: `path` is a NUL-terminated wide string and `data` a WIN32_FIND_DATAW, both alive for
     // the call. Basic info (no 8.3 name), no large fetch: one entry.
@@ -449,13 +452,14 @@ pub fn spawn_search(
 /// `<path>\*` as a NUL-terminated wide string. A long path gets the `\\?\` prefix (`\\?\UNC\`
 /// for a share), as std's read_dir adds it, so folders past MAX_PATH still list.
 fn find_pattern(path: &Path) -> Vec<u16> {
-    long_wide(path.join("*").as_os_str().encode_wide().collect())
+    long_wide(path.join("*").as_os_str().encode_wide().collect(), false)
 }
 
-/// A wide path, NUL-terminated, with the long-path prefix when it needs one (`find_pattern`).
-fn long_wide(star: Vec<u16>) -> Vec<u16> {
+/// A wide path, NUL-terminated, with the long-path prefix when it needs one (`find_pattern`), or
+/// always with `verbatim` (`stat_entry`: no normalisation, so a trailing dot or space is kept).
+fn long_wide(star: Vec<u16>, verbatim: bool) -> Vec<u16> {
     let (bs, q) = (b'\\' as u16, b'?' as u16);
-    let (prefix, rest) = if star.len() < 248 || star.starts_with(&[bs, bs, q, bs]) {
+    let (prefix, rest) = if (!verbatim && star.len() < 248) || star.starts_with(&[bs, bs, q, bs]) {
         ("", &star[..])
     } else if star.starts_with(&[bs, bs]) {
         (r"\\?\UNC", &star[1..]) // \\server\share -> \\?\UNC\server\share
@@ -935,6 +939,9 @@ mod tests {
         std::fs::write(dir.join("Report.TXT"), b"hello").unwrap();
         std::fs::write(dir.join("a[1].txt"), b"xy").unwrap();
         std::fs::write(dir.join("a1.txt"), b"other").unwrap();
+        // A name ending in a dot exists only through a verbatim path.
+        let verbatim = |n: &str| PathBuf::from(format!(r"\\?\{}", dir.join(n).display()));
+        std::fs::write(verbatim("trail."), b"dot").unwrap();
         let (mut types, zone) = (TypeNames::default(), crate::model::LocalZone::current());
         let mut keys = crate::icons::IconKeys::new(dir.clone(), false);
         let mut stat = |name: &str| stat_entry(&dir, name, &mut types, &mut keys, &zone);
@@ -942,7 +949,9 @@ mod tests {
         let bracket = stat("a[1].txt");
         let sub = stat("Sub");
         let missing = stat("nope.txt");
-        let refused: Vec<bool> = ["", ".", "..", "a*.txt", "a?.txt", r"Sub\x"].iter().map(|n| stat(n).is_none()).collect();
+        let trail = stat("trail.");
+        let no_dot = stat("trail");
+        let refused: Vec<bool> = ["", ".", "..", "a*.txt", "a?.txt", r"Sub\x", "Report.TXT:stream", "C:x"].iter().map(|n| stat(n).is_none()).collect();
         // The listing's own entry for the same file, to compare field by field.
         let mut listed = Vec::new();
         let mut keys2 = crate::icons::IconKeys::new(dir.clone(), false);
@@ -951,8 +960,12 @@ mod tests {
             true
         })
         .unwrap();
+        std::fs::remove_file(verbatim("trail.")).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
 
+        let trail = trail.expect("a name ending in a dot is looked up as itself");
+        assert_eq!((trail.name.as_str(), trail.size), ("trail.", 3));
+        assert!(no_dot.is_none(), "and not as the name without its dot");
         let report = report.expect("found with another casing");
         assert_eq!(report.name, "Report.TXT", "the on-disk casing");
         let from_list = listed.iter().find(|e| e.name == "Report.TXT").unwrap();

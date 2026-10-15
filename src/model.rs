@@ -309,6 +309,7 @@ impl PaneModel {
         self.filtered.set(0);
         self.incoming.borrow_mut().clear();
         self.refreshing.set(false);
+        self.landed_pass.set(0);
         *self.sel.borrow_mut() = Selection::default();
         self.sel_version.set(self.sel_version.get() + 1);
         self.cut.borrow_mut().clear();
@@ -620,10 +621,12 @@ impl PaneModel {
         self.landed_pass.set(pass);
     }
 
-    /// No refresh in flight and the newest requested pass has landed: `shown` is `all` filtered and
-    /// sorted by the current settings, so `apply_edits` may edit it.
+    /// No refresh in flight, a pass has landed since the listing began (passes count from 1;
+    /// `clear` resets `landed_pass` to 0, so a first enumeration's unsorted batches are not settled)
+    /// and it is the newest requested one: `shown` is `all` filtered and sorted by the current
+    /// settings, so `apply_edits` may edit it.
     pub fn settled(&self) -> bool {
-        !self.refreshing.get() && self.landed_pass.get() == self.pass.get()
+        !self.refreshing.get() && self.landed_pass.get() != 0 && self.landed_pass.get() == self.pass.get()
     }
 
     /// Whether the listing has an entry of this name: exactly, or else ASCII-case-insensitively.
@@ -637,7 +640,12 @@ impl PaneModel {
     /// row before (or -1); the returned one is where that row is now (-1 when its row was removed
     /// and nothing follows it; the row after it when it was removed: as a delete's fallback cursor).
     /// All-or-nothing: Err(why) and no change when a `Remove` or `Rename.from` names an entry the
-    /// listing does not have (the caller refreshes the folder instead), or a refresh is in flight.
+    /// listing does not have (the caller refreshes the folder instead), or the model is not
+    /// `settled` (a refresh or a pass in flight, or no pass landed yet). A pass in flight would
+    /// carry the listing from before the edits and undo them when it lands (`land_pass` drops a
+    /// stale pass only when `total()` changed). The edits leave `pass` and `landed_pass` as they
+    /// are, so the model stays settled. The caller must not request a pass between its `settled`
+    /// check and this call (both run on the UI thread in one handler).
     ///
     /// Notifications, sent after every edit is applied, in order: `row_added(i, 1)`,
     /// `row_removed(i, 1)` or `row_changed(i)` per step on the details list (an entry that moves is
@@ -646,6 +654,12 @@ impl PaneModel {
     pub fn apply_edits(&self, edits: Vec<Edit>, cursor: i32) -> Result<Applied, String> {
         if self.refreshing.get() {
             return Err("a refresh is in flight".into());
+        }
+        if self.landed_pass.get() != self.pass.get() {
+            return Err("a pass is in flight".into());
+        }
+        if self.landed_pass.get() == 0 {
+            return Err("no pass has landed since the listing began".into());
         }
         let mut all = self.all.borrow_mut();
         // Exact names to indices into `all`, kept up to date through the call.
@@ -725,6 +739,8 @@ impl PaneModel {
         let (mut hidden, mut filtered) = (self.hidden.get(), self.filtered.get());
         let mut notes: Vec<Note> = Vec::new();
         let mut gone_names: HashSet<SharedString> = HashSet::new();
+        // Entries replaced under another casing (an Upsert matched case-insensitively): (old, new).
+        let mut recased: Vec<(SharedString, SharedString)> = Vec::new();
         let mut out = Applied { added: 0, removed: 0, changed: 0, cursor: -1 };
         let cut_names: HashSet<SharedString> = self.cut.borrow().iter().cloned().collect();
 
@@ -759,7 +775,8 @@ impl PaneModel {
                         idx.insert(all[ai].name.clone(), ai);
                     }
                     gone_names.insert(old.name.clone());
-                    match pos_of(&shown, &old) {
+                    let pos = if visible(&old, show_hidden, &filter) { pos_of(&shown, &old) } else { None };
+                    match pos {
                         Some(p) => {
                             row_remove(&mut shown, &mut sel, &mut cur, &mut notes, p);
                         }
@@ -770,14 +787,13 @@ impl PaneModel {
                     out.changed += 1;
                     let ai = idx.remove(&old).expect("resolved in phase 1");
                     let prev = all[ai].clone();
-                    if rename || prev.name != entry.name {
+                    if rename {
                         gone_names.insert(prev.name.clone());
+                    } else if prev.name != entry.name {
+                        recased.push((prev.name.clone(), entry.name.clone()));
                     }
-                    // What the fresh stat cannot know: the resolved icon (same key), a folder's
-                    // computed size.
-                    if entry.icon_key == prev.icon_key {
-                        entry.icon = prev.icon;
-                    }
+                    // What the fresh stat cannot know: a folder's computed size (and, below, the
+                    // row's resolved icon).
                     if entry.is_dir() && prev.is_dir() && !prev.size_text.is_empty() {
                         entry.size = prev.size;
                         entry.size_text = prev.size_text.clone();
@@ -787,9 +803,14 @@ impl PaneModel {
                     idx.insert(entry.name.clone(), ai);
                     all[ai] = entry.clone();
                     let vis = visible(&entry, show_hidden, &filter);
-                    match pos_of(&shown, &prev) {
+                    let pos = if visible(&prev, show_hidden, &filter) { pos_of(&shown, &prev) } else { None };
+                    match pos {
                         Some(p) => {
-                            // The row keeps its selection; its cut mark too unless renamed away.
+                            // The row keeps its icon (same key: `resolve_icons` writes icons into
+                            // `shown` only) and its selection; its cut mark too unless renamed away.
+                            if entry.icon_key == shown[p].icon_key {
+                                entry.icon = shown[p].icon;
+                            }
                             entry.selected = shown[p].selected;
                             entry.cut = if rename { cut_names.contains(&entry.name) } else { shown[p].cut };
                             if !vis {
@@ -817,7 +838,7 @@ impl PaneModel {
                         None => {
                             count_out(&prev, false);
                             if vis {
-                                entry.cut = !rename && cut_names.contains(&entry.name);
+                                entry.cut = !rename && cut_names.contains(&prev.name);
                                 let q = insert_at(&shown, &entry);
                                 row_insert(&mut shown, &mut sel, &mut cur, &mut notes, q, entry);
                             } else {
@@ -831,9 +852,16 @@ impl PaneModel {
         drop(filter);
         self.hidden.set(hidden);
         self.filtered.set(filtered);
-        if !gone_names.is_empty() {
-            // Names that left (removed, renamed away, or replaced under another casing) leave the cut.
-            self.cut.borrow_mut().retain(|n| !gone_names.contains(n));
+        if !gone_names.is_empty() || !recased.is_empty() {
+            // A name replaced under another casing is renamed in the cut (its row keeps the mark);
+            // names that left (removed, renamed away) leave it.
+            let mut cut = self.cut.borrow_mut();
+            for (old, new) in &recased {
+                for n in cut.iter_mut().filter(|n| *n == old) {
+                    *n = new.clone();
+                }
+            }
+            cut.retain(|n| !gone_names.contains(n));
         }
         let sel_changed = (&sel.set, sel.anchor) != (&sel_before.0, sel_before.1);
         if let Some(c) = cur {
@@ -2147,15 +2175,47 @@ mod tests {
     #[test]
     fn landed_pass_and_settled() {
         let m = PaneModel::default();
-        assert!(m.settled(), "nothing requested yet");
+        m.append(vec![e("a", 0, false)]);
+        assert!(!m.settled(), "a first enumeration's batches: no pass has landed");
+        assert!(m.apply_edits(vec![Edit::Upsert(e("b", 0, false))], -1).is_err());
         m.pass.set(3);
         assert!(!m.settled(), "a pass in flight");
+        assert_eq!(m.apply_edits(vec![Edit::Upsert(e("b", 0, false))], -1).unwrap_err(), "a pass is in flight");
         m.set_landed_pass(3);
         assert!(m.settled());
+        m.apply_edits(vec![Edit::Upsert(e("b", 0, false))], -1).unwrap();
+        assert!(m.settled() && m.pass.get() == 3, "the edits keep the model settled");
         m.begin_refresh();
         assert!(!m.settled(), "a refresh in flight");
         m.finish_refresh();
         assert!(m.settled());
+        m.clear(); // navigation: the next listing starts unsettled
+        assert!(!m.settled() && m.landed_pass.get() == 0);
+    }
+
+    #[test]
+    fn apply_edits_recases_the_cut_and_keeps_resolved_icons() {
+        let (m, r, _g) = edited(SortCol::Name, true, "");
+        m.set_cut(vec!["a3".into()]);
+        log(&r);
+        // An Upsert whose casing differs from the listing's: the row and its cut mark stay, under
+        // the new name.
+        m.apply_edits(vec![Edit::Upsert(e("A3", 31, false))], -1).unwrap();
+        assert_eq!(log(&r), ["chg 2"]);
+        assert!(m.row_data(2).unwrap().cut && m.row_data(2).unwrap().name == "A3");
+        assert_eq!(m.capture(-1).cut, [SharedString::from("A3")]);
+        // The icon `resolve_icons` gave the row survives a replace with the same key; a new key
+        // goes back to the placeholder.
+        let keyed = |name: &str, key: &str| Entry { icon_key: key.into(), ..e(name, 5, false) };
+        m.apply_edits(vec![Edit::Upsert(keyed("a5", "ext:.txt"))], -1).unwrap();
+        m.icons.borrow_mut().complete("ext:.txt".into(), 16, crate::icons::Outcome::Pixels(slint::SharedPixelBuffer::new(1, 1)));
+        assert_eq!(m.resolve_icons(0, 99, 16, |_, _| {}), [4]);
+        let resolved = m.icon_indices(4, 4)[0];
+        assert!(resolved >= PLACEHOLDERS);
+        m.apply_edits(vec![Edit::Upsert(keyed("a5", "ext:.txt"))], -1).unwrap();
+        assert_eq!(m.icon_indices(4, 4), [resolved]);
+        m.apply_edits(vec![Edit::Upsert(keyed("a5", "ext:.log"))], -1).unwrap();
+        assert_eq!(m.icon_indices(4, 4), [PLACEHOLDER_FILE]);
     }
 
     #[test]
