@@ -141,8 +141,14 @@
 //!   rmfile <pane> <name>             delete that file from the pane's folder. Both refuse paths
 //!                                    outside the soak folders under TWINFM_SOAK=1, as file
 //!                                    operations do; otherwise use them on %TEMP% scratch folders only
+//!   mvfile <pane> <old> <new>        rename a file in the pane's folder (plain names without
+//!                                    spaces; the same fence as touch and rmfile)
 //!   waitwatch <ms>                   wait until the next refresh started by the directory watch has
-//!                                    listed its folder (at most <ms>), then 300 ms more for the pass
+//!                                    listed its folder, or the next watch window has been applied
+//!                                    as row edits (at most <ms>), then 300 ms more for the pass
+//!   waitedit <ms>                    wait until the next watch window has been applied as row edits
+//!                                    (not a refresh: a script asserts the edit path), at most <ms>,
+//!                                    then 300 ms more
 //!   filter <pane> <text>             put <text> (the rest of the step, may be empty) in the pane's
 //!                                    filter box, opening it without the focus, and call the box's
 //!                                    `edited` callback, as typing does (applied 150 ms later)
@@ -259,7 +265,10 @@ enum Step {
     SettingsSet(String, String),
     /// `touch` (create or update) or `rmfile` (delete) a file in the pane's folder.
     ScriptFile { pane: usize, name: String, remove: bool },
-    WaitWatch(u64),
+    /// `mvfile`: rename a file in the pane's folder.
+    ScriptMove { pane: usize, old: String, new: String },
+    /// `waitwatch` (a watch-driven refresh or an applied window) or `waitedit` (`edits_only`).
+    WaitWatch(u64, bool),
     /// Set the pane's filter box to `text` (opening it, without the focus) and call its `edited`
     /// callback, as typing does.
     Filter { pane: usize, text: String },
@@ -408,7 +417,13 @@ fn parse(script: &str) -> Vec<Step> {
                 "settings" => Step::Key("CtrlComma".into()),
                 "touch" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: false },
                 "rmfile" => Step::ScriptFile { pane: num(1) as usize, name: a.get(2..).unwrap_or(&[]).join(" "), remove: true },
-                "waitwatch" => Step::WaitWatch(num(1).max(1) as u64),
+                "mvfile" => Step::ScriptMove {
+                    pane: num(1) as usize,
+                    old: a.get(2).unwrap_or(&"").to_string(),
+                    new: a.get(3).unwrap_or(&"").to_string(),
+                },
+                "waitwatch" => Step::WaitWatch(num(1).max(1) as u64, false),
+                "waitedit" => Step::WaitWatch(num(1).max(1) as u64, true),
                 // The text is the rest of the step after the pane, trimmed (may be empty).
                 "filter" => Step::Filter {
                     pane: num(1) as usize,
@@ -1115,15 +1130,26 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             }
             schedule(runner, 1);
         }
-        Step::WaitWatch(max_ms) => {
-            let start = crate::watch_refreshes();
+        Step::ScriptMove { pane, old, new } => {
+            if [&old, &new].iter().any(|n| n.is_empty() || n.contains(['\\', '/'])) {
+                eprintln!("[auto] mvfile takes two plain file names, not {old:?} {new:?}");
+            } else {
+                crate::script_rename(pane, &old, &new);
+            }
+            schedule(runner, 1);
+        }
+        Step::WaitWatch(max_ms, edits_only) => {
+            let counts = move || (if edits_only { 0 } else { crate::watch_refreshes() }, crate::watch_edits());
+            let start = counts();
             let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
             let r2 = runner.clone();
             runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
-                let seen = crate::watch_refreshes() > start;
+                let seen = counts() != start;
                 if seen || std::time::Instant::now() >= deadline {
-                    if !seen {
-                        eprintln!("[auto] waitwatch: no watch-driven refresh within {max_ms} ms");
+                    if !seen && edits_only {
+                        eprintln!("[auto] waitedit: no watch window applied within {max_ms} ms");
+                    } else if !seen {
+                        eprintln!("[auto] waitwatch: no watch-driven refresh or applied window within {max_ms} ms");
                     }
                     r2.borrow().sub.stop();
                     schedule(r2.clone(), 300);
