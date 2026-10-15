@@ -303,8 +303,11 @@ gate). Read them before changing the list.
   frames only if the build's `target-<name>\release` is on `_NT_SYMBOL_PATH` (the exe's embedded
   pdb path is not searched once that variable is set); `--exe` adds that directory itself.
 - Harness-launched runs flip between RDP 32 Hz and console 60 Hz presentation without notice,
-  so in-app busy numbers taken minutes apart are not comparable. Record Narrator on/off with
-  every run (it adds about 6 points of busy).
+  so in-app busy numbers taken minutes apart are not comparable. In-app pairs run back to back
+  carry a run-order bias too (2026-10-15, P4-M2): the second slot of a pair read one to three
+  points above the first whichever binary sat in it, so swap the order before reading an in-app
+  "candidate above in every pair" as a cost; the console triplet decides. Record Narrator on/off
+  with every run (it adds about 6 points of busy).
 - Close every TwinFM window before a gate run: a pre-existing one appears in the trace with
   start "MIN" (the analyzer picks the process that started inside the trace, but the extra
   process still shares the machine). Single runs of one unchanged binary ranged 19.6 to 22.8
