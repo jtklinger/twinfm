@@ -1232,8 +1232,8 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let (lo, hi) = (first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS);
     // With thumbnails on, the workers learn which rows this resolve asks for (once per resolve),
     // and the rows on screen are asked for last, so the workers (newest first) render them first.
-    // The grid shows its entries' type icons in P4-M1 (thumbnails in the tiles are P4-M2).
-    let thumbs = st.config.thumbnails && !grid;
+    // The grid asks for its thumbnails at the tiles' icon size (P4-M2), through the same path.
+    let thumbs = st.config.thumbnails;
     let wanted = if thumbs {
         st.resolve_seq[pane] += 1;
         st.icon_views.publish(pane, st.resolve_seq[pane], (lo, hi.min(model.len() - 1)));

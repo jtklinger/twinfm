@@ -12,7 +12,7 @@ grid with thumbnails, three milestones, kicked off 2026-10-14; settings triplets
 gate). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (126 tests; seven touch the real shell and clipboard, and nine of the ten
+- `cargo test --release` (127 tests; seven touch the real shell and clipboard, and nine of the ten
   `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
   tests write to scratch folders, see below)
@@ -202,6 +202,14 @@ gate). Read them before changing the list.
   grid row composes one), not whole strips. Hit testing (`dnd::hit`), the drop highlight, the rename
   editor, the keyboard menu point (`shellmenu::tile_menu_point`) and the driver read the pane's
   view and tile count from the window (`window_layout`: `Layout::grid`).
+  Since P4-M2, thumbnails in the tiles: a grid pane with `thumbnails` on asks for its `thumb:` keys
+  at the grid's icon size (96 px at 100%) through the P3-M5 path, so the `[icons]` line's `thumbs N
+  avg M ms dropped D` counts them; no new driver step or line. A gate run with the grid and
+  thumbnails on takes `TWINFM_CONFIG=C:\traces\grid-thumbs.toml` (read-only: both panes `"icons"`,
+  `thumbnails = true`); its stderr shows `[settings] file ... (read)`, `[view] pane=0 starts as
+  large icons` and `[icons] list geometry: 32 px rows, 32 px icons`. The shell's icon bitmaps can
+  carry straight-colour edge pixels (the 96 px folder icon's top row: (251, 187, 23) at alpha 64),
+  which `bgra_to_rgba` clamps to their alpha; the placeholders are drawn at the requested size.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -223,7 +231,8 @@ gate). Read them before changing the list.
   chosen per pane by `show_type` x `thumbnails`, never per row); since P4-M1 `view_left` and
   `view_right` (`"details"`, the default, or `"icons"`, the large-icon grid: a fifth list component,
   `FileGridList`, chosen under the same per-pane `if`s; Ctrl+Shift+1 / Ctrl+Shift+2 set and save it;
-  not in the settings dialog yet). `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  not in the settings dialog yet; since P4-M2 a grid pane with `thumbnails` on shows thumbnails in
+  its tiles, at the grid's icon size, through the same workers and table). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in

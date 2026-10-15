@@ -389,3 +389,206 @@ of per-row images, sits at 9.6 against the bar's 20. Jeremy's console checks (20
 the triplet): "console checks look good". Merged as #38 (7ca4a5f, 2026-10-15); `targetelease`
 rebuilt from main. `target-p4m1` (cb589c8) is the reference for P4-M2; `target-p3m5` goes once it
 has served as one, and `target-p3m5b` (the grid's trace baseline) has no further use.
+
+## P4-M2: thumbnails in the tiles
+
+The second milestone of the phase (2026-10-15): the grid takes thumbnails through the P3-M5 path at
+the tiles' icon size, the `thumbnails` setting governs the grid as it governs the list, and the two
+things the trace left uninvestigated (the thin green fringe on the shell's 96 px folder icon and
+the 16 px placeholders stretched before the first icon lands) are explained and fixed. Branch
+`feat/p4-m2-thumbnails-tiles`, from d55623b. The change is small: nothing new in Slint, no new
+list component, no new worker path, no new driver step.
+
+### What landed
+
+- **Thumbnails reach the tiles through the P3-M5 path, unchanged** (`resolve_view`). The grid
+  pane no longer forces `thumbs` off: with the setting on, a grid pane asks for its `thumb:` keys
+  at the grid's icon size (`GridGeom::icon_px`: 96 px at 100%, 120 at 125%, 144 at 150%), the
+  workers render them from the system thumbnail cache (`IThumbnailCache::GetThumbnail`,
+  `WTS_EXTRACT`), letterbox them into the square, and the ring of per-row images composes them as
+  it composes icons. The per-size table keeps the grid's 96 px thumbnails beside the list's 32 px
+  ones. The publish of the rows a resolve asks for and the workers' drop of thumbnails for rows
+  scrolled past (`Views::passed`) work in entry indices, so they carry over as they are: in a
+  grid of ten tiles the UI margin (`ICON_MARGIN_ROWS`, 10 entries) is one grid row, and the
+  drop margin (`STRIP_MARGIN_ROWS`, 4 entries) under half of one. The `thumbnails` flip through
+  the dialog takes the existing relist path for a grid pane too (Scripted checks (ii)), and a scale
+  change re-keys the table and the ring by icon size as P4-M1 left it.
+- **The green fringe, explained and fixed** (`bgra_to_rgba`). Probed by rendering the shell's
+  folder icon (`C:\Windows`) at 48, 96, 128 and 256 px through `render` and dumping the pixels:
+  the 96 px bitmap carries an edge row (row 12, the top of the folder's body) of straight, not
+  premultiplied, colour, (251, 187, 23) at alpha 64, which no premultiplied pixel can be; 190 of
+  its 253 semi-transparent pixels are such, and the 48 px (19 of 57) and 256 px (137 of 1,430)
+  renders have them too, so a 256 px fetch fitted down by our box filter shows the same row. The
+  renderer blends the buffer as premultiplied (`dst = src + dst x (1 - a)`), so that row comes out
+  brighter than any pixel of the icon: over a light background about (255, 255, 214), a pale lime
+  line along the top of an orange-yellow folder (the "green fringe"); over the dark theme about
+  (255, 211, 47), a brighter yellow line. The fix is in the conversion, once per key: every
+  channel is clamped to its alpha (a valid premultiplied pixel is unchanged). The fetch stays as
+  it was (`SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK` at the requested size). The clamp applies to the
+  16 and 32 px icons too, where the same pixels were blended the same way.
+- **Placeholders drawn at the requested size** (`placeholder`, `IconTable::fitted`). The three
+  placeholders were 16 x 16 buffers box-filtered up to the icon size, so a 96 px tile showed
+  six-pixel blocks before its icon landed. The painter now takes the size: its rectangles are laid
+  out on a 16-unit grid scaled to the size, with an `inset` in pixels for the one-pixel outline
+  (the file's paper inside its grey edge, the drive's face inside its case), so the outline stays
+  one pixel at 96 px and the 16 px pictures are what they were. `fitted` draws a placeholder index
+  at the size asked for instead of fitting the 16 px buffer; the raw 16 px buffers stay in the
+  table (the drag image's fallback reads them).
+- **Tests**, 126 to 127: `placeholders_are_drawn_at_the_requested_size` (the 16 px pictures,
+  the 96 px outline's corners, the table's `fitted` for a placeholder);
+  `bgra_conversion_keeps_premultiplied_alpha` extended with the clamp (the folder's edge pixel).
+- **Settings file for the gate**: `C:\traces\grid-thumbs.toml` (`view_left = "icons"`,
+  `view_right = "icons"`, `thumbnails = true`), read-only.
+
+### Decisions
+
+- **The clamp lives in the conversion, not in the fetch.** The probe showed the straight-colour
+  edge at every size the shell hands out, so asking for a native size and resampling ourselves
+  would not have cured it; clamping each channel to its alpha makes any buffer a valid
+  premultiplied one at the cost of three `min`s per pixel, once per key per size.
+- **Placeholders are drawn, not resampled**, because a one-pixel outline is a one-pixel outline
+  at any size; the 16-unit grid keeps the 16 px pictures byte for byte.
+- **No new logging.** The once-a-second `[icons]` line's `thumbs N avg M ms dropped D` counts the
+  grid's thumbnails as it counts the list's; `[view]` and `[settings]` lines say which view and
+  setting a run is in.
+
+### Deviations
+
+- None from the brief. The entry named "scale changes" as a thing to cover: nothing needed
+  changing (P4-M1 keys the ring and the table by icon size), so it is a check, not code.
+
+### Deferred
+
+- **Thumbnails for video and Office documents**: still no fixture on this machine; the grid shows
+  what the shell's cache returns (Open questions).
+- **A frame or shadow around a thumbnail** (Explorer draws one): the tile shows the letterboxed
+  image alone, as the 32 px row does.
+- **A thumbnail-sized drag image** out of the grid: P4-M3.
+- **The margins in grid rows**: `ICON_MARGIN_ROWS` and `STRIP_MARGIN_ROWS` are in entries, so
+  the grid's margins are a grid row and under half of one; enough for the ring (one grid row of
+  margin), revisit if a trace shows re-requests on a slow scroll.
+
+### Scripted checks
+
+Harness session (RDP, 1216 x 839 window, scale 1.0, accessibility on), this worktree's
+`target\release\twinfm.exe` from the commit under review, every run with `TWINFM_SCRIPT`, no
+`TWINFM_SOAK`, the fixture `%TEMP%\twinfm-p3m5-thumbs\` (200 JPEGs). All exit code 0, no
+`panicked` line.
+
+- **(i) The grid with thumbnails on** (`TWINFM_CONFIG=C:\traces\grid-thumbs.toml`): `[settings]
+  file C:\traces\grid-thumbs.toml (read)`, `[view] pane=0 starts as large icons`, `[icons] list
+  geometry: 32 px rows, 32 px icons`; the first resolve asks 80 keys (eight grid rows of ten: the
+  viewport plus a grid row's margin) and the workers answer `thumbs 18 avg 60.71 ms`, `45 avg
+  45.31 ms`, `17 avg 46.18 ms` (two of the 200 over 100 ms: `[icons] thumbnail 209 ms: ...
+  photo-016.jpg`, `228 ms: ... photo-017.jpg`, the system cache cold for this copy), the ten-tick
+  wheel asks 100 more (`dropped 6`: rows the scroll passed), `view details` re-aims `scroll -1200
+  -> -3200 (entry 100 first)` with no request (the 32 px list's thumbnails are its own keys, held
+  from P3-M5's runs), `view icons` back asks 20 and drops 14. The table ends at 183 images.
+- **(ii) The flip through the dialog while the grid shows** (`TWINFM_CONFIG=C:\traces\grid.toml`):
+  `[settings] dialog: thumbnails false -> true`, `[icons] list geometry: 32 px rows, 32 px icons`,
+  the pane lists again (`[enum] pane=0 done: 200 entries`), `+80 requests +80 replies ... thumbs
+  80 avg 9.14 ms` (the cache warm from (i)); then `thumbnails true -> false`, `22 px rows, 16 px
+  icons`, the pane lists again and asks nothing (its entries' type icon is held).
+- **(iii) The defaults** on the fixture: one request (`ext:.jpg`), three strips at 24 us, nothing
+  of the grid or of thumbnails.
+
+### Measurements
+
+In-app, RELATIVE only: harness session (RDP), 1216 x 839 window, scale 1.0, accessibility on,
+the gate scenario on `C:\traces\bigdir`, `[busy]` over the 10 s after the split, each candidate
+run interleaved with `target-p4m1` (cb589c8, the reference) by the same runner, reference first,
+three rounds per settings file.
+
+| Pair | reference, defaults | P4-M2, defaults | reference, `grid.toml` | P4-M2, `grid.toml` | reference, `grid-thumbs.toml` | P4-M2, `grid-thumbs.toml` |
+|---|---|---|---|---|---|---|
+| 1 | 17.2 | 18.3 | 12.8 | 11.6 | 9.5 | 9.5 |
+| 2 | 18.6 | 18.9 | 11.4 | 12.2 | 10.6 | 9.7 |
+| 3 | 17.2 | 18.0 | 10.8 | 9.5 | 9.5 | 8.4 |
+| **median** | **17.2** | **18.3** | **11.4** | **11.6** | **9.5** | **9.5** |
+| composes | 371 strips at 22.4 to 24.4 us | 371 at 22.6 to 24.0 us | 1,422 rows at 71.6 to 77.8 us | 1,422 at 73.4 to 79.7 us | 1,422 at 70.5 to 74.4 us | 1,422 at 71.0 to 71.9 us |
+
+The grid pairs and the grid-thumbs pairs sit at or below the reference (the grid-thumbs
+reference is `target-p4m1` with the same file: its grid panes show type icons, its lists 32 px
+rows). The defaults pairs read the candidate above the reference in all three, by 0.3 to 1.1,
+which no code on the defaults path explains (the clamp runs once per key on the worker, the
+placeholder branch once per index and size, the `thumbs` flag is a bool), so the same three
+rounds were run again with the order swapped, the candidate first:
+
+| Pair | P4-M2, defaults, FIRST | reference, defaults, second |
+|---|---|---|
+| 1 | 17.5 | 20.5 |
+| 2 | 18.6 | 20.5 |
+| 3 | 15.9 | 18.6 |
+| **median** | **17.5** | **20.5** |
+
+The second slot of a pair read one to three points above the first in this session whichever
+binary sat in it: the in-app pairs carry an order bias here, and the defaults difference is that
+bias, not the change. The console triplet (interleaved, by median, reference first in every
+round) decides, as always.
+
+### Gate
+
+`tools/wpr-triplet.ps1 -Reference p4m1 -Candidate p4m2,p4m2@C:\traces\grid.toml,p4m2@C:\traces\grid-thumbs.toml
+-Tag ab18`, run from this checkout's `tools\`, Jeremy elevated at the console, accessibility on,
+Narrator off, no other TwinFM window, console checks after. `target-p4m1` (cb589c8) against
+`target-p4m2` (the PR head, built with `--locked` from a detached checkout). Each settings run's
+stderr must show `[settings] file C:\traces\<toml> (read)` and `[view] pane=0 starts as large
+icons` (and, for `grid-thumbs.toml`, `[icons] list geometry: 32 px rows, 32 px icons`) before its
+triplet is read. The defaults triplet decides whether the details list moved (its rows are
+untouched; the conversion's clamp runs once per key on the worker); the grid triplet whether the
+grid holds the bar with the P4-M2 conversion; the grid-thumbs triplet whether the thumbnail
+resolve order and the publish hold it (the gate folder's files have no thumbnail extension, so no
+thumbnail is rendered there, as in P3-M5's thumbnails triplet).
+
+Console checks after the triplet: the fixture folder in the grid with thumbnails on (the
+thumbnails in the tiles, the placeholders before they land, a cold copy of the fixture), a folder
+of folders at 100% and 150% (the top edge of the folder icon, no lime line), a folder with video
+or Office files if one is at hand.
+
+**All three triplets passed (2026-10-15, Jeremy at the console).** Twelve runs from 08:53 to
+09:05 in three rounds, each round reference, defaults, grid, grid-thumbs; `target-p4m1` (cb589c8)
+against `target-p4m2` (44d3a84, the PR head). Every settings run's stderr carries `[settings] file
+C:\traces\<toml> (read)` and `[view] pane=0 starts as large icons`, the grid-thumbs runs `[icons]
+list geometry: 32 px rows, 32 px icons` too. Analysed with `tools/analyze-trace.py --symbols
+--exe`.
+
+| Run | P4-M1 (`target-p4m1`) | P4-M2 defaults | P4-M2 `grid.toml` | P4-M2 `grid-thumbs.toml` |
+|---|---|---|---|---|
+| 1 | 18.4% (1836 ms) | 18.6% (1855 ms) | 11.4% (1138 ms) | 11.0% (1102 ms) |
+| 2 | 18.4% (1839 ms) | 18.7% (1873 ms) | 11.3% (1128 ms) | 11.2% (1123 ms) |
+| 3 | 21.6% (2160 ms) | 22.3% (2230 ms) | 12.1% (1212 ms) | 12.3% (1234 ms) |
+| **median** | **18.4%** | **18.7%** | **11.4%** | **11.2%** |
+
+**Defaults: the details list has not moved.** The medians differ by 0.3, and the reference's run 3
+(21.6) sits above the candidate's runs 1 and 2 (18.6, 18.7), so neither half of the rule calls a
+gap. Round 3 was disturbed for every binary (the reference up 3.2 on its own earlier runs, the
+candidates up 3.6, 0.8 and 1.1), so the pairs are read within their round: +0.2, +0.3, +0.7. Frame
+shares match within a few samples in every pair (accessibility 213 / 223, 214 / 205, 208 / 215;
+render 1052 / 1093, 1057 / 1092, 1370 / 1359; draw_text 628 / 645, 614 / 644, 831 / 799; rows 355
+/ 320, 361 / 369, 374 / 395; timers 685 / 645, 666 / 687, 686 / 757; heap 212 / 194, 193 / 175,
+233 / 212), and no `twinfm` frame of the change reaches the table in a defaults window: the
+conversion's clamp runs on the worker once per key (one key in this scenario) and the placeholder
+branch once per index and size. In-app the candidate read 20.3, 20.8, 23.0 against 17.5, 19.8,
+19.5, the second slot of each round again the higher (Measurements), `compose 371 strips avg 23.9
+to 27.9 us` (reference 23.3 to 24.8), 0 `panicked`.
+
+**Grid on: seven points under the reference and eight and a half under the bar**, the session
+sitting about a point and a half above ab17's (the reference read 16.9 there, 18.4 here; the grid
+9.6 there, 11.4 here). The grid's shape is ab17's: rows 45 / 57 / 49, draw_text 293 / 294 / 390,
+accessibility 89 / 92 / 67, timers 328 / 360 / 320; `compose_grid` 87 / 95 / 85 samples (7.6%,
+8.4%, 7.0%), `resolve_view` inclusive 94 / 102 / 91. In-app 13.0, 10.3, 13.4, `compose 1422
+strips avg 79.3 to 83.9 us` (grid rows), 0 `panicked`.
+
+**Grid with thumbnails on: 11.2, the same window as the grid's** (11.0, 11.2, 12.3 against 11.4,
+11.3, 12.1: three pairs within 0.4, two of them below). The scenario's files have no thumbnail
+extension, so what this triplet measures is the thumbnail resolve order (the margin rows first,
+the rows on screen last) and the publish of the rows asked for, once per resolve, in the grid:
+rows 42 / 56 / 52, draw_text 275 / 308 / 362, accessibility 102 / 91 / 79, timers 338 / 321 / 338,
+`compose_grid` 93 / 77 / 88 (8.4%, 6.9%, 7.1%), `resolve_view` 96 / 81 / 100. In-app 10.9, 12.3,
+12.8, `compose 1422 strips avg 78.8 to 84.0 us`, 0 `panicked`. Traces
+`C:/traces/twinfm-ab18-{p4m1,p4m2,p4m2-grid,p4m2-grid-thumbs}-{1,2,3}.etl`, reports under
+`C:/traces/export/`.
+
+P4-M2 holds all three gates: the default row is the reference's, the grid sits at 11.4 and the
+grid with thumbnails at 11.2 against the bar's 20. Jeremy's console checks (2026-10-15, after the
+triplet): "console checks nominal".
