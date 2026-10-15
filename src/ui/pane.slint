@@ -793,6 +793,26 @@ export component Pane inherits Rectangle {
     out property <int> tiles-per-row: list.cols;
     callback grid-cols(int);
     callback grid-cursor(int);
+    // The rubber band (P4-M3, grid only): band-pointer(kind, window x, window y, ctrl, shift) for
+    // the left button on empty grid space (kind 0 down, 1 move, 2 up, 3 cancel); main.rs runs the
+    // gesture (band.rs) and draws it through band-here and the rectangle (content coordinates).
+    callback band-pointer(int, length, length, bool, bool);
+    in property <bool> band-here: false;
+    in property <length> band-x;
+    in property <length> band-y;
+    in property <length> band-w;
+    in property <length> band-h;
+    function band-ev(ev: PointerEvent, ax: length, ay: length, mx: length, my: length) {
+        if (!root.grid) { return; }
+        if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+            list.focus-list();
+            root.focus-requested();
+            root.band-pointer(0, ax + mx, ay + my, ev.modifiers.control, ev.modifiers.shift);
+        }
+        if (ev.kind == PointerEventKind.move) { root.band-pointer(1, ax + mx, ay + my, false, false); }
+        if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.up) { root.band-pointer(2, ax + mx, ay + my, false, false); }
+        if (ev.kind == PointerEventKind.cancel) { root.band-pointer(3, ax + mx, ay + my, false, false); }
+    }
 
     callback navigate(string);
     callback open-row(int);
@@ -1284,6 +1304,7 @@ export component Pane inherits Rectangle {
         width: list.visible-width;
         height: max(0px, list.visible-height - root.rows-end);
         pointer-event(ev) => {
+            root.band-ev(ev, self.absolute-position.x, self.absolute-position.y, self.mouse-x, self.mouse-y);
             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
                 list.focus-list();
                 root.focus-requested();
@@ -1299,6 +1320,44 @@ export component Pane inherits Rectangle {
             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
                 root.context-menu(-1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, ev.modifiers.shift);
             }
+        }
+    }
+
+    // The grid's other empty space (P4-M3), where the band starts too: the gap right of the last
+    // column (12 px short of the list's edge: Fluent's scrollbar overlays the content there) and the
+    // gap after the last tile of a partial last grid row (under the list's clip, so a scrolled-away
+    // row takes no input over the header). The ListView's scroll surface took left presses there.
+    // Two overlays per pane, created only while the grid shows; the band's rectangle under the
+    // same clip, drawn only while the band is on.
+    if root.grid: Rectangle {
+        x: list.x;
+        y: list.y;
+        width: list.visible-width;
+        height: list.visible-height;
+        clip: true;
+        TouchArea {
+            x: list.cols * 96px;
+            y: 0;
+            width: max(0px, parent.width - 12px - self.x);
+            height: parent.height;
+            pointer-event(ev) => { root.band-ev(ev, self.absolute-position.x, self.absolute-position.y, self.mouse-x, self.mouse-y); }
+        }
+        TouchArea {
+            x: mod(root.rows.length, list.cols) * 96px;
+            y: list.content-y + (root.grid-rows.length - 1) * 120px;
+            width: mod(root.rows.length, list.cols) == 0 ? 0px : (list.cols - mod(root.rows.length, list.cols)) * 96px;
+            height: 120px;
+            pointer-event(ev) => { root.band-ev(ev, self.absolute-position.x, self.absolute-position.y, self.mouse-x, self.mouse-y); }
+        }
+        Rectangle {
+            visible: root.band-here;
+            x: root.band-x;
+            y: list.content-y + root.band-y;
+            width: root.band-w;
+            height: root.band-h;
+            background: Palette.accent-background.transparentize(75%);
+            border-width: 1px;
+            border-color: Palette.accent-background;
         }
     }
 

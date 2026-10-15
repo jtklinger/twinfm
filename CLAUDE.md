@@ -12,7 +12,7 @@ grid with thumbnails, three milestones, kicked off 2026-10-14; settings triplets
 gate). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (127 tests; seven touch the real shell and clipboard, and nine of the ten
+- `cargo test --release` (134 tests; seven touch the real shell and clipboard, and nine of the ten
   `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
   tests write to scratch folders, see below)
@@ -72,8 +72,9 @@ gate). Read them before changing the list.
   loop runs no Win32 timer. A scripted drag can only be cancelled, never dropped (a scripted drop
   in an RDP session once landed on another program's window; see the M5 record). Since P2-M4 our
   own drag runs from a posted `WM_RUN_DRAG` (outside winit's handler, so the highlight paints),
-  and `dragrow` waits for it. `[dnd]` lines on stderr, P2-M4's among them: `drag image 96x96 px, N
-  item(s), icon from ...: InitializeFromBitmap = 0x...`, `DoDragDrop starts (left|right button)`,
+  and `dragrow` waits for it. `[dnd]` lines on stderr, P2-M4's among them: `drag image 96x96 px,
+  64 px icon, N item(s), icon from ...: InitializeFromBitmap = 0x...` (since P4-M3 with the icon
+  size; `128x128 px, 96 px icon` out of the grid), `DoDragDrop starts (left|right button)`,
   `highlight painted inside our own drag loop`, `N frame(s) rendered inside the drag loop`,
   `right-button drag over: pointer grab ended without a release`, `drop menu starts`, `drop menu
   loop idle: app state free=`, `drop menu: default X, chose Y -> effect Z`, `auto-scroll pane N
@@ -210,6 +211,25 @@ gate). Read them before changing the list.
   large icons` and `[icons] list geometry: 32 px rows, 32 px icons`. The shell's icon bitmaps can
   carry straight-colour edge pixels (the 96 px folder icon's top row: (251, 187, 23) at alpha 64),
   which `bgra_to_rgba` clamps to their alpha; the placeholders are drawn at the requested size.
+  Since P4-M3, the grid's rubber band and drag image: `band <pane> <x0> <y0> <x1> <y1> [ctrl|shift]
+  [hold <ms>]` presses the left button at (x0, y0) of the pane's list (px from its top-left corner;
+  aim at empty grid space: the gap right of the last column, 12 px short of the list's edge, the
+  gap after the last tile of a partial last grid row, or below the rows), moves to (x1, y1) in 8 px
+  steps and releases, through Slint's pointer path; `hold` keeps the button down for `<ms>` and runs
+  the next steps meanwhile (`key Escape` cancels the band; the edge auto-scroll runs; no `waitops`
+  or `waitwatch` inside a hold). The band (`src/band.rs`) starts past the drag threshold, selects
+  every tile it touches (a plain drag replaces the selection, Ctrl toggles the touched tiles against
+  the selection at the press, Shift adds them), scrolls the list a grid row every 50 ms while the
+  pointer is within 24 px of the list's top or bottom edge or beyond it, and ends on the release; a
+  press released under the threshold clears the selection (Explorer) unless Ctrl or Shift is held.
+  `[band]` lines: `pane=N start at (x, y), Replace|Toggle|Add` (content coordinates), `pane=N K
+  selected, rect (x, y) W x H` (at most four a second), `auto-scroll pane N up|down: content-y A ->
+  B`, `pane=N done: K selected`, `pane=N cancelled (Escape|the pointer grab ended): K selected`. A
+  drag out of a grid pane carries a 128 px drag image (at 100%) with the pressed tile's 96 px
+  picture, the thumbnail or the type icon the tile shows (`icon from the tile`; a placeholder tile
+  asks the shell); the `[dnd] drag image` line reads `WxW px, I px icon, N item(s), icon from
+  ...` (the details list's stays 96 px with a 64 px icon from the shell). Shift and Ctrl across
+  tiles, drops onto a tile and onto empty space and the drag auto-scroll by grid rows are P4-M1's.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -249,6 +269,12 @@ gate). Read them before changing the list.
   (`menu copy`, `menu cancel`), and a right-button `dragrow` cancelled with `dragcancel`; it
   reports drops by kind, drop menus, right-button drags (cancelled, and dropped, which must be 0)
   and drag images besides the M5 counts.
+  `tools/soak-p4m3.ps1 -Minutes N` is the P2-M4 soak plus, per cycle, a grid cycle: both panes
+  switched to the large-icon grid, a `dropfiles` onto a tile and onto the grid's empty space, a
+  context menu on a tile, a left and a right-button `dragrow` out of a tile (both cancelled), a
+  `band` from the gap after the last tile that selects the right pane's two files, and Shift+Delete
+  on that selection after the switch back to details; it reports grid switches, tile drops, 128 px
+  drag images and bands (started, done with 2 selected, cancelled) besides the P2-M4 counts.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per

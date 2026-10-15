@@ -106,6 +106,14 @@
 //!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
 //!   tabdrag <pane> <index> <dx>      press the left button on tab <index> (0-based), move <dx> px
 //!                                    in 8 px steps, release: a tab drag through Slint's pointer path
+//!   band <pane> <x0> <y0> <x1> <y1> [ctrl|shift] [hold <ms>]
+//!                                    press the left button at (x0, y0) of the pane's list (px from
+//!                                    its top-left corner; aim at empty grid space), move to (x1, y1)
+//!                                    in 8 px steps, release: a rubber band through Slint's pointer
+//!                                    path (P4-M3), with Ctrl or Shift held through it; `hold`
+//!                                    keeps the button down at (x1, y1) for <ms> before the release
+//!                                    and runs the next steps meanwhile (the edge auto-scroll runs,
+//!                                    a `key Escape` cancels the band; no waitops/waitwatch inside)
 //!   crumb <pane> <index>             breadcrumb button <index> (0 is This PC), through its callback
 //!   crumbmenu <pane> <index>         the chevron after crumb <index>: its subfolders in a dropdown
 //!                                    (listed on a worker; sleep before crumbpick)
@@ -237,6 +245,7 @@ enum Step {
     CrumbClose,
     /// Press the left button on tab `index`'s centre, move `dx` px in 8 px steps, release.
     TabDrag { pane: usize, index: usize, dx: f32 },
+    Band { pane: usize, from: (f32, f32), to: (f32, f32), modifier: Option<Key>, hold_ms: u64 },
     PathMode { pane: usize, entry: bool },
     SideClick(i32),
     BookmarkRemove(i32),
@@ -367,6 +376,17 @@ fn parse(script: &str) -> Vec<Step> {
                     n => format!("Ctrl{n}"),
                 }),
                 "tabdrag" => Step::TabDrag { pane: num(1) as usize, index: num(2) as usize, dx: num(3) as f32 },
+                "band" => Step::Band {
+                    pane: num(1) as usize,
+                    from: (num(2) as f32, num(3) as f32),
+                    to: (num(4) as f32, num(5) as f32),
+                    modifier: match a.get(6).map(|m| &**m) {
+                        Some("ctrl") => Some(Key::Control),
+                        Some("shift") => Some(Key::Shift),
+                        _ => None,
+                    },
+                    hold_ms: a.iter().position(|w| &**w == "hold").and_then(|i| a.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0),
+                },
                 "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
                 "crumbmenu" => Step::CrumbMenu { pane: num(1) as usize, index: num(2) as i32 },
                 "crumbpick" => Step::CrumbPick(a[1..].join(" ")),
@@ -1005,6 +1025,55 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             win.dispatch_event_with_result(WindowEvent::PointerReleased { position: at(x0 + dx), button: PointerEventButton::Left }).ok();
             eprintln!("[auto] tabdrag pane={pane} tab {index} from x {x0:.0} by {dx:.0} (tab width {w:.0})");
             schedule(runner, 1);
+        }
+        Step::Band { pane, from, to, modifier, hold_ms } => {
+            let layout = crate::window_layout(&app);
+            let (left, right) = crate::dnd::pane_x(&layout, pane);
+            let origin = (left + crate::dnd::PANE_PAD, crate::dnd::list_top(&layout, pane));
+            let width = right - left - 2.0 * crate::dnd::PANE_PAD;
+            let at = |p: (f32, f32)| LogicalPosition::new(origin.0 + p.0, origin.1 + p.1);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at(from) }).ok();
+            if let Some(m) = modifier {
+                win.dispatch_event_with_result(WindowEvent::KeyPressed { text: m.into() }).ok();
+            }
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: at(from), button: PointerEventButton::Left }).ok();
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let steps = (dx.abs().max(dy.abs()) / 8.0).ceil().max(1.0) as i32;
+            for k in 1..=steps {
+                let f = k as f32 / steps as f32;
+                win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at((from.0 + dx * f, from.1 + dy * f)) }).ok();
+            }
+            eprintln!(
+                "[auto] band pane={pane} from ({}, {}) to ({}, {}){} (list {width:.0} px wide, {} tiles to a row){}",
+                from.0,
+                from.1,
+                to.0,
+                to.1,
+                modifier.map_or("", |m| if m == Key::Control { " with Ctrl" } else { " with Shift" }),
+                layout.grid[pane].map_or(0, |c| c),
+                if hold_ms > 0 { format!(", held {hold_ms} ms") } else { String::new() }
+            );
+            let release = at(to);
+            let w = app.as_weak();
+            let r2 = runner.clone();
+            let end = move || {
+                let Some(app) = w.upgrade() else { return };
+                let win = app.window();
+                win.dispatch_event_with_result(WindowEvent::PointerReleased { position: release, button: PointerEventButton::Left }).ok();
+                if let Some(m) = modifier {
+                    win.dispatch_event_with_result(WindowEvent::KeyReleased { text: m.into() }).ok();
+                }
+                if hold_ms == 0 {
+                    schedule(r2.clone(), 300);
+                }
+            };
+            if hold_ms > 0 {
+                runner.borrow().sub.start(TimerMode::SingleShot, Duration::from_millis(hold_ms), end);
+                schedule(runner, 1);
+            } else {
+                end();
+            }
         }
         Step::PathMode { pane, entry } => {
             app.invoke_set_path_mode(pane as i32, entry);

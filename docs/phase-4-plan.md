@@ -634,3 +634,198 @@ column, a scrolled list, the Ctrl and Shift modes) and the two drag image geomet
 
 Gate: `tools/wpr-triplet.ps1 -Reference p4m2 -Candidate p4m3,p4m3@C:\traces\grid.toml -Tag ab19`,
 `target-p4m2` (44d3a84) the reference, as the plan above says.
+
+### What landed
+
+- **The rubber band** (`band.rs`, new; `pane.slint`, `app.slint`, `main.rs`). The maths are
+  free of Slint and the window: `touched(a, b, cols, len)` gives the entries whose tile the
+  rectangle between two content-coordinate corners overlaps (a tile's left and top edges belong to
+  it, so a band of zero width or height touches nothing; the space right of the last column and
+  past the last entry is empty), `selection(mode, before, touched)` combines them with the
+  selection at the press (`Replace`, `Toggle` for Ctrl, `Add` for Shift; Ctrl wins over Shift as
+  a click's does), `edge(top, bottom, y)` is the band's auto-scroll rule, and `Band` carries one
+  gesture (anchor, pointer, mode, the selection at the press, and whether the pointer has left
+  the drag threshold). `PaneModel::set_selection` applies a whole set at once through the
+  existing per-row notification (`Selection::replace`: the rows whose membership changed, the
+  anchor untouched), so the tiles redraw as a click's do.
+- **Where a band starts.** Three pointer areas on the pane, none of them in a row or a tile: the
+  existing right-click area below the rows (a left press there is now the band's in the grid),
+  and, created only while the grid shows, the gap right of the last column (12 px short of the
+  list's edge, where Fluent's scrollbar overlays the content) and the gap after the last tile of a
+  partial last grid row, both under the list's clip so a scrolled-away row takes no input over the
+  header. Until now a left press in those gaps went to the ListView's scroll surface, which
+  dragged the list. The three call one host function, `band-ev`, which forwards press, move,
+  release and cancel to Rust as `band-pointer(pane, kind, window x, window y, ctrl, shift)`; the
+  press also focuses the list and makes the pane active, as a right-click there does.
+- **The gesture in Rust** (`band_pointer`, `band_moved`, `band_apply`, `band_cancel`). The press
+  records the anchor in the list's content coordinates (`band_point`: the window point less the
+  list's left edge and top, less `content-y`), the mode and the selection. Moves under the drag
+  threshold (`drag-dx` / `drag-dy`, `SM_CXDRAG`) change nothing; past it the band is on
+  (`band-pane`, and the rectangle `band-x/y/w/h` in content coordinates, so the overlay scrolls
+  with the list for free), and every move selects what the band touches when that differs from
+  the selection (one batched change; `size_selection` and the status bar follow). The release ends
+  it; a press released under the threshold with no modifier clears the selection (Explorer's click
+  on empty space; before, nothing happened); Escape (the list's `cancelqueued` command, taken first)
+  and a pointer-grab cancel restore the selection from the press. Nothing holds a state borrow
+  across anything: the band's timer and the pointer callbacks each take `with_state` briefly.
+- **Auto-scroll.** While the pointer is within `EDGE_PX` (24 px) of the list's top or bottom edge
+  or beyond it (the pointer is grabbed, so past the edge counts as at it; a hovering drag must be
+  over the list, `dnd::edge_scroll`), a repeating `slint::Timer` at `SCROLL_EVERY` (50 ms) scrolls
+  the list one grid row through the drop target's own arithmetic (`edge_line` / `scroll_line`,
+  factored out of `drop_autoscroll`, which now uses them too) and applies the band again at the
+  pointer's unchanged window point, so its far edge follows the content. The timer stops when the
+  pointer leaves the edge or the button comes up.
+- **The drawing.** One rectangle under the list's clip, created with the grid, drawn only while
+  `band-here`: the accent colour at 25%, a 1 px accent border.
+- **A tile-sized drag image** (`dnd.rs`, `main.rs`). `ImageGeom::tile(scale)` is a 128 px square
+  (at 100%) with a 96 px picture at a 16 px inset, the count badge where it was; `ImageGeom::new`
+  (96 px, 64 px icon, 8 px inset) is unchanged and both come from one `sized`. `DragImage` gains
+  `tile` (the drag starts in a grid pane) and `tile_picture` (the pressed entry's table index is
+  not a placeholder): out of the grid with a real picture, the pane's cached 96 px buffer is drawn
+  (`icon from the tile`: the thumbnail or the type icon the tile shows), without one the shell is
+  asked at 96 px as before. The `[dnd] drag image` line carries the icon size.
+- **Driver**: `band <pane> <x0> <y0> <x1> <y1> [ctrl|shift] [hold <ms>]` (press, 8 px moves,
+  release through Slint's pointer path, as `tabdrag`; with `hold` the release comes from a timer
+  and the next steps run inside the hold, so `key Escape` can cancel a band and the edge
+  auto-scroll can run). `[band]` lines as `CLAUDE.md` § Measuring lists them.
+- **Soak**: `tools/soak-p4m3.ps1`, the P2-M4 soak plus the grid cycle (both panes to the grid, a
+  drop onto a tile and onto empty space, a tile's context menu, a left and a right-button drag out
+  of a tile cancelled, a band from the gap after the last tile that selects the right pane's two
+  files, Shift+Delete after the switch back), with its counts.
+- **Tests**, 127 to 134: `band_touches_the_tiles_it_overlaps`, `band_selection_replaces_toggles_or_adds`,
+  `band_scrolls_at_and_beyond_the_list_edges`, `band_rect_is_normalised`,
+  `band_gesture_waits_for_the_threshold_and_restores_on_cancel`,
+  `selection_replace_reports_the_rows_that_changed`, `tile_drag_image_holds_the_tile_picture`.
+
+### Decisions
+
+- **Overlays, not a per-row pointer area.** The brief allowed one small pointer area per visible
+  grid row for the gap right of the last column. The gap is the same x for every grid row, so one
+  overlay the height of the viewport covers it, and the partial last row's gap is a second
+  rectangle placed by `content-y`; neither touches the grid row component, nothing is created per
+  row, and a band is never tied to a ListView delegate that scrolling could recycle under the
+  pointer grab. The generated code of the four details lists is the reference's (Scripted checks).
+- **A press on a tile is the tile's**, as agreed: the band starts from empty space only.
+- **Beyond the edge scrolls.** A hovering drag (OLE) only reports positions over the window, so
+  `dnd::edge_scroll` wants the pointer over the list; the band's pointer is grabbed by Slint, so a
+  pointer dragged below the list (over the status bar) or above it (over the header) keeps the
+  list scrolling, as Explorer's band does. The scripted check with the pointer 40 px past the
+  list's bottom (the harness window is 800 px tall, not the 839 the P4-M1 checks assumed) found
+  the first version of the rule stopping there.
+- **The cursor does not follow the band.** Explorer moves the focus to the last tile touched; the
+  band leaves `current-row` and the anchor where they were, so a Shift+click after a band ranges
+  from the last click, not from the band. Revisit if it is missed at the console.
+- **A click on empty space clears the selection** (Explorer), a change from P4-M1, where a left
+  press below the rows did nothing; with Ctrl or Shift held it still does nothing.
+
+### Deviations
+
+- **No per-row pointer area** (Decision 1): the overlays replace it, so the generated-code diff
+  for the details lists is a check rather than a proof that a new row item costs nothing.
+- **The band's edge rule is its own** (`band::edge`), not `dnd::edge_scroll` (Decision 3).
+
+### Deferred
+
+- **A rubber band in the details list**: none, as the brief said; the overlays are grid-only.
+- **The cursor and anchor after a band** (Decision 4).
+- **A band started on a tile's blank corner** (Explorer): a press on a tile selects it.
+- **Keyboard auto-repeat of the band's scroll speed**: one grid row per 50 ms at any distance past
+  the edge; Explorer scrolls faster the further the pointer goes.
+- **Horizontal auto-scroll**: the grid never scrolls sideways.
+- **The band under a navigation or refresh while the button is down**: the band's anchor stays in
+  content coordinates of the old listing; the next move applies it to the new one. Not seen as a
+  problem; a `[band]` line would show it.
+
+### Scripted checks
+
+Harness session (RDP, 1216 x 800 window, scale 1.0, accessibility on), this worktree's
+`target\release\twinfm.exe` from the commit under review, every run with `TWINFM_SCRIPT` and
+`TWINFM_CONFIG=C:\traces\grid.toml` (read-only; `[settings] file C:\traces\grid.toml (read)`,
+`[view] pane=0 starts as large icons`), no `TWINFM_SOAK` outside the soak. The fixture
+`%TEMP%\twinfm-p4m1\src` (P4-M1's: five folders and files, 37 entries now; 10 tiles to a row in
+the unsplit 1010 px list, four grid rows, the last holding seven). All exit code 0, no `panicked`
+line.
+
+- **(i) The band's modes**, from the gap column (x 965, right of the tenth tile): `band 0 965 50
+  50 200` touches rows 0 and 1 whole (`start at (965, 50), Replace` ... `done: 20 selected`);
+  `band 0 965 10 150 130 ctrl` touches columns 1 to 9 of both rows and flips them against the 20
+  (`Toggle` ... `done: 2 selected`: entries 0 and 10 stay); `band 0 965 300 150 340 shift` adds
+  the third row's columns 1 to 9 (`Add` ... `done: 11 selected`); a band of zero width (`965 50
+  965 60`) replaces the selection with nothing (`done: 0 selected`); a band over the partial last
+  row (`965 400 500 405`) selects its last two tiles (`done: 2 selected`); after `click 0 3`, a
+  press and release in the gap (`965 350 965 351`, under the threshold) logs `[select] pane=0
+  Clear row=0 selected=0`.
+- **(ii) Escape and the hold**: `click 0 2; band 0 965 50 300 200 hold 1500; sleep 400; key
+  Escape` logs `start`, `1 selected, rect (957, 50) 8 x 2` (the first move past the threshold),
+  then `cancelled (Escape): 1 selected` with the clicked entry back as the selection; the Ctrl band
+  after it (`hold 800`, released by the timer) ends `done: 15 selected`.
+- **(iii) Auto-scroll beyond the edges**, `C:\traces\bigdir`, 4,000 grid rows: `band 0 965 400
+  900 740 hold 1000` (y 740 is 40 px below this window's list, which ends at 779 - 63 = 716 px of
+  list) scrolls `content-y 0 -> -120` ... `-3000 -> -3120` (26 grid rows in the hold, 50 ms apart)
+  and ends `done: 30 selected` (column 9 of rows 3 to 32); `band 0 965 300 900 -100 hold 600` from
+  there scrolls back to 0 and ends `done: 29 selected`; `scrollpos` reads -3120 then 0. The first
+  version of the edge rule used `dnd::edge_scroll` and stopped once the pointer left the list.
+- **(iv) The drawing**: a `hold 7000` band from (965, 40) to (150, 230) captured with
+  `tools/shot.ps1` mid-gesture shows the translucent accent rectangle over rows 0 and 1, columns 1
+  to 9, the 18 tiles under it selected, the status bar at `18 selected`, the clicked tile's cursor
+  border where it was.
+- **(v) Drag images**: `dragrow 0 1 0 60` out of a grid tile logs `[dnd] drag image 128x128 px, 96
+  px icon, 1 item(s), icon from the tile, composed in 0.8 ms`; after `view details`, `96x96 px, 64
+  px icon, 1 item(s), icon from the shell, composed in 5.7 ms`. In the soak the right-button drag
+  out of a tile carries the 128 px image too.
+- **(vi) P4-M1's behaviours re-checked**: `click 0 3; ctrlclick 0 7; shiftclick 0 14; key
+  ShiftDown; key ShiftRight` logs `Only 3` (1), `Toggle 7` (2), `Range 14` (8), `Range 24` (18),
+  `Range 25` (19); `dropfiles 0 1 copy ...\dropme.txt` lands on tile 1 (`over pane 0 row 1
+  (...\src\beta)`, a copy into `beta`), `dropfiles 0 -1 copy ...\droptwo.txt` into the folder;
+  `rclick 0 2` opens the item menu at (427, 123), `rclickempty` clears and opens the background
+  menu at (692, 660); on `bigdir`, `dragover 0 bottom 500` scrolls `content-y 0 -> -120` ...
+  `-840 -> -960` (eight grid rows).
+- **(vii) The soak**, `tools/soak-p4m3.ps1 -Minutes 3`: 5 cycles, 97 jobs done (0 failed, 0
+  cancelled), 0 panics, 36 drops as expected (tile drops 4), 12 drags cancelled and 0 dropped, 12
+  drag images set, 8 of them 128 px, grid switched on and off 8 times each, 4 bands started and 4
+  done with 2 selected, 0 cancelled, 12 menus; working set 107 to 181 MB (max 205).
+- **(viii) The details lists are the reference's.** The generated Rust for `FileList`,
+  `FileListNoType`, `FileList32` and `FileListNoType32` and their rows (6,091 lines from
+  `InnerFileList_root_` to `InnerFileGridList_root_`) compared with `target-p4m2`'s, the generated
+  numbering of components and temporaries normalised: 0 lines differ.
+
+### Measurements
+
+In-app, RELATIVE only: harness session (RDP), 1216 x 800 window, scale 1.0, accessibility on,
+the gate scenario on `C:\traces\bigdir`, `[busy]` over the 10 s after the split, each candidate
+run interleaved with `target-p4m2` (44d3a84, the reference) by the same runner, reference first,
+three rounds per settings file.
+
+| Pair | reference, defaults | P4-M3, defaults | reference, `grid.toml` | P4-M3, `grid.toml` |
+|---|---|---|---|---|
+| 1 | 15.6 | 20.0 | 11.1 | 10.3 |
+| 2 | 18.0 | 16.2 | 11.2 | 9.5 |
+| 3 | 18.0 | 17.0 | 10.9 | 10.3 |
+| **median** | **18.0** | **17.0** | **11.1** | **10.3** |
+| composes | 371 strips at 22.9 to 24.2 us | 371 at 23.4 to 24.3 us | 1,422 rows at 76.4 to 77.0 us | 1,422 at 74.4 to 75.7 us |
+
+The grid pairs sit below the reference in all three rounds (nothing of the band runs in the
+scenario: the two grid overlays exist and the band's rectangle is invisible, so what the grid
+triplet will measure is two more items in the pane's tree and the `if root.grid` block). The
+defaults pairs show the second-slot bias of P4-M2 (round 1's candidate 20.0 against 15.6, rounds
+2 and 3 below the reference); nothing on the defaults path changed (the overlays are under `if
+root.grid`, the drag image and the band are gesture code), and the generated rows are the
+reference's (Scripted checks (viii)). The console triplet decides.
+
+### Gate
+
+`tools/wpr-triplet.ps1 -Reference p4m2 -Candidate p4m3,p4m3@C:\traces\grid.toml -Tag ab19`, run
+from this checkout's `tools\`, Jeremy elevated at the console, accessibility on, Narrator off, no
+other TwinFM window, console checks after. `target-p4m2` (44d3a84) against `target-p4m3` (the PR
+head, built with `--locked` from a detached checkout). The grid run's stderr must show
+`[settings] file C:\traces\grid.toml (read)` and `[view] pane=0 starts as large icons` before its
+triplet is read. The defaults triplet decides whether the details list moved (its rows are the
+reference's byte for byte; the band's areas are created only with the grid); the grid triplet
+whether the grid holds the bar with the two overlays in its tree.
+
+Console checks after the triplet: a band in the grid on a folder of pictures with thumbnails on
+(the rectangle, the tiles lighting up as it crosses them, Ctrl and Shift, Escape), a band dragged
+below the list's bottom and above its top on `bigdir` (the auto-scroll both ways), a drag out of
+the grid (the tile-sized image with the thumbnail, and with a type icon), a click on empty grid
+space clearing the selection, and the details list's band-free behaviour unchanged (a left press
+below the rows does nothing, a drag out of a row carries the 96 px image).

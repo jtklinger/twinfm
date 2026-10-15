@@ -158,6 +158,16 @@ export component App inherits Window {
     in-out property <int> drop-side-row: -1;
     in-out property <length> drop-side-y;
     in-out property <length> drop-side-h;
+    // The rubber band (P4-M3): in pane band-pane (-1: none), the rectangle in that list's content
+    // coordinates. Set by main.rs while a band gesture runs.
+    in-out property <int> band-pane: -1;
+    in-out property <length> band-x;
+    in-out property <length> band-y;
+    in-out property <length> band-w;
+    in-out property <length> band-h;
+    // band-pointer(pane, kind, window x, window y, ctrl, shift): the left button on a grid pane's
+    // empty space (kind 0 down, 1 move, 2 up, 3 cancel).
+    callback band-pointer(int, int, length, length, bool, bool);
     // The drag threshold in logical px (SM_CXDRAG / SM_CYDRAG over the scale factor).
     in property <length> drag-dx: 4px;
     in property <length> drag-dy: 4px;
@@ -555,6 +565,9 @@ export component App inherits Window {
                 drag-dy: root.drag-dy;
                 drop-here: root.drop-pane == 0;
                 drop-row: root.drop-row;
+                band-here: root.band-pane == 0;
+                band-x: root.band-x; band-y: root.band-y; band-w: root.band-w; band-h: root.band-h;
+                band-pointer(k, x, y, c, s) => { root.band-pointer(0, k, x, y, c, s); }
                 open-row(i) => { root.open-row(0, i); }
                 sort-by(c) => { root.sort-by(0, c); }
                 go-up => { root.go-up(0); }
@@ -600,6 +613,9 @@ export component App inherits Window {
                 drag-dy: root.drag-dy;
                 drop-here: root.drop-pane == 1;
                 drop-row: root.drop-row;
+                band-here: root.band-pane == 1;
+                band-x: root.band-x; band-y: root.band-y; band-w: root.band-w; band-h: root.band-h;
+                band-pointer(k, x, y, c, s) => { root.band-pointer(1, k, x, y, c, s); }
                 open-row(i) => { root.open-row(1, i); }
                 sort-by(c) => { root.sort-by(1, c); }
                 go-up => { root.go-up(1); }
