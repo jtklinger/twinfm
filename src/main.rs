@@ -123,6 +123,10 @@ struct Tab {
     /// folder, and when (`job_done`): a watch window naming only these within `EXPLAINED_FOR` is
     /// the operation's own, already covered by its refresh.
     explained: Option<(HashSet<String>, Instant)>,
+    /// Names (lower-cased) a watch window added or renamed to that were gone again when the edit
+    /// worker statted them, so the listing never had them, with the listing's generation: a later
+    /// record removing or renaming one is no unknown name (`window_refusal`, `land_edits`).
+    vanished: (u64, HashSet<String>),
 }
 
 /// What a search tab searches for, and its worker's cancel flag (`fs::enumerate::SEARCH_*`).
@@ -314,6 +318,7 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         watched_bg: false,
         shown_at: Instant::now(),
         explained: None,
+        vanished: (0, HashSet::new()),
     }
 }
 
@@ -976,23 +981,31 @@ fn explained_names(dir: &Path, job: &Job, results: &[fileops::ItemResult]) -> Ha
 
 /// A window's changes as row edits, given a fresh stat per name (None: the name is gone again):
 /// an add that is gone is nothing, a modified name that is gone is removed, a rename whose new
-/// name is gone removes the old one.
-fn edits_from(changes: &[fs::watch::Change], mut stat: impl FnMut(&str) -> Option<model::Entry>) -> Vec<model::Edit> {
+/// name is gone removes the old one. Also the names added or renamed to that were gone (the
+/// listing will not have them; `Tab::vanished`).
+fn edits_from(changes: &[fs::watch::Change], mut stat: impl FnMut(&str) -> Option<model::Entry>) -> (Vec<model::Edit>, Vec<String>) {
     use fs::watch::Change;
     use model::Edit;
     let mut edits = Vec::with_capacity(changes.len());
+    let mut vanished = Vec::new();
     for c in changes {
         match c {
-            Change::Added(n) => edits.extend(stat(n).map(Edit::Upsert)),
+            Change::Added(n) => match stat(n) {
+                Some(entry) => edits.push(Edit::Upsert(entry)),
+                None => vanished.push(n.clone()),
+            },
             Change::Removed(n) => edits.push(Edit::Remove(n.as_str().into())),
             Change::Modified(n) => edits.push(stat(n).map_or_else(|| Edit::Remove(n.as_str().into()), Edit::Upsert)),
             Change::Renamed { from, to } => edits.push(match stat(to) {
                 Some(entry) => Edit::Rename { from: from.as_str().into(), entry },
-                None => Edit::Remove(from.as_str().into()),
+                None => {
+                    vanished.push(to.clone());
+                    Edit::Remove(from.as_str().into())
+                }
             }),
         }
     }
-    edits
+    (edits, vanished)
 }
 
 /// A watch window for the edit worker: the tab, its folder, the changes, and the listing they
@@ -1005,6 +1018,9 @@ struct StatJob {
     generation: u64,
     pass: u64,
     thumbnails: bool,
+    /// The listing is younger than the longest window (`young_listing`): a name it does not have
+    /// may be one the window's early records saw go before the listing began.
+    young: bool,
 }
 
 /// The edit worker: stats the names of each watch window (one window at a time, in order, so
@@ -1020,10 +1036,10 @@ fn edit_worker() -> Sender<StatJob> {
                 let mut types = fs::enumerate::TypeNames::default();
                 let mut keys = icons::IconKeys::new(job.path.clone(), job.thumbnails);
                 let zone = model::LocalZone::current();
-                let edits = edits_from(&job.changes, |n| fs::enumerate::stat_entry(&job.path, n, &mut types, &mut keys, &zone));
+                let (edits, vanished) = edits_from(&job.changes, |n| fs::enumerate::stat_entry(&job.path, n, &mut types, &mut keys, &zone));
                 let stat_ms = perf::elapsed_ms(t0);
-                let StatJob { pane, tab, generation, pass, .. } = job;
-                let _ = slint::invoke_from_event_loop(move || land_edits(pane, tab, (generation, pass), edits, stat_ms));
+                let StatJob { pane, tab, generation, pass, young, .. } = job;
+                let _ = slint::invoke_from_event_loop(move || land_edits(pane, tab, (generation, pass, young), edits, vanished, stat_ms));
             }
         })
         .expect("spawn watch edit thread");
@@ -1146,6 +1162,7 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                             changes,
                             generation: t.model.generation.get(),
                             pass: t.model.pass.get(),
+                            young: young_listing(t),
                             thumbnails: st.config.thumbnails,
                         };
                         let _ = st.stat_tx.send(job);
@@ -1232,7 +1249,7 @@ fn window_refusal(t: &mut Tab, active: bool, changes: &[fs::watch::Change]) -> O
             Change::Removed(n) | Change::Modified(n) => n,
             Change::Renamed { from, .. } => from,
         };
-        if !t.model.has_name(known) {
+        if !t.model.has_name(known) && !vanished(t, known) && !young_listing(t) {
             return Some(format!("unknown name {known}"));
         }
     }
@@ -1242,10 +1259,26 @@ fn window_refusal(t: &mut Tab, active: bool, changes: &[fs::watch::Change]) -> O
     None
 }
 
+/// The tab's listing began less than the longest watch window (plus one short one) ago: a window
+/// delivered now can hold records from before it, so a name it removes or renames may already be
+/// gone from the listing. Such names are no reason to list the folder again (the listing is newer
+/// than they are); `land_edits` drops their removal and turns their rename into an add.
+fn young_listing(t: &Tab) -> bool {
+    t.timing.requested.is_some_and(|r| r.elapsed() < fs::watch::COALESCE_MAX + fs::watch::COALESCE)
+}
+
+/// `name` was added (or renamed to) by a watch window of the tab's current listing and gone when
+/// statted: the listing does not have it, and need not.
+fn vanished(t: &Tab, name: &str) -> bool {
+    t.vanished.0 == t.model.generation.get() && t.vanished.1.contains(&name.to_lowercase())
+}
+
 /// A window's edits came back from the edit worker (on the UI thread): apply them to the tab's
 /// listing if it is still the one they were checked against, else drop them and refresh (the
-/// records are spent).
-fn land_edits(pane: usize, tab_id: u64, (generation, pass): (u64, u64), edits: Vec<model::Edit>, stat_ms: f64) {
+/// records are spent). A removal of a name the listing does not have because it vanished before
+/// it was listed (`Tab::vanished`), or went before a young listing began (`young`), is dropped, a
+/// rename from one is an add.
+fn land_edits(pane: usize, tab_id: u64, (generation, pass, young): (u64, u64, bool), edits: Vec<model::Edit>, gone: Vec<String>, stat_ms: f64) {
     let again = with_state(|st| {
         let mut again = Vec::new();
         let app = st.app.upgrade()?;
@@ -1266,6 +1299,30 @@ fn land_edits(pane: usize, tab_id: u64, (generation, pass): (u64, u64), edits: V
             eprintln!("[watch] pane={pane} tab={tab_id} edits dropped: {why}: {outcome}");
             return Some(again);
         }
+        if t.vanished.0 != generation {
+            t.vanished = (generation, HashSet::new());
+        }
+        let edits: Vec<model::Edit> = edits
+            .into_iter()
+            .filter_map(|e| {
+                let from = match &e {
+                    model::Edit::Remove(n) => n,
+                    model::Edit::Rename { from, .. } => from,
+                    model::Edit::Upsert(entry) => {
+                        t.vanished.1.remove(&entry.name.to_lowercase());
+                        return Some(e);
+                    }
+                };
+                if t.model.has_name(from) || !(t.vanished.1.remove(&from.to_lowercase()) || young) {
+                    return Some(e);
+                }
+                match e {
+                    model::Edit::Rename { entry, .. } => Some(model::Edit::Upsert(entry)),
+                    _ => None,
+                }
+            })
+            .collect();
+        t.vanished.1.extend(gone.iter().map(|n| n.to_lowercase()));
         // A folder that leaves the listing, or is renamed, loses its size (and its walk).
         for e in &edits {
             let (gone, now) = match e {
@@ -4531,10 +4588,11 @@ mod tests {
         ];
         let on_disk = ["new.txt", "kept.txt", "b.txt"];
         let mut asked = Vec::new();
-        let edits = edits_from(&changes, |n| {
+        let (edits, vanished) = edits_from(&changes, |n| {
             asked.push(n.to_string());
             on_disk.contains(&n).then(|| entry(n))
         });
+        assert_eq!(vanished, ["gone-again.txt", "d.txt"], "added or renamed to, gone when statted");
         assert_eq!(asked, ["new.txt", "gone-again.txt", "kept.txt", "vanished.txt", "b.txt", "d.txt"], "a removal is not statted");
         let shape: Vec<String> = edits
             .iter()
