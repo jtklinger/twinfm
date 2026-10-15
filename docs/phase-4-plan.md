@@ -544,3 +544,51 @@ Console checks after the triplet: the fixture folder in the grid with thumbnails
 thumbnails in the tiles, the placeholders before they land, a cold copy of the fixture), a folder
 of folders at 100% and 150% (the top edge of the folder icon, no lime line), a folder with video
 or Office files if one is at hand.
+
+**All three triplets passed (2026-10-15, Jeremy at the console).** Twelve runs from 08:53 to
+09:05 in three rounds, each round reference, defaults, grid, grid-thumbs; `target-p4m1` (cb589c8)
+against `target-p4m2` (44d3a84, the PR head). Every settings run's stderr carries `[settings] file
+C:\traces\<toml> (read)` and `[view] pane=0 starts as large icons`, the grid-thumbs runs `[icons]
+list geometry: 32 px rows, 32 px icons` too. Analysed with `tools/analyze-trace.py --symbols
+--exe`.
+
+| Run | P4-M1 (`target-p4m1`) | P4-M2 defaults | P4-M2 `grid.toml` | P4-M2 `grid-thumbs.toml` |
+|---|---|---|---|---|
+| 1 | 18.4% (1836 ms) | 18.6% (1855 ms) | 11.4% (1138 ms) | 11.0% (1102 ms) |
+| 2 | 18.4% (1839 ms) | 18.7% (1873 ms) | 11.3% (1128 ms) | 11.2% (1123 ms) |
+| 3 | 21.6% (2160 ms) | 22.3% (2230 ms) | 12.1% (1212 ms) | 12.3% (1234 ms) |
+| **median** | **18.4%** | **18.7%** | **11.4%** | **11.2%** |
+
+**Defaults: the details list has not moved.** The medians differ by 0.3, and the reference's run 3
+(21.6) sits above the candidate's runs 1 and 2 (18.6, 18.7), so neither half of the rule calls a
+gap. Round 3 was disturbed for every binary (the reference up 3.2 on its own earlier runs, the
+candidates up 3.6, 0.8 and 1.1), so the pairs are read within their round: +0.2, +0.3, +0.7. Frame
+shares match within a few samples in every pair (accessibility 213 / 223, 214 / 205, 208 / 215;
+render 1052 / 1093, 1057 / 1092, 1370 / 1359; draw_text 628 / 645, 614 / 644, 831 / 799; rows 355
+/ 320, 361 / 369, 374 / 395; timers 685 / 645, 666 / 687, 686 / 757; heap 212 / 194, 193 / 175,
+233 / 212), and no `twinfm` frame of the change reaches the table in a defaults window: the
+conversion's clamp runs on the worker once per key (one key in this scenario) and the placeholder
+branch once per index and size. In-app the candidate read 20.3, 20.8, 23.0 against 17.5, 19.8,
+19.5, the second slot of each round again the higher (Measurements), `compose 371 strips avg 23.9
+to 27.9 us` (reference 23.3 to 24.8), 0 `panicked`.
+
+**Grid on: seven points under the reference and eight and a half under the bar**, the session
+sitting about a point and a half above ab17's (the reference read 16.9 there, 18.4 here; the grid
+9.6 there, 11.4 here). The grid's shape is ab17's: rows 45 / 57 / 49, draw_text 293 / 294 / 390,
+accessibility 89 / 92 / 67, timers 328 / 360 / 320; `compose_grid` 87 / 95 / 85 samples (7.6%,
+8.4%, 7.0%), `resolve_view` inclusive 94 / 102 / 91. In-app 13.0, 10.3, 13.4, `compose 1422
+strips avg 79.3 to 83.9 us` (grid rows), 0 `panicked`.
+
+**Grid with thumbnails on: 11.2, the same window as the grid's** (11.0, 11.2, 12.3 against 11.4,
+11.3, 12.1: three pairs within 0.4, two of them below). The scenario's files have no thumbnail
+extension, so what this triplet measures is the thumbnail resolve order (the margin rows first,
+the rows on screen last) and the publish of the rows asked for, once per resolve, in the grid:
+rows 42 / 56 / 52, draw_text 275 / 308 / 362, accessibility 102 / 91 / 79, timers 338 / 321 / 338,
+`compose_grid` 93 / 77 / 88 (8.4%, 6.9%, 7.1%), `resolve_view` 96 / 81 / 100. In-app 10.9, 12.3,
+12.8, `compose 1422 strips avg 78.8 to 84.0 us`, 0 `panicked`. Traces
+`C:/traces/twinfm-ab18-{p4m1,p4m2,p4m2-grid,p4m2-grid-thumbs}-{1,2,3}.etl`, reports under
+`C:/traces/export/`.
+
+P4-M2 holds all three gates: the default row is the reference's, the grid sits at 11.4 and the
+grid with thumbnails at 11.2 against the bar's 20. Jeremy's console checks (2026-10-15, after the
+triplet): "console checks nominal".
