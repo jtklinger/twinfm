@@ -1007,6 +1007,11 @@ Phase 5 candidates, in no agreed order, for Jeremy's decision (none is decided):
 - **Daily use**: TwinFM in place of Files for a stretch of days, with what bites written down as
   the milestones; `docs/cleanup.md` names what goes once Files is retired.
 
+**Jeremy's decision (2026-10-15, the same day): Phase 5 finishes the Phase 2 lists still open**, the
+directory watching, file operation and drag-and-drop items above. Accessibility (the grid read by a
+screen reader, the Narrator passes) is deferred for much later, not a Phase 5 or Phase 6 candidate.
+The milestones are agreed in `docs/phase-5-plan.md` at its kickoff.
+
 The gate protocol for Phase 5, unchanged from Phase 4: `tools/wpr-triplet.ps1` elevated at the
 console by Jeremy, accessibility on, Narrator off, no other TwinFM window, the split-and-scroll
 scenario on `C:\traces\bigdir`, clean binaries built with `--locked` into their own `--target-dir
