@@ -267,6 +267,8 @@ struct State {
     search_armed: [bool; 2],
     /// The search tab whose "no watch" line each pane logged last (logged once per tab).
     no_watch_logged: [Option<u64>; 2],
+    /// The tab each pane's watch was last asked for (the watcher is keyed by tab; one per pane).
+    watched: [Option<u64>; 2],
     /// The folder size worker and its replies.
     sizer: fs::sizes::Sizer,
     size_rx: Receiver<fs::sizes::Reply>,
@@ -353,12 +355,18 @@ impl State {
     /// watches it). The hidden second pane watches nothing.
     fn watch_active(&mut self, app: &App, pane: usize) {
         if pane == 1 && !app.get_split() {
-            return self.watch.unwatch(1);
+            self.watched[1] = None;
+            return self.watch.unwatch_pane(1);
         }
+        let id = self.panes[pane].active().id;
+        if let Some(old) = self.watched[pane].filter(|&old| old != id) {
+            self.watch.unwatch(old);
+        }
+        self.watched[pane] = Some(id);
         let t = self.panes[pane].active();
         if t.search.is_some() {
             // A search's results come from many folders; F5 runs it again.
-            self.watch.unwatch(pane);
+            self.watch.unwatch(id);
             if self.no_watch_logged[pane] != Some(t.id) {
                 eprintln!("[watch] pane={pane} no watch for {}: search results", t.path.display());
                 self.no_watch_logged[pane] = Some(t.id);
@@ -368,7 +376,7 @@ impl State {
         // With folder sizes cached or in flight, every folder below is watched too (until two
         // overflows in a row), so a change inside a sized folder drops its size.
         let subtree = t.sizes.any() && t.sizes.overflows < 2;
-        self.watch.watch(pane, t.id, t.path.clone(), subtree);
+        self.watch.watch(pane, t.id, t.path.clone(), subtree, true);
     }
 
     /// The pane's active tab is a search tab.
@@ -798,7 +806,7 @@ fn drain() {
                     if st.is_active(pane, id) {
                         update_status(st, &app, pane);
                         // A folder that cannot be listed is not watched.
-                        if ok { st.watch_active(&app, pane) } else { st.watch.unwatch(pane) }
+                        if ok { st.watch_active(&app, pane) } else { st.watch.unwatch(id) }
                         if pending {
                             st.tab_mut(pane).watch_refresh = true;
                             again.push(pane);
@@ -828,9 +836,15 @@ fn drain() {
 /// again if they are selected); only a change in the folder itself, or an overflow, refreshes.
 fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
     let (pane, tab_id) = match &ev {
-        fs::watch::Event::Changed { pane, tab_id }
+        fs::watch::Event::Changed { pane, tab_id, .. }
         | fs::watch::Event::Lost { pane, tab_id, .. }
         | fs::watch::Event::Subtree { pane, tab_id, .. } => (*pane, *tab_id),
+        // Wired by the UI later; the watcher has logged it.
+        fs::watch::Event::Refused { .. } => return,
+        fs::watch::Event::Moved { pane, tab_id, from, to } => {
+            eprintln!("[watch] pane={pane} tab={tab_id} moved: {} -> {}", from.display(), to.display());
+            return;
+        }
     };
     let active = st.is_active(pane, tab_id);
     let Some(t) = st.find(pane, tab_id) else { return };
@@ -843,7 +857,7 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
             }
             return;
         }
-        fs::watch::Event::Changed { .. } => {}
+        fs::watch::Event::Changed { .. } | fs::watch::Event::Refused { .. } | fs::watch::Event::Moved { .. } => {}
         fs::watch::Event::Subtree { top, changes, overflow, .. } => {
             if overflow {
                 t.sizes.overflows += 1;
@@ -1527,6 +1541,7 @@ fn main_hwnd(st: &mut State, app: &App) -> isize {
             if let RawWindowHandle::Win32(w) = h.as_raw() {
                 st.hwnd = w.hwnd.get();
                 devices::install(st.hwnd);
+                st.watch.set_hwnd(st.hwnd);
             }
         }
     }
@@ -3056,6 +3071,7 @@ fn close_tab(pane: usize, i: usize) {
             s.cancel(fs::enumerate::SEARCH_CLOSED);
         }
         closed.drop_sizes(pane, "tab closed");
+        st.watch.unwatch(closed.id);
         eprintln!("[tab] pane={pane} closed tab {} (id {}), {} left", i + 1, closed.id, st.panes[pane].len());
         schedule_save(st);
         if was_active {
@@ -3786,6 +3802,7 @@ fn main() -> Result<(), slint::PlatformError> {
             filter_timer: Default::default(),
             search_armed: [false; 2],
             no_watch_logged: [None; 2],
+            watched: [None; 2],
             sizer,
             size_rx,
             size_timer: Default::default(),
@@ -3964,7 +3981,10 @@ fn main() -> Result<(), slint::PlatformError> {
                 navigate(1, left);
                 app.invoke_focus_pane(1);
             } else {
-                with_state(|st| st.watch.unwatch(1));
+                with_state(|st| {
+                    st.watched[1] = None;
+                    st.watch.unwatch_pane(1)
+                });
                 app.invoke_focus_pane(0);
             }
         }

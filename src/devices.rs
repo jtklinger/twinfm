@@ -7,15 +7,20 @@
 //! and posts `crate::clipboard_changed`, which clears the cut marks when another program took
 //! the clipboard.
 //!
+//! Device events for a handle registration (`DBT_DEVTYP_HANDLE`: a directory watch on a removable
+//! drive, `crate::fs::watch`) go to `fs::watch::device_event`: a query remove closes the watch's
+//! handle (so the drive can be ejected) before the subclass answers TRUE, a failed removal reopens
+//! it, a completed removal ends it.
+//!
 //! The subclass procedure can run inside a modal loop (a context menu, a drag, a shell dialog),
-//! so it touches no app state: it only posts.
+//! so it touches no app state: it only posts (and talks to the watcher thread).
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::DataExchange::AddClipboardFormatListener;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_VOLUME, DEV_BROADCAST_HDR, DEV_BROADCAST_VOLUME, WM_CLIPBOARDUPDATE,
-    WM_DEVICECHANGE,
+    DBT_DEVICEARRIVAL, DBT_DEVICEQUERYREMOVE, DBT_DEVICEQUERYREMOVEFAILED, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_HANDLE,
+    DBT_DEVTYP_VOLUME, DEV_BROADCAST_HANDLE, DEV_BROADCAST_HDR, DEV_BROADCAST_VOLUME, WM_CLIPBOARDUPDATE, WM_DEVICECHANGE,
 };
 
 /// Our permanent subclass id on the main window (shellmenu's temporary one is "twfm").
@@ -43,6 +48,21 @@ unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
         let _ = slint::invoke_from_event_loop(crate::clipboard_changed);
     }
     let event = wp as u32;
+    if msg == WM_DEVICECHANGE
+        && matches!(event, DBT_DEVICEQUERYREMOVE | DBT_DEVICEQUERYREMOVEFAILED | DBT_DEVICEREMOVECOMPLETE)
+        && lp != 0
+    {
+        // SAFETY: for these events lParam points to a DEV_BROADCAST_HDR.
+        let hdr = unsafe { &*(lp as *const DEV_BROADCAST_HDR) };
+        if hdr.dbch_devicetype == DBT_DEVTYP_HANDLE {
+            // SAFETY: the header says this is a DEV_BROADCAST_HANDLE.
+            let notify = unsafe { (*(lp as *const DEV_BROADCAST_HANDLE)).dbch_hdevnotify } as isize;
+            crate::fs::watch::device_event(event, notify);
+            if event == DBT_DEVICEQUERYREMOVE {
+                return 1; // TRUE: the removal may go ahead (the watch's handle is closed)
+            }
+        }
+    }
     if msg == WM_DEVICECHANGE && (event == DBT_DEVICEARRIVAL || event == DBT_DEVICEREMOVECOMPLETE) && lp != 0 {
         // SAFETY: for these two events lParam points to a DEV_BROADCAST_HDR.
         let hdr = unsafe { &*(lp as *const DEV_BROADCAST_HDR) };
