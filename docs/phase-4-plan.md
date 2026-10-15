@@ -351,11 +351,38 @@ starts as large icons` before its triplet is read. The defaults triplet decides 
 details list moved (its rows are the reference's byte for byte); the grid triplet whether the
 grid holds the bar.
 
+**Both triplets passed (2026-10-15, Jeremy at the console).** Nine runs from 07:21 to 07:30,
+reference first in each round, `target-p3m5` (ee0be21) against `target-p4m1` (cb589c8, the PR
+head); every grid run's stderr carries `[settings] file C:\traces\grid.toml (read)` and `[view]
+pane=0 starts as large icons`. Analysed with `tools/analyze-trace.py --symbols --exe`.
+
 | Run | P3-M5 (`target-p3m5`) | P4-M1 defaults, `target-p4m1` | P4-M1 grid on, `target-p4m1` |
 |---|---|---|---|
-| 1 | | | |
-| 2 | | | |
-| 3 | | | |
-| **median** | | | |
+| 1 | 16.9% (1688 ms) | 17.5% (1746 ms) | 9.9% (987 ms) |
+| 2 | 16.9% (1694 ms) | 17.0% (1700 ms) | 9.6% (956 ms) |
+| 3 | 17.0% (1703 ms) | 16.9% (1690 ms) | 9.6% (955 ms) |
+| **median** | **16.9%** | **17.0%** | **9.6%** |
 
-(To be filled from Jeremy's triplet.)
+**Defaults: the details list has not moved.** The medians differ by 0.1, and the candidate's run
+3 (16.9) sits below the reference's run 3 (17.0), so neither half of the rule calls a gap; the
+six runs lie within 0.6 of a point. Frame shares match within a few samples in every pair
+(accessibility 180 / 181, 175 / 182, 182 / 179; render 1003 / 1038, 1008 / 1015, 1007 / 994;
+draw_text 601 / 589, 567 / 607, 595 / 592; rows 320 / 329, 329 / 342, 318 / 324; timers 595 /
+603, 604 / 606, 603 / 596; heap 147 / 163, 179 / 148, 161 / 168), and no `twinfm` frame of the
+grid reaches the table in a defaults window: the row and the default resolve path are the
+reference's, as the generated-code proof said. In-app the candidate read 18.4, 17.8, 18.6 against
+16.4, 18.0, 18.3, `compose 371 strips avg 24.2 to 24.4 us` (reference 24.3 to 26.8), 0 `panicked`.
+
+**Grid on: seven points under the reference and ten under the bar**, the tightest spread of any
+triplet (0.3). The grid draws far less than the list, as in ab14 (rows 38 / 38 / 43 against the
+reference's 320 / 329 / 318; draw_text 291 / 296 / 288 against 601 / 567 / 595; accessibility 77 /
+72 / 68 against 180 / 175 / 182; timers 284 / 288 / 277 against 595 / 604 / 603), and the strip
+now costs it about 15% of its window instead of ab14's 36%: `compose_grid` 82 / 85 / 72 samples
+(8.3%, 8.9%, 7.5%; ab14: 254, 19.1%) and `Texture::new_from_image` 66 / 60 / 76 (6.7%, 6.3%, 8.0%,
+of it `ImageStore::alloc` 39 / 31 / 36; ab14: 227, 17.1%, of it 169). `resolve_view` inclusive 89 /
+86 / 76 (it holds the compose). In-app 11.2, 10.0, 10.3, `compose 1422 strips avg 71.6 to 74.1 us`
+(grid rows), 0 `panicked`. Traces `C:/traces/twinfm-ab17-{p3m5,p4m1,p4m1-grid}-{1,2,3}.etl`,
+reports under `C:/traces/export/`.
+
+P4-M1 holds both gates: the default row is the reference's, and the grid, with its strip as a ring
+of per-row images, sits at 9.6 against the bar's 20. Console checks: Jeremy's, after the triplet.
