@@ -8,6 +8,7 @@ mod fs {
     pub mod watch;
 }
 mod auto;
+mod band;
 mod devices;
 mod dnd;
 mod fileops;
@@ -221,6 +222,12 @@ struct State {
     strip_rows: [Rc<VecModel<StripRow>>; 2],
     /// Each pane's left-button gesture on a row (click, drag, double-click), dnd::Gesture.
     gesture: [dnd::Gesture; 2],
+    /// The rubber band under way (P4-M3, `band.rs`), its last window point, the timer that
+    /// scrolls the list while the pointer sits at its edge, and when `[band]` last logged a count.
+    band: Option<band::Band>,
+    band_at: (f32, f32),
+    band_timer: slint::Timer,
+    band_logged: Option<Instant>,
     /// Retries the drop target registration until the window exists, then stops.
     dnd_timer: slint::Timer,
     /// Each pane's tab strip and breadcrumb, rebuilt on change only.
@@ -1633,7 +1640,12 @@ fn command(pane: usize, cmd: &str) {
         "cc" | "cx" => return clipboard_put(pane, cmd == "cx"),
         "cv" => return clipboard_paste(pane),
         "undo" => return undo(pane),
-        "cancelqueued" => return cancel_queued(pane),
+        "cancelqueued" => {
+            if band_cancel(pane) {
+                return;
+            }
+            return cancel_queued(pane);
+        }
         _ => {}
     }
     let edit = with_state(|st| {
@@ -2317,6 +2329,8 @@ fn drag_start(pane: usize, row: usize, right: bool) {
         let image = dnd::DragImage {
             path: folder.join(shown.name.as_str()),
             cached: Some(st.icons.borrow().buffer(shown.icon).clone()),
+            tile: window_layout(&app).grid[pane].is_some(),
+            tile_picture: shown.icon >= icons::PLACEHOLDERS,
             count: names.len(),
             scale: app.window().scale_factor(),
         };
@@ -2609,24 +2623,207 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
         let scale = app.window().scale_factor();
         let layout = window_layout(&app);
         let (pane, dir) = dnd::edge_scroll(&layout, px as f32 / scale, py as f32 / scale)?;
-        let visible = layout.height - dnd::LIST_BOTTOM_GAP - dnd::list_top(&layout, pane);
-        // The lines the list scrolls by: rows, or grid rows of tiles.
-        let lines = match layout.grid[pane] {
-            Some(cols) => model::grid_rows(st.model(pane).len(), cols),
-            None => st.model(pane).len(),
-        };
-        Some((app, pane, dir, lines, visible, layout.row_px_of(pane)))
+        Some(edge_line(st, &app, &layout, pane, dir))
     });
-    let Some((app, pane, dir, len, visible, line_px)) = found else { return false };
-    let from = app.invoke_get_scroll(pane as i32);
-    let to = dnd::scrolled(from, dir, len, visible, line_px);
-    if to == from {
-        return false;
-    }
-    app.invoke_set_scroll(pane as i32, to);
+    let Some(line) = found else { return false };
+    let Some((pane, dir, from, to)) = scroll_line(line) else { return false };
     dnd::repaint_during_own_drag();
     eprintln!("[dnd] auto-scroll pane {pane} {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
     true
+}
+
+/// One line's auto-scroll of `pane` in `dir`, to run outside the state borrow: the app, the
+/// pane, the direction, the lines the list scrolls by (rows, or grid rows of tiles), the
+/// viewport height and the line height.
+type EdgeLine = (App, usize, i32, usize, f32, f32);
+
+fn edge_line(st: &State, app: &App, layout: &dnd::Layout, pane: usize, dir: i32) -> EdgeLine {
+    let visible = layout.height - dnd::LIST_BOTTOM_GAP - dnd::list_top(layout, pane);
+    let lines = match layout.grid[pane] {
+        Some(cols) => model::grid_rows(st.model(pane).len(), cols),
+        None => st.model(pane).len(),
+    };
+    (app.clone_strong(), pane, dir, lines, visible, layout.row_px_of(pane))
+}
+
+/// Scroll the line `edge_line` described; the pane, direction and content-y before and after,
+/// or None when the list was already at that end.
+fn scroll_line((app, pane, dir, len, visible, line_px): EdgeLine) -> Option<(usize, i32, f32, f32)> {
+    let from = app.invoke_get_scroll(pane as i32);
+    let to = dnd::scrolled(from, dir, len, visible, line_px);
+    if to == from {
+        return None;
+    }
+    app.invoke_set_scroll(pane as i32, to);
+    Some((pane, dir, from, to))
+}
+
+// --- The rubber band (P4-M3) --------------------------------------------------------------------
+
+/// A window point as content coordinates of `pane`'s list (x from the list's left edge, y from
+/// the top of the first grid row).
+fn band_point(app: &App, layout: &dnd::Layout, pane: usize, at: (f32, f32)) -> (f32, f32) {
+    let (left, _) = dnd::pane_x(layout, pane);
+    let content_y = app.invoke_get_scroll(pane as i32);
+    (at.0 - left - dnd::PANE_PAD, at.1 - dnd::list_top(layout, pane) - content_y)
+}
+
+/// The left button on a grid pane's empty space (`band-pointer`): kind 0 down, 1 move, 2 up, 3
+/// cancel, at window point `at` (logical px). The band starts once the pointer leaves the drag
+/// threshold, selects the tiles it touches on every move, scrolls the list while the pointer sits
+/// at its top or bottom edge, and ends on the release; a press released under the threshold is a
+/// click on empty space, which clears the selection (Explorer) unless Ctrl or Shift is held.
+fn band_pointer(pane: usize, kind: i32, at: (f32, f32), ctrl: bool, shift: bool) {
+    match kind {
+        0 => with_state(|st| {
+            let Some(app) = st.app.upgrade() else { return };
+            let layout = window_layout(&app);
+            if layout.grid[pane].is_none() {
+                return;
+            }
+            let p = band_point(&app, &layout, pane, at);
+            st.band = Some(band::Band::press(pane, p, band::Mode::from_keys(ctrl, shift), st.model(pane).selected_set()));
+            st.band_at = at;
+            st.band_logged = None;
+        }),
+        1 => band_moved(pane, at),
+        2 | 3 => {
+            let taken = with_state(|st| {
+                let b = st.band.take().filter(|b| b.pane == pane)?;
+                st.band_timer.stop();
+                Some((b, st.app.upgrade()?))
+            });
+            let Some((b, app)) = taken else { return };
+            app.set_band_pane(-1);
+            if kind == 3 {
+                band_restore(pane, &b, "the pointer grab ended");
+            } else if b.active {
+                eprintln!("[band] pane={pane} done: {} selected", with_state(|st| st.model(pane).selected_count()));
+            } else if b.mode == band::Mode::Replace {
+                with_state(|st| {
+                    let model = st.panes[pane].active().model.clone();
+                    if model.selected_count() > 0 {
+                        model.select(SelOp::Clear, 0);
+                        log_select(&model, pane, SelOp::Clear, 0);
+                        size_selection(st, pane);
+                        update_status(st, &app, pane);
+                    }
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The pointer moved to `at` with the band's button down (or the timer fired with it still at
+/// the edge).
+fn band_moved(pane: usize, at: (f32, f32)) {
+    let edge = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let layout = window_layout(&app);
+        let threshold = (app.get_drag_dx(), app.get_drag_dy());
+        let p = band_point(&app, &layout, pane, at);
+        let b = st.band.as_mut().filter(|b| b.pane == pane)?;
+        st.band_at = at;
+        if !b.moved(p, threshold) {
+            return None;
+        }
+        if app.get_band_pane() != pane as i32 {
+            eprintln!("[band] pane={pane} start at ({:.0}, {:.0}), {:?}", b.anchor.0, b.anchor.1, b.mode);
+            app.set_band_pane(pane as i32);
+        }
+        band_apply(st, &app, pane, true);
+        // At the list's top or bottom edge, or beyond it: scroll a grid row every SCROLL_EVERY
+        // until the pointer leaves the edge or the button comes up; each scroll moves the band's
+        // far edge.
+        match band::edge(dnd::list_top(&layout, pane), layout.height - dnd::LIST_BOTTOM_GAP, at.1) {
+            Some(dir) => {
+                if !st.band_timer.running() {
+                    st.band_timer.start(slint::TimerMode::Repeated, dnd::SCROLL_EVERY, move || band_tick(pane));
+                }
+                Some(edge_line(st, &app, &layout, pane, dir))
+            }
+            None => {
+                st.band_timer.stop();
+                None
+            }
+        }
+    });
+    if let Some((_, dir, from, to)) = edge.and_then(scroll_line) {
+        eprintln!("[band] auto-scroll pane {pane} {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
+        // The content moved under the pointer: the band's far edge and the touched tiles with it.
+        with_state(|st| {
+            let Some(app) = st.app.upgrade() else { return };
+            let layout = window_layout(&app);
+            let p = band_point(&app, &layout, pane, st.band_at);
+            if let Some(b) = st.band.as_mut().filter(|b| b.pane == pane) {
+                b.now = p;
+                band_apply(st, &app, pane, false);
+            }
+        });
+    }
+}
+
+/// The band's timer: the pointer still sits at the edge, so scroll another line.
+fn band_tick(pane: usize) {
+    let at = with_state(|st| st.band.as_ref().filter(|b| b.pane == pane).map(|_| st.band_at));
+    match at {
+        Some(at) => band_moved(pane, at),
+        None => with_state(|st| st.band_timer.stop()),
+    }
+}
+
+/// Draw the band where it is and select the tiles it touches, when that changed anything.
+/// `log`: a `[band]` line for a changed count, at most four a second.
+fn band_apply(st: &mut State, app: &App, pane: usize, log: bool) {
+    let Some(b) = st.band.as_ref().filter(|b| b.pane == pane) else { return };
+    let Some(cols) = window_layout(app).grid[pane] else { return };
+    let (x, y, w, h) = band::rect(b.anchor, b.now);
+    app.set_band_x(x);
+    app.set_band_y(y);
+    app.set_band_w(w);
+    app.set_band_h(h);
+    let model = st.panes[pane].active().model.clone();
+    let want = b.selection(cols, model.len());
+    if want == model.selected_set() {
+        return;
+    }
+    model.set_selection(want);
+    size_selection(st, pane);
+    update_status(st, app, pane);
+    if log && st.band_logged.is_none_or(|t| t.elapsed() >= Duration::from_millis(250)) {
+        st.band_logged = Some(Instant::now());
+        eprintln!("[band] pane={pane} {} selected, rect ({x:.0}, {y:.0}) {w:.0} x {h:.0}", model.selected_count());
+    }
+}
+
+/// Escape with a band under way: the band ends and the selection goes back to what it was at
+/// the press. True when there was one.
+fn band_cancel(pane: usize) -> bool {
+    let taken = with_state(|st| {
+        let b = st.band.take().filter(|b| b.pane == pane)?;
+        st.band_timer.stop();
+        Some((b, st.app.upgrade()))
+    });
+    let Some((b, app)) = taken else { return false };
+    if let Some(app) = app {
+        app.set_band_pane(-1);
+    }
+    band_restore(pane, &b, "Escape");
+    true
+}
+
+fn band_restore(pane: usize, b: &band::Band, why: &str) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let model = st.panes[pane].active().model.clone();
+        if b.active {
+            model.set_selection(b.before.clone());
+            size_selection(st, pane);
+            update_status(st, &app, pane);
+        }
+        eprintln!("[band] pane={pane} cancelled ({why}): {} selected", model.selected_count());
+    });
 }
 
 /// For the drop target: highlight what a drop would land on (a pane's row, or with row -1 its
@@ -3564,6 +3761,10 @@ fn main() -> Result<(), slint::PlatformError> {
             grid_slots: Default::default(),
             strip_rows,
             gesture: Default::default(),
+            band: None,
+            band_at: (0.0, 0.0),
+            band_timer: slint::Timer::default(),
+            band_logged: None,
             dnd_timer: slint::Timer::default(),
             tab_models,
             crumb_models,
@@ -3618,6 +3819,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_navigate(|pane, path| navigate(pane as usize, PathBuf::from(path.as_str())));
     app.on_open_row(|pane, row| open_row(pane as usize, row));
     app.on_row_gesture(|pane, row, what, ctrl, shift| row_gesture(pane as usize, row, what, ctrl, shift));
+    app.on_band_pointer(|pane, kind, x, y, ctrl, shift| band_pointer(pane as usize, kind, (x, y), ctrl, shift));
     app.on_go_up(|pane| {
         go_up(pane as usize);
     });

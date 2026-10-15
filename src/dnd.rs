@@ -2098,8 +2098,18 @@ pub struct ImageGeom {
 
 impl ImageGeom {
     pub fn new(scale: f32) -> ImageGeom {
+        Self::sized(scale, 96.0, 64.0, 8.0)
+    }
+
+    /// Out of the grid (P4-M3): the tile's picture at the tile's icon size (96 px at 100%),
+    /// with the inset doubled so the badge still fits inside the square.
+    pub fn tile(scale: f32) -> ImageGeom {
+        Self::sized(scale, 128.0, crate::icons::GRID_ICON_PX, 16.0)
+    }
+
+    fn sized(scale: f32, size: f32, icon: f32, inset: f32) -> ImageGeom {
         let s = |v: f32| (v * scale).round().max(1.0);
-        ImageGeom { size: s(96.0) as u32, icon: s(64.0) as u32, inset: s(8.0) as u32, badge_r: s(14.0), cursor: (s(16.0) as i32, s(16.0) as i32) }
+        ImageGeom { size: s(size) as u32, icon: s(icon) as u32, inset: s(inset) as u32, badge_r: s(14.0), cursor: (s(16.0) as i32, s(16.0) as i32) }
     }
 
     /// The badge's centre: over the icon's bottom-right corner.
@@ -2275,21 +2285,28 @@ fn init_drag_image(helper: *mut c_void, data: *mut c_void, bgra: &[u8], size: u3
 pub struct DragImage {
     /// The item whose icon is drawn (asked of the shell at drag start, one call per drag).
     pub path: PathBuf,
-    /// The pane's cached icon for it (row size), used when the shell call fails.
+    /// The pane's cached picture for it (the pane's icon size), used when the shell call fails;
+    /// out of the grid (`tile`), what the tile shows when it is a real picture (`tile_picture`:
+    /// the thumbnail or the type icon, not a placeholder), drawn in place of the shell's icon.
     pub cached: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
+    pub tile: bool,
+    pub tile_picture: bool,
     pub count: usize,
     pub scale: f32,
 }
 
 /// Compose the image and store it on `data` through the source helper; logs the result.
 fn attach_drag_image(data: *mut c_void, img: &DragImage) {
-    let g = ImageGeom::new(img.scale);
+    let g = if img.tile { ImageGeom::tile(img.scale) } else { ImageGeom::new(img.scale) };
     let t0 = std::time::Instant::now();
-    let (icon, from) = match crate::icons::render(&img.path, g.icon) {
-        Some(p) => (Some(crate::icons::fit(&p, g.icon)), "the shell"),
-        None => match &img.cached {
-            Some(c) => (Some(crate::icons::fit(c, g.icon)), "the pane's cache"),
-            None => (None, "nowhere"),
+    let (icon, from) = match (&img.cached, img.tile && img.tile_picture) {
+        (Some(c), true) => (Some(crate::icons::fit(c, g.icon)), "the tile"),
+        _ => match crate::icons::render(&img.path, g.icon) {
+            Some(p) => (Some(crate::icons::fit(&p, g.icon)), "the shell"),
+            None => match &img.cached {
+                Some(c) => (Some(crate::icons::fit(c, g.icon)), "the pane's cache"),
+                None => (None, "nowhere"),
+            },
         },
     };
     let tw = (g.badge_r * 2.0) as u32;
@@ -2297,11 +2314,12 @@ fn attach_drag_image(data: *mut c_void, img: &DragImage) {
     let bgra = compose_image(&g, icon.as_ref().map(|p| p.as_slice()), img.count, cov.as_deref().map(|c| (c, tw)));
     let hr = init_drag_image(source_helper(), data, &bgra, g.size, g.cursor);
     eprintln!(
-        "[dnd] drag image {0}x{0} px, {1} item(s), icon from {from}, composed in {2:.1} ms: InitializeFromBitmap = 0x{3:08X}",
+        "[dnd] drag image {0}x{0} px, {4} px icon, {1} item(s), icon from {from}, composed in {2:.1} ms: InitializeFromBitmap = 0x{3:08X}",
         g.size,
         img.count,
         crate::perf::elapsed_ms(t0),
-        hr as u32
+        hr as u32,
+        g.icon
     );
 }
 
@@ -2890,6 +2908,25 @@ mod tests {
         assert_eq!(at(&text, cx as usize, cy as usize), vec![255, 255, 255, 255]);
         // A wrong-sized icon is ignored rather than misread.
         assert_eq!(at(&compose_image(&g, Some(&icon[..10]), 1, None), 8, 8), vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn tile_drag_image_holds_the_tile_picture() {
+        // Out of the grid (P4-M3): the tile's 96 px picture with room for the badge.
+        let g = ImageGeom::tile(1.0);
+        assert_eq!((g.size, g.icon, g.inset, g.cursor), (128, 96, 16, (16, 16)));
+        let (cx, cy) = g.badge_centre();
+        assert!(cx + g.badge_r < g.size as f32 && cy + g.badge_r < g.size as f32, "the badge fits");
+        let g2 = ImageGeom::tile(1.5);
+        assert_eq!((g2.size, g2.icon, g2.inset), (192, 144, 24));
+        let blue = slint::Rgba8Pixel { r: 0, g: 0, b: 255, a: 255 };
+        let pic = vec![blue; 96 * 96];
+        let one = compose_image(&g, Some(&pic), 1, None);
+        let at = |img: &[u8], x: usize, y: usize| img[(y * 128 + x) * 4..(y * 128 + x) * 4 + 4].to_vec();
+        assert_eq!(one.len(), 128 * 128 * 4);
+        assert_eq!(at(&one, 16, 16), vec![255, 0, 0, 255], "the picture's first pixel, BGRA");
+        assert_eq!(at(&one, 111, 111), vec![255, 0, 0, 255], "its last");
+        assert_eq!(at(&one, 112, 112), vec![0, 0, 0, 0], "past it");
     }
 
     /// The shell's drag-drop helper takes a drag image for the shell's data object over a real

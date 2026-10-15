@@ -352,21 +352,38 @@ impl PaneModel {
     pub fn select(&self, op: SelOp, row: usize) {
         let len = self.shown.borrow().len();
         let changed = self.sel.borrow_mut().apply(op, row, len);
+        self.selection_changed(&changed);
+    }
+
+    /// Rows whose selection membership changed: mirror the set into the rows and notify them.
+    fn selection_changed(&self, changed: &[usize]) {
         if changed.is_empty() {
             return;
         }
         {
             let sel = self.sel.borrow();
             let mut shown = self.shown.borrow_mut();
-            for &i in &changed {
+            for &i in changed {
                 shown[i].selected = sel.set.contains(&i);
             }
         }
-        for &i in &changed {
+        for &i in changed {
             self.notify.row_changed(i);
             self.grid_changed(i);
         }
         self.sel_version.set(self.sel_version.get() + 1);
+    }
+
+    /// Replace the selection (the rubber band); only rows whose membership changed are notified.
+    pub fn set_selection(&self, new: BTreeSet<usize>) {
+        let len = self.shown.borrow().len();
+        let changed = self.sel.borrow_mut().replace(new, len);
+        self.selection_changed(&changed);
+    }
+
+    /// The selected rows' indices.
+    pub fn selected_set(&self) -> BTreeSet<usize> {
+        self.sel.borrow().set.clone()
     }
 
     /// Names of the selected rows, in display order.
@@ -948,6 +965,17 @@ impl Selection {
     }
 }
 
+impl Selection {
+    /// Replace the selection with `new` (rows past `len` dropped), keeping the anchor; returns
+    /// the rows whose membership changed. The rubber band's bulk update.
+    pub fn replace(&mut self, new: BTreeSet<usize>, len: usize) -> Vec<usize> {
+        let new: BTreeSet<usize> = new.into_iter().filter(|&i| i < len).collect();
+        let changed = self.set.symmetric_difference(&new).copied().collect();
+        self.set = new;
+        changed
+    }
+}
+
 /// Sort in place: directories first, then by the chosen column. Runs on a worker.
 pub fn sort_entries(entries: &mut [Entry], col: SortCol, asc: bool) {
     entries.sort_unstable_by(|a, b| {
@@ -1326,6 +1354,19 @@ mod tests {
         let mut fresh = Selection::default();
         fresh.apply(SelOp::Range, 4, 10);
         assert_eq!((fresh.set.clone(), fresh.anchor), (set(&[4]), Some(4)));
+    }
+
+    #[test]
+    fn selection_replace_reports_the_rows_that_changed() {
+        let mut s = Selection::default();
+        s.apply(SelOp::Range, 2, 10);
+        s.apply(SelOp::Range, 4, 10); // 2..=4
+        let mut changed = s.replace([3, 4, 5, 12].into_iter().collect(), 10);
+        changed.sort_unstable();
+        assert_eq!(changed, vec![2, 5], "2 leaves, 5 joins, 3 and 4 stay, 12 is past the end");
+        assert_eq!(s.set.iter().copied().collect::<Vec<_>>(), vec![3, 4, 5]);
+        assert_eq!(s.anchor, Some(2), "the anchor is not the band's to move");
+        assert!(s.replace([3, 4, 5].into_iter().collect(), 10).is_empty(), "nothing changed");
     }
 
     #[test]
