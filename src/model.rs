@@ -666,13 +666,28 @@ impl PaneModel {
         let mut idx: HashMap<SharedString, usize> = all.iter().enumerate().map(|(i, e)| (e.name.clone(), i)).collect();
 
         // Phase 1: resolve every name against the listing as the earlier edits leave it, without
-        // touching the model. `gone` and `added` overlay `idx`; `lower` (ASCII lowercase to the
-        // names that ever had it) is built on the first exact miss.
+        // touching the model. `overlay` (names removed or added so far) overlays `idx`.
+        //
+        // Names are matched exactly, except where the record's casing may differ from the listing's:
+        // a `Remove` or a `Rename.from` that misses exactly falls back to an ASCII-case-insensitive
+        // match through `lower` (ASCII lowercase to the names that ever had it), built on the first
+        // such miss only (about 33 ms over 40k names), and a rename's target is matched the same
+        // way by a scan that allocates nothing (an overwrite under another casing). An `Upsert` is
+        // matched exactly, by contract: a record carries the on-disk casing, so an Upsert whose
+        // name differs from an entry's only in case is a new entry (an insert); a case-only rename
+        // arrives as a `Rename`.
         let mut plan: Vec<Step> = Vec::with_capacity(edits.len());
         {
             let mut overlay: HashMap<SharedString, bool> = HashMap::new();
             let mut lower: Option<HashMap<String, Vec<SharedString>>> = None;
             let present = |overlay: &HashMap<SharedString, bool>, n: &SharedString| overlay.get(n).copied().unwrap_or_else(|| idx.contains_key(n));
+            let exact = |overlay: &HashMap<SharedString, bool>, n: &SharedString| present(overlay, n).then(|| n.clone());
+            let scan = |overlay: &HashMap<SharedString, bool>, lower: &Option<HashMap<String, Vec<SharedString>>>, n: &SharedString| {
+                if let Some(m) = lower {
+                    return m.get(&n.to_ascii_lowercase())?.iter().find(|k| present(overlay, k)).cloned();
+                }
+                idx.keys().chain(overlay.keys()).find(|k| k.eq_ignore_ascii_case(n) && present(overlay, k)).cloned()
+            };
             let resolve = |overlay: &HashMap<SharedString, bool>, lower: &mut Option<HashMap<String, Vec<SharedString>>>, n: &SharedString| {
                 if present(overlay, n) {
                     return Some(n.clone());
@@ -697,7 +712,7 @@ impl PaneModel {
             };
             for edit in edits {
                 match edit {
-                    Edit::Upsert(e) => match resolve(&overlay, &mut lower, &e.name) {
+                    Edit::Upsert(e) => match exact(&overlay, &e.name) {
                         Some(old) => {
                             mark(&mut overlay, &mut lower, &old, false);
                             mark(&mut overlay, &mut lower, &e.name, true);
@@ -718,7 +733,7 @@ impl PaneModel {
                             .ok_or_else(|| format!("rename of \"{from}\" to \"{}\": not in the listing", entry.name))?;
                         mark(&mut overlay, &mut lower, &old, false);
                         // Onto an existing name (overwriting it): that entry leaves first.
-                        if let Some(target) = resolve(&overlay, &mut lower, &entry.name) {
+                        if let Some(target) = exact(&overlay, &entry.name).or_else(|| scan(&overlay, &lower, &entry.name)) {
                             mark(&mut overlay, &mut lower, &target, false);
                             plan.push(Step::Remove(target));
                         }
@@ -739,8 +754,6 @@ impl PaneModel {
         let (mut hidden, mut filtered) = (self.hidden.get(), self.filtered.get());
         let mut notes: Vec<Note> = Vec::new();
         let mut gone_names: HashSet<SharedString> = HashSet::new();
-        // Entries replaced under another casing (an Upsert matched case-insensitively): (old, new).
-        let mut recased: Vec<(SharedString, SharedString)> = Vec::new();
         let mut out = Applied { added: 0, removed: 0, changed: 0, cursor: -1 };
         let cut_names: HashSet<SharedString> = self.cut.borrow().iter().cloned().collect();
 
@@ -789,8 +802,6 @@ impl PaneModel {
                     let prev = all[ai].clone();
                     if rename {
                         gone_names.insert(prev.name.clone());
-                    } else if prev.name != entry.name {
-                        recased.push((prev.name.clone(), entry.name.clone()));
                     }
                     // What the fresh stat cannot know: a folder's computed size (and, below, the
                     // row's resolved icon).
@@ -852,16 +863,9 @@ impl PaneModel {
         drop(filter);
         self.hidden.set(hidden);
         self.filtered.set(filtered);
-        if !gone_names.is_empty() || !recased.is_empty() {
-            // A name replaced under another casing is renamed in the cut (its row keeps the mark);
-            // names that left (removed, renamed away) leave it.
-            let mut cut = self.cut.borrow_mut();
-            for (old, new) in &recased {
-                for n in cut.iter_mut().filter(|n| *n == old) {
-                    *n = new.clone();
-                }
-            }
-            cut.retain(|n| !gone_names.contains(n));
+        if !gone_names.is_empty() {
+            // Names that left (removed, renamed away) leave the cut.
+            self.cut.borrow_mut().retain(|n| !gone_names.contains(n));
         }
         let sel_changed = (&sel.set, sel.anchor) != (&sel_before.0, sel_before.1);
         if let Some(c) = cur {
@@ -2194,16 +2198,21 @@ mod tests {
     }
 
     #[test]
-    fn apply_edits_recases_the_cut_and_keeps_resolved_icons() {
+    fn apply_edits_upserts_exactly_and_keeps_resolved_icons() {
         let (m, r, _g) = edited(SortCol::Name, true, "");
         m.set_cut(vec!["a3".into()]);
         log(&r);
-        // An Upsert whose casing differs from the listing's: the row and its cut mark stay, under
-        // the new name.
-        m.apply_edits(vec![Edit::Upsert(e("A3", 31, false))], -1).unwrap();
-        assert_eq!(log(&r), ["chg 2"]);
-        assert!(m.row_data(2).unwrap().cut && m.row_data(2).unwrap().name == "A3");
-        assert_eq!(m.capture(-1).cut, [SharedString::from("A3")]);
+        // The contract: an Upsert is matched by its exact name (a record carries the on-disk
+        // casing), so one that differs from an entry only in case is a new entry, inserted after
+        // its equal; the entry it resembles, its row and its cut mark are untouched.
+        let a = m.apply_edits(vec![Edit::Upsert(e("A3", 31, false))], -1).unwrap();
+        assert_eq!((a.added, a.changed), (1, 0));
+        assert_eq!(log(&r), ["add 3"]);
+        assert_eq!((m.row_data(2).unwrap().name.as_str(), m.row_data(3).unwrap().name.as_str()), ("a3", "A3"));
+        assert!(m.row_data(2).unwrap().cut && !m.row_data(3).unwrap().cut);
+        assert_eq!(m.capture(-1).cut, [SharedString::from("a3")]);
+        m.apply_edits(vec![Edit::Remove("A3".into())], -1).unwrap();
+        assert_eq!(rows(&m)[2..4], ["a3", "a4"], "the exact name is removed, not its case twin");
         // The icon `resolve_icons` gave the row survives a replace with the same key; a new key
         // goes back to the placeholder.
         let keyed = |name: &str, key: &str| Entry { icon_key: key.into(), ..e(name, 5, false) };
@@ -2216,6 +2225,11 @@ mod tests {
         assert_eq!(m.icon_indices(4, 4), [resolved]);
         m.apply_edits(vec![Edit::Upsert(keyed("a5", "ext:.log"))], -1).unwrap();
         assert_eq!(m.icon_indices(4, 4), [PLACEHOLDER_FILE]);
+        // A rename onto a name that exists under another casing overwrites it.
+        let total = m.total();
+        let a = m.apply_edits(vec![Edit::Rename { from: "a6".into(), entry: e("A7", 6, false) }], -1).unwrap();
+        assert_eq!((a.removed, a.changed, m.total()), (1, 1, total - 1));
+        assert_eq!(m.snapshot_all().iter().filter(|x| x.name.eq_ignore_ascii_case("a7")).map(|x| x.name.to_string()).collect::<Vec<_>>(), ["A7"]);
     }
 
     #[test]
