@@ -99,6 +99,7 @@ from a detached checkout with `--locked`, `tools/wpr-triplet.ps1 -Reference p3m5
 ## Open questions
 
 Written 2026-10-14 at the kickoff; the Phase 3 close's open questions are absorbed here.
+Updated 2026-10-15 at the Phase 4 close (§ Phase 4 close holds where each stands).
 
 - **The Slint whole-row snap patch** (P3-M1 Deferred): Slint snaps a `ListView` rebuilt while
   scrolled to a whole row; the one-line fork patch is proven (`target-zcfix`). P4-M1's view switch
@@ -870,3 +871,161 @@ sits at 10.2 against the bar's 20. Jeremy's console checks (2026-10-15, after th
 "console checks are fine". Merged as #44 (2026-10-15); `target\release` rebuilt from main.
 `target-p4m3` (53dbc50) is the reference for whatever follows; `target-p4m2` goes once it has
 served as one.
+
+## Phase 4 close
+
+Written 2026-10-15. P4-M1 to P4-M3 are in, each squash-merged on Jeremy's word, all three on the
+same day: P4-M1 the grid as a real view (#38, 7ca4a5f; gate build cb589c8; its close docs #39,
+d55623b), P4-M2 thumbnails in the tiles (#40, d18ee46; gate build 44d3a84; the run-order note in
+`CLAUDE.md` #41, 10cfb6b), P4-M3 selection and drops by tile (#44, 3929c06; gate build 53dbc50,
+the PR head before its two docs commits). Between them `docs/cleanup.md` (#42, #43): the stale
+gate builds, 169 GB of traces and the Files-app profiling leftovers, with the four Phase 3
+reference builds deleted on 2026-10-15. The phase ran from the kickoff (#37, 2026-10-14) to the
+last merge in a day and a half. Tests went from 122 at the start of P4-M1 to 134.
+
+Phase 4's goal, "TwinFM shows a folder as large icons, with thumbnails, without giving back the
+gate" (chosen 2026-10-14), held: a large-icon grid per pane behind Ctrl+Shift+1 / Ctrl+Shift+2
+and a saved `view_left` / `view_right`, with tile geometry everywhere the trace had left 22 px
+rows (hit testing, the drop highlight, the rename editor, the menu point, keyboard by tile, the
+driver) and its strip as a ring of per-row images; thumbnails in the tiles at the grid's icon
+size through the P3-M5 workers and table, with the shell's straight-colour edge pixels clamped
+and the placeholders drawn at size; a rubber band from the grid's empty space with auto-scroll at
+and beyond the list's edges, a 128 px drag image holding the tile's own picture, and a grid cycle
+in the soak. The gate gave nothing back. Every milestone passed by the triplet rule against the
+previous milestone's build (medians, reference / candidate on defaults / candidate with the
+settings file):
+
+| Milestone | Tag | Reference | Medians | Note |
+|---|---|---|---|---|
+| P4-M1 | ab17 | `target-p3m5` (ee0be21) | 16.9 / 17.0 / grid 9.6 | the grid's strip at 15% of its window against the trace's 36% |
+| P4-M2 | ab18 | `target-p4m1` (cb589c8) | 18.4 / 18.7 / grid 11.4, grid with thumbnails 11.2 | round 3 disturbed for every binary; pairs read within their round (+0.2, +0.3, +0.7) |
+| P4-M3 | ab19 | `target-p4m2` (44d3a84) | 18.0 / 17.9 / grid 10.2 | the tightest spread of any triplet (0.1) |
+
+The details list never moved: the defaults medians sat within 0.3 of the reference in every
+session, and the generated rows of the four details lists were proven to be the reference's by
+diffing the generated Rust (P4-M1, 6,090 lines; P4-M3, 6,091) before each gate. The grid sits
+seven to eight points under the details list in every session and nine to ten under the bar,
+because it draws so much less per pixel scrolled (about 40 row samples against 320, half the
+`draw_text`, under half the accessibility and timer samples), with its strip at 7 to 9% of its
+window. The settings triplets (`C:\traces\grid.toml`, `C:\traces\grid-thumbs.toml`, read-only,
+each run's stderr checked for `[settings] file ... (read)`) worked as the kickoff said they
+would: the defaults triplet decided whether the details list had moved, the settings triplet
+whether the grid held the bar.
+
+Lessons of the phase, each in its milestone's record and, where it changes how work is done, in
+`CLAUDE.md`:
+
+- **The size of what is recomposed is the lever, not how often** (P4-M1 Decision 1). The brief
+  named the strip's margin and the texture upload; measured, a larger margin composed less often
+  but cost more each time, while one image per grid row halved the strip's CPU and made each
+  upload a tenth of the size, because an unchanged `Image` property keeps its cached texture.
+- **Back-to-back in-app pairs carry a run-order bias** (P4-M2 Measurements, `CLAUDE.md` §
+  Measuring): the second slot of a pair read one to three points above the first whichever binary
+  sat in it, so an in-app "candidate above in every pair" is swapped before it is believed. The
+  console triplet decides.
+- **A pane overlay beats a per-row item** (P4-M3 Decision 1): the band's empty-space areas are two
+  rectangles on the pane, created only with the grid, in place of the per-row pointer area the
+  brief allowed; nothing per row, nothing a recycled delegate could drop under a pointer grab.
+- **The shell's bitmaps are not always premultiplied** (P4-M2): the 96 px folder icon carries an
+  edge row of straight colour at low alpha, which the renderer brightened into a lime line;
+  `bgra_to_rgba` clamps every channel to its alpha once per key.
+- **The harness window is 800 px tall**, not the 839 earlier checks assumed (P4-M3): edge rules
+  are checked against the real list geometry (`scrollpos`, the `[grid]` row count).
+
+Open questions at the close (§ Open questions is updated above):
+
+- **The Slint whole-row snap patch**: still Jeremy's call. The view switch rebuilds the list, so
+  the snap shows on every Ctrl+Shift+1 / Ctrl+Shift+2; the one-line fork patch (`target-zcfix`)
+  waits for the fork to be touched next, with its own triplet.
+- **Upstreaming the two accessibility patches**: still deferred; Jeremy decides when.
+- **Video and Office thumbnails**: still no fixture on this machine; the grid shows what the
+  shell's cache returns and no one has reported looking.
+- **Explorer's view per folder**: not asked for; the view stays per pane.
+- **The trace binaries**: `target-p3m5a` and `target-p3m5b` were deleted on 2026-10-15
+  (`docs/cleanup.md`); their branches `trace/p3-m5-a-32px` and `trace/p3-m5-b-grid` stay on
+  origin, never merged, so both can be rebuilt.
+
+Deferred, pulled together from the three milestones, each with where it came from. The Phase 3
+close's list (`phase-3-plan.md` § Phase 3 close) still stands except for what this phase
+finished: the large-icon grid, the green fringe and the stretched placeholders (P3-M5), and the
+thumbnail in the drag image out of the grid (P3-M5; a drag out of the details list still asks the
+shell for a 64 px icon).
+
+- **The view**: not in the settings dialog, only the keys and the file set it (P4-M1); Explorer's
+  other views (Ctrl+Shift+3 to 8: extra large, medium and small icons, list, tiles, content) have
+  no key and no component, and the grid's tile size is one constant (`TILE_W`, `GRID_ICON_PX`)
+  (P4-M1); the grid keeps a Name header for the sort arrow and the geometry (P4-M1); PageUp and
+  PageDown are still unmapped in the details list (P4-M1); Shift with the digits is read as `!`
+  and `@`, US layouts only (P4-M1); the whole-row snap on every switch (above).
+- **The grid and Slint**: each grid row is one accessibility node and the tiles have none of their
+  own, not checked with Narrator (P4-M1); stale slot images outside the covered range stay in
+  memory until navigation, at most the ring (P4-M1); `ICON_MARGIN_ROWS` and `STRIP_MARGIN_ROWS`
+  are in entries, so the grid's margins are a grid row and under half of one, enough for the ring
+  unless a trace shows re-requests on a slow scroll (P4-M2).
+- **Thumbnails**: no frame or shadow around a thumbnail, where Explorer draws one (P4-M2); video
+  and Office documents unseen (above); thumbnails in search tabs, in archives and in the details
+  list's drag image (Phase 3's list, unchanged).
+- **The band**: none in the details list (P4-M3); the cursor and the anchor stay where they were
+  after a band, where Explorer moves the focus to the last tile touched (P4-M3 Decision 4); a
+  press on a tile's blank corner selects the tile rather than starting a band (P4-M3); the scroll
+  speed is one grid row per 50 ms at any distance past the edge, where Explorer scrolls faster
+  the further the pointer goes (P4-M3); no horizontal auto-scroll (the grid never scrolls
+  sideways); a band under a navigation or refresh keeps its anchor in the old listing's content
+  coordinates (P4-M3).
+- **Checks that need Jeremy at the console**: Narrator over the grid (P4-M1) joins Phase 3's list
+  (the settings dialog, the filter box, an archive tab, the 32 px lists, and the rest of it);
+  video and Office thumbnails in the tiles (P4-M2).
+
+Phase 5 candidates, in no agreed order, for Jeremy's decision (none is decided):
+
+- **The grid read by a screen reader** (P4-M1 Deferred): tiles as accessibility nodes of their own,
+  which is a per-tile cost and so a trace first (the accessibility patches exist because AccessKit
+  rebuilt per scrolled frame; the grid's ab19 window holds about 70 accessibility samples against
+  the list's 185), and a Narrator pass over everything since Phase 2 that no person has checked
+  (the console-check list above).
+- **The views finished** (P4-M1 Deferred): the view in the settings dialog; Explorer's extra large
+  and medium icons as the same grid at other tile sizes (the constants become a per-pane
+  geometry, chosen once, never per row); a frame around thumbnails; the cursor following the band;
+  the whole-row snap patch as the fork's third commit with its own triplet, since every switch
+  shows the snap.
+- **The Slint fork** on its own: the snap patch and the upstreaming decision
+  (`docs/upstream-issue-draft.md`, `docs/patches/`), both Jeremy's.
+- **Content search** (P3-M2; Jeremy said out for now on 2026-10-13).
+- **Thumbnails beyond the listing** (P3-M5): search tabs, archives, the details list's drag image.
+- **Archives, the rest** (P3-M4): other formats, writing into archives, a foreign synchronous zip
+  drop moved off the UI thread.
+- **The compact Windows 11 context menu** (`IExplorerCommand`, P2-M3, cut from Phase 3).
+- **OneDrive status marks** through `PHCM_EXPOSE_PLACEHOLDERS` (P2-M5; needs its own check and a
+  decision on whether cloud marks are wanted at all).
+- **Search polish** (P3-M2): the Name column width in search tabs, results from several folders in
+  one menu or drag, results following changes.
+- **Folder sizes, the unexercised paths** (P3-M3): forcing the subtree-watch overflow in a test,
+  the drive-root subtree watch.
+- **The Phase 2 lists still open**: directory watching (change records, background tabs, shares,
+  removable drives), file operations (Redo, progress inside TwinFM), drag and drop
+  (spring-loaded folders, drop descriptions), as `phase-3-plan.md` § Phase 3 close lists them.
+- **Daily use**: TwinFM in place of Files for a stretch of days, with what bites written down as
+  the milestones; `docs/cleanup.md` names what goes once Files is retired.
+
+The gate protocol for Phase 5, unchanged from Phase 4: `tools/wpr-triplet.ps1` elevated at the
+console by Jeremy, accessibility on, Narrator off, no other TwinFM window, the split-and-scroll
+scenario on `C:\traces\bigdir`, clean binaries built with `--locked` into their own `--target-dir
+target-<name>` from detached checkouts with default features; three runs per binary interleaved,
+compared by median; a gap counts only when every reference run sits below every candidate run or
+the medians differ by more than one point; console checks after the triplet; bar: main thread
+under 20% busy over the 10 s after the split, judged against the reference's spread in the same
+session, never against a recorded number. Settings triplets stay part of it: a milestone that
+touches the list, the grid or the icons runs the defaults triplet and the settings triplets its
+entry names (`C:\traces\thumbs.toml`, `C:\traces\grid.toml`, `C:\traces\grid-thumbs.toml`,
+read-only, each run's stderr checked for `[settings] file ... (read)`). Tags continue from ab20.
+
+The fleet of gate binaries at the close (each `target-<name>\release\twinfm.exe` in the main
+checkout): `target-p4m3` (53dbc50, P4-M3's gate build) is the reference for Phase 5's first
+milestone; `target-p4m2` (44d3a84) was P4-M3's reference and is deleted once `target-p4m3` has
+served as one; `target-p4m1` (cb589c8) has served and can go now; every older `target-*` is gone
+(`docs/cleanup.md`). The everyday `target\release` was rebuilt from 3929c06 on 2026-10-15.
+Worktrees left from the phase for Jeremy to remove from the main checkout (a session cannot
+remove its own): `.claude/worktrees/sad-khayyam-7503e2` (P4-M3, merged) and
+`.claude/worktrees/p4m2-gate` (the detached gate checkout); `.claude/worktrees/p4-m2-thumbnails-tiles-370576`
+was emptied on 2026-10-15 and its orphaned local branch `claude/phase-4-close-phase-5-1c4faa`
+(at 3929c06, no commits) can be deleted; then `git worktree prune`.
