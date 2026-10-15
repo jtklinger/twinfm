@@ -75,11 +75,22 @@ pub const OPEN_TIMEOUT: Duration = Duration::from_secs(3);
 /// The notification buffer per watch, in bytes (DWORD-aligned: it is a `Vec<u32>`).
 const BUF_BYTES: usize = 64 * 1024;
 
+/// Past this many records in one window a plain watch stops gathering them and reports an
+/// overflow (the UI lists the folder again).
+const MAX_RECORDS: usize = 1000;
+
 /// The buffer of a parent watch (folder names only).
 const PARENT_BUF_BYTES: usize = 4 * 1024;
 
 /// Completion key of a command post. Watches use their own (heap) address, never 1 or 2.
 const KEY_CMD: usize = 1;
+
+/// Completion key of a network folder's open, posted by its helper thread; the packet's
+/// `OVERLAPPED` pointer is a `Box<Opened>`.
+const KEY_OPENED: usize = 3;
+
+/// A network folder whose open stalled is refused at once for this long.
+const STALL_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// Completion key of a helper thread's report that it has cancelled and closed a network watch;
 /// the packet's `OVERLAPPED` pointer is the watch.
@@ -175,6 +186,9 @@ impl Watcher {
                     dying: Vec::new(),
                     refused: HashMap::new(),
                     hwnd: 0,
+                    opening: HashMap::new(),
+                    next_req: 0,
+                    stalled: HashMap::new(),
                     cmds: cmd_rx,
                     events: tx,
                     wake,
@@ -277,7 +291,12 @@ pub fn device_event(event: u32, hdevnotify: isize) -> bool {
             match reply_rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(true) => eprintln!("[devices] query remove for a watched handle: suspended"),
                 Ok(false) => {}
-                Err(_) => eprintln!("[devices] query remove for a watched handle: no reply within 1 s"),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    eprintln!("[devices] query remove for a watched handle: no reply within 1 s")
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    eprintln!("[devices] query remove for a watched handle: the watcher has stopped")
+                }
             }
         }
         DBT_DEVICEQUERYREMOVEFAILED => post(Cmd::Resume(hdevnotify)),
@@ -404,6 +423,28 @@ impl Watch {
     }
 }
 
+/// The result of a network folder's open, from its helper thread.
+struct Opened {
+    req: u64,
+    result: Result<usize, String>,
+}
+
+/// A network folder's open in flight: what to do with the handle when it arrives.
+struct PendingOpen {
+    tab_id: u64,
+    pane: usize,
+    role: Role,
+    path: PathBuf,
+    subtree: bool,
+    parent: bool,
+    deadline: Instant,
+}
+
+/// The drive or share a path is on (lowercased), for the stall cool-down.
+fn root_of(path: &Path) -> std::ffi::OsString {
+    path.components().next().map(|c| c.as_os_str().to_ascii_lowercase()).unwrap_or_default()
+}
+
 struct Dirwatch<W: Fn()> {
     port: HANDLE,
     /// The live (main) watch of each tab.
@@ -414,6 +455,11 @@ struct Dirwatch<W: Fn()> {
     refused: HashMap<u64, (usize, PathBuf)>,
     /// The main window (0 until the UI sends it).
     hwnd: isize,
+    /// Network folders being opened on helper threads, by request number.
+    opening: HashMap<u64, PendingOpen>,
+    next_req: u64,
+    /// Network roots whose open stalled, and when.
+    stalled: HashMap<std::ffi::OsString, Instant>,
     cmds: Receiver<Cmd>,
     events: Sender<Event>,
     wake: W,
@@ -479,31 +525,13 @@ fn open_now(path: &Path) -> Result<usize, String> {
     if h == INVALID_HANDLE_VALUE { Err(last_error()) } else { Ok(h as usize) }
 }
 
-/// Open `path` for watching: the directory handle, or why not. A network folder is opened on a
-/// helper thread, waited for at most `OPEN_TIMEOUT`; a late open is closed by the helper.
+/// Open a local `path` for watching on this thread: the directory handle, or why not. (A network
+/// folder goes through `Dirwatch::request_open` instead.)
 fn open_dir(path: &Path) -> Result<HANDLE, String> {
     if let Some(why) = unwatchable(path) {
         return Err(why.into());
     }
-    if !is_remote(path) {
-        return open_now(path).map(|h| h as HANDLE);
-    }
-    // A rendezvous channel: the handle is either received here or handed back to the helper.
-    let (tx, rx) = bounded::<Result<usize, String>>(0);
-    let p = path.to_path_buf();
-    let spawned = std::thread::Builder::new().name("dirwatch-open".into()).spawn(move || {
-        if let Err(crossbeam_channel::SendError(Ok(h))) = tx.send(open_now(&p)) {
-            // SAFETY: the open completed after the watcher gave up; nobody else has the handle.
-            unsafe { CloseHandle(h as HANDLE) };
-        }
-    });
-    if let Err(e) = spawned {
-        return Err(format!("no open thread: {e}"));
-    }
-    match rx.recv_timeout(OPEN_TIMEOUT) {
-        Ok(r) => r.map(|h| h as HANDLE),
-        Err(_) => Err("stalled: no watch".into()),
-    }
+    open_now(path).map(|h| h as HANDLE)
 }
 
 /// Register for the device events of the drive under `handle`: the HDEVNOTIFY, or 0.
@@ -576,7 +604,9 @@ impl<W: Fn()> Dirwatch<W> {
             let ok = unsafe { GetQueuedCompletionStatus(self.port, &mut bytes, &mut key, &mut ov, timeout) } != 0;
             // SAFETY: reads this thread's last-error value, set by the failed call just above.
             let err = if ok { 0 } else { unsafe { GetLastError() } };
-            if !ov.is_null() {
+            if key == KEY_OPENED && !ov.is_null() {
+                self.opened(ov as *mut Opened);
+            } else if !ov.is_null() {
                 self.completed(ov as *mut Watch, key, ok, err, bytes);
             } else if ok && key == KEY_CMD {
                 if !self.commands() {
@@ -586,13 +616,16 @@ impl<W: Fn()> Dirwatch<W> {
                 eprintln!("[watch] completion port failed: {}; the watcher stops", std::io::Error::from_raw_os_error(err as i32));
                 return self.shutdown();
             }
+            self.expire_opens();
             self.deliver();
         }
     }
 
     fn next_due(&self) -> Option<Instant> {
         // SAFETY: every slot is a live watch owned by this thread.
-        self.slots.values().filter_map(|&p| unsafe { (*p).due }).min()
+        let due = self.slots.values().filter_map(|&p| unsafe { (*p).due }).min();
+        let open = self.opening.values().map(|o| o.deadline).min();
+        due.into_iter().chain(open).min()
     }
 
     fn send(&self, ev: Event) {
@@ -614,12 +647,14 @@ impl<W: Fn()> Dirwatch<W> {
                 Cmd::Watch { pane, tab_id, path, subtree, parent } => self.start(pane, tab_id, path, subtree, parent),
                 Cmd::Unwatch(tab_id) => {
                     self.refused.remove(&tab_id);
+                    self.opening.retain(|_, o| o.tab_id != tab_id);
                     if let Some(p) = self.slots.remove(&tab_id) {
                         self.retire(p);
                     }
                 }
                 Cmd::UnwatchPane(pane) => {
                     self.refused.retain(|_, (p, _)| *p != pane);
+                    self.opening.retain(|_, o| o.pane != pane);
                     // SAFETY: every slot is a live watch owned by this thread.
                     let tabs: Vec<u64> = self.slots.iter().filter(|&(_, &p)| unsafe { (*p).pane } == pane).map(|(&t, _)| t).collect();
                     for t in tabs {
@@ -686,14 +721,25 @@ impl<W: Fn()> Dirwatch<W> {
     }
 
     fn start(&mut self, pane: usize, tab_id: u64, path: PathBuf, subtree: bool, parent: bool) {
+        // A network open in flight for this tab: the same request waits for it; another one
+        // supersedes it (its late handle is closed when it arrives).
+        if let Some((&req, o)) = self.opening.iter_mut().find(|(_, o)| o.tab_id == tab_id && o.role == Role::Main) {
+            if o.path == path && o.subtree == subtree {
+                (o.pane, o.parent) = (pane, parent);
+                return;
+            }
+            self.opening.remove(&req);
+        }
         if let Some(&p) = self.slots.get(&tab_id) {
             // SAFETY: a live watch owned by this thread.
             let w = unsafe { &mut *p };
             if w.path == path && w.subtree == subtree {
                 w.pane = pane;
-                if parent != w.wants_parent && !w.suspended {
+                if parent != w.wants_parent {
+                    // A suspended watch only remembers it: `resume` opens the parent if wanted.
                     w.wants_parent = parent;
-                    if parent {
+                    if w.suspended {
+                    } else if parent {
                         self.open_parent(p);
                     } else if !w.parent.is_null() {
                         let pp = std::mem::replace(&mut w.parent, std::ptr::null_mut());
@@ -706,15 +752,109 @@ impl<W: Fn()> Dirwatch<W> {
                 eprintln!("[watch] pane={pane} subtree off {}", path.display());
             }
             self.slots.remove(&tab_id);
+            self.opening.retain(|_, o| o.tab_id != tab_id);
             self.retire(p);
         }
-        if self.slots.len() >= MAX_WATCHES {
+        let opening = self.opening.values().filter(|o| o.role == Role::Main).count();
+        if self.slots.len() + opening >= MAX_WATCHES {
             return self.refuse(pane, tab_id, path, format!("watch cap reached ({MAX_WATCHES})"));
         }
-        let handle = match open_dir(&path) {
-            Ok(h) => h,
-            Err(why) => return self.refuse(pane, tab_id, path, why),
+        if let Some(why) = unwatchable(&path) {
+            return self.refuse(pane, tab_id, path, why.into());
+        }
+        if is_remote(&path) {
+            if let Err(why) = self.request_open(tab_id, pane, Role::Main, path.clone(), subtree, parent) {
+                self.refuse(pane, tab_id, path, why);
+            }
+            return;
+        }
+        match open_dir(&path) {
+            Ok(h) => self.install(pane, tab_id, path, subtree, parent, h),
+            Err(why) => self.refuse(pane, tab_id, path, why),
+        }
+    }
+
+    /// Open a network folder on a helper thread, which posts the result (`KEY_OPENED`); refused
+    /// at once while its root is in the stall cool-down.
+    fn request_open(&mut self, tab_id: u64, pane: usize, role: Role, path: PathBuf, subtree: bool, parent: bool) -> Result<(), String> {
+        if self.stalled.get(&root_of(&path)).is_some_and(|t| t.elapsed() < STALL_COOLDOWN) {
+            return Err("stalled: no watch".into());
+        }
+        let req = self.next_req;
+        self.next_req += 1;
+        let (port, p) = (self.port as usize, path.clone());
+        HELPERS.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new().name("dirwatch-open".into()).spawn(move || {
+            let packet = Box::into_raw(Box::new(Opened { req, result: open_now(&p) }));
+            // SAFETY: the watcher frees the Box when it dequeues the packet; the port stays open
+            // while any helper runs (`HELPERS`).
+            unsafe { PostQueuedCompletionStatus(port as HANDLE, 0, KEY_OPENED, packet as *const OVERLAPPED) };
+            HELPERS.fetch_sub(1, Ordering::SeqCst);
+        });
+        if let Err(e) = spawned {
+            HELPERS.fetch_sub(1, Ordering::SeqCst);
+            return Err(format!("no open thread: {e}"));
+        }
+        self.opening.insert(req, PendingOpen { tab_id, pane, role, path, subtree, parent, deadline: Instant::now() + OPEN_TIMEOUT });
+        Ok(())
+    }
+
+    /// A network folder's open finished: install the watch (or parent watch) it was for, or close
+    /// the handle when that request was superseded or gave up.
+    fn opened(&mut self, packet: *mut Opened) {
+        // SAFETY: the helper's Box, posted once and dequeued once.
+        let o = unsafe { Box::from_raw(packet) };
+        let close = |h: usize| {
+            // SAFETY: the handle the helper opened; nobody else has it.
+            unsafe { CloseHandle(h as HANDLE) };
         };
+        let Some(po) = self.opening.remove(&o.req) else {
+            if let Ok(h) = o.result {
+                close(h);
+            }
+            return;
+        };
+        match (po.role, o.result) {
+            (Role::Main, Ok(h)) => self.install(po.pane, po.tab_id, po.path, po.subtree, po.parent, h as HANDLE),
+            (Role::Main, Err(why)) => self.refuse(po.pane, po.tab_id, po.path, why),
+            (Role::Parent, result) => {
+                // SAFETY: slots hold live watches.
+                let owner = self.slots.get(&po.tab_id).copied().filter(|&m| unsafe {
+                    (*m).parent.is_null() && (*m).wants_parent && !(*m).suspended && (*m).path.parent() == Some(po.path.as_path())
+                });
+                match (owner, result) {
+                    (Some(m), Ok(h)) => self.attach_parent(m, po.path, h as HANDLE),
+                    (None, Ok(h)) => close(h),
+                    (Some(m), Err(why)) => {
+                        // SAFETY: a live main watch.
+                        let w = unsafe { &*m };
+                        eprintln!("[watch] pane={} tab={} no parent watch for {}: {why}", w.pane, w.tab_id, w.path.display());
+                    }
+                    (None, Err(_)) => {}
+                }
+            }
+        }
+    }
+
+    /// Network opens that have not finished within `OPEN_TIMEOUT`: refused as stalled, and their
+    /// root refused at once for `STALL_COOLDOWN`. The helper's late handle is closed on arrival.
+    fn expire_opens(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<u64> = self.opening.iter().filter(|(_, o)| o.deadline <= now).map(|(&r, _)| r).collect();
+        for req in expired {
+            let Some(po) = self.opening.remove(&req) else { continue };
+            self.stalled.insert(root_of(&po.path), now);
+            match po.role {
+                Role::Main => self.refuse(po.pane, po.tab_id, po.path, "stalled: no watch".into()),
+                Role::Parent => {
+                    eprintln!("[watch] pane={} tab={} no parent watch for {}: stalled: no watch", po.pane, po.tab_id, po.path.display())
+                }
+            }
+        }
+    }
+
+    /// Start the main watch of `tab_id` on the open `handle`.
+    fn install(&mut self, pane: usize, tab_id: u64, path: PathBuf, subtree: bool, parent: bool, handle: HANDLE) {
         let p = Box::into_raw(Box::new(Watch::new(Role::Main, handle, pane, tab_id, path, subtree)));
         // SAFETY: `p` is the Box just leaked; the handle is open; the key is the watch's address.
         let res = unsafe {
@@ -753,11 +893,27 @@ impl<W: Fn()> Dirwatch<W> {
         let Some(dir) = w.path.parent().filter(|d| w.path.file_name().is_some() && !d.as_os_str().is_empty()) else {
             return no_parent("a drive root");
         };
-        let handle = match open_dir(dir) {
-            Ok(h) => h,
-            Err(why) => return no_parent(&why),
-        };
-        let pp = Box::into_raw(Box::new(Watch::new(Role::Parent, handle, w.pane, w.tab_id, dir.to_path_buf(), false)));
+        if is_remote(dir) {
+            let (tab_id, pane, dir) = (w.tab_id, w.pane, dir.to_path_buf());
+            if let Err(why) = self.request_open(tab_id, pane, Role::Parent, dir, false, false) {
+                // SAFETY: as above.
+                let w = unsafe { &*p };
+                eprintln!("[watch] pane={} tab={} no parent watch for {}: {why}", w.pane, w.tab_id, w.path.display());
+            }
+            return;
+        }
+        match open_dir(dir) {
+            Ok(h) => self.attach_parent(p, dir.to_path_buf(), h),
+            Err(why) => no_parent(&why),
+        }
+    }
+
+    /// Give the main watch at `p` its parent watch on `dir`, opened as `handle`.
+    fn attach_parent(&mut self, p: *mut Watch, dir: PathBuf, handle: HANDLE) {
+        // SAFETY: a live main watch owned by this thread.
+        let w = unsafe { &mut *p };
+        let no_parent = |why: &str| eprintln!("[watch] pane={} tab={} no parent watch for {}: {why}", w.pane, w.tab_id, w.path.display());
+        let pp = Box::into_raw(Box::new(Watch::new(Role::Parent, handle, w.pane, w.tab_id, dir.clone(), false)));
         // SAFETY: `pp` is the Box just leaked; the handle is open; the key is the watch's address.
         let res = unsafe {
             if CreateIoCompletionPort(handle, self.port, pp as usize, 0).is_null() { Err(last_error()) } else { arm(&mut *pp) }
@@ -905,6 +1061,12 @@ impl<W: Fn()> Dirwatch<W> {
                 w.records += records.len();
                 if !w.overflow {
                     w.raw.extend(records.into_iter().filter(|(_, n)| !n.contains('\\')));
+                    if w.raw.len() > MAX_RECORDS {
+                        // Folding this many costs more than listing the folder again.
+                        eprintln!("[watch] pane={} tab={} {} records in the window: overflow", w.pane, w.tab_id, w.raw.len());
+                        w.overflow = true;
+                        w.raw = Vec::new();
+                    }
                 }
             }
         }
@@ -940,7 +1102,12 @@ impl<W: Fn()> Dirwatch<W> {
             while i < records.len() {
                 let name = mw.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let (action, n) = (&records[i].0, &records[i].1);
-                let renamed_to = if std::mem::take(&mut pw.cut_old) && *action == FILE_ACTION_RENAMED_NEW_NAME {
+                // An old name of our folder with no new name after it: the folder left this
+                // parent (moved to another folder on the volume).
+                let renamed_to = if i == 0 && std::mem::take(&mut pw.cut_old) {
+                    if *action != FILE_ACTION_RENAMED_NEW_NAME {
+                        return self.lose(m, "the folder was moved away".into());
+                    }
                     Some(n.clone())
                 } else if *action == FILE_ACTION_RENAMED_OLD_NAME && n.eq_ignore_ascii_case(&name) {
                     match records.get(i + 1) {
@@ -948,7 +1115,7 @@ impl<W: Fn()> Dirwatch<W> {
                             i += 1;
                             Some(new.clone())
                         }
-                        Some(_) => None,
+                        Some(_) => return self.lose(m, "the folder was moved away".into()),
                         None => {
                             pw.cut_old = true;
                             None
@@ -1084,6 +1251,7 @@ impl<W: Fn()> Dirwatch<W> {
     /// Quit: cancel every watch and wait (bounded) for the cancelled reads and helpers, so no
     /// buffer is freed while the kernel may still write into it.
     fn shutdown(mut self) {
+        self.opening.clear();
         let live: Vec<_> = self.slots.drain().map(|(_, p)| p).collect();
         for p in live {
             self.retire(p);
@@ -1098,7 +1266,9 @@ impl<W: Fn()> Dirwatch<W> {
             let (mut bytes, mut key, mut ov) = (0u32, 0usize, std::ptr::null_mut::<OVERLAPPED>());
             // SAFETY: as in `run`.
             let ok = unsafe { GetQueuedCompletionStatus(self.port, &mut bytes, &mut key, &mut ov, left.as_millis() as u32) } != 0;
-            if !ov.is_null() {
+            if key == KEY_OPENED && !ov.is_null() {
+                self.opened(ov as *mut Opened);
+            } else if !ov.is_null() {
                 self.completed(ov as *mut Watch, key, ok, 0, 0);
             }
         }
@@ -1142,10 +1312,14 @@ fn action_name(action: u32) -> &'static str {
     }
 }
 
-/// The net change per name of a window's raw records (FILE_ACTION_*, name), in the order each
-/// entry first appeared. A rename's old name followed by its new name is one rename; an old name
-/// with no new name after it is a removal, a new name with no old name an addition. Names compare
-/// ASCII-case-insensitively (NTFS).
+/// The net change per name of a window's raw records (FILE_ACTION_*, name). A rename's old name
+/// followed by its new name is one rename; an old name with no new name after it is a removal, a
+/// new name with no old name an addition. Names compare ASCII-case-insensitively (NTFS).
+///
+/// The changes come out so that applying them in order is right: departures first (removals, then
+/// renames, each rename after the one that vacates its target), then additions, then
+/// modifications; within a kind, in the order each entry first appeared. Renames that form a
+/// cycle (a swap through a temporary name) become a modification of each name.
 pub fn net_changes(raw: Vec<(u32, String)>) -> Vec<Change> {
     /// One entry: its name at the window's start (None: created in the window), its name now
     /// (None: gone), and whether its contents changed.
@@ -1154,57 +1328,107 @@ pub fn net_changes(raw: Vec<(u32, String)>) -> Vec<Change> {
         now: Option<String>,
         modified: bool,
     }
-    let same = |a: &Option<String>, b: &str| a.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(b));
+    let key = |n: &str| n.to_ascii_lowercase();
     let mut entries: Vec<Entry> = Vec::new();
+    // Lowercased current name -> live entry; lowercased start name -> entry that is gone.
+    let mut live: HashMap<String, usize> = HashMap::new();
+    let mut gone: HashMap<String, usize> = HashMap::new();
     let mut it = raw.into_iter().peekable();
     while let Some((action, name)) = it.next() {
-        let live = entries.iter().position(|e| same(&e.now, &name));
+        let k = key(&name);
         match action {
             FILE_ACTION_RENAMED_OLD_NAME if matches!(it.peek(), Some((FILE_ACTION_RENAMED_NEW_NAME, _))) => {
                 let Some((_, to)) = it.next() else { unreachable!() };
-                match live {
-                    Some(i) => entries[i].now = Some(to),
-                    None => entries.push(Entry { start: Some(name), now: Some(to), modified: false }),
-                }
+                let i = live.remove(&k).unwrap_or_else(|| {
+                    entries.push(Entry { start: Some(name), now: None, modified: false });
+                    entries.len() - 1
+                });
+                live.insert(key(&to), i);
+                entries[i].now = Some(to);
             }
-            FILE_ACTION_REMOVED | FILE_ACTION_RENAMED_OLD_NAME => match live {
-                Some(i) => entries[i].now = None,
-                None => entries.push(Entry { start: Some(name), now: None, modified: false }),
+            FILE_ACTION_REMOVED | FILE_ACTION_RENAMED_OLD_NAME => match live.remove(&k) {
+                Some(i) => {
+                    entries[i].now = None;
+                    if let Some(s) = &entries[i].start {
+                        gone.insert(key(s), i);
+                    }
+                }
+                None => {
+                    entries.push(Entry { start: Some(name), now: None, modified: false });
+                    gone.insert(k, entries.len() - 1);
+                }
             },
             FILE_ACTION_ADDED | FILE_ACTION_RENAMED_NEW_NAME => {
-                if let Some(i) = live {
+                if let Some(&i) = live.get(&k) {
                     entries[i].modified = true;
-                } else if let Some(i) = entries.iter().position(|e| e.now.is_none() && same(&e.start, &name)) {
+                } else if let Some(i) = gone.remove(&k) {
                     // Removed, then here again: still in the listing, its entry re-read.
                     entries[i].now = Some(name);
                     entries[i].modified = true;
+                    live.insert(k, i);
                 } else {
                     entries.push(Entry { start: None, now: Some(name), modified: false });
+                    live.insert(k, entries.len() - 1);
                 }
             }
-            _ => match live {
-                Some(i) => entries[i].modified = true,
-                None => entries.push(Entry { start: Some(name.clone()), now: Some(name), modified: true }),
+            _ => match live.get(&k) {
+                Some(&i) => entries[i].modified = true,
+                None => {
+                    entries.push(Entry { start: Some(name.clone()), now: Some(name), modified: true });
+                    live.insert(k, entries.len() - 1);
+                }
             },
         }
     }
-    let mut out = Vec::new();
+    let (mut removed, mut renames, mut added, mut modified) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for e in entries {
         match (e.start, e.now) {
             (None, None) => {}
-            (None, Some(n)) => out.push(Change::Added(n)),
-            (Some(s), None) => out.push(Change::Removed(s)),
+            (None, Some(n)) => added.push(Change::Added(n)),
+            (Some(s), None) => removed.push(Change::Removed(s)),
             (Some(s), Some(n)) => {
                 if s != n {
-                    out.push(Change::Renamed { from: s, to: n.clone() });
+                    renames.push((s, n.clone()));
                 }
                 if e.modified {
-                    out.push(Change::Modified(n));
+                    modified.push(Change::Modified(n));
                 }
             }
         }
     }
-    out
+    // Each rename waits for the rename whose source is its target (a case-only rename waits for
+    // nobody); when every one left waits, they contain a cycle: its names are modified instead.
+    let mut ordered = Vec::new();
+    let mut cycles = Vec::new();
+    while !renames.is_empty() {
+        let froms: HashMap<String, usize> = renames.iter().enumerate().map(|(i, (f, _))| (key(f), i)).collect();
+        let waits = |i: usize| froms.get(&key(&renames[i].1)).is_some_and(|&j| j != i);
+        if let Some(i) = (0..renames.len()).find(|&i| !waits(i)) {
+            let (from, to) = renames.remove(i);
+            ordered.push(Change::Renamed { from, to });
+            continue;
+        }
+        let mut path = vec![0usize];
+        let cycle = loop {
+            let next = froms[&key(&renames[*path.last().unwrap()].1)];
+            if let Some(at) = path.iter().position(|&x| x == next) {
+                break path.split_off(at);
+            }
+            path.push(next);
+        };
+        let mut cycle = cycle;
+        cycle.sort_unstable();
+        for &i in cycle.iter().rev() {
+            let (_, to) = renames.remove(i);
+            cycles.push(to);
+        }
+    }
+    for to in cycles.into_iter().rev() {
+        if !modified.iter().any(|m| matches!(m, Change::Modified(n) if n.eq_ignore_ascii_case(&to))) {
+            modified.push(Change::Modified(to));
+        }
+    }
+    removed.into_iter().chain(ordered).chain(added).chain(modified).collect()
 }
 
 #[cfg(test)]
@@ -1418,6 +1642,23 @@ mod tests {
     }
 
     #[test]
+    fn moving_the_watched_folder_away_loses_it() {
+        let dir = Scratch::new("moved-away");
+        let (from, to) = (dir.0.join("a"), dir.0.join("b"));
+        std::fs::create_dir_all(from.join("watched")).unwrap();
+        std::fs::create_dir(&to).unwrap();
+        let (w, rx) = watcher();
+        w.watch(0, 6, from.join("watched"), false, true);
+        w.sync();
+        std::fs::rename(from.join("watched"), to.join("watched")).unwrap();
+        let events = collect(&rx, Duration::from_secs(1));
+        let lost: Vec<_> = events.iter().filter_map(|e| if let Event::Lost { tab_id: 6, error, .. } = e { Some(error.as_str()) } else { None }).collect();
+        eprintln!("moved away: {lost:?}");
+        assert_eq!(lost.len(), 1, "{events:?}");
+        assert!(!events.iter().any(|e| matches!(e, Event::Moved { .. })), "{events:?}");
+    }
+
+    #[test]
     fn watches_are_keyed_by_tab_and_capped() {
         let dirs: Vec<Scratch> = (0..10).map(|i| Scratch::new(&format!("cap{i}"))).collect();
         let (w, rx) = watcher();
@@ -1518,10 +1759,31 @@ mod tests {
         assert_eq!(n(&[(1, "A.txt"), (3, "a.TXT"), (2, "a.txt")]), vec![], "names compare case-insensitively");
         assert_eq!(n(&[(4, "a"), (5, "b"), (4, "b"), (5, "a")]), vec![], "renamed and back");
         assert_eq!(
-            n(&[(3, "z"), (1, "a"), (2, "y"), (3, "z")]),
-            vec![Modified(s("z")), Added(s("a")), Removed(s("y"))],
-            "order of first appearance"
+            n(&[(3, "z"), (1, "a"), (2, "y"), (3, "z"), (2, "x")]),
+            vec![Removed(s("y")), Removed(s("x")), Added(s("a")), Modified(s("z"))],
+            "departures, then arrivals, then modifications; each in order of first appearance"
         );
+        assert_eq!(
+            n(&[(1, "doc.tmp"), (4, "doc"), (5, "doc.bak"), (4, "doc.tmp"), (5, "doc")]),
+            vec![Renamed { from: s("doc"), to: s("doc.bak") }, Added(s("doc"))],
+            "a safe-save: the old file is renamed away before the new one takes its name"
+        );
+        assert_eq!(
+            n(&[(4, "a"), (5, "t"), (4, "c"), (5, "a"), (4, "t"), (5, "c")]),
+            vec![Modified(s("c")), Modified(s("a"))],
+            "a swap through a temporary name modifies both names"
+        );
+        assert_eq!(
+            n(&[(4, "b"), (5, "c"), (4, "a"), (5, "b")]),
+            vec![Renamed { from: s("b"), to: s("c") }, Renamed { from: s("a"), to: s("b") }],
+            "a shift: b leaves before a takes its name"
+        );
+        assert_eq!(
+            n(&[(4, "a"), (5, "b"), (4, "c"), (5, "a")]),
+            vec![Renamed { from: s("a"), to: s("b") }, Renamed { from: s("c"), to: s("a") }],
+            "a rename into a name another rename vacated comes after it"
+        );
+        assert_eq!(n(&[(4, "a"), (5, "A")]), vec![Renamed { from: s("a"), to: s("A") }], "a case-only rename");
     }
 
     #[test]
