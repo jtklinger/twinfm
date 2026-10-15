@@ -386,7 +386,8 @@ reports under `C:/traces/export/`.
 
 P4-M1 holds both gates: the default row is the reference's, and the grid, with its strip as a ring
 of per-row images, sits at 9.6 against the bar's 20. Jeremy's console checks (2026-10-15, after
-the triplet): "console checks look good". Merged as #38 (7ca4a5f, 2026-10-15); `targetelease`
+the triplet): "console checks look good". Merged as #38 (7ca4a5f, 2026-10-15); `target
+elease`
 rebuilt from main. `target-p4m1` (cb589c8) is the reference for P4-M2; `target-p3m5` goes once it
 has served as one, and `target-p3m5b` (the grid's trace baseline) has no further use.
 
@@ -866,6 +867,7 @@ cost nothing the trace can see: the grid's shape is ab18's (rows 40 / 38 / 40, d
 reports under `C:/traces/export/`.
 
 P4-M3 holds both gates: the default row is the reference's, and the grid with the band's overlays
-sits at 10.2 against the bar's 20. Console checks and the merge are Jeremy's; once merged,
-`target-p4m3` (53dbc50) is the reference for whatever follows and `target-p4m2` goes once it has
+sits at 10.2 against the bar's 20. Jeremy's console checks (2026-10-15, after the triplet):
+"console checks are fine". Merged as #44 (2026-10-15); `targetelease` rebuilt from main.
+`target-p4m3` (53dbc50) is the reference for whatever follows; `target-p4m2` goes once it has
 served as one.
