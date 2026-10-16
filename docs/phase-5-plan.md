@@ -720,6 +720,11 @@ wiring relied on it, then the branch as a whole, with one fix wave.
 - **Ctrl+Y from the sidebar, the tab strip and a crumb button** (above).
 - **Undo of a copy or move that replaced an existing file** still does not restore the replaced
   file (P2-M2 Deferred).
+- **A delete from the shell context menu leaves no undo record** (console check, 2026-10-16): the
+  menu's verb runs the shell's own operation. Routing the menu's Delete (and Cut, Copy, Rename)
+  verbs to TwinFM's jobs would record them; a Phase 5 close candidate.
+- **Escape does not cancel a cut** as Explorer's does; the marks clear on a paste, a copy or
+  another program taking the clipboard.
 
 ### Scripted checks
 
@@ -837,7 +842,36 @@ Explorer, "Safely remove", re-inserted; a dead share if one can be arranged; a f
 Explorer under a tab; a background tab written into, then selected) and P5-M2's (a file deleted in
 TwinFM, Ctrl+Z: the file is back and Explorer's Recycle Bin no longer lists it; Ctrl+Y: it is back
 in the bin under its original name; a cut row's icon dimmed beside its text in both views; a copy
-large enough to show the percentage climbing beside the shell's window). Recorded here once run.
+large enough to show the percentage climbing beside the shell's window).
+
+**Console checks, 2026-10-16, Jeremy at the console with the `target-p5m2` build:**
+
+- Delete key, Ctrl+Z: the file is back, Explorer's Recycle Bin no longer lists it; Ctrl+Y: back in
+  the bin under its original name; Ctrl+Z again brings it back. **A delete through the right-click
+  menu cannot be undone**: the shell's own verb runs it, outside the worker and the sink, so no
+  record is written (P2-M3's menu; see Deferred).
+- Ctrl+Z during a running copy: "Wait for the running operation to finish", nothing undone; the
+  copy undone afterwards.
+- A taken name: Jeremy deleted `BUILD.txt`, made a new text document in Explorer and renamed it,
+  and reports the undo bringing the file back as `BUILD (2).txt`, which is the result of Ctrl+Z
+  pressed before the rename (the restore ran onto the free name, and Explorer's later rename
+  collided with it and numbered its own file). The same flow scripted against the gate build with
+  the rename done first (`New Text Document.txt` created and renamed to `BUILD.txt` by PowerShell
+  while TwinFM waited 6 s, then `undo`) gives `[undo] "Deleted 1 item to the Recycle Bin" refused:
+  Cannot undo: BUILD.txt is in the way`, the new file untouched and the old one left in the bin:
+  the refusal works as designed, and the order of the steps decides which of the two a person sees.
+- A cut row's icon dims with its text in the details list and in the grid; Ctrl+C on another row
+  restores it (the copied row is not marked). Escape does not clear a cut, and never did (Explorer's
+  does; see Deferred).
+- Progress: the percentage climbs in the status bar beside the shell's window, "N operations
+  queued" after it with a second copy started.
+- A move onto a folder holding the same name: the shell's Replace-or-Skip dialog, "keep both" under
+  "Compare info"; after Ctrl+Z the moved file came back to its folder under its original name,
+  not "(2)".
+- P5-M1's: a USB stick written to from Explorer shows the row; "Safely remove" succeeds; re-inserted
+  and opened again. A folder renamed in Explorer under a tab: the path bar follows. A background tab
+  written into, then selected: the rows are there with no re-listing. A dead share was not available:
+  that check stays owed.
 
 ## Open questions
 
