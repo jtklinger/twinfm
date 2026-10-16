@@ -366,10 +366,21 @@ pub fn needs_recompose(c: Option<Composed>, visible: (usize, usize), len: usize,
     }
 }
 
+/// Scale every premultiplied channel of `line` to 45%, rounded (255 becomes 115, 0 stays 0): the
+/// icon of a row on the clipboard as a cut, matching its text's `transparentize(55%)`.
+pub fn dim_line(line: &mut [Rgba8Pixel]) {
+    let f = |v: u8| ((v as u32 * 45 + 50) / 100) as u8;
+    for p in line {
+        *p = Rgba8Pixel { r: f(p.r), g: f(p.g), b: f(p.b), a: f(p.a) };
+    }
+}
+
 /// Compose a strip: `icons[k]` (each `g.icon_px` square, premultiplied) is copied, one scanline
 /// at a time, to `y = g.icon_y(k)` of a buffer `g.icon_px` wide and `g.height(icons.len())`
-/// tall. An icon of any other size is left out (the table hands out fitted buffers).
-pub fn compose(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &StripGeom) -> SharedPixelBuffer<Rgba8Pixel> {
+/// tall, dimmed (`dim_line`) when `dim[k]` is true (entry k is cut; a `dim` shorter than `icons`
+/// leaves the rest undimmed). An icon of any other size is left out (the table hands out fitted
+/// buffers).
+pub fn compose(icons: &[SharedPixelBuffer<Rgba8Pixel>], dim: &[bool], g: &StripGeom) -> SharedPixelBuffer<Rgba8Pixel> {
     let w = g.icon_px as usize;
     let h = g.height(icons.len()) as usize;
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(w as u32, h as u32);
@@ -378,6 +389,7 @@ pub fn compose(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &StripGeom) -> Shared
         if icon.width() != g.icon_px || icon.height() != g.icon_px {
             continue;
         }
+        let dimmed = dim.get(k) == Some(&true);
         let y0 = g.icon_y(k) as usize;
         for (r, line) in icon.as_slice().chunks_exact(w).enumerate() {
             let at = (y0 + r) * w;
@@ -385,6 +397,9 @@ pub fn compose(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &StripGeom) -> Shared
                 break;
             }
             dst[at..at + w].copy_from_slice(line);
+            if dimmed {
+                dim_line(&mut dst[at..at + w]);
+            }
         }
     }
     buf
@@ -431,9 +446,10 @@ impl GridGeom {
 }
 
 /// Compose a grid strip of `rows` grid rows: `icons[k]` (each `g.icon_px` square,
-/// premultiplied; entry k of the strip) is copied scanline by scanline to `g.icon_pos(k)`. An
-/// icon of any other size is left out; anything past the buffer's edge is clipped.
-pub fn compose_grid(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &GridGeom, rows: usize) -> SharedPixelBuffer<Rgba8Pixel> {
+/// premultiplied; entry k of the strip) is copied scanline by scanline to `g.icon_pos(k)`, dimmed
+/// when `dim[k]` is true, as `compose` does. An icon of any other size is left out; anything past
+/// the buffer's edge is clipped.
+pub fn compose_grid(icons: &[SharedPixelBuffer<Rgba8Pixel>], dim: &[bool], g: &GridGeom, rows: usize) -> SharedPixelBuffer<Rgba8Pixel> {
     let (w, h) = (g.width() as usize, g.height(rows) as usize);
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(w as u32, h as u32);
     let dst = buf.make_mut_slice();
@@ -448,12 +464,16 @@ pub fn compose_grid(icons: &[SharedPixelBuffer<Rgba8Pixel>], g: &GridGeom, rows:
             continue;
         }
         let span = n.min(w - x0);
+        let dimmed = dim.get(k) == Some(&true);
         for (r, line) in icon.as_slice().chunks_exact(n).enumerate() {
             if y0 + r >= h {
                 break;
             }
             let at = (y0 + r) * w + x0;
             dst[at..at + span].copy_from_slice(&line[..span]);
+            if dimmed {
+                dim_line(&mut dst[at..at + span]);
+            }
         }
     }
     buf
@@ -1534,7 +1554,7 @@ mod tests {
         // Three rows: key a, a row with no icon yet (the file placeholder), key b.
         let g = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(false) };
         let icons: Vec<_> = [PLACEHOLDERS, PLACEHOLDER_FILE, PLACEHOLDERS + 1].iter().map(|&i| t.fitted(i, 2)).collect();
-        let strip = compose(&icons, &g);
+        let strip = compose(&icons, &[], &g);
         assert_eq!((strip.width(), strip.height()), (2, 66));
         let px = strip.as_slice();
         let at = |x: usize, y: usize| px[y * 2 + x];
@@ -1552,11 +1572,11 @@ mod tests {
         let filled: Vec<usize> = (0..66).filter(|&y| at(0, y).a != 0 || at(1, y).a != 0).collect();
         assert_eq!(filled, [3, 4, 25, 26, 47, 48]);
         // An empty strip, and an icon of the wrong size left out.
-        assert_eq!(compose(&[], &g).height(), 0);
-        assert!(compose(&[solid(1)], &StripGeom { icon_px: 4, scale: 1.0, ..g }).as_slice().iter().all(|p| p.a == 0));
+        assert_eq!(compose(&[], &[], &g).height(), 0);
+        assert!(compose(&[solid(1)], &[], &StripGeom { icon_px: 4, scale: 1.0, ..g }).as_slice().iter().all(|p| p.a == 0));
         // 32 px rows with 32 px icons: each icon at its row's top, rows 32 px apart.
         let g32 = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(true) };
-        let strip = compose(&icons, &g32);
+        let strip = compose(&icons, &[], &g32);
         assert_eq!((strip.width(), strip.height()), (2, 96));
         let px = strip.as_slice();
         let at = |x: usize, y: usize| px[y * 2 + x];
@@ -1592,7 +1612,7 @@ mod tests {
                 b
             };
             let icons: Vec<_> = (1..=5).map(|v| solid(v * 10)).collect();
-            let strip = compose_grid(&icons, &g, 2);
+            let strip = compose_grid(&icons, &[], &g, 2);
             assert_eq!((strip.width(), strip.height()), (g.width(), g.height(2)));
             let w = strip.width() as usize;
             let px = strip.as_slice();
@@ -1607,7 +1627,7 @@ mod tests {
             }
             assert_eq!(px.iter().filter(|p| p.a != 0).count(), drawn, "scale {scale}: only the icons are drawn");
             // A wrong-sized icon is left out.
-            assert!(compose_grid(&[solid(1), SharedPixelBuffer::new(2, 2)], &g, 1).as_slice().iter().filter(|p| p.a != 0).count() == (n * n) as usize);
+            assert!(compose_grid(&[solid(1), SharedPixelBuffer::new(2, 2)], &[], &g, 1).as_slice().iter().filter(|p| p.a != 0).count() == (n * n) as usize);
         }
         // Grid strip range: visible grid rows plus the margin, clamped.
         let m = GRID_MARGIN_ROWS;
@@ -1615,6 +1635,54 @@ mod tests {
         assert_eq!(grid_strip_range((0, 3), 4), (0, 3));
         assert_eq!(visible_range(-120.0, 600.0, 1000, TILE_H), Some((1, 6)));
         assert_eq!(GridGeom::new(1.0, 0).cols, 1, "no width yet reads as one column");
+    }
+
+    #[test]
+    fn dim_line_scales_every_channel() {
+        let p = |r, g, b, a| Rgba8Pixel { r, g, b, a };
+        let mut line = [p(255, 255, 255, 255), p(0, 0, 0, 0), p(100, 20, 1, 200), p(2, 3, 128, 255)];
+        dim_line(&mut line);
+        // 45% rounded half up: 255 -> 115, 100 -> 45, 20 -> 9, 1 -> 0, 200 -> 90, 2 -> 1, 3 -> 1, 128 -> 58.
+        assert_eq!(line, [p(115, 115, 115, 115), p(0, 0, 0, 0), p(45, 9, 0, 90), p(1, 1, 58, 115)]);
+    }
+
+    #[test]
+    fn compose_dims_cut_entries_only() {
+        let solid = |n: u32, v: u8| {
+            let mut b = SharedPixelBuffer::<Rgba8Pixel>::new(n, n);
+            b.make_mut_slice().iter_mut().for_each(|p| *p = Rgba8Pixel { r: v, g: v, b: v, a: 255 });
+            b
+        };
+        let full = Rgba8Pixel { r: 200, g: 200, b: 200, a: 255 };
+        let dimmed = Rgba8Pixel { r: 90, g: 90, b: 90, a: 115 };
+        // The strip: entry 1 of three dimmed; a `dim` shorter than the icons leaves entry 2 alone.
+        let g = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(false) };
+        let icons = vec![solid(2, 200); 3];
+        let strip = compose(&icons, &[false, true], &g);
+        let px = strip.as_slice();
+        let rows = |k: usize| {
+            let y = g.icon_y(k) as usize;
+            &px[y * 2..(y + 2) * 2]
+        };
+        assert!(rows(0).iter().all(|&p| p == full));
+        assert!(rows(1).iter().all(|&p| p == dimmed));
+        assert!(rows(2).iter().all(|&p| p == full));
+        assert_eq!(px.iter().filter(|p| p.a != 0).count(), 12, "nothing else drawn");
+        // The grid: entry 0 of two dimmed, entry 1 not.
+        let g = GridGeom::new(1.0, 2);
+        let n = g.icon_px;
+        let icons = vec![solid(n, 200); 2];
+        let strip = compose_grid(&icons, &[true, false], &g, 1);
+        let w = strip.width() as usize;
+        let px = strip.as_slice();
+        for (k, want) in [(0, dimmed), (1, full)] {
+            let (x, y) = g.icon_pos(k);
+            for dy in 0..n {
+                let at = (y + dy) as usize * w + x as usize;
+                assert!(px[at..at + n as usize].iter().all(|&p| p == want), "entry {k} line {dy}");
+            }
+        }
+        assert_eq!(px.iter().filter(|p| p.a != 0).count(), 2 * (n * n) as usize);
     }
 
     #[test]

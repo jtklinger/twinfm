@@ -557,12 +557,321 @@ bar follows); a tab left in the background while Explorer writes into its folder
 (no re-listing, the new rows there).
 
 **Deferred by Jeremy (2026-10-15): the ab20 triplet and the console checks run after P5-M2**, not
-before the merge. The decision rests on the in-app pairs above (the candidate below the reference
+before the merge. Run on 2026-10-16 with P5-M2 as the candidate (§ P5-M2 Gate): both pass. The decision rests on the in-app pairs above (the candidate below the reference
 in every defaults round), the generated rows being the reference's, and nothing in the diff running
 per row or per frame; the cost is that a gap found later is bisected across two milestones instead
 of one. `target-p4m3` stays the reference until a triplet is recorded here; the USB check (insert,
 write from Explorer, "Safely remove", re-insert) is the first real run of the device path and is
 still owed.
+
+## P5-M2: file operations finished
+
+The second milestone of the phase (2026-10-15): redo, undo of a delete through the Recycle Bin's
+own item, undo of a move that renamed on collision, the cut row's icon dimmed with its text, and
+the running job's progress in the status bar. Branch `claude/p5-m2-file-operations-31492e`, from
+3131d06 (P5-M1). The brief is the P5-M2 entry of the kickoff above; the work was split three ways
+(the file-operation worker and the undo record; the icon strips, the status text, the driver, the
+soak and the window's key handler; the wiring in `main.rs`), the fileops half reviewed before the
+wiring relied on it, then the branch as a whole, with one fix wave.
+
+### What landed
+
+- **Two jobs for the undo record** (`src/fileops/mod.rs`). `Job::MoveAs { items: (path, name),
+  dest_dir }` moves each item into a folder under a given name (`IFileOperation::MoveItem` with
+  `pszNewName`); `Job::Restore { items: ($R path, original) }` restores recycled items. A restore
+  is not an `IFileOperation` job: the worker lists the Recycle Bin once (`SHGetKnownFolderItem` on
+  `FOLDERID_RecycleBinFolder`, `BindToHandler(BHID_EnumItems)`, each item's `SIGDN_FILESYSPATH`
+  being its `$R` path), takes the matching item's `IContextMenu` (`BHID_SFUIObject`), fills a
+  popup menu with `QueryContextMenu` and invokes the ANSI verb `undelete` (`CMIC_MASK_NOASYNC`, and
+  `CMIC_MASK_FLAG_NO_UI` under the soak and the tests, the request's hwnd as the owner), then waits
+  (pumping the worker's messages in 20 ms steps, at most 30 s) until the `$R` path is gone and the
+  original is there. When the verb cannot be reached (the item is not in the bin, no context menu,
+  `QueryContextMenu` fails), fails, or times out, the item is moved back instead: a one-item
+  `MoveAs` of the `$R` path into the original's folder under the original's name, through the
+  ordinary sink, after which the sibling `$I` metadata file is removed. A verb the user cancelled
+  records the cancel and runs no fallback; an original path that is taken again is refused before
+  any shell call (item HRESULT 0x800700B7, `ERROR_ALREADY_EXISTS`); a `$R` path outside
+  `\$Recycle.Bin\` is refused (`E_INVALIDARG`); a `WM_QUIT` met in the wait stops the job as
+  cancelled. Each item gets one `ItemResult { source: $R, dest: original, hr }`; `Restore.paths()`
+  names the originals only, so the soak fence sees what the job writes. `[fileops] undelete <$R>
+  -> <original>: verb ok (T ms) | verb cancelled 0x... | verb failed 0x...: moved back | verb not
+  reachable (<why>): moved back | already back, nothing moved | moved back failed 0x... | refused
+  (<name> is in the way) | not a Recycle Bin path | quit while waiting: stopped`. Status texts
+  "Moved N items" and "Restored N items from the Recycle Bin", running texts "moving..." and
+  "restoring...".
+- **The undo record** (`src/fileops/undo.rs`). A move whose result renamed any item on collision
+  ("a (2).txt") is undone by a `MoveAs` back under the sources' names (a plain `Move` back
+  otherwise); a `MoveAs` by a `MoveAs` back; a delete to the Recycle Bin by a `Restore` from the
+  `$R` paths the sink reported (a recycle that reported none still records `undo: None` with the
+  note "Cannot undo: the Recycle Bin reported no items"); a `Restore` by a recycle of the originals
+  again. `check` refuses a restore whose `$R` path left the bin ("is no longer there") or whose
+  original path is taken ("Cannot undo: <name> is in the way").
+- **Redo** (`main.rs`). `State.redo` is a second stack, capped by the same `push`; `JobInfo.replay`
+  carries the record an undo or redo job replays. The pure `after_job` decides: a plain job that
+  changed something (any ok result) records onto undo and clears redo (`[undo] redo cleared
+  (N)`); an undo job that ends `Done` records `record_for(&undo_job, ..)` onto redo (`[undo] redo
+  recorded "<text>": <job>`), a redo job the same onto undo; a replay that ran nothing (cancelled
+  while queued, refused by the fence, a stopped worker) goes back on its stack (`[undo] record
+  kept: "<text>"`). Ctrl+Y (`redo`, the mirror of `undo`: `[undo] redo "<text>" with <job>`, `redo
+  "<text>" refused: <why>`, `nothing to redo`, "Redid: <text>" / "Redo: <status>") is caught in the
+  window's outer `FocusScope` in `app.slint`, beside Ctrl+T, so `pane.slint` and the list and grid
+  components are untouched; the list rejects the key and it bubbles there. Ctrl+Z and Ctrl+Y
+  while any job is in flight are refused (`[undo] busy: N operation(s) in flight`, the note "Wait
+  for the running operation to finish") rather than popping a record that depends on the running
+  one. The removal fallback of the cursor covers a `MoveAs` out of the pane's folder
+  (`removed_names`).
+- **The cut row's icon dims** (`src/icons.rs`, `src/model.rs`). `compose(icons, dim, g)` and
+  `compose_grid(icons, dim, g, rows)` take the entries' cut flags (`PaneModel::cut_flags(first,
+  last)`, read at compose time); an entry whose flag is set has its copied scanlines passed
+  through `dim_line`, every premultiplied channel scaled to 45% (the text's `transparentize(55%)`:
+  255 becomes 115). An undimmed entry costs one slice lookup; the icon table is untouched. A cut
+  (`clipboard_put`), its clearing (`clear_cuts`: the paste, another program taking the clipboard,
+  "Copy path") mark the affected panes' strips dirty and resolve once; a pass swap and a watch's
+  row edits already recompose, so the marks carried by name still dim after a refresh. The grid's
+  tiles go through the same flags.
+- **Progress in the status bar**. The sink's `UpdateProgress` computes `percent(total, sofar)`
+  (None for a zero total, clamped to 100) and reports through `ProgressGate` (the first report,
+  then at most one per 250 ms and only when the percent changed, 100 at once), to a second
+  callback of `Worker::spawn`; `job_progress` (an `invoke_from_event_loop` hop, like `job_done`)
+  stores it for the job in flight, logs `[fileops] progress id=N P%` and composes that pane's
+  status once. `update_status` appends the percent (`statusbar::with_progress`) to the running
+  job's own note only (`progress_for`: this pane, this tab, and the note still the job's running
+  text) before the queue count: "copying 3 items... 42%, 1 operation queued". The shell's window
+  stays.
+- **Driver** (`auto.rs`): `redo` (key name `CtrlY`); the recycle-and-undo cycle is `delete`,
+  `waitops`, `undo`, `waitops`, `redo`, `waitops`.
+- **Soak** (`tools/soak-m3.ps1`): an `undo` (the restore through the bin's verb) and a `redo` after
+  each cycle's recycle; the report counts redos, nothing to undo/redo, refused, busy, record kept,
+  the `undelete` outcomes (verb ok, moved back, moved back failed) and the progress lines.
+- **Tests**, 159 to 171: `fileops`: `progress_percent_and_gate`, `restore_moves_only_out_of_the_bin`
+  (the `$R` guard, `info_file`), `status_texts` extended (MoveAs, Restore, `paths()`),
+  `recycle_restore_move_as_and_progress` (the real bin: a file recycled, restored through the
+  record in under 25 s, its content and the `$R`/original result checked, the redo material a
+  recycle again; a `MoveAs` round trip; progress from a folder copy of 8 x 256 KB); `undo`:
+  `moves_under_new_names_recycles_and_restores`, `records_and_the_cap` and
+  `check_refuses_missing_and_non_empty` extended (a restore record, "in the way"); `icons`:
+  `dim_line_scales_every_channel`, `compose_dims_cut_entries_only`; `model`:
+  `cut_flags_follow_the_shown_rows`; `statusbar::progress_text`; `main`:
+  `after_job_feeds_the_two_stacks`, `removed_names_are_the_sources_in_that_folder`,
+  `progress_shows_beside_the_running_jobs_own_note`, `replay_text_names_the_record_when_done`,
+  `explained_names_are_the_jobs_names_in_that_folder` extended (MoveAs, Restore).
+- **Docs**: `CLAUDE.md` (test count, the step and key name, the lines, the soak, the bin test).
+
+### Decisions
+
+- **The bin's verb first, the move back second**, as the kickoff's open question asked. At the real
+  bin the enumeration exposes each item's `$R` path as its file-system path, so the match is
+  direct; the verb returns synchronously for a small file (73 to 107 ms in the checks, 270 to 317
+  ms for the soak's 200-file tree) and restores to the location the `$I` file records. The move
+  back is what the sink's paths allow directly and is taken only when the verb cannot be reached,
+  fails or times out; never after a cancel (the user said no once) and never when the original
+  path is taken (the move would replace it under `FOF_NOCONFIRMATION`).
+- **A taken original path refuses the undo** instead of letting the verb's conflict dialog decide:
+  with "keep both" the item would come back as "x (2).txt" while the result named the original,
+  and the redo would then recycle the wrong file.
+- **Undo and redo wait for the running job.** A second Ctrl+Z during an undo popped the next
+  record and checked it against a disk the first undo had not changed yet (rename then move:
+  "b is no longer there"), dropping it for good. Refusing with a note is Explorer's behaviour too.
+- **Only a job that changed something clears redo**: a queued job cancelled with Escape, a cancel
+  at the shell's first dialog, a job that failed on every item leave the redo stack alone.
+- **A replay that ran nothing keeps its record**; a replay refused by `check` still drops it, as
+  P2-M2 decided (the items are not where the job left them).
+- **Ctrl+Y is window-level, Ctrl+Z list-level.** The alternative, a line in `pane.slint`'s `key()`,
+  would change the generated list components' key callback and with it the diff this phase
+  relies on. Ctrl+Y therefore works from anywhere but the text boxes (whose own Redo takes it) and
+  the settings dialog (excluded by the condition); the asymmetry is recorded, not hidden.
+- **Dimming at compose time, in the destination buffer**: the icon table keeps one image per key,
+  the strip pays the scaling only for cut rows, and the gate scenario (no cut rows) pays one
+  `Vec<bool>` per compose.
+- **The percent follows the running job's own note.** With a second job queued from the same tab
+  the note already shows the newer job's running text; the percent is shown only while the note
+  is the running job's, so "Nothing to undo 42%" cannot appear.
+- **The throttle lives on the worker** (`ProgressGate`), so the UI thread sees at most four hops a
+  second whatever the copy engine's cadence.
+
+### Deviations
+
+- **`check` for a restore is stricter than the brief**: the original path must be free (above).
+- **`Restore.paths()` names the originals only**, so the soak fence can allow a restore into the
+  scratch root; the one guard is that every `$R` path must lie under `\$Recycle.Bin\`.
+- **The verb's `NOASYNC` and `NO_UI` flags** were not in the brief: without `NOASYNC` a timeout
+  could race the fallback move against a verb still running; `NO_UI` only under the soak and the
+  tests.
+- **An undo whose Delete sources all lie outside the pane's folder gets no cursor fallback now**
+  (`removed_names` is empty); before, every undo Delete got one.
+- **The soak's "moved back" count** reads the attempt lines only (the failure line also contains
+  the words).
+
+### Deferred
+
+- **A restore with one failed item is `Failed` and records nothing**: the items that did come back
+  cannot be redone from TwinFM (existing jobs behave the same when `IFileOperation` fails).
+- **A mixed recycle** (some items nuked for size or on a volume without a bin) restores the subset
+  the bin reported and says "Undid: Deleted N items".
+- **Progress through the fallback**: each move back is its own `IFileOperation` with a fresh gate
+  (0 to 100 per item); the verb path reports no progress at all, so a restore shows none.
+- **Orphan `$I` files**: a restore through the verb leaves the `$I` metadata file on disk in
+  `$Recycle.Bin\<SID>\` (the bin does not list it; two such orphans predate this work, so Windows's
+  own restores leave them too); the fallback removes its own.
+- **Each fallback move adds an entry to Explorer's own undo list** (`FOFX_ADDUNDORECORD`).
+- **An undo or redo refused by `check` drops its record** (P2-M2's decision, now on two stacks).
+- **The percent is per job, not per queue**: the queue count beside it is the only sign of the jobs
+  behind.
+- **Ctrl+Y from the sidebar, the tab strip and a crumb button** (above).
+- **Undo of a copy or move that replaced an existing file** still does not restore the replaced
+  file (P2-M2 Deferred).
+- **A delete from the shell context menu leaves no undo record** (console check, 2026-10-16): the
+  menu's verb runs the shell's own operation. Routing the menu's Delete (and Cut, Copy, Rename)
+  verbs to TwinFM's jobs would record them; a Phase 5 close candidate.
+- **Escape does not cancel a cut** as Explorer's does; the marks clear on a paste, a copy or
+  another program taking the clipboard.
+
+### Scripted checks
+
+Harness session (RDP, 1216 x 800 window, scale 1.0, accessibility on), this worktree's
+`target\release\twinfm.exe`, scratch folders under `%TEMP%\twinfm-p5m2-manual\` (no soak fence),
+stderr kept; exit code 0 and no `panicked` line throughout.
+
+- **(i) The recycle-undo-redo cycle**, `click 0 0; delete; waitops; undo; waitops; redo; waitops;
+  undo; waitops` on a folder of three files: `[fileops] done id=1 ... Deleted 1 item to the Recycle
+  Bin`, `[undo] recorded "Deleted 1 item to the Recycle Bin": Some(Restore { items: [("C:\$Recycle.Bin\S-1-5-21-...\$RP9VRFP.txt", "...\a\f1.txt")] })`,
+  `[undo] "Deleted 1 item to the Recycle Bin" with Restore {..}`, `[fileops] undelete ...$RP9VRFP.txt
+  -> ...\a\f1.txt: verb ok (73 ms)`, `[undo] done id=2 Done: Undid: Deleted 1 item to the Recycle
+  Bin`, `[undo] redo recorded "Deleted 1 item to the Recycle Bin": Some(Delete { sources: [...f1.txt],
+  permanent: false })`, `[undo] redo "Deleted 1 item to the Recycle Bin" with Delete {..}`, `[undo]
+  redo done id=3 Done: Redid: Deleted 1 item to the Recycle Bin`, then `[undo] recorded ...
+  Restore` again and the second undo's `verb ok (73 ms)`. The Recycle Bin's item count
+  (`Shell.Application`'s `NameSpace(10)`) was the same before and after (1421).
+- **(ii) The redo stack clears and the busy refusal**: a `move` right after it with `undo` pressed
+  before `waitops`: `[undo] busy: 1 operation(s) in flight`, the note "Wait for the running
+  operation to finish"; then `[undo] recorded "Moved 1 item"`, `[undo] redo cleared (1)`, and after
+  `waitops` `[undo] "Moved 1 item" with Move {..}`, `Undid: Moved 1 item`.
+- **(iii) A taken name**: a file recycled, a new file written at its path from PowerShell, `undo`:
+  `[undo] "Deleted 1 item to the Recycle Bin" refused: Cannot undo: f1.txt is in the way`, no job
+  submitted, the new file untouched (the original stays in the bin: one entry).
+- **(iv) Progress**: every job through the sink logs `[fileops] progress id=N 0%` and `100%` (a tiny
+  job), the soak's 200-file copies `0%, 26%, 54%, 81%, 100%` over about a second; a restore through
+  the verb logs none.
+- **(v) Cut dimming**: `click 0 0; cx` then `click 0 1; cc`: the once-a-second `[icons]` compose
+  count rose by one at each (14 to 15 to 16 in the details list; 32 to 33 to 34 grid rows with
+  `C:\traces\grid.toml`), nothing else recomposed.
+- **(vi) The grid** (`TWINFM_CONFIG=C:\traces\grid.toml`, read-only): the same script, `[settings]
+  file C:\traces\grid.toml (read)`, `[view] pane=0 starts as large icons`, the same Undid and Redid
+  lines, the bin at the same count.
+- **(vii) The soak**, `tools/soak-m3.ps1 -Minutes 2` on the PR head (78c184b): exit 0, 0 `panicked`, 4
+  cycles, 56 jobs (0 failed, 0 cancelled), 0 fence refusals, 0 `waitops` timeouts; 4 redos, 0
+  nothing to undo or redo, 0 refused, 0 busy, 0 records kept; 4 restores all `verb ok` (270 to 317
+  ms for the 200-file tree), 0 moved back; 128 progress lines; working set 108.7 MB at 5 s, 149.6
+  MB at 121 s (peak 159.8), private 111.5 to 147.5 MB. The same two minutes with the 3131d06
+  build (the main checkout's `target
+elease`) and its own soak script, run right after: exit 0,
+  0 `panicked`, 4 cycles, 48 jobs, working set 112.1 to 176.8 MB, private 114.3 to 158.7 MB; the
+  milestone adds no memory. A first run before the fix wave (c510c84) read 5 cycles, 59 jobs, 4
+  redos, 4 `verb ok`, 140 progress lines, working set 104.6 to 167 MB.
+- **(viii) The lists are the reference's.** The generated Rust of `target-p4m3` (53dbc50) and this
+  build's (78c184b), numbering normalised, differ in the Ctrl+Y branch of the window's key
+  callback (13 lines in `InnerApp`) and the embedded icon's checkout path; the list and grid
+  components' region (`InnerFileList_root_` to `InnerFileGridList_root_`, 6,091 lines) in 0.
+  `src/ui/pane.slint` did not change.
+
+### Measurements
+
+In-app, RELATIVE only: harness session, 1216 x 800 window, scale 1.0, accessibility on, the gate
+scenario on `C:\traces\bigdir`, `[busy]` over the 10 s after the split, each candidate run
+interleaved with `target-p4m3` (53dbc50, the reference) by the same runner, reference first, two
+sets of three rounds per settings file (six pairs), no cargo or agent running beside. **Jeremy's
+session was disconnected throughout** (`query session`: `Disc`), so the window presented at about
+21 Hz (frame interval p50 46.6 to 47.3 ms in every run) and the busy figures sit far below P5-M1's
+(which ran under RDP at 32 Hz) and swing widely; they are comparable only with each other.
+
+| Pair | reference, defaults | P5-M2, defaults | reference, `grid.toml` | P5-M2, `grid.toml` |
+|---|---|---|---|---|
+| 1 | 9.7 | 4.8 | 4.5 | 6.2 |
+| 2 | 5.1 | 11.4 | 17.0 | 7.6 |
+| 3 | 9.7 | 8.7 | 6.7 | 2.2 |
+| 4 | 10.8 | 9.2 | 3.1 | 10.3 |
+| 5 | 9.0 | 17.2 | 4.7 | 2.8 |
+| 6 | 8.9 | 11.2 | 5.0 | 4.5 |
+| **median** | **9.4** | **10.2** | **4.9** | **5.4** |
+| composes | 371 strips at 20.6 to 21.7 us | 371 at 20.8 to 21.9 us | 1,422 rows at 66.6 to 69.0 us | 1,422 at 66.9 to 68.7 us |
+
+The PR head (78c184b). The pairs go both ways in both settings (defaults: the candidate below in
+pairs 1, 3 and 4, above in 2, 5 and 6; grid: below in 2, 3, 5 and 6, above in 1 and 4), the
+medians differ by 0.8 and 0.5, and the reference's own spread (5.1 to 10.8, 3.1 to 17.0) is wider
+than either gap: the pairs see no cost and cannot see a small one in this session. What the
+scenario exercises of the branch is exactly the compose path (the `cut_flags` read and the `dim`
+lookup per entry), and its figures are the reference's to the microsecond: 371 strips and 1,422
+grid rows per run in every one of the 24 runs, at the same averages. Every grid run's stderr shows
+`[settings] file C:\traces\grid.toml (read)` and `[view] pane=0 starts as large icons`; every
+run's `[watch]` lines are the two `watching` and two `parent watch on` lines; no `[fileops]`,
+`[undo]` or progress line; 0 `panicked`. The console triplet decides.
+
+### Gate
+
+`tools/wpr-triplet.ps1 -Reference p4m3 -Candidate p5m2,p5m2@C:\traces\grid.toml -Tag ab20`, run
+from this checkout's `tools\` on 2026-10-16 (08:38 to 08:46), Jeremy elevated at the console,
+accessibility on, Narrator off, no other TwinFM window. `target-p4m3` (53dbc50) against
+`target-p5m2` (6b1d0f1, the PR head, built with `--locked` from the detached checkout
+`.claude\worktrees\gate-p5m2`). The grid runs' stderr shows `[settings] file C:\traces\grid.toml
+(read)` and `[view] pane=0 starts as large icons`; no run has a `[fileops]`, `[undo]` or `panicked`
+line. Analysed with `tools/analyze-trace.py --symbols --exe`; traces `C:\traces\twinfm-ab20-*.etl`,
+reports under `C:\traces\export\`.
+
+| Run | reference `target-p4m3`, WPR | P5-M2 defaults, WPR | P5-M2 `grid.toml`, WPR | in-app (ref / defaults / grid) |
+|---|---|---|---|---|
+| 1 | 18.5% | 18.4% | 10.2% | 17.3 / 17.5 / 10.0 |
+| 2 | 18.5% | 17.3% | 10.0% | 19.2 / 19.7 / 11.2 |
+| 3 | 17.6% | 17.4% | 9.9% | 19.1 / 18.3 / 9.5 |
+| **median** | **18.5%** | **17.4%** | **10.0%** | 19.1 / 18.3 / 10.0 |
+
+**P5-M2 passes, and with it P5-M1** (this one triplet judges both, § P5-M1 Gate): every run of
+both candidates sits under the 20% bar, the defaults candidate's median is 1.1 points below the
+reference's with the runs interleaving (18.4 against 18.5 and 17.6; 17.3 and 17.4 below all
+three), and the grid median of 10.0 is P4-M3's own 10.2 (`phase-4-plan.md` § Phase 4 close). Frame
+shares, reference runs 1 to 3 / candidate runs 1 to 3 (sampled ms in the window): accessibility
+201, 185, 188 / 183, 187, 177; render 1081, 1098, 1042 / 1087, 1024, 1021; draw_text 634, 643, 617 /
+630, 596, 608; ListView 346, 345, 317 / 342, 306, 357; timers 654, 641, 610 / 634, 602, 626; heap
+187, 181, 186 / 186, 159, 174. No fileops, undo, compose, `cut_flags` or `dim_line` frame appears
+in any candidate window: the scenario never cuts a row or runs a job, and the cut flags are read
+inside the compose that the reference pays too. The grid's shares (accessibility 64 to 77, render
+602 to 617, ListView 38 to 47) are the P4 grid's. Peak working set 150 to 161 MB in eight runs and
+187 MB in the first candidate run (its busy figure was unremarkable); not explained.
+
+Console checks after the triplet, Jeremy's: P5-M1's (a USB stick inserted, written to from
+Explorer, "Safely remove", re-inserted; a dead share if one can be arranged; a folder renamed in
+Explorer under a tab; a background tab written into, then selected) and P5-M2's (a file deleted in
+TwinFM, Ctrl+Z: the file is back and Explorer's Recycle Bin no longer lists it; Ctrl+Y: it is back
+in the bin under its original name; a cut row's icon dimmed beside its text in both views; a copy
+large enough to show the percentage climbing beside the shell's window).
+
+**Console checks, 2026-10-16, Jeremy at the console with the `target-p5m2` build:**
+
+- Delete key, Ctrl+Z: the file is back, Explorer's Recycle Bin no longer lists it; Ctrl+Y: back in
+  the bin under its original name; Ctrl+Z again brings it back. **A delete through the right-click
+  menu cannot be undone**: the shell's own verb runs it, outside the worker and the sink, so no
+  record is written (P2-M3's menu; see Deferred).
+- Ctrl+Z during a running copy: "Wait for the running operation to finish", nothing undone; the
+  copy undone afterwards.
+- A taken name: Jeremy deleted `BUILD.txt`, made a new text document in Explorer and renamed it,
+  and reports the undo bringing the file back as `BUILD (2).txt`, which is the result of Ctrl+Z
+  pressed before the rename (the restore ran onto the free name, and Explorer's later rename
+  collided with it and numbered its own file). The same flow scripted against the gate build with
+  the rename done first (`New Text Document.txt` created and renamed to `BUILD.txt` by PowerShell
+  while TwinFM waited 6 s, then `undo`) gives `[undo] "Deleted 1 item to the Recycle Bin" refused:
+  Cannot undo: BUILD.txt is in the way`, the new file untouched and the old one left in the bin:
+  the refusal works as designed, and the order of the steps decides which of the two a person sees.
+- A cut row's icon dims with its text in the details list and in the grid; Ctrl+C on another row
+  restores it (the copied row is not marked). Escape does not clear a cut, and never did (Explorer's
+  does; see Deferred).
+- Progress: the percentage climbs in the status bar beside the shell's window, "N operations
+  queued" after it with a second copy started.
+- A move onto a folder holding the same name: the shell's Replace-or-Skip dialog, "keep both" under
+  "Compare info"; after Ctrl+Z the moved file came back to its folder under its original name,
+  not "(2)".
+- P5-M1's: a USB stick written to from Explorer shows the row; "Safely remove" succeeds; re-inserted
+  and opened again. A folder renamed in Explorer under a tab: the path bar follows. A background tab
+  written into, then selected: the rows are there with no re-listing. A dead share was not available:
+  that check stays owed.
 
 ## Open questions
 
@@ -573,9 +882,10 @@ Written 2026-10-15 at the kickoff; the Phase 4 close's open questions are absorb
 - **How the watched folder's own rename is noticed** (P5-M1): settled, a parent watch for the
   active tabs only (§ P5-M1 Decisions); whether the handles block a rename of an ancestor folder is
   a console check.
-- **Undo of a delete to the Recycle Bin** (P5-M2): the bin's "undelete" verb against a move back
-  from `$Recycle.Bin`; the verb keeps the bin's metadata and is what Explorer plays, the move is
-  what the sink's paths allow directly. Tried in that order.
+- **Undo of a delete to the Recycle Bin** (P5-M2): settled, the bin's "undelete" verb first, a
+  move back from `$Recycle.Bin` only when the verb cannot be reached, fails or times out, never
+  after a cancel or onto a taken name (§ P5-M2 Decisions). The verb restores synchronously at the
+  real bin; both paths leave the `$I` metadata file on disk.
 - **The spring-load delay** (P5-M3): Explorer opens after about a second; the number is set at
   the console.
 - **The Slint whole-row snap patch** (P3-M1 Deferred, P4 Open questions): still Jeremy's call;

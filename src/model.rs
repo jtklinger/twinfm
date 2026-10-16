@@ -302,6 +302,14 @@ impl PaneModel {
         shown.get(first..end).map_or_else(Vec::new, |rows| rows.iter().map(|e| e.icon).collect())
     }
 
+    /// The `cut` flag of every row in `first..=last` (clamped to the list), in order: which icons
+    /// of the strip are composed dimmed.
+    pub fn cut_flags(&self, first: usize, last: usize) -> Vec<bool> {
+        let shown = self.shown.borrow();
+        let end = (last + 1).min(shown.len());
+        shown.get(first..end).map_or_else(Vec::new, |rows| rows.iter().map(|e| e.cut).collect())
+    }
+
     pub fn clear(&self) {
         self.all.borrow_mut().clear();
         self.shown.borrow_mut().clear();
@@ -2481,5 +2489,16 @@ mod tests {
         m.clear();
         m.append(vec![e("a", 0, false)]);
         assert!(!m.row_data(0).unwrap().cut, "navigating away forgets the cut");
+    }
+
+    #[test]
+    fn cut_flags_follow_the_shown_rows() {
+        let m = PaneModel::default();
+        m.append(vec![e("a", 0, false), e("b", 0, false), e("c", 0, false), e("d", 0, false)]);
+        assert_eq!(m.cut_flags(0, 99), [false; 4]);
+        m.set_cut(vec!["b".into(), "d".into()]);
+        assert_eq!(m.cut_flags(0, 99), [false, true, false, true], "clamped to the list");
+        assert_eq!(m.cut_flags(1, 2), [true, false]);
+        assert!(m.cut_flags(4, 9).is_empty(), "past the end");
     }
 }

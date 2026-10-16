@@ -13,7 +13,7 @@
 //!                                    Backspace, Return, Space, AltUp, CtrlShiftRight, CtrlH
 //!                                    (hidden files), CtrlR (refresh), CtrlA, Down, ShiftUp, ShiftDown,
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
-//!                                    CtrlV, CtrlZ, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
+//!                                    CtrlV, CtrlZ, CtrlY, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
 //!                                    the context menu and take in-menu steps like rclick); CtrlT,
 //!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
 //!                                    CtrlShiftPageUp, CtrlShiftPageDown, AltLeft, AltRight (back
@@ -25,6 +25,7 @@
 //!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
 //!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
 //!   undo                             Ctrl+Z: undo the newest recorded operation (fileops::undo)
+//!   redo                             Ctrl+Y: redo the newest undone operation
 //!   newfolder <name>                 F7, type the name into the editor, Return
 //!   rename <name>                    F2 on the cursor row, type the new name, Return
 //!   waitops <ms>                     wait until no file operation runs, no pane refreshes and no
@@ -319,6 +320,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "cx" => Step::Key("CtrlX".into()),
                 "cv" => Step::Key("CtrlV".into()),
                 "undo" => Step::Key("CtrlZ".into()),
+                "redo" => Step::Key("CtrlY".into()),
                 "newfolder" => Step::Type { lead: "F7".into(), text: a[1..].join(" ") },
                 "rename" => Step::Type { lead: "F2".into(), text: a[1..].join(" ") },
                 "waitops" => Step::WaitOps(num(1).max(1) as u64),
@@ -820,6 +822,7 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlX" => vec![k(Key::Control), "x".into()],
         "CtrlV" => vec![k(Key::Control), "v".into()],
         "CtrlZ" => vec![k(Key::Control), "z".into()],
+        "CtrlY" => vec![k(Key::Control), "y".into()],
         "CtrlShiftN" => vec![k(Key::Control), k(Key::Shift), "N".into()],
         "CtrlF" => vec![k(Key::Control), "f".into()],
         "CtrlShiftF" => vec![k(Key::Control), k(Key::Shift), "F".into()],
