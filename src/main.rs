@@ -175,8 +175,16 @@ struct JobInfo {
     /// those rows were in and where its cursor falls back to if its row goes
     /// (`PaneModel::cursor_after_removal`).
     fallback: Option<(usize, u64, usize)>,
-    /// An undo job: the status text of the job it undoes. Its own completion is not recorded.
-    undo_of: Option<String>,
+    /// An undo or redo job, and the status text of the record it replays (`after_job` says
+    /// which stack its completion goes to).
+    replay: Option<(Replay, String)>,
+}
+
+/// Which stack a replayed record came from: Ctrl+Z's or Ctrl+Y's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Replay {
+    Undo,
+    Redo,
 }
 
 struct State {
@@ -216,6 +224,10 @@ struct State {
     clip_seq: u32,
     /// Ctrl+Z's record, newest last, shared by both panes (`fileops::undo`).
     undo: Vec<fileops::undo::Record>,
+    /// Ctrl+Y's record, fed by completed undo jobs and cleared by the next new job.
+    redo: Vec<fileops::undo::Record>,
+    /// The running job's last reported percentage (job id, percent), for its tab's status bar.
+    progress: Option<(u64, u32)>,
     /// The paste-of-a-cut job, if one is in flight: on success the clipboard is emptied.
     paste_move: Option<u64>,
     /// TWINFM_SOAK=1: no confirmations, and every path must lie inside one of these scratch
@@ -576,8 +588,10 @@ fn update_status(st: &State, app: &App, pane: usize) {
     let m = &t.model;
     let loading = t.timing.done_ms.is_none() && t.timing.error.is_none();
     let enum_ms = if st.perf_status { t.timing.done_ms } else { None };
-    // Jobs waiting behind the running one, shown on both panes.
-    let note = statusbar::with_queue(&t.note, st.jobs.len().saturating_sub(1));
+    // The running job's percentage on the tab that submitted it; jobs waiting behind it, shown
+    // on both panes.
+    let pct = st.progress.and_then(|(id, p)| st.jobs.get(&id).filter(|j| j.pane == pane && j.tab == t.id).map(|_| p));
+    let note = statusbar::with_queue(&statusbar::with_progress(&t.note, pct), st.jobs.len().saturating_sub(1));
     let left = match &t.search {
         Some(s) => {
             let secs = (!loading).then(|| t.timing.done_ms.unwrap_or(0.0) / 1e3);
@@ -1818,7 +1832,7 @@ fn compose_strip(st: &mut State, app: &App, pane: usize, visible: (usize, usize)
         let mut table = st.icons.borrow_mut();
         model.icon_indices(first, last).into_iter().map(|i| table.fitted(i, geom.icon_px)).collect()
     };
-    let strip = icons::compose(&bufs, geom);
+    let strip = icons::compose(&bufs, &model.cut_flags(first, last), geom);
     st.icon_counts.composes += 1;
     st.icon_counts.compose_ns += t0.elapsed().as_nanos() as u64;
     let (w, h) = (strip.width() as f32 / geom.scale, strip.height() as f32 / geom.scale);
@@ -1857,7 +1871,7 @@ fn compose_grid_rows(st: &mut State, pane: usize, visible: (usize, usize), visib
             let mut table = st.icons.borrow_mut();
             model.icon_indices(g * n, (g + 1) * n - 1).into_iter().map(|i| table.fitted(i, geom.icon_px)).collect()
         };
-        let row = icons::compose_grid(&bufs, geom, 1);
+        let row = icons::compose_grid(&bufs, &model.cut_flags(g * n, (g + 1) * n - 1), geom, 1);
         st.icon_counts.composes += 1;
         st.icon_counts.compose_ns += t0.elapsed().as_nanos() as u64;
         let (w, h) = (row.width() as f32 / geom.scale, row.height() as f32 / geom.scale);
@@ -2116,7 +2130,7 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
         return None;
     }
     let tab = st.tab(pane).id;
-    st.jobs.insert(id, JobInfo { pane, tab, fallback: None, undo_of: None });
+    st.jobs.insert(id, JobInfo { pane, tab, fallback: None, replay: None });
     note(st, app, pane, running);
     if st.jobs.len() > 1 {
         eprintln!("[fileops] {} operation(s) queued", st.jobs.len() - 1);
@@ -2157,6 +2171,7 @@ fn command(pane: usize, cmd: &str) {
         "cc" | "cx" => return clipboard_put(pane, cmd == "cx"),
         "cv" => return clipboard_paste(pane),
         "undo" => return undo(pane),
+        "redo" => return redo(pane),
         "cancelqueued" => {
             if band_cancel(pane) {
                 return;
@@ -2286,25 +2301,70 @@ fn undo(pane: usize) {
             return note(st, &app, pane, why);
         }
         eprintln!("[undo] \"{}\" with {:?}", rec.text, u.job);
-        // Undoing a copy or a new folder in this pane's folder removes rows from it.
-        let fallback = match &u.job {
-            Job::Delete { sources, .. } => {
-                let folder = st.tab(pane).path.clone();
-                let names: Vec<SharedString> = sources
-                    .iter()
-                    .filter(|s| s.parent().is_some_and(|p| same_dir(p, &folder)))
-                    .filter_map(|s| Some(s.file_name()?.to_string_lossy().as_ref().into()))
-                    .collect();
-                removal_fallback(st, &app, pane, &names)
-            }
-            _ => None,
-        };
-        if let Some(id) = submit_removing(st, &app, pane, u.job, fallback) {
-            if let Some(j) = st.jobs.get_mut(&id) {
-                j.undo_of = Some(rec.text);
-            }
-        }
+        submit_replay(st, &app, pane, u.job, (Replay::Undo, rec.text));
     });
+}
+
+/// Ctrl+Y in a pane's list: redo the newest undone operation (the job that reverses its undo),
+/// refused like an undo when the items are no longer where the undo left them.
+fn redo(pane: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let Some(rec) = st.redo.pop() else {
+            eprintln!("[undo] nothing to redo");
+            return note(st, &app, pane, "Nothing to redo".into());
+        };
+        // A redo record comes from a completed undo job, which always has a reverse; kept for
+        // symmetry with `undo`.
+        let Some(u) = rec.undo else {
+            eprintln!("[undo] redo of \"{}\" cannot be done", rec.text);
+            return note(st, &app, pane, format!("Cannot redo: {}", rec.text));
+        };
+        if let Err(why) = fileops::undo::check(&u) {
+            eprintln!("[undo] redo \"{}\" refused: {why}", rec.text);
+            return note(st, &app, pane, why.replacen("Cannot undo", "Cannot redo", 1));
+        }
+        eprintln!("[undo] redo \"{}\" with {:?}", rec.text, u.job);
+        submit_replay(st, &app, pane, u.job, (Replay::Redo, rec.text));
+    });
+}
+
+/// Submit an undo or redo job; one that takes rows out of this pane's folder (a recycle, a move
+/// back) gets that tab's cursor fallback.
+fn submit_replay(st: &mut State, app: &App, pane: usize, job: Job, replay: (Replay, String)) {
+    let names = removed_names(&job, &st.tab(pane).path);
+    let fallback = if names.is_empty() { None } else { removal_fallback(st, app, pane, &names) };
+    if let Some(id) = submit_removing(st, app, pane, job, fallback) {
+        if let Some(j) = st.jobs.get_mut(&id) {
+            j.replay = Some(replay);
+        }
+    }
+}
+
+/// The names `job` takes out of `folder`: the sources of a delete or a move (a move-as's items)
+/// that lie in it.
+fn removed_names(job: &Job, folder: &Path) -> Vec<SharedString> {
+    let sources: Vec<&Path> = match job {
+        Job::Delete { sources, .. } | Job::Move { sources, .. } => sources.iter().map(PathBuf::as_path).collect(),
+        Job::MoveAs { items, .. } => items.iter().map(|(p, _)| p.as_path()).collect(),
+        _ => Vec::new(),
+    };
+    sources
+        .into_iter()
+        .filter(|s| s.parent().is_some_and(|p| same_dir(p, folder)))
+        .filter_map(|s| Some(s.file_name()?.to_string_lossy().as_ref().into()))
+        .collect()
+}
+
+/// Where a finished job's record goes (None when it left none): a new job's onto the undo stack,
+/// clearing the redo stack (as Explorer does); an undo job's onto the redo stack; a redo job's
+/// back onto the undo stack. Returns how many redo records were cleared.
+fn after_job(replay: Option<Replay>, record: Option<fileops::undo::Record>, undo: &mut Vec<fileops::undo::Record>, redo: &mut Vec<fileops::undo::Record>) -> usize {
+    let cleared = if replay.is_none() { std::mem::take(redo).len() } else { 0 };
+    if let Some(r) = record {
+        fileops::undo::push(if replay == Some(Replay::Undo) { redo } else { undo }, r);
+    }
+    cleared
 }
 
 /// Escape in a pane's list: cancel every queued job that has not started (each reports
@@ -2329,13 +2389,31 @@ fn cancel_queued(pane: usize) {
     });
 }
 
-/// Clear the cut marks in every tab (the clipboard no longer holds a cut).
+/// Clear the cut marks in every tab (the clipboard no longer holds a cut), and recompose the
+/// icon strip that dimmed them.
 fn clear_cuts(st: &mut State) {
-    st.cut_source = None;
+    if let Some(p) = take_cuts(st) {
+        recompose_strip(st, p);
+    }
+}
+
+/// `clear_cuts` without the recompose: the pane whose active tab showed the cut, if any.
+fn take_cuts(st: &mut State) -> Option<usize> {
+    let shown = st.cut_source.take().filter(|&(p, tab)| st.is_active(p, tab)).map(|(p, _)| p);
     for tabs in &st.panes {
         for t in tabs.iter() {
             t.model.set_cut(Vec::new());
         }
+    }
+    shown
+}
+
+/// A pane's cut marks changed: its icon strip (the cut icons dim in the compose) is composed
+/// again, once.
+fn recompose_strip(st: &mut State, pane: usize) {
+    st.strip_dirty[pane] = true;
+    if let Some(app) = st.app.upgrade() {
+        resolve_view(st, &app, pane);
     }
 }
 
@@ -2361,10 +2439,16 @@ fn clipboard_put(pane: usize, cut: bool) {
                 let n = paths.len();
                 let what = if cut { "Cut" } else { "Copied" };
                 note(st, &app, pane, format!("{what} {n} item{} to the clipboard", if n == 1 { "" } else { "s" }));
-                clear_cuts(st);
+                let mut dimmed: Vec<usize> = take_cuts(st).into_iter().collect();
                 if cut {
                     st.model(pane).set_cut(names);
                     st.cut_source = Some((pane, st.tab(pane).id));
+                    if !dimmed.contains(&pane) {
+                        dimmed.push(pane);
+                    }
+                }
+                for p in dimmed {
+                    recompose_strip(st, p);
                 }
             }
             Err(e) => note(st, &app, pane, format!("clipboard: {e}")),
@@ -2434,24 +2518,39 @@ fn mark_background_stale(st: &mut State, watched_too: bool) {
 fn job_done(d: fileops::Done) {
     let mut clear_clipboard = None;
     let panes = with_state(|st| {
-        let info = st.jobs.remove(&d.id).unwrap_or(JobInfo { pane: 0, tab: 0, fallback: None, undo_of: None });
+        let info = st.jobs.remove(&d.id).unwrap_or(JobInfo { pane: 0, tab: 0, fallback: None, replay: None });
         let (pane, tab) = (info.pane, info.tab);
+        if st.progress.is_some_and(|(id, _)| id == d.id) {
+            st.progress = None;
+        }
         let text = fileops::status_text(&d.job, &d.outcome, &d.results);
-        let text = match &info.undo_of {
-            // An undo job is never recorded itself (no redo).
-            Some(orig) => {
-                let shown = if d.outcome == Outcome::Done { format!("Undid: {orig}") } else { format!("Undo: {text}") };
-                eprintln!("[undo] done id={} {:?}: {shown}", d.id, d.outcome);
-                shown
-            }
+        let done = d.outcome == Outcome::Done;
+        // An undo or redo job's record keeps the text of the record it replayed.
+        let (text, record) = match &info.replay {
             None => {
-                if let Some(r) = fileops::undo::record_for(&d.job, &d.outcome, &d.results, &text) {
-                    eprintln!("[undo] recorded \"{}\": {:?}", r.text, r.undo.as_ref().map(|u| &u.job));
-                    fileops::undo::push(&mut st.undo, r);
-                }
-                text
+                let r = fileops::undo::record_for(&d.job, &d.outcome, &d.results, &text);
+                (text, r)
+            }
+            Some((Replay::Undo, orig)) => {
+                let shown = if done { format!("Undid: {orig}") } else { format!("Undo: {text}") };
+                eprintln!("[undo] done id={} {:?}: {shown}", d.id, d.outcome);
+                (shown, fileops::undo::record_for(&d.job, &d.outcome, &d.results, orig))
+            }
+            Some((Replay::Redo, orig)) => {
+                let shown = if done { format!("Redid: {orig}") } else { format!("Redo: {text}") };
+                eprintln!("[undo] redo done id={} {:?}: {shown}", d.id, d.outcome);
+                (shown, fileops::undo::record_for(&d.job, &d.outcome, &d.results, orig))
             }
         };
+        let replay = info.replay.as_ref().map(|(r, _)| *r);
+        if let Some(r) = &record {
+            let stack = if replay == Some(Replay::Undo) { "redo recorded" } else { "recorded" };
+            eprintln!("[undo] {stack} \"{}\": {:?}", r.text, r.undo.as_ref().map(|u| &u.job));
+        }
+        let cleared = after_job(replay, record, &mut st.undo, &mut st.redo);
+        if cleared > 0 {
+            eprintln!("[undo] redo cleared ({cleared})");
+        }
         // Whatever the outcome (a cancel can come after some items went), the source tab's next
         // pass puts a cursor whose row is gone on the row after it.
         if let Some((p, id, idx)) = info.fallback {
@@ -2505,6 +2604,19 @@ fn job_done(d: fileops::Done) {
     for p in panes {
         refresh(p);
     }
+}
+
+/// The running job's progress (on the UI thread, from the worker's wake-up, at most four a
+/// second): its tab's status bar shows the percentage. A report for a job already done is dropped.
+fn job_progress(p: fileops::Progress) {
+    with_state(|st| {
+        let Some(pane) = st.jobs.get(&p.id).map(|j| j.pane) else { return };
+        st.progress = Some((p.id, p.percent));
+        eprintln!("[fileops] progress id={} {}%", p.id, p.percent);
+        if let Some(app) = st.app.upgrade() {
+            update_status(st, &app, pane);
+        }
+    });
 }
 
 /// What `context_menu` needs after the menu closes, taken out of the state before it opens.
@@ -4183,6 +4295,8 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     let ops = fileops::Worker::spawn(|d| {
         let _ = slint::invoke_from_event_loop(move || job_done(d));
+    }, |p| {
+        let _ = slint::invoke_from_event_loop(move || job_progress(p));
     });
     let soak = (std::env::var("TWINFM_SOAK").as_deref() == Ok("1"))
         .then(|| vec![std::env::temp_dir().join("twinfm-m3"), std::env::temp_dir().join("twinfm-m5")]);
@@ -4317,6 +4431,8 @@ fn main() -> Result<(), slint::PlatformError> {
             cut_source: None,
             clip_seq: 0,
             undo: Vec::new(),
+            redo: Vec::new(),
+            progress: None,
             paste_move: None,
             soak,
             strip: [None; 2],
@@ -4616,6 +4732,62 @@ mod tests {
         let job = Job::NewFolder { parent: dir.clone(), name: s("New folder") };
         let names = explained_names(&dir, &job, &[item(r"C:\x\here", Some(r"C:\x\here\New folder (2)"))]);
         assert_eq!(names, ["new folder", "new folder (2)"].into_iter().map(s).collect(), "not the folder itself");
+        // A move-as back from another folder: the item's name here, from its result.
+        let job = Job::MoveAs { items: vec![(r"C:\x\other\a (2).txt".into(), s("a.txt"))], dest_dir: dir.clone() };
+        let names = explained_names(&dir, &job, &[item(r"C:\x\other\a (2).txt", Some(r"C:\x\here\a.txt"))]);
+        assert_eq!(names, ["a.txt"].into_iter().map(s).collect(), "the old name it went back under");
+        // A move-as out of this folder: the name that left.
+        let job = Job::MoveAs { items: vec![(r"C:\x\here\b (2).txt".into(), s("b.txt"))], dest_dir: r"C:\x\other".into() };
+        let names = explained_names(&dir, &job, &[item(r"C:\x\here\b (2).txt", Some(r"C:\x\other\b.txt"))]);
+        assert_eq!(names, ["b (2).txt"].into_iter().map(s).collect());
+        // A restore: the originals, never the bin's `$R` names.
+        let bin = r"C:\$Recycle.Bin\S-1-5-21\$RAB12CD.txt";
+        let job = Job::Restore { items: vec![(bin.into(), r"C:\x\here\c.txt".into())] };
+        let names = explained_names(&dir, &job, &[item(bin, Some(r"C:\x\here\c.txt"))]);
+        assert_eq!(names, ["c.txt"].into_iter().map(s).collect());
+    }
+
+    #[test]
+    fn removed_names_are_the_sources_in_that_folder() {
+        let dir = PathBuf::from(r"C:\x\here");
+        let names = |job: &Job| removed_names(job, &dir).iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let delete = Job::Delete { sources: vec![r"C:\x\here\a.txt".into(), r"C:\x\other\b.txt".into()], permanent: false };
+        assert_eq!(names(&delete), ["a.txt"], "the source in another folder is not a row here");
+        let mv = Job::Move { sources: vec![r"C:\X\Here\c.txt".into()], dest_dir: r"C:\x\other".into() };
+        assert_eq!(names(&mv), ["c.txt"], "folders compare as the file system does");
+        let move_as = Job::MoveAs { items: vec![(r"C:\x\here\d (2).txt".into(), s("d.txt"))], dest_dir: r"C:\x\other".into() };
+        assert_eq!(names(&move_as), ["d (2).txt"], "the name it has here, not the one it goes back under");
+        let restore = Job::Restore { items: vec![(r"C:\$Recycle.Bin\S-1\$R1.txt".into(), r"C:\x\here\e.txt".into())] };
+        assert!(names(&restore).is_empty(), "a restore adds rows");
+        let rename = Job::Rename { source: r"C:\x\here\f.txt".into(), new_name: s("g.txt") };
+        assert!(names(&rename).is_empty());
+    }
+
+    #[test]
+    fn after_job_feeds_the_two_stacks() {
+        use fileops::undo::Record;
+        let rec = |t: &str| Some(Record { undo: None, text: t.into() });
+        let texts = |v: &[Record]| v.iter().map(|r| r.text.clone()).collect::<Vec<_>>();
+        let (mut undo, mut redo) = (Vec::new(), Vec::new());
+        assert_eq!(after_job(None, rec("a"), &mut undo, &mut redo), 0);
+        assert_eq!(after_job(None, rec("b"), &mut undo, &mut redo), 0);
+        // Ctrl+Z took "b" off the undo stack; its undo job's record goes onto the redo stack.
+        undo.pop();
+        assert_eq!(after_job(Some(Replay::Undo), rec("b"), &mut undo, &mut redo), 0);
+        assert_eq!((texts(&undo), texts(&redo)), (vec![s("a")], vec![s("b")]));
+        // Ctrl+Y took it back; the redo job's record goes onto the undo stack.
+        redo.pop();
+        assert_eq!(after_job(Some(Replay::Redo), rec("b"), &mut undo, &mut redo), 0);
+        assert_eq!((texts(&undo), texts(&redo)), (vec![s("a"), s("b")], vec![]));
+        // An undo that failed leaves no record; a new job clears the redo stack, record or not.
+        undo.pop();
+        assert_eq!(after_job(Some(Replay::Undo), None, &mut undo, &mut redo), 0);
+        redo.push(Record { undo: None, text: s("x") });
+        redo.push(Record { undo: None, text: s("y") });
+        assert_eq!(after_job(None, None, &mut undo, &mut redo), 2);
+        assert!(redo.is_empty());
+        assert_eq!(after_job(None, rec("c"), &mut undo, &mut redo), 0);
+        assert_eq!(texts(&undo), [s("a"), s("c")]);
     }
 
     #[test]
