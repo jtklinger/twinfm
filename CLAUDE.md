@@ -438,6 +438,10 @@ candidates). Read them before changing the list.
   points above the first whichever binary sat in it, so swap the order before reading an in-app
   "candidate above in every pair" as a cost; the console triplet decides. Record Narrator on/off
   with every run (it adds about 6 points of busy).
+- Console checks start TwinFM unelevated: Windows blocks drag and drop from a normal-integrity
+  program (File Explorer) into an elevated window, so a TwinFM started from the elevated gate
+  console shows the denied cursor and never gets `DragEnter` (2026-10-16, `docs/phase-5-plan.md`
+  § P5-M3 Gate). The gate itself may stay elevated; its scenario never drags.
 - Close every TwinFM window before a gate run: a pre-existing one appears in the trace with
   start "MIN" (the analyzer picks the process that started inside the trace, but the extra
   process still shares the machine). Single runs of one unchanged binary ranged 19.6 to 22.8
