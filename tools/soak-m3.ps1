@@ -9,14 +9,17 @@
 # Never set it outside a soak.
 #
 # Each cycle: copy the tree to the other pane, rename it, move it back, delete it to the Recycle
-# Bin, copy it again and delete that copy permanently, make a folder and rename it, Ctrl+C/Ctrl+V
-# it across and delete it, Ctrl+X/Ctrl+V it across and delete it, refresh, then scroll bigdir,
-# System32 and WinSxS\Manifests. One Recycle Bin entry (the 200-file tree) is added per cycle,
-# and the clipboard is overwritten throughout: do not copy anything you need while it runs.
+# Bin, undo that (Ctrl+Z restores it from the bin) and redo it (Ctrl+Y recycles it again), copy it
+# again and delete that copy permanently, make a folder and rename it, Ctrl+C/Ctrl+V it across and
+# delete it, Ctrl+X/Ctrl+V it across and delete it, refresh, then scroll bigdir, System32 and
+# WinSxS\Manifests. One Recycle Bin entry (the 200-file tree) is added per cycle (the undo's
+# restore takes the delete's entry out, the redo adds one), and the clipboard is overwritten
+# throughout: do not copy anything you need while it runs.
 #
 # At -Minutes the window is closed (WM_CLOSE, a clean exit); a job running at that moment is cut
 # short, which can leave scratch files behind. Reported: exit code, `panicked` lines in stderr,
-# job outcomes, and working set at start and end (sampled every 30 s into soak-m3-memory.csv).
+# job outcomes, undo and redo outcomes, progress reports, and working set at start and end
+# (sampled every 30 s into soak-m3-memory.csv).
 param(
     [double]$Minutes = 10,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -69,7 +72,7 @@ $cycle = @(
     'click 0 0', 'key CtrlA', 'copy', $wait,
     'click 1 0', 'rename moved', $wait,
     'click 1 0', 'move', $wait,
-    'click 0 0', 'delete', $wait,
+    'click 0 0', 'delete', $wait, 'undo', $wait, 'redo', $wait,
     'click 0 0', 'copy', $wait, 'click 1 0', 'sdelete', $wait,
     'newfolder nf', $wait, 'click 1 0', 'rename nf2', $wait,
     'click 1 0', 'cc', 'click 0 0', 'cv', $wait, 'click 0 0', 'sdelete', $wait,
@@ -129,12 +132,23 @@ $failed = @($done | Select-String -SimpleMatch 'Failed')
 $cancelled = @($done | Select-String -SimpleMatch 'Cancelled')
 $refused = @($log | Select-String -SimpleMatch 'soak: refused').Count
 $stuck = @($log | Select-String -SimpleMatch 'waitops: still busy').Count
+$undoLines = @($log | Select-String -SimpleMatch '[undo]')
+$redos = @($undoLines | Select-String -SimpleMatch 'redo "').Count
+$nothingUndo = @($undoLines | Select-String -SimpleMatch 'nothing to undo').Count
+$nothingRedo = @($undoLines | Select-String -SimpleMatch 'nothing to redo').Count
+$undoRefused = @($undoLines | Select-String -SimpleMatch 'refused').Count
+$undelete = @($log | Select-String -SimpleMatch '[fileops] undelete')
+$verbOk = @($undelete | Select-String -SimpleMatch 'verb ok').Count
+$movedBackFailed = @($undelete | Select-String -SimpleMatch 'moved back failed').Count
+$movedBack = @($undelete | Select-String -SimpleMatch 'moved back').Count - $movedBackFailed
+$progress = @($log | Select-String -SimpleMatch '[fileops] progress').Count
 $cyclesRun = @($log | Select-String -SimpleMatch "[auto] Nav { pane: 0, path: `"$($src.Replace('\', '\\'))`" }").Count
 $first = $samples[0]; $last = $samples[$samples.Count - 1]
 ''
 "ran {0:N1} min, window closed by script: {1}, exit code {2}" -f ((Get-Date) - $t0).TotalMinutes, $closed, $p.ExitCode
 "panicked lines: $panics"
 "cycles started: $cyclesRun; jobs done: $($done.Count) (failed $($failed.Count), cancelled $($cancelled.Count)); soak refusals: $refused; waitops timeouts: $stuck"
+"undo/redo: redos $redos, nothing to undo $nothingUndo, nothing to redo $nothingRedo, refused $undoRefused; undelete: verb ok $verbOk, moved back $movedBack, moved back failed $movedBackFailed; progress lines: $progress"
 "working set: start $($first.working_set_mb) MB at $($first.seconds) s, end $($last.working_set_mb) MB at $($last.seconds) s; private: $($first.private_mb) -> $($last.private_mb) MB"
 "min/max working set: {0} / {1} MB" -f ($samples | Measure-Object working_set_mb -Minimum).Minimum, ($samples | Measure-Object working_set_mb -Maximum).Maximum
 "memory samples: $csv"

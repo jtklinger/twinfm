@@ -129,6 +129,15 @@ pub fn with_queue(note: &str, queued: usize) -> String {
     if note.is_empty() { q } else { format!("{note}, {q}") }
 }
 
+/// The running job's note with its percentage after it ("copying 3 items... 42%"); the note
+/// unchanged with no percentage or no note.
+pub fn with_progress(note: &str, percent: Option<u32>) -> String {
+    match percent {
+        Some(p) if !note.is_empty() => format!("{note} {p}%"),
+        _ => note.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +147,14 @@ mod tests {
         assert_eq!(with_queue("copying 2 items...", 0), "copying 2 items...");
         assert_eq!(with_queue("copying 2 items...", 1), "copying 2 items..., 1 operation queued");
         assert_eq!(with_queue("", 3), "3 operations queued");
+    }
+
+    #[test]
+    fn progress_text() {
+        assert_eq!(with_progress("copying 3 items...", Some(42)), "copying 3 items... 42%");
+        assert_eq!(with_progress("copying 3 items...", None), "copying 3 items...");
+        assert_eq!(with_progress("", Some(42)), "");
+        assert_eq!(with_queue(&with_progress("copying 3 items...", Some(42)), 1), "copying 3 items... 42%, 1 operation queued");
     }
 
     #[test]
