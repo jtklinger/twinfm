@@ -797,7 +797,7 @@ than either gap: the pairs see no cost and cannot see a small one in this sessio
 scenario exercises of the branch is exactly the compose path (the `cut_flags` read and the `dim`
 lookup per entry), and its figures are the reference's to the microsecond: 371 strips and 1,422
 grid rows per run in every one of the 24 runs, at the same averages. Every grid run's stderr shows
-`[settings] file C:	races\grid.toml (read)` and `[view] pane=0 starts as large icons`; every
+`[settings] file C:\traces\grid.toml (read)` and `[view] pane=0 starts as large icons`; every
 run's `[watch]` lines are the two `watching` and two `parent watch on` lines; no `[fileops]`,
 `[undo]` or progress line; 0 `panicked`. The console triplet decides.
 
