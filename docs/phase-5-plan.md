@@ -557,7 +557,7 @@ bar follows); a tab left in the background while Explorer writes into its folder
 (no re-listing, the new rows there).
 
 **Deferred by Jeremy (2026-10-15): the ab20 triplet and the console checks run after P5-M2**, not
-before the merge. The decision rests on the in-app pairs above (the candidate below the reference
+before the merge. Run on 2026-10-16 with P5-M2 as the candidate (§ P5-M2 Gate): both pass. The decision rests on the in-app pairs above (the candidate below the reference
 in every defaults round), the generated rows being the reference's, and nothing in the diff running
 per row or per frame; the cost is that a gap found later is bisected across two milestones instead
 of one. `target-p4m3` stays the reference until a triplet is recorded here; the USB check (insert,
@@ -804,24 +804,40 @@ run's `[watch]` lines are the two `watching` and two `parent watch on` lines; no
 ### Gate
 
 `tools/wpr-triplet.ps1 -Reference p4m3 -Candidate p5m2,p5m2@C:\traces\grid.toml -Tag ab20`, run
-from this checkout's `tools\`, Jeremy elevated at the console, accessibility on, Narrator off, no
-other TwinFM window, console checks after. `target-p4m3` (53dbc50) against `target-p5m2` (the PR
-head, built with `--locked` from a detached checkout). The grid run's stderr must show `[settings]
-file C:\traces\grid.toml (read)` and `[view] pane=0 starts as large icons` before its triplet is
-read. **This one triplet judges P5-M1 and P5-M2 together**: Jeremy deferred P5-M1's triplet and
-console checks to this point (§ P5-M1 Gate), so no `target-p5m1` exists and `target-p4m3` stays the
-reference; a gap found here is bisected across the two milestones. Nothing in the scenario cuts a
-row or runs a job, so what the triplets measure is the branch: the cut flags read per compose, the
-progress closure never called, the Ctrl+Y branch never taken; the rows are the reference's
-(Scripted checks (viii)).
+from this checkout's `tools\` on 2026-10-16 (08:38 to 08:46), Jeremy elevated at the console,
+accessibility on, Narrator off, no other TwinFM window. `target-p4m3` (53dbc50) against
+`target-p5m2` (6b1d0f1, the PR head, built with `--locked` from the detached checkout
+`.claude\worktrees\gate-p5m2`). The grid runs' stderr shows `[settings] file C:\traces\grid.toml
+(read)` and `[view] pane=0 starts as large icons`; no run has a `[fileops]`, `[undo]` or `panicked`
+line. Analysed with `tools/analyze-trace.py --symbols --exe`; traces `C:\traces\twinfm-ab20-*.etl`,
+reports under `C:\traces\export\`.
 
-Console checks after the triplet: P5-M1's (a USB stick inserted, written to from Explorer,
-"Safely remove", re-inserted; a dead share if one can be arranged; a folder renamed in Explorer
-under a tab; a background tab written into, then selected) and P5-M2's: a file deleted in TwinFM,
-Ctrl+Z (the file is back, Explorer's Recycle Bin no longer lists it), Ctrl+Y (it is back in the
-bin, Explorer lists it under its original name), a cut row's icon dimmed beside its text in both
-views, and a copy of a folder large enough to show the percentage climbing beside the shell's
-window.
+| Run | reference `target-p4m3`, WPR | P5-M2 defaults, WPR | P5-M2 `grid.toml`, WPR | in-app (ref / defaults / grid) |
+|---|---|---|---|---|
+| 1 | 18.5% | 18.4% | 10.2% | 17.3 / 17.5 / 10.0 |
+| 2 | 18.5% | 17.3% | 10.0% | 19.2 / 19.7 / 11.2 |
+| 3 | 17.6% | 17.4% | 9.9% | 19.1 / 18.3 / 9.5 |
+| **median** | **18.5%** | **17.4%** | **10.0%** | 19.1 / 18.3 / 10.0 |
+
+**P5-M2 passes, and with it P5-M1** (this one triplet judges both, § P5-M1 Gate): every run of
+both candidates sits under the 20% bar, the defaults candidate's median is 1.1 points below the
+reference's with the runs interleaving (18.4 against 18.5 and 17.6; 17.3 and 17.4 below all
+three), and the grid median of 10.0 is P4-M3's own 10.2 (`phase-4-plan.md` § Phase 4 close). Frame
+shares, reference runs 1 to 3 / candidate runs 1 to 3 (sampled ms in the window): accessibility
+201, 185, 188 / 183, 187, 177; render 1081, 1098, 1042 / 1087, 1024, 1021; draw_text 634, 643, 617 /
+630, 596, 608; ListView 346, 345, 317 / 342, 306, 357; timers 654, 641, 610 / 634, 602, 626; heap
+187, 181, 186 / 186, 159, 174. No fileops, undo, compose, `cut_flags` or `dim_line` frame appears
+in any candidate window: the scenario never cuts a row or runs a job, and the cut flags are read
+inside the compose that the reference pays too. The grid's shares (accessibility 64 to 77, render
+602 to 617, ListView 38 to 47) are the P4 grid's. Peak working set 150 to 161 MB in eight runs and
+187 MB in the first candidate run (its busy figure was unremarkable); not explained.
+
+Console checks after the triplet, Jeremy's: P5-M1's (a USB stick inserted, written to from
+Explorer, "Safely remove", re-inserted; a dead share if one can be arranged; a folder renamed in
+Explorer under a tab; a background tab written into, then selected) and P5-M2's (a file deleted in
+TwinFM, Ctrl+Z: the file is back and Explorer's Recycle Bin no longer lists it; Ctrl+Y: it is back
+in the bin under its original name; a cut row's icon dimmed beside its text in both views; a copy
+large enough to show the percentage climbing beside the shell's window). Recorded here once run.
 
 ## Open questions
 
