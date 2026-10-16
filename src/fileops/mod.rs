@@ -16,7 +16,12 @@
 //! Each job advises an `IFileOperationProgressSink` of ours (`Sink`, made on the worker and
 //! released there) for its `PerformOperations`. Its Post* methods record, per item, the source,
 //! the item the shell actually created (the real "New folder (2)", the renamed or moved item's
-//! new path, a copy's path) and the HRESULT; they come back in `Done::results`.
+//! new path, a copy's path) and the HRESULT; they come back in `Done::results`. Its
+//! `UpdateProgress` feeds the `progress` callback, through `ProgressGate`.
+//!
+//! A restore from the Recycle Bin (`Job::Restore`, the undo of a recycle) is not an
+//! `IFileOperation` job: each item is restored by the bin's own "undelete" verb, which keeps the
+//! bin's bookkeeping, and moved back from `$Recycle.Bin` only when the verb cannot be reached.
 
 pub mod clipboard;
 pub mod undo;
@@ -25,18 +30,21 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use windows_sys::Win32::Foundation::{ERROR_CANCELLED, HWND};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::{E_INVALIDARG, ERROR_CANCELLED, ERROR_TIMEOUT, HWND};
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
 use windows_sys::Win32::System::Com::{CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Shell::{
-    COPYENGINE_E_USER_CANCELLED, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
-    FOF_WANTNUKEWARNING,
-    FOFX_ADDUNDORECORD, FOFX_SHOWELEVATIONPROMPT, FileOperation, SHCreateItemFromParsingName,
+    BHID_EnumItems, BHID_SFUIObject, CMF_NORMAL, CMINVOKECOMMANDINFOEX, COPYENGINE_E_USER_CANCELLED, FOF_ALLOWUNDO,
+    FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION, FOF_WANTNUKEWARNING, FOFX_ADDUNDORECORD,
+    FOFX_SHOWELEVATIONPROMPT, FOLDERID_RecycleBinFolder, FileOperation, KF_FLAG_DEFAULT, SHCreateItemFromParsingName,
+    SHGetKnownFolderItem,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, TranslateMessage, WM_APP,
-    WM_QUIT,
+    CreatePopupMenu, DestroyMenu, DispatchMessageW, GetMessageW, HMENU, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
+    PostThreadMessageW, SW_SHOWNORMAL, TranslateMessage, WM_APP, WM_QUIT,
 };
 use windows_sys::core::{BOOL, GUID, HRESULT};
 
@@ -46,13 +54,23 @@ const WM_RUN: u32 = WM_APP + 1;
 /// HRESULT_FROM_WIN32(ERROR_CANCELLED): what some shell paths return when the user cancels.
 pub const HR_CANCELLED: HRESULT = (0x8007_0000u32 | ERROR_CANCELLED) as HRESULT;
 
+/// HRESULT_FROM_WIN32(ERROR_TIMEOUT): the "undelete" verb returned but the item never came back.
+const HR_TIMEOUT: HRESULT = (0x8007_0000u32 | ERROR_TIMEOUT) as HRESULT;
+
+/// How long a restore waits for the "undelete" verb to put an item back.
+const UNDELETE_WAIT: Duration = Duration::from_secs(30);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Job {
     Copy { sources: Vec<PathBuf>, dest_dir: PathBuf },
     Move { sources: Vec<PathBuf>, dest_dir: PathBuf },
+    /// Move each item into `dest_dir` under the given name (`MoveItem` with `pszNewName`).
+    MoveAs { items: Vec<(PathBuf, String)>, dest_dir: PathBuf },
     Delete { sources: Vec<PathBuf>, permanent: bool },
     Rename { source: PathBuf, new_name: String },
     NewFolder { parent: PathBuf, name: String },
+    /// Restore recycled items: (the `$R` path in the bin, the original full path).
+    Restore { items: Vec<(PathBuf, PathBuf)> },
 }
 
 impl Job {
@@ -60,17 +78,22 @@ impl Job {
     pub fn count(&self) -> usize {
         match self {
             Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } => sources.len(),
+            Job::MoveAs { items, .. } => items.len(),
+            Job::Restore { items } => items.len(),
             Job::Rename { .. } | Job::NewFolder { .. } => 1,
         }
     }
 
-    /// Every path the job reads or writes, for the soak guard.
+    /// Every path the job reads or writes, for the soak guard. A restore names the originals
+    /// only: the `$R` paths are the bin's.
     pub fn paths(&self) -> Vec<&Path> {
         match self {
             Job::Copy { sources, dest_dir } | Job::Move { sources, dest_dir } => {
                 sources.iter().map(PathBuf::as_path).chain([dest_dir.as_path()]).collect()
             }
+            Job::MoveAs { items, dest_dir } => items.iter().map(|(p, _)| p.as_path()).chain([dest_dir.as_path()]).collect(),
             Job::Delete { sources, .. } => sources.iter().map(PathBuf::as_path).collect(),
+            Job::Restore { items } => items.iter().map(|(_, original)| original.as_path()).collect(),
             Job::Rename { source, .. } => vec![source.as_path()],
             Job::NewFolder { parent, .. } => vec![parent.as_path()],
         }
@@ -178,7 +201,8 @@ pub fn status_text(job: &Job, outcome: &Outcome, results: &[ItemResult]) -> Stri
         Outcome::Failed(hr) => format!("Failed: 0x{:08X}", *hr as u32),
         Outcome::Done => match job {
             Job::Copy { .. } => format!("Copied {}", items(job.count())),
-            Job::Move { .. } => format!("Moved {}", items(job.count())),
+            Job::Move { .. } | Job::MoveAs { .. } => format!("Moved {}", items(job.count())),
+            Job::Restore { .. } => format!("Restored {} from the Recycle Bin", items(job.count())),
             Job::Delete { permanent: false, .. } => format!("Deleted {} to the Recycle Bin", items(job.count())),
             Job::Delete { permanent: true, .. } => format!("Deleted {} permanently", items(job.count())),
             Job::Rename { new_name, .. } => format!("Renamed to {}", real_name(job, results).unwrap_or_else(|| new_name.clone())),
@@ -191,7 +215,8 @@ pub fn status_text(job: &Job, outcome: &Outcome, results: &[ItemResult]) -> Stri
 pub fn running_text(job: &Job) -> String {
     match job {
         Job::Copy { .. } => format!("copying {}...", items(job.count())),
-        Job::Move { .. } => format!("moving {}...", items(job.count())),
+        Job::Move { .. } | Job::MoveAs { .. } => format!("moving {}...", items(job.count())),
+        Job::Restore { .. } => format!("restoring {}...", items(job.count())),
         Job::Delete { .. } => format!("deleting {}...", items(job.count())),
         Job::Rename { .. } => "renaming...".into(),
         Job::NewFolder { .. } => "creating folder...".into(),
@@ -212,6 +237,47 @@ pub fn invalid_name(name: &str) -> Option<&'static str> {
     }
 }
 
+/// A running job's progress, as the sink's `UpdateProgress` reported it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub id: u64,
+    pub percent: u32,
+}
+
+/// `sofar` of `total` as a percentage, None for a zero total; clamped to 100.
+pub fn percent(total: u32, sofar: u32) -> Option<u32> {
+    (total != 0).then(|| (sofar as u64 * 100 / total as u64).min(100) as u32)
+}
+
+/// The least time between two progress reports.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
+/// The worker-side throttle: at most one report per 250 ms, and only when the percent changed;
+/// a change to 100 always goes through.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProgressGate {
+    last: Option<(Instant, u32)>,
+}
+
+impl ProgressGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether `percent` at `now` is reported (and, if so, remembered as the last report).
+    pub fn due(&mut self, now: Instant, percent: u32) -> bool {
+        let due = match self.last {
+            None => true,
+            Some((_, p)) if p == percent => false,
+            Some((t, _)) => percent == 100 || now.duration_since(t) >= PROGRESS_EVERY,
+        };
+        if due {
+            self.last = Some((now, percent));
+        }
+        due
+    }
+}
+
 /// Handle to the worker. Dropping it ends the worker's message loop.
 pub struct Worker {
     tid: u32,
@@ -221,8 +287,9 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Start the worker. `done` is called on the worker thread after each job.
-    pub fn spawn(done: impl Fn(Done) + Send + 'static) -> Worker {
+    /// Start the worker. `done` is called on the worker thread after each job, `progress` on the
+    /// worker thread while one runs (throttled by `ProgressGate`).
+    pub fn spawn(done: impl Fn(Done) + Send + 'static, progress: impl Fn(Progress) + Send + 'static) -> Worker {
         let (tx, rx) = unbounded::<Request>();
         let (tid_tx, tid_rx) = crossbeam_channel::bounded(1);
         let cancel_upto = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -239,7 +306,7 @@ impl Worker {
                     GetCurrentThreadId()
                 };
                 let _ = tid_tx.send(tid);
-                run_loop(rx, &cancel, done);
+                run_loop(rx, &cancel, done, Rc::new(progress));
             })
             .expect("spawn fileops thread");
         let tid = tid_rx.recv().unwrap_or(0);
@@ -270,7 +337,7 @@ impl Drop for Worker {
     }
 }
 
-fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, done: impl Fn(Done)) {
+fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, done: impl Fn(Done), progress: Rc<dyn Fn(Progress)>) {
     // SAFETY: initialises COM for this thread as an STA; balanced by CoUninitialize below.
     let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     // SAFETY: a zeroed MSG is a valid out-buffer for GetMessageW.
@@ -286,7 +353,7 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
                 let (outcome, results) = if req.id <= cancel_upto.load(std::sync::atomic::Ordering::Acquire) {
                     (Outcome::Cancelled, Vec::new()) // cancelled while queued: never started
                 } else if com >= 0 {
-                    perform(&req)
+                    perform(&req, &progress)
                 } else {
                     (Outcome::Failed(com), Vec::new())
                 };
@@ -417,23 +484,27 @@ struct SinkVtbl {
     resume_timer: unsafe extern "system" fn(*mut c_void) -> HRESULT,
 }
 
-/// IShellItem, up to the one method used.
+/// IShellItem, up to the methods used.
 #[repr(C)]
 struct ShellItemVtbl {
     base: UnknownVtbl,
-    _bind_to_handler: Slot,
+    bind_to_handler: unsafe extern "system" fn(*mut c_void, *mut c_void, *const GUID, *const GUID, *mut *mut c_void) -> HRESULT,
     _get_parent: Slot,
     get_display_name: unsafe extern "system" fn(*mut c_void, i32, *mut *mut u16) -> HRESULT,
 }
 
-/// Our sink: a `Box` with the vtable pointer first, a reference count, and the results. It is
-/// made, advised, called and released on the worker thread only (an STA), so the results need
-/// no lock; the count is atomic only because that is what COM objects conventionally do.
+/// Our sink: a `Box` with the vtable pointer first, a reference count, the results, and the
+/// job's id with the progress callback and its gate. It is made, advised, called and released on
+/// the worker thread only (an STA), so nothing needs a lock; the count is atomic only because
+/// that is what COM objects conventionally do.
 #[repr(C)]
 struct Sink {
     vtbl: *const SinkVtbl,
     refs: std::sync::atomic::AtomicU32,
     results: std::cell::RefCell<Vec<ItemResult>>,
+    id: u64,
+    progress: Rc<dyn Fn(Progress)>,
+    gate: std::cell::Cell<ProgressGate>,
 }
 
 static SINK_VTBL: SinkVtbl = SinkVtbl {
@@ -534,7 +605,17 @@ unsafe extern "system" fn sink_pre_move_copy(_: *mut c_void, _: u32, _: Item, _:
 unsafe extern "system" fn sink_pre_delete(_: *mut c_void, _: u32, _: Item) -> HRESULT {
     0
 }
-unsafe extern "system" fn sink_progress(_: *mut c_void, _: u32, _: u32) -> HRESULT {
+unsafe extern "system" fn sink_progress(this: *mut c_void, total: u32, sofar: u32) -> HRESULT {
+    // SAFETY: `this` is our Sink, called on the worker.
+    let sink = unsafe { &*(this as *const Sink) };
+    if let Some(percent) = percent(total, sofar) {
+        let mut gate = sink.gate.get();
+        let due = gate.due(Instant::now(), percent);
+        sink.gate.set(gate);
+        if due {
+            (sink.progress)(Progress { id: sink.id, percent });
+        }
+    }
     0
 }
 unsafe extern "system" fn sink_post_rename(this: *mut c_void, _: u32, item: Item, _: Wstr, hr: HRESULT, created: Item) -> HRESULT {
@@ -597,8 +678,10 @@ fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
         Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } => {
             sources.iter().map(PathBuf::as_path).collect()
         }
+        Job::MoveAs { items, .. } => items.iter().map(|(p, _)| p.as_path()).collect(),
         Job::Rename { source, .. } => vec![source.as_path()],
         Job::NewFolder { parent, .. } => vec![parent.as_path()],
+        Job::Restore { .. } => return all, // one result per item, made by `restore`
     };
     // Top-level items share a parent with a source; checking the parent first keeps the
     // canonicalising comparison off a folder's contents.
@@ -611,9 +694,9 @@ fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
 }
 
 /// Run one job on this (STA, pumping) thread.
-fn perform(req: &Request) -> (Outcome, Vec<ItemResult>) {
+fn perform(req: &Request, progress: &Rc<dyn Fn(Progress)>) -> (Outcome, Vec<ItemResult>) {
     let mut results = Vec::new();
-    let outcome = match perform_inner(req, &mut results) {
+    let outcome = match perform_inner(req, progress, &mut results) {
         Ok(false) => Outcome::Done,
         Ok(true) => Outcome::Cancelled,
         Err(hr) if hr == COPYENGINE_E_USER_CANCELLED || hr == HR_CANCELLED => Outcome::Cancelled,
@@ -623,7 +706,10 @@ fn perform(req: &Request) -> (Outcome, Vec<ItemResult>) {
 }
 
 /// Ok(aborted) or the first failing HRESULT; the sink's results go to `results` either way.
-fn perform_inner(req: &Request, results: &mut Vec<ItemResult>) -> Result<bool, HRESULT> {
+fn perform_inner(req: &Request, progress: &Rc<dyn Fn(Progress)>, results: &mut Vec<ItemResult>) -> Result<bool, HRESULT> {
+    if let Job::Restore { items } = &req.job {
+        return restore(req, items, progress, results);
+    }
     let mut p: *mut c_void = std::ptr::null_mut();
     // SAFETY: standard in-process COM activation; `p` receives an IFileOperation or stays null.
     check(unsafe { CoCreateInstance(&FileOperation, std::ptr::null_mut(), CLSCTX_ALL, &IID_IFILEOPERATION, &mut p) })?;
@@ -653,6 +739,16 @@ fn perform_inner(req: &Request, results: &mut Vec<ItemResult>) -> Result<bool, H
             }
             keep.push(dest);
         }
+        Job::MoveAs { items, dest_dir } => {
+            let dest = shell_item(dest_dir)?;
+            for (s, name) in items {
+                let item = shell_item(s)?;
+                let name = wide(std::ffi::OsStr::new(name));
+                check(unsafe { (v.move_item)(op.0, item.0, dest.0, name.as_ptr(), std::ptr::null_mut()) })?;
+                keep.push(item);
+            }
+            keep.push(dest);
+        }
         Job::Delete { sources, .. } => {
             for s in sources {
                 let item = shell_item(s)?;
@@ -674,6 +770,7 @@ fn perform_inner(req: &Request, results: &mut Vec<ItemResult>) -> Result<bool, H
             })?;
             keep.push(dir);
         }
+        Job::Restore { .. } => unreachable!("restored above"),
     }
     // The sink, advised for this one PerformOperations and unadvised right after. `sink` holds
     // our own reference; the operation takes its own in Advise and drops it in Unadvise (or
@@ -682,6 +779,9 @@ fn perform_inner(req: &Request, results: &mut Vec<ItemResult>) -> Result<bool, H
         vtbl: &SINK_VTBL,
         refs: std::sync::atomic::AtomicU32::new(1),
         results: std::cell::RefCell::new(Vec::new()),
+        id: req.id,
+        progress: progress.clone(),
+        gate: std::cell::Cell::new(ProgressGate::new()),
     })) as *mut c_void);
     let mut cookie = 0u32;
     let advised = unsafe { (v.advise)(op.0, sink.0, &mut cookie) } >= 0;
@@ -699,6 +799,196 @@ fn perform_inner(req: &Request, results: &mut Vec<ItemResult>) -> Result<bool, H
         return Err(performed);
     }
     Ok(got >= 0 && aborted != 0)
+}
+
+// --- Restore from the Recycle Bin ---------------------------------------------------------------
+
+const IID_IENUMSHELLITEMS: GUID = GUID::from_u128(0x70629033_e363_4a28_a567_0db78006e6d7);
+const IID_ICONTEXTMENU: GUID = GUID::from_u128(0x000214e4_0000_0000_c000_000000000046);
+
+/// CMIC_MASK_FLAG_NO_UI (SEE_MASK_FLAG_NO_UI): no dialogs from the verb.
+const CMIC_MASK_FLAG_NO_UI: u32 = 0x0000_0400;
+
+/// IEnumShellItems, up to `Next`.
+#[repr(C)]
+struct EnumShellItemsVtbl {
+    base: UnknownVtbl,
+    next: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void, *mut u32) -> HRESULT,
+}
+
+/// IContextMenu, up to `InvokeCommand`.
+#[repr(C)]
+struct ContextMenuVtbl {
+    base: UnknownVtbl,
+    query_context_menu: unsafe extern "system" fn(*mut c_void, HMENU, u32, u32, u32, u32) -> HRESULT,
+    invoke_command: unsafe extern "system" fn(*mut c_void, *const CMINVOKECOMMANDINFOEX) -> HRESULT,
+}
+
+/// Restore each item: the bin's "undelete" verb first, a move back from `$Recycle.Bin` when the
+/// verb cannot be reached or fails. One result per item (source: the `$R` path, dest: the
+/// original); Ok(aborted) when every item came back, else the first failing HRESULT.
+fn restore(req: &Request, items: &[(PathBuf, PathBuf)], progress: &Rc<dyn Fn(Progress)>, results: &mut Vec<ItemResult>) -> Result<bool, HRESULT> {
+    let found = bin_items(items);
+    let mut aborted = false;
+    let mut first_err = None;
+    for (k, (r, original)) in items.iter().enumerate() {
+        let t = Instant::now();
+        let verb = match &found {
+            Err(why) => Err(Err(why.clone())),
+            Ok(found) => match &found[k] {
+                Some(item) => undelete(req, item, r, original),
+                None => Err(Err("not in the Recycle Bin".into())),
+            },
+        };
+        let hr = match verb {
+            Ok(()) => {
+                eprintln!("[fileops] undelete {} -> {}: verb ok ({} ms)", r.display(), original.display(), t.elapsed().as_millis());
+                0
+            }
+            Err(e) => {
+                match e {
+                    Ok(hr) => eprintln!("[fileops] undelete {} -> {}: verb failed 0x{:08X}: moved back", r.display(), original.display(), hr as u32),
+                    Err(why) => eprintln!("[fileops] undelete {} -> {}: verb not reachable ({why}): moved back", r.display(), original.display()),
+                }
+                let (hr, a) = move_back(req, r, original, progress);
+                if hr < 0 {
+                    eprintln!("[fileops] undelete {} -> {}: moved back failed 0x{:08X}", r.display(), original.display(), hr as u32);
+                }
+                aborted |= a;
+                hr
+            }
+        };
+        results.push(ItemResult { source: r.clone(), dest: Some(original.clone()), hr });
+        if hr < 0 && first_err.is_none() {
+            first_err = Some(hr);
+        }
+    }
+    first_err.map_or(Ok(aborted), Err)
+}
+
+/// The bin's own items for the `$R` paths, in their order (None: not in the bin), from one pass
+/// over the bin; Err when the bin cannot be listed.
+fn bin_items(items: &[(PathBuf, PathBuf)]) -> Result<Vec<Option<Com>>, String> {
+    let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+    let want: Vec<String> = items.iter().map(|(r, _)| lower(r)).collect();
+    let mut found: Vec<Option<Com>> = items.iter().map(|_| None).collect();
+    let mut p: *mut c_void = std::ptr::null_mut();
+    // SAFETY: a known folder id and an out-pointer that receives an IShellItem or stays null.
+    let hr = unsafe { SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, std::ptr::null_mut(), &IID_ISHELLITEM, &mut p) };
+    if hr < 0 || p.is_null() {
+        return Err(format!("the Recycle Bin 0x{:08X}", hr as u32));
+    }
+    let bin = Com(p);
+    let mut e: *mut c_void = std::ptr::null_mut();
+    // SAFETY: `bin` is a live IShellItem; `e` receives an IEnumShellItems or stays null.
+    let hr = unsafe { ((**(bin.0 as *const *const ShellItemVtbl)).bind_to_handler)(bin.0, std::ptr::null_mut(), &BHID_EnumItems, &IID_IENUMSHELLITEMS, &mut e) };
+    if hr < 0 || e.is_null() {
+        return Err(format!("listing the Recycle Bin 0x{:08X}", hr as u32));
+    }
+    let en = Com(e);
+    while found.iter().any(Option::is_none) {
+        let mut item: *mut c_void = std::ptr::null_mut();
+        let mut n = 0u32;
+        // SAFETY: `en` is a live IEnumShellItems; one item out, owned by us when fetched.
+        let hr = unsafe { ((**(en.0 as *const *const EnumShellItemsVtbl)).next)(en.0, 1, &mut item, &mut n) };
+        if hr != 0 || n == 0 || item.is_null() {
+            break; // S_FALSE: the end
+        }
+        let item = Com(item);
+        if let Some(k) = item_path(item.0).map(|p| lower(&p)).and_then(|p| want.iter().zip(&found).position(|(w, f)| f.is_none() && *w == p)) {
+            found[k] = Some(item);
+        }
+    }
+    Ok(found)
+}
+
+/// The bin item's "undelete" verb, then a wait (pumping) until `r` is gone and `original` is
+/// there. Err(Ok(hr)): the verb failed or timed out; Err(Err(why)): it could not be reached.
+fn undelete(req: &Request, item: &Com, r: &Path, original: &Path) -> Result<(), Result<HRESULT, String>> {
+    let mut p: *mut c_void = std::ptr::null_mut();
+    // SAFETY: `item` is a live IShellItem; `p` receives an IContextMenu or stays null.
+    let hr = unsafe { ((**(item.0 as *const *const ShellItemVtbl)).bind_to_handler)(item.0, std::ptr::null_mut(), &BHID_SFUIObject, &IID_ICONTEXTMENU, &mut p) };
+    if hr < 0 || p.is_null() {
+        return Err(Err(format!("no context menu 0x{:08X}", hr as u32)));
+    }
+    let cm = Com(p);
+    // SAFETY: `cm` is a live IContextMenu.
+    let cv = unsafe { &**(cm.0 as *const *const ContextMenuVtbl) };
+    // SAFETY: a new empty menu, destroyed below.
+    let menu = unsafe { CreatePopupMenu() };
+    if menu.is_null() {
+        return Err(Err("CreatePopupMenu failed".into()));
+    }
+    // SAFETY: a live IContextMenu and our menu.
+    let hr = unsafe { (cv.query_context_menu)(cm.0, menu, 0, 1, 0x7FFF, CMF_NORMAL) };
+    let hr = if hr < 0 {
+        Err(format!("QueryContextMenu 0x{:08X}", hr as u32))
+    } else {
+        let mut ici = CMINVOKECOMMANDINFOEX::default();
+        ici.cbSize = std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32;
+        ici.fMask = if req.no_confirm { CMIC_MASK_FLAG_NO_UI } else { 0 };
+        ici.hwnd = req.hwnd as HWND;
+        ici.lpVerb = c"undelete".as_ptr() as *const u8;
+        ici.nShow = SW_SHOWNORMAL;
+        // SAFETY: a live IContextMenu and a fully initialised CMINVOKECOMMANDINFOEX whose verb
+        // string outlives the call.
+        Ok(unsafe { (cv.invoke_command)(cm.0, &ici) })
+    };
+    // SAFETY: the menu made above.
+    unsafe { DestroyMenu(menu) };
+    match hr {
+        Err(why) => Err(Err(why)),
+        Ok(hr) if hr < 0 => Err(Ok(hr)),
+        Ok(_) if wait_restored(r, original) => Ok(()),
+        Ok(_) => Err(Ok(HR_TIMEOUT)),
+    }
+}
+
+/// Wait, pumping this thread's messages, until `r` is gone and `original` exists (at most
+/// `UNDELETE_WAIT`). A `WM_QUIT` met here is posted again for the worker's loop and ends the wait.
+fn wait_restored(r: &Path, original: &Path) -> bool {
+    let end = Instant::now() + UNDELETE_WAIT;
+    let done = || std::fs::symlink_metadata(r).is_err() && std::fs::symlink_metadata(original).is_ok();
+    loop {
+        if done() {
+            return true;
+        }
+        if Instant::now() >= end {
+            return false;
+        }
+        // SAFETY: a standard PeekMessage pump on this thread's queue; `msg` is a valid out-buffer.
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                if msg.message == WM_QUIT {
+                    PostThreadMessageW(GetCurrentThreadId(), WM_QUIT, msg.wParam, msg.lParam);
+                    return done();
+                }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The fallback: move `r` into the original's folder under the original's name (an ordinary
+/// `MoveAs` job, through the sink). The item's HRESULT as the sink reported it, and whether the
+/// operation was aborted.
+fn move_back(req: &Request, r: &Path, original: &Path, progress: &Rc<dyn Fn(Progress)>) -> (HRESULT, bool) {
+    let (Some(dir), Some(name)) = (original.parent(), original.file_name()) else {
+        return (E_INVALIDARG, false);
+    };
+    let job = Job::MoveAs { items: vec![(r.to_path_buf(), name.to_string_lossy().into_owned())], dest_dir: dir.to_path_buf() };
+    let sub = Request { id: req.id, job, hwnd: req.hwnd, no_confirm: req.no_confirm };
+    let mut got = Vec::new();
+    match perform_inner(&sub, progress, &mut got) {
+        Err(hr) => (hr, false),
+        Ok(aborted) => {
+            let hr = got.iter().find(|x| same_path(&x.source, r)).map_or(if aborted { HR_CANCELLED } else { 0 }, |x| x.hr);
+            (hr, aborted)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -756,6 +1046,36 @@ mod tests {
         assert_eq!(status_text(&copy, &Outcome::Cancelled, &[]), "Cancelled");
         assert_eq!(status_text(&copy, &Outcome::Failed(0x80070005u32 as i32), &[]), "Failed: 0x80070005");
         assert_eq!(running_text(&copy), "copying 3 items...");
+        let mv_as = Job::MoveAs { items: vec![(PathBuf::from(r"C:\b\a (2).txt"), "a.txt".into())], dest_dir: PathBuf::from(r"C:\a") };
+        assert_eq!(status_text(&mv_as, &Outcome::Done, &[]), "Moved 1 item");
+        assert_eq!(running_text(&mv_as), "moving 1 item...");
+        assert_eq!(mv_as.paths(), [Path::new(r"C:\b\a (2).txt"), Path::new(r"C:\a")]);
+        let restore = Job::Restore { items: vec![(PathBuf::from(r"C:\$Recycle.Bin\S\$RX.txt"), PathBuf::from(r"C:\a\x.txt")); 2] };
+        assert_eq!(status_text(&restore, &Outcome::Done, &[]), "Restored 2 items from the Recycle Bin");
+        assert_eq!(running_text(&restore), "restoring 2 items...");
+        assert_eq!(restore.paths(), [Path::new(r"C:\a\x.txt"); 2], "the originals only: the soak fence");
+    }
+
+    #[test]
+    fn progress_percent_and_gate() {
+        assert_eq!(percent(0, 0), None);
+        assert_eq!(percent(0, 5), None);
+        assert_eq!(percent(200, 0), Some(0));
+        assert_eq!(percent(200, 101), Some(50));
+        assert_eq!(percent(200, 300), Some(100), "clamped");
+        assert_eq!(percent(u32::MAX, u32::MAX - 1), Some(99), "no overflow");
+
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut g = ProgressGate::new();
+        assert!(g.due(ms(0), 0), "the first report goes through");
+        assert!(!g.due(ms(10), 5), "within 250 ms");
+        assert!(!g.due(ms(300), 0), "unchanged");
+        assert!(g.due(ms(300), 7));
+        assert!(!g.due(ms(549), 8));
+        assert!(g.due(ms(550), 8), "250 ms after the last report");
+        assert!(g.due(ms(560), 100), "100 goes through when it changes");
+        assert!(!g.due(ms(900), 100), "but only once");
     }
 
     #[test]
@@ -780,7 +1100,7 @@ mod tests {
         let (tx, rx) = unbounded();
         let worker = Worker::spawn(move |d| {
             let _ = tx.send(d);
-        });
+        }, |_| {});
         worker.cancel_queued(2);
         for (id, name) in [(1, "one"), (2, "two"), (3, "three")] {
             let job = Job::NewFolder { parent: root.clone(), name: name.into() };
@@ -809,7 +1129,7 @@ mod tests {
         let (tx, rx) = unbounded();
         let worker = Worker::spawn(move |d| {
             let _ = tx.send(d);
-        });
+        }, |_| {});
         let mut id = 0;
         let mut run = |job: Job| -> Vec<ItemResult> {
             id += 1;
@@ -886,6 +1206,97 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// The real shell and the real Recycle Bin, on a scratch folder (`twinfm-p5m2-test-<pid>`):
+    /// a file recycled and restored through the undo record (the bin's "undelete" verb, or the
+    /// move back), the redo material of that restore, a `MoveAs` round trip, and progress reports
+    /// from a folder copy. It adds one Recycle Bin entry and restores it, so a passing run leaves
+    /// the bin as it found it; the scratch folder is then deleted permanently.
+    #[test]
+    fn recycle_restore_move_as_and_progress() {
+        let root = std::env::temp_dir().join(format!("twinfm-p5m2-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("made")).unwrap();
+        let root = long_path(&root);
+        let (tx, rx) = unbounded();
+        let (ptx, prx) = unbounded();
+        let worker = Worker::spawn(
+            move |d| {
+                let _ = tx.send(d);
+            },
+            move |p| {
+                let _ = ptx.send(p);
+            },
+        );
+        let mut id = 0;
+        let mut run = |job: Job| -> (u64, Vec<ItemResult>) {
+            id += 1;
+            assert!(worker.submit(Request { id, job, hwnd: 0, no_confirm: true }));
+            let d = rx.recv_timeout(Duration::from_secs(60)).expect("job finishes within 60 s");
+            assert_eq!(d.id, id);
+            assert_eq!(d.outcome, Outcome::Done, "{:?}: {:?}", d.job, d.results);
+            assert!(d.results.iter().all(ItemResult::ok), "{:?}", d.results);
+            (id, d.results)
+        };
+        let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+
+        // Recycle, then undo through the record: a restore from the bin.
+        let file = root.join("recycled.txt");
+        std::fs::write(&file, b"from the bin").unwrap();
+        let del = Job::Delete { sources: vec![file.clone()], permanent: false };
+        let (_, r) = run(del.clone());
+        assert!(!file.exists());
+        let r_path = r[0].dest.clone().expect("the sink reports the item in the bin");
+        assert!(lower(&r_path).contains(r"\$recycle.bin\"), "{}", r_path.display());
+        let rec = undo::record_for(&del, &Outcome::Done, &r, "Deleted 1 item to the Recycle Bin").unwrap();
+        let u = rec.undo.expect("a recycle is undoable");
+        assert_eq!(u.job, Job::Restore { items: vec![(r_path.clone(), file.clone())] });
+        assert_eq!(undo::check(&u), Ok(()));
+        let restore = u.job;
+        let (_, r) = run(restore.clone());
+        assert_eq!(std::fs::read(&file).unwrap(), b"from the bin", "the file is back");
+        assert!(!r_path.exists(), "and gone from the bin");
+        assert_eq!(r.len(), 1);
+        assert_eq!((&r[0].source, r[0].dest.as_ref()), (&r_path, Some(&file)), "source: the `$R` path, dest: the original");
+        // The redo material: the restore's own record recycles the file again.
+        let redo = undo::record_for(&restore, &Outcome::Done, &r, "Restored 1 item from the Recycle Bin").unwrap();
+        assert_eq!(redo.undo.unwrap().job, Job::Delete { sources: vec![file.clone()], permanent: false });
+
+        // MoveAs: made\b.txt into the root as c.txt, and back.
+        std::fs::write(root.join("made").join("b.txt"), b"bee").unwrap();
+        let job = Job::MoveAs { items: vec![(root.join("made").join("b.txt"), "c.txt".into())], dest_dir: root.clone() };
+        let (_, r) = run(job.clone());
+        assert_eq!(std::fs::read(root.join("c.txt")).unwrap(), b"bee");
+        assert_eq!(r.iter().map(|x| lower(x.dest.as_ref().unwrap())).collect::<Vec<_>>(), [lower(&root.join("c.txt"))]);
+        let u = undo::undo_for(&job, &r).expect("a MoveAs is undoable");
+        match &u.job {
+            Job::MoveAs { items, dest_dir } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(lower(&items[0].0), lower(&root.join("c.txt")));
+                assert_eq!(items[0].1, "b.txt");
+                assert!(same_dir(dest_dir, &root.join("made")), "{}", dest_dir.display());
+            }
+            other => panic!("undo of a MoveAs: {other:?}"),
+        }
+        run(u.job);
+        assert_eq!(std::fs::read(root.join("made").join("b.txt")).unwrap(), b"bee", "moved back under its old name");
+
+        // Progress: a copy of a folder of a few files.
+        for k in 0..8 {
+            std::fs::write(root.join("made").join(format!("f{k}.bin")), vec![k as u8; 256 * 1024]).unwrap();
+        }
+        std::fs::create_dir(root.join("out")).unwrap();
+        while prx.try_recv().is_ok() {}
+        let (copy_id, _) = run(Job::Copy { sources: vec![root.join("made")], dest_dir: root.join("out") });
+        let got: Vec<Progress> = prx.try_iter().collect();
+        assert!(!got.is_empty(), "UpdateProgress reported nothing for the copy");
+        assert!(got.iter().all(|p| p.id == copy_id && p.percent <= 100), "{got:?}");
+        eprintln!("[test] progress for the copy: {got:?}");
+
+        drop(run);
+        drop(worker);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// `p` with its 8.3 components expanded (`canonicalize` without the `\\?\` prefix): the CI
     /// runner's %TEMP% is an 8.3 path (RUNNER~1) and the shell hands back long paths, which a
     /// path inside a zip cannot be canonicalised to afterwards.
@@ -939,7 +1350,7 @@ mod tests {
         let (tx, rx) = unbounded();
         let worker = Worker::spawn(move |d| {
             let _ = tx.send(d);
-        });
+        }, |_| {});
         let job = Job::Copy { sources: vec![child.clone(), zip.join("sub").join("deep")], dest_dir: root.join("out") };
         assert!(worker.submit(Request { id: 1, job: job.clone(), hwnd: 0, no_confirm: true }));
         let d = rx.recv_timeout(Duration::from_secs(30)).expect("the extraction finishes within 30 s");

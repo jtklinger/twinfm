@@ -3,15 +3,21 @@
 //! leaves a `Record` built from the real names the progress sink reported, and Ctrl+Z submits
 //! its inverse through the ordinary worker path:
 //!
-//! - Move: move the moved items back to the folder they came from.
+//! - Move: move the moved items back to the folder they came from; when the shell renamed an
+//!   item on collision ("a (2).txt"), a `MoveAs` that gives it its old name back.
+//! - Move under new names (`MoveAs`): the same `MoveAs` back.
 //! - Rename: rename the item back to its old name.
 //! - New folder: recycle the folder, only if it is still empty.
 //! - Copy: recycle the copies.
-//! - Delete to the Recycle Bin: a record that undoes nothing and says so (restoring from the
-//!   Recycle Bin is not done yet). A permanent delete records nothing.
+//! - Delete to the Recycle Bin: restore the items from the bin (`Restore`, from the `$R` paths
+//!   the sink reported); a recycle that reported none records a note that undoes nothing. A
+//!   permanent delete records nothing.
+//! - Restore: recycle the restored items again.
 //!
-//! Undo jobs are not recorded themselves (no redo). Pure apart from `check`, which looks at the
-//! disk at undo time.
+//! An undo job's own record is the redo: the app keeps a second stack (capped by `push` too), and
+//! when an undo job completes `Done` it pushes `record_for(&undo_job, ..)` there; a redo job's
+//! record goes back onto the undo stack the same way, and any other job clears the redo stack.
+//! Pure apart from `check`, which looks at the disk at undo time.
 
 use super::{ItemResult, Job, Outcome, same_dir};
 use std::path::PathBuf;
@@ -32,14 +38,14 @@ pub struct Undo {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
-    /// None: the job cannot be undone in TwinFM (a delete to the Recycle Bin); Ctrl+Z says so.
+    /// None: the job cannot be undone (a recycle the bin reported no items for); Ctrl+Z says so.
     pub undo: Option<Undo>,
     /// The job's status text, for "Undid: <text>".
     pub text: String,
 }
 
-/// The note Ctrl+Z shows for a delete to the Recycle Bin.
-pub const CANNOT_UNDO_DELETE: &str = "Cannot undo a delete yet (use the Recycle Bin)";
+/// The note Ctrl+Z shows for a recycle whose items the bin did not report.
+pub const CANNOT_UNDO_DELETE: &str = "Cannot undo: the Recycle Bin reported no items";
 
 /// The reverse of `job` from the items the sink reported, or None when nothing can be undone.
 pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
@@ -49,6 +55,11 @@ pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
         return None;
     }
     let dests: Vec<PathBuf> = made.iter().map(|(_, d)| d.clone()).collect();
+    // The items back under their old names (the sources' names), into `from`.
+    let move_as_back = |from: &std::path::Path| -> Option<Undo> {
+        let items = made.iter().map(|(s, d)| Some((d.clone(), s.file_name()?.to_string_lossy().into_owned()))).collect::<Option<Vec<_>>>()?;
+        Some(Undo { job: Job::MoveAs { items, dest_dir: from.to_path_buf() }, expect: dests.clone(), must_be_empty: false })
+    };
     match job {
         Job::Move { sources, .. } => {
             // One folder to move them back to (a paste can gather files from several).
@@ -56,8 +67,22 @@ pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
             if !sources.iter().all(|s| s.parent().is_some_and(|p| same_dir(p, from))) {
                 return None;
             }
+            if made.iter().any(|(s, d)| s.file_name() != d.file_name()) {
+                return move_as_back(from); // renamed on collision
+            }
             Some(Undo { job: Job::Move { sources: dests.clone(), dest_dir: from.to_path_buf() }, expect: dests, must_be_empty: false })
         }
+        Job::MoveAs { items, .. } => {
+            let from = items.first()?.0.parent()?;
+            if !items.iter().all(|(s, _)| s.parent().is_some_and(|p| same_dir(p, from))) {
+                return None;
+            }
+            move_as_back(from)
+        }
+        Job::Delete { permanent: false, .. } => {
+            Some(Undo { job: Job::Restore { items: made.iter().map(|(s, d)| (d.clone(), s.clone())).collect() }, expect: dests, must_be_empty: false })
+        }
+        Job::Restore { .. } => Some(Undo { job: Job::Delete { sources: dests.clone(), permanent: false }, expect: dests, must_be_empty: false }),
         Job::Copy { .. } => Some(Undo { job: Job::Delete { sources: dests.clone(), permanent: false }, expect: dests, must_be_empty: false }),
         Job::Rename { source, .. } => {
             let old = source.file_name()?.to_string_lossy().into_owned();
@@ -68,19 +93,20 @@ pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
             let (_, folder) = made.into_iter().next()?;
             Some(Undo { job: Job::Delete { sources: vec![folder.clone()], permanent: false }, expect: vec![folder], must_be_empty: true })
         }
-        Job::Delete { .. } => None,
+        Job::Delete { permanent: true, .. } => None,
     }
 }
 
-/// What a finished job leaves on the undo stack: only successful jobs leave anything; a delete
-/// to the Recycle Bin leaves a record that undoes nothing, a permanent delete none.
+/// What a finished job leaves on the undo stack (or, for an undo job, on the redo stack): only
+/// successful jobs leave anything; a recycle the bin reported no items for leaves a record that
+/// undoes nothing, a permanent delete none.
 pub fn record_for(job: &Job, outcome: &Outcome, results: &[ItemResult], text: &str) -> Option<Record> {
     if *outcome != Outcome::Done {
         return None;
     }
     match job {
         Job::Delete { permanent: true, .. } => None,
-        Job::Delete { permanent: false, .. } => Some(Record { undo: None, text: text.into() }),
+        Job::Delete { permanent: false, .. } => Some(Record { undo: undo_for(job, results), text: text.into() }),
         _ => Some(Record { undo: Some(undo_for(job, results)?), text: text.into() }),
     }
 }
@@ -93,8 +119,8 @@ pub fn push(stack: &mut Vec<Record>, r: Record) {
     }
 }
 
-/// At undo time: the items are still where the job left them (and a new folder is still empty),
-/// or why not.
+/// At undo time: the items are still where the job left them (a restore's `$R` paths still in
+/// the bin, a new folder still empty), or why not.
 pub fn check(u: &Undo) -> Result<(), String> {
     let name = |p: &PathBuf| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
     for p in &u.expect {
@@ -148,10 +174,54 @@ mod tests {
     }
 
     #[test]
+    fn moves_under_new_names_recycles_and_restores() {
+        // The shell renamed one item on collision: the undo gives it its old name back.
+        let mv = Job::Move { sources: vec![r"C:\a\a.txt".into(), r"C:\a\b.txt".into()], dest_dir: r"C:\b".into() };
+        let res = [ok(r"C:\a\a.txt", r"C:\b\a (2).txt"), ok(r"C:\a\b.txt", r"C:\b\b.txt")];
+        let u = undo_for(&mv, &res).unwrap();
+        let back = Job::MoveAs {
+            items: vec![(r"C:\b\a (2).txt".into(), "a.txt".into()), (r"C:\b\b.txt".into(), "b.txt".into())],
+            dest_dir: r"C:\a".into(),
+        };
+        assert_eq!(u.job, back);
+        assert_eq!(u.expect, [PathBuf::from(r"C:\b\a (2).txt"), PathBuf::from(r"C:\b\b.txt")]);
+
+        // A MoveAs is undone by a MoveAs back under the items' old names.
+        let u = undo_for(&back, &[ok(r"C:\b\a (2).txt", r"C:\a\a.txt"), ok(r"C:\b\b.txt", r"C:\a\b.txt")]).unwrap();
+        assert_eq!(
+            u.job,
+            Job::MoveAs { items: vec![(r"C:\a\a.txt".into(), "a (2).txt".into()), (r"C:\a\b.txt".into(), "b.txt".into())], dest_dir: r"C:\b".into() }
+        );
+        let mixed = Job::MoveAs { items: vec![(r"C:\b\x".into(), "x".into()), (r"C:\c\y".into(), "y".into())], dest_dir: r"C:\a".into() };
+        assert_eq!(undo_for(&mixed, &[ok(r"C:\b\x", r"C:\a\x"), ok(r"C:\c\y", r"C:\a\y")]), None, "from two folders");
+
+        // A recycle is undone by a restore from the `$R` paths, failed items left out.
+        let r = r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt";
+        let del = Job::Delete { sources: vec![r"C:\a\x.txt".into(), r"C:\a\y.txt".into()], permanent: false };
+        let res = [ok(r"C:\a\x.txt", r), ItemResult { hr: -1, ..ok(r"C:\a\y.txt", r"C:\$Recycle.Bin\S-1-5-21-1\$RZZ.txt") }];
+        let u = undo_for(&del, &res).unwrap();
+        assert_eq!(u.job, Job::Restore { items: vec![(r.into(), r"C:\a\x.txt".into())] });
+        assert_eq!(u.expect, [PathBuf::from(r)], "the `$R` path must still be in the bin");
+        assert_eq!(undo_for(&Job::Delete { sources: vec![], permanent: true }, &res), None);
+
+        // A restore is undone (redone) by recycling the originals again.
+        let restore = Job::Restore { items: vec![(r.into(), r"C:\a\x.txt".into())] };
+        let u = undo_for(&restore, &[ok(r, r"C:\a\x.txt")]).unwrap();
+        assert_eq!(u.job, Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: false });
+    }
+
+    #[test]
     fn records_and_the_cap() {
         let del = Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: false };
         let rec = record_for(&del, &Outcome::Done, &[], "Deleted 1 item to the Recycle Bin").unwrap();
-        assert_eq!(rec.undo, None, "a recycle is recorded as not undoable");
+        assert_eq!(rec.undo, None, "a recycle the bin reported no items for is recorded as not undoable");
+        let res = [ok(r"C:\a\x.txt", r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt")];
+        let rec = record_for(&del, &Outcome::Done, &res, "Deleted 1 item to the Recycle Bin").unwrap();
+        assert!(matches!(rec.undo, Some(Undo { job: Job::Restore { .. }, .. })), "{rec:?}");
+        let restore = Job::Restore { items: vec![(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt".into(), r"C:\a\x.txt".into())] };
+        let res = [ok(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt", r"C:\a\x.txt")];
+        let rec = record_for(&restore, &Outcome::Done, &res, "Restored 1 item from the Recycle Bin").unwrap();
+        assert_eq!(rec.undo.unwrap().job, Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: false }, "the redo of a restore");
         let nuke = Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: true };
         assert_eq!(record_for(&nuke, &Outcome::Done, &[], "x"), None, "a permanent delete records nothing");
         let ren = Job::Rename { source: r"C:\a\old.txt".into(), new_name: "new.txt".into() };
@@ -182,6 +252,9 @@ mod tests {
         assert_eq!(check(&del(root.join("full"), true)), Err("Cannot undo: full is not empty".into()));
         assert_eq!(check(&del(root.join("full"), false)), Ok(()));
         assert_eq!(check(&del(root.join("gone"), false)), Err("Cannot undo: gone is no longer there".into()));
+        let restore = |r: PathBuf| Undo { job: Job::Restore { items: vec![(r.clone(), root.join("x.txt"))] }, expect: vec![r], must_be_empty: false };
+        assert_eq!(check(&restore(root.join("full").join("f"))), Ok(()));
+        assert_eq!(check(&restore(root.join("$RGONE.txt"))), Err("Cannot undo: $RGONE.txt is no longer there".into()), "emptied from the bin");
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
