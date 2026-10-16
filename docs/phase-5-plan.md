@@ -1149,8 +1149,8 @@ no other TwinFM window. `target-p5m2` (6b1d0f1) against `target-p5m3` (074ccb2, 
 `--locked` from the detached checkout `.claude\worktrees\gate-p5m3`). Every run's stderr shows the two
 `watching` and two `parent watch on` lines, the candidate's two `[crumb] pane=N geometry: 4 crumbs`
 lines, and no `[fileops]`, `[undo]`, `spring`, `drop description` or `panicked` line. Analysed with
-`tools/analyze-trace.py --symbols --exe`; traces `C:	races	winfm-ab21-*.etl`, reports under
-`C:	races\export\`.
+`tools/analyze-trace.py --symbols --exe`; traces `C:\traces\twinfm-ab21-*.etl`, reports under
+`C:\traces\export\`.
 
 | Run | reference `target-p5m2`, WPR | P5-M3 `target-p5m3`, WPR | in-app (ref / cand) | peak working set (ref / cand) |
 |---|---|---|---|---|
