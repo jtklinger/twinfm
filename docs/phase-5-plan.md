@@ -772,7 +772,7 @@ elease`) and its own soak script, run right after: exit 0,
 ### Measurements
 
 In-app, RELATIVE only: harness session, 1216 x 800 window, scale 1.0, accessibility on, the gate
-scenario on `C:	racesigdir`, `[busy]` over the 10 s after the split, each candidate run
+scenario on `C:\traces\bigdir`, `[busy]` over the 10 s after the split, each candidate run
 interleaved with `target-p4m3` (53dbc50, the reference) by the same runner, reference first, two
 sets of three rounds per settings file (six pairs), no cargo or agent running beside. **Jeremy's
 session was disconnected throughout** (`query session`: `Disc`), so the window presented at about
