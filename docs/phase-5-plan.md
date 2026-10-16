@@ -1171,9 +1171,24 @@ working set was 187 MB against 150 to 154 MB in the other five, the same pattern
 candidate run (§ P5-M2 Gate); its busy figure was unremarkable; not explained. The in-app lines
 (15.6 to 20.9) swing wider than the WPR figures and do not decide.
 
-Console checks, 2026-10-16, Jeremy at the console with the `target-p5m3` build: in progress. First
-finding: **a drag from File Explorer onto TwinFM shows the denied icon and does not drop**, while a
-drag from TwinFM to File Explorer copies. Under investigation (below) before the merge.
+**Console checks, 2026-10-16, Jeremy at the console with the `target-p5m3` build:**
+
+- **A drag from File Explorer onto TwinFM first showed the denied icon and never reached the drop
+  target** (no `DragEnter` line in the log), with the reference build behaving the same, while a drag
+  from TwinFM into File Explorer copied. Cause: TwinFM had been started from the elevated PowerShell
+  the triplet ran in, and Windows blocks drag and drop from a program at the normal integrity level
+  (File Explorer) into an elevated window; the other direction is allowed. Started unelevated, the
+  same drag works: `DragEnter: 1 file(s)`, `volumes: sources on c:`, then per spot `volumes: dest
+  C:\Users\jtkli\Music on c:` with `drop description: Move to "Music"` and `over sidebar row 9
+  (...) -> effect move`, "Videos" the same, `drop description: none` and `effect none` over the
+  file's own Downloads folder, `Move to "tmp"` over the pane, `drop description: cleared` at the
+  drop, `Drop at pane 0 (C:\tmp) ... effect move (reported to the source: none)`, `[fileops] done
+  ... Moved 1 item`; File Explorer's data object took every SetData (no `SetData failed` line). Not
+  a defect; recorded so that console checks always start TwinFM unelevated (the gate script starts
+  it from the elevated console, which is fine for the gate since the scenario never drags).
+- Remaining checks (the description text as painted under File Explorer's image and under ours, the
+  OLE cursor glyph, the spring-loads, a crumb drop, the sidebar and tab-strip edge scrolls, the first
+  drag): recorded below as Jeremy reports them.
 
 ## Open questions
 
