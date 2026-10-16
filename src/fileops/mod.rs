@@ -32,7 +32,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Foundation::{E_INVALIDARG, ERROR_CANCELLED, ERROR_TIMEOUT, HWND};
+use windows_sys::Win32::Foundation::{E_FAIL, E_INVALIDARG, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_TIMEOUT, HWND};
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
 use windows_sys::Win32::System::Com::{CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
@@ -56,6 +56,9 @@ pub const HR_CANCELLED: HRESULT = (0x8007_0000u32 | ERROR_CANCELLED) as HRESULT;
 
 /// HRESULT_FROM_WIN32(ERROR_TIMEOUT): the "undelete" verb returned but the item never came back.
 const HR_TIMEOUT: HRESULT = (0x8007_0000u32 | ERROR_TIMEOUT) as HRESULT;
+
+/// HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS): a restore whose original path is taken.
+const HR_IN_THE_WAY: HRESULT = (0x8007_0000u32 | ERROR_ALREADY_EXISTS) as HRESULT;
 
 /// How long a restore waits for the "undelete" verb to put an item back.
 const UNDELETE_WAIT: Duration = Duration::from_secs(30);
@@ -808,6 +811,8 @@ const IID_ICONTEXTMENU: GUID = GUID::from_u128(0x000214e4_0000_0000_c000_0000000
 
 /// CMIC_MASK_FLAG_NO_UI (SEE_MASK_FLAG_NO_UI): no dialogs from the verb.
 const CMIC_MASK_FLAG_NO_UI: u32 = 0x0000_0400;
+/// CMIC_MASK_NOASYNC (SEE_MASK_NOASYNC): the handler finishes before InvokeCommand returns.
+const CMIC_MASK_NOASYNC: u32 = 0x0000_0100;
 
 /// IEnumShellItems, up to `Next`.
 #[repr(C)]
@@ -825,37 +830,59 @@ struct ContextMenuVtbl {
 }
 
 /// Restore each item: the bin's "undelete" verb first, a move back from `$Recycle.Bin` when the
-/// verb cannot be reached or fails. One result per item (source: the `$R` path, dest: the
-/// original); Ok(aborted) when every item came back, else the first failing HRESULT.
+/// verb cannot be reached, fails or times out. One result per item reached (source: the `$R`
+/// path, dest: the original); Ok(aborted) when every item came back, else the first failing
+/// HRESULT. A `$R` path outside a `$Recycle.Bin` folder is refused, an original path already
+/// taken is never moved onto, a cancelled verb is not followed by the move, and a `WM_QUIT` met
+/// while waiting ends the job as cancelled.
 fn restore(req: &Request, items: &[(PathBuf, PathBuf)], progress: &Rc<dyn Fn(Progress)>, results: &mut Vec<ItemResult>) -> Result<bool, HRESULT> {
     let found = bin_items(items);
     let mut aborted = false;
     let mut first_err = None;
     for (k, (r, original)) in items.iter().enumerate() {
         let t = Instant::now();
-        let verb = match &found {
-            Err(why) => Err(Err(why.clone())),
-            Ok(found) => match &found[k] {
-                Some(item) => undelete(req, item, r, original),
-                None => Err(Err("not in the Recycle Bin".into())),
-            },
-        };
-        let hr = match verb {
-            Ok(()) => {
-                eprintln!("[fileops] undelete {} -> {}: verb ok ({} ms)", r.display(), original.display(), t.elapsed().as_millis());
-                0
-            }
-            Err(e) => {
-                match e {
-                    Ok(hr) => eprintln!("[fileops] undelete {} -> {}: verb failed 0x{:08X}: moved back", r.display(), original.display(), hr as u32),
-                    Err(why) => eprintln!("[fileops] undelete {} -> {}: verb not reachable ({why}): moved back", r.display(), original.display()),
+        let (rs, os) = (r.display(), original.display());
+        let hr = if !in_recycle_bin(r) {
+            eprintln!("[fileops] undelete {rs} -> {os}: not a Recycle Bin path");
+            E_INVALIDARG
+        } else {
+            let verb = match &found {
+                Err(why) => Err(NotRestored::Fallback(Err(why.clone()))),
+                Ok(found) => match &found[k] {
+                    Some(item) => undelete(req, item, r, original),
+                    None => Err(NotRestored::Fallback(Err("not in the Recycle Bin".into()))),
+                },
+            };
+            match verb {
+                Ok(()) => {
+                    eprintln!("[fileops] undelete {rs} -> {os}: verb ok ({} ms)", t.elapsed().as_millis());
+                    0
                 }
-                let (hr, a) = move_back(req, r, original, progress);
-                if hr < 0 {
-                    eprintln!("[fileops] undelete {} -> {}: moved back failed 0x{:08X}", r.display(), original.display(), hr as u32);
+                Err(NotRestored::Quit) => {
+                    eprintln!("[fileops] undelete {rs} -> {os}: quit while waiting: stopped");
+                    return Ok(true);
                 }
-                aborted |= a;
-                hr
+                Err(NotRestored::InTheWay(why)) => {
+                    eprintln!("[fileops] undelete {rs} -> {os}: refused ({why})");
+                    HR_IN_THE_WAY
+                }
+                Err(NotRestored::Fallback(Ok(hr))) if hr == HR_CANCELLED || hr == COPYENGINE_E_USER_CANCELLED => {
+                    eprintln!("[fileops] undelete {rs} -> {os}: verb cancelled 0x{:08X}", hr as u32);
+                    aborted = true;
+                    hr
+                }
+                Err(NotRestored::Fallback(e)) => {
+                    match e {
+                        Ok(hr) => eprintln!("[fileops] undelete {rs} -> {os}: verb failed 0x{:08X}: moved back", hr as u32),
+                        Err(why) => eprintln!("[fileops] undelete {rs} -> {os}: verb not reachable ({why}): moved back"),
+                    }
+                    let (hr, a) = move_back(req, r, original, progress);
+                    if hr < 0 {
+                        eprintln!("[fileops] undelete {rs} -> {os}: moved back failed 0x{:08X}", hr as u32);
+                    }
+                    aborted |= a;
+                    hr
+                }
             }
         };
         results.push(ItemResult { source: r.clone(), dest: Some(original.clone()), hr });
@@ -864,6 +891,29 @@ fn restore(req: &Request, items: &[(PathBuf, PathBuf)], progress: &Rc<dyn Fn(Pro
         }
     }
     first_err.map_or(Ok(aborted), Err)
+}
+
+/// A `$R` path lies in a `$Recycle.Bin` folder: the one guard on what a restore moves.
+fn in_recycle_bin(r: &Path) -> bool {
+    r.to_string_lossy().to_lowercase().contains(r"\$recycle.bin\")
+}
+
+/// The `$I` file beside a `$R` item (its original path and deletion time).
+fn info_file(r: &Path) -> Option<PathBuf> {
+    let name = r.file_name()?.to_str()?;
+    let rest = name.strip_prefix("$R").or_else(|| name.strip_prefix("$r"))?;
+    Some(r.with_file_name(format!("$I{rest}")))
+}
+
+/// Why the "undelete" verb did not put an item back.
+enum NotRestored {
+    /// The verb failed or timed out (Ok(hr)) or could not be reached (Err(why)): the move back
+    /// runs, unless the verb was cancelled.
+    Fallback(Result<HRESULT, String>),
+    /// The original path is taken: nothing is moved (`undo::check` refuses this first).
+    InTheWay(String),
+    /// A `WM_QUIT` came while waiting: the worker is stopping.
+    Quit,
 }
 
 /// The bin's own items for the `$R` paths, in their order (None: not in the bin), from one pass
@@ -903,13 +953,17 @@ fn bin_items(items: &[(PathBuf, PathBuf)]) -> Result<Vec<Option<Com>>, String> {
 }
 
 /// The bin item's "undelete" verb, then a wait (pumping) until `r` is gone and `original` is
-/// there. Err(Ok(hr)): the verb failed or timed out; Err(Err(why)): it could not be reached.
-fn undelete(req: &Request, item: &Com, r: &Path, original: &Path) -> Result<(), Result<HRESULT, String>> {
+/// there; refused before the verb when `original` already exists.
+fn undelete(req: &Request, item: &Com, r: &Path, original: &Path) -> Result<(), NotRestored> {
+    if std::fs::symlink_metadata(original).is_ok() {
+        let name = original.file_name().map_or_else(|| original.display().to_string(), |n| n.to_string_lossy().into_owned());
+        return Err(NotRestored::InTheWay(format!("{name} is in the way")));
+    }
     let mut p: *mut c_void = std::ptr::null_mut();
     // SAFETY: `item` is a live IShellItem; `p` receives an IContextMenu or stays null.
     let hr = unsafe { ((**(item.0 as *const *const ShellItemVtbl)).bind_to_handler)(item.0, std::ptr::null_mut(), &BHID_SFUIObject, &IID_ICONTEXTMENU, &mut p) };
     if hr < 0 || p.is_null() {
-        return Err(Err(format!("no context menu 0x{:08X}", hr as u32)));
+        return Err(NotRestored::Fallback(Err(format!("no context menu 0x{:08X}", hr as u32))));
     }
     let cm = Com(p);
     // SAFETY: `cm` is a live IContextMenu.
@@ -917,7 +971,7 @@ fn undelete(req: &Request, item: &Com, r: &Path, original: &Path) -> Result<(), 
     // SAFETY: a new empty menu, destroyed below.
     let menu = unsafe { CreatePopupMenu() };
     if menu.is_null() {
-        return Err(Err("CreatePopupMenu failed".into()));
+        return Err(NotRestored::Fallback(Err("CreatePopupMenu failed".into())));
     }
     // SAFETY: a live IContextMenu and our menu.
     let hr = unsafe { (cv.query_context_menu)(cm.0, menu, 0, 1, 0x7FFF, CMF_NORMAL) };
@@ -926,7 +980,7 @@ fn undelete(req: &Request, item: &Com, r: &Path, original: &Path) -> Result<(), 
     } else {
         let mut ici = CMINVOKECOMMANDINFOEX::default();
         ici.cbSize = std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32;
-        ici.fMask = if req.no_confirm { CMIC_MASK_FLAG_NO_UI } else { 0 };
+        ici.fMask = CMIC_MASK_NOASYNC | if req.no_confirm { CMIC_MASK_FLAG_NO_UI } else { 0 };
         ici.hwnd = req.hwnd as HWND;
         ici.lpVerb = c"undelete".as_ptr() as *const u8;
         ici.nShow = SW_SHOWNORMAL;
@@ -937,24 +991,35 @@ fn undelete(req: &Request, item: &Com, r: &Path, original: &Path) -> Result<(), 
     // SAFETY: the menu made above.
     unsafe { DestroyMenu(menu) };
     match hr {
-        Err(why) => Err(Err(why)),
-        Ok(hr) if hr < 0 => Err(Ok(hr)),
-        Ok(_) if wait_restored(r, original) => Ok(()),
-        Ok(_) => Err(Ok(HR_TIMEOUT)),
+        Err(why) => Err(NotRestored::Fallback(Err(why))),
+        Ok(hr) if hr < 0 => Err(NotRestored::Fallback(Ok(hr))),
+        Ok(_) => match wait_restored(r, original) {
+            Wait::Restored => Ok(()),
+            Wait::TimedOut => Err(NotRestored::Fallback(Ok(HR_TIMEOUT))),
+            Wait::Quit => Err(NotRestored::Quit),
+        },
     }
+}
+
+/// How `wait_restored` ended.
+enum Wait {
+    Restored,
+    TimedOut,
+    /// A `WM_QUIT` came first (posted again for the worker's loop).
+    Quit,
 }
 
 /// Wait, pumping this thread's messages, until `r` is gone and `original` exists (at most
 /// `UNDELETE_WAIT`). A `WM_QUIT` met here is posted again for the worker's loop and ends the wait.
-fn wait_restored(r: &Path, original: &Path) -> bool {
+fn wait_restored(r: &Path, original: &Path) -> Wait {
     let end = Instant::now() + UNDELETE_WAIT;
     let done = || std::fs::symlink_metadata(r).is_err() && std::fs::symlink_metadata(original).is_ok();
     loop {
         if done() {
-            return true;
+            return Wait::Restored;
         }
         if Instant::now() >= end {
-            return false;
+            return Wait::TimedOut;
         }
         // SAFETY: a standard PeekMessage pump on this thread's queue; `msg` is a valid out-buffer.
         unsafe {
@@ -962,7 +1027,7 @@ fn wait_restored(r: &Path, original: &Path) -> bool {
             while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
                 if msg.message == WM_QUIT {
                     PostThreadMessageW(GetCurrentThreadId(), WM_QUIT, msg.wParam, msg.lParam);
-                    return done();
+                    return if done() { Wait::Restored } else { Wait::Quit };
                 }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -973,9 +1038,16 @@ fn wait_restored(r: &Path, original: &Path) -> bool {
 }
 
 /// The fallback: move `r` into the original's folder under the original's name (an ordinary
-/// `MoveAs` job, through the sink). The item's HRESULT as the sink reported it, and whether the
-/// operation was aborted.
+/// `MoveAs` job, through the sink), then its `$I` file removed. The item's HRESULT as the sink
+/// reported it (when it reported none: cancelled if aborted, 0 if the original is there, else
+/// E_FAIL), and whether the operation was aborted. An item the verb did put back after all (`r`
+/// gone, `original` there) is not moved: hr 0.
 fn move_back(req: &Request, r: &Path, original: &Path, progress: &Rc<dyn Fn(Progress)>) -> (HRESULT, bool) {
+    let exists = |p: &Path| std::fs::symlink_metadata(p).is_ok();
+    if !exists(r) && exists(original) {
+        eprintln!("[fileops] undelete {} -> {}: already back, nothing moved", r.display(), original.display());
+        return (0, false);
+    }
     let (Some(dir), Some(name)) = (original.parent(), original.file_name()) else {
         return (E_INVALIDARG, false);
     };
@@ -985,7 +1057,20 @@ fn move_back(req: &Request, r: &Path, original: &Path, progress: &Rc<dyn Fn(Prog
     match perform_inner(&sub, progress, &mut got) {
         Err(hr) => (hr, false),
         Ok(aborted) => {
-            let hr = got.iter().find(|x| same_path(&x.source, r)).map_or(if aborted { HR_CANCELLED } else { 0 }, |x| x.hr);
+            let none = if aborted {
+                HR_CANCELLED
+            } else if exists(original) {
+                0
+            } else {
+                E_FAIL
+            };
+            let hr = got.iter().find(|x| same_path(&x.source, r)).map_or(none, |x| x.hr);
+            if hr >= 0 && !exists(r) {
+                // Windows leaves the bin's `$I` record behind when the item is moved out.
+                if let Some(i) = info_file(r) {
+                    let _ = std::fs::remove_file(i);
+                }
+            }
             (hr, aborted)
         }
     }
@@ -995,6 +1080,26 @@ fn move_back(req: &Request, r: &Path, original: &Path, progress: &Rc<dyn Fn(Prog
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn restore_moves_only_out_of_the_bin() {
+        assert!(in_recycle_bin(Path::new(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt")));
+        assert!(in_recycle_bin(Path::new(r"D:\$RECYCLE.BIN\S-1-5-21-1\$RAB12CD")), "any case, any drive");
+        assert!(!in_recycle_bin(Path::new(r"C:\Users\x\$RAB12CD.txt")));
+        assert!(!in_recycle_bin(Path::new(r"C:\Users\x\$Recycle.Bin.txt")), "a name, not the folder");
+        assert!(!in_recycle_bin(Path::new(r"C:\$Recycle.Bin")), "the bin itself");
+        // The guard runs before any shell call, item by item.
+        let req = Request { id: 1, job: Job::Restore { items: vec![] }, hwnd: 0, no_confirm: true };
+        let progress: Rc<dyn Fn(Progress)> = Rc::new(|_| {});
+        let items = [(PathBuf::from(r"C:\Users\x\$RAB12CD.txt"), PathBuf::from(r"C:\Users\x\a.txt"))];
+        let mut results = Vec::new();
+        assert_eq!(restore(&req, &items, &progress, &mut results), Err(E_INVALIDARG));
+        assert_eq!(results, [ItemResult { source: items[0].0.clone(), dest: Some(items[0].1.clone()), hr: E_INVALIDARG }]);
+
+        assert_eq!(info_file(Path::new(r"C:\$Recycle.Bin\S-1\$RAB12CD.txt")), Some(PathBuf::from(r"C:\$Recycle.Bin\S-1\$IAB12CD.txt")));
+        assert_eq!(info_file(Path::new(r"C:\$Recycle.Bin\S-1\$RXY9")), Some(PathBuf::from(r"C:\$Recycle.Bin\S-1\$IXY9")), "a folder");
+        assert_eq!(info_file(Path::new(r"C:\$Recycle.Bin\S-1\a.txt")), None);
+    }
 
     #[test]
     fn job_flags() {
@@ -1207,10 +1312,12 @@ mod tests {
     }
 
     /// The real shell and the real Recycle Bin, on a scratch folder (`twinfm-p5m2-test-<pid>`):
-    /// a file recycled and restored through the undo record (the bin's "undelete" verb, or the
-    /// move back), the redo material of that restore, a `MoveAs` round trip, and progress reports
-    /// from a folder copy. It adds one Recycle Bin entry and restores it, so a passing run leaves
-    /// the bin as it found it; the scratch folder is then deleted permanently.
+    /// a file recycled and restored through the undo record (the bin's "undelete" verb, which
+    /// must finish in under 25 s, well inside the verb's 30 s wait before the move back), the redo
+    /// material of that restore, a `MoveAs` round trip, and progress reports from a folder copy.
+    /// It adds one Recycle Bin entry and restores it, so a passing run leaves the bin's listing as
+    /// it found it (an orphan `$I` file, which Windows's own restore can leave, may stay on disk);
+    /// the scratch folder is then deleted permanently.
     #[test]
     fn recycle_restore_move_as_and_progress() {
         let root = std::env::temp_dir().join(format!("twinfm-p5m2-test-{}", std::process::id()));
@@ -1252,7 +1359,9 @@ mod tests {
         assert_eq!(u.job, Job::Restore { items: vec![(r_path.clone(), file.clone())] });
         assert_eq!(undo::check(&u), Ok(()));
         let restore = u.job;
+        let t = std::time::Instant::now();
         let (_, r) = run(restore.clone());
+        assert!(t.elapsed() < Duration::from_secs(25), "the verb restored it (took {:?})", t.elapsed());
         assert_eq!(std::fs::read(&file).unwrap(), b"from the bin", "the file is back");
         assert!(!r_path.exists(), "and gone from the bin");
         assert_eq!(r.len(), 1);

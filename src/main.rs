@@ -175,9 +175,11 @@ struct JobInfo {
     /// those rows were in and where its cursor falls back to if its row goes
     /// (`PaneModel::cursor_after_removal`).
     fallback: Option<(usize, u64, usize)>,
-    /// An undo or redo job, and the status text of the record it replays (`after_job` says
-    /// which stack its completion goes to).
-    replay: Option<(Replay, String)>,
+    /// An undo or redo job, and the record it replays (`after_job` says which stack its
+    /// completion goes to; a replay that did nothing puts the record back where it came from).
+    replay: Option<(Replay, fileops::undo::Record)>,
+    /// The note `submit` showed for it: its percentage shows only beside that note.
+    running: String,
 }
 
 /// Which stack a replayed record came from: Ctrl+Z's or Ctrl+Y's.
@@ -588,9 +590,9 @@ fn update_status(st: &State, app: &App, pane: usize) {
     let m = &t.model;
     let loading = t.timing.done_ms.is_none() && t.timing.error.is_none();
     let enum_ms = if st.perf_status { t.timing.done_ms } else { None };
-    // The running job's percentage on the tab that submitted it; jobs waiting behind it, shown
-    // on both panes.
-    let pct = st.progress.and_then(|(id, p)| st.jobs.get(&id).filter(|j| j.pane == pane && j.tab == t.id).map(|_| p));
+    // The running job's percentage beside its own note; jobs waiting behind it, shown on both
+    // panes.
+    let pct = progress_for(st.progress, &st.jobs, pane, t.id, &t.note);
     let note = statusbar::with_queue(&statusbar::with_progress(&t.note, pct), st.jobs.len().saturating_sub(1));
     let left = match &t.search {
         Some(s) => {
@@ -612,6 +614,13 @@ fn update_status(st: &State, app: &App, pane: usize) {
         right: statusbar::free_text(t.free).into(),
     };
     if pane == 0 { app.set_left_status(s) } else { app.set_right_status(s) }
+}
+
+/// The running job's percentage for a tab's status bar: only on the pane and tab that submitted
+/// it, while the tab still shows the job's own running note.
+fn progress_for(progress: Option<(u64, u32)>, jobs: &HashMap<u64, JobInfo>, pane: usize, tab: u64, note: &str) -> Option<u32> {
+    let (id, p) = progress?;
+    jobs.get(&id).filter(|j| j.pane == pane && j.tab == tab && j.running == note).map(|_| p)
 }
 
 /// The pane's tab strip: one entry per tab, titled by its folder. Hidden by the UI with one tab.
@@ -2130,7 +2139,7 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
         return None;
     }
     let tab = st.tab(pane).id;
-    st.jobs.insert(id, JobInfo { pane, tab, fallback: None, replay: None });
+    st.jobs.insert(id, JobInfo { pane, tab, fallback: None, replay: None, running: running.clone() });
     note(st, app, pane, running);
     if st.jobs.len() > 1 {
         eprintln!("[fileops] {} operation(s) queued", st.jobs.len() - 1);
@@ -2283,11 +2292,15 @@ fn cut_fallback(st: &mut State, app: &App) -> Option<(usize, u64, usize)> {
 }
 
 /// Ctrl+Z in a pane's list: undo the newest recorded operation, whichever pane it was done in.
-/// Refused with a note when the items are no longer where it left them; the undo job runs
-/// through the worker like any other (the soak fence included) and is not recorded itself.
+/// Refused with a note while an operation is in flight, or when the items are no longer where it
+/// left them; the undo job runs through the worker like any other (the soak fence included), and
+/// its own record, when it completes, goes onto the redo stack.
 fn undo(pane: usize) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
+        if replay_busy(st, &app, pane) {
+            return;
+        }
         let Some(rec) = st.undo.pop() else {
             eprintln!("[undo] nothing to undo");
             return note(st, &app, pane, "Nothing to undo".into());
@@ -2301,21 +2314,26 @@ fn undo(pane: usize) {
             return note(st, &app, pane, why);
         }
         eprintln!("[undo] \"{}\" with {:?}", rec.text, u.job);
-        submit_replay(st, &app, pane, u.job, (Replay::Undo, rec.text));
+        let job = u.job.clone();
+        submit_replay(st, &app, pane, job, (Replay::Undo, fileops::undo::Record { undo: Some(u), text: rec.text }));
     });
 }
 
 /// Ctrl+Y in a pane's list: redo the newest undone operation (the job that reverses its undo),
-/// refused like an undo when the items are no longer where the undo left them.
+/// refused like an undo while an operation is in flight or when the items are no longer where
+/// the undo left them.
 fn redo(pane: usize) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
+        if replay_busy(st, &app, pane) {
+            return;
+        }
         let Some(rec) = st.redo.pop() else {
             eprintln!("[undo] nothing to redo");
             return note(st, &app, pane, "Nothing to redo".into());
         };
-        // A redo record comes from a completed undo job, which always has a reverse; kept for
-        // symmetry with `undo`.
+        // A redo record can have no reverse: the undo of a copy, a new folder or a restore is a
+        // recycle, and a volume with no Recycle Bin reports no `$R` paths for it.
         let Some(u) = rec.undo else {
             eprintln!("[undo] redo of \"{}\" cannot be done", rec.text);
             return note(st, &app, pane, format!("Cannot redo: {}", rec.text));
@@ -2325,20 +2343,41 @@ fn redo(pane: usize) {
             return note(st, &app, pane, why.replacen("Cannot undo", "Cannot redo", 1));
         }
         eprintln!("[undo] redo \"{}\" with {:?}", rec.text, u.job);
-        submit_replay(st, &app, pane, u.job, (Replay::Redo, rec.text));
+        let job = u.job.clone();
+        submit_replay(st, &app, pane, job, (Replay::Redo, fileops::undo::Record { undo: Some(u), text: rec.text }));
     });
 }
 
+/// Ctrl+Z and Ctrl+Y wait for the operations in flight (the record they would pop may belong to
+/// one of them, or be changed by it): true, with a note, when any is.
+fn replay_busy(st: &mut State, app: &App, pane: usize) -> bool {
+    if st.jobs.is_empty() {
+        return false;
+    }
+    eprintln!("[undo] busy: {} operation(s) in flight", st.jobs.len());
+    note(st, app, pane, "Wait for the running operation to finish".into());
+    true
+}
+
 /// Submit an undo or redo job; one that takes rows out of this pane's folder (a recycle, a move
-/// back) gets that tab's cursor fallback.
-fn submit_replay(st: &mut State, app: &App, pane: usize, job: Job, replay: (Replay, String)) {
+/// back) gets that tab's cursor fallback. A job the worker refuses puts its record back.
+fn submit_replay(st: &mut State, app: &App, pane: usize, job: Job, replay: (Replay, fileops::undo::Record)) {
     let names = removed_names(&job, &st.tab(pane).path);
     let fallback = if names.is_empty() { None } else { removal_fallback(st, app, pane, &names) };
-    if let Some(id) = submit_removing(st, app, pane, job, fallback) {
-        if let Some(j) = st.jobs.get_mut(&id) {
-            j.replay = Some(replay);
+    match submit_removing(st, app, pane, job, fallback) {
+        Some(id) => {
+            if let Some(j) = st.jobs.get_mut(&id) {
+                j.replay = Some(replay);
+            }
         }
+        None => keep_record(st, replay),
     }
+}
+
+/// An undo or redo that did nothing: its record goes back onto the stack it came from.
+fn keep_record(st: &mut State, (replay, rec): (Replay, fileops::undo::Record)) {
+    eprintln!("[undo] record kept: \"{}\"", rec.text);
+    fileops::undo::push(if replay == Replay::Undo { &mut st.undo } else { &mut st.redo }, rec);
 }
 
 /// The names `job` takes out of `folder`: the sources of a delete or a move (a move-as's items)
@@ -2357,14 +2396,32 @@ fn removed_names(job: &Job, folder: &Path) -> Vec<SharedString> {
 }
 
 /// Where a finished job's record goes (None when it left none): a new job's onto the undo stack,
-/// clearing the redo stack (as Explorer does); an undo job's onto the redo stack; a redo job's
-/// back onto the undo stack. Returns how many redo records were cleared.
-fn after_job(replay: Option<Replay>, record: Option<fileops::undo::Record>, undo: &mut Vec<fileops::undo::Record>, redo: &mut Vec<fileops::undo::Record>) -> usize {
-    let cleared = if replay.is_none() { std::mem::take(redo).len() } else { 0 };
+/// clearing the redo stack (as Explorer does) when it `changed` something (an item came out ok);
+/// an undo job's onto the redo stack; a redo job's back onto the undo stack. Returns how many
+/// redo records were cleared.
+fn after_job(
+    replay: Option<Replay>,
+    changed: bool,
+    record: Option<fileops::undo::Record>,
+    undo: &mut Vec<fileops::undo::Record>,
+    redo: &mut Vec<fileops::undo::Record>,
+) -> usize {
+    let cleared = if replay.is_none() && changed { std::mem::take(redo).len() } else { 0 };
     if let Some(r) = record {
         fileops::undo::push(if replay == Some(Replay::Undo) { redo } else { undo }, r);
     }
     cleared
+}
+
+/// The note an undo or redo job leaves: "Undid: <the record's text>" when it was `done`, else
+/// "Undo: <its own status text>" (and "Redid:" / "Redo:" for a redo).
+fn replay_text(replay: Replay, done: bool, orig: &str, status: &str) -> String {
+    match (replay, done) {
+        (Replay::Undo, true) => format!("Undid: {orig}"),
+        (Replay::Undo, false) => format!("Undo: {status}"),
+        (Replay::Redo, true) => format!("Redid: {orig}"),
+        (Replay::Redo, false) => format!("Redo: {status}"),
+    }
 }
 
 /// Escape in a pane's list: cancel every queued job that has not started (each reports
@@ -2518,28 +2575,25 @@ fn mark_background_stale(st: &mut State, watched_too: bool) {
 fn job_done(d: fileops::Done) {
     let mut clear_clipboard = None;
     let panes = with_state(|st| {
-        let info = st.jobs.remove(&d.id).unwrap_or(JobInfo { pane: 0, tab: 0, fallback: None, replay: None });
+        let info = st.jobs.remove(&d.id).unwrap_or(JobInfo { pane: 0, tab: 0, fallback: None, replay: None, running: String::new() });
         let (pane, tab) = (info.pane, info.tab);
         if st.progress.is_some_and(|(id, _)| id == d.id) {
             st.progress = None;
         }
         let text = fileops::status_text(&d.job, &d.outcome, &d.results);
         let done = d.outcome == Outcome::Done;
+        let changed = d.results.iter().any(fileops::ItemResult::ok);
         // An undo or redo job's record keeps the text of the record it replayed.
         let (text, record) = match &info.replay {
             None => {
                 let r = fileops::undo::record_for(&d.job, &d.outcome, &d.results, &text);
                 (text, r)
             }
-            Some((Replay::Undo, orig)) => {
-                let shown = if done { format!("Undid: {orig}") } else { format!("Undo: {text}") };
-                eprintln!("[undo] done id={} {:?}: {shown}", d.id, d.outcome);
-                (shown, fileops::undo::record_for(&d.job, &d.outcome, &d.results, orig))
-            }
-            Some((Replay::Redo, orig)) => {
-                let shown = if done { format!("Redid: {orig}") } else { format!("Redo: {text}") };
-                eprintln!("[undo] redo done id={} {:?}: {shown}", d.id, d.outcome);
-                (shown, fileops::undo::record_for(&d.job, &d.outcome, &d.results, orig))
+            Some((r, orig)) => {
+                let shown = replay_text(*r, done, &orig.text, &text);
+                let what = if *r == Replay::Undo { "done" } else { "redo done" };
+                eprintln!("[undo] {what} id={} {:?}: {shown}", d.id, d.outcome);
+                (shown, fileops::undo::record_for(&d.job, &d.outcome, &d.results, &orig.text))
             }
         };
         let replay = info.replay.as_ref().map(|(r, _)| *r);
@@ -2547,9 +2601,14 @@ fn job_done(d: fileops::Done) {
             let stack = if replay == Some(Replay::Undo) { "redo recorded" } else { "recorded" };
             eprintln!("[undo] {stack} \"{}\": {:?}", r.text, r.undo.as_ref().map(|u| &u.job));
         }
-        let cleared = after_job(replay, record, &mut st.undo, &mut st.redo);
+        let cleared = after_job(replay, changed, record, &mut st.undo, &mut st.redo);
         if cleared > 0 {
             eprintln!("[undo] redo cleared ({cleared})");
+        }
+        // An undo or redo that changed nothing (cancelled while queued, refused, failed on its
+        // first item) can be tried again.
+        if let Some(r) = info.replay.filter(|_| !done && !changed) {
+            keep_record(st, r);
         }
         // Whatever the outcome (a cancel can come after some items went), the source tab's next
         // pass puts a cursor whose row is gone on the row after it.
@@ -4769,25 +4828,52 @@ mod tests {
         let rec = |t: &str| Some(Record { undo: None, text: t.into() });
         let texts = |v: &[Record]| v.iter().map(|r| r.text.clone()).collect::<Vec<_>>();
         let (mut undo, mut redo) = (Vec::new(), Vec::new());
-        assert_eq!(after_job(None, rec("a"), &mut undo, &mut redo), 0);
-        assert_eq!(after_job(None, rec("b"), &mut undo, &mut redo), 0);
+        assert_eq!(after_job(None, true, rec("a"), &mut undo, &mut redo), 0);
+        assert_eq!(after_job(None, true, rec("b"), &mut undo, &mut redo), 0);
         // Ctrl+Z took "b" off the undo stack; its undo job's record goes onto the redo stack.
         undo.pop();
-        assert_eq!(after_job(Some(Replay::Undo), rec("b"), &mut undo, &mut redo), 0);
+        assert_eq!(after_job(Some(Replay::Undo), true, rec("b"), &mut undo, &mut redo), 0);
         assert_eq!((texts(&undo), texts(&redo)), (vec![s("a")], vec![s("b")]));
         // Ctrl+Y took it back; the redo job's record goes onto the undo stack.
         redo.pop();
-        assert_eq!(after_job(Some(Replay::Redo), rec("b"), &mut undo, &mut redo), 0);
+        assert_eq!(after_job(Some(Replay::Redo), true, rec("b"), &mut undo, &mut redo), 0);
         assert_eq!((texts(&undo), texts(&redo)), (vec![s("a"), s("b")], vec![]));
-        // An undo that failed leaves no record; a new job clears the redo stack, record or not.
+        // An undo that failed leaves no record; a new job that changed something clears the redo
+        // stack, record or not (a failed one with some items done, a permanent delete).
         undo.pop();
-        assert_eq!(after_job(Some(Replay::Undo), None, &mut undo, &mut redo), 0);
+        assert_eq!(after_job(Some(Replay::Undo), false, None, &mut undo, &mut redo), 0);
         redo.push(Record { undo: None, text: s("x") });
         redo.push(Record { undo: None, text: s("y") });
-        assert_eq!(after_job(None, None, &mut undo, &mut redo), 2);
+        // A job cancelled while queued, or one whose every item failed, leaves redo alone.
+        assert_eq!(after_job(None, false, None, &mut undo, &mut redo), 0);
+        assert_eq!(texts(&redo), [s("x"), s("y")]);
+        assert_eq!(after_job(None, true, None, &mut undo, &mut redo), 2);
         assert!(redo.is_empty());
-        assert_eq!(after_job(None, rec("c"), &mut undo, &mut redo), 0);
+        assert_eq!(after_job(None, true, rec("c"), &mut undo, &mut redo), 0);
         assert_eq!(texts(&undo), [s("a"), s("c")]);
+    }
+
+    #[test]
+    fn progress_shows_beside_the_running_jobs_own_note() {
+        let job = |pane, tab, running: &str| JobInfo { pane, tab, fallback: None, replay: None, running: s(running) };
+        let jobs: HashMap<u64, JobInfo> = [(7, job(0, 3, "copying 3 items...")), (8, job(1, 4, "moving 1 item..."))].into_iter().collect();
+        let p = Some((7, 42));
+        assert_eq!(progress_for(p, &jobs, 0, 3, "copying 3 items..."), Some(42), "its pane, its tab, its note");
+        assert_eq!(progress_for(p, &jobs, 0, 5, "copying 3 items..."), None, "another tab");
+        assert_eq!(progress_for(p, &jobs, 1, 3, "copying 3 items..."), None, "the other pane");
+        assert_eq!(progress_for(p, &jobs, 0, 3, "moving 1 item..."), None, "a later job's note replaced it");
+        assert_eq!(progress_for(p, &jobs, 0, 3, "Nothing to undo"), None, "a note replaced it");
+        assert_eq!(progress_for(Some((9, 42)), &jobs, 0, 3, "copying 3 items..."), None, "no such job (done)");
+        assert_eq!(progress_for(None, &jobs, 0, 3, "copying 3 items..."), None, "no progress yet");
+    }
+
+    #[test]
+    fn replay_text_names_the_record_when_done() {
+        let orig = "Deleted 1 item to the Recycle Bin";
+        assert_eq!(replay_text(Replay::Undo, true, orig, "Restored 1 item"), format!("Undid: {orig}"));
+        assert_eq!(replay_text(Replay::Undo, false, orig, "Cancelled"), "Undo: Cancelled");
+        assert_eq!(replay_text(Replay::Redo, true, orig, "x"), format!("Redid: {orig}"));
+        assert_eq!(replay_text(Replay::Redo, false, orig, "Failed: 0x80004005"), "Redo: Failed: 0x80004005");
     }
 
     #[test]

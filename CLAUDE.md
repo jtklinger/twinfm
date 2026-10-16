@@ -14,7 +14,8 @@ Phase 5 record (the Phase 2 lists finished: directory watching, file operations,
 three milestones, kicked off 2026-10-15). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (159 tests; seven touch the real shell and clipboard, and fourteen of the
+- `cargo test --release` (171 tests; eight touch the real shell and clipboard, one of them the Recycle
+  Bin, and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
   tests write to scratch folders, see below)
@@ -50,12 +51,32 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   keys include `CtrlH` (hidden files), `F5`/`CtrlR` (refresh), `CtrlA`, `Space`, `Down`,
   `ShiftUp`/`ShiftDown`; `click`/`ctrlclick`/`shiftclick <pane> <row>` select rows; file
   operation steps `copy`, `move`, `delete`, `sdelete`, `newfolder <name>`, `rename <name>`,
-  `cc`, `cx`, `cv`, `undo` (Ctrl+Z, key name `CtrlZ`), and `waitops <ms>` to wait for a job and
+  `cc`, `cx`, `cv`, `undo` (Ctrl+Z, key name `CtrlZ`), since P5-M2 `redo` (Ctrl+Y, key name `CtrlY`:
+  the newest undone operation again; a recycle-and-undo cycle is `delete`, `waitops`, `undo`,
+  `waitops`, `redo`, `waitops`), and `waitops <ms>` to wait for a job and
   the refresh after it; key `Escape` in the list cancels the queued jobs that have not started.
   `[fileops]` lines on stderr (submit, note, done, one `item` line per item the progress sink
-  reported, with its HRESULT and the real destination path, and `N operation(s) queued`);
+  reported, with its HRESULT and the real destination path, and `N operation(s) queued`; since
+  P5-M2 `progress id=N P%` at most four times a second while a job runs, from the sink's
+  `UpdateProgress`, the same percentage the status bar shows after the running job's note, and
+  `undelete <$R path> -> <original>: verb ok (T ms) | verb cancelled 0x... | verb failed 0x...:
+  moved back | verb not reachable (<why>): moved back | already back, nothing moved | moved back
+  failed 0x... | refused (<name> is in the way) | not a Recycle Bin path | quit while waiting:
+  stopped` for a restore from the Recycle Bin: the bin's own "undelete" verb first, a move back
+  from `$Recycle.Bin` under the original name as the fallback, never after a cancel or when the
+  original path is taken (item HRESULT 0x800700B7));
   `[undo]` lines (`recorded "<status>"`, the undo job, `done ... Undid: <status>`, `cannot be
-  undone`, `refused: <why>`, `nothing to undo`); `[clipboard]` lines (`format listener added`,
+  undone`, `refused: <why>`, `nothing to undo`; since P5-M2 a delete to the Recycle Bin is
+  undone by a `Restore` job (refused with `<name> is in the way` when the original path is
+  taken again, `is no longer there` when the bin was emptied) and a move the shell renamed on
+  collision by a `MoveAs` back under the old names; the redo stack: `redo recorded "<status>":
+  <job>` when an undo job finishes, `redo "<status>" with <job>` (Ctrl+Y), `redo done ...
+  Redid: <status>`, `redo "<status>" refused: <why>`, `nothing to redo`, `redo cleared (N)` when
+  a new job that changed something empties it, `busy: N operation(s) in flight` (Ctrl+Z or Ctrl+Y
+  while a job runs: refused with the note "Wait for the running operation to finish", nothing
+  popped), `record kept: "<status>"` (an undo or redo job that ran nothing, cancelled while
+  queued or refused by the soak fence, goes back on its stack); the soak counts `redo "` lines as redo attempts, so no other line
+  carries that substring); `[clipboard]` lines (`format listener added`,
   `another program took the clipboard: cut marks cleared`). Context menu steps: `rclick <pane> <row>`, `rclickempty <pane>`, key names
   `ShiftF10` and `Menu`, each followed by in-menu steps (`sleep`, `menuopen <text>`,
   `menukey <key>`, `menupick <own item>`, `menuclose`) that run from a Win32 timer inside the
@@ -283,8 +304,12 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   cycles between the panes with the bigdir/System32/Manifests scroll scenario in between, and
   reports exit code, `panicked` count and working set (CSV every 30 s). It runs the app with
   `TWINFM_SOAK=1`, which adds `FOF_NOCONFIRMATION` to every job and refuses any file operation
-  outside `%TEMP%\twinfm-m3` and `%TEMP%\twinfm-m5`. Never set `TWINFM_SOAK` otherwise. Each cycle
-  adds one Recycle Bin entry and overwrites the clipboard. `tools/soak-m5.ps1 -Minutes N` does the
+  outside `%TEMP%\twinfm-m3` and `%TEMP%\twinfm-m5`. Never set `TWINFM_SOAK` otherwise. Since P5-M2
+  each cycle also undoes the recycle (a restore through the bin's verb) and redoes it, and the report
+  carries the undo/redo counts (redos, nothing to undo/redo, refused, busy, record kept), the `undelete` outcomes (verb
+  ok, moved back, moved back failed) and the number of progress lines. Each cycle
+  adds one Recycle Bin entry (the undo's restore takes the first one out, the redo adds one) and
+  overwrites the clipboard. `tools/soak-m5.ps1 -Minutes N` does the
   same in `%TEMP%\twinfm-m5\` and adds, per cycle, a `dropfiles` copy and move and a scripted
   context menu on a row and on empty space; it also reports drops, menus and in-menu ticks.
   `tools/soak-p2m4.ps1 -Minutes N` is the M5 soak plus, per cycle, a `dropfiles` onto a sidebar
@@ -313,7 +338,12 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   results and an undo round trip), `fileops::tests::cancelled_queued_jobs_never_run` makes one
   folder through the shell in `%TEMP%\twinfm-m3-test-queue-<pid>\`,
   `undo::tests::check_refuses_missing_and_non_empty` only reads folders it makes in
-  `%TEMP%\twinfm-m3-test-undo-<pid>\` (none of the three uses the Recycle Bin), and
+  `%TEMP%\twinfm-m3-test-undo-<pid>\` (none of the three uses the Recycle Bin);
+  `fileops::tests::recycle_restore_move_as_and_progress` (P5-M2) recycles one file in
+  `%TEMP%\twinfm-p5m2-test-<pid>\` and restores it through the bin's "undelete" verb (the bin's
+  listing is as it found it; an orphan `$I` metadata file may stay on disk in `$Recycle.Bin\<SID>\`,
+  which Windows leaves after its own restores too), runs a `MoveAs` round trip and a folder copy
+  for the progress reports, and deletes the folder permanently; and
   `clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` replaces the clipboard's
   contents and leaves it empty, and `dnd::tests::shell_data_object_offers_hdrop` asks the shell
   for a data object over two files in `%TEMP%\twinfm-m5-test-<pid>\`, and

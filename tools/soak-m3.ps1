@@ -137,10 +137,12 @@ $redos = @($undoLines | Select-String -SimpleMatch 'redo "').Count
 $nothingUndo = @($undoLines | Select-String -SimpleMatch 'nothing to undo').Count
 $nothingRedo = @($undoLines | Select-String -SimpleMatch 'nothing to redo').Count
 $undoRefused = @($undoLines | Select-String -SimpleMatch 'refused').Count
+$undoBusy = @($undoLines | Select-String -SimpleMatch '[undo] busy').Count
+$recordKept = @($undoLines | Select-String -SimpleMatch 'record kept').Count
 $undelete = @($log | Select-String -SimpleMatch '[fileops] undelete')
 $verbOk = @($undelete | Select-String -SimpleMatch 'verb ok').Count
 $movedBackFailed = @($undelete | Select-String -SimpleMatch 'moved back failed').Count
-$movedBack = @($undelete | Select-String -SimpleMatch 'moved back').Count - $movedBackFailed
+$movedBack = @($undelete | Select-String -Pattern ': moved back$').Count - $movedBackFailed
 $progress = @($log | Select-String -SimpleMatch '[fileops] progress').Count
 $cyclesRun = @($log | Select-String -SimpleMatch "[auto] Nav { pane: 0, path: `"$($src.Replace('\', '\\'))`" }").Count
 $first = $samples[0]; $last = $samples[$samples.Count - 1]
@@ -148,7 +150,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "ran {0:N1} min, window closed by script: {1}, exit code {2}" -f ((Get-Date) - $t0).TotalMinutes, $closed, $p.ExitCode
 "panicked lines: $panics"
 "cycles started: $cyclesRun; jobs done: $($done.Count) (failed $($failed.Count), cancelled $($cancelled.Count)); soak refusals: $refused; waitops timeouts: $stuck"
-"undo/redo: redos $redos, nothing to undo $nothingUndo, nothing to redo $nothingRedo, refused $undoRefused; undelete: verb ok $verbOk, moved back $movedBack, moved back failed $movedBackFailed; progress lines: $progress"
+"undo/redo: redos $redos, nothing to undo $nothingUndo, nothing to redo $nothingRedo, refused $undoRefused, busy $undoBusy, record kept $recordKept; undelete: verb ok $verbOk, moved back $movedBack, moved back failed $movedBackFailed; progress lines: $progress"
 "working set: start $($first.working_set_mb) MB at $($first.seconds) s, end $($last.working_set_mb) MB at $($last.seconds) s; private: $($first.private_mb) -> $($last.private_mb) MB"
 "min/max working set: {0} / {1} MB" -f ($samples | Measure-Object working_set_mb -Minimum).Minimum, ($samples | Measure-Object working_set_mb -Maximum).Maximum
 "memory samples: $csv"

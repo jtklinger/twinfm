@@ -120,7 +120,7 @@ pub fn push(stack: &mut Vec<Record>, r: Record) {
 }
 
 /// At undo time: the items are still where the job left them (a restore's `$R` paths still in
-/// the bin, a new folder still empty), or why not.
+/// the bin and nothing at their original paths, a new folder still empty), or why not.
 pub fn check(u: &Undo) -> Result<(), String> {
     let name = |p: &PathBuf| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
     for p in &u.expect {
@@ -129,6 +129,11 @@ pub fn check(u: &Undo) -> Result<(), String> {
         }
         if u.must_be_empty && std::fs::read_dir(p).map_or(true, |mut d| d.next().is_some()) {
             return Err(format!("Cannot undo: {} is not empty", name(p)));
+        }
+    }
+    if let Job::Restore { items } = &u.job {
+        if let Some((_, original)) = items.iter().find(|(_, o)| std::fs::symlink_metadata(o).is_ok()) {
+            return Err(format!("Cannot undo: {} is in the way", name(original)));
         }
     }
     Ok(())
@@ -255,6 +260,9 @@ mod tests {
         let restore = |r: PathBuf| Undo { job: Job::Restore { items: vec![(r.clone(), root.join("x.txt"))] }, expect: vec![r], must_be_empty: false };
         assert_eq!(check(&restore(root.join("full").join("f"))), Ok(()));
         assert_eq!(check(&restore(root.join("$RGONE.txt"))), Err("Cannot undo: $RGONE.txt is no longer there".into()), "emptied from the bin");
+        // A file now at the original path: the restore would land on it.
+        std::fs::write(root.join("x.txt"), b"new").unwrap();
+        assert_eq!(check(&restore(root.join("full").join("f"))), Err("Cannot undo: x.txt is in the way".into()));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
