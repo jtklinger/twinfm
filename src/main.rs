@@ -30,7 +30,7 @@ use model::{GridModel, Kind, NameMatch, PaneModel, SelOp, SortCol, filter_sort};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{ComponentHandle, Image, Model, ModelRc, RenderingState, SharedString, VecModel, Weak};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -94,9 +94,9 @@ struct Tab {
     /// Saved when the tab goes to the background, restored when it comes back.
     cursor: i32,
     scroll: f32,
-    /// A file operation or shell command finished while the tab was in the background, or the
-    /// tab left the foreground (its directory watch went with it): it refreshes when it comes to
-    /// the front.
+    /// What happened to its folder is unknown (it is in the background without a watch, its
+    /// watch fell back or was lost, or a file operation finished while it was unwatched): it
+    /// refreshes when it comes to the front.
     stale: bool,
     /// The directory watch reported a change while the listing was still in flight: refresh again
     /// when it is done.
@@ -111,6 +111,22 @@ struct Tab {
     search: Option<Search>,
     /// Folder sizes computed for this tab (selected folders, Alt+Return), and those in flight.
     sizes: fs::sizes::TabSizes,
+    /// The UI asked the watcher to watch this tab's folder and has not heard `Refused` or `Lost`
+    /// since (`State::watch_tabs`); `watched_bg`: that watch is a background one (shallow, no
+    /// parent), so "watched in the background" is logged once per stretch in the background.
+    watched: bool,
+    watched_bg: bool,
+    /// When the tab last came to the front (`show_tab`): background tabs are watched most
+    /// recently shown first, up to the watcher's cap.
+    shown_at: Instant,
+    /// The lower-cased names a finished file operation created, changed or removed in this
+    /// folder, and when (`job_done`): a watch window naming only these within `EXPLAINED_FOR` is
+    /// the operation's own, already covered by its refresh.
+    explained: Option<(HashSet<String>, Instant)>,
+    /// Names (lower-cased) a watch window added or renamed to that were gone again when the edit
+    /// worker statted them, so the listing never had them, with the listing's generation: a later
+    /// record removing or renaming one is no unknown name (`window_refusal`, `land_edits`).
+    vanished: (u64, HashSet<String>),
 }
 
 /// What a search tab searches for, and its worker's cancel flag (`fs::enumerate::SEARCH_*`).
@@ -246,8 +262,8 @@ struct State {
     places: Vec<(String, PathBuf)>,
     side: Vec<sidebar::Row>,
     side_model: Rc<VecModel<SideItem>>,
-    /// The directory watcher (one thread, at most one watch per pane: its active tab's folder)
-    /// and its events, drained with the enumeration messages.
+    /// The directory watcher (one thread; each pane's active tab and, up to its cap, background
+    /// tabs: `watch_tabs`) and its events, drained with the enumeration messages.
     watch: fs::watch::Watcher,
     watch_rx: Receiver<fs::watch::Event>,
     /// Watch-driven refreshes whose listing completed (the driver's `waitwatch` waits on it).
@@ -267,6 +283,10 @@ struct State {
     search_armed: [bool; 2],
     /// The search tab whose "no watch" line each pane logged last (logged once per tab).
     no_watch_logged: [Option<u64>; 2],
+    /// Watch windows applied as row edits (the driver's `waitedit` and `waitwatch` wait on it),
+    /// and the worker that stats their names (`edit_worker`).
+    watch_edits: u64,
+    stat_tx: Sender<StatJob>,
     /// The folder size worker and its replies.
     sizer: fs::sizes::Sizer,
     size_rx: Receiver<fs::sizes::Reply>,
@@ -294,6 +314,11 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         history: tabs::History::default(),
         search: None,
         sizes: fs::sizes::TabSizes::default(),
+        watched: false,
+        watched_bg: false,
+        shown_at: Instant::now(),
+        explained: None,
+        vanished: (0, HashSet::new()),
     }
 }
 
@@ -349,26 +374,91 @@ impl State {
         &self.panes[pane].active().model
     }
 
-    /// Point the pane's directory watch at its active tab's folder (a no-op when it already
-    /// watches it). The hidden second pane watches nothing.
-    fn watch_active(&mut self, app: &App, pane: usize) {
-        if pane == 1 && !app.get_split() {
-            return self.watch.unwatch(1);
-        }
-        let t = self.panes[pane].active();
-        if t.search.is_some() {
-            // A search's results come from many folders; F5 runs it again.
-            self.watch.unwatch(pane);
-            if self.no_watch_logged[pane] != Some(t.id) {
-                eprintln!("[watch] pane={pane} no watch for {}: search results", t.path.display());
-                self.no_watch_logged[pane] = Some(t.id);
+    /// The watch set changed (a navigation, a tab switch, a listing done, sizes): `watch_tabs`.
+    fn watch_active(&mut self, app: &App, _pane: usize) {
+        self.watch_tabs(app);
+    }
+
+    /// Decide which tabs the watcher watches, and ask it. Every active tab (both panes with the
+    /// split; the hidden second pane's tabs none) with a parent watch (and a subtree watch while
+    /// folder sizes are cached or in flight); then background folder tabs whose listing is done,
+    /// not stale, most recently shown first, shallow and without a parent, up to
+    /// `fs::watch::MAX_WATCHES`. Every other tab is unwatched; a background one goes stale (a
+    /// search tab never: going stale would run its search again). Unwatches go first, so a slot
+    /// freed here is free for the watches that follow. A no-op for a tab already watched the same
+    /// way (the watcher compares).
+    fn watch_tabs(&mut self, app: &App) {
+        let split = app.get_split();
+        let mut cands: Vec<WatchCand> = Vec::new();
+        for (pane, tabs) in self.panes.iter().enumerate() {
+            if pane == 1 && !split {
+                continue;
             }
-            return;
+            let active = tabs.active_index();
+            for (i, t) in tabs.iter().enumerate() {
+                let listed = t.timing.error.is_none();
+                let eligible = if i == active {
+                    t.search.is_none() && listed
+                } else {
+                    folder_tab(t) && t.timing.done_ms.is_some() && listed && !t.stale
+                };
+                cands.push(WatchCand { id: t.id, active: i == active, eligible, shown_at: t.shown_at });
+            }
         }
-        // With folder sizes cached or in flight, every folder below is watched too (until two
-        // overflows in a row), so a change inside a sized folder drops its size.
-        let subtree = t.sizes.any() && t.sizes.overflows < 2;
-        self.watch.watch(pane, t.id, t.path.clone(), subtree);
+        let set = watch_set(&cands, fs::watch::MAX_WATCHES);
+        let mut asks: Vec<(usize, u64, PathBuf, bool, bool)> = Vec::new();
+        for (pane, tabs) in self.panes.iter_mut().enumerate() {
+            let active = tabs.active_index();
+            for (i, t) in tabs.iter_mut().enumerate() {
+                if set.contains(&t.id) {
+                    continue;
+                }
+                // Always: a `Lost` drained after a re-watch clears `watched` while the watcher holds
+                // the new slot (an unwatch of a tab it does not watch is a no-op).
+                self.watch.unwatch(t.id);
+                t.watched = false;
+                t.watched_bg = false;
+                if i == active {
+                    if t.search.is_some() && (pane == 0 || split) && self.no_watch_logged[pane] != Some(t.id) {
+                        // A search's results come from many folders; F5 runs it again.
+                        eprintln!("[watch] pane={pane} no watch for {}: search results", t.path.display());
+                        self.no_watch_logged[pane] = Some(t.id);
+                    }
+                    continue;
+                }
+                if t.search.is_some() || t.stale {
+                    continue;
+                }
+                if cands.iter().any(|c| c.id == t.id && c.eligible) {
+                    eprintln!("[watch] pane={pane} tab={} past the cap: stale when shown", t.id);
+                }
+                t.stale = true;
+            }
+        }
+        for &id in &set {
+            for (pane, tabs) in self.panes.iter_mut().enumerate() {
+                let active = tabs.active().id == id;
+                let Some(t) = tabs.iter_mut().find(|t| t.id == id) else { continue };
+                if active {
+                    // With folder sizes cached or in flight, every folder below is watched too
+                    // (until two overflows in a row), so a change inside a sized folder drops its
+                    // size.
+                    let subtree = t.sizes.any() && t.sizes.overflows < 2;
+                    asks.push((pane, id, t.path.clone(), subtree, true));
+                    t.watched_bg = false;
+                } else {
+                    asks.push((pane, id, t.path.clone(), false, false));
+                    if !t.watched_bg {
+                        eprintln!("[watch] pane={pane} tab={id} watched in the background");
+                        t.watched_bg = true;
+                    }
+                }
+                t.watched = true;
+            }
+        }
+        for (pane, id, path, subtree, parent) in asks {
+            self.watch.watch(pane, id, path, subtree, parent);
+        }
     }
 
     /// The pane's active tab is a search tab.
@@ -411,6 +501,7 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         t.stale = false;
         t.refresh_pending = false;
         t.watch_refresh = false;
+        t.explained = None;
         // A search tab becomes a folder tab again (its root goes on the back stack, the search
         // does not).
         if let Some(s) = t.search.take() {
@@ -797,8 +888,8 @@ fn drain() {
                     }
                     if st.is_active(pane, id) {
                         update_status(st, &app, pane);
-                        // A folder that cannot be listed is not watched.
-                        if ok { st.watch_active(&app, pane) } else { st.watch.unwatch(pane) }
+                        // A folder that cannot be listed is not watched (`watch_tabs`).
+                        st.watch_active(&app, pane);
                         if pending {
                             st.tab_mut(pane).watch_refresh = true;
                             again.push(pane);
@@ -821,30 +912,308 @@ fn drain() {
     }
 }
 
-/// A directory watch event (on the UI thread, inside `drain`). A change to the active tab
-/// refreshes it (after the listing in flight, if there is one); a tab that is no longer active
-/// goes stale. A lost watch refreshes the active tab once, so its error shows. A subtree watch's
-/// change below the folder only drops the sizes of the subfolders it lay under (and sizes them
-/// again if they are selected); only a change in the folder itself, or an overflow, refreshes.
+/// More changes than this in one watch window: the whole-folder refresh, cheaper than as many
+/// single-row edits (each moves the rest of `shown` on a long listing).
+const EDIT_CAP: usize = 500;
+
+/// How many unknown names `land_edits` lets off (drops or turns into adds) in one window before it
+/// falls back.
+const LENIENT_TRIES: usize = 8;
+
+/// How long after a file operation finished a watch window it fully explains is ignored.
+const EXPLAINED_FOR: Duration = Duration::from_secs(3);
+
+/// A tab as `watch_set` sees it.
+#[derive(Clone, Copy, Debug)]
+struct WatchCand {
+    id: u64,
+    active: bool,
+    /// May be watched at all (an active tab that is no search and whose listing has not failed; a
+    /// background folder tab that is listed and not stale).
+    eligible: bool,
+    shown_at: Instant,
+}
+
+/// The tabs to watch, in the order asked: the eligible active tabs, then the eligible background
+/// ones most recently shown first, at most `cap` in all.
+fn watch_set(cands: &[WatchCand], cap: usize) -> Vec<u64> {
+    let mut v: Vec<&WatchCand> = cands.iter().filter(|c| c.eligible).collect();
+    v.sort_by(|a, b| b.active.cmp(&a.active).then(b.shown_at.cmp(&a.shown_at)));
+    v.into_iter().take(cap).map(|c| c.id).collect()
+}
+
+/// A folder tab: not a search, not This PC, not a level inside an archive (never watched).
+fn folder_tab(t: &Tab) -> bool {
+    t.search.is_none() && !is_this_pc(&t.path.to_string_lossy()) && !fs::archive::inside(&t.path)
+}
+
+/// Every name the window's changes touch (both names of a rename) is in `set` (lower-cased).
+fn explained_by(changes: &[fs::watch::Change], set: &HashSet<String>) -> bool {
+    use fs::watch::Change;
+    let has = |n: &str| set.contains(&n.to_lowercase());
+    !changes.is_empty()
+        && changes.iter().all(|c| match c {
+            Change::Added(n) | Change::Removed(n) | Change::Modified(n) => has(n),
+            Change::Renamed { from, to } => has(from) && has(to),
+        })
+}
+
+/// The lower-cased names a finished job touched in `dir`: every source and destination whose
+/// folder is `dir`, and the name a rename or a new folder asked for.
+fn explained_names(dir: &Path, job: &Job, results: &[fileops::ItemResult]) -> HashSet<String> {
+    let mut set = HashSet::new();
+    let mut add = |p: &Path| {
+        if let (Some(d), Some(n)) = (p.parent(), p.file_name()) {
+            if same_dir(d, dir) {
+                set.insert(n.to_string_lossy().to_lowercase());
+            }
+        }
+    };
+    for r in results {
+        add(&r.source);
+        if let Some(d) = &r.dest {
+            add(d);
+        }
+    }
+    match job {
+        Job::Rename { source, new_name } => add(&source.with_file_name(new_name)),
+        Job::NewFolder { parent, name } => add(&parent.join(name)),
+        _ => {}
+    }
+    set
+}
+
+/// A window's changes as row edits, given a fresh stat per name (None: the name is gone again):
+/// an add that is gone is nothing, a modified name that is gone is removed, a rename whose new
+/// name is gone removes the old one. Also the names added or renamed to that were gone (the
+/// listing will not have them; `Tab::vanished`).
+fn edits_from(changes: &[fs::watch::Change], mut stat: impl FnMut(&str) -> Option<model::Entry>) -> (Vec<model::Edit>, Vec<String>) {
+    use fs::watch::Change;
+    use model::Edit;
+    let mut edits = Vec::with_capacity(changes.len());
+    let mut vanished = Vec::new();
+    for c in changes {
+        match c {
+            Change::Added(n) => match stat(n) {
+                Some(entry) => edits.push(Edit::Upsert(entry)),
+                None => vanished.push(n.clone()),
+            },
+            Change::Removed(n) => edits.push(Edit::Remove(n.as_str().into())),
+            Change::Modified(n) => edits.push(stat(n).map_or_else(|| Edit::Remove(n.as_str().into()), Edit::Upsert)),
+            Change::Renamed { from, to } => edits.push(match stat(to) {
+                Some(entry) => Edit::Rename { from: from.as_str().into(), entry },
+                None => {
+                    vanished.push(to.clone());
+                    Edit::Remove(from.as_str().into())
+                }
+            }),
+        }
+    }
+    (edits, vanished)
+}
+
+/// A watch window for the edit worker: the tab, its folder (as the tab held it when the window was
+/// sent), the changes, and the listing they were checked against (its generation and pass), which
+/// `land_edits` checks again.
+struct StatJob {
+    pane: usize,
+    tab: u64,
+    path: PathBuf,
+    changes: Vec<fs::watch::Change>,
+    /// The window's record count, for the fallback lines.
+    records: usize,
+    generation: u64,
+    pass: u64,
+    thumbnails: bool,
+    /// The listing is younger than the longest window (`young_listing`): a name it does not have
+    /// may be one the window's early records saw go before the listing began.
+    young: bool,
+}
+
+/// The folder the edit worker stats under: absolute, backslashes, no `.` or `..` (Win32's
+/// `GetFullPathNameW`, through `std::path::absolute`), as `stat_entry`'s verbatim prefix needs. A
+/// tab's path is kept as typed (`twinfm.exe C:/x`, `C:\a\..\b`, a saved tab).
+fn stat_dir(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The edit worker: stats the names of each watch window (one window at a time, in order, so
+/// windows land in the order they came) and posts the edits to the UI thread. Never the UI thread
+/// or the watcher thread: a stat can block on a busy disk. When a stat fails and the folder itself
+/// is gone (deleted, or renamed since the window was sent), the window is no removal of its names:
+/// `land_edits` falls back instead.
+fn edit_worker() -> Sender<StatJob> {
+    let (tx, rx) = unbounded::<StatJob>();
+    std::thread::Builder::new()
+        .name("watch-edits".into())
+        .spawn(move || {
+            for mut job in rx {
+                let t0 = Instant::now();
+                let dir = stat_dir(&job.path);
+                let mut types = fs::enumerate::TypeNames::default();
+                let mut keys = icons::IconKeys::new(job.path.clone(), job.thumbnails);
+                let zone = model::LocalZone::current();
+                let mut failed = false;
+                let (edits, vanished) = edits_from(&job.changes, |n| {
+                    let entry = fs::enumerate::stat_entry(&dir, n, &mut types, &mut keys, &zone);
+                    failed |= entry.is_none();
+                    entry
+                });
+                let folder_gone = failed && std::fs::metadata(&dir).is_err();
+                let stat_ms = perf::elapsed_ms(t0);
+                job.changes = Vec::new();
+                let _ = slint::invoke_from_event_loop(move || land_edits(job, edits, vanished, folder_gone, stat_ms));
+            }
+        })
+        .expect("spawn watch edit thread");
+    tx
+}
+
+/// Why a tab's listing cannot take a window's edits now (listed without error, no refresh or pass
+/// in flight), or None.
+fn unsettled(t: &Tab) -> Option<&'static str> {
+    if t.timing.done_ms.is_none() || t.timing.error.is_some() {
+        Some("listing in flight")
+    } else if !t.model.settled() {
+        Some("pass in flight")
+    } else {
+        None
+    }
+}
+
+/// The whole-folder refresh in place of a window's edits: the active tab refreshes (after the
+/// listing in flight, if there is one), a background tab goes stale (and gives up its watch).
+/// Returns the outcome for the caller's line.
+fn fall_back(st: &mut State, pane: usize, tab_id: u64, again: &mut Vec<usize>) -> &'static str {
+    let active = st.is_active(pane, tab_id);
+    let Some(t) = st.find(pane, tab_id) else { return "tab closed" };
+    if !active {
+        t.stale = true;
+        if let Some(app) = st.app.upgrade() {
+            st.watch_tabs(&app);
+        }
+        "stale"
+    } else if t.timing.done_ms.is_none() && t.timing.error.is_none() {
+        t.refresh_pending = true;
+        "refresh after it"
+    } else {
+        t.watch_refresh = true;
+        if !again.contains(&pane) {
+            again.push(pane);
+        }
+        "refresh"
+    }
+}
+
+/// A directory watch event (on the UI thread, inside `drain`). A window of changes is applied to
+/// the tab's listing as row edits (its names statted on the edit worker, then `land_edits`) when
+/// the listing is settled and the window allows it (`window_refusal`); otherwise the whole-folder
+/// refresh, with its reason (`fall_back`). A window that nets to nothing, or that a file
+/// operation's own results explain, does nothing. A lost watch refreshes the active tab once, so
+/// its error shows. A subtree watch's change below the folder only drops the sizes of the
+/// subfolders it lay under (and sizes them again if they are selected); a change in the folder
+/// itself, or an overflow, refreshes.
 fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
+    use fs::watch::Event;
     let (pane, tab_id) = match &ev {
-        fs::watch::Event::Changed { pane, tab_id }
-        | fs::watch::Event::Lost { pane, tab_id, .. }
-        | fs::watch::Event::Subtree { pane, tab_id, .. } => (*pane, *tab_id),
+        Event::Changed { pane, tab_id, .. }
+        | Event::Lost { pane, tab_id, .. }
+        | Event::Subtree { pane, tab_id, .. }
+        | Event::Refused { pane, tab_id, .. }
+        | Event::Moved { pane, tab_id, .. } => (*pane, *tab_id),
     };
     let active = st.is_active(pane, tab_id);
     let Some(t) = st.find(pane, tab_id) else { return };
     let (mut resize, mut stale) = (false, false);
-    match ev {
-        fs::watch::Event::Lost { error, .. } => {
-            eprintln!("[watch] pane={pane} tab={tab_id} watch lost ({error}){}", if active { ": refresh" } else { "" });
-            if active && !again.contains(&pane) {
-                again.push(pane);
+    let records = match ev {
+        Event::Refused { path, .. } => {
+            // The watcher logged why. For an older request (the tab has moved on) nothing changes.
+            if path == t.path {
+                t.watched = false;
+                t.watched_bg = false;
+                if !active && t.search.is_none() {
+                    t.stale = true;
+                }
             }
             return;
         }
-        fs::watch::Event::Changed { .. } => {}
-        fs::watch::Event::Subtree { top, changes, overflow, .. } => {
+        Event::Moved { to, .. } => {
+            // The watcher follows the folder; so do the tab, its title and the saved tab list. The
+            // history needs nothing: its current place is the tab's folder.
+            t.path = to;
+            t.explained = None;
+            eprintln!("[nav] pane={pane} path follows the rename: {}", t.path.display());
+            // A listing of the old path still in flight will fail: list the new one.
+            if t.timing.done_ms.is_none() {
+                if active {
+                    if !again.contains(&pane) {
+                        again.push(pane);
+                    }
+                } else if t.search.is_none() {
+                    t.stale = true;
+                }
+            }
+            if let Some(app) = st.app.upgrade() {
+                if active {
+                    set_path(st, &app, pane);
+                }
+                // A `watch_tabs` between the watcher's `Moved` and this asked for the old path,
+                // which the watcher refused: ask again, for the new one.
+                st.watch_tabs(&app);
+            }
+            update_tabs(st, pane);
+            schedule_save(st);
+            return;
+        }
+        Event::Lost { error, .. } => {
+            t.watched = false;
+            t.watched_bg = false;
+            if active {
+                eprintln!("[watch] pane={pane} tab={tab_id} watch lost ({error}): refresh");
+                if !again.contains(&pane) {
+                    again.push(pane);
+                }
+            } else if t.search.is_none() {
+                t.stale = true;
+                eprintln!("[watch] pane={pane} tab={tab_id} watch lost ({error}): stale");
+            }
+            return;
+        }
+        Event::Changed { changes, records, overflow, .. } => {
+            let reason = if overflow {
+                "overflow".to_string()
+            } else if changes.is_empty() {
+                eprintln!("[watch] pane={pane} tab={tab_id} {records} records netted to nothing");
+                return;
+            } else {
+                match window_refusal(t, active, &changes) {
+                    Some(why) if why.is_empty() => {
+                        eprintln!("[watch] pane={pane} tab={tab_id} {records} records explained by the operation: no refresh");
+                        return;
+                    }
+                    Some(why) => why,
+                    None => {
+                        let job = StatJob {
+                            pane,
+                            tab: tab_id,
+                            path: t.path.clone(),
+                            changes,
+                            records,
+                            generation: t.model.generation.get(),
+                            pass: t.model.pass.get(),
+                            young: young_listing(t),
+                            thumbnails: st.config.thumbnails,
+                        };
+                        let _ = st.stat_tx.send(job);
+                        return;
+                    }
+                }
+            };
+            let outcome = fall_back(st, pane, tab_id, again);
+            eprintln!("[watch] pane={pane} tab={tab_id} fallback: {reason} ({records} records): {outcome}");
+            return;
+        }
+        Event::Subtree { top, changes, overflow, .. } => {
             if overflow {
                 t.sizes.overflows += 1;
                 let names: Vec<String> = t.sizes.cache.keys().cloned().collect();
@@ -881,24 +1250,170 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                 }
                 return;
             }
+            changes.len()
         }
-    }
-    let Some(t) = st.find(pane, tab_id) else { return };
-    if !active {
-        t.stale = true;
-        eprintln!("[watch] pane={pane} tab={tab_id} changed in the background: stale");
-    } else if t.timing.done_ms.is_none() && t.timing.error.is_none() {
-        t.refresh_pending = true;
-        eprintln!("[watch] pane={pane} tab={tab_id} changed while listing: refresh after it");
-    } else {
-        t.watch_refresh = true;
-        eprintln!("[watch] pane={pane} tab={tab_id} changed: refresh");
-        if !again.contains(&pane) {
-            again.push(pane);
-        }
-    }
+    };
+    // A subtree watch's change in the folder itself: its records are not carried to row edits
+    // (the count is of the children it named).
+    let outcome = fall_back(st, pane, tab_id, again);
+    eprintln!("[watch] pane={pane} tab={tab_id} fallback: subtree watch ({records} records): {outcome}");
     if resize {
         resize_after_change(st, pane);
+    }
+}
+
+/// Why a window of changes for tab `t` cannot be applied as row edits (the fallback's reason); ""
+/// when a file operation's results explain all of it (nothing to do); None when it can.
+fn window_refusal(t: &mut Tab, active: bool, changes: &[fs::watch::Change]) -> Option<String> {
+    if active {
+        match &t.explained {
+            Some((_, at)) if at.elapsed() > EXPLAINED_FOR => t.explained = None,
+            Some((set, _)) if explained_by(changes, set) => return Some(String::new()),
+            _ => {}
+        }
+    }
+    if !folder_tab(t) {
+        return Some("not a folder listing".into());
+    }
+    if let Some(why) = unsettled(t) {
+        return Some(why.into());
+    }
+    if fs::watch::is_remote(&t.path) {
+        return Some("network path".into());
+    }
+    // A name the listing does not have is `apply_edits`'s to find (`land_edits`), not a scan here.
+    if changes.len() > EDIT_CAP {
+        return Some(format!("{} changes over the cap", changes.len()));
+    }
+    None
+}
+
+/// The tab's listing began less than the longest watch window (plus one short one) ago: a window
+/// delivered now can hold records from before it, so a name it removes or renames may already be
+/// gone from the listing. Such names are no reason to list the folder again (the listing is newer
+/// than they are); `land_edits` drops their removal and turns their rename into an add.
+fn young_listing(t: &Tab) -> bool {
+    t.timing.requested.is_some_and(|r| r.elapsed() < fs::watch::COALESCE_MAX + fs::watch::COALESCE)
+}
+
+/// The name an `apply_edits` error says the listing does not have (`remove of "n": not in the
+/// listing`, `rename of "n" to "m": not in the listing`). A Win32 file name holds no `"`.
+fn unknown_name(why: &str) -> Option<&str> {
+    why.ends_with(": not in the listing").then(|| why.split('"').nth(1)).flatten()
+}
+
+/// A window's edits came back from the edit worker (on the UI thread): apply them to the tab's
+/// listing if it is still the one they were checked against, else drop them and refresh (the
+/// records are spent). A removal of a name the listing does not have because it vanished before
+/// it was listed (`Tab::vanished`), or went before a young listing began (`young`), is dropped, a
+/// rename from one is an add. A window statted under a folder that has gone (`folder_gone`), or
+/// under a path the tab no longer has (the folder renamed since), falls back.
+fn land_edits(job: StatJob, edits: Vec<model::Edit>, gone: Vec<String>, folder_gone: bool, stat_ms: f64) {
+    let StatJob { pane, tab: tab_id, path, records, generation, pass, young, .. } = job;
+    let again = with_state(|st| {
+        let mut again = Vec::new();
+        let app = st.app.upgrade()?;
+        let active = st.is_active(pane, tab_id);
+        let Some(t) = st.find(pane, tab_id) else {
+            eprintln!("[watch] pane={pane} tab={tab_id} edits dropped: tab closed");
+            return None;
+        };
+        let why = if t.model.generation.get() != generation {
+            Some("the listing changed")
+        } else if t.model.pass.get() != pass {
+            Some("a pass was requested")
+        } else if t.path != path {
+            Some("the path changed")
+        } else {
+            unsettled(t)
+        };
+        if let Some(why) = why {
+            let outcome = fall_back(st, pane, tab_id, &mut again);
+            eprintln!("[watch] pane={pane} tab={tab_id} edits dropped: {why}: {outcome}");
+            return Some(again);
+        }
+        if folder_gone {
+            let outcome = fall_back(st, pane, tab_id, &mut again);
+            eprintln!("[watch] pane={pane} tab={tab_id} fallback: folder gone ({records} records): {outcome}");
+            return Some(again);
+        }
+        if t.vanished.0 != generation {
+            t.vanished = (generation, HashSet::new());
+        }
+        let cursor = if active { current_row(&app, pane) } else { t.cursor };
+        // `apply_edits` is all-or-nothing and names the first name the listing does not have. One
+        // that vanished before it was listed, or went before a young listing began, is no reason to
+        // list again: its removal is dropped, a rename from it becomes an add, and the rest is
+        // applied again (a few times at most). A name with a `~` is never let off: a record can
+        // carry a short name (`LONGFI~1.TXT`) for a file the listing has under its long one.
+        let mut edits = edits;
+        let mut tries = 0;
+        let t0 = Instant::now();
+        let res = loop {
+            let why = match t.model.apply_edits(edits.clone(), cursor) {
+                Ok(a) => break Ok(a),
+                Err(why) => why,
+            };
+            let Some(name) = unknown_name(&why).map(str::to_string) else { break Err(why) };
+            let lenient = !name.contains('~') && (t.vanished.1.remove(&name.to_lowercase()) || young);
+            let at = edits.iter().position(|e| matches!(e, model::Edit::Remove(n) | model::Edit::Rename { from: n, .. } if n.as_str() == name));
+            match at {
+                Some(i) if lenient && tries < LENIENT_TRIES => {
+                    tries += 1;
+                    if let model::Edit::Rename { entry, .. } = edits.remove(i) {
+                        edits.insert(i, model::Edit::Upsert(entry));
+                    }
+                }
+                _ => break Err(format!("unknown name {name} ({records} records)")),
+            }
+        };
+        let apply_ms = perf::elapsed_ms(t0);
+        match res {
+            Ok(a) => {
+                for e in &edits {
+                    if let model::Edit::Upsert(entry) = e {
+                        t.vanished.1.remove(&entry.name.to_lowercase());
+                    }
+                }
+                t.vanished.1.extend(gone.iter().map(|n| n.to_lowercase()));
+                // A folder that leaves the listing, or is renamed, loses its size (and its walk);
+                // `apply_edits` carries no size across a rename.
+                for e in &edits {
+                    let gone = match e {
+                        model::Edit::Remove(n) | model::Edit::Rename { from: n, .. } => n.as_str(),
+                        model::Edit::Upsert(_) => continue,
+                    };
+                    if let Some(p) = t.sizes.pending.remove(gone) {
+                        p.cancel.store(true, Ordering::Relaxed);
+                    }
+                    t.sizes.forget(gone);
+                }
+                t.model.set_grid_cursor(a.cursor);
+                if !active {
+                    t.cursor = a.cursor;
+                }
+                eprintln!(
+                    "[watch] pane={pane} tab={tab_id} applied: +{} -{} ~{} (stat {stat_ms:.1} ms, apply {apply_ms:.1} ms)",
+                    a.added, a.removed, a.changed
+                );
+                st.watch_edits += 1;
+                if active {
+                    set_current_row(&app, pane, usize::try_from(a.cursor).ok());
+                    size_selection(st, pane);
+                    update_status(st, &app, pane);
+                    st.strip_dirty[pane] = true;
+                    resolve_view(st, &app, pane);
+                }
+            }
+            Err(why) => {
+                let outcome = fall_back(st, pane, tab_id, &mut again);
+                eprintln!("[watch] pane={pane} tab={tab_id} fallback: {why}: {outcome}");
+            }
+        }
+        Some(again)
+    });
+    for pane in again.unwrap_or_default() {
+        refresh(pane);
     }
 }
 
@@ -1164,6 +1679,7 @@ fn land_pass(
     let keep = std::mem::take(&mut t.keep_scroll);
     let scroll = (keep && active).then(|| app.invoke_get_scroll(pane as i32));
     let cursor = model.replace(out);
+    model.set_landed_pass(pass);
     model.set_grid_cursor(cursor.map_or(-1, |c| c as i32));
     if !active {
         t.cursor = cursor.map_or(-1, |c| c as i32);
@@ -1527,6 +2043,7 @@ fn main_hwnd(st: &mut State, app: &App) -> isize {
             if let RawWindowHandle::Win32(w) = h.as_raw() {
                 st.hwnd = w.hwnd.get();
                 devices::install(st.hwnd);
+                st.watch.set_hwnd(st.hwnd);
             }
         }
     }
@@ -1899,11 +2416,11 @@ fn clipboard_paste(pane: usize) {
 
 /// Every tab not on screen goes stale: it refreshes when it comes to the front. After a file
 /// operation or shell command, any folder may have changed.
-fn mark_background_stale(st: &mut State) {
+fn mark_background_stale(st: &mut State, watched_too: bool) {
     for tabs in st.panes.iter_mut() {
         let active = tabs.active_index();
         for (i, t) in tabs.iter_mut().enumerate() {
-            if i != active {
+            if i != active && (watched_too || !t.watched) {
                 t.stale = true;
             }
         }
@@ -1967,9 +2484,18 @@ fn job_done(d: fileops::Done) {
                 clear_cuts(st);
             }
         }
-        mark_background_stale(st);
+        // A watched background tab gets the job's changes from its watch.
+        mark_background_stale(st, false);
         let split = st.app.upgrade().is_some_and(|a| a.get_split());
-        if split { vec![0, 1] } else { vec![0] }
+        let panes = if split { vec![0, 1] } else { vec![0] };
+        // The refresh below covers what the job did: its own records, arriving after it, are
+        // not refreshed again.
+        for &p in &panes {
+            let t = st.tab_mut(p);
+            let names = explained_names(&t.path, &d.job, &d.results);
+            t.explained = (!names.is_empty()).then(|| (names, Instant::now()));
+        }
+        panes
     });
     if let Some(hwnd) = clear_clipboard {
         if let Err(e) = clipboard::clear(hwnd) {
@@ -2055,7 +2581,7 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
             }
             // The shell may have created, renamed or deleted entries in either folder.
             let split = with_state(|st| {
-                mark_background_stale(st);
+                mark_background_stale(st, false);
                 st.app.upgrade().is_some_and(|a| a.get_split())
             });
             refresh(0);
@@ -2935,6 +3461,7 @@ fn set_current_row(app: &App, pane: usize, row: Option<usize>) {
 /// Put the pane's active tab on screen: its rows (the list re-points at its model), folder,
 /// breadcrumb, sort indicators, cursor, scroll, status and icons.
 fn show_tab(st: &mut State, app: &App, pane: usize) {
+    st.tab_mut(pane).shown_at = Instant::now();
     let t = st.tab(pane);
     let (model, cursor, scroll) = (t.model.clone(), t.cursor, t.scroll);
     let rows = ModelRc::from(model.clone());
@@ -2966,6 +3493,17 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
     st.watch_active(app, pane);
 }
 
+/// A watched background tab coming to the front: its watch says nothing when its folder went
+/// away in a way the shallow watch cannot see, so check the folder is still there (one metadata
+/// call; never on a network path). Gone: stale, so it refreshes and shows the error.
+fn check_gone(st: &mut State, pane: usize) {
+    let t = st.tab_mut(pane);
+    if t.watched && !t.stale && folder_tab(t) && !fs::watch::is_remote(&t.path) && std::fs::metadata(&t.path).is_err() {
+        t.stale = true;
+        eprintln!("[watch] pane={pane} tab={} folder gone on show: refresh", t.id);
+    }
+}
+
 /// Remember the active tab's cursor and scroll before another tab takes the pane.
 fn save_view(st: &mut State, app: &App, pane: usize) {
     let (cursor, scroll) = (current_row(app, pane), app.invoke_get_scroll(pane as i32));
@@ -2984,12 +3522,12 @@ fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
         if st.panes[pane].active_index() == before {
             return None;
         }
-        // Its watch goes to the new tab, so what happens to its folder from now on is unknown. A
-        // search tab has no watch to lose (and going stale would run its search again).
+        // It keeps a shallow watch if the watch set has room for it (`watch_tabs`, from
+        // `show_tab`), else it goes stale. Its sizes go: a background watch sees no subfolder.
         if let Some(t) = st.panes[pane].iter_mut().nth(before).filter(|t| t.search.is_none()) {
-            t.stale = true;
             t.drop_sizes(pane, "tab in the background");
         }
+        check_gone(st, pane);
         show_tab(st, &app, pane);
         schedule_save(st);
         let t = st.tab(pane);
@@ -3015,9 +3553,8 @@ fn open_tab(pane: usize, path: Option<PathBuf>) {
     let path = with_state(|st| {
         let app = st.app.upgrade()?;
         save_view(st, &app, pane);
-        // Leaves the foreground and loses its watch (see switch_tab); a search tab has none.
+        // Leaves the foreground, watched in the background if the set has room (see switch_tab).
         if !st.is_search(pane) {
-            st.tab_mut(pane).stale = true;
             st.tab_mut(pane).drop_sizes(pane, "tab in the background");
         }
         let cur = st.tab(pane);
@@ -3056,12 +3593,16 @@ fn close_tab(pane: usize, i: usize) {
             s.cancel(fs::enumerate::SEARCH_CLOSED);
         }
         closed.drop_sizes(pane, "tab closed");
+        st.watch.unwatch(closed.id);
         eprintln!("[tab] pane={pane} closed tab {} (id {}), {} left", i + 1, closed.id, st.panes[pane].len());
         schedule_save(st);
         if was_active {
+            check_gone(st, pane);
             show_tab(st, &app, pane);
             Some(st.tab(pane).stale)
         } else {
+            // Its slot may go to a background tab.
+            st.watch_tabs(&app);
             update_tabs(st, pane);
             Some(false)
         }
@@ -3357,8 +3898,9 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
             }
         } else {
             save_view(st, &app, pane);
-            // Leaves the foreground and loses its watch (see switch_tab).
-            st.tab_mut(pane).stale = true;
+            // Leaves the foreground, watched in the background if the set has room (see
+            // switch_tab).
+            st.tab_mut(pane).drop_sizes(pane, "tab in the background");
             let cur = st.tab(pane);
             let (col, asc, hidden, root) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get(), cur.path.clone());
             let mut t = st.new_tab(root.clone());
@@ -3460,7 +4002,8 @@ fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
     for pane in 0..2 {
         hide_strip(st, app, pane);
     }
-    mark_background_stale(st);
+    // New icon keys: every listing again, watched or not.
+    mark_background_stale(st, true);
     if app.get_split() { vec![0, 1] } else { vec![0] }
 }
 
@@ -3575,21 +4118,43 @@ pub fn watch_refreshes() -> u64 {
     STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().map(|st| st.watch_refreshes)).unwrap_or(0))
 }
 
-/// For the scripted driver's `touch` and `rmfile`: create (or update the time of) an empty file
-/// in the pane's folder, or delete one. Under TWINFM_SOAK=1 the path must lie in the soak fence.
-pub fn script_file(pane: usize, name: &str, remove: bool) {
+/// For the scripted driver: watch windows applied as row edits so far.
+pub fn watch_edits() -> u64 {
+    STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().map(|st| st.watch_edits)).unwrap_or(0))
+}
+
+/// `name` in the pane's folder for the driver's file steps, or None (logged): no such pane, This
+/// PC, or under TWINFM_SOAK=1 a path outside the soak fence.
+fn script_path(pane: usize, name: &str) -> Option<PathBuf> {
     let Some((folder, soak)) = with_state(|st| Some((st.panes.get(pane)?.active().path.clone(), st.soak.clone()))) else {
-        return eprintln!("[auto] no pane {pane}");
+        eprintln!("[auto] no pane {pane}");
+        return None;
     };
     if is_this_pc(&folder.to_string_lossy()) {
-        return eprintln!("[auto] pane {pane} lists drives; no file there");
+        eprintln!("[auto] pane {pane} lists drives; no file there");
+        return None;
     }
     let path = folder.join(name);
     if let Some(roots) = soak {
         if !roots.iter().any(|r| inside(&path, r)) {
-            return eprintln!("[auto] soak: refused {} (outside the soak folders)", path.display());
+            eprintln!("[auto] soak: refused {} (outside the soak folders)", path.display());
+            return None;
         }
     }
+    Some(path)
+}
+
+/// For the scripted driver's `mvfile`: rename a file in the pane's folder (same fence as `touch`).
+pub fn script_rename(pane: usize, old: &str, new: &str) {
+    let (Some(from), Some(to)) = (script_path(pane, old), script_path(pane, new)) else { return };
+    let res = std::fs::rename(&from, &to);
+    eprintln!("[auto] mvfile {} -> {}: {res:?}", from.display(), to.display());
+}
+
+/// For the scripted driver's `touch` and `rmfile`: create (or update the time of) an empty file
+/// in the pane's folder, or delete one. Under TWINFM_SOAK=1 the path must lie in the soak fence.
+pub fn script_file(pane: usize, name: &str, remove: bool) {
+    let Some(path) = script_path(pane, name) else { return };
     let res = if remove {
         std::fs::remove_file(&path)
     } else {
@@ -3786,6 +4351,8 @@ fn main() -> Result<(), slint::PlatformError> {
             filter_timer: Default::default(),
             search_armed: [false; 2],
             no_watch_logged: [None; 2],
+            watch_edits: 0,
+            stat_tx: edit_worker(),
             sizer,
             size_rx,
             size_timer: Default::default(),
@@ -3964,7 +4531,10 @@ fn main() -> Result<(), slint::PlatformError> {
                 navigate(1, left);
                 app.invoke_focus_pane(1);
             } else {
-                with_state(|st| st.watch.unwatch(1));
+                with_state(|st| {
+                    st.watch.unwatch_pane(1);
+                    st.watch_tabs(&app)
+                });
                 app.invoke_focus_pane(0);
             }
         }
@@ -3991,4 +4561,105 @@ fn main() -> Result<(), slint::PlatformError> {
     // thread-local destructor runs.
     with_state(|st| st.watch.stop());
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fs::watch::Change;
+    use model::Edit;
+
+    fn s(n: &str) -> String {
+        n.to_string()
+    }
+
+    fn entry(n: &str) -> model::Entry {
+        model::Entry::new(n.into(), 1, 0, 0x20, "Text Document".into())
+    }
+
+    #[test]
+    fn watch_set_takes_active_tabs_then_the_most_recently_shown_up_to_the_cap() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let c = |id, active, eligible, ms| WatchCand { id, active, eligible, shown_at: at(ms) };
+        // An active tab shown long ago still comes first; ineligible tabs never count.
+        let cands = [c(1, false, true, 30), c(2, true, true, 0), c(3, false, true, 50), c(4, false, false, 90), c(5, true, false, 80), c(6, false, true, 10)];
+        assert_eq!(watch_set(&cands, 8), vec![2, 3, 1, 6]);
+        assert_eq!(watch_set(&cands, 3), vec![2, 3, 1], "the least recently shown is past the cap");
+        assert_eq!(watch_set(&cands, 1), vec![2]);
+        // Two active tabs (the split) both come before every background one.
+        let cands = [c(1, false, true, 90), c(2, true, true, 0), c(3, true, true, 5)];
+        assert_eq!(watch_set(&cands, 2), vec![3, 2]);
+        assert!(watch_set(&[], 8).is_empty());
+    }
+
+    #[test]
+    fn explained_by_needs_every_name_of_the_window() {
+        let set: HashSet<String> = ["a.txt", "b - copy.txt"].into_iter().map(s).collect();
+        assert!(explained_by(&[Change::Added(s("A.TXT")), Change::Modified(s("b - Copy.txt"))], &set));
+        assert!(!explained_by(&[Change::Added(s("a.txt")), Change::Removed(s("c.txt"))], &set), "one name not the job's");
+        assert!(explained_by(&[Change::Renamed { from: s("a.txt"), to: s("b - copy.txt") }], &set));
+        assert!(!explained_by(&[Change::Renamed { from: s("a.txt"), to: s("z.txt") }], &set), "both names of a rename");
+        assert!(!explained_by(&[], &set), "an empty window explains nothing");
+    }
+
+    #[test]
+    fn explained_names_are_the_jobs_names_in_that_folder() {
+        let dir = PathBuf::from(r"C:\x\here");
+        let item = |src: &str, dest: Option<&str>| fileops::ItemResult { source: src.into(), dest: dest.map(PathBuf::from), hr: 0 };
+        let job = Job::Copy { sources: vec![r"C:\x\other\A.txt".into()], dest_dir: dir.clone() };
+        let names = explained_names(&dir, &job, &[item(r"C:\x\other\A.txt", Some(r"C:\X\Here\A.txt"))]);
+        assert_eq!(names, ["a.txt"].into_iter().map(s).collect(), "the copy, not its source in another folder");
+        let job = Job::Rename { source: r"C:\x\here\old.txt".into(), new_name: s("New.txt") };
+        let names = explained_names(&dir, &job, &[]);
+        assert_eq!(names, ["new.txt"].into_iter().map(s).collect(), "the name asked for even with no results");
+        let job = Job::NewFolder { parent: dir.clone(), name: s("New folder") };
+        let names = explained_names(&dir, &job, &[item(r"C:\x\here", Some(r"C:\x\here\New folder (2)"))]);
+        assert_eq!(names, ["new folder", "new folder (2)"].into_iter().map(s).collect(), "not the folder itself");
+    }
+
+    #[test]
+    fn edits_from_folds_failed_stats() {
+        let changes = [
+            Change::Added(s("new.txt")),
+            Change::Added(s("gone-again.txt")),
+            Change::Removed(s("old.txt")),
+            Change::Modified(s("kept.txt")),
+            Change::Modified(s("vanished.txt")),
+            Change::Renamed { from: s("a.txt"), to: s("b.txt") },
+            Change::Renamed { from: s("c.txt"), to: s("d.txt") },
+        ];
+        let on_disk = ["new.txt", "kept.txt", "b.txt"];
+        let mut asked = Vec::new();
+        let (edits, vanished) = edits_from(&changes, |n| {
+            asked.push(n.to_string());
+            on_disk.contains(&n).then(|| entry(n))
+        });
+        assert_eq!(vanished, ["gone-again.txt", "d.txt"], "added or renamed to, gone when statted");
+        assert_eq!(asked, ["new.txt", "gone-again.txt", "kept.txt", "vanished.txt", "b.txt", "d.txt"], "a removal is not statted");
+        let shape: Vec<String> = edits
+            .iter()
+            .map(|e| match e {
+                Edit::Upsert(e) => format!("upsert {}", e.name),
+                Edit::Remove(n) => format!("remove {n}"),
+                Edit::Rename { from, entry } => format!("rename {from} -> {}", entry.name),
+            })
+            .collect();
+        assert_eq!(shape, ["upsert new.txt", "remove old.txt", "upsert kept.txt", "remove vanished.txt", "rename a.txt -> b.txt", "remove c.txt"]);
+    }
+
+    #[test]
+    fn unknown_name_reads_apply_edits_errors() {
+        assert_eq!(unknown_name(r#"remove of "a b.txt": not in the listing"#), Some("a b.txt"));
+        assert_eq!(unknown_name(r#"rename of "x" to "y": not in the listing"#), Some("x"));
+        assert_eq!(unknown_name("a refresh is in flight"), None);
+    }
+
+    #[test]
+    fn stat_dir_normalises_a_typed_path() {
+        // As strings: Path equality compares components, which hides the slashes and the `.`.
+        assert_eq!(stat_dir(Path::new("C:/x/./y")).to_str(), Some(r"C:\x\y"));
+        assert_eq!(stat_dir(Path::new(r"C:\a\..\b")).to_str(), Some(r"C:\b"));
+        assert_eq!(stat_dir(Path::new(r"C:\x\y")).to_str(), Some(r"C:\x\y"));
+    }
 }

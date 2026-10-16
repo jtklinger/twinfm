@@ -14,8 +14,8 @@ Phase 5 record (the Phase 2 lists finished: directory watching, file operations,
 three milestones, kicked off 2026-10-15). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (134 tests; seven touch the real shell and clipboard, and nine of the ten
-  `fs::watch` tests, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
+- `cargo test --release` (159 tests; seven touch the real shell and clipboard, and fourteen of the
+  eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
   tests write to scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
@@ -118,10 +118,31 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   <name>` deletes it, and `waitwatch <ms>` waits until the next refresh started by the watch has
   listed its folder (at most `<ms>`), then 300 ms more for the pass, like `waitops`. `touch` and
   `rmfile` obey the `TWINFM_SOAK` fence as file operations do; outside a soak, point them at
-  `%TEMP%` scratch folders only. `[watch]` lines on stderr: `watching <path>`, `no watch for <path>:
-  <reason>` (This PC, network drives and shares, removable drives and discs, a folder that cannot
-  be opened; logged once per pane and path), `changed: refresh`, `changed while listing: refresh after it`, `changed in the
-  background: stale`, `lost <path>: <error>`; `[devices]` lines for volume arrivals and removals.
+  `%TEMP%` scratch folders only. Since P5-M1 `mvfile <pane> <old> <new>` renames a file there (the
+  same fence), `waitwatch` also returns when a watch window has been applied as row edits, and
+  `waitedit <ms>` waits for an applied window only (so a script can assert the edit path, not the
+  fallback, was taken). `[watch]` lines on stderr, every one `pane=N tab=T` since watches are per
+  tab: `watching <path>`, `parent watch on <parent>` (the active tabs: the folder's own rename or
+  delete), `no parent watch for <path>: <why>`, `no watch for <path>: <reason>` (This PC, discs, a
+  search tab, an archive level, a folder that cannot be opened, `watch cap reached (8)`, `stalled:
+  no watch` for a share whose open took over 3 s, then refused at once for 30 s; logged once per
+  tab and path), `records R, changes C, window W ms[, overflow]` per delivered window, `back-off:
+  window W ms` (250 ms doubling to 2 s while changes arrive within 1 s of the last delivery, back
+  to 250 after a quiet second), `N records in the window: overflow` (past 1,000), `applied: +A -R
+  ~C (stat S ms, apply T ms)` (the window became row edits), `R records netted to nothing`, `R
+  records explained by the operation: no refresh` (after our own job), `fallback: <reason> (R
+  records): refresh | refresh after it | stale` (the whole-folder refresh, the three outcomes of
+  P2-M1; reasons `overflow`, `not a folder listing`, `listing in flight`, `pass in flight`,
+  `network path`, `unknown name <name>` (from `land_edits`, after the stats), `folder gone`, `C
+  changes over the cap` (500), `subtree watch`), `edits dropped: <why>: <outcome>` (the listing
+  changed, a pass was requested, the path changed, tab closed), `watched in the background`, `past the cap: stale when shown`,
+  `folder gone on show: refresh`, `folder renamed: <from> -> <to>` with `[nav] pane=N path follows
+  the rename: <to>`, `lost <path>: <error>` (`the folder was deleted`, `the folder was moved away`,
+  `the drive was removed`, or an OS error) with `watch lost (<error>): refresh | stale`, `suspended
+  for removal: <path>` and `resumed after a failed removal: <path>` (a removable drive's handle
+  closed for "Safely remove" and reopened when it failed); `[devices]` lines for volume arrivals
+  and removals and `query remove for a watched handle: suspended | no reply within 1 s | the
+  watcher has stopped`.
   Since P3-M2, filter and search: `filter <pane> <text>` puts `<text>` (the rest of the step,
   trimmed, may be empty) in the pane's filter box, opening it without the focus, and calls the
   box's `edited` callback as typing does (applied 150 ms later); `search <pane>` calls Ctrl+Shift+F's
@@ -280,8 +301,13 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
-  second, a 200-operation burst every 15 s); it reports `[watch]` and `[refresh]` counts besides
-  exit code, panics and working set. It uses neither the clipboard nor the Recycle Bin.
+  second, a 200-operation burst every 15 s); since P5-M1 a third folder `w3` sits on a second left
+  tab that the writer churns in the background, each cycle adds a `mvfile`, a `waitedit` and a
+  switch to `w3` and back, and the report carries the record counts (records delivered, windows
+  applied with their `+A -R ~C` sums, edits dropped, fallbacks by reason, netted, explained,
+  watched in the background, past the cap, back-off lines and the largest window, switches to
+  `w3` that refreshed) besides `[watch]` and `[refresh]` counts, exit code, panics and working
+  set. It uses neither the clipboard nor the Recycle Bin.
 - Tests that touch the desktop: `fileops::tests::worker_runs_real_shell_operations` runs real
   `IFileOperation` jobs in `%TEMP%\twinfm-m3-test-<pid>\` (and checks the progress sink's
   results and an undo round trip), `fileops::tests::cancelled_queued_jobs_never_run` makes one
@@ -294,7 +320,10 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   `dnd::tests::drag_source_helper_takes_a_bitmap` makes the shell's drag-drop helper store a drag
   image on a data object over a file in `%TEMP%\twinfm-m5-test-img-<pid>\`. The `fs::watch` tests create,
   rename, delete and change attributes of files in `%TEMP%\twinfm-p2m1-test-<pid>\` (removed
-  afterwards); they touch neither the clipboard nor the Recycle Bin.
+  afterwards; since P5-M1 one of them renames and one moves the watched folder itself there, one
+  makes nine folders for the cap, and one re-watches a folder with the subtree flag flipped); they touch neither the clipboard nor the Recycle Bin.
+  `fs::enumerate::tests::stat_entry_reads_one_entry` writes files (one named with a trailing dot
+  through a verbatim path) in `%TEMP%\twinfm-p5m1-stat-<pid>\` and removes them.
   `pathbar::tests::subfolders_for_the_crumb_dropdown` makes folders (two of them hidden and
   system) in `%TEMP%\twinfm-p2m3-crumbs-<pid>\` and removes them.
   `fs::enumerate::tests::tells_reparse_points_apart` makes a junction (`cmd /c mklink /J`) and

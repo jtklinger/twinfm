@@ -6,7 +6,7 @@ use crate::icons::{IconTable, KeyState, PLACEHOLDER_DRIVE, PLACEHOLDER_FILE, PLA
 use slint::{Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM,
@@ -211,6 +211,8 @@ pub struct PaneModel {
     pub generation: Cell<u64>,
     /// Bumped by every filter/sort request; only the newest pass may swap `shown`.
     pub pass: Cell<u64>,
+    /// The pass that last landed (`set_landed_pass`); equal to `pass` once the newest one has.
+    pub landed_pass: Cell<u64>,
     pub sort_col: Cell<SortCol>,
     pub sort_asc: Cell<bool>,
     pub show_hidden: Cell<bool>,
@@ -246,6 +248,7 @@ impl PaneModel {
             grid_notify: ModelNotify::default(),
             generation: Cell::new(0),
             pass: Cell::new(0),
+            landed_pass: Cell::new(0),
             sort_col: Cell::new(SortCol::Name),
             sort_asc: Cell::new(true),
             show_hidden: Cell::new(false),
@@ -306,6 +309,7 @@ impl PaneModel {
         self.filtered.set(0);
         self.incoming.borrow_mut().clear();
         self.refreshing.set(false);
+        self.landed_pass.set(0);
         *self.sel.borrow_mut() = Selection::default();
         self.sel_version.set(self.sel_version.get() + 1);
         self.cut.borrow_mut().clear();
@@ -611,6 +615,384 @@ impl PaneModel {
     pub fn entry(&self, i: usize) -> Option<Entry> {
         self.shown.borrow().get(i).cloned()
     }
+
+    /// The pass number that last landed (`land_pass` calls this after `replace`).
+    pub fn set_landed_pass(&self, pass: u64) {
+        self.landed_pass.set(pass);
+    }
+
+    /// No refresh in flight, a pass has landed since the listing began (passes count from 1;
+    /// `clear` resets `landed_pass` to 0, so a first enumeration's unsorted batches are not settled)
+    /// and it is the newest requested one: `shown` is `all` filtered and sorted by the current
+    /// settings, so `apply_edits` may edit it.
+    pub fn settled(&self) -> bool {
+        !self.refreshing.get() && self.landed_pass.get() != 0 && self.landed_pass.get() == self.pass.get()
+    }
+
+    /// Whether the listing has an entry of this name: exactly, or else ASCII-case-insensitively.
+    #[cfg(test)]
+    pub fn has_name(&self, name: &str) -> bool {
+        let all = self.all.borrow();
+        all.iter().any(|e| e.name == name) || all.iter().any(|e| e.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Apply a window of changes to the listing in place, keeping `shown` sorted by the current sort
+    /// and the selection, cut marks and cursor on the rows they were on. `cursor` is the cursor's
+    /// row before (or -1); the returned one is where that row is now (-1 when its row was removed
+    /// and nothing follows it; the row after it when it was removed: as a delete's fallback cursor).
+    /// All-or-nothing: Err(why) and no change when a `Remove` or `Rename.from` names an entry the
+    /// listing does not have (the caller refreshes the folder instead), or the model is not
+    /// `settled` (a refresh or a pass in flight, or no pass landed yet). A pass in flight would
+    /// carry the listing from before the edits and undo them when it lands (`land_pass` drops a
+    /// stale pass only when `total()` changed). The edits leave `pass` and `landed_pass` as they
+    /// are, so the model stays settled. The caller must not request a pass between its `settled`
+    /// check and this call (both run on the UI thread in one handler).
+    ///
+    /// Notifications, sent after every edit is applied, in order: `row_added(i, 1)`,
+    /// `row_removed(i, 1)` or `row_changed(i)` per step on the details list (an entry that moves is
+    /// a removal and an addition); on the grid one `grid_changed` per in-place change, or a single
+    /// `reset` when any row was added or removed. Never a reset of the details list.
+    pub fn apply_edits(&self, edits: Vec<Edit>, cursor: i32) -> Result<Applied, String> {
+        if self.refreshing.get() {
+            return Err("a refresh is in flight".into());
+        }
+        if self.landed_pass.get() != self.pass.get() {
+            return Err("a pass is in flight".into());
+        }
+        if self.landed_pass.get() == 0 {
+            return Err("no pass has landed since the listing began".into());
+        }
+        let mut all = self.all.borrow_mut();
+        // Exact names to indices into `all`, kept up to date through the call.
+        let mut idx: HashMap<SharedString, usize> = all.iter().enumerate().map(|(i, e)| (e.name.clone(), i)).collect();
+
+        // Phase 1: resolve every name against the listing as the earlier edits leave it, without
+        // touching the model. `overlay` (names removed or added so far) overlays `idx`.
+        //
+        // Names are matched exactly, except where the record's casing may differ from the listing's:
+        // a `Remove` or a `Rename.from` that misses exactly falls back to an ASCII-case-insensitive
+        // match through `lower` (ASCII lowercase to the names that ever had it), built on the first
+        // such miss only (about 33 ms over 40k names). A rename's target is matched exactly, and
+        // through `lower` only if that is built already (an overwrite under another casing; else
+        // the overwritten entry stays until the next listing). An `Upsert` is
+        // matched exactly, by contract: a record carries the on-disk casing, so an Upsert whose
+        // name differs from an entry's only in case is a new entry (an insert); a case-only rename
+        // arrives as a `Rename`.
+        let mut plan: Vec<Step> = Vec::with_capacity(edits.len());
+        {
+            let mut overlay: HashMap<SharedString, bool> = HashMap::new();
+            let mut lower: Option<HashMap<String, Vec<SharedString>>> = None;
+            let present = |overlay: &HashMap<SharedString, bool>, n: &SharedString| overlay.get(n).copied().unwrap_or_else(|| idx.contains_key(n));
+            let exact = |overlay: &HashMap<SharedString, bool>, n: &SharedString| present(overlay, n).then(|| n.clone());
+            // Only through `lower` when an earlier miss built it: never a scan of every name.
+            let scan = |overlay: &HashMap<SharedString, bool>, lower: &Option<HashMap<String, Vec<SharedString>>>, n: &SharedString| {
+                lower.as_ref()?.get(&n.to_ascii_lowercase())?.iter().find(|k| present(overlay, k)).cloned()
+            };
+            let resolve = |overlay: &HashMap<SharedString, bool>, lower: &mut Option<HashMap<String, Vec<SharedString>>>, n: &SharedString| {
+                if present(overlay, n) {
+                    return Some(n.clone());
+                }
+                let map = lower.get_or_insert_with(|| {
+                    let mut m: HashMap<String, Vec<SharedString>> = HashMap::new();
+                    for k in idx.keys().chain(overlay.keys()) {
+                        m.entry(k.to_ascii_lowercase()).or_default().push(k.clone());
+                    }
+                    m
+                });
+                map.get(&n.to_ascii_lowercase())?.iter().find(|k| present(overlay, k)).cloned()
+            };
+            let mark = |overlay: &mut HashMap<SharedString, bool>, lower: &mut Option<HashMap<String, Vec<SharedString>>>, n: &SharedString, on: bool| {
+                overlay.insert(n.clone(), on);
+                if let (true, Some(m)) = (on, lower.as_mut()) {
+                    let v = m.entry(n.to_ascii_lowercase()).or_default();
+                    if !v.contains(n) {
+                        v.push(n.clone());
+                    }
+                }
+            };
+            for edit in edits {
+                match edit {
+                    Edit::Upsert(e) => match exact(&overlay, &e.name) {
+                        Some(old) => {
+                            mark(&mut overlay, &mut lower, &old, false);
+                            mark(&mut overlay, &mut lower, &e.name, true);
+                            plan.push(Step::Replace { old, entry: e, rename: false });
+                        }
+                        None => {
+                            mark(&mut overlay, &mut lower, &e.name, true);
+                            plan.push(Step::Insert(e));
+                        }
+                    },
+                    Edit::Remove(n) => {
+                        let old = resolve(&overlay, &mut lower, &n).ok_or_else(|| format!("remove of \"{n}\": not in the listing"))?;
+                        mark(&mut overlay, &mut lower, &old, false);
+                        plan.push(Step::Remove(old));
+                    }
+                    Edit::Rename { from, entry } => {
+                        let old = resolve(&overlay, &mut lower, &from)
+                            .ok_or_else(|| format!("rename of \"{from}\" to \"{}\": not in the listing", entry.name))?;
+                        mark(&mut overlay, &mut lower, &old, false);
+                        // Onto an existing name (overwriting it): that entry leaves first.
+                        if let Some(target) = exact(&overlay, &entry.name).or_else(|| scan(&overlay, &lower, &entry.name)) {
+                            mark(&mut overlay, &mut lower, &target, false);
+                            plan.push(Step::Remove(target));
+                        }
+                        mark(&mut overlay, &mut lower, &entry.name, true);
+                        plan.push(Step::Replace { old, entry, rename: true });
+                    }
+                }
+            }
+        }
+
+        // Phase 2: apply the plan; nothing below can fail.
+        let (col, asc, show_hidden) = (self.sort_col.get(), self.sort_asc.get(), self.show_hidden.get());
+        let filter = self.filter.borrow();
+        let mut shown = self.shown.borrow_mut();
+        let mut sel = self.sel.borrow_mut();
+        let sel_before = (sel.set.clone(), sel.anchor);
+        let mut cur = usize::try_from(cursor).ok().filter(|&c| c < shown.len());
+        let (mut hidden, mut filtered) = (self.hidden.get(), self.filtered.get());
+        let mut notes: Vec<Note> = Vec::new();
+        let mut gone_names: HashSet<SharedString> = HashSet::new();
+        let mut out = Applied { added: 0, removed: 0, changed: 0, cursor: -1 };
+        let cut_names: HashSet<SharedString> = self.cut.borrow().iter().cloned().collect();
+
+        // Counts for an entry that is in `all` but not in `shown`, joining (+1) or leaving (-1).
+        let mut count_out = |e: &Entry, join: bool| {
+            let c = if shows(e, show_hidden) { &mut filtered } else { &mut hidden };
+            *c = if join { *c + 1 } else { c.saturating_sub(1) };
+        };
+        let pos_of = |shown: &[Entry], e: &Entry| locate(shown, e, col, asc);
+        let insert_at = |shown: &[Entry], e: &Entry| shown.partition_point(|x| cmp_entries(x, e, col, asc) != std::cmp::Ordering::Greater);
+
+        for step in plan {
+            match step {
+                Step::Insert(mut e) => {
+                    out.added += 1;
+                    e.selected = false;
+                    e.cut = false;
+                    idx.insert(e.name.clone(), all.len());
+                    all.push(e.clone());
+                    if visible(&e, show_hidden, &filter) {
+                        let q = insert_at(&shown, &e);
+                        row_insert(&mut shown, &mut sel, &mut cur, &mut notes, q, e);
+                    } else {
+                        count_out(&e, true);
+                    }
+                }
+                Step::Remove(name) => {
+                    out.removed += 1;
+                    let ai = idx.remove(&name).expect("resolved in phase 1");
+                    let old = all.swap_remove(ai);
+                    if ai < all.len() {
+                        idx.insert(all[ai].name.clone(), ai);
+                    }
+                    gone_names.insert(old.name.clone());
+                    let pos = if visible(&old, show_hidden, &filter) { pos_of(&shown, &old) } else { None };
+                    match pos {
+                        Some(p) => {
+                            row_remove(&mut shown, &mut sel, &mut cur, &mut notes, p);
+                        }
+                        None => count_out(&old, false),
+                    }
+                }
+                Step::Replace { old, mut entry, rename } => {
+                    out.changed += 1;
+                    let ai = idx.remove(&old).expect("resolved in phase 1");
+                    let prev = all[ai].clone();
+                    if rename {
+                        gone_names.insert(prev.name.clone());
+                    }
+                    // What the fresh stat cannot know: a folder's computed size (and, below, the
+                    // row's resolved icon).
+                    // Not across a rename: the size was walked under the old name, and the caller
+                    // drops it.
+                    if !rename && entry.is_dir() && prev.is_dir() && !prev.size_text.is_empty() {
+                        entry.size = prev.size;
+                        entry.size_text = prev.size_text.clone();
+                    }
+                    entry.selected = false;
+                    entry.cut = false;
+                    idx.insert(entry.name.clone(), ai);
+                    all[ai] = entry.clone();
+                    let vis = visible(&entry, show_hidden, &filter);
+                    let pos = if visible(&prev, show_hidden, &filter) { pos_of(&shown, &prev) } else { None };
+                    match pos {
+                        Some(p) => {
+                            // The row keeps its icon (same key: `resolve_icons` writes icons into
+                            // `shown` only) and its selection; its cut mark too unless renamed away.
+                            if entry.icon_key == shown[p].icon_key {
+                                entry.icon = shown[p].icon;
+                            }
+                            entry.selected = shown[p].selected;
+                            entry.cut = if rename { cut_names.contains(&entry.name) } else { shown[p].cut };
+                            if !vis {
+                                row_remove(&mut shown, &mut sel, &mut cur, &mut notes, p);
+                                count_out(&entry, true);
+                            } else if fits(&shown, p, &entry, col, asc) {
+                                shown[p] = entry;
+                                notes.push(Note::Changed(p));
+                            } else {
+                                let (was_sel, was_cur, was_anchor) = (sel.set.contains(&p), cur == Some(p), sel.anchor == Some(p));
+                                row_remove(&mut shown, &mut sel, &mut cur, &mut notes, p);
+                                let q = insert_at(&shown, &entry);
+                                row_insert(&mut shown, &mut sel, &mut cur, &mut notes, q, entry);
+                                if was_sel {
+                                    sel.set.insert(q);
+                                }
+                                if was_cur {
+                                    cur = Some(q);
+                                }
+                                if was_anchor {
+                                    sel.anchor = Some(q);
+                                }
+                            }
+                        }
+                        None => {
+                            count_out(&prev, false);
+                            if vis {
+                                entry.cut = !rename && cut_names.contains(&prev.name);
+                                let q = insert_at(&shown, &entry);
+                                row_insert(&mut shown, &mut sel, &mut cur, &mut notes, q, entry);
+                            } else {
+                                count_out(&entry, true);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        drop(filter);
+        self.hidden.set(hidden);
+        self.filtered.set(filtered);
+        if !gone_names.is_empty() {
+            // Names that left (removed, renamed away) leave the cut.
+            self.cut.borrow_mut().retain(|n| !gone_names.contains(n));
+        }
+        let sel_changed = (&sel.set, sel.anchor) != (&sel_before.0, sel_before.1);
+        if let Some(c) = cur {
+            if c >= shown.len() {
+                cur = shown.len().checked_sub(1);
+            }
+        }
+        out.cursor = cur.map_or(-1, |c| c as i32);
+        drop((all, shown, sel));
+        if sel_changed {
+            self.sel_version.set(self.sel_version.get() + 1);
+        }
+        let structural = notes.iter().any(|n| !matches!(n, Note::Changed(_)));
+        for n in &notes {
+            match *n {
+                Note::Added(i) => self.notify.row_added(i, 1),
+                Note::Removed(i) => self.notify.row_removed(i, 1),
+                Note::Changed(i) => {
+                    self.notify.row_changed(i);
+                    if !structural {
+                        self.grid_changed(i);
+                    }
+                }
+            }
+        }
+        if structural {
+            self.grid_notify.reset();
+        }
+        Ok(out)
+    }
+}
+
+/// One change of a watch window, for `PaneModel::apply_edits`.
+#[derive(Clone, Debug)]
+pub enum Edit {
+    /// An entry added or modified: its fresh stat. A known name is replaced in place, an unknown
+    /// one inserted at its sorted position.
+    Upsert(Entry),
+    /// An entry removed.
+    Remove(SharedString),
+    /// An entry renamed: `from` leaves, `entry` (its fresh stat under the new name) arrives.
+    Rename { from: SharedString, entry: Entry },
+}
+
+/// What `apply_edits` did: entries of the listing added, removed and changed (a rename counts as
+/// changed; one onto an existing name also as removed), and the cursor's row now (-1: none).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Applied {
+    pub added: usize,
+    pub removed: usize,
+    pub changed: usize,
+    pub cursor: i32,
+}
+
+/// An edit resolved against the listing (phase 1 of `apply_edits`): names are the stored ones.
+enum Step {
+    Insert(Entry),
+    Remove(SharedString),
+    Replace { old: SharedString, entry: Entry, rename: bool },
+}
+
+/// A row notification `apply_edits` sends once its borrows are released.
+enum Note {
+    Added(usize),
+    Removed(usize),
+    Changed(usize),
+}
+
+/// Where `e` (as stored, so with the sort key its row has) sits in `shown`: by binary search on
+/// the sort, then among the equal ones by name; a linear scan if the list is not in that order
+/// (a folder size that landed after the pass). None when it is not shown.
+fn locate(shown: &[Entry], e: &Entry, col: SortCol, asc: bool) -> Option<usize> {
+    let lo = shown.partition_point(|x| cmp_entries(x, e, col, asc) == std::cmp::Ordering::Less);
+    shown[lo..]
+        .iter()
+        .take_while(|x| cmp_entries(x, e, col, asc) == std::cmp::Ordering::Equal)
+        .position(|x| x.name == e.name)
+        .map(|k| lo + k)
+        .or_else(|| shown.iter().position(|x| x.name == e.name))
+}
+
+/// Whether `e` can take row `p`'s place without breaking the order.
+fn fits(shown: &[Entry], p: usize, e: &Entry, col: SortCol, asc: bool) -> bool {
+    use std::cmp::Ordering::Greater;
+    (p == 0 || cmp_entries(&shown[p - 1], e, col, asc) != Greater) && shown.get(p + 1).is_none_or(|n| cmp_entries(e, n, col, asc) != Greater)
+}
+
+/// Insert a row at `q`, shifting the selection, anchor and cursor at or after it.
+fn row_insert(shown: &mut Vec<Entry>, sel: &mut Selection, cur: &mut Option<usize>, notes: &mut Vec<Note>, q: usize, e: Entry) {
+    shown.insert(q, e);
+    if sel.set.range(q..).next().is_some() {
+        let hi = sel.set.split_off(&q);
+        sel.set.extend(hi.into_iter().map(|j| j + 1));
+    }
+    if let Some(a) = sel.anchor.filter(|&a| a >= q) {
+        sel.anchor = Some(a + 1);
+    }
+    if let Some(c) = cur.filter(|&c| c >= q) {
+        *cur = Some(c + 1);
+    }
+    notes.push(Note::Added(q));
+}
+
+/// Remove row `p`: it leaves the selection, later indices shift down, the anchor on it is
+/// dropped, and a cursor on it falls to the row that followed it (the same index).
+fn row_remove(shown: &mut Vec<Entry>, sel: &mut Selection, cur: &mut Option<usize>, notes: &mut Vec<Note>, p: usize) {
+    shown.remove(p);
+    if sel.set.range(p..).next().is_some() {
+        let mut hi = sel.set.split_off(&p);
+        hi.remove(&p);
+        sel.set.extend(hi.into_iter().map(|j| j - 1));
+    }
+    sel.anchor = match sel.anchor {
+        Some(a) if a == p => None,
+        Some(a) if a > p => Some(a - 1),
+        a => a,
+    };
+    if let Some(c) = *cur {
+        if c > p {
+            *cur = Some(c - 1);
+        } else if c == p {
+            *cur = if p < shown.len() { Some(p) } else { shown.len().checked_sub(1) };
+        }
+    }
+    notes.push(Note::Removed(p));
 }
 
 impl Model for PaneModel {
@@ -978,19 +1360,23 @@ impl Selection {
 
 /// Sort in place: directories first, then by the chosen column. Runs on a worker.
 pub fn sort_entries(entries: &mut [Entry], col: SortCol, asc: bool) {
-    entries.sort_unstable_by(|a, b| {
-        let dir_order = b.is_dir().cmp(&a.is_dir());
-        if dir_order != std::cmp::Ordering::Equal {
-            return dir_order;
-        }
-        let o = match col {
-            SortCol::Name => natural_cmp(&a.name, &b.name),
-            SortCol::Size => a.size.cmp(&b.size).then_with(|| natural_cmp(&a.name, &b.name)),
-            SortCol::Modified => a.modified.cmp(&b.modified).then_with(|| natural_cmp(&a.name, &b.name)),
-            SortCol::Type => natural_cmp(&a.type_text, &b.type_text).then_with(|| natural_cmp(&a.name, &b.name)),
-        };
-        if asc { o } else { o.reverse() }
-    });
+    entries.sort_unstable_by(|a, b| cmp_entries(a, b, col, asc));
+}
+
+/// The sort's order: directories first, then the chosen column with the name as the tie-break,
+/// reversed (directories still first) when descending. `sort_entries` and `apply_edits` share it.
+pub fn cmp_entries(a: &Entry, b: &Entry, col: SortCol, asc: bool) -> std::cmp::Ordering {
+    let dir_order = b.is_dir().cmp(&a.is_dir());
+    if dir_order != std::cmp::Ordering::Equal {
+        return dir_order;
+    }
+    let o = match col {
+        SortCol::Name => natural_cmp(&a.name, &b.name),
+        SortCol::Size => a.size.cmp(&b.size).then_with(|| natural_cmp(&a.name, &b.name)),
+        SortCol::Modified => a.modified.cmp(&b.modified).then_with(|| natural_cmp(&a.name, &b.name)),
+        SortCol::Type => natural_cmp(&a.type_text, &b.type_text).then_with(|| natural_cmp(&a.name, &b.name)),
+    };
+    if asc { o } else { o.reverse() }
 }
 
 /// Case-insensitive compare with embedded numbers compared numerically (file_2 < file_10).
@@ -1539,6 +1925,348 @@ mod tests {
         assert_eq!(cursor, Some(1)); // new order "0", "b", "c"
         assert_eq!(m.selected_names(), ["b"]);
         assert_eq!(m.row_count(), 3);
+    }
+
+    /// Records the notifications a model sends, as the views' peers receive them.
+    #[derive(Default)]
+    struct Rec(RefCell<Vec<String>>);
+
+    impl slint::private_unstable_api::re_exports::ModelChangeListener for Rec {
+        fn row_changed(self: std::pin::Pin<&Self>, row: usize) {
+            self.0.borrow_mut().push(format!("chg {row}"));
+        }
+        fn row_added(self: std::pin::Pin<&Self>, index: usize, count: usize) {
+            self.0.borrow_mut().push(format!("add {index}{}", if count == 1 { String::new() } else { format!("+{count}") }));
+        }
+        fn row_removed(self: std::pin::Pin<&Self>, index: usize, count: usize) {
+            self.0.borrow_mut().push(format!("rem {index}{}", if count == 1 { String::new() } else { format!("+{count}") }));
+        }
+        fn reset(self: std::pin::Pin<&Self>) {
+            self.0.borrow_mut().push("reset".into());
+        }
+    }
+
+    type Peer = std::pin::Pin<Box<slint::private_unstable_api::re_exports::ModelChangeListenerContainer<Rec>>>;
+
+    /// A model of the ten files a1 to a10 (sizes 10 to 100) listed in reverse, sorted by `col` and
+    /// `asc` through a landed pass, with a recorder on the details list and one on the grid (one
+    /// tile to a grid row, so a grid row is an entry).
+    fn edited(col: SortCol, asc: bool, filter: &str) -> (Rc<PaneModel>, Peer, Peer) {
+        use slint::private_unstable_api::re_exports::ModelChangeListenerContainer;
+        let m = Rc::new(PaneModel::default());
+        *m.filter.borrow_mut() = NameMatch::new(filter);
+        m.append((1..=10).rev().map(|i| e(&format!("a{i}"), i * 10, false)).collect());
+        m.sort_col.set(col);
+        m.sort_asc.set(asc);
+        m.pass.set(1);
+        m.replace(filter_sort(m.snapshot_all(), false, &m.filter.borrow().clone(), col, asc, &Restore::default()));
+        m.set_landed_pass(1);
+        assert!(m.settled());
+        let rows: Peer = Box::pin(ModelChangeListenerContainer::new(Rec::default()));
+        let grid: Peer = Box::pin(ModelChangeListenerContainer::new(Rec::default()));
+        m.model_tracker().attach_peer(rows.as_ref().model_peer());
+        GridModel(m.clone()).model_tracker().attach_peer(grid.as_ref().model_peer());
+        (m, rows, grid)
+    }
+
+    fn rows(m: &PaneModel) -> Vec<String> {
+        (0..m.row_count()).map(|i| m.row_data(i).unwrap().name.to_string()).collect()
+    }
+
+    fn log(p: &Peer) -> Vec<String> {
+        std::mem::take(&mut *p.0.borrow_mut())
+    }
+
+    #[test]
+    fn apply_edits_inserts_at_the_sorted_position() {
+        let (m, r, g) = edited(SortCol::Name, true, "");
+        // "a01" compares equal to "a1" (natural order): it goes after it.
+        let a = m.apply_edits(vec![Edit::Upsert(e("a01", 5, false))], -1).unwrap();
+        assert_eq!(a, Applied { added: 1, removed: 0, changed: 0, cursor: -1 });
+        assert_eq!(log(&r), ["add 1"]);
+        assert_eq!(log(&g), ["reset"]);
+        m.apply_edits(vec![Edit::Upsert(e("zdir", 0, true)), Edit::Upsert(e("a5x", 1, false))], -1).unwrap();
+        assert_eq!(log(&r), ["add 0", "add 7"], "the folder before every file; a5x after a5");
+        assert_eq!(rows(&m), ["zdir", "a1", "a01", "a2", "a3", "a4", "a5", "a5x", "a6", "a7", "a8", "a9", "a10"]);
+        assert_eq!((m.total(), m.len()), (13, 13));
+
+        let (m, r, _g) = edited(SortCol::Name, false, "");
+        m.apply_edits(vec![Edit::Upsert(e("a01", 5, false)), Edit::Upsert(e("zdir", 0, true)), Edit::Upsert(e("a5x", 1, false))], -1).unwrap();
+        assert_eq!(log(&r), ["add 10", "add 0", "add 6"]);
+        assert_eq!(rows(&m), ["zdir", "a10", "a9", "a8", "a7", "a6", "a5x", "a5", "a4", "a3", "a2", "a1", "a01"]);
+        assert!(m.snapshot_all().iter().any(|x| x.name == "a01"), "the listing has it too");
+    }
+
+    #[test]
+    fn apply_edits_replaces_in_place_and_moves_when_the_key_changes() {
+        // Size sort: a3 grows from 30 to 95 and moves between a9 (90) and a10 (100).
+        let (m, r, g) = edited(SortCol::Size, true, "");
+        let a = m.apply_edits(vec![Edit::Upsert(e("a3", 95, false))], -1).unwrap();
+        assert_eq!(a, Applied { added: 0, removed: 0, changed: 1, cursor: -1 });
+        assert_eq!(log(&r), ["rem 2", "add 8"]);
+        assert_eq!(log(&g), ["reset"]);
+        assert_eq!(rows(&m), ["a1", "a2", "a4", "a5", "a6", "a7", "a8", "a9", "a3", "a10"]);
+        assert_eq!(m.row_data(8).unwrap().size, "95 B");
+        // A change that keeps its place: one row_changed, and the grid row alone.
+        m.apply_edits(vec![Edit::Upsert(e("a3", 96, false))], -1).unwrap();
+        assert_eq!((log(&r), log(&g)), (vec!["chg 8".to_string()], vec!["chg 8".to_string()]));
+
+        // Name sort: a size change never moves a row.
+        let (m, r, g) = edited(SortCol::Name, true, "");
+        m.apply_edits(vec![Edit::Upsert(e("a3", 95, false))], -1).unwrap();
+        assert_eq!((log(&r), log(&g)), (vec!["chg 2".to_string()], vec!["chg 2".to_string()]));
+        assert_eq!(m.row_data(2).unwrap().size, "95 B");
+        assert_eq!(m.snapshot_all().iter().find(|x| x.name == "a3").unwrap().size, 95);
+        assert_eq!((m.total(), m.len()), (10, 10));
+    }
+
+    #[test]
+    fn apply_edits_keeps_selection_cut_and_cursor() {
+        let (m, r, _g) = edited(SortCol::Name, true, "");
+        m.select(SelOp::Only, 2); // a3
+        m.select(SelOp::Toggle, 5); // a6
+        m.set_cut(vec!["a8".into()]); // row 7
+        log(&r);
+        let v = m.sel_version.get();
+        // An insert before them, then a3 removed; the cursor is on a6 (row 5).
+        let a = m.apply_edits(vec![Edit::Upsert(e("a01", 1, false)), Edit::Remove("a3".into())], 5).unwrap();
+        assert_eq!(a, Applied { added: 1, removed: 1, changed: 0, cursor: 5 });
+        assert_eq!(log(&r), ["add 1", "rem 3"]);
+        assert_eq!(rows(&m), ["a1", "a01", "a2", "a4", "a5", "a6", "a7", "a8", "a9", "a10"]);
+        assert_eq!(m.selected_names(), ["a6"], "the selection follows its rows; the removed one leaves");
+        assert_eq!(m.selected_set(), set(&[5]));
+        assert!(m.row_data(5).unwrap().selected && !m.row_data(2).unwrap().selected);
+        assert!(m.sel_version.get() > v, "a selected row left");
+        assert!(m.row_data(7).unwrap().cut, "a8 keeps its cut mark");
+        // A replace keeps the cut mark and the selection.
+        m.select(SelOp::Toggle, 7);
+        m.apply_edits(vec![Edit::Upsert(e("a8", 1234, false))], 5).unwrap();
+        let a8 = m.row_data(7).unwrap();
+        assert!(a8.cut && a8.selected && a8.size == "1.2 KB");
+        assert_eq!(m.selected_names(), ["a6", "a8"]);
+        // The cursor's row removed: the row that followed it (a7) is the cursor, at the same index.
+        let a = m.apply_edits(vec![Edit::Remove("a6".into())], 5).unwrap();
+        assert_eq!((a.cursor, m.row_data(5).unwrap().name.as_str()), (5, "a7"));
+        assert_eq!(m.selected_names(), ["a8"]);
+        // The last row removed under the cursor: the new last row; a cut name removed leaves the cut.
+        let a = m.apply_edits(vec![Edit::Remove("a10".into()), Edit::Remove("a8".into())], 8).unwrap();
+        assert_eq!(rows(&m), ["a1", "a01", "a2", "a4", "a5", "a7", "a9"]);
+        assert_eq!(a.cursor, 6);
+        assert!(m.selected_names().is_empty());
+        assert!(m.capture(-1).cut.is_empty(), "a8 left the cut");
+        // A cursor below an insert moves down with its row; everything removed: no cursor.
+        assert_eq!(m.apply_edits(vec![Edit::Upsert(e("a0", 1, false))], 3).unwrap().cursor, 4);
+        let all: Vec<Edit> = rows(&m).into_iter().map(|n| Edit::Remove(n.into())).collect();
+        assert_eq!(m.apply_edits(all, 4).unwrap().cursor, -1);
+        assert_eq!((m.len(), m.total()), (0, 0));
+    }
+
+    #[test]
+    fn apply_edits_counts_hidden_and_filtered() {
+        let consistent = |m: &PaneModel| assert_eq!(m.len() + m.hidden_count() + m.filtered_count(), m.total());
+        let (m, r, _g) = edited(SortCol::Name, true, "");
+        let hidden = |name: &str| Entry::new(name.into(), 30, 0, FILE_ATTRIBUTE_HIDDEN, SharedString::default());
+        m.apply_edits(vec![Edit::Upsert(hidden("a3"))], -1).unwrap();
+        assert_eq!(log(&r), ["rem 2"], "now hidden: it leaves the list");
+        assert_eq!((m.len(), m.total(), m.hidden_count(), m.filtered_count()), (9, 10, 1, 0));
+        consistent(&m);
+        m.apply_edits(vec![Edit::Upsert(e("a3", 30, false))], -1).unwrap();
+        assert_eq!(log(&r), ["add 2"], "shown again");
+        assert_eq!((m.len(), m.hidden_count()), (10, 0));
+        // A hidden newcomer and the removal of a hidden entry only count.
+        m.apply_edits(vec![Edit::Upsert(hidden("h"))], -1).unwrap();
+        assert_eq!((m.len(), m.total(), m.hidden_count()), (10, 11, 1));
+        m.apply_edits(vec![Edit::Remove("h".into())], -1).unwrap();
+        assert_eq!((m.len(), m.total(), m.hidden_count()), (10, 10, 0));
+        assert!(log(&r).is_empty());
+        consistent(&m);
+
+        // A filter on: "a1*" shows a1 and a10.
+        let (m, r, _g) = edited(SortCol::Name, true, "a1*");
+        assert_eq!((m.len(), m.filtered_count()), (2, 8));
+        m.apply_edits(vec![Edit::Upsert(e("zzz", 1, false)), Edit::Upsert(e("a11", 1, false))], -1).unwrap();
+        assert_eq!(log(&r), ["add 2"], "a11 matches, zzz does not");
+        assert_eq!((m.len(), m.total(), m.filtered_count()), (3, 12, 9));
+        consistent(&m);
+        // A rename out of the filter and one into it.
+        m.apply_edits(vec![Edit::Rename { from: "a10".into(), entry: e("b10", 100, false) }, Edit::Rename { from: "a5".into(), entry: e("a15", 50, false) }], -1).unwrap();
+        assert_eq!(log(&r), ["rem 1", "add 2"]);
+        assert_eq!(rows(&m), ["a1", "a11", "a15"]);
+        assert_eq!((m.len(), m.total(), m.filtered_count()), (3, 12, 9));
+        m.apply_edits(vec![Edit::Remove("zzz".into()), Edit::Remove("a11".into())], -1).unwrap();
+        assert_eq!((m.len(), m.total(), m.filtered_count()), (2, 10, 8));
+        consistent(&m);
+    }
+
+    #[test]
+    fn apply_edits_refuses_unknown_names_without_changing_anything() {
+        let (m, r, g) = edited(SortCol::Name, true, "");
+        m.select(SelOp::Only, 4);
+        log(&r);
+        log(&g);
+        let (before, v) = (rows(&m), m.sel_version.get());
+        let err = m.apply_edits(vec![Edit::Upsert(e("new", 1, false)), Edit::Remove("a2".into()), Edit::Remove("stranger".into())], 4);
+        assert!(err.unwrap_err().contains("stranger"));
+        let err = m.apply_edits(vec![Edit::Remove("a2".into()), Edit::Remove("a2".into())], 4);
+        assert!(err.is_err(), "removed twice: the second names an entry that is gone");
+        let err = m.apply_edits(vec![Edit::Rename { from: "ghost".into(), entry: e("x", 1, false) }], 4);
+        assert!(err.is_err());
+        assert_eq!((rows(&m), m.total(), m.selected_names(), m.sel_version.get()), (before, 10, vec![SharedString::from("a5")], v));
+        assert!(log(&r).is_empty() && log(&g).is_empty(), "no notification");
+        // Within one window a name added earlier can be removed later.
+        assert!(m.apply_edits(vec![Edit::Upsert(e("tmp", 1, false)), Edit::Remove("tmp".into())], 4).is_ok());
+        assert_eq!(log(&r), ["add 10", "rem 10"]);
+        // No edits while a refresh is in flight.
+        m.begin_refresh();
+        assert!(m.apply_edits(vec![Edit::Upsert(e("x", 1, false))], 4).is_err());
+    }
+
+    #[test]
+    fn apply_edits_renames() {
+        let (m, r, _g) = edited(SortCol::Name, true, "");
+        m.select(SelOp::Only, 2); // a3
+        log(&r);
+        let a = m.apply_edits(vec![Edit::Rename { from: "a3".into(), entry: e("z9", 30, false) }], 2).unwrap();
+        assert_eq!(a, Applied { added: 0, removed: 0, changed: 1, cursor: 9 }, "the cursor follows the row");
+        assert_eq!(log(&r), ["rem 2", "add 9"]);
+        assert_eq!(rows(&m), ["a1", "a2", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "z9"]);
+        assert_eq!(m.selected_names(), ["z9"]);
+        // A case-only rename stays in place; a record's casing that differs from the listing's
+        // still finds the entry.
+        m.apply_edits(vec![Edit::Rename { from: "A4".into(), entry: e("A4", 40, false) }], -1).unwrap();
+        assert_eq!(log(&r), ["chg 2"]);
+        assert!(m.has_name("A4") && m.has_name("a4") && !m.has_name("a3"));
+        assert_eq!(m.snapshot_all().iter().filter(|x| x.name.eq_ignore_ascii_case("a4")).count(), 1);
+        // Onto an existing name: the target leaves, the renamed row takes its name and keeps its
+        // own selection and cursor.
+        m.select(SelOp::Only, 0); // a1
+        log(&r);
+        let a = m.apply_edits(vec![Edit::Rename { from: "a1".into(), entry: e("a5", 10, false) }], 0).unwrap();
+        assert_eq!(a, Applied { added: 0, removed: 1, changed: 1, cursor: 2 });
+        assert_eq!(log(&r), ["rem 3", "rem 0", "add 2"]);
+        assert_eq!(rows(&m), ["a2", "A4", "a5", "a6", "a7", "a8", "a9", "a10", "z9"]);
+        assert_eq!(m.selected_names(), ["a5"]);
+        assert_eq!(m.row_data(2).unwrap().size, "10 B");
+        assert_eq!((m.total(), m.len()), (9, 9));
+        // A record's casing on a removal too.
+        m.apply_edits(vec![Edit::Remove("Z9".into())], -1).unwrap();
+        assert!(!m.has_name("z9"));
+        // A sized folder keeps its size across a replace, not across a rename.
+        m.apply_edits(vec![Edit::Upsert(e("d1", 0, true))], -1).unwrap();
+        m.set_size("d1", Some(2048));
+        m.apply_edits(vec![Edit::Upsert(e("d1", 0, true))], -1).unwrap();
+        assert_eq!(m.snapshot_all().iter().find(|x| x.name == "d1").unwrap().size_text.as_str(), "2.0 KB");
+        m.apply_edits(vec![Edit::Rename { from: "d1".into(), entry: e("d2", 0, true) }], -1).unwrap();
+        assert_eq!(m.snapshot_all().iter().find(|x| x.name == "d2").unwrap().size_text.as_str(), "");
+    }
+
+    #[test]
+    fn apply_edits_notifies_rows_not_resets() {
+        let (m, r, g) = edited(SortCol::Modified, false, "");
+        m.set_grid_n(4);
+        log(&g);
+        let mut many: Vec<Edit> = (0..50).map(|i| Edit::Upsert(e(&format!("n{i}"), i, false))).collect();
+        many.push(Edit::Remove("a4".into()));
+        many.push(Edit::Rename { from: "a5".into(), entry: e("b5", 50, false) });
+        many.push(Edit::Upsert(e("a6", 7, false)));
+        let a = m.apply_edits(many, 3).unwrap();
+        assert_eq!((a.added, a.removed, a.changed), (50, 1, 2));
+        let details = log(&r);
+        assert_eq!(details.len(), 50 + 1 + 1 + 1 + 1, "one per step: 50 adds, a removal, a moved rename, a replace");
+        assert!(details.iter().all(|n| n != "reset"), "the details list never resets: {details:?}");
+        assert_eq!(log(&g), ["reset"], "the grid resets once");
+        // The list is still in the sort's order and agrees with a fresh pass over the listing.
+        let fresh = filter_sort(m.snapshot_all(), false, &NameMatch::default(), SortCol::Modified, false, &Restore::default());
+        assert_eq!(rows(&m), fresh.shown.iter().map(|x| x.name.to_string()).collect::<Vec<_>>());
+        assert_eq!((m.len(), m.total()), (59, 59));
+        assert_eq!(m.grid_len(), 15);
+        // An empty window does nothing.
+        assert_eq!(m.apply_edits(Vec::new(), 2).unwrap(), Applied { added: 0, removed: 0, changed: 0, cursor: 2 });
+        assert!(log(&r).is_empty() && log(&g).is_empty());
+    }
+
+    #[test]
+    fn landed_pass_and_settled() {
+        let m = PaneModel::default();
+        m.append(vec![e("a", 0, false)]);
+        assert!(!m.settled(), "a first enumeration's batches: no pass has landed");
+        assert!(m.apply_edits(vec![Edit::Upsert(e("b", 0, false))], -1).is_err());
+        m.pass.set(3);
+        assert!(!m.settled(), "a pass in flight");
+        assert_eq!(m.apply_edits(vec![Edit::Upsert(e("b", 0, false))], -1).unwrap_err(), "a pass is in flight");
+        m.set_landed_pass(3);
+        assert!(m.settled());
+        m.apply_edits(vec![Edit::Upsert(e("b", 0, false))], -1).unwrap();
+        assert!(m.settled() && m.pass.get() == 3, "the edits keep the model settled");
+        m.begin_refresh();
+        assert!(!m.settled(), "a refresh in flight");
+        m.finish_refresh();
+        assert!(m.settled());
+        m.clear(); // navigation: the next listing starts unsettled
+        assert!(!m.settled() && m.landed_pass.get() == 0);
+    }
+
+    #[test]
+    fn apply_edits_upserts_exactly_and_keeps_resolved_icons() {
+        let (m, r, _g) = edited(SortCol::Name, true, "");
+        m.set_cut(vec!["a3".into()]);
+        log(&r);
+        // The contract: an Upsert is matched by its exact name (a record carries the on-disk
+        // casing), so one that differs from an entry only in case is a new entry, inserted after
+        // its equal; the entry it resembles, its row and its cut mark are untouched.
+        let a = m.apply_edits(vec![Edit::Upsert(e("A3", 31, false))], -1).unwrap();
+        assert_eq!((a.added, a.changed), (1, 0));
+        assert_eq!(log(&r), ["add 3"]);
+        assert_eq!((m.row_data(2).unwrap().name.as_str(), m.row_data(3).unwrap().name.as_str()), ("a3", "A3"));
+        assert!(m.row_data(2).unwrap().cut && !m.row_data(3).unwrap().cut);
+        assert_eq!(m.capture(-1).cut, [SharedString::from("a3")]);
+        m.apply_edits(vec![Edit::Remove("A3".into())], -1).unwrap();
+        assert_eq!(rows(&m)[2..4], ["a3", "a4"], "the exact name is removed, not its case twin");
+        // The icon `resolve_icons` gave the row survives a replace with the same key; a new key
+        // goes back to the placeholder.
+        let keyed = |name: &str, key: &str| Entry { icon_key: key.into(), ..e(name, 5, false) };
+        m.apply_edits(vec![Edit::Upsert(keyed("a5", "ext:.txt"))], -1).unwrap();
+        m.icons.borrow_mut().complete("ext:.txt".into(), 16, crate::icons::Outcome::Pixels(slint::SharedPixelBuffer::new(1, 1)));
+        assert_eq!(m.resolve_icons(0, 99, 16, |_, _| {}), [4]);
+        let resolved = m.icon_indices(4, 4)[0];
+        assert!(resolved >= PLACEHOLDERS);
+        m.apply_edits(vec![Edit::Upsert(keyed("a5", "ext:.txt"))], -1).unwrap();
+        assert_eq!(m.icon_indices(4, 4), [resolved]);
+        m.apply_edits(vec![Edit::Upsert(keyed("a5", "ext:.log"))], -1).unwrap();
+        assert_eq!(m.icon_indices(4, 4), [PLACEHOLDER_FILE]);
+        // A rename onto a name that exists under another casing overwrites it when an earlier
+        // case-insensitive lookup in the window built the lowercase map (here the Remove of "A8")...
+        let total = m.total();
+        let a = m.apply_edits(vec![Edit::Remove("A8".into()), Edit::Rename { from: "a6".into(), entry: e("A7", 6, false) }], -1).unwrap();
+        assert_eq!((a.removed, a.changed, m.total()), (2, 1, total - 2));
+        assert_eq!(m.snapshot_all().iter().filter(|x| x.name.eq_ignore_ascii_case("a7")).map(|x| x.name.to_string()).collect::<Vec<_>>(), ["A7"]);
+        // ... and is not looked for otherwise (no scan of every name per rename): the twin stays
+        // until the next listing.
+        let a = m.apply_edits(vec![Edit::Rename { from: "a9".into(), entry: e("A10", 9, false) }], -1).unwrap();
+        assert_eq!((a.removed, a.changed), (0, 1));
+        assert_eq!(m.snapshot_all().iter().filter(|x| x.name.eq_ignore_ascii_case("a10")).count(), 2);
+    }
+
+    #[test]
+    fn cmp_entries_matches_sort_entries() {
+        // A shuffled mix of folders and files with equal sizes, times and types among them.
+        let mk = |i: u64| {
+            let attrs = if i % 7 == 0 { FILE_ATTRIBUTE_DIRECTORY } else { 0 };
+            let ty = ["Text Document", "PNG File", "File"][(i % 3) as usize];
+            Entry::new(format!("f_{}", (i * 37) % 101).into(), (i * 13) % 5, ((i * 11) % 4) as i64, attrs, ty.into())
+        };
+        let v: Vec<Entry> = (0..101).map(mk).collect();
+        for col in [SortCol::Name, SortCol::Size, SortCol::Modified, SortCol::Type] {
+            for asc in [true, false] {
+                let mut a = v.clone();
+                sort_entries(&mut a, col, asc);
+                let mut b = v.clone();
+                b.sort_by(|x, y| cmp_entries(x, y, col, asc));
+                let names = |s: &[Entry]| s.iter().map(|e| e.name.to_string()).collect::<Vec<_>>();
+                assert_eq!(names(&a), names(&b), "{col:?} asc={asc}");
+                assert!(a.windows(2).all(|w| cmp_entries(&w[0], &w[1], col, asc) != std::cmp::Ordering::Greater));
+            }
+        }
     }
 
     #[test]
