@@ -556,6 +556,14 @@ shows the error, the UI never waits); a folder renamed in Explorer while a tab s
 bar follows); a tab left in the background while Explorer writes into its folder, then selected
 (no re-listing, the new rows there).
 
+**Deferred by Jeremy (2026-10-15): the ab20 triplet and the console checks run after P5-M2**, not
+before the merge. The decision rests on the in-app pairs above (the candidate below the reference
+in every defaults round), the generated rows being the reference's, and nothing in the diff running
+per row or per frame; the cost is that a gap found later is bisected across two milestones instead
+of one. `target-p4m3` stays the reference until a triplet is recorded here; the USB check (insert,
+write from Explorer, "Safely remove", re-insert) is the first real run of the device path and is
+still owed.
+
 ## Open questions
 
 Written 2026-10-15 at the kickoff; the Phase 4 close's open questions are absorbed here.
