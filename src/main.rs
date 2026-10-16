@@ -252,6 +252,10 @@ struct State {
     strip_rows: [Rc<VecModel<StripRow>>; 2],
     /// Each pane's left-button gesture on a row (click, drag, double-click), dnd::Gesture.
     gesture: [dnd::Gesture; 2],
+    /// The drag image's icon asked of the icon worker at the last press on a row
+    /// (`prefetch_drag_icon`): its path, and its pixels once the reply landed. The newest press
+    /// wins; a drag takes it (`run_pending_drag`).
+    drag_icon: Option<(PathBuf, Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>)>,
     /// The rubber band under way (P4-M3, `band.rs`), its last window point, the timer that
     /// scrolls the list while the pointer sits at its edge, and when `[band]` last logged a count.
     band: Option<band::Band>,
@@ -2006,6 +2010,15 @@ fn drain_icons() {
         {
             let mut table = st.icons.borrow_mut();
             while let Ok(r) = st.icon_rx.try_recv() {
+                if icons::is_drag_key(&r.key) {
+                    // A drag image's icon: kept for the press that asked for it, never in the table.
+                    if let (Some((path, slot)), icons::Outcome::Pixels(p)) = (&mut st.drag_icon, r.outcome) {
+                        if r.key == icons::drag_key(path) {
+                            *slot = Some(p);
+                        }
+                    }
+                    continue;
+                }
                 table.complete(r.key, r.size_px, r.outcome);
                 st.icon_counts.replies += 1;
                 any = true;
@@ -2952,6 +2965,7 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
         0 => with_state(|st| {
             let model = st.panes[pane].active().model.clone();
             let selected = model.entry(row).is_some_and(|e| e.selected);
+            prefetch_drag_icon(st, pane, row);
             if let Some(op) = st.gesture[pane].press(row, selected, ctrl, shift) {
                 model.select(op, row);
                 log_select(&model, pane, op, row);
@@ -2985,6 +2999,28 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
         7 => history_button(pane, true),
         _ => {}
     }
+}
+
+/// A press on `row` that may become a drag (the left button, or the right): ask the icon worker
+/// for the drag image's icon now, one channel send, so the drag that may follow finds it rendered
+/// instead of asking the shell on the UI thread (113 ms for the first drag of a run, P2-M4). Not
+/// for a drive row (never dragged) nor for a grid tile showing a real picture (the image is the
+/// tile's).
+fn prefetch_drag_icon(st: &mut State, pane: usize, row: usize) {
+    let Some(app) = st.app.upgrade() else { return };
+    let model = st.model(pane);
+    let Some(e) = model.entry(row) else { return };
+    let grid = st.grid[pane];
+    if e.kind == Kind::Drive || (grid && e.icon >= icons::PLACEHOLDERS) {
+        return;
+    }
+    let scale = app.window().scale_factor();
+    let size_px = if grid { dnd::ImageGeom::tile(scale).icon } else { dnd::ImageGeom::new(scale).icon };
+    let path = st.tab(pane).path.join(e.name.as_str());
+    let generation = model.generation.get();
+    let key = icons::drag_key(&path);
+    let _ = st.icon_tx.send(icons::Request { generation, pane, key, path: path.clone(), size_px, overlay: false, thumbnail: false, row: 0, wanted: 0 });
+    st.drag_icon = Some((path, None));
 }
 
 /// The pointer left the drag threshold with the left button (or, `right`, the right button) down
@@ -3028,6 +3064,7 @@ fn drag_start(pane: usize, row: usize, right: bool) {
             cached: Some(st.icons.borrow().buffer(shown.icon).clone()),
             tile: window_layout(&app).grid[pane].is_some(),
             tile_picture: shown.icon >= icons::PLACEHOLDERS,
+            prefetched: None,
             count: names.len(),
             scale: app.window().scale_factor(),
         };
@@ -3062,7 +3099,7 @@ pub fn drag_pending() -> bool {
 /// `WM_RUN_DRAG` arrived (the permanent subclass, dispatched by winit's message loop outside its
 /// event handler): run the pending drag. `DoDragDrop` runs a modal loop; no borrow is held.
 pub fn run_pending_drag() {
-    let Some((pane, req)) = PENDING_DRAG.with(|p| p.borrow_mut().take()) else { return };
+    let Some((pane, mut req)) = PENDING_DRAG.with(|p| p.borrow_mut().take()) else { return };
     let right = req.right;
     if !state_is_free() {
         // Not expected: the message is dispatched by an event loop, never inside a borrow.
@@ -3070,6 +3107,16 @@ pub fn run_pending_drag() {
         with_state(|st| st.gesture[pane].drag_ended());
         return slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right));
     }
+    // The drag image's icon from the press, when the icon worker has answered it (its reply may
+    // still wait in the channel: the posted message can come before the worker's wake-up).
+    drain_icons();
+    with_state(|st| {
+        if let (Some(img), Some((path, Some(p)))) = (req.image.as_mut(), st.drag_icon.take()) {
+            if path == img.path {
+                img.prefetched = Some(p);
+            }
+        }
+    });
     // MODAL LOOP: no borrow held (see dnd). A drop on our own other pane comes back through our
     // drop target from inside this call, and its job is posted to the event loop.
     let res = dnd::drag(&req);
@@ -4501,6 +4548,7 @@ fn main() -> Result<(), slint::PlatformError> {
             grid_slots: Default::default(),
             strip_rows,
             gesture: Default::default(),
+            drag_icon: None,
             band: None,
             band_at: (0.0, 0.0),
             band_timer: slint::Timer::default(),
@@ -4589,6 +4637,10 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         }
         with_state(|st| {
+            if op == SelOp::Context {
+                // A right press on a row, which may become a right-button drag.
+                prefetch_drag_icon(st, pane as usize, row as usize);
+            }
             let model = st.model(pane as usize);
             model.select(op, row.max(0) as usize);
             eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());

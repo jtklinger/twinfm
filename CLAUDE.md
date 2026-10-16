@@ -14,7 +14,7 @@ Phase 5 record (the Phase 2 lists finished: directory watching, file operations,
 three milestones, kicked off 2026-10-15). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (171 tests; eight touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (173 tests; eight touch the real shell and clipboard, one of them the Recycle
   Bin, and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
@@ -101,7 +101,18 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   `highlight painted inside our own drag loop`, `N frame(s) rendered inside the drag loop`,
   `right-button drag over: pointer grab ended without a release`, `drop menu starts`, `drop menu
   loop idle: app state free=`, `drop menu: default X, chose Y -> effect Z`, `auto-scroll pane N
-  up|down: content-y A -> B`, and spots `sidebar row N (...)` and `pane N tab I (...)`. Tabs and
+  up|down: content-y A -> B`, and spots `sidebar row N (...)` and `pane N tab I (...)`. Since
+  P5-M3 the drag image line's `icon from` reads `the worker` when the icon asked of the icon worker
+  at the press (a `drag:` key, never in the icon table) had landed before the drag started, else
+  `the shell` as before. `IDragSourceHelper2::SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT) = 0x...` once
+  per process, at the first drag. `drop description: Move to "<folder>" | Copy to "<folder>" |
+  none | cleared` when the description our target sets on the drag's data object changes (none:
+  the drop is refused; cleared: DragLeave or Drop gives the text back to the source), and `drop
+  description: SetData failed 0x...` once per drag whose data object refuses it (the driver's
+  `dropfiles` and `dragover` objects do, 0x80004001). `volumes: sources on <key>` once per
+  DragEnter with files, and `volumes: dest <path> on <key>` when a new destination's volume is
+  looked up (`GetVolumePathNameW`; the key is the lowercase mount point without its trailing
+  separator, `c:` or `c:\mnt\data`, or `\\server\share`). Tabs and
   path bar: `tab <new|close|next|prev|N>` presses Ctrl+T, Ctrl+W, Ctrl+Tab,
   Ctrl+Shift+Tab or Ctrl+N on the active pane (key names `CtrlT`, `CtrlW`, `CtrlTab`,
   `CtrlShiftTab`, `Ctrl1` to `Ctrl9`, and `CtrlL` for the path entry), `tab moveleft|moveright`
@@ -408,7 +419,7 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   labelled `name-<basename>` in the trace names; run the script from the checkout whose `tools/`
   it sits in, since it calls the `wpr-gate.ps1` beside it); a gap counts only when every reference run sits below every candidate run or the
   medians differ by more than one point. The reference binary is the last merged milestone's
-  gate build (`target-p4m1`, cb589c8, after P4-M1); the previous one is deleted once the new one
+  gate build (`target-p5m2`, 6b1d0f1, after P5-M2); the previous one is deleted once the new one
   has served as a reference. Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running

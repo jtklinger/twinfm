@@ -57,7 +57,9 @@ use windows_sys::Win32::Graphics::Gdi::{
     DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, GdiFlush, HBITMAP, ScreenToClient, SelectObject,
     RDW_INTERNALPAINT, RedrawWindow, SetBkMode, SetTextColor, TRANSPARENT,
 };
-use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL};
+use std::os::windows::ffi::OsStrExt;
+use windows_sys::Win32::Foundation::MAX_PATH;
+use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, GetVolumePathNameW};
 use windows_sys::Win32::System::Com::Marshal::CoMarshalInterThreadInterfaceInStream;
 use windows_sys::Win32::System::Com::StructuredStorage::CoGetInterfaceAndReleaseStream;
 use windows_sys::Win32::System::Com::{
@@ -74,7 +76,8 @@ use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MK_RBUT
 use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
 use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows_sys::Win32::UI::Shell::{
-    CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORA, CFSTR_FILEDESCRIPTORW, CFSTR_SHELLIDLIST, ILCombine, ILFree, SHGetNameFromIDList,
+    CFSTR_DROPDESCRIPTION, CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORA, CFSTR_FILEDESCRIPTORW, CFSTR_SHELLIDLIST, DROPIMAGE_COPY,
+    DROPIMAGE_INVALID, DROPIMAGE_MOVE, DROPIMAGE_NONE, ILCombine, ILFree, SHGetNameFromIDList,
     SIGDN_DESKTOPABSOLUTEPARSING, CFSTR_LOGICALPERFORMEDDROPEFFECT, CFSTR_PERFORMEDDROPEFFECT, DefSubclassProc,
     FD_ATTRIBUTES, FD_FILESIZE, FD_PROGRESSUI, RemoveWindowSubclass, SHCreateDataObject, SHCreateMemStream, SHDRAGIMAGE,
     SetWindowSubclass,
@@ -134,10 +137,55 @@ pub fn menu_effect(cmd: u32, allowed: u32) -> u32 {
     }
 }
 
-/// The volume a path lives on, as a comparable key: `c:` for a drive path, `\\server\share` for a
-/// UNC path (lowercase, `\\?\` and `\\?\UNC\` prefixes removed). A volume mounted in a folder
-/// counts as the drive that holds the folder.
+/// The volume a path lives on, as a comparable key: for a local drive path the mount point
+/// `GetVolumePathNameW` gives (lowercase, no trailing separator: `c:`, or `c:\mnt\data` for a
+/// volume mounted in that folder), else `path_volume_key`'s string rule: always for UNC paths and
+/// mapped network drives (a mount point lies on a local volume, and the call could wait on a dead
+/// server), and when the call fails. The path need not exist: the call walks up to the nearest
+/// mount point. One file-system call, so the drop target caches it (`VolumeCache`).
 pub fn volume_key(p: &Path) -> String {
+    let fallback = path_volume_key(p);
+    if fallback.starts_with(r"\\") || crate::fs::watch::is_remote(p) {
+        return fallback;
+    }
+    let wide: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+    let mut buf = vec![0u16; wide.len().max(MAX_PATH as usize + 1)];
+    // SAFETY: `wide` is NUL-terminated and `buf` is writable for the length passed.
+    let ok = unsafe { GetVolumePathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(0);
+    if ok == 0 || n == 0 {
+        return fallback;
+    }
+    let s = String::from_utf16_lossy(&buf[..n]).to_lowercase();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+    s.trim_end_matches('\\').to_string()
+}
+
+/// A one-entry cache of a folder's volume key: DragOver runs about every 50 ms while a drag
+/// hovers, and the destination folder changes only when the pointer crosses into another row,
+/// tab or pane, so `volume_key` runs once per distinct destination.
+#[derive(Default)]
+pub struct VolumeCache {
+    last: Option<(PathBuf, String)>,
+}
+
+impl VolumeCache {
+    /// The key of `dest`, from the cache or from `lookup`, and whether `lookup` ran for it.
+    pub fn key(&mut self, dest: &Path, lookup: impl FnOnce(&Path) -> String) -> (String, bool) {
+        if let Some((p, k)) = &self.last {
+            if p == dest {
+                return (k.clone(), false);
+            }
+        }
+        let k = lookup(dest);
+        self.last = Some((dest.to_path_buf(), k.clone()));
+        (k, true)
+    }
+}
+
+/// The string rule: `c:` for a drive path, `\\server\share` for a UNC path (lowercase, `\\?\` and
+/// `\\?\UNC\` prefixes removed). A volume mounted in a folder counts as the drive that holds it.
+pub fn path_volume_key(p: &Path) -> String {
     let s = p.to_string_lossy().to_lowercase();
     let s = if let Some(rest) = s.strip_prefix(r"\\?\unc\") {
         format!(r"\\{rest}")
@@ -198,13 +246,67 @@ pub fn decide_effect(keys: u32, allowed: u32, same_volume: bool) -> u32 {
 }
 
 /// The whole decision for dropping `sources` into `dest`: none for an empty list or a refused
-/// drop, else `decide_effect` with the volume of the first source.
-pub fn effect_for(sources: &[PathBuf], dest: &Path, keys: u32, allowed: u32) -> u32 {
-    match sources.first() {
-        None => NONE,
-        Some(_) if refused(sources, dest) => NONE,
-        Some(first) => decide_effect(keys, allowed, volume_key(first) == volume_key(dest)),
+/// drop, else `decide_effect`. `same_volume`: the first source and `dest` share a volume (the
+/// drop target decides it from its cached `volume_key`s).
+pub fn effect_for(sources: &[PathBuf], dest: &Path, keys: u32, allowed: u32, same_volume: bool) -> u32 {
+    if sources.is_empty() || refused(sources, dest) { NONE } else { decide_effect(keys, allowed, same_volume) }
+}
+
+/// What the text under the drag image says (`DROPDESCRIPTION`): the image type, the message and
+/// the text the shell puts in place of its `%1`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Description {
+    pub kind: i32,
+    pub message: &'static str,
+    pub insert: String,
+}
+
+impl Description {
+    /// `DROPIMAGE_INVALID` with no text: the shell goes back to the source's default (set when a
+    /// drag leaves us or drops, so Explorer as the source shows its own text again).
+    pub fn cleared() -> Description {
+        Description { kind: DROPIMAGE_INVALID, message: "", insert: String::new() }
     }
+}
+
+/// The description for a drop with `effect` into `dest`: "Move to %1" or "Copy to %1" with the
+/// folder's name; for none (or no folder), `DROPIMAGE_NONE` with no text, so the shell shows its
+/// own "not allowed" image.
+pub fn description(effect: u32, dest: Option<&Path>) -> Description {
+    let (kind, message) = match effect {
+        MOVE => (DROPIMAGE_MOVE, "Move to %1"),
+        COPY => (DROPIMAGE_COPY, "Copy to %1"),
+        _ => (DROPIMAGE_NONE, ""),
+    };
+    match dest {
+        Some(d) if kind != DROPIMAGE_NONE => Description { kind, message, insert: folder_label(d) },
+        _ => Description { kind: DROPIMAGE_NONE, message: "", insert: String::new() },
+    }
+}
+
+/// A folder's name as the description shows it: its last component, `C:` for a drive root, the
+/// share's name for a UNC share root.
+pub fn folder_label(dest: &Path) -> String {
+    if let Some(n) = dest.file_name() {
+        return n.to_string_lossy().into_owned();
+    }
+    let s = dest.to_string_lossy();
+    let s = s.trim_end_matches('\\');
+    s.rsplit('\\').next().unwrap_or(s).to_string()
+}
+
+/// The `DROPDESCRIPTION` struct's bytes (shlobj_core.h): the type (4 bytes), then the message and
+/// the insert, 260 wide characters each, NUL-terminated (cut at 259).
+pub fn description_block(d: &Description) -> Vec<u8> {
+    let mut b = d.kind.to_le_bytes().to_vec();
+    for s in [d.message, d.insert.as_str()] {
+        let mut w = [0u16; 260];
+        for (k, u) in s.encode_utf16().take(259).enumerate() {
+            w[k] = u;
+        }
+        b.extend(w.iter().flat_map(|u| u.to_le_bytes()));
+    }
+    b
 }
 
 /// What the effect reported back to the source is: a move is an optimized move (module docs).
@@ -682,27 +784,34 @@ fn read_dword(data: *mut c_void, name: PCWSTR) -> Option<u32> {
 /// Tell the data object what the drop did (`SetData` with a DWORD); best effort, a source that
 /// does not take it is not an error.
 fn set_dword(data: *mut c_void, name: PCWSTR, value: u32) {
+    set_block(data, name, &value.to_le_bytes());
+}
+
+/// `SetData` of `bytes` in an HGLOBAL in the registered format `name`; its HRESULT.
+fn set_block(data: *mut c_void, name: PCWSTR, bytes: &[u8]) -> HRESULT {
     let fmt = FORMATETC { cfFormat: registered_format(name), ..hdrop_format() };
-    // SAFETY: a moveable 4-byte block handed to SetData with fRelease = TRUE (the data object
-    // owns it on success); freed here if SetData refuses it.
+    // SAFETY: a moveable block of `bytes.len()` handed to SetData with fRelease = TRUE (the data
+    // object owns it on success); freed here if SetData refuses it.
     unsafe {
-        let h = GlobalAlloc(GMEM_MOVEABLE, 4);
+        let h = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
         if h.is_null() {
-            return;
+            return windows_sys::Win32::Foundation::E_OUTOFMEMORY;
         }
         let p = GlobalLock(h) as *mut u8;
         if p.is_null() {
             GlobalFree(h);
-            return;
+            return windows_sys::Win32::Foundation::E_OUTOFMEMORY;
         }
-        std::ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), p, 4);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
         GlobalUnlock(h);
         let mut medium: STGMEDIUM = std::mem::zeroed();
         medium.tymed = TYMED_HGLOBAL as u32;
         medium.u.hGlobal = h;
-        if (data_vtbl(data).set_data)(data, &fmt, &medium, 1) < 0 {
+        let hr = (data_vtbl(data).set_data)(data, &fmt, &medium, 1);
+        if hr < 0 {
             GlobalFree(h);
         }
+        hr
     }
 }
 
@@ -1457,6 +1566,18 @@ struct DropTarget {
     right: Cell<bool>,
     /// When DragOver last scrolled a list (auto-scroll near its edges, `SCROLL_EVERY`).
     scrolled_at: Cell<Option<std::time::Instant>>,
+    // P5-M3, drop descriptions and volumes (per drag, reset at DragEnter).
+    /// The data object DragEnter was handed, with a reference of ours (released in DragLeave and
+    /// Drop): DragOver is not handed it, and the drop description is set on it. Null between drags.
+    data: Cell<*mut c_void>,
+    /// The drop description last set on it (type, insert), so it is set on change only, and
+    /// whether a SetData failure was logged this drag.
+    described: RefCell<Option<(i32, String)>>,
+    describe_failed: Cell<bool>,
+    /// The sources' volume (`volume_key` of the first file), looked up at DragEnter, and the
+    /// last destination's, looked up once per distinct folder.
+    src_volume: RefCell<Option<String>>,
+    dest_volume: RefCell<VolumeCache>,
 }
 
 static DROP_TARGET_VTBL: DropTargetVtbl = DropTargetVtbl {
@@ -1498,11 +1619,59 @@ impl DropTarget {
         let p = self.client(pt);
         let spot = crate::drop_spot(p.x, p.y);
         let effect = match (&*self.offered.borrow(), &spot) {
-            (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed),
+            (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed, self.same_volume(&spot.dest)),
             (Offer::Virtual(_) | Offer::Archive(_), Some(_)) => virtual_effect(allowed),
             _ => NONE,
         };
         (spot, effect)
+    }
+
+    /// The sources (looked up at DragEnter) and `dest` share a volume; `dest`'s key is looked up
+    /// once per distinct folder.
+    fn same_volume(&self, dest: &Path) -> bool {
+        let Some(src) = self.src_volume.borrow().clone() else { return false };
+        let (key, looked_up) = self.dest_volume.borrow_mut().key(dest, volume_key);
+        if looked_up {
+            eprintln!("[dnd] volumes: dest {} on {key}", dest.display());
+        }
+        key == src
+    }
+
+    /// Set the drop description on the drag's data object when it differs from the last one set.
+    /// A data object that refuses SetData (some sources' do) is logged once per drag and is no
+    /// error: the image then shows no text.
+    fn describe(&self, d: Description) {
+        let data = self.data.get();
+        if data.is_null() || self.described.borrow().as_ref().is_some_and(|(k, i)| *k == d.kind && *i == d.insert) {
+            return;
+        }
+        *self.described.borrow_mut() = Some((d.kind, d.insert.clone()));
+        let hr = set_block(data, CFSTR_DROPDESCRIPTION, &description_block(&d));
+        if hr < 0 {
+            if !self.describe_failed.replace(true) {
+                eprintln!("[dnd] drop description: SetData failed 0x{:08X}", hr as u32);
+            }
+            return;
+        }
+        match d.kind {
+            DROPIMAGE_MOVE => eprintln!("[dnd] drop description: Move to \"{}\"", d.insert),
+            DROPIMAGE_COPY => eprintln!("[dnd] drop description: Copy to \"{}\"", d.insert),
+            DROPIMAGE_INVALID => eprintln!("[dnd] drop description: cleared"),
+            _ => eprintln!("[dnd] drop description: none"),
+        }
+    }
+
+    /// The drag left or dropped: give the description back to the source (when one was set) and
+    /// release our reference to the data object.
+    fn end_drag(&self) {
+        if self.described.borrow().is_some() {
+            self.describe(Description::cleared());
+        }
+        let data = self.data.replace(std::ptr::null_mut());
+        if !data.is_null() {
+            // SAFETY: the reference DragEnter took.
+            unsafe { (data_vtbl(data).release)(data) };
+        }
     }
 
     fn over(&self, keys: u32, pt: POINTL, effect: *mut u32) {
@@ -1514,6 +1683,8 @@ impl DropTarget {
         let (spot, e) = self.evaluate(keys, pt, allowed);
         let highlight = spot.as_ref().filter(|_| e != NONE).map(|s| (s.pane, s.mark));
         crate::drop_highlight(highlight);
+        // Before the target helper's DragEnter/DragOver, which read it.
+        self.describe(description(e, spot.as_ref().map(|s| s.dest.as_path())));
         let changed = self.last.borrow().as_ref() != Some(&(spot.clone(), e));
         if changed {
             eprintln!("[dnd] over {} keys=0x{keys:x} allowed=0x{allowed:x} -> effect {}", describe(&spot), effect_name(e));
@@ -1561,8 +1732,27 @@ unsafe extern "system" fn dt_drag_enter(this: *mut c_void, data: *mut c_void, ke
         }
     );
     let nothing = matches!(offered, Offer::Nothing);
+    // The sources' volume, once per drag (a drag whose first source changes is a new DragEnter).
+    let src = match &offered {
+        Offer::Files(s) => s.first().map(|f| volume_key(f)),
+        _ => None,
+    };
+    if let Some(k) = &src {
+        eprintln!("[dnd] volumes: sources on {k}");
+    }
+    *t.src_volume.borrow_mut() = src;
     *t.offered.borrow_mut() = offered;
     *t.last.borrow_mut() = None;
+    // Keep the data object for DragOver's drop descriptions (a DragEnter without a DragLeave
+    // before it gives the old one back first).
+    t.end_drag();
+    if !data.is_null() {
+        // SAFETY: a live IDataObject; the reference is released in `end_drag`.
+        unsafe { (data_vtbl(data).add_ref)(data) };
+    }
+    t.data.set(data);
+    *t.described.borrow_mut() = None;
+    t.describe_failed.set(false);
     // SAFETY: COM contract: a valid in/out pointer (checked for null).
     let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
     t.over(keys, pt, effect);
@@ -1654,6 +1844,7 @@ unsafe extern "system" fn dt_drag_leave(this: *mut c_void) -> HRESULT {
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
     eprintln!("[dnd] DragLeave");
+    t.end_drag();
     target_helper_call(HelperCall::Leave, POINTL { x: 0, y: 0 }, NONE);
     S_OK
 }
@@ -1732,6 +1923,8 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
     let menu_allowed = if matches!(fresh, Offer::Virtual(_) | Offer::Archive(_)) { allowed & COPY } else { allowed };
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
+    // The source's own description back (on the data object DragEnter kept, which is Drop's).
+    t.end_drag();
     // The shell takes its drag image down (before the menu, as Explorer does).
     target_helper_call(HelperCall::Drop(data), pt, e);
     if right && e != NONE && spot.is_some() {
@@ -1883,6 +2076,11 @@ pub fn register(hwnd: isize) -> (HRESULT, HRESULT) {
         last: RefCell::new(None),
         right: Cell::new(false),
         scrolled_at: Cell::new(None),
+        data: Cell::new(std::ptr::null_mut()),
+        described: RefCell::new(None),
+        describe_failed: Cell::new(false),
+        src_volume: RefCell::new(None),
+        dest_volume: RefCell::new(VolumeCache::default()),
     });
     let ptr = Box::into_raw(obj) as *mut c_void;
     // SAFETY: plain OLE calls on our own window, on its thread. RegisterDragDrop takes its own
@@ -2051,6 +2249,49 @@ fn helper(slot: &'static std::thread::LocalKey<Cell<(*mut c_void, bool)>>, iid: 
 
 fn source_helper() -> *mut c_void {
     helper(&SOURCE_HELPER, &IID_IDRAGSOURCEHELPER, "IDragSourceHelper")
+}
+
+const IID_IDRAGSOURCEHELPER2: GUID = GUID::from_u128(0x83e07d0d_0c5f_4163_bf1a_60b274051e40);
+/// `IDragSourceHelper2::SetFlags`: show the target's `DROPDESCRIPTION` text on our drag image.
+const DSH_ALLOWDROPDESCRIPTIONTEXT: u32 = 1;
+
+/// IDragSourceHelper2 (shobjidl.h): IDragSourceHelper's methods, then SetFlags.
+#[repr(C)]
+struct DragSourceHelper2Vtbl {
+    base: DragSourceHelperVtbl,
+    set_flags: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT,
+}
+
+thread_local! {
+    /// The source helper's IDragSourceHelper2 face (null: not asked yet, or not offered), kept
+    /// like the helper itself, and whether it was asked for.
+    static SOURCE_HELPER2: Cell<(*mut c_void, bool)> = const { Cell::new((std::ptr::null_mut(), false)) };
+}
+
+/// Let the drop target's description show on our drag image: `SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT)`
+/// on the source helper, before every `InitializeFromBitmap` (the helper applies its flags when it
+/// stores an image on a data object; the documentation states no order, and every sample sets the
+/// flags first). Logged once per process; without IDragSourceHelper2 the image shows no text.
+fn allow_description_text(helper: *mut c_void) {
+    let (mut h2, asked) = SOURCE_HELPER2.with(Cell::get);
+    if !asked {
+        let mut p: *mut c_void = std::ptr::null_mut();
+        // SAFETY: `helper` is the live IDragSourceHelper of this thread; the interface obtained is
+        // kept for the life of the process, as the helper is.
+        let hr = unsafe { ((**(helper as *const *const DragSourceHelperVtbl)).query_interface)(helper, &IID_IDRAGSOURCEHELPER2, &mut p) };
+        h2 = if hr >= 0 { p } else { std::ptr::null_mut() };
+        if !h2.is_null() {
+            // SAFETY: as below.
+            let hr = unsafe { ((**(h2 as *const *const DragSourceHelper2Vtbl)).set_flags)(h2, DSH_ALLOWDROPDESCRIPTIONTEXT) };
+            eprintln!("[dnd] IDragSourceHelper2::SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT) = 0x{:08X}", hr as u32);
+        }
+        SOURCE_HELPER2.with(|c| c.set((h2, true)));
+        return;
+    }
+    if !h2.is_null() {
+        // SAFETY: the live IDragSourceHelper2 kept for this thread.
+        unsafe { ((**(h2 as *const *const DragSourceHelper2Vtbl)).set_flags)(h2, DSH_ALLOWDROPDESCRIPTIONTEXT) };
+    }
 }
 
 fn target_helper() -> *mut c_void {
@@ -2266,6 +2507,7 @@ fn init_drag_image(helper: *mut c_void, data: *mut c_void, bgra: &[u8], size: u3
         return E_NOINTERFACE;
     }
     let Some(bmp) = dib_from(bgra, size, size) else { return windows_sys::Win32::Foundation::E_OUTOFMEMORY };
+    allow_description_text(helper);
     let img = SHDRAGIMAGE {
         sizeDragImage: SIZE { cx: size as i32, cy: size as i32 },
         ptOffset: POINT { x: cursor.0, y: cursor.1 },
@@ -2291,6 +2533,10 @@ pub struct DragImage {
     pub cached: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
     pub tile: bool,
     pub tile_picture: bool,
+    /// The shell's icon for `path` at the image's icon size, rendered by the icon worker when the
+    /// row was pressed (P5-M3), so the drag start need not wait for the shell; None when the reply
+    /// had not landed yet (the shell is then asked here, as before).
+    pub prefetched: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
     pub count: usize,
     pub scale: f32,
 }
@@ -2301,6 +2547,7 @@ fn attach_drag_image(data: *mut c_void, img: &DragImage) {
     let t0 = std::time::Instant::now();
     let (icon, from) = match (&img.cached, img.tile && img.tile_picture) {
         (Some(c), true) => (Some(crate::icons::fit(c, g.icon)), "the tile"),
+        _ if img.prefetched.is_some() => (img.prefetched.as_ref().map(|p| crate::icons::fit(p, g.icon)), "the worker"),
         _ => match crate::icons::render(&img.path, g.icon) {
             Some(p) => (Some(crate::icons::fit(&p, g.icon)), "the shell"),
             None => match &img.cached {
@@ -2501,6 +2748,12 @@ mod tests {
         PathBuf::from(s)
     }
 
+    /// `effect_for` with the string rule's volumes (`path_volume_key`), no file-system call.
+    fn eff(sources: &[PathBuf], dest: &Path, keys: u32, allowed: u32) -> u32 {
+        let same = sources.first().is_some_and(|f| path_volume_key(f) == path_volume_key(dest));
+        effect_for(sources, dest, keys, allowed, same)
+    }
+
     #[test]
     fn query_continue_drag_states() {
         // (escape, lbutton, rbutton, right-button drag)
@@ -2559,47 +2812,123 @@ mod tests {
         assert_eq!(MENU_LABELS[MENU_COPY as usize - 1], "Copy here");
         assert_eq!(MENU_LABELS[MENU_CANCEL as usize - 1], "Cancel");
         // The effect the menu starts from is decide_effect's, unchanged by the right button.
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_RBUTTON, both), MOVE);
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"D:\dst"), MK_RBUTTON, both), COPY);
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_RBUTTON, both), MOVE);
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"D:\dst"), MK_RBUTTON, both), COPY);
     }
 
     #[test]
     fn volumes() {
-        assert_eq!(volume_key(&p(r"C:\a\b.txt")), "c:");
-        assert_eq!(volume_key(&p(r"c:\")), "c:");
-        assert_eq!(volume_key(&p(r"D:\x")), "d:");
-        assert_eq!(volume_key(&p(r"\\?\C:\long\path")), "c:");
-        assert_eq!(volume_key(&p(r"\\Server\Share\dir\f")), r"\\server\share");
-        assert_eq!(volume_key(&p(r"\\?\UNC\server\share\f")), r"\\server\share");
-        assert_ne!(volume_key(&p(r"\\server\a\f")), volume_key(&p(r"\\server\b\f")));
+        // The string rule (UNC paths, and the fallback).
+        assert_eq!(path_volume_key(&p(r"C:\a\b.txt")), "c:");
+        assert_eq!(path_volume_key(&p(r"c:\")), "c:");
+        assert_eq!(path_volume_key(&p(r"D:\x")), "d:");
+        assert_eq!(path_volume_key(&p(r"\\?\C:\long\path")), "c:");
+        assert_eq!(path_volume_key(&p(r"\\Server\Share\dir\f")), r"\\server\share");
+        assert_eq!(path_volume_key(&p(r"\\?\UNC\server\share\f")), r"\\server\share");
+        assert_ne!(path_volume_key(&p(r"\\server\a\f")), path_volume_key(&p(r"\\server\b\f")));
+        // GetVolumePathNameW on the system drive: a folder, its root, a path that does not exist
+        // and a verbatim one all lie on the root's volume.
+        let windows = std::env::var("SystemRoot").map(PathBuf::from).unwrap_or_else(|_| p(r"C:\Windows"));
+        let drive = path_volume_key(&windows);
+        let key = volume_key(&PathBuf::from(format!(r"{}\", drive.to_uppercase())));
+        assert_eq!(key, drive, "a drive root's key is the drive");
+        assert_eq!(volume_key(&windows), key);
+        assert_eq!(volume_key(&windows.join("no-such-folder-p5m3").join("x.txt")), key, "the path need not exist");
+        assert_eq!(volume_key(&PathBuf::from(format!(r"\\?\{}", windows.display()))), key);
+        // UNC paths keep the string rule (no call that could wait on a server).
+        assert_eq!(volume_key(&p(r"\\no-such-server-p5m3\Share\dir")), r"\\no-such-server-p5m3\share");
+    }
+
+    #[test]
+    fn volume_cache_looks_each_destination_up_once() {
+        let calls = Cell::new(0);
+        let fake = |d: &Path| {
+            calls.set(calls.get() + 1);
+            if d.starts_with(r"C:\mnt\data") { r"c:\mnt\data".to_string() } else { "c:".to_string() }
+        };
+        let mut c = VolumeCache::default();
+        assert_eq!(c.key(&p(r"C:\dst"), fake), ("c:".to_string(), true), "first: looked up");
+        assert_eq!(c.key(&p(r"C:\dst"), fake), ("c:".to_string(), false), "the same folder: cached");
+        assert_eq!(c.key(&p(r"C:\dst"), fake), ("c:".to_string(), false));
+        assert_eq!(calls.get(), 1, "DragOver after DragOver over one folder: one lookup");
+        assert_eq!(c.key(&p(r"C:\mnt\data\sub"), fake), (r"c:\mnt\data".to_string(), true), "another folder");
+        assert_eq!(c.key(&p(r"C:\dst"), fake), ("c:".to_string(), true), "one entry: back again is a lookup");
+        assert_eq!(calls.get(), 3);
+        // A mount point decides the effect: the same drive letter, another volume, copies.
+        let both = COPY | MOVE;
+        let src = fake(&p(r"C:\src\a.txt"));
+        let (dest, _) = c.key(&p(r"C:\mnt\data\sub"), fake);
+        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\mnt\data\sub"), 0, both, src == dest), COPY);
+        let (dest, _) = c.key(&p(r"C:\dst"), fake);
+        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\dst"), 0, both, src == dest), MOVE);
+    }
+
+    #[test]
+    fn drop_descriptions() {
+        assert_eq!(
+            description(MOVE, Some(&p(r"C:\Users\me\Documents"))),
+            Description { kind: DROPIMAGE_MOVE, message: "Move to %1", insert: "Documents".into() }
+        );
+        assert_eq!(description(COPY, Some(&p(r"D:\"))), Description { kind: DROPIMAGE_COPY, message: "Copy to %1", insert: "D:".into() });
+        assert_eq!(description(COPY, Some(&p(r"C:\dir\"))).insert, "dir", "a trailing separator");
+        assert_eq!(description(MOVE, Some(&p(r"\\server\share"))).insert, "share", "a UNC share root");
+        assert_eq!(description(MOVE, Some(&p(r"\\server\share\"))).insert, "share");
+        assert_eq!(description(MOVE, Some(&p(r"\\server\share\dir"))).insert, "dir");
+        assert_eq!(description(COPY, Some(&p(r"\\?\C:\"))).insert, "C:");
+        let none = Description { kind: DROPIMAGE_NONE, message: "", insert: String::new() };
+        assert_eq!(description(NONE, Some(&p(r"C:\dst"))), none, "refused: the shell's own image, no text");
+        assert_eq!(description(MOVE, None), none, "nowhere to drop");
+        assert_eq!(Description::cleared().kind, DROPIMAGE_INVALID);
+
+        // The DROPDESCRIPTION block: the type, then 260 wide characters each for message and insert.
+        let b = description_block(&description(COPY, Some(&p(r"C:\dst"))));
+        assert_eq!(b.len(), 1044);
+        assert_eq!(b.len(), std::mem::size_of::<windows_sys::Win32::UI::Shell::DROPDESCRIPTION>());
+        assert_eq!(i32::from_le_bytes(b[0..4].try_into().unwrap()), DROPIMAGE_COPY);
+        let wide = |o: usize| -> String {
+            let w: Vec<u16> = (0..260).map(|k| u16::from_le_bytes([b[o + 2 * k], b[o + 2 * k + 1]])).take_while(|&u| u != 0).collect();
+            String::from_utf16_lossy(&w)
+        };
+        assert_eq!(wide(4), "Copy to %1");
+        assert_eq!(wide(4 + 520), "dst");
+        assert_eq!(&b[4 + 2 * 10..4 + 2 * 11], &[0, 0], "the message's NUL");
+        assert_eq!(&b[524 + 2 * 3..524 + 2 * 4], &[0, 0], "the insert's NUL");
+        // A name past 259 characters is cut so the NUL still fits.
+        let long = description_block(&Description { kind: DROPIMAGE_MOVE, message: "Move to %1", insert: "x".repeat(300) });
+        assert_eq!(long.len(), 1044);
+        assert_eq!(&long[524 + 2 * 258..524 + 2 * 259], &[b'x', 0]);
+        assert_eq!(&long[524 + 2 * 259..524 + 2 * 260], &[0, 0]);
+        let cleared = description_block(&Description::cleared());
+        assert_eq!(i32::from_le_bytes(cleared[0..4].try_into().unwrap()), -1);
+        assert!(cleared[4..].iter().all(|&c| c == 0));
     }
 
     #[test]
     fn effect_decision() {
         let both = COPY | MOVE;
         // Same volume moves, across volumes copies.
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\dst"), 0, both), MOVE);
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"D:\dst"), 0, both), COPY);
-        assert_eq!(effect_for(&[p(r"\\s\x\a")], &p(r"\\S\X\dst"), 0, both), MOVE);
-        assert_eq!(effect_for(&[p(r"\\s\x\a")], &p(r"C:\dst"), 0, both), COPY);
+        assert_eq!(eff(&[p(r"C:\src\a.txt")], &p(r"C:\dst"), 0, both), MOVE);
+        assert_eq!(eff(&[p(r"C:\src\a.txt")], &p(r"D:\dst"), 0, both), COPY);
+        assert_eq!(eff(&[p(r"\\s\x\a")], &p(r"\\S\X\dst"), 0, both), MOVE);
+        assert_eq!(eff(&[p(r"\\s\x\a")], &p(r"C:\dst"), 0, both), COPY);
         // Modifiers.
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_CONTROL, both), COPY, "Ctrl forces copy");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"D:\dst"), MK_SHIFT, both), MOVE, "Shift forces move");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_CONTROL | MK_SHIFT, both), COPY, "no links: copy");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_ALT, both), COPY, "Alt (link in Explorer): copy");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_LBUTTON, both), MOVE, "the button bit is no modifier");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_CONTROL, both), COPY, "Ctrl forces copy");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"D:\dst"), MK_SHIFT, both), MOVE, "Shift forces move");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_CONTROL | MK_SHIFT, both), COPY, "no links: copy");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_ALT, both), COPY, "Alt (link in Explorer): copy");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_LBUTTON, both), MOVE, "the button bit is no modifier");
         // What the source allows.
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), 0, COPY), COPY, "move not allowed: copy");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"D:\dst"), 0, MOVE), MOVE, "copy not allowed: move");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), 0, NONE), NONE);
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), 0, COPY), COPY, "move not allowed: copy");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"D:\dst"), 0, MOVE), MOVE, "copy not allowed: move");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), 0, NONE), NONE);
         // Refused drops.
-        assert_eq!(effect_for(&[], &p(r"C:\dst"), 0, both), NONE, "no files");
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\src"), MK_CONTROL, both), NONE, "into its own folder");
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"c:\SRC\"), 0, both), NONE, "case and trailing separator");
-        assert_eq!(effect_for(&[p(r"C:\src\d")], &p(r"C:\src\d"), 0, both), NONE, "onto a dragged folder");
-        assert_eq!(effect_for(&[p(r"C:\src\d")], &p(r"C:\src\d\sub"), 0, both), NONE, "into a dragged folder's subfolder");
-        assert_eq!(effect_for(&[p(r"C:\src\d")], &p(r"C:\src\dd"), 0, both), MOVE, "a sibling with a longer name is fine");
-        assert_eq!(effect_for(&[p(r"C:\a\x"), p(r"C:\b\y")], &p(r"C:\b"), 0, both), NONE, "any source's own folder");
+        assert_eq!(eff(&[], &p(r"C:\dst"), 0, both), NONE, "no files");
+        assert_eq!(eff(&[p(r"C:\src\a.txt")], &p(r"C:\src"), MK_CONTROL, both), NONE, "into its own folder");
+        assert_eq!(eff(&[p(r"C:\src\a.txt")], &p(r"c:\SRC\"), 0, both), NONE, "case and trailing separator");
+        assert_eq!(eff(&[p(r"C:\src\d")], &p(r"C:\src\d"), 0, both), NONE, "onto a dragged folder");
+        assert_eq!(eff(&[p(r"C:\src\d")], &p(r"C:\src\d\sub"), 0, both), NONE, "into a dragged folder's subfolder");
+        assert_eq!(eff(&[p(r"C:\src\d")], &p(r"C:\src\dd"), 0, both), MOVE, "a sibling with a longer name is fine");
+        assert_eq!(eff(&[p(r"C:\a\x"), p(r"C:\b\y")], &p(r"C:\b"), 0, both), NONE, "any source's own folder");
         // An optimized move reports none to the source.
         assert_eq!(reported_effect(MOVE), NONE);
         assert_eq!(reported_effect(COPY), COPY);
@@ -2873,6 +3202,11 @@ mod tests {
             // The optimized-move notes are stored and read back.
             set_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT, MOVE);
             assert_eq!(read_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT), Some(MOVE));
+            // So is a drop description (P5-M3): the shell's data object takes the 1044-byte block.
+            let d = description(COPY, Some(&root));
+            assert_eq!(set_block(data.0, CFSTR_DROPDESCRIPTION, &description_block(&d)), S_OK);
+            let back = read_hglobal(data.0, registered_format(CFSTR_DROPDESCRIPTION)).expect("DropDescription stored");
+            assert_eq!(&back[..1044], description_block(&d).as_slice());
         }
         if com >= 0 {
             // SAFETY: pairs the CoInitializeEx above.

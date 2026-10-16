@@ -113,6 +113,20 @@ pub struct Request {
     pub wanted: u64,
 }
 
+/// The key of a drag image's icon (P5-M3): asked for when a row is pressed, at the drag image's
+/// icon size, so a drag that follows need not wait for the shell on the UI thread. Its reply goes
+/// to the pending drag icon, never to the icon table, and the workers render it for every press
+/// (no `taken` entry): one shell call per press, on a worker.
+pub fn drag_key(path: &Path) -> SharedString {
+    format!("{DRAG_PREFIX}{}", path.display()).into()
+}
+
+const DRAG_PREFIX: &str = "drag:";
+
+pub fn is_drag_key(key: &str) -> bool {
+    key.starts_with(DRAG_PREFIX)
+}
+
 /// The rows each pane asks icons for (the rows on screen and the UI's margin), published by the
 /// UI once per resolve while thumbnails are on, so the workers can drop thumbnail requests for
 /// rows a scroll has passed (`passed`). Plain icon requests (shared keys, cheap) are never dropped.
@@ -866,7 +880,9 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
             stats.dropped.fetch_add(1, Ordering::Relaxed);
         }
         let taken = (r.key.clone(), r.size_px);
-        if stale || passed || !lock(&pool.taken).insert(taken.clone()) {
+        // A drag image's icon (`drag_key`) is rendered for every press that asks, never cached.
+        let drag = is_drag_key(&r.key);
+        if stale || passed || (!drag && !lock(&pool.taken).insert(taken.clone())) {
             if tx.send(Reply { key: r.key, size_px: r.size_px, outcome: Outcome::Skipped }).is_err() {
                 break;
             }
@@ -895,7 +911,9 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
         let outcome = match pixels {
             Some(p) => Outcome::Pixels(p),
             None => {
-                lock(&pool.taken).remove(&taken);
+                if !drag {
+                    lock(&pool.taken).remove(&taken);
+                }
                 Outcome::Failed
             }
         };
