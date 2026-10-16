@@ -1186,9 +1186,10 @@ candidate run (§ P5-M2 Gate); its busy figure was unremarkable; not explained. 
   ... Moved 1 item`; File Explorer's data object took every SetData (no `SetData failed` line). Not
   a defect; recorded so that console checks always start TwinFM unelevated (the gate script starts
   it from the elevated console, which is fine for the gate since the scenario never drags).
-- Remaining checks (the description text as painted under File Explorer's image and under ours, the
-  OLE cursor glyph, the spring-loads, a crumb drop, the sidebar and tab-strip edge scrolls, the first
-  drag): recorded below as Jeremy reports them.
+- The remaining checks passed (Jeremy, 2026-10-16): the description text under the drag image with
+  File Explorer as the source and as the target and between TwinFM's own panes, a drag held over a
+  folder row, a tile and a tab opening it, a drop on a crumb, the sidebar and tab-strip edge scrolls,
+  and the first drag of a run starting without a pause. **P5-M3 is closed**; merged on Jeremy's word.
 
 ## Open questions
 
