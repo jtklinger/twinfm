@@ -104,8 +104,19 @@ component CrumbButton inherits HorizontalLayout {
     // it gets, so each one in the pane reports it).
     callback back();
     callback forward();
-    Rectangle {
-        background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+    // A drag over the label would drop into this crumb's folder (P5-M3): lit as a tab is.
+    in property <bool> drop-here: false;
+    // geometry(x, width): the crumb's x in the crumb row and its label's width, for the drop
+    // target's hit test (main.rs `crumb_geometry`). Reported when the crumb is made and when
+    // either changes (`changed` runs once per change, never per frame).
+    callback geometry(length, length);
+    init => { root.geometry(root.x, label-box.width); }
+    changed x => { root.geometry(root.x, label-box.width); }
+    label-box := Rectangle {
+        background: root.drop-here ? Palette.accent-background.transparentize(65%) : ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+        border-width: root.drop-here ? 2px : 0px;
+        border-color: Palette.accent-background;
+        changed width => { root.geometry(root.x, self.width); }
         ta := TouchArea {
             clicked => { root.clicked(); }
             pointer-event(ev) => {
@@ -849,6 +860,12 @@ export component Pane inherits Rectangle {
     in property <int> drop-row: -1;
     // A drag is over tab `drop-tab` of the strip and would drop into its folder (-1: none).
     in property <int> drop-tab: -1;
+    // A drag is over crumb `drop-crumb` of the breadcrumb and would drop into its folder (-1: none).
+    in property <int> drop-crumb: -1;
+    // crumb-geometry(index, x, width): crumb `index`'s x in the crumb row and its label's width, or
+    // with index -1 the crumb row's offset in the bar and the bar's width (the drop target's hit
+    // test; never per frame).
+    callback crumb-geometry(int, length, length);
 
     // The name filter (Ctrl+F): a box at the right end of the path bar, created only while
     // filter-open (an `if` here, never in a row). filter-text is the active tab's filter; main.rs
@@ -1081,18 +1098,22 @@ export component Pane inherits Rectangle {
             }
             // The breadcrumb, right-aligned when it is wider than the bar, so the current folder
             // stays in view.
-            Rectangle {
+            crumb-clip := Rectangle {
                 visible: !root.path-entry;
                 x: 0;
                 width: parent.width - 26px - root.filter-w;
                 clip: true;
+                changed width => { root.crumb-geometry(-1, crumb-row.x, self.width); }
                 crumb-row := HorizontalLayout {
                     x: min(0px, parent.width - self.preferred-width);
                     width: self.preferred-width;
                     padding-top: 3px;
                     padding-bottom: 3px;
+                    changed x => { root.crumb-geometry(-1, self.x, crumb-clip.width); }
                     for c[i] in root.crumbs: CrumbButton {
                         label: c.label;
+                        drop-here: i == root.drop-crumb;
+                        geometry(x, w) => { root.crumb-geometry(i, x, w); }
                         clicked => { root.crumb-clicked(i); }
                         menu(x, y) => { root.crumb-menu(i, x, y); }
                         back => { root.back-button(); }

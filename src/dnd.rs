@@ -370,6 +370,8 @@ pub enum Spot {
     Side(usize),
     /// Over tab `.1` in pane `.0`'s tab strip.
     Tab(usize, usize),
+    /// Over breadcrumb button `.1` of pane `.0`'s path bar.
+    Crumb(usize, usize),
 }
 
 /// The sidebar's list starts under its 3 px top padding and ends above the 26 px footer (the
@@ -378,8 +380,19 @@ pub const SIDE_TOP: f32 = 3.0;
 pub const SIDE_FOOTER: f32 = 26.0;
 pub const TAB_TOP: f32 = 3.0;
 pub const TAB_H: f32 = 26.0;
+/// The breadcrumb buttons (pane.slint `crumb-row`): 3 px padding inside the 32 px path bar, which
+/// sits under the pane's 3 px padding and, with two tabs or more, the tab strip (`TAB_STRIP`), so
+/// the buttons are 26 px tall from 6 px (or 34 px) below the pane's top.
+pub const CRUMB_PAD: f32 = 3.0;
+pub const CRUMB_H: f32 = 26.0;
 
-/// What `hit_all` needs beyond the panes: the sidebar and the tab strips (logical px).
+/// The top of pane `pane`'s breadcrumb buttons, in window px.
+pub fn crumb_top(l: &Layout, pane: usize) -> f32 {
+    PANE_PAD + if l.tabs[pane] { TAB_STRIP } else { 0.0 } + CRUMB_PAD
+}
+
+/// What `hit_all` needs beyond the panes: the sidebar, the tab strips and the breadcrumbs
+/// (logical px).
 #[derive(Clone, Copy, Debug)]
 pub struct Strips<'a> {
     /// The sidebar's width (0 when it is collapsed: no targets), its list's scroll offset (zero
@@ -390,6 +403,11 @@ pub struct Strips<'a> {
     /// Each pane's tab strip: tab count, tab width and the strip's scroll offset. The strip shows
     /// only when the pane has more than one tab (`Layout::tabs`).
     pub tabs: [(usize, f32, f32); 2],
+    /// Each pane's breadcrumb as Slint reported it: the crumb row's offset in the bar (zero or
+    /// negative: right-aligned when it is wider) and the width the bar shows of it, then each
+    /// crumb's x in the row and its label's width. No crumbs while the text entry shows.
+    pub crumb_row: [(f32, f32); 2],
+    pub crumbs: [&'a [(f32, f32)]; 2],
 }
 
 /// The top of sidebar row `i` in the sidebar list's content (before its scroll), from the rows'
@@ -398,7 +416,7 @@ pub fn side_row_top(rows: &[(f32, bool)], i: usize) -> f32 {
     rows.iter().take(i).map(|r| r.0).sum()
 }
 
-/// `hit`, plus the sidebar's rows and the panes' tab strips.
+/// `hit`, plus the sidebar's rows, the panes' tab strips and their breadcrumbs.
 pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> Spot {
     if y < 0.0 || y >= l.height || x < 0.0 {
         return Spot::Outside;
@@ -424,6 +442,17 @@ pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len:
             let (n, w, off) = s.tabs[pane];
             let i = ((x - a - PANE_PAD - off) / w).floor();
             return if w > 0.0 && i >= 0.0 && (i as usize) < n { Spot::Tab(pane, i as usize) } else { Spot::Pane(pane) };
+        }
+        // A crumb's label (its chevron, the bar past the crumbs and a crumb clipped off the bar's
+        // left end are the pane).
+        let top = crumb_top(l, pane);
+        let (row_x, shown_w) = s.crumb_row[pane];
+        let bx = x - a - PANE_PAD;
+        if x < b - PANE_PAD && bx >= 0.0 && bx < shown_w && y >= top && y < top + CRUMB_H {
+            let cx = bx - row_x;
+            if let Some(i) = s.crumbs[pane].iter().position(|&(cx0, w)| cx >= cx0 && cx < cx0 + w) {
+                return Spot::Crumb(pane, i);
+            }
         }
     }
     hit(l, x, y, content_y, len)
@@ -506,8 +535,57 @@ pub fn edge_scroll(l: &Layout, x: f32, y: f32) -> Option<(usize, i32)> {
 /// The list's scroll offset after one row's scroll in `dir` from `content_y` (zero or negative),
 /// kept in range for `len` rows of `row_px` in a viewport `visible_h` tall.
 pub fn scrolled(content_y: f32, dir: i32, len: usize, visible_h: f32, row_px: f32) -> f32 {
-    let lowest = (visible_h - len as f32 * row_px).min(0.0);
-    (content_y - dir as f32 * row_px).clamp(lowest, 0.0)
+    scroll_step(content_y, dir, row_px, len as f32 * row_px, visible_h)
+}
+
+/// An offset (zero or negative) after one `step` in `dir`, kept in range for `content` px shown
+/// in `visible` px: what `scrolled` does for a list, for the sidebar's rows of mixed heights and
+/// for a tab strip (whose "rows" run left to right).
+pub fn scroll_step(offset: f32, dir: i32, step: f32, content: f32, visible: f32) -> f32 {
+    (offset - dir as f32 * step).clamp((visible - content).min(0.0), 0.0)
+}
+
+/// Where a hovering drag scrolls something (direction -1 toward the start: up, or left in a tab
+/// strip; 1 toward the end).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    /// A pane's list (`edge_scroll`).
+    List(usize, i32),
+    /// The sidebar's list: within `EDGE_PX` of its top or of its footer.
+    Side(i32),
+    /// A pane's tab strip, while it shows: within `EDGE_PX` of its left or right end.
+    Strip(usize, i32),
+}
+
+/// `edge_scroll`, plus the sidebar's list and the panes' tab strips. Whether there is anything
+/// to scroll (an overflowing sidebar or strip) is the caller's: `scroll_step` leaves an offset
+/// that cannot move where it is.
+pub fn edge_scroll_all(l: &Layout, s: &Strips, x: f32, y: f32) -> Option<Edge> {
+    if x >= 0.0 && x < s.side_w {
+        let (top, bottom) = (SIDE_TOP, l.height - SIDE_FOOTER);
+        return if y >= top && y < top + EDGE_PX {
+            Some(Edge::Side(-1))
+        } else if y >= bottom - EDGE_PX && y < bottom {
+            Some(Edge::Side(1))
+        } else {
+            None
+        };
+    }
+    let panes = if l.split { 2 } else { 1 };
+    for pane in 0..panes {
+        let (a, b) = pane_x(l, pane);
+        let (left, right) = (a + PANE_PAD, b - PANE_PAD);
+        if l.tabs[pane] && x >= left && x < right && y >= TAB_TOP && y < TAB_TOP + TAB_H {
+            return if x < left + EDGE_PX {
+                Some(Edge::Strip(pane, -1))
+            } else if x >= right - EDGE_PX {
+                Some(Edge::Strip(pane, 1))
+            } else {
+                None
+            };
+        }
+    }
+    edge_scroll(l, x, y).map(|(pane, dir)| Edge::List(pane, dir))
 }
 
 /// The folder a drop goes to: the row's directory when the row is one (a drive row's name is its
@@ -1535,12 +1613,13 @@ unsafe fn end_async(data: *mut c_void, hr: HRESULT, effect: u32) {
 // --- The drop target ----------------------------------------------------------------------------
 
 /// What a drop spot highlights: a row of the pane's list (-1: the whole list, the drop goes to
-/// the pane's folder), a tab of its strip, or a sidebar row.
+/// the pane's folder), a tab of its strip, a sidebar row, or a crumb of its path bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mark {
     Row(i32),
     Tab(usize),
     Side(usize),
+    Crumb(usize),
 }
 
 /// Where a drop at a window point goes, as the app decides it (`crate::drop_spot`).
@@ -1550,6 +1629,60 @@ pub struct DropSpot {
     pub pane: usize,
     pub mark: Mark,
     pub dest: PathBuf,
+    /// A drag held here opens it (`Spring`): a folder row or tile (`Mark::Row` with a row), or a
+    /// tab that is not the pane's active one.
+    pub springs: bool,
+}
+
+/// How long a drag must hover a folder row, a tile or a tab before it opens there (Explorer's is
+/// about a second; the open question in phase-5-plan.md says the number is set at the console).
+pub const SPRING_MS: u64 = 1000;
+
+/// Spring-loaded folders: the drop target arms it when the spot changes to something that
+/// opens, and asks it on every DragOver (OLE calls DragOver on a timer even while the mouse rests,
+/// so that call is the clock: no timer of our own). It fires once per target: the same target
+/// does not fire again until the pointer has left it.
+#[derive(Debug)]
+pub struct Spring<T> {
+    armed: Option<(T, std::time::Instant)>,
+    fired: Option<T>,
+}
+
+impl<T> Default for Spring<T> {
+    fn default() -> Self {
+        Spring { armed: None, fired: None }
+    }
+}
+
+impl<T: Clone + PartialEq> Spring<T> {
+    /// The pointer is over `target`, which opens. True when that armed the spring (a new target),
+    /// false while it was armed for it already or has fired for it.
+    pub fn arm(&mut self, target: T, now: std::time::Instant) -> bool {
+        if self.armed.as_ref().is_some_and(|(t, _)| *t == target) || self.fired.as_ref() == Some(&target) {
+            return false;
+        }
+        self.armed = Some((target, now));
+        self.fired = None;
+        true
+    }
+
+    /// The pointer left the target (to anything that does not open, or out of the window). True
+    /// when the spring was armed (and had not fired yet).
+    pub fn disarm(&mut self) -> bool {
+        self.fired = None;
+        self.armed.take().is_some()
+    }
+
+    /// The target and how long it was hovered, once the hover has lasted `SPRING_MS`.
+    pub fn check(&mut self, now: std::time::Instant) -> Option<(T, std::time::Duration)> {
+        let waited = now.saturating_duration_since(self.armed.as_ref()?.1);
+        if waited < std::time::Duration::from_millis(SPRING_MS) {
+            return None;
+        }
+        let (target, _) = self.armed.take()?;
+        self.fired = Some(target.clone());
+        Some((target, waited))
+    }
 }
 
 #[repr(C)]
@@ -1566,6 +1699,8 @@ struct DropTarget {
     right: Cell<bool>,
     /// When DragOver last scrolled a list (auto-scroll near its edges, `SCROLL_EVERY`).
     scrolled_at: Cell<Option<std::time::Instant>>,
+    /// The spring-loaded folder or tab under the drag (P5-M3).
+    spring: RefCell<Spring<DropSpot>>,
     // P5-M3, drop descriptions and volumes (per drag, reset at DragEnter).
     /// The data object DragEnter was handed, with a reference of ours (released in DragLeave and
     /// Drop): DragOver is not handed it, and the drop description is set on it. Null between drags.
@@ -1688,11 +1823,56 @@ impl DropTarget {
         let changed = self.last.borrow().as_ref() != Some(&(spot.clone(), e));
         if changed {
             eprintln!("[dnd] over {} keys=0x{keys:x} allowed=0x{allowed:x} -> effect {}", describe(&spot), effect_name(e));
+        }
+        self.spring_over(spot.as_ref().filter(|s| s.springs && e != NONE));
+        if changed {
             *self.last.borrow_mut() = Some((spot, e));
         }
         if !effect.is_null() {
             // SAFETY: as above.
             unsafe { *effect = e };
+        }
+    }
+
+    /// The spring-loaded folder: arm it over a spot that opens (one a drop would land on: a
+    /// refused spot neither lights up nor opens), open it once the hover has lasted `SPRING_MS`.
+    /// The open runs from the event loop, as the closures the drag loop already runs do, so
+    /// nothing here touches the app state; the next DragOver evaluates the spot against whatever
+    /// the pane then shows.
+    fn spring_over(&self, target: Option<&DropSpot>) {
+        let now = std::time::Instant::now();
+        let mut spring = self.spring.borrow_mut();
+        match target {
+            Some(t) => {
+                if spring.arm(t.clone(), now) {
+                    eprintln!("[dnd] spring armed: {}", describe(&Some(t.clone())));
+                }
+            }
+            None => {
+                if spring.disarm() {
+                    eprintln!("[dnd] spring disarmed (moved away)");
+                }
+            }
+        }
+        let Some((t, waited)) = spring.check(now) else { return };
+        drop(spring);
+        let ms = waited.as_millis();
+        match t.mark {
+            Mark::Tab(i) => {
+                eprintln!("[dnd] spring-loaded: pane {} shows tab {i} after {ms} ms", t.pane);
+                crate::spring_tab(t.pane, i);
+            }
+            _ => {
+                eprintln!("[dnd] spring-loaded: pane {} opens {} after {ms} ms", t.pane, t.dest.display());
+                crate::spring_open(t.pane, t.dest);
+            }
+        }
+    }
+
+    /// The drag left or dropped: an armed spring goes, saying why.
+    fn unspring(&self, why: &str) {
+        if self.spring.borrow_mut().disarm() {
+            eprintln!("[dnd] spring disarmed ({why})");
         }
     }
 }
@@ -1705,6 +1885,7 @@ fn describe(spot: &Option<DropSpot>) -> String {
             Mark::Row(_) => format!("pane {} ({})", s.pane, s.dest.display()),
             Mark::Tab(i) => format!("pane {} tab {i} ({})", s.pane, s.dest.display()),
             Mark::Side(i) => format!("sidebar row {i} ({}), noted in pane {}", s.dest.display(), s.pane),
+            Mark::Crumb(i) => format!("pane {} crumb {i} ({})", s.pane, s.dest.display()),
         },
     }
 }
@@ -1844,6 +2025,7 @@ unsafe extern "system" fn dt_drag_leave(this: *mut c_void) -> HRESULT {
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
     eprintln!("[dnd] DragLeave");
+    t.unspring("DragLeave");
     t.end_drag();
     target_helper_call(HelperCall::Leave, POINTL { x: 0, y: 0 }, NONE);
     S_OK
@@ -1923,6 +2105,7 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
     let menu_allowed = if matches!(fresh, Offer::Virtual(_) | Offer::Archive(_)) { allowed & COPY } else { allowed };
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
+    t.unspring("Drop");
     // The source's own description back (on the data object DragEnter kept, which is Drop's).
     t.end_drag();
     // The shell takes its drag image down (before the menu, as Explorer does).
@@ -2076,6 +2259,7 @@ pub fn register(hwnd: isize) -> (HRESULT, HRESULT) {
         last: RefCell::new(None),
         right: Cell::new(false),
         scrolled_at: Cell::new(None),
+        spring: RefCell::new(Spring::default()),
         data: Cell::new(std::ptr::null_mut()),
         described: RefCell::new(None),
         describe_failed: Cell::new(false),
@@ -3025,7 +3209,14 @@ mod tests {
         let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2] };
         // Header 26, two drives 24, header 26, a place 24, header 26, a bookmark being renamed 30.
         let rows = [(26.0, false), (24.0, true), (24.0, true), (26.0, false), (24.0, true), (26.0, false), (30.0, true)];
-        let s = Strips { side_w: 180.0, side_scroll: 0.0, side_rows: &rows, tabs: [(1, 160.0, 0.0), (3, 120.0, 0.0)] };
+        let s = Strips {
+            side_w: 180.0,
+            side_scroll: 0.0,
+            side_rows: &rows,
+            tabs: [(1, 160.0, 0.0), (3, 120.0, 0.0)],
+            crumb_row: [(0.0, 0.0); 2],
+            crumbs: [&[], &[]],
+        };
         let none = [0.0, 0.0];
         let hit = |x: f32, y: f32| hit_all(&l, &s, x, y, none, [5, 7]);
         // Sidebar rows from y 3 (its padding).
@@ -3098,6 +3289,139 @@ mod tests {
         // 32 px rows (thumbnails on): one 32 px row per step, the bottom at 3200 - 440.
         assert_eq!(scrolled(0.0, 1, 100, 440.0, 32.0), -32.0);
         assert_eq!(scrolled(-2750.0, 1, 100, 440.0, 32.0), -2760.0, "clamped to the bottom");
+    }
+
+    #[test]
+    fn auto_scroll_sidebar_and_tab_strip() {
+        // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000;
+        // the right pane shows a strip of 6 tabs of 120 px in its 399 px (720 px of tabs).
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2] };
+        let rows = [(26.0, false), (24.0, true)];
+        let s = Strips {
+            side_w: 180.0,
+            side_scroll: 0.0,
+            side_rows: &rows,
+            tabs: [(1, 160.0, 0.0), (6, 120.0, 0.0)],
+            crumb_row: [(0.0, 0.0); 2],
+            crumbs: [&[], &[]],
+        };
+        // The sidebar list runs from y 3 to 574 (above the 26 px footer).
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 3.0), Some(Edge::Side(-1)), "the sidebar's top");
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 26.9), Some(Edge::Side(-1)));
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 27.0), None, "inside the sidebar list");
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 550.0), Some(Edge::Side(1)), "the sidebar's bottom");
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 573.9), Some(Edge::Side(1)));
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 574.0), None, "the footer");
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 2.0), None, "above the list");
+        // The right pane's strip runs from x 598 to 997, y 3 to 29: its ends scroll it.
+        assert_eq!(edge_scroll_all(&l, &s, 598.0, 10.0), Some(Edge::Strip(1, -1)), "the strip's left end");
+        assert_eq!(edge_scroll_all(&l, &s, 621.9, 28.9), Some(Edge::Strip(1, -1)));
+        assert_eq!(edge_scroll_all(&l, &s, 622.0, 10.0), None, "inside the strip");
+        assert_eq!(edge_scroll_all(&l, &s, 973.0, 10.0), Some(Edge::Strip(1, 1)), "the strip's right end");
+        assert_eq!(edge_scroll_all(&l, &s, 996.9, 10.0), Some(Edge::Strip(1, 1)));
+        assert_eq!(edge_scroll_all(&l, &s, 997.0, 10.0), None, "the pane's padding");
+        assert_eq!(edge_scroll_all(&l, &s, 598.0, 29.0), None, "under the strip: the path bar");
+        assert_eq!(edge_scroll_all(&l, &s, 190.0, 10.0), None, "the left pane shows no strip");
+        // The lists' edges as before (the right list starts under the strip, at 91).
+        assert_eq!(edge_scroll_all(&l, &s, 300.0, 70.0), Some(Edge::List(0, -1)));
+        assert_eq!(edge_scroll_all(&l, &s, 700.0, 95.0), Some(Edge::List(1, -1)));
+        assert_eq!(edge_scroll_all(&l, &s, 700.0, 560.0), Some(Edge::List(1, 1)));
+        assert_eq!(edge_scroll_all(&Layout { tabs: [false; 2], ..l }, &s, 700.0, 10.0), None, "no strip: the path bar");
+        // A collapsed sidebar: nothing to scroll there.
+        let collapsed = Strips { side_w: 0.0, ..s };
+        assert_eq!(edge_scroll_all(&Layout { left: 12.0, ..l }, &collapsed, 5.0, 10.0), None);
+        // The sidebar's rows of mixed heights, one 24 px row per step: 600 px of rows in 571.
+        assert_eq!(scroll_step(0.0, 1, 24.0, 600.0, 571.0), -24.0);
+        assert_eq!(scroll_step(-24.0, 1, 24.0, 600.0, 571.0), -29.0, "clamped to the bottom");
+        assert_eq!(scroll_step(-29.0, -1, 24.0, 600.0, 571.0), -5.0);
+        assert_eq!(scroll_step(0.0, 1, 24.0, 200.0, 571.0), 0.0, "rows that fit do not scroll");
+        // The strip, one tab per step: 720 px of tabs in 399 px, the end at -321.
+        assert_eq!(scroll_step(0.0, 1, 120.0, 720.0, 399.0), -120.0);
+        assert_eq!(scroll_step(-240.0, 1, 120.0, 720.0, 399.0), -321.0, "clamped to the last tab");
+        assert_eq!(scroll_step(-321.0, -1, 120.0, 720.0, 399.0), -201.0);
+        assert_eq!(scroll_step(-100.0, -1, 120.0, 720.0, 399.0), 0.0, "clamped to the first tab");
+        assert_eq!(scroll_step(0.0, 1, 120.0, 360.0, 399.0), 0.0, "tabs that fit do not scroll");
+    }
+
+    #[test]
+    fn hit_breadcrumb_crumbs() {
+        // One pane from x 0 (no sidebar), 600 px tall; the bar's crumb row reported at offset 0,
+        // 900 px of it shown; crumbs "This PC", "C:", "Users" at 0, 70 and 110 in the row.
+        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2] };
+        let crumbs = [(0.0, 54.0), (70.0, 24.0), (110.0, 60.0)];
+        let s = Strips { side_w: 0.0, side_scroll: 0.0, side_rows: &[], tabs: [(1, 160.0, 0.0); 2], crumb_row: [(0.0, 900.0), (0.0, 0.0)], crumbs: [&crumbs, &[]] };
+        let none = [0.0, 0.0];
+        let hit = |s: &Strips, x: f32, y: f32| hit_all(&l, s, x, y, none, [5, 0]);
+        // The labels run from y 6 to 32, from x 3 (the pane's padding) plus their x in the row.
+        assert_eq!(crumb_top(&l, 0), 6.0);
+        assert_eq!(hit(&s, 3.0, 6.0), Spot::Crumb(0, 0));
+        assert_eq!(hit(&s, 56.9, 31.9), Spot::Crumb(0, 0));
+        assert_eq!(hit(&s, 57.0, 20.0), Spot::Pane(0), "the chevron after This PC");
+        assert_eq!(hit(&s, 73.0, 20.0), Spot::Crumb(0, 1));
+        assert_eq!(hit(&s, 113.0 + 59.9, 20.0), Spot::Crumb(0, 2));
+        assert_eq!(hit(&s, 400.0, 20.0), Spot::Pane(0), "the bar past the crumbs");
+        assert_eq!(hit(&s, 80.0, 5.0), Spot::Pane(0), "above the crumbs: the padding");
+        assert_eq!(hit(&s, 80.0, 32.0), Spot::Pane(0), "below them: the bar's padding");
+        assert_eq!(hit(&s, 80.0, 70.0), Spot::Row(0, 0), "the list as before");
+        // A row right-aligned in a narrow bar (offset -60, 100 px shown): This PC is clipped off,
+        // "C:" sits at 13..37 and "Users" (53..113) is cut at the bar's end (x 103).
+        let narrow = Strips { crumb_row: [(-60.0, 100.0), (0.0, 0.0)], ..s };
+        assert_eq!(hit(&narrow, 5.0, 20.0), Spot::Pane(0), "This PC, off the bar's left end");
+        assert_eq!(hit(&narrow, 13.0, 20.0), Spot::Crumb(0, 1));
+        assert_eq!(hit(&narrow, 102.9, 20.0), Spot::Crumb(0, 2));
+        assert_eq!(hit(&narrow, 103.0, 20.0), Spot::Pane(0), "past the bar: the mode glyph");
+        // A tab strip moves the bar down by 28 px.
+        let lt = Layout { tabs: [true, false], ..l };
+        assert_eq!(crumb_top(&lt, 0), 34.0);
+        assert_eq!(hit_all(&lt, &s, 80.0, 20.0, none, [5, 0]), Spot::Tab(0, 0), "the strip, not a crumb");
+        assert_eq!(hit_all(&lt, &s, 80.0, 40.0, none, [5, 0]), Spot::Crumb(0, 1));
+        // No crumbs (the text entry shows): the bar is the pane.
+        let entry = Strips { crumbs: [&[], &[]], ..s };
+        assert_eq!(hit(&entry, 80.0, 20.0), Spot::Pane(0));
+        // Split: each pane its own crumbs; the right pane starts at 503.
+        let two = Layout { split: true, ..l };
+        let right = [(0.0, 54.0)];
+        let both = Strips { crumb_row: [(0.0, 400.0), (0.0, 400.0)], crumbs: [&crumbs, &right], ..s };
+        assert_eq!(hit_all(&two, &both, 73.0, 20.0, none, [5, 0]), Spot::Crumb(0, 1));
+        assert_eq!(hit_all(&two, &both, 510.0, 20.0, none, [5, 0]), Spot::Crumb(1, 0));
+        assert_eq!(hit_all(&two, &both, 580.0, 20.0, none, [5, 0]), Spot::Pane(1));
+    }
+
+    #[test]
+    fn spring_loaded_folders() {
+        let t0 = std::time::Instant::now();
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+        let mut s: Spring<u32> = Spring::default();
+        // Nothing armed: nothing fires, and a disarm says so.
+        assert_eq!(s.check(at(5000)), None);
+        assert!(!s.disarm());
+        // Armed over target 1; DragOver's checks before SPRING_MS do nothing.
+        assert!(s.arm(1, at(0)));
+        assert!(!s.arm(1, at(20)), "the same target keeps its start");
+        assert_eq!(s.check(at(980)), None);
+        // It fires once at SPRING_MS, and not again while the pointer stays on it.
+        assert_eq!(s.check(at(1000)), Some((1, std::time::Duration::from_millis(1000))));
+        assert_eq!(s.check(at(3000)), None);
+        assert!(!s.arm(1, at(3020)), "still over the opened target: no new arm");
+        assert_eq!(s.check(at(5000)), None);
+        // Leaving it after it fired: no armed spring to report, and the target may fire again.
+        assert!(!s.disarm());
+        assert!(s.arm(1, at(6000)));
+        assert_eq!(s.check(at(7100)).map(|(t, _)| t), Some(1));
+        // Moving to another target restarts the clock.
+        assert!(s.arm(2, at(8000)));
+        assert!(s.arm(3, at(8500)));
+        assert_eq!(s.check(at(9000)), None, "target 3 was armed only 500 ms ago");
+        assert_eq!(s.check(at(9600)).map(|(t, _)| t), Some(3));
+        // Moving away before the time: disarmed (reported), nothing fires later.
+        assert!(s.arm(4, at(10000)));
+        assert!(s.disarm());
+        assert_eq!(s.check(at(12000)), None);
+        // A fired target followed by another one: the new one arms at once.
+        assert!(s.arm(5, at(13000)));
+        assert_eq!(s.check(at(14000)).map(|(t, _)| t), Some(5));
+        assert!(s.arm(6, at(14020)));
+        assert_eq!(s.check(at(15020)).map(|(t, _)| t), Some(6));
     }
 
     #[test]

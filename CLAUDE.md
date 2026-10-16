@@ -14,7 +14,7 @@ Phase 5 record (the Phase 2 lists finished: directory watching, file operations,
 three milestones, kicked off 2026-10-15). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (173 tests; eight touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (176 tests; eight touch the real shell and clipboard, one of them the Recycle
   Bin, and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
@@ -112,7 +112,30 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   `dropfiles` and `dragover` objects do, 0x80004001). `volumes: sources on <key>` once per
   DragEnter with files, and `volumes: dest <path> on <key>` when a new destination's volume is
   looked up (`GetVolumePathNameW`; the key is the lowercase mount point without its trailing
-  separator, `c:` or `c:\mnt\data`, or `\\server\share`). Tabs and
+  separator, `c:` or `c:\mnt\data`, or `\\server\share`). Also since P5-M3: `dropfiles crumb
+  <pane> <index> <mode> <paths>` aims at a breadcrumb crumb's label (0 is This PC; a negative index
+  counts from the end, -1 the folder itself, -2 its parent; the place is the one Slint reported,
+  below), and `dragover` hovers other spots: `dragover row <pane> <row> <ms> <paths>`, `dragover
+  tab <pane> <index> ...` and `dragover crumb <pane> <index> ...` at the centre of that spot (as
+  `dropfiles` aims; the hover's DragOver every 20 ms is the spring-load's clock), `dragover side
+  <top|bottom> ...` 6 px inside the sidebar list's top or its bottom above the footer, `dragover
+  strip <pane> <left|right> ...` 6 px inside a tab strip's end (shown with two tabs or more).
+  Spring-loaded folders: a drag held `dnd::SPRING_MS` (1000 ms) over a folder row or tile, or a
+  tab other than the active one, opens it in that pane (a navigation, or the tab switch, run from
+  the event loop), for drags from anywhere; once per spot until the pointer leaves it; never a
+  sidebar row, a crumb, a file row, empty space, a search tab, This PC's tab or an archive level,
+  nor a spot that refuses the drop. Lines: `spring armed: pane N row R (<folder>)` or `pane N tab
+  I (<folder>)`, `spring-loaded: pane N opens <folder> after T ms` or `pane N shows tab I after T
+  ms`, `spring disarmed (moved away | DragLeave | Drop)` (an armed spring only, one that had not
+  fired). The spot `pane N crumb I (<folder>)` (the crumb's folder; This PC's crumb and a search
+  tab's own crumb are no folder, a crumb inside a zip archive is refused as `[archive] refused:
+  drop into ...`). `auto-scroll sidebar up|down: content-y A -> B` (one 24 px row per 50 ms while
+  the drag is within 24 px of the sidebar list's top or bottom, bounded by the ListView's own
+  content height) and `auto-scroll pane N tab strip left|right: x A -> B` (one tab per 50 ms
+  within 24 px of the strip's ends, only when its tabs overflow it). `[crumb] pane=N geometry: K
+  crumbs` once per breadcrumb rebuild, when every crumb has reported its place (`changed` callbacks
+  in pane.slint's `CrumbButton` and the crumb row, kept in `main.rs` `CRUMB_GEOM`; about 16
+  reports in the 15 s gate scenario, none while the lists scroll). Tabs and
   path bar: `tab <new|close|next|prev|N>` presses Ctrl+T, Ctrl+W, Ctrl+Tab,
   Ctrl+Shift+Tab or Ctrl+N on the active pane (key names `CtrlT`, `CtrlW`, `CtrlTab`,
   `CtrlShiftTab`, `Ctrl1` to `Ctrl9`, and `CtrlL` for the path entry), `tab moveleft|moveright`
@@ -334,6 +357,14 @@ three milestones, kicked off 2026-10-15). Read them before changing the list.
   `band` from the gap after the last tile that selects the right pane's two files, and Shift+Delete
   on that selection after the switch back to details; it reports grid switches, tile drops, 128 px
   drag images and bands (started, done with 2 selected, cancelled) besides the P2-M4 counts.
+  `tools/soak-p5m3.ps1 -Minutes N` is the P4-M3 soak plus, per cycle: the right pane on
+  `spring` (made by the setup, holding `inner`), a `dragover row 1 0 1300` that spring-loads
+  `inner`, a `dropfiles crumb 1 -2 copy` onto the parent crumb (a copy into `spring`), a
+  `dragover side bottom 300` and a `dragover tab 0 1 300` (under the spring time: armed, never
+  switched), then back to `spring` and Shift+Delete on the two copies; it reports spring armed,
+  spring-loaded rows (and the navigations into `inner`) and tabs (must be 0), spring disarmed,
+  crumb drops, and the sidebar and tab-strip auto-scroll lines (counted, not required: the sidebar
+  scrolls only when it overflows) besides the P4-M3 counts.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
