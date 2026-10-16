@@ -77,7 +77,10 @@
 //!                                    `<pane> <row>`, `side <row>` aims at sidebar row <row> (headers
 //!                                    count; 0 is "Drives"; -1 the last row, the newest bookmark) and
 //!                                    `tab <pane> <index>` at tab <index>
-//!                                    of the pane's strip (shown with two tabs or more). copy holds
+//!                                    of the pane's strip (shown with two tabs or more), `crumb
+//!                                    <pane> <index>` at the label of crumb <index> of the pane's
+//!                                    breadcrumb (0 is This PC; -1 the folder itself, -2 its
+//!                                    parent). copy holds
 //!                                    Ctrl, move Shift, auto neither; menu holds the right button,
 //!                                    so Drop opens the drop menu, and picks "Copy here", "Move
 //!                                    here" or "Cancel" from the in-menu timer. Paths are separated
@@ -101,7 +104,13 @@
 //!                                    a drag of the paths enters the window 6 px inside the pane
 //!                                    list's top or bottom edge and hovers there for <ms> (our drop
 //!                                    target's DragEnter, DragOver every 20 ms from a Slint timer,
-//!                                    DragLeave): the auto-scroll near the edges. It never drops
+//!                                    DragLeave): the auto-scroll near the edges. It never drops.
+//!                                    `side <top|bottom>` hovers 6 px inside the sidebar list's top
+//!                                    or bottom and `strip <pane> <left|right>` 6 px inside a tab
+//!                                    strip's end (their auto-scroll); `row <pane> <row>`, `tab
+//!                                    <pane> <index>` and `crumb <pane> <index>` hover the centre of
+//!                                    that spot, as `dropfiles` aims at it (held 1000 ms or more
+//!                                    over a folder row, a tile or a tab, the spring-load opens it)
 //!   tab <new|close|next|prev|N>      Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+N (1..9) through the
 //!                                    Slint key path, on the active pane
 //!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
@@ -200,12 +209,25 @@ use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_RBUTTON, MK_SHIF
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, PostMessageW, SetTimer, WM_KEYDOWN, WM_MOUSEMOVE};
 
-/// Where a `dropfiles` lands: a pane's row (-1: the pane's folder), a sidebar row, or a tab.
+/// Where a `dropfiles` lands: a pane's row (-1: the pane's folder), a sidebar row, a tab, or a
+/// crumb of the pane's breadcrumb (a negative index counts from the end).
 #[derive(Debug, Clone, Copy)]
 enum DropAt {
     Row(usize, i32),
     Side(i32),
     Tab(usize, usize),
+    Crumb(usize, i32),
+}
+
+/// Where a `dragover` hovers: 6 px inside a pane list's top (true) or bottom edge, a `dropfiles`
+/// spot's centre, 6 px inside the sidebar list's top or bottom, or 6 px inside a tab strip's left
+/// (false) or right end.
+#[derive(Debug, Clone, Copy)]
+enum HoverAt {
+    Edge(usize, bool),
+    At(DropAt),
+    Side(bool),
+    Strip(usize, bool),
 }
 
 #[derive(Debug, Clone)]
@@ -244,8 +266,8 @@ enum Step {
     /// asks for asynchronous extraction), or with `zip` the shell's data object for paths inside an
     /// archive.
     DropVirtual { pane: usize, row: i32, zip: bool, own: bool, idlist: bool, asynced: bool, items: Vec<String> },
-    /// Hover a drag of `paths` near the pane list's top or bottom edge for `ms`, then leave.
-    DragOver { pane: usize, top: bool, ms: u64, paths: Vec<String> },
+    /// Hover a drag of `paths` at `at` for `ms`, then leave.
+    DragOver { at: HoverAt, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
     CrumbMenu { pane: usize, index: i32 },
     CrumbPick(String),
@@ -339,15 +361,17 @@ fn parse(script: &str) -> Vec<Step> {
                 },
                 "dragcancel" => Step::DragCancel,
                 "dropfiles" => {
-                    // `tab <pane> <index>` takes one word more than `<pane> <row>` and `side <row>`.
-                    let m = if a.get(1) == Some(&"tab") { 4 } else { 3 };
+                    // `tab <pane> <index>` and `crumb <pane> <index>` take one word more than
+                    // `<pane> <row>` and `side <row>`.
+                    let m = if matches!(a.get(1), Some(&"tab" | &"crumb")) { 4 } else { 3 };
                     let mode = a.get(m).unwrap_or(&"auto").to_string();
                     // `menu <copy|move|cancel>` takes one more word before the paths.
                     let (pick, first) = if mode == "menu" { (a.get(m + 1).unwrap_or(&"cancel").to_string(), m + 2) } else { (String::new(), m + 1) };
-                    // The spot: `<pane> <row>`, `side <row>` or `tab <pane> <index>`.
+                    // The spot: `<pane> <row>`, `side <row>`, `tab <pane> <index>` or `crumb <pane> <index>`.
                     let at = match a.get(1).copied() {
                         Some("side") => DropAt::Side(num(2) as i32),
                         Some("tab") => DropAt::Tab(num(2) as usize, num(3) as usize),
+                        Some("crumb") => DropAt::Crumb(num(2) as usize, num(3) as i32),
                         _ => DropAt::Row(num(1) as usize, num(2) as i32),
                     };
                     Step::DropFiles {
@@ -371,12 +395,23 @@ fn parse(script: &str) -> Vec<Step> {
                         items: a.get(first..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                     }
                 }
-                "dragover" => Step::DragOver {
-                    pane: num(1) as usize,
-                    top: a.get(2) == Some(&"top"),
-                    ms: num(3).max(1) as u64,
-                    paths: a.get(4..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
-                },
+                "dragover" => {
+                    // `row|tab|crumb|strip <pane> <n|end>` take one word more than `<pane>
+                    // <top|bottom>` and `side <top|bottom>`.
+                    let (at, m) = match a.get(1).copied() {
+                        Some("row") => (HoverAt::At(DropAt::Row(num(2) as usize, num(3) as i32)), 4),
+                        Some("tab") => (HoverAt::At(DropAt::Tab(num(2) as usize, num(3) as usize)), 4),
+                        Some("crumb") => (HoverAt::At(DropAt::Crumb(num(2) as usize, num(3) as i32)), 4),
+                        Some("strip") => (HoverAt::Strip(num(2) as usize, a.get(3) == Some(&"right")), 4),
+                        Some("side") => (HoverAt::Side(a.get(2) == Some(&"top")), 3),
+                        _ => (HoverAt::Edge(num(1) as usize, a.get(2) == Some(&"top")), 3),
+                    };
+                    Step::DragOver {
+                        at,
+                        ms: num(m).max(1) as u64,
+                        paths: a.get(m + 1..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
+                    }
+                }
                 "tab" => Step::Key(match a.get(1).copied().unwrap_or("") {
                     "new" => "CtrlT".into(),
                     "close" => "CtrlW".into(),
@@ -663,8 +698,8 @@ fn when_drag_over(f: Box<dyn FnOnce()>) {
 
 /// Where `dropfiles` aims: the centre of a visible row, or with row -1 the pane's header (in the
 /// pane, over no row, so the drop goes to the pane's folder); the centre of a sidebar row; the
-/// centre of a tab. None for a sidebar row that does not exist, or a tab when the pane shows no
-/// strip.
+/// centre of a tab; the centre of a crumb's label. None for a sidebar row that does not exist, a
+/// tab when the pane shows no strip, or a crumb that is not on screen.
 fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
     match at {
         DropAt::Row(pane, row) => {
@@ -684,6 +719,29 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
             let w = app.invoke_tab_width(pane as i32);
             let x = left + crate::dnd::PANE_PAD + app.invoke_tab_offset(pane as i32) + (index as f32 + 0.5) * w;
             Some(LogicalPosition::new(x, crate::dnd::TAB_TOP + crate::dnd::TAB_H / 2.0))
+        }
+        DropAt::Crumb(pane, index) => crate::crumb_centre(app, pane, index),
+    }
+}
+
+/// Where `dragover` hovers (see `HoverAt`), in window px.
+fn hover_point(app: &App, at: HoverAt) -> Option<LogicalPosition> {
+    let l = crate::window_layout(app);
+    match at {
+        HoverAt::Edge(pane, top) => {
+            let (_, _, mid) = geometry(app, pane);
+            let y = if top { crate::dnd::list_top(&l, pane) + 6.0 } else { l.height - crate::dnd::LIST_BOTTOM_GAP - 6.0 };
+            Some(LogicalPosition::new(mid.x, y))
+        }
+        HoverAt::At(spot) => drop_point(app, spot),
+        HoverAt::Side(top) => {
+            let y = if top { crate::dnd::SIDE_TOP + 6.0 } else { l.height - crate::dnd::SIDE_FOOTER - 6.0 };
+            app.get_sidebar_visible().then(|| LogicalPosition::new(app.get_sidebar_width() / 2.0, y))
+        }
+        HoverAt::Strip(pane, right) => {
+            let (a, b) = crate::dnd::pane_x(&l, pane);
+            let x = if right { b - crate::dnd::PANE_PAD - 6.0 } else { a + crate::dnd::PANE_PAD + 6.0 };
+            l.tabs[pane].then(|| LogicalPosition::new(x, crate::dnd::TAB_TOP + crate::dnd::TAB_H / 2.0))
         }
     }
 }
@@ -1277,14 +1335,17 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 }));
             });
         }
-        Step::DragOver { pane, top, ms, paths } => {
-            // A drag hovering 6 px inside the list's top or bottom edge: DragEnter, a DragOver every
-            // 20 ms from a Slint timer (OLE calls DragOver on its own timer for another program's
-            // drag, outside any modal loop of ours), then DragLeave. It never drops.
-            let l = crate::window_layout(&app);
-            let (_, _, mid) = geometry(&app, pane);
-            let y = if top { crate::dnd::list_top(&l, pane) + 6.0 } else { l.height - crate::dnd::LIST_BOTTOM_GAP - 6.0 };
-            let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), mid.x, y, app.window().scale_factor());
+        Step::DragOver { at, ms, paths } => {
+            // A drag hovering at one point (an edge that scrolls, a spot that springs open):
+            // DragEnter, a DragOver every 20 ms from a Slint timer (OLE calls DragOver on its own
+            // timer for another program's drag, outside any modal loop of ours), then DragLeave.
+            // It never drops.
+            let Some(pos) = hover_point(&app, at) else {
+                eprintln!("[auto] dragover {at:?}: no such spot on screen");
+                schedule(runner, 1);
+                return;
+            };
+            let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), pos.x, pos.y, app.window().scale_factor());
             let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
             if !crate::dnd::hover_begin(&paths, sx, sy) {
                 eprintln!("[auto] dragover: no drop target registered yet");

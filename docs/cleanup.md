@@ -15,8 +15,10 @@ previous one is deleted once the new one has served as a reference". Four previo
 | `target-p3m5` | 1.65 GB | deleted 2026-10-15 |
 | `target-p3m5a` | 1.65 GB | deleted 2026-10-15 |
 | `target-p3m5b` | 1.64 GB | deleted 2026-10-15 |
-| `target-p4m1` | 1.65 GB | **keep** - current reference (cb589c8) |
-| `target-p4m2` | 1.65 GB | **keep** until P4-M2's gate closes and it becomes the reference |
+| `target-p4m1` | 1.65 GB | still here 2026-10-16: superseded as the reference by `target-p4m3` on 2026-10-15, so it is due for deletion on Jeremy's word |
+| `target-p4m2` | 1.65 GB | deleted 2026-10-15 |
+| `target-p4m3` | 1.5 GB | deleted 2026-10-16 (served as the reference for P5-M1 and P5-M2, ab20) |
+| `target-p5m2` | 1.5 GB | **keep** - current reference (6b1d0f1), for P5-M3's triplet (ab21) |
 | `target` | 3.50 GB | ordinary dev builds; `cargo clean` any time |
 
 The four superseded ones were deleted on 2026-10-15 (6.6 GB freed). For the next round, from the checkout root:

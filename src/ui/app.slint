@@ -158,6 +158,9 @@ export component App inherits Window {
     in-out property <int> drop-side-row: -1;
     in-out property <length> drop-side-y;
     in-out property <length> drop-side-h;
+    // A drag would drop on crumb `drop-crumb` of pane `drop-crumb-pane`'s breadcrumb (-1: none).
+    in-out property <int> drop-crumb-pane: -1;
+    in-out property <int> drop-crumb: -1;
     // The rubber band (P4-M3): in pane band-pane (-1: none), the rectangle in that list's content
     // coordinates. Set by main.rs while a band gesture runs.
     in-out property <int> band-pane: -1;
@@ -225,6 +228,9 @@ export component App inherits Window {
     // worker and shows the dropdown below (x, y). crumb-pick(i): item i of the dropdown.
     callback crumb-menu(int, int, length, length);
     callback crumb-pick(int);
+    // crumb-geometry(pane, index, x, width): a crumb's place in its row (index -1: the row's offset
+    // in the bar and the bar's width), for the drop target's hit test (main.rs `crumb_geometry`).
+    callback crumb-geometry(int, int, length, length);
     // side-clicked(row, middle): a sidebar row; the middle button opens it in a new tab.
     callback side-clicked(int, bool);
     // bookmark-add(): Ctrl+D. bookmark-remove(index): the bookmark menu's "Remove bookmark".
@@ -348,9 +354,21 @@ export component App inherits Window {
     }
     public function tab-width(p: int) -> length { return p == 0 ? left.tab-w : right.tab-w; }
     public function tab-offset(p: int) -> length { return p == 0 ? left.shown-tab-scroll : right.shown-tab-scroll; }
+    // A drag hovering an end of the pane's strip scrolls it (main.rs `drop_autoscroll`).
+    public function set-tab-scroll(p: int, x: length) {
+        if (p == 0) { left.tab-scroll = x; } else { right.tab-scroll = x; }
+    }
+    // The pane's path bar shows the text entry, not the breadcrumb (no crumb is a drop target).
+    public function path-entry-shown(p: int) -> bool { return p == 0 ? left.path-entry : right.path-entry; }
 
     // The sidebar list's scroll offset (zero or negative), for the drop target's hit test.
     public function side-scroll() -> length { return side-list.content-y; }
+    // A drag hovering the sidebar list's top or bottom scrolls it (main.rs `drop_autoscroll`).
+    public function set-side-scroll(y: length) { side-list.content-y = y; }
+    // Its rows' height and its viewport's, as the ListView has them (its rows differ in height,
+    // so its content height is its own estimate, a px or two off the rows' sum).
+    public function side-content-height() -> length { return side-list.content-height; }
+    public function side-visible-height() -> length { return side-list.visible-height; }
 
     public function get-scroll(p: int) -> length {
         return p == 0 ? left.get-scroll() : right.get-scroll();
@@ -544,11 +562,13 @@ export component App inherits Window {
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
+                drop-crumb: root.drop-crumb-pane == 0 ? root.drop-crumb : -1;
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
                 tab-move(f, t) => { root.tab-move(0, f, t); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(0, i, x, y); }
+                crumb-geometry(i, x, w) => { root.crumb-geometry(0, i, x, w); }
                 active: !split || active-pane == 0;
                 sort-col: left-sort-col; sort-asc: left-sort-asc;
                 current-row <=> left-current-row;
@@ -592,11 +612,13 @@ export component App inherits Window {
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;
+                drop-crumb: root.drop-crumb-pane == 1 ? root.drop-crumb : -1;
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
                 tab-move(f, t) => { root.tab-move(1, f, t); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(1, i, x, y); }
+                crumb-geometry(i, x, w) => { root.crumb-geometry(1, i, x, w); }
                 active: split && active-pane == 1;
                 sort-col: right-sort-col; sort-asc: right-sort-asc;
                 current-row <=> right-current-row;

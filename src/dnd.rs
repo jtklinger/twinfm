@@ -57,7 +57,9 @@ use windows_sys::Win32::Graphics::Gdi::{
     DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, GdiFlush, HBITMAP, ScreenToClient, SelectObject,
     RDW_INTERNALPAINT, RedrawWindow, SetBkMode, SetTextColor, TRANSPARENT,
 };
-use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL};
+use std::os::windows::ffi::OsStrExt;
+use windows_sys::Win32::Foundation::MAX_PATH;
+use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, GetVolumePathNameW};
 use windows_sys::Win32::System::Com::Marshal::CoMarshalInterThreadInterfaceInStream;
 use windows_sys::Win32::System::Com::StructuredStorage::CoGetInterfaceAndReleaseStream;
 use windows_sys::Win32::System::Com::{
@@ -74,7 +76,8 @@ use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MK_RBUT
 use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
 use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows_sys::Win32::UI::Shell::{
-    CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORA, CFSTR_FILEDESCRIPTORW, CFSTR_SHELLIDLIST, ILCombine, ILFree, SHGetNameFromIDList,
+    CFSTR_DROPDESCRIPTION, CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORA, CFSTR_FILEDESCRIPTORW, CFSTR_SHELLIDLIST, DROPIMAGE_COPY,
+    DROPIMAGE_INVALID, DROPIMAGE_MOVE, DROPIMAGE_NONE, ILCombine, ILFree, SHGetNameFromIDList,
     SIGDN_DESKTOPABSOLUTEPARSING, CFSTR_LOGICALPERFORMEDDROPEFFECT, CFSTR_PERFORMEDDROPEFFECT, DefSubclassProc,
     FD_ATTRIBUTES, FD_FILESIZE, FD_PROGRESSUI, RemoveWindowSubclass, SHCreateDataObject, SHCreateMemStream, SHDRAGIMAGE,
     SetWindowSubclass,
@@ -134,10 +137,55 @@ pub fn menu_effect(cmd: u32, allowed: u32) -> u32 {
     }
 }
 
-/// The volume a path lives on, as a comparable key: `c:` for a drive path, `\\server\share` for a
-/// UNC path (lowercase, `\\?\` and `\\?\UNC\` prefixes removed). A volume mounted in a folder
-/// counts as the drive that holds the folder.
+/// The volume a path lives on, as a comparable key: for a local drive path the mount point
+/// `GetVolumePathNameW` gives (lowercase, no trailing separator: `c:`, or `c:\mnt\data` for a
+/// volume mounted in that folder), else `path_volume_key`'s string rule: always for UNC paths and
+/// mapped network drives (a mount point lies on a local volume, and the call could wait on a dead
+/// server), and when the call fails. The path need not exist: the call walks up to the nearest
+/// mount point. One file-system call, so the drop target caches it (`VolumeCache`).
 pub fn volume_key(p: &Path) -> String {
+    let fallback = path_volume_key(p);
+    if fallback.starts_with(r"\\") || crate::fs::watch::is_remote(p) {
+        return fallback;
+    }
+    let wide: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+    let mut buf = vec![0u16; wide.len().max(MAX_PATH as usize + 1)];
+    // SAFETY: `wide` is NUL-terminated and `buf` is writable for the length passed.
+    let ok = unsafe { GetVolumePathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(0);
+    if ok == 0 || n == 0 {
+        return fallback;
+    }
+    let s = String::from_utf16_lossy(&buf[..n]).to_lowercase();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+    s.trim_end_matches('\\').to_string()
+}
+
+/// A one-entry cache of a folder's volume key: DragOver runs about every 50 ms while a drag
+/// hovers, and the destination folder changes only when the pointer crosses into another row,
+/// tab or pane, so `volume_key` runs once per distinct destination.
+#[derive(Default)]
+pub struct VolumeCache {
+    last: Option<(PathBuf, String)>,
+}
+
+impl VolumeCache {
+    /// The key of `dest`, from the cache or from `lookup`, and whether `lookup` ran for it.
+    pub fn key(&mut self, dest: &Path, lookup: impl FnOnce(&Path) -> String) -> (String, bool) {
+        if let Some((p, k)) = &self.last {
+            if p == dest {
+                return (k.clone(), false);
+            }
+        }
+        let k = lookup(dest);
+        self.last = Some((dest.to_path_buf(), k.clone()));
+        (k, true)
+    }
+}
+
+/// The string rule: `c:` for a drive path, `\\server\share` for a UNC path (lowercase, `\\?\` and
+/// `\\?\UNC\` prefixes removed). A volume mounted in a folder counts as the drive that holds it.
+pub fn path_volume_key(p: &Path) -> String {
     let s = p.to_string_lossy().to_lowercase();
     let s = if let Some(rest) = s.strip_prefix(r"\\?\unc\") {
         format!(r"\\{rest}")
@@ -198,13 +246,67 @@ pub fn decide_effect(keys: u32, allowed: u32, same_volume: bool) -> u32 {
 }
 
 /// The whole decision for dropping `sources` into `dest`: none for an empty list or a refused
-/// drop, else `decide_effect` with the volume of the first source.
-pub fn effect_for(sources: &[PathBuf], dest: &Path, keys: u32, allowed: u32) -> u32 {
-    match sources.first() {
-        None => NONE,
-        Some(_) if refused(sources, dest) => NONE,
-        Some(first) => decide_effect(keys, allowed, volume_key(first) == volume_key(dest)),
+/// drop, else `decide_effect`. `same_volume`: the first source and `dest` share a volume (the
+/// drop target decides it from its cached `volume_key`s).
+pub fn effect_for(sources: &[PathBuf], dest: &Path, keys: u32, allowed: u32, same_volume: bool) -> u32 {
+    if sources.is_empty() || refused(sources, dest) { NONE } else { decide_effect(keys, allowed, same_volume) }
+}
+
+/// What the text under the drag image says (`DROPDESCRIPTION`): the image type, the message and
+/// the text the shell puts in place of its `%1`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Description {
+    pub kind: i32,
+    pub message: &'static str,
+    pub insert: String,
+}
+
+impl Description {
+    /// `DROPIMAGE_INVALID` with no text: the shell goes back to the source's default (set when a
+    /// drag leaves us or drops, so Explorer as the source shows its own text again).
+    pub fn cleared() -> Description {
+        Description { kind: DROPIMAGE_INVALID, message: "", insert: String::new() }
     }
+}
+
+/// The description for a drop with `effect` into `dest`: "Move to %1" or "Copy to %1" with the
+/// folder's name; for none (or no folder), `DROPIMAGE_NONE` with no text, so the shell shows its
+/// own "not allowed" image.
+pub fn description(effect: u32, dest: Option<&Path>) -> Description {
+    let (kind, message) = match effect {
+        MOVE => (DROPIMAGE_MOVE, "Move to %1"),
+        COPY => (DROPIMAGE_COPY, "Copy to %1"),
+        _ => (DROPIMAGE_NONE, ""),
+    };
+    match dest {
+        Some(d) if kind != DROPIMAGE_NONE => Description { kind, message, insert: folder_label(d) },
+        _ => Description { kind: DROPIMAGE_NONE, message: "", insert: String::new() },
+    }
+}
+
+/// A folder's name as the description shows it: its last component, `C:` for a drive root, the
+/// share's name for a UNC share root.
+pub fn folder_label(dest: &Path) -> String {
+    if let Some(n) = dest.file_name() {
+        return n.to_string_lossy().into_owned();
+    }
+    let s = dest.to_string_lossy();
+    let s = s.trim_end_matches('\\');
+    s.rsplit('\\').next().unwrap_or(s).to_string()
+}
+
+/// The `DROPDESCRIPTION` struct's bytes (shlobj_core.h): the type (4 bytes), then the message and
+/// the insert, 260 wide characters each, NUL-terminated (cut at 259).
+pub fn description_block(d: &Description) -> Vec<u8> {
+    let mut b = d.kind.to_le_bytes().to_vec();
+    for s in [d.message, d.insert.as_str()] {
+        let mut w = [0u16; 260];
+        for (k, u) in s.encode_utf16().take(259).enumerate() {
+            w[k] = u;
+        }
+        b.extend(w.iter().flat_map(|u| u.to_le_bytes()));
+    }
+    b
 }
 
 /// What the effect reported back to the source is: a move is an optimized move (module docs).
@@ -268,6 +370,8 @@ pub enum Spot {
     Side(usize),
     /// Over tab `.1` in pane `.0`'s tab strip.
     Tab(usize, usize),
+    /// Over breadcrumb button `.1` of pane `.0`'s path bar.
+    Crumb(usize, usize),
 }
 
 /// The sidebar's list starts under its 3 px top padding and ends above the 26 px footer (the
@@ -276,8 +380,19 @@ pub const SIDE_TOP: f32 = 3.0;
 pub const SIDE_FOOTER: f32 = 26.0;
 pub const TAB_TOP: f32 = 3.0;
 pub const TAB_H: f32 = 26.0;
+/// The breadcrumb buttons (pane.slint `crumb-row`): 3 px padding inside the 32 px path bar, which
+/// sits under the pane's 3 px padding and, with two tabs or more, the tab strip (`TAB_STRIP`), so
+/// the buttons are 26 px tall from 6 px (or 34 px) below the pane's top.
+pub const CRUMB_PAD: f32 = 3.0;
+pub const CRUMB_H: f32 = 26.0;
 
-/// What `hit_all` needs beyond the panes: the sidebar and the tab strips (logical px).
+/// The top of pane `pane`'s breadcrumb buttons, in window px.
+pub fn crumb_top(l: &Layout, pane: usize) -> f32 {
+    PANE_PAD + if l.tabs[pane] { TAB_STRIP } else { 0.0 } + CRUMB_PAD
+}
+
+/// What `hit_all` needs beyond the panes: the sidebar, the tab strips and the breadcrumbs
+/// (logical px).
 #[derive(Clone, Copy, Debug)]
 pub struct Strips<'a> {
     /// The sidebar's width (0 when it is collapsed: no targets), its list's scroll offset (zero
@@ -288,6 +403,11 @@ pub struct Strips<'a> {
     /// Each pane's tab strip: tab count, tab width and the strip's scroll offset. The strip shows
     /// only when the pane has more than one tab (`Layout::tabs`).
     pub tabs: [(usize, f32, f32); 2],
+    /// Each pane's breadcrumb as Slint reported it: the crumb row's offset in the bar (zero or
+    /// negative: right-aligned when it is wider) and the width the bar shows of it, then each
+    /// crumb's x in the row and its label's width. No crumbs while the text entry shows.
+    pub crumb_row: [(f32, f32); 2],
+    pub crumbs: [&'a [(f32, f32)]; 2],
 }
 
 /// The top of sidebar row `i` in the sidebar list's content (before its scroll), from the rows'
@@ -296,7 +416,7 @@ pub fn side_row_top(rows: &[(f32, bool)], i: usize) -> f32 {
     rows.iter().take(i).map(|r| r.0).sum()
 }
 
-/// `hit`, plus the sidebar's rows and the panes' tab strips.
+/// `hit`, plus the sidebar's rows, the panes' tab strips and their breadcrumbs.
 pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> Spot {
     if y < 0.0 || y >= l.height || x < 0.0 {
         return Spot::Outside;
@@ -322,6 +442,17 @@ pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len:
             let (n, w, off) = s.tabs[pane];
             let i = ((x - a - PANE_PAD - off) / w).floor();
             return if w > 0.0 && i >= 0.0 && (i as usize) < n { Spot::Tab(pane, i as usize) } else { Spot::Pane(pane) };
+        }
+        // A crumb's label (its chevron, the bar past the crumbs and a crumb clipped off the bar's
+        // left end are the pane).
+        let top = crumb_top(l, pane);
+        let (row_x, shown_w) = s.crumb_row[pane];
+        let bx = x - a - PANE_PAD;
+        if x < b - PANE_PAD && bx >= 0.0 && bx < shown_w && y >= top && y < top + CRUMB_H {
+            let cx = bx - row_x;
+            if let Some(i) = s.crumbs[pane].iter().position(|&(cx0, w)| cx >= cx0 && cx < cx0 + w) {
+                return Spot::Crumb(pane, i);
+            }
         }
     }
     hit(l, x, y, content_y, len)
@@ -404,8 +535,57 @@ pub fn edge_scroll(l: &Layout, x: f32, y: f32) -> Option<(usize, i32)> {
 /// The list's scroll offset after one row's scroll in `dir` from `content_y` (zero or negative),
 /// kept in range for `len` rows of `row_px` in a viewport `visible_h` tall.
 pub fn scrolled(content_y: f32, dir: i32, len: usize, visible_h: f32, row_px: f32) -> f32 {
-    let lowest = (visible_h - len as f32 * row_px).min(0.0);
-    (content_y - dir as f32 * row_px).clamp(lowest, 0.0)
+    scroll_step(content_y, dir, row_px, len as f32 * row_px, visible_h)
+}
+
+/// An offset (zero or negative) after one `step` in `dir`, kept in range for `content` px shown
+/// in `visible` px: what `scrolled` does for a list, for the sidebar's rows of mixed heights and
+/// for a tab strip (whose "rows" run left to right).
+pub fn scroll_step(offset: f32, dir: i32, step: f32, content: f32, visible: f32) -> f32 {
+    (offset - dir as f32 * step).clamp((visible - content).min(0.0), 0.0)
+}
+
+/// Where a hovering drag scrolls something (direction -1 toward the start: up, or left in a tab
+/// strip; 1 toward the end).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    /// A pane's list (`edge_scroll`).
+    List(usize, i32),
+    /// The sidebar's list: within `EDGE_PX` of its top or of its footer.
+    Side(i32),
+    /// A pane's tab strip, while it shows: within `EDGE_PX` of its left or right end.
+    Strip(usize, i32),
+}
+
+/// `edge_scroll`, plus the sidebar's list and the panes' tab strips. Whether there is anything
+/// to scroll (an overflowing sidebar or strip) is the caller's: `scroll_step` leaves an offset
+/// that cannot move where it is.
+pub fn edge_scroll_all(l: &Layout, s: &Strips, x: f32, y: f32) -> Option<Edge> {
+    if x >= 0.0 && x < s.side_w {
+        let (top, bottom) = (SIDE_TOP, l.height - SIDE_FOOTER);
+        return if y >= top && y < top + EDGE_PX {
+            Some(Edge::Side(-1))
+        } else if y >= bottom - EDGE_PX && y < bottom {
+            Some(Edge::Side(1))
+        } else {
+            None
+        };
+    }
+    let panes = if l.split { 2 } else { 1 };
+    for pane in 0..panes {
+        let (a, b) = pane_x(l, pane);
+        let (left, right) = (a + PANE_PAD, b - PANE_PAD);
+        if l.tabs[pane] && x >= left && x < right && y >= TAB_TOP && y < TAB_TOP + TAB_H {
+            return if x < left + EDGE_PX {
+                Some(Edge::Strip(pane, -1))
+            } else if x >= right - EDGE_PX {
+                Some(Edge::Strip(pane, 1))
+            } else {
+                None
+            };
+        }
+    }
+    edge_scroll(l, x, y).map(|(pane, dir)| Edge::List(pane, dir))
 }
 
 /// The folder a drop goes to: the row's directory when the row is one (a drive row's name is its
@@ -682,27 +862,34 @@ fn read_dword(data: *mut c_void, name: PCWSTR) -> Option<u32> {
 /// Tell the data object what the drop did (`SetData` with a DWORD); best effort, a source that
 /// does not take it is not an error.
 fn set_dword(data: *mut c_void, name: PCWSTR, value: u32) {
+    set_block(data, name, &value.to_le_bytes());
+}
+
+/// `SetData` of `bytes` in an HGLOBAL in the registered format `name`; its HRESULT.
+fn set_block(data: *mut c_void, name: PCWSTR, bytes: &[u8]) -> HRESULT {
     let fmt = FORMATETC { cfFormat: registered_format(name), ..hdrop_format() };
-    // SAFETY: a moveable 4-byte block handed to SetData with fRelease = TRUE (the data object
-    // owns it on success); freed here if SetData refuses it.
+    // SAFETY: a moveable block of `bytes.len()` handed to SetData with fRelease = TRUE (the data
+    // object owns it on success); freed here if SetData refuses it.
     unsafe {
-        let h = GlobalAlloc(GMEM_MOVEABLE, 4);
+        let h = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
         if h.is_null() {
-            return;
+            return windows_sys::Win32::Foundation::E_OUTOFMEMORY;
         }
         let p = GlobalLock(h) as *mut u8;
         if p.is_null() {
             GlobalFree(h);
-            return;
+            return windows_sys::Win32::Foundation::E_OUTOFMEMORY;
         }
-        std::ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), p, 4);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
         GlobalUnlock(h);
         let mut medium: STGMEDIUM = std::mem::zeroed();
         medium.tymed = TYMED_HGLOBAL as u32;
         medium.u.hGlobal = h;
-        if (data_vtbl(data).set_data)(data, &fmt, &medium, 1) < 0 {
+        let hr = (data_vtbl(data).set_data)(data, &fmt, &medium, 1);
+        if hr < 0 {
             GlobalFree(h);
         }
+        hr
     }
 }
 
@@ -1426,12 +1613,13 @@ unsafe fn end_async(data: *mut c_void, hr: HRESULT, effect: u32) {
 // --- The drop target ----------------------------------------------------------------------------
 
 /// What a drop spot highlights: a row of the pane's list (-1: the whole list, the drop goes to
-/// the pane's folder), a tab of its strip, or a sidebar row.
+/// the pane's folder), a tab of its strip, a sidebar row, or a crumb of its path bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mark {
     Row(i32),
     Tab(usize),
     Side(usize),
+    Crumb(usize),
 }
 
 /// Where a drop at a window point goes, as the app decides it (`crate::drop_spot`).
@@ -1441,6 +1629,60 @@ pub struct DropSpot {
     pub pane: usize,
     pub mark: Mark,
     pub dest: PathBuf,
+    /// A drag held here opens it (`Spring`): a folder row or tile (`Mark::Row` with a row), or a
+    /// tab that is not the pane's active one.
+    pub springs: bool,
+}
+
+/// How long a drag must hover a folder row, a tile or a tab before it opens there (Explorer's is
+/// about a second; the open question in phase-5-plan.md says the number is set at the console).
+pub const SPRING_MS: u64 = 1000;
+
+/// Spring-loaded folders: the drop target arms it when the spot changes to something that
+/// opens, and asks it on every DragOver (OLE calls DragOver on a timer even while the mouse rests,
+/// so that call is the clock: no timer of our own). It fires once per target: the same target
+/// does not fire again until the pointer has left it.
+#[derive(Debug)]
+pub struct Spring<T> {
+    armed: Option<(T, std::time::Instant)>,
+    fired: Option<T>,
+}
+
+impl<T> Default for Spring<T> {
+    fn default() -> Self {
+        Spring { armed: None, fired: None }
+    }
+}
+
+impl<T: Clone + PartialEq> Spring<T> {
+    /// The pointer is over `target`, which opens. True when that armed the spring (a new target),
+    /// false while it was armed for it already or has fired for it.
+    pub fn arm(&mut self, target: T, now: std::time::Instant) -> bool {
+        if self.armed.as_ref().is_some_and(|(t, _)| *t == target) || self.fired.as_ref() == Some(&target) {
+            return false;
+        }
+        self.armed = Some((target, now));
+        self.fired = None;
+        true
+    }
+
+    /// The pointer left the target (to anything that does not open, or out of the window). True
+    /// when the spring was armed (and had not fired yet).
+    pub fn disarm(&mut self) -> bool {
+        self.fired = None;
+        self.armed.take().is_some()
+    }
+
+    /// The target and how long it was hovered, once the hover has lasted `SPRING_MS`.
+    pub fn check(&mut self, now: std::time::Instant) -> Option<(T, std::time::Duration)> {
+        let waited = now.saturating_duration_since(self.armed.as_ref()?.1);
+        if waited < std::time::Duration::from_millis(SPRING_MS) {
+            return None;
+        }
+        let (target, _) = self.armed.take()?;
+        self.fired = Some(target.clone());
+        Some((target, waited))
+    }
 }
 
 #[repr(C)]
@@ -1457,6 +1699,20 @@ struct DropTarget {
     right: Cell<bool>,
     /// When DragOver last scrolled a list (auto-scroll near its edges, `SCROLL_EVERY`).
     scrolled_at: Cell<Option<std::time::Instant>>,
+    /// The spring-loaded folder or tab under the drag (P5-M3).
+    spring: RefCell<Spring<DropSpot>>,
+    // P5-M3, drop descriptions and volumes (per drag, reset at DragEnter).
+    /// The data object DragEnter was handed, with a reference of ours (released in DragLeave and
+    /// Drop): DragOver is not handed it, and the drop description is set on it. Null between drags.
+    data: Cell<*mut c_void>,
+    /// The drop description last set on it (type, insert), so it is set on change only, and
+    /// whether a SetData failure was logged this drag.
+    described: RefCell<Option<(i32, String)>>,
+    describe_failed: Cell<bool>,
+    /// The sources' volume (`volume_key` of the first file), looked up at DragEnter, and the
+    /// last destination's, looked up once per distinct folder.
+    src_volume: RefCell<Option<String>>,
+    dest_volume: RefCell<VolumeCache>,
 }
 
 static DROP_TARGET_VTBL: DropTargetVtbl = DropTargetVtbl {
@@ -1498,11 +1754,59 @@ impl DropTarget {
         let p = self.client(pt);
         let spot = crate::drop_spot(p.x, p.y);
         let effect = match (&*self.offered.borrow(), &spot) {
-            (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed),
+            (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed, self.same_volume(&spot.dest)),
             (Offer::Virtual(_) | Offer::Archive(_), Some(_)) => virtual_effect(allowed),
             _ => NONE,
         };
         (spot, effect)
+    }
+
+    /// The sources (looked up at DragEnter) and `dest` share a volume; `dest`'s key is looked up
+    /// once per distinct folder.
+    fn same_volume(&self, dest: &Path) -> bool {
+        let Some(src) = self.src_volume.borrow().clone() else { return false };
+        let (key, looked_up) = self.dest_volume.borrow_mut().key(dest, volume_key);
+        if looked_up {
+            eprintln!("[dnd] volumes: dest {} on {key}", dest.display());
+        }
+        key == src
+    }
+
+    /// Set the drop description on the drag's data object when it differs from the last one set.
+    /// A data object that refuses SetData (some sources' do) is logged once per drag and is no
+    /// error: the image then shows no text.
+    fn describe(&self, d: Description) {
+        let data = self.data.get();
+        if data.is_null() || self.described.borrow().as_ref().is_some_and(|(k, i)| *k == d.kind && *i == d.insert) {
+            return;
+        }
+        *self.described.borrow_mut() = Some((d.kind, d.insert.clone()));
+        let hr = set_block(data, CFSTR_DROPDESCRIPTION, &description_block(&d));
+        if hr < 0 {
+            if !self.describe_failed.replace(true) {
+                eprintln!("[dnd] drop description: SetData failed 0x{:08X}", hr as u32);
+            }
+            return;
+        }
+        match d.kind {
+            DROPIMAGE_MOVE => eprintln!("[dnd] drop description: Move to \"{}\"", d.insert),
+            DROPIMAGE_COPY => eprintln!("[dnd] drop description: Copy to \"{}\"", d.insert),
+            DROPIMAGE_INVALID => eprintln!("[dnd] drop description: cleared"),
+            _ => eprintln!("[dnd] drop description: none"),
+        }
+    }
+
+    /// The drag left or dropped: give the description back to the source (when one was set) and
+    /// release our reference to the data object.
+    fn end_drag(&self) {
+        if self.described.borrow().is_some() {
+            self.describe(Description::cleared());
+        }
+        let data = self.data.replace(std::ptr::null_mut());
+        if !data.is_null() {
+            // SAFETY: the reference DragEnter took.
+            unsafe { (data_vtbl(data).release)(data) };
+        }
     }
 
     fn over(&self, keys: u32, pt: POINTL, effect: *mut u32) {
@@ -1514,14 +1818,61 @@ impl DropTarget {
         let (spot, e) = self.evaluate(keys, pt, allowed);
         let highlight = spot.as_ref().filter(|_| e != NONE).map(|s| (s.pane, s.mark));
         crate::drop_highlight(highlight);
+        // Before the target helper's DragEnter/DragOver, which read it.
+        self.describe(description(e, spot.as_ref().map(|s| s.dest.as_path())));
         let changed = self.last.borrow().as_ref() != Some(&(spot.clone(), e));
         if changed {
             eprintln!("[dnd] over {} keys=0x{keys:x} allowed=0x{allowed:x} -> effect {}", describe(&spot), effect_name(e));
+        }
+        self.spring_over(spot.as_ref().filter(|s| s.springs && e != NONE));
+        if changed {
             *self.last.borrow_mut() = Some((spot, e));
         }
         if !effect.is_null() {
             // SAFETY: as above.
             unsafe { *effect = e };
+        }
+    }
+
+    /// The spring-loaded folder: arm it over a spot that opens (one a drop would land on: a
+    /// refused spot neither lights up nor opens), open it once the hover has lasted `SPRING_MS`.
+    /// The open runs from the event loop, as the closures the drag loop already runs do, so
+    /// nothing here touches the app state; the next DragOver evaluates the spot against whatever
+    /// the pane then shows.
+    fn spring_over(&self, target: Option<&DropSpot>) {
+        let now = std::time::Instant::now();
+        let mut spring = self.spring.borrow_mut();
+        match target {
+            Some(t) => {
+                if spring.arm(t.clone(), now) {
+                    eprintln!("[dnd] spring armed: {}", describe(&Some(t.clone())));
+                }
+            }
+            None => {
+                if spring.disarm() {
+                    eprintln!("[dnd] spring disarmed (moved away)");
+                }
+            }
+        }
+        let Some((t, waited)) = spring.check(now) else { return };
+        drop(spring);
+        let ms = waited.as_millis();
+        match t.mark {
+            Mark::Tab(i) => {
+                eprintln!("[dnd] spring-loaded: pane {} shows tab {i} after {ms} ms", t.pane);
+                crate::spring_tab(t.pane, i);
+            }
+            _ => {
+                eprintln!("[dnd] spring-loaded: pane {} opens {} after {ms} ms", t.pane, t.dest.display());
+                crate::spring_open(t.pane, t.dest);
+            }
+        }
+    }
+
+    /// The drag left or dropped: an armed spring goes, saying why.
+    fn unspring(&self, why: &str) {
+        if self.spring.borrow_mut().disarm() {
+            eprintln!("[dnd] spring disarmed ({why})");
         }
     }
 }
@@ -1534,6 +1885,7 @@ fn describe(spot: &Option<DropSpot>) -> String {
             Mark::Row(_) => format!("pane {} ({})", s.pane, s.dest.display()),
             Mark::Tab(i) => format!("pane {} tab {i} ({})", s.pane, s.dest.display()),
             Mark::Side(i) => format!("sidebar row {i} ({}), noted in pane {}", s.dest.display(), s.pane),
+            Mark::Crumb(i) => format!("pane {} crumb {i} ({})", s.pane, s.dest.display()),
         },
     }
 }
@@ -1561,8 +1913,27 @@ unsafe extern "system" fn dt_drag_enter(this: *mut c_void, data: *mut c_void, ke
         }
     );
     let nothing = matches!(offered, Offer::Nothing);
+    // The sources' volume, once per drag (a drag whose first source changes is a new DragEnter).
+    let src = match &offered {
+        Offer::Files(s) => s.first().map(|f| volume_key(f)),
+        _ => None,
+    };
+    if let Some(k) = &src {
+        eprintln!("[dnd] volumes: sources on {k}");
+    }
+    *t.src_volume.borrow_mut() = src;
     *t.offered.borrow_mut() = offered;
     *t.last.borrow_mut() = None;
+    // Keep the data object for DragOver's drop descriptions (a DragEnter without a DragLeave
+    // before it gives the old one back first).
+    t.end_drag();
+    if !data.is_null() {
+        // SAFETY: a live IDataObject; the reference is released in `end_drag`.
+        unsafe { (data_vtbl(data).add_ref)(data) };
+    }
+    t.data.set(data);
+    *t.described.borrow_mut() = None;
+    t.describe_failed.set(false);
     // SAFETY: COM contract: a valid in/out pointer (checked for null).
     let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
     t.over(keys, pt, effect);
@@ -1654,6 +2025,8 @@ unsafe extern "system" fn dt_drag_leave(this: *mut c_void) -> HRESULT {
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
     eprintln!("[dnd] DragLeave");
+    t.unspring("DragLeave");
+    t.end_drag();
     target_helper_call(HelperCall::Leave, POINTL { x: 0, y: 0 }, NONE);
     S_OK
 }
@@ -1732,6 +2105,9 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
     let menu_allowed = if matches!(fresh, Offer::Virtual(_) | Offer::Archive(_)) { allowed & COPY } else { allowed };
     *t.last.borrow_mut() = None;
     crate::drop_highlight(None);
+    t.unspring("Drop");
+    // The source's own description back (on the data object DragEnter kept, which is Drop's).
+    t.end_drag();
     // The shell takes its drag image down (before the menu, as Explorer does).
     target_helper_call(HelperCall::Drop(data), pt, e);
     if right && e != NONE && spot.is_some() {
@@ -1883,6 +2259,12 @@ pub fn register(hwnd: isize) -> (HRESULT, HRESULT) {
         last: RefCell::new(None),
         right: Cell::new(false),
         scrolled_at: Cell::new(None),
+        spring: RefCell::new(Spring::default()),
+        data: Cell::new(std::ptr::null_mut()),
+        described: RefCell::new(None),
+        describe_failed: Cell::new(false),
+        src_volume: RefCell::new(None),
+        dest_volume: RefCell::new(VolumeCache::default()),
     });
     let ptr = Box::into_raw(obj) as *mut c_void;
     // SAFETY: plain OLE calls on our own window, on its thread. RegisterDragDrop takes its own
@@ -2051,6 +2433,49 @@ fn helper(slot: &'static std::thread::LocalKey<Cell<(*mut c_void, bool)>>, iid: 
 
 fn source_helper() -> *mut c_void {
     helper(&SOURCE_HELPER, &IID_IDRAGSOURCEHELPER, "IDragSourceHelper")
+}
+
+const IID_IDRAGSOURCEHELPER2: GUID = GUID::from_u128(0x83e07d0d_0c5f_4163_bf1a_60b274051e40);
+/// `IDragSourceHelper2::SetFlags`: show the target's `DROPDESCRIPTION` text on our drag image.
+const DSH_ALLOWDROPDESCRIPTIONTEXT: u32 = 1;
+
+/// IDragSourceHelper2 (shobjidl.h): IDragSourceHelper's methods, then SetFlags.
+#[repr(C)]
+struct DragSourceHelper2Vtbl {
+    base: DragSourceHelperVtbl,
+    set_flags: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT,
+}
+
+thread_local! {
+    /// The source helper's IDragSourceHelper2 face (null: not asked yet, or not offered), kept
+    /// like the helper itself, and whether it was asked for.
+    static SOURCE_HELPER2: Cell<(*mut c_void, bool)> = const { Cell::new((std::ptr::null_mut(), false)) };
+}
+
+/// Let the drop target's description show on our drag image: `SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT)`
+/// on the source helper, before every `InitializeFromBitmap` (the helper applies its flags when it
+/// stores an image on a data object; the documentation states no order, and every sample sets the
+/// flags first). Logged once per process; without IDragSourceHelper2 the image shows no text.
+fn allow_description_text(helper: *mut c_void) {
+    let (mut h2, asked) = SOURCE_HELPER2.with(Cell::get);
+    if !asked {
+        let mut p: *mut c_void = std::ptr::null_mut();
+        // SAFETY: `helper` is the live IDragSourceHelper of this thread; the interface obtained is
+        // kept for the life of the process, as the helper is.
+        let hr = unsafe { ((**(helper as *const *const DragSourceHelperVtbl)).query_interface)(helper, &IID_IDRAGSOURCEHELPER2, &mut p) };
+        h2 = if hr >= 0 { p } else { std::ptr::null_mut() };
+        if !h2.is_null() {
+            // SAFETY: as below.
+            let hr = unsafe { ((**(h2 as *const *const DragSourceHelper2Vtbl)).set_flags)(h2, DSH_ALLOWDROPDESCRIPTIONTEXT) };
+            eprintln!("[dnd] IDragSourceHelper2::SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT) = 0x{:08X}", hr as u32);
+        }
+        SOURCE_HELPER2.with(|c| c.set((h2, true)));
+        return;
+    }
+    if !h2.is_null() {
+        // SAFETY: the live IDragSourceHelper2 kept for this thread.
+        unsafe { ((**(h2 as *const *const DragSourceHelper2Vtbl)).set_flags)(h2, DSH_ALLOWDROPDESCRIPTIONTEXT) };
+    }
 }
 
 fn target_helper() -> *mut c_void {
@@ -2266,6 +2691,7 @@ fn init_drag_image(helper: *mut c_void, data: *mut c_void, bgra: &[u8], size: u3
         return E_NOINTERFACE;
     }
     let Some(bmp) = dib_from(bgra, size, size) else { return windows_sys::Win32::Foundation::E_OUTOFMEMORY };
+    allow_description_text(helper);
     let img = SHDRAGIMAGE {
         sizeDragImage: SIZE { cx: size as i32, cy: size as i32 },
         ptOffset: POINT { x: cursor.0, y: cursor.1 },
@@ -2291,6 +2717,10 @@ pub struct DragImage {
     pub cached: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
     pub tile: bool,
     pub tile_picture: bool,
+    /// The shell's icon for `path` at the image's icon size, rendered by the icon worker when the
+    /// row was pressed (P5-M3), so the drag start need not wait for the shell; None when the reply
+    /// had not landed yet (the shell is then asked here, as before).
+    pub prefetched: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
     pub count: usize,
     pub scale: f32,
 }
@@ -2301,6 +2731,7 @@ fn attach_drag_image(data: *mut c_void, img: &DragImage) {
     let t0 = std::time::Instant::now();
     let (icon, from) = match (&img.cached, img.tile && img.tile_picture) {
         (Some(c), true) => (Some(crate::icons::fit(c, g.icon)), "the tile"),
+        _ if img.prefetched.is_some() => (img.prefetched.as_ref().map(|p| crate::icons::fit(p, g.icon)), "the worker"),
         _ => match crate::icons::render(&img.path, g.icon) {
             Some(p) => (Some(crate::icons::fit(&p, g.icon)), "the shell"),
             None => match &img.cached {
@@ -2501,6 +2932,12 @@ mod tests {
         PathBuf::from(s)
     }
 
+    /// `effect_for` with the string rule's volumes (`path_volume_key`), no file-system call.
+    fn eff(sources: &[PathBuf], dest: &Path, keys: u32, allowed: u32) -> u32 {
+        let same = sources.first().is_some_and(|f| path_volume_key(f) == path_volume_key(dest));
+        effect_for(sources, dest, keys, allowed, same)
+    }
+
     #[test]
     fn query_continue_drag_states() {
         // (escape, lbutton, rbutton, right-button drag)
@@ -2559,47 +2996,123 @@ mod tests {
         assert_eq!(MENU_LABELS[MENU_COPY as usize - 1], "Copy here");
         assert_eq!(MENU_LABELS[MENU_CANCEL as usize - 1], "Cancel");
         // The effect the menu starts from is decide_effect's, unchanged by the right button.
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_RBUTTON, both), MOVE);
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"D:\dst"), MK_RBUTTON, both), COPY);
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_RBUTTON, both), MOVE);
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"D:\dst"), MK_RBUTTON, both), COPY);
     }
 
     #[test]
     fn volumes() {
-        assert_eq!(volume_key(&p(r"C:\a\b.txt")), "c:");
-        assert_eq!(volume_key(&p(r"c:\")), "c:");
-        assert_eq!(volume_key(&p(r"D:\x")), "d:");
-        assert_eq!(volume_key(&p(r"\\?\C:\long\path")), "c:");
-        assert_eq!(volume_key(&p(r"\\Server\Share\dir\f")), r"\\server\share");
-        assert_eq!(volume_key(&p(r"\\?\UNC\server\share\f")), r"\\server\share");
-        assert_ne!(volume_key(&p(r"\\server\a\f")), volume_key(&p(r"\\server\b\f")));
+        // The string rule (UNC paths, and the fallback).
+        assert_eq!(path_volume_key(&p(r"C:\a\b.txt")), "c:");
+        assert_eq!(path_volume_key(&p(r"c:\")), "c:");
+        assert_eq!(path_volume_key(&p(r"D:\x")), "d:");
+        assert_eq!(path_volume_key(&p(r"\\?\C:\long\path")), "c:");
+        assert_eq!(path_volume_key(&p(r"\\Server\Share\dir\f")), r"\\server\share");
+        assert_eq!(path_volume_key(&p(r"\\?\UNC\server\share\f")), r"\\server\share");
+        assert_ne!(path_volume_key(&p(r"\\server\a\f")), path_volume_key(&p(r"\\server\b\f")));
+        // GetVolumePathNameW on the system drive: a folder, its root, a path that does not exist
+        // and a verbatim one all lie on the root's volume.
+        let windows = std::env::var("SystemRoot").map(PathBuf::from).unwrap_or_else(|_| p(r"C:\Windows"));
+        let drive = path_volume_key(&windows);
+        let key = volume_key(&PathBuf::from(format!(r"{}\", drive.to_uppercase())));
+        assert_eq!(key, drive, "a drive root's key is the drive");
+        assert_eq!(volume_key(&windows), key);
+        assert_eq!(volume_key(&windows.join("no-such-folder-p5m3").join("x.txt")), key, "the path need not exist");
+        assert_eq!(volume_key(&PathBuf::from(format!(r"\\?\{}", windows.display()))), key);
+        // UNC paths keep the string rule (no call that could wait on a server).
+        assert_eq!(volume_key(&p(r"\\no-such-server-p5m3\Share\dir")), r"\\no-such-server-p5m3\share");
+    }
+
+    #[test]
+    fn volume_cache_looks_each_destination_up_once() {
+        let calls = Cell::new(0);
+        let fake = |d: &Path| {
+            calls.set(calls.get() + 1);
+            if d.starts_with(r"C:\mnt\data") { r"c:\mnt\data".to_string() } else { "c:".to_string() }
+        };
+        let mut c = VolumeCache::default();
+        assert_eq!(c.key(&p(r"C:\dst"), fake), ("c:".to_string(), true), "first: looked up");
+        assert_eq!(c.key(&p(r"C:\dst"), fake), ("c:".to_string(), false), "the same folder: cached");
+        assert_eq!(c.key(&p(r"C:\dst"), fake), ("c:".to_string(), false));
+        assert_eq!(calls.get(), 1, "DragOver after DragOver over one folder: one lookup");
+        assert_eq!(c.key(&p(r"C:\mnt\data\sub"), fake), (r"c:\mnt\data".to_string(), true), "another folder");
+        assert_eq!(c.key(&p(r"C:\dst"), fake), ("c:".to_string(), true), "one entry: back again is a lookup");
+        assert_eq!(calls.get(), 3);
+        // A mount point decides the effect: the same drive letter, another volume, copies.
+        let both = COPY | MOVE;
+        let src = fake(&p(r"C:\src\a.txt"));
+        let (dest, _) = c.key(&p(r"C:\mnt\data\sub"), fake);
+        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\mnt\data\sub"), 0, both, src == dest), COPY);
+        let (dest, _) = c.key(&p(r"C:\dst"), fake);
+        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\dst"), 0, both, src == dest), MOVE);
+    }
+
+    #[test]
+    fn drop_descriptions() {
+        assert_eq!(
+            description(MOVE, Some(&p(r"C:\Users\me\Documents"))),
+            Description { kind: DROPIMAGE_MOVE, message: "Move to %1", insert: "Documents".into() }
+        );
+        assert_eq!(description(COPY, Some(&p(r"D:\"))), Description { kind: DROPIMAGE_COPY, message: "Copy to %1", insert: "D:".into() });
+        assert_eq!(description(COPY, Some(&p(r"C:\dir\"))).insert, "dir", "a trailing separator");
+        assert_eq!(description(MOVE, Some(&p(r"\\server\share"))).insert, "share", "a UNC share root");
+        assert_eq!(description(MOVE, Some(&p(r"\\server\share\"))).insert, "share");
+        assert_eq!(description(MOVE, Some(&p(r"\\server\share\dir"))).insert, "dir");
+        assert_eq!(description(COPY, Some(&p(r"\\?\C:\"))).insert, "C:");
+        let none = Description { kind: DROPIMAGE_NONE, message: "", insert: String::new() };
+        assert_eq!(description(NONE, Some(&p(r"C:\dst"))), none, "refused: the shell's own image, no text");
+        assert_eq!(description(MOVE, None), none, "nowhere to drop");
+        assert_eq!(Description::cleared().kind, DROPIMAGE_INVALID);
+
+        // The DROPDESCRIPTION block: the type, then 260 wide characters each for message and insert.
+        let b = description_block(&description(COPY, Some(&p(r"C:\dst"))));
+        assert_eq!(b.len(), 1044);
+        assert_eq!(b.len(), std::mem::size_of::<windows_sys::Win32::UI::Shell::DROPDESCRIPTION>());
+        assert_eq!(i32::from_le_bytes(b[0..4].try_into().unwrap()), DROPIMAGE_COPY);
+        let wide = |o: usize| -> String {
+            let w: Vec<u16> = (0..260).map(|k| u16::from_le_bytes([b[o + 2 * k], b[o + 2 * k + 1]])).take_while(|&u| u != 0).collect();
+            String::from_utf16_lossy(&w)
+        };
+        assert_eq!(wide(4), "Copy to %1");
+        assert_eq!(wide(4 + 520), "dst");
+        assert_eq!(&b[4 + 2 * 10..4 + 2 * 11], &[0, 0], "the message's NUL");
+        assert_eq!(&b[524 + 2 * 3..524 + 2 * 4], &[0, 0], "the insert's NUL");
+        // A name past 259 characters is cut so the NUL still fits.
+        let long = description_block(&Description { kind: DROPIMAGE_MOVE, message: "Move to %1", insert: "x".repeat(300) });
+        assert_eq!(long.len(), 1044);
+        assert_eq!(&long[524 + 2 * 258..524 + 2 * 259], &[b'x', 0]);
+        assert_eq!(&long[524 + 2 * 259..524 + 2 * 260], &[0, 0]);
+        let cleared = description_block(&Description::cleared());
+        assert_eq!(i32::from_le_bytes(cleared[0..4].try_into().unwrap()), -1);
+        assert!(cleared[4..].iter().all(|&c| c == 0));
     }
 
     #[test]
     fn effect_decision() {
         let both = COPY | MOVE;
         // Same volume moves, across volumes copies.
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\dst"), 0, both), MOVE);
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"D:\dst"), 0, both), COPY);
-        assert_eq!(effect_for(&[p(r"\\s\x\a")], &p(r"\\S\X\dst"), 0, both), MOVE);
-        assert_eq!(effect_for(&[p(r"\\s\x\a")], &p(r"C:\dst"), 0, both), COPY);
+        assert_eq!(eff(&[p(r"C:\src\a.txt")], &p(r"C:\dst"), 0, both), MOVE);
+        assert_eq!(eff(&[p(r"C:\src\a.txt")], &p(r"D:\dst"), 0, both), COPY);
+        assert_eq!(eff(&[p(r"\\s\x\a")], &p(r"\\S\X\dst"), 0, both), MOVE);
+        assert_eq!(eff(&[p(r"\\s\x\a")], &p(r"C:\dst"), 0, both), COPY);
         // Modifiers.
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_CONTROL, both), COPY, "Ctrl forces copy");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"D:\dst"), MK_SHIFT, both), MOVE, "Shift forces move");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_CONTROL | MK_SHIFT, both), COPY, "no links: copy");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_ALT, both), COPY, "Alt (link in Explorer): copy");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_LBUTTON, both), MOVE, "the button bit is no modifier");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_CONTROL, both), COPY, "Ctrl forces copy");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"D:\dst"), MK_SHIFT, both), MOVE, "Shift forces move");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_CONTROL | MK_SHIFT, both), COPY, "no links: copy");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_ALT, both), COPY, "Alt (link in Explorer): copy");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), MK_LBUTTON, both), MOVE, "the button bit is no modifier");
         // What the source allows.
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), 0, COPY), COPY, "move not allowed: copy");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"D:\dst"), 0, MOVE), MOVE, "copy not allowed: move");
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\dst"), 0, NONE), NONE);
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), 0, COPY), COPY, "move not allowed: copy");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"D:\dst"), 0, MOVE), MOVE, "copy not allowed: move");
+        assert_eq!(eff(&[p(r"C:\src\a")], &p(r"C:\dst"), 0, NONE), NONE);
         // Refused drops.
-        assert_eq!(effect_for(&[], &p(r"C:\dst"), 0, both), NONE, "no files");
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\src"), MK_CONTROL, both), NONE, "into its own folder");
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"c:\SRC\"), 0, both), NONE, "case and trailing separator");
-        assert_eq!(effect_for(&[p(r"C:\src\d")], &p(r"C:\src\d"), 0, both), NONE, "onto a dragged folder");
-        assert_eq!(effect_for(&[p(r"C:\src\d")], &p(r"C:\src\d\sub"), 0, both), NONE, "into a dragged folder's subfolder");
-        assert_eq!(effect_for(&[p(r"C:\src\d")], &p(r"C:\src\dd"), 0, both), MOVE, "a sibling with a longer name is fine");
-        assert_eq!(effect_for(&[p(r"C:\a\x"), p(r"C:\b\y")], &p(r"C:\b"), 0, both), NONE, "any source's own folder");
+        assert_eq!(eff(&[], &p(r"C:\dst"), 0, both), NONE, "no files");
+        assert_eq!(eff(&[p(r"C:\src\a.txt")], &p(r"C:\src"), MK_CONTROL, both), NONE, "into its own folder");
+        assert_eq!(eff(&[p(r"C:\src\a.txt")], &p(r"c:\SRC\"), 0, both), NONE, "case and trailing separator");
+        assert_eq!(eff(&[p(r"C:\src\d")], &p(r"C:\src\d"), 0, both), NONE, "onto a dragged folder");
+        assert_eq!(eff(&[p(r"C:\src\d")], &p(r"C:\src\d\sub"), 0, both), NONE, "into a dragged folder's subfolder");
+        assert_eq!(eff(&[p(r"C:\src\d")], &p(r"C:\src\dd"), 0, both), MOVE, "a sibling with a longer name is fine");
+        assert_eq!(eff(&[p(r"C:\a\x"), p(r"C:\b\y")], &p(r"C:\b"), 0, both), NONE, "any source's own folder");
         // An optimized move reports none to the source.
         assert_eq!(reported_effect(MOVE), NONE);
         assert_eq!(reported_effect(COPY), COPY);
@@ -2696,7 +3209,14 @@ mod tests {
         let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2] };
         // Header 26, two drives 24, header 26, a place 24, header 26, a bookmark being renamed 30.
         let rows = [(26.0, false), (24.0, true), (24.0, true), (26.0, false), (24.0, true), (26.0, false), (30.0, true)];
-        let s = Strips { side_w: 180.0, side_scroll: 0.0, side_rows: &rows, tabs: [(1, 160.0, 0.0), (3, 120.0, 0.0)] };
+        let s = Strips {
+            side_w: 180.0,
+            side_scroll: 0.0,
+            side_rows: &rows,
+            tabs: [(1, 160.0, 0.0), (3, 120.0, 0.0)],
+            crumb_row: [(0.0, 0.0); 2],
+            crumbs: [&[], &[]],
+        };
         let none = [0.0, 0.0];
         let hit = |x: f32, y: f32| hit_all(&l, &s, x, y, none, [5, 7]);
         // Sidebar rows from y 3 (its padding).
@@ -2769,6 +3289,139 @@ mod tests {
         // 32 px rows (thumbnails on): one 32 px row per step, the bottom at 3200 - 440.
         assert_eq!(scrolled(0.0, 1, 100, 440.0, 32.0), -32.0);
         assert_eq!(scrolled(-2750.0, 1, 100, 440.0, 32.0), -2760.0, "clamped to the bottom");
+    }
+
+    #[test]
+    fn auto_scroll_sidebar_and_tab_strip() {
+        // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000;
+        // the right pane shows a strip of 6 tabs of 120 px in its 399 px (720 px of tabs).
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2] };
+        let rows = [(26.0, false), (24.0, true)];
+        let s = Strips {
+            side_w: 180.0,
+            side_scroll: 0.0,
+            side_rows: &rows,
+            tabs: [(1, 160.0, 0.0), (6, 120.0, 0.0)],
+            crumb_row: [(0.0, 0.0); 2],
+            crumbs: [&[], &[]],
+        };
+        // The sidebar list runs from y 3 to 574 (above the 26 px footer).
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 3.0), Some(Edge::Side(-1)), "the sidebar's top");
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 26.9), Some(Edge::Side(-1)));
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 27.0), None, "inside the sidebar list");
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 550.0), Some(Edge::Side(1)), "the sidebar's bottom");
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 573.9), Some(Edge::Side(1)));
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 574.0), None, "the footer");
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 2.0), None, "above the list");
+        // The right pane's strip runs from x 598 to 997, y 3 to 29: its ends scroll it.
+        assert_eq!(edge_scroll_all(&l, &s, 598.0, 10.0), Some(Edge::Strip(1, -1)), "the strip's left end");
+        assert_eq!(edge_scroll_all(&l, &s, 621.9, 28.9), Some(Edge::Strip(1, -1)));
+        assert_eq!(edge_scroll_all(&l, &s, 622.0, 10.0), None, "inside the strip");
+        assert_eq!(edge_scroll_all(&l, &s, 973.0, 10.0), Some(Edge::Strip(1, 1)), "the strip's right end");
+        assert_eq!(edge_scroll_all(&l, &s, 996.9, 10.0), Some(Edge::Strip(1, 1)));
+        assert_eq!(edge_scroll_all(&l, &s, 997.0, 10.0), None, "the pane's padding");
+        assert_eq!(edge_scroll_all(&l, &s, 598.0, 29.0), None, "under the strip: the path bar");
+        assert_eq!(edge_scroll_all(&l, &s, 190.0, 10.0), None, "the left pane shows no strip");
+        // The lists' edges as before (the right list starts under the strip, at 91).
+        assert_eq!(edge_scroll_all(&l, &s, 300.0, 70.0), Some(Edge::List(0, -1)));
+        assert_eq!(edge_scroll_all(&l, &s, 700.0, 95.0), Some(Edge::List(1, -1)));
+        assert_eq!(edge_scroll_all(&l, &s, 700.0, 560.0), Some(Edge::List(1, 1)));
+        assert_eq!(edge_scroll_all(&Layout { tabs: [false; 2], ..l }, &s, 700.0, 10.0), None, "no strip: the path bar");
+        // A collapsed sidebar: nothing to scroll there.
+        let collapsed = Strips { side_w: 0.0, ..s };
+        assert_eq!(edge_scroll_all(&Layout { left: 12.0, ..l }, &collapsed, 5.0, 10.0), None);
+        // The sidebar's rows of mixed heights, one 24 px row per step: 600 px of rows in 571.
+        assert_eq!(scroll_step(0.0, 1, 24.0, 600.0, 571.0), -24.0);
+        assert_eq!(scroll_step(-24.0, 1, 24.0, 600.0, 571.0), -29.0, "clamped to the bottom");
+        assert_eq!(scroll_step(-29.0, -1, 24.0, 600.0, 571.0), -5.0);
+        assert_eq!(scroll_step(0.0, 1, 24.0, 200.0, 571.0), 0.0, "rows that fit do not scroll");
+        // The strip, one tab per step: 720 px of tabs in 399 px, the end at -321.
+        assert_eq!(scroll_step(0.0, 1, 120.0, 720.0, 399.0), -120.0);
+        assert_eq!(scroll_step(-240.0, 1, 120.0, 720.0, 399.0), -321.0, "clamped to the last tab");
+        assert_eq!(scroll_step(-321.0, -1, 120.0, 720.0, 399.0), -201.0);
+        assert_eq!(scroll_step(-100.0, -1, 120.0, 720.0, 399.0), 0.0, "clamped to the first tab");
+        assert_eq!(scroll_step(0.0, 1, 120.0, 360.0, 399.0), 0.0, "tabs that fit do not scroll");
+    }
+
+    #[test]
+    fn hit_breadcrumb_crumbs() {
+        // One pane from x 0 (no sidebar), 600 px tall; the bar's crumb row reported at offset 0,
+        // 900 px of it shown; crumbs "This PC", "C:", "Users" at 0, 70 and 110 in the row.
+        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2] };
+        let crumbs = [(0.0, 54.0), (70.0, 24.0), (110.0, 60.0)];
+        let s = Strips { side_w: 0.0, side_scroll: 0.0, side_rows: &[], tabs: [(1, 160.0, 0.0); 2], crumb_row: [(0.0, 900.0), (0.0, 0.0)], crumbs: [&crumbs, &[]] };
+        let none = [0.0, 0.0];
+        let hit = |s: &Strips, x: f32, y: f32| hit_all(&l, s, x, y, none, [5, 0]);
+        // The labels run from y 6 to 32, from x 3 (the pane's padding) plus their x in the row.
+        assert_eq!(crumb_top(&l, 0), 6.0);
+        assert_eq!(hit(&s, 3.0, 6.0), Spot::Crumb(0, 0));
+        assert_eq!(hit(&s, 56.9, 31.9), Spot::Crumb(0, 0));
+        assert_eq!(hit(&s, 57.0, 20.0), Spot::Pane(0), "the chevron after This PC");
+        assert_eq!(hit(&s, 73.0, 20.0), Spot::Crumb(0, 1));
+        assert_eq!(hit(&s, 113.0 + 59.9, 20.0), Spot::Crumb(0, 2));
+        assert_eq!(hit(&s, 400.0, 20.0), Spot::Pane(0), "the bar past the crumbs");
+        assert_eq!(hit(&s, 80.0, 5.0), Spot::Pane(0), "above the crumbs: the padding");
+        assert_eq!(hit(&s, 80.0, 32.0), Spot::Pane(0), "below them: the bar's padding");
+        assert_eq!(hit(&s, 80.0, 70.0), Spot::Row(0, 0), "the list as before");
+        // A row right-aligned in a narrow bar (offset -60, 100 px shown): This PC is clipped off,
+        // "C:" sits at 13..37 and "Users" (53..113) is cut at the bar's end (x 103).
+        let narrow = Strips { crumb_row: [(-60.0, 100.0), (0.0, 0.0)], ..s };
+        assert_eq!(hit(&narrow, 5.0, 20.0), Spot::Pane(0), "This PC, off the bar's left end");
+        assert_eq!(hit(&narrow, 13.0, 20.0), Spot::Crumb(0, 1));
+        assert_eq!(hit(&narrow, 102.9, 20.0), Spot::Crumb(0, 2));
+        assert_eq!(hit(&narrow, 103.0, 20.0), Spot::Pane(0), "past the bar: the mode glyph");
+        // A tab strip moves the bar down by 28 px.
+        let lt = Layout { tabs: [true, false], ..l };
+        assert_eq!(crumb_top(&lt, 0), 34.0);
+        assert_eq!(hit_all(&lt, &s, 80.0, 20.0, none, [5, 0]), Spot::Tab(0, 0), "the strip, not a crumb");
+        assert_eq!(hit_all(&lt, &s, 80.0, 40.0, none, [5, 0]), Spot::Crumb(0, 1));
+        // No crumbs (the text entry shows): the bar is the pane.
+        let entry = Strips { crumbs: [&[], &[]], ..s };
+        assert_eq!(hit(&entry, 80.0, 20.0), Spot::Pane(0));
+        // Split: each pane its own crumbs; the right pane starts at 503.
+        let two = Layout { split: true, ..l };
+        let right = [(0.0, 54.0)];
+        let both = Strips { crumb_row: [(0.0, 400.0), (0.0, 400.0)], crumbs: [&crumbs, &right], ..s };
+        assert_eq!(hit_all(&two, &both, 73.0, 20.0, none, [5, 0]), Spot::Crumb(0, 1));
+        assert_eq!(hit_all(&two, &both, 510.0, 20.0, none, [5, 0]), Spot::Crumb(1, 0));
+        assert_eq!(hit_all(&two, &both, 580.0, 20.0, none, [5, 0]), Spot::Pane(1));
+    }
+
+    #[test]
+    fn spring_loaded_folders() {
+        let t0 = std::time::Instant::now();
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+        let mut s: Spring<u32> = Spring::default();
+        // Nothing armed: nothing fires, and a disarm says so.
+        assert_eq!(s.check(at(5000)), None);
+        assert!(!s.disarm());
+        // Armed over target 1; DragOver's checks before SPRING_MS do nothing.
+        assert!(s.arm(1, at(0)));
+        assert!(!s.arm(1, at(20)), "the same target keeps its start");
+        assert_eq!(s.check(at(980)), None);
+        // It fires once at SPRING_MS, and not again while the pointer stays on it.
+        assert_eq!(s.check(at(1000)), Some((1, std::time::Duration::from_millis(1000))));
+        assert_eq!(s.check(at(3000)), None);
+        assert!(!s.arm(1, at(3020)), "still over the opened target: no new arm");
+        assert_eq!(s.check(at(5000)), None);
+        // Leaving it after it fired: no armed spring to report, and the target may fire again.
+        assert!(!s.disarm());
+        assert!(s.arm(1, at(6000)));
+        assert_eq!(s.check(at(7100)).map(|(t, _)| t), Some(1));
+        // Moving to another target restarts the clock.
+        assert!(s.arm(2, at(8000)));
+        assert!(s.arm(3, at(8500)));
+        assert_eq!(s.check(at(9000)), None, "target 3 was armed only 500 ms ago");
+        assert_eq!(s.check(at(9600)).map(|(t, _)| t), Some(3));
+        // Moving away before the time: disarmed (reported), nothing fires later.
+        assert!(s.arm(4, at(10000)));
+        assert!(s.disarm());
+        assert_eq!(s.check(at(12000)), None);
+        // A fired target followed by another one: the new one arms at once.
+        assert!(s.arm(5, at(13000)));
+        assert_eq!(s.check(at(14000)).map(|(t, _)| t), Some(5));
+        assert!(s.arm(6, at(14020)));
+        assert_eq!(s.check(at(15020)).map(|(t, _)| t), Some(6));
     }
 
     #[test]
@@ -2873,6 +3526,11 @@ mod tests {
             // The optimized-move notes are stored and read back.
             set_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT, MOVE);
             assert_eq!(read_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT), Some(MOVE));
+            // So is a drop description (P5-M3): the shell's data object takes the 1044-byte block.
+            let d = description(COPY, Some(&root));
+            assert_eq!(set_block(data.0, CFSTR_DROPDESCRIPTION, &description_block(&d)), S_OK);
+            let back = read_hglobal(data.0, registered_format(CFSTR_DROPDESCRIPTION)).expect("DropDescription stored");
+            assert_eq!(&back[..1044], description_block(&d).as_slice());
         }
         if com >= 0 {
             // SAFETY: pairs the CoInitializeEx above.

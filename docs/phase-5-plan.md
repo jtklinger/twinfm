@@ -873,6 +873,324 @@ large enough to show the percentage climbing beside the shell's window).
   written into, then selected: the rows are there with no re-listing. A dead share was not available:
   that check stays owed.
 
+## P5-M3: drag and drop finished
+
+The third milestone of the phase (2026-10-16): spring-loaded folders and tabs, drop descriptions
+under the drag image, drops on breadcrumb crumbs, auto-scroll of the sidebar list and the tab
+strip, mounted folders counted as their own volume, and the first drag's wait for its icon removed.
+Branch `claude/p5-m3-milestone-setup-c40a6d`, from 876a0b9 (P5-M2). The brief is the P5-M3 entry of
+the kickoff above; the work was split in two halves run one after the other because both edit the
+drop target's methods in `src/dnd.rs`: first the self-contained items (descriptions, the icon,
+volumes: 92a6a0c), reviewed and committed, then the hit-test and timing items (the spring, crumbs,
+the strips' auto-scroll, the driver, the soak: 5db406b), reviewed and committed. Both implementers
+were Opus 5.5 agents at Jeremy's word; the lead reviewed each diff and ran the gates again.
+
+### What landed
+
+- **Spring-loaded folders and tabs** (`src/dnd.rs` `Spring`, `SPRING_MS` = 1000). A drag held over
+  a folder row, a folder tile or a tab other than the pane's active one opens it in that pane, for
+  our own drags and other programs' alike. The timing is a pure state machine in the drop target
+  (`arm` when the spot changes to one that opens, `check` on every `DragOver`, which OLE calls on
+  its own timer even while the mouse rests, so no timer of ours is needed and none could run inside
+  our own drag loop; `disarm` when the spot changes, on DragLeave and on Drop; after firing, the
+  same spot does not fire again until the pointer has left it). The open is `crate::spring_open`
+  (`navigate`) or `crate::spring_tab` (the tab's `select`), each posted through
+  `slint::invoke_from_event_loop`, the closures the drag loop already runs (P2-M4 amendment), so the
+  drop target touches no app state and the next DragOver evaluates the spot against whatever the
+  pane then shows. `DropSpot.springs` says whether a spot opens (a row spot with a row, i.e. a
+  folder row, or an inactive tab); a spot whose effect is none (a refused drop) never springs.
+  Not spring-loaded: sidebar rows, crumbs, file rows, empty space, search tabs, This PC's tab, an
+  archive level. Lines: `[dnd] spring armed: pane N row R (<folder>)` / `pane N tab I (<folder>)`,
+  `spring-loaded: pane N opens <folder> after T ms` / `pane N shows tab I after T ms`, `spring
+  disarmed (moved away | DragLeave | Drop)` for an armed spring that had not fired.
+- **Drop descriptions** (`Description`, `description`, `description_block`, `DropTarget::describe`).
+  Our target sets `DROPDESCRIPTION` ("Move to %1" / "Copy to %1" with the destination folder's name;
+  `C:` for a drive root, the share's name for a UNC root) on the drag's data object on every
+  DragEnter and DragOver whose (type, insert) differs from the last one set, `DROPIMAGE_NONE` with no
+  text for a refused drop (the shell's own "not allowed" image), and `DROPIMAGE_INVALID` on
+  DragLeave and Drop so the source's own text comes back. DragOver is not handed the data object, so
+  DragEnter keeps a reference (released in DragLeave and Drop); the description is set before the
+  target helper's call, which reads it. Our source asks `IDragSourceHelper2::SetFlags
+  (DSH_ALLOWDROPDESCRIPTIONTEXT)` before every `InitializeFromBitmap` (the interface queried once
+  per process and kept as the helper is). Lines: `drop description: Move to "<folder>" | Copy to
+  "<folder>" | none | cleared` on change, `drop description: SetData failed 0x...` once per drag
+  whose data object refuses SetData (the driver's own objects do, 0x80004001), and
+  `IDragSourceHelper2::SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT) = 0x...` once per process.
+- **Drops on a breadcrumb crumb** (`Spot::Crumb`, `Mark::Crumb`). A crumb's label is a drop target
+  for the crumb's folder (This PC's crumb and a search tab's own crumb are none; an archive path is
+  refused as drops into archives are), lit as a tab is (`CrumbButton.drop-here`, accent at 65% with
+  a 2 px border; `drop-crumb-pane` / `drop-crumb` on `App`, set by `drop_highlight` on change). The
+  crumbs' places come from Slint: `CrumbButton` reports its x in the crumb row and its label's width
+  on `init` and on `changed x` / `changed width`, and the crumb row reports its offset in the bar
+  (the right-alignment) and the bar's width on `changed x` / `changed width`, to `main.rs`
+  `crumb_geometry` (a thread-local `CRUMB_GEOM`, outside the app state because Slint reports from its
+  instantiation and change-handler passes). `dnd::Strips` carries them; `hit_all` checks crumbs after
+  the tab strip and before the lists; constants `CRUMB_PAD` (3) and `CRUMB_H` (26) with `crumb_top`
+  from pane.slint's layout. 16 reports in the 15 s gate scenario (4 crumbs plus the row at start, 3
+  at the split, 4 for pane 1), none while the lists scroll; one `[crumb] pane=N geometry: K crumbs`
+  line per breadcrumb rebuild.
+- **Auto-scroll of the sidebar list and the tab strip** (`Edge`, `edge_scroll_all`, `scroll_step`;
+  `main.rs` `drop_autoscroll`). Within 24 px of the sidebar list's top or bottom a hovering drag
+  scrolls it by one 24 px row per 50 ms, bounded by the ListView's own content height
+  (`side-content-height()` / `side-visible-height()` on `App`: its estimate for rows of mixed heights
+  sits a px or two off their sum and is what the scroll can reach); within 24 px of either end of a
+  tab strip whose tabs overflow it, by one tab per 50 ms (`set-tab-scroll`). Lines: `auto-scroll
+  sidebar up|down: content-y A -> B`, `auto-scroll pane N tab strip left|right: x A -> B`.
+- **Mounted folders as volumes** (`volume_key`, `path_volume_key`, `VolumeCache`). For a local drive
+  path `volume_key` is the mount point `GetVolumePathNameW` returns (lowercase, no trailing
+  separator: `c:`, or `c:\mnt\data` for a volume mounted there); UNC paths and mapped network drives
+  (`fs::watch::is_remote`) keep the string rule, so DragEnter cannot wait on a dead server, as does
+  a failed call. The sources' key is looked up once per DragEnter and the destination's once per
+  distinct folder (a one-entry cache in the target); `effect_for` takes `same_volume` from the
+  target. Lines: `volumes: sources on <key>` per DragEnter with files, `volumes: dest <path> on
+  <key>` per new destination.
+- **The first drag's icon** (`icons::drag_key`, `main.rs` `prefetch_drag_icon`, `State.drag_icon`,
+  `DragImage.prefetched`). A left or right press on a row sends the icon worker one request for the
+  drag image's icon at the image's icon size (a `drag:` key: rendered for every press, never in the
+  icon table, never in the `taken` set); the reply lands in a one-slot `drag_icon` (the newest press
+  wins, another path's reply is dropped), and `run_pending_drag` drains the channel once and hands
+  the buffer to `attach_drag_image`, whose order is now the tile's picture, the worker's icon, the
+  shell, the pane's cache (`icon from the worker` in the drag image line). Not for a drive row nor
+  for a grid tile already showing a real picture. Measured (`[dnd] drag image ... composed in`, the
+  first drag of a fresh process, three runs each; the P2-M4 figure of 113 ms did not reproduce on
+  this machine today): `click 0 1; dragrow 0 1 0 60` 19.9 / 10.5 / 11.5 ms from the shell before,
+  1.7 / 1.8 / 1.9 ms from the worker after; with `sleep 300` between 11.8 / 10.2 / 11.3 before, 1.7
+  / 1.7 / 4.8 after; a bare `dragrow` (its own press, 60 ms before the threshold) 11.2 / 14.4 / 11.8
+  before, 2.6 / 1.7 (worker) / 28.9 (the shell fallback: the reply had not landed) after; on
+  `C:\traces\bigdir`, interleaved, 8.4 / 8.6 / 9.1 before, 0.7 / 1.1 / 1.6 after.
+- **Driver** (`auto.rs`): `dropfiles crumb <pane> <index> <mode> <paths>`; `dragover row <pane>
+  <row>`, `tab <pane> <index>`, `crumb <pane> <index>` (the spot's centre, the spring-load's clock),
+  `side <top|bottom>`, `strip <pane> <left|right>` beside the old `<pane> <top|bottom>` form.
+- **Soak** `tools/soak-p5m3.ps1`: the P4-M3 soak plus, per cycle, a `dragover row 1 0 1300` that
+  spring-loads a folder, a `dropfiles crumb 1 -2 copy` onto the parent crumb, a `dragover side
+  bottom 300` and a `dragover tab 0 1 300` (under the spring time: armed, never switched).
+- **Tests**, 171 to 176: `dnd`: `volume_cache_looks_each_destination_up_once`, `drop_descriptions`,
+  `spring_loaded_folders`, `hit_breadcrumb_crumbs`, `auto_scroll_sidebar_and_tab_strip`; `volumes`
+  extended with real `GetVolumePathNameW` keys (a folder, its root, a path that does not exist and
+  a `\\?\` path all give the drive's key; a UNC path keeps the share) and
+  `shell_data_object_offers_hdrop` with the 1044-byte description stored on the shell's data object
+  and read back; the existing `effect_for` tests go through the string rule.
+- **Docs**: `CLAUDE.md` (test count, the driver forms and lines, the soak, the reference build
+  `target-p5m2`); `docs/cleanup.md` (`target-p4m3` deleted 2026-10-16 after serving as the reference
+  for ab20; `target-p4m1` still on disk, superseded on 2026-10-15, due for deletion on Jeremy's
+  word).
+
+### Decisions
+
+- **The spring is clocked by DragOver, not by a timer.** No Slint timer runs inside our own drag
+  loop (P2-M4), and OLE calls DragOver about every 50 ms while the pointer rests, so a time
+  comparison there is both the only clock available in every case and free of any per-frame work.
+- **The open runs from the event loop** (`invoke_from_event_loop`), as the job of a drop does: the
+  drop target holds no app-state borrow and opens no modal loop, and the closure runs inside our own
+  drag loop (as every such closure has since P2-M4) or at the next turn for a foreign drag.
+- **A spot fires once until the pointer leaves it.** After a row spring the listing changes and the
+  spot falls to the pane (or lands on another row), which disarms it; after a tab spring the tab is
+  active and no longer springs. Without the rule a drag resting on an unchanged spot would open it
+  again every second.
+- **Only where a highlight shows.** A spot the drop refuses (effect none: a source's own folder, a
+  dragged folder itself) never arms, so the spring and the highlight agree.
+- **Drive rows on This PC spring** (they are folders); crumbs and sidebar rows do not (the kickoff
+  named rows, tiles and tabs).
+- **The description is `DROPIMAGE_NONE` with no text for a refused drop**, not INVALID: INVALID tells
+  the shell to fall back to the source's default text, which for a refused spot would read as if the
+  drop were allowed. INVALID is used only when the drag leaves or drops.
+- **`SetFlags` before every `InitializeFromBitmap`**: the documentation states no order; the samples
+  set the flags first; one COM call per drag.
+- **Crumb geometry comes from `changed` callbacks**, the brief's own design, kept in a thread-local
+  rather than in `State`: Slint reports from its instantiation and change-handler passes, which a
+  call that holds the state's borrow could set off. The generated code was checked: layout bindings
+  read the instances through `instance_at` and never `ensure_updated`, and instances are made in
+  `ensure_tree_instantiated` outside any binding, so a read of `x` in `init` or a change tracker's
+  first read cannot recurse. A per-crumb `drop-here` binding is accepted: crumbs are few and outside
+  the list (the P3-M1/P3-M5 amendment is about rows and tiles).
+- **The sidebar's bound is the ListView's own content height**, not the rows' sum: the ListView's
+  estimate for rows of mixed heights sits about 2 px off the sum, and a bound from the sum kept the
+  scroll hitting the clamp (`-97 -> -99` on every tick); Slint nudges content-y by about 2 px as it
+  corrects its estimate (`-48` then `-46`), which is its own behaviour and harmless.
+- **`GetVolumePathNameW` only for local paths**, cached per drag and per destination: the call walks
+  the mount-point table, and DragOver runs every 50 ms; a UNC path or mapped drive keeps the string
+  rule so no DragEnter waits on a server (mount points lie on local volumes anyway).
+- **The drag icon is asked of the worker at the press, not warmed at start**: a warm-up render on
+  the UI thread at start could land inside the gate's measured window; the press path costs one
+  channel send and the worker one 64 px render per press, which the gate scenario never makes. Taken
+  in `run_pending_drag` (after one `drain_icons`), not in `drag_start`, so a reply that lands between
+  the threshold and the posted message still counts; a `drag:` key is never cached because the next
+  press may be another row's.
+
+### Deviations
+
+- **Right presses prefetch too** (`SelOp::Context` in `on_select`), so a right-button drag gets the
+  worker's icon as well; a context-menu right-click costs the worker one render it does not use.
+- **`effect_for` gained a parameter** (`same_volume`) instead of looking the volumes up itself, so
+  the lookups could be cached in the target; the tests go through a small `eff` helper.
+- **One repeated `over` line after a tab spring**: the tab's `springs` flips to false when it becomes
+  active, so the (spot, effect) pair changes once more and logs once more. Accepted rather than
+  special-casing the comparison.
+- **The sidebar auto-scroll's bound** is the ListView's estimate (above), not the geometry the hit
+  test uses.
+- **The spring-load time is a constant**, 1000 ms, not a setting: the open question says the number
+  is set at the console; a change is one constant.
+
+### Deferred
+
+- **Our own `GiveFeedback` still returns `DRAGDROP_S_USEDEFAULTCURSORS`**: with a description showing,
+  Explorer's sources handle the cursor themselves ("IsShowingLayered"); ours may show the OLE cursor
+  glyph beside the description's icon. A console check decides whether that is worth changing.
+- **The description text as painted** (Explorer as the source over TwinFM, TwinFM as the source over
+  Explorer and over itself) needs a person at the console: the driver's data objects refuse SetData
+  (the unit test shows the shell's data object stores the block).
+- **Spring-loading a sidebar row or a crumb** (not in the brief).
+- **A spring-load into a folder that then fails to list** leaves the drag over an empty pane (the
+  drop goes to the pane's folder, as any drop onto empty space does).
+- **The pane-to-pane OLE drop stays unscripted** (P2-M4; a scripted drop once landed on another
+  program's window).
+- **`target-p4m1`** is still on disk (superseded 2026-10-15); deletion on Jeremy's word.
+
+### Scripted checks
+
+Harness session (console session active, 1216 x 800 window, scale 1.0, accessibility on), this
+worktree's `target\release\twinfm.exe` from the commit under review, scratch folders under
+`%TEMP%\twinfm-p5m3-manual\` and `%TEMP%\twinfm-p5m3-drag\` (no soak fence), stderr kept; exit code
+0 and no `panicked` line throughout (run by the implementers, quoted from their logs).
+
+- **(i) A row spring-load**, `dragover row 0 0 1300` over a folder row: `[dnd] spring armed: pane 0
+  row 0 (...\a\sub)`, `[dnd] spring-loaded: pane 0 opens ...\a\sub after 1002 ms`, `[nav] pane=0
+  history push ...\a (2 back)`, `[nav] pane=0 gen=5 path=...\a\sub`, `[enum] pane=0 done: 1
+  entries`; the hover then armed on `sub\inner` and ended with `spring disarmed (DragLeave)`.
+- **(ii) A tab spring-load**, `dragover tab 1 1 1300`: `spring armed: pane 1 tab 1 (...\c)`,
+  `spring-loaded: pane 1 shows tab 1 after 1019 ms`, `[tab] pane=1 switched to 2 of 2 (id 3,
+  ...\c)`; a 300 ms hover over the other tab: armed, then `disarmed (DragLeave)`, no switch.
+- **(iii) The grid** (`TWINFM_CONFIG=C:\traces\grid.toml`, read-only): `[settings] file
+  C:\traces\grid.toml (read)`, `[view] pane=0 starts as large icons`, the same `spring armed: pane 0
+  row 0 (...\a\sub)` and `spring-loaded: pane 0 opens ...\a\sub after 1006 ms` on the tile.
+- **(iv) A crumb drop**, `dropfiles crumb 1 -2 copy <file>`: `[dnd] over pane 1 crumb 8 (...\b) keys=0x8
+  ... -> effect copy`, `Drop at pane 1 crumb 8 ...`, `[fileops] done id=1 pane=1 tab=2 Done: Copied 1
+  item` into the parent folder. `dragover crumb 0 -2` gives `over pane 0 crumb 8 (...\a)`; a crumb
+  inside `C:\traces\bigdir.zip` gives `[archive] refused: drop into C:\traces\bigdir.zip (writing
+  into a zip archive is not supported)` and `over nowhere`.
+- **(v) The tab strip's auto-scroll**, seven tabs in the right pane, `dragover strip 1 left 400`
+  then `right`: `auto-scroll pane 1 tab strip left: x -341 -> -221`, `-221 -> -101`, `-101 -> 0`,
+  then `right: 0 -> -120`, `-120 -> -240`, `-240 -> -341`.
+- **(vi) The sidebar's auto-scroll**, 24 scripted bookmarks, `dragover side bottom` then `top`:
+  `auto-scroll sidebar down: content-y 0 -> -24`, `-24 -> -48`, `-46 -> -70`, `-70 -> -94`, `-94 ->
+  -97`, then it stops at the bound; `up: -97 -> -73` ... `-3 -> 0`.
+- **(vii) Descriptions and volumes with the driver**, `dragover 0 bottom 400` then `dropfiles 0 -1
+  auto` from another `%TEMP%` folder: `[dnd] volumes: sources on c:`, `[dnd] volumes: dest
+  C:\...\twinfm-p5m3-drag on c:` (the second drag hit the cache and logged no dest line), `[dnd] drop
+  description: SetData failed 0x80004001` once per drag (the driver's own data object), the move
+  effect as before. The first real drag of a run logs `[dnd] IDragSourceHelper2::SetFlags
+  (DSH_ALLOWDROPDESCRIPTIONTEXT) = 0x00000000`.
+- **(viii) The soak**, `tools/soak-p5m3.ps1 -Minutes 2` on 5db406b: exit 0, 0 `panicked`, 3 cycles,
+  63 jobs (0 failed, 0 cancelled), 0 fence refusals, 0 `waitops` timeouts; 22 drops, 4 drop menus (0
+  busy), 0 drags dropped, grid on/off 4/4, bands 2/2; spring armed 8, spring-loaded rows 2 (two
+  navigations into `spring\inner`), tabs 0, disarmed 6 (the existing `dropfiles tab 0 1` steps arm in
+  DragEnter and disarm with `(Drop)`); crumb drops 2; sidebar and tab-strip auto-scroll 0 (neither
+  overflows in the soak; counted, not required); working set 108.2 MB at 5 s, 180.4 MB at 121 s
+  (peak 190.9), private 106.9 to 140.9 MB; the spring folder held only `inner` after the run.
+- **(ix) The lists are the reference's.** The generated Rust of `target-p5m2` (6b1d0f1) and this
+  build's (5db406b), normalised (a line break after each `;`, `{` and `}`, lines trimmed, `_<digits>`
+  suffixes and the change-tracker, repeater and timer indices to `N`, quoted drive paths blanked),
+  differ in 294 lines outside the list and grid components, all in `InnerPane_root`,
+  `InnerCrumbButton_root` and `InnerApp` (the crumb highlight, the crumb-geometry callbacks and
+  change trackers, `crumb_clip`, `drop_crumb`, the new `App` functions); the list and grid
+  components' region (`InnerFileList_root_` to `InnerFileGridList_root_`, 6,138 normalised lines on
+  each side) in 0.
+- **(x) The crumb reports are not per frame**: the 15 s gate scenario on `C:\traces\bigdir` with a
+  temporary line per report logged 16 reports (none while the lists scroll); without it, two
+  `[crumb] pane=N geometry: 4 crumbs` lines.
+
+### Measurements
+
+In-app, RELATIVE only: harness session with Jeremy's console session active (frame interval p50
+16.4 to 16.5 ms in every run: 60 Hz), 1216 x 800 window, scale 1.0, accessibility on, the gate
+scenario on `C:\traces\bigdir`, `[busy]` over the 10 s after the split, each candidate run (5db406b,
+this worktree's `target\release`) interleaved with `target-p5m2` (6b1d0f1, the reference) by the
+same runner, two sets of six pairs: the first with the reference in the first slot of each pair, the
+second with the candidate first, as the P4-M2 note asks before an in-app "candidate above" is read
+as a cost. No cargo or agent ran beside.
+
+| Pair | set 1: reference first | set 1: P5-M3 second | set 2: P5-M3 first | set 2: reference second |
+|---|---|---|---|---|
+| 1 | 17.3 | 20.2 | 20.3 | 23.4 |
+| 2 | 19.1 | 20.5 | 16.4 | 18.4 |
+| 3 | 18.6 | 19.2 | 16.2 | 19.8 |
+| 4 | 18.6 | 17.7 | 18.3 | 15.5 |
+| 5 | 19.8 | 20.3 | 18.9 | 19.1 |
+| 6 | 18.0 | 17.0 | 18.3 | 18.9 |
+| **median** | **18.6** | **19.7** | **18.3** | **19.0** |
+| composes | 371 strips at 23.3 to 25.7 us | 371 at 23.2 to 25.0 us | 371 at 23.2 to 24.4 us | 371 at 22.1 to 26.8 us |
+
+The second slot of a pair read above the first in nine of the twelve pairs whichever binary sat in
+it (the candidate above in four of six when second, below in five of six when first), so the two
+sets' medians cancel: over all twelve pairs the reference's median is 18.75 and the candidate's
+18.6, inside the reference's own spread (15.5 to 23.4). What the scenario exercises of the branch
+is the drop target's absence (no drag), the crumb geometry reports (two `[crumb] pane=N geometry: 4
+crumbs` lines per candidate run, none while the lists scroll) and the per-crumb `drop-here`
+binding, and the compose figures are the reference's to the microsecond: 371 strips per run in
+every one of the 24 runs. Every run's `[watch]` lines are the two `watching` and two `parent watch
+on` lines; no `[fileops]`, `[undo]`, `[dnd] spring` or `panicked` line. The console triplet decides.
+
+### Gate
+
+`tools/wpr-triplet.ps1 -Reference p5m2 -Candidate p5m3 -Tag ab21`, Jeremy elevated at the
+console, accessibility on, Narrator off, no other TwinFM window: `target-p5m2` (6b1d0f1) against
+`target-p5m3` (the PR head, built with `--locked` from the detached checkout
+`.claude\worktrees\gate-p5m3`). The defaults triplet only (the kickoff: nothing in this milestone
+is per row; the list and grid components are the reference's, (ix) above). Console checks after
+the triplet: the drop descriptions with Explorer as the source over TwinFM and TwinFM as the source
+over Explorer and over its own other pane (and whether the OLE cursor glyph shows beside the
+description's icon, see Deferred); a drag held over a folder row, a tile and a tab for about a
+second; a drop on a crumb; a drag resting at the sidebar's bottom edge with the sidebar
+overflowing, and at a tab strip's end with many tabs; the first drag of a run starting without a
+pause.
+
+Run on 2026-10-16 (15:46 to 15:51), Jeremy elevated at the console, accessibility on, Narrator off,
+no other TwinFM window. `target-p5m2` (6b1d0f1) against `target-p5m3` (074ccb2, the PR head, built with
+`--locked` from the detached checkout `.claude\worktrees\gate-p5m3`). Every run's stderr shows the two
+`watching` and two `parent watch on` lines, the candidate's two `[crumb] pane=N geometry: 4 crumbs`
+lines, and no `[fileops]`, `[undo]`, `spring`, `drop description` or `panicked` line. Analysed with
+`tools/analyze-trace.py --symbols --exe`; traces `C:\traces\twinfm-ab21-*.etl`, reports under
+`C:\traces\export\`.
+
+| Run | reference `target-p5m2`, WPR | P5-M3 `target-p5m3`, WPR | in-app (ref / cand) | peak working set (ref / cand) |
+|---|---|---|---|---|
+| 1 | 17.9% | 17.9% | 19.7 / 20.5 | 154 / 187 MB |
+| 2 | 17.8% | 17.8% | 16.6 / 19.2 | 151 / 150 MB |
+| 3 | 17.7% | 17.9% | 20.9 / 15.6 | 151 / 151 MB |
+| **median** | **17.8%** | **17.9%** | 19.7 / 19.2 | |
+
+**P5-M3 passes the gate**: every run of both binaries sits under the 20% bar, the runs interleave
+(the candidate's 17.8 sits between the reference's 17.7 and 17.9), and the medians differ by 0.1.
+Frame shares, reference runs 1 to 3 / candidate runs 1 to 3 (sampled ms in the window):
+accessibility 199, 200, 182 / 196, 204, 202; render 1053, 1048, 1037 / 1044, 1043, 1040; draw_text
+619, 621, 615 / 637, 588, 614; ListView 331, 323, 344 / 334, 311, 336; timers 634, 633, 628 / 656,
+626, 645; heap 153, 181, 177 / 171, 175, 178. The candidate's reports hold no spring, describe,
+volume or drag frame in the window (the scenario never drags); the crumb geometry's change trackers
+appear only as the Slint runtime's own frames the reference has too. The first candidate run's peak
+working set was 187 MB against 150 to 154 MB in the other five, the same pattern as ab20's first
+candidate run (§ P5-M2 Gate); its busy figure was unremarkable; not explained. The in-app lines
+(15.6 to 20.9) swing wider than the WPR figures and do not decide.
+
+**Console checks, 2026-10-16, Jeremy at the console with the `target-p5m3` build:**
+
+- **A drag from File Explorer onto TwinFM first showed the denied icon and never reached the drop
+  target** (no `DragEnter` line in the log), with the reference build behaving the same, while a drag
+  from TwinFM into File Explorer copied. Cause: TwinFM had been started from the elevated PowerShell
+  the triplet ran in, and Windows blocks drag and drop from a program at the normal integrity level
+  (File Explorer) into an elevated window; the other direction is allowed. Started unelevated, the
+  same drag works: `DragEnter: 1 file(s)`, `volumes: sources on c:`, then per spot `volumes: dest
+  C:\Users\jtkli\Music on c:` with `drop description: Move to "Music"` and `over sidebar row 9
+  (...) -> effect move`, "Videos" the same, `drop description: none` and `effect none` over the
+  file's own Downloads folder, `Move to "tmp"` over the pane, `drop description: cleared` at the
+  drop, `Drop at pane 0 (C:\tmp) ... effect move (reported to the source: none)`, `[fileops] done
+  ... Moved 1 item`; File Explorer's data object took every SetData (no `SetData failed` line). Not
+  a defect; recorded so that console checks always start TwinFM unelevated (the gate script starts
+  it from the elevated console, which is fine for the gate since the scenario never drags).
+- The remaining checks passed (Jeremy, 2026-10-16): the description text under the drag image with
+  File Explorer as the source and as the target and between TwinFM's own panes, a drag held over a
+  folder row, a tile and a tab opening it, a drop on a crumb, the sidebar and tab-strip edge scrolls,
+  and the first drag of a run starting without a pause. **P5-M3 is closed**; merged on Jeremy's word.
+
 ## Open questions
 
 Written 2026-10-15 at the kickoff; the Phase 4 close's open questions are absorbed here.
@@ -886,8 +1204,8 @@ Written 2026-10-15 at the kickoff; the Phase 4 close's open questions are absorb
   move back from `$Recycle.Bin` only when the verb cannot be reached, fails or times out, never
   after a cancel or onto a taken name (§ P5-M2 Decisions). The verb restores synchronously at the
   real bin; both paths leave the `$I` metadata file on disk.
-- **The spring-load delay** (P5-M3): Explorer opens after about a second; the number is set at
-  the console.
+- **The spring-load delay** (P5-M3): 1000 ms as `dnd::SPRING_MS`, a constant until the console says
+  otherwise (§ P5-M3 Decisions).
 - **The Slint whole-row snap patch** (P3-M1 Deferred, P4 Open questions): still Jeremy's call;
   every view switch shows the snap. Nothing in Phase 5 touches the fork.
 - **Upstreaming the two accessibility patches** (`docs/upstream-issue-draft.md`,

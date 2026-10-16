@@ -252,6 +252,10 @@ struct State {
     strip_rows: [Rc<VecModel<StripRow>>; 2],
     /// Each pane's left-button gesture on a row (click, drag, double-click), dnd::Gesture.
     gesture: [dnd::Gesture; 2],
+    /// The drag image's icon asked of the icon worker at the last press on a row
+    /// (`prefetch_drag_icon`): its path, and its pixels once the reply landed. The newest press
+    /// wins; a drag takes it (`run_pending_drag`).
+    drag_icon: Option<(PathBuf, Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>)>,
     /// The rubber band under way (P4-M3, `band.rs`), its last window point, the timer that
     /// scrolls the list while the pointer sits at its edge, and when `[band]` last logged a count.
     band: Option<band::Band>,
@@ -671,6 +675,7 @@ fn set_path(st: &State, app: &App, pane: usize) {
     if let Some(s) = &t.search {
         crumbs.push(Crumb { label: format!("Search: \"{}\"", s.pattern.pattern).into() });
     }
+    crumb_geometry_reset(pane, crumbs.len());
     st.crumb_models[pane].set_vec(crumbs);
     // The window title reads the active pane's one ("TwinFM - <folder>", app.slint).
     let title: SharedString = tab_title(t).into();
@@ -2006,6 +2011,15 @@ fn drain_icons() {
         {
             let mut table = st.icons.borrow_mut();
             while let Ok(r) = st.icon_rx.try_recv() {
+                if icons::is_drag_key(&r.key) {
+                    // A drag image's icon: kept for the press that asked for it, never in the table.
+                    if let (Some((path, slot)), icons::Outcome::Pixels(p)) = (&mut st.drag_icon, r.outcome) {
+                        if r.key == icons::drag_key(path) {
+                            *slot = Some(p);
+                        }
+                    }
+                    continue;
+                }
                 table.complete(r.key, r.size_px, r.outcome);
                 st.icon_counts.replies += 1;
                 any = true;
@@ -2952,6 +2966,7 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
         0 => with_state(|st| {
             let model = st.panes[pane].active().model.clone();
             let selected = model.entry(row).is_some_and(|e| e.selected);
+            prefetch_drag_icon(st, pane, row);
             if let Some(op) = st.gesture[pane].press(row, selected, ctrl, shift) {
                 model.select(op, row);
                 log_select(&model, pane, op, row);
@@ -2985,6 +3000,28 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
         7 => history_button(pane, true),
         _ => {}
     }
+}
+
+/// A press on `row` that may become a drag (the left button, or the right): ask the icon worker
+/// for the drag image's icon now, one channel send, so the drag that may follow finds it rendered
+/// instead of asking the shell on the UI thread (113 ms for the first drag of a run, P2-M4). Not
+/// for a drive row (never dragged) nor for a grid tile showing a real picture (the image is the
+/// tile's).
+fn prefetch_drag_icon(st: &mut State, pane: usize, row: usize) {
+    let Some(app) = st.app.upgrade() else { return };
+    let model = st.model(pane);
+    let Some(e) = model.entry(row) else { return };
+    let grid = st.grid[pane];
+    if e.kind == Kind::Drive || (grid && e.icon >= icons::PLACEHOLDERS) {
+        return;
+    }
+    let scale = app.window().scale_factor();
+    let size_px = if grid { dnd::ImageGeom::tile(scale).icon } else { dnd::ImageGeom::new(scale).icon };
+    let path = st.tab(pane).path.join(e.name.as_str());
+    let generation = model.generation.get();
+    let key = icons::drag_key(&path);
+    let _ = st.icon_tx.send(icons::Request { generation, pane, key, path: path.clone(), size_px, overlay: false, thumbnail: false, row: 0, wanted: 0 });
+    st.drag_icon = Some((path, None));
 }
 
 /// The pointer left the drag threshold with the left button (or, `right`, the right button) down
@@ -3028,6 +3065,7 @@ fn drag_start(pane: usize, row: usize, right: bool) {
             cached: Some(st.icons.borrow().buffer(shown.icon).clone()),
             tile: window_layout(&app).grid[pane].is_some(),
             tile_picture: shown.icon >= icons::PLACEHOLDERS,
+            prefetched: None,
             count: names.len(),
             scale: app.window().scale_factor(),
         };
@@ -3062,7 +3100,7 @@ pub fn drag_pending() -> bool {
 /// `WM_RUN_DRAG` arrived (the permanent subclass, dispatched by winit's message loop outside its
 /// event handler): run the pending drag. `DoDragDrop` runs a modal loop; no borrow is held.
 pub fn run_pending_drag() {
-    let Some((pane, req)) = PENDING_DRAG.with(|p| p.borrow_mut().take()) else { return };
+    let Some((pane, mut req)) = PENDING_DRAG.with(|p| p.borrow_mut().take()) else { return };
     let right = req.right;
     if !state_is_free() {
         // Not expected: the message is dispatched by an event loop, never inside a borrow.
@@ -3070,6 +3108,16 @@ pub fn run_pending_drag() {
         with_state(|st| st.gesture[pane].drag_ended());
         return slint::Timer::single_shot(Duration::ZERO, move || release_after_drag(right));
     }
+    // The drag image's icon from the press, when the icon worker has answered it (its reply may
+    // still wait in the channel: the posted message can come before the worker's wake-up).
+    drain_icons();
+    with_state(|st| {
+        if let (Some(img), Some((path, Some(p)))) = (req.image.as_mut(), st.drag_icon.take()) {
+            if path == img.path {
+                img.prefetched = Some(p);
+            }
+        }
+    });
     // MODAL LOOP: no borrow held (see dnd). A drop on our own other pane comes back through our
     // drop target from inside this call, and its job is posted to the event loop.
     let res = dnd::drag(&req);
@@ -3223,7 +3271,8 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
         let content_y = [app.invoke_get_scroll(0), app.invoke_get_scroll(1)];
         let len = [st.model(0).len(), st.model(1).len()];
         let side_rows = side_rows(st, &app);
-        let strips = strips(st, &app, &side_rows);
+        let (crumb_row, crumbs) = crumb_geometry_now(&app);
+        let strips = strips(st, &app, &side_rows, crumb_row, &crumbs);
         let (pane, row) = match dnd::hit_all(&layout, &strips, px as f32 / scale, py as f32 / scale, content_y, len) {
             dnd::Spot::Outside => return None,
             dnd::Spot::Pane(p) => (p, None),
@@ -3234,9 +3283,10 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 if fs::archive::inside(&dest) {
                     return refuse_archive_drop(&dest);
                 }
-                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest });
+                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest, springs: false });
             }
-            // A tab's folder; a tab on This PC is no folder.
+            // A tab's folder; a tab on This PC is no folder. A tab other than the active one opens
+            // when the drag is held over it.
             dnd::Spot::Tab(p, i) => {
                 let tab = st.panes[p].iter().nth(i)?;
                 if tab.search.is_some() {
@@ -3250,7 +3300,26 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 if fs::archive::inside(&dest) {
                     return refuse_archive_drop(&dest);
                 }
-                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Tab(i), dest });
+                let springs = st.panes[p].active_index() != i;
+                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Tab(i), dest, springs });
+            }
+            // A crumb's folder (the This PC crumb is none). A search tab's breadcrumb is its root's
+            // crumbs, real folders, then the search's own crumb, which is no folder.
+            dnd::Spot::Crumb(p, i) => {
+                let tab = st.tab(p);
+                let Some(c) = pathbar::crumbs(&tab.path.to_string_lossy()).into_iter().nth(i) else {
+                    if tab.search.is_some() {
+                        refuse_search_drop(p, tab.id);
+                    }
+                    return None;
+                };
+                if is_this_pc(&c.target.to_string_lossy()) {
+                    return None;
+                }
+                if fs::archive::inside(&c.target) {
+                    return refuse_archive_drop(&c.target);
+                }
+                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Crumb(i), dest: c.target, springs: false });
             }
         };
         if st.is_search(pane) {
@@ -3265,7 +3334,8 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
         let this_pc = is_this_pc(&folder.to_string_lossy());
         let (dest, on_row) = dnd::drop_folder(folder, this_pc, entry.as_ref().map(|e| (e.name.as_str(), e.is_dir())))?;
         let row = if on_row { row.map_or(-1, |r| r as i32) } else { -1 };
-        Some(dnd::DropSpot { pane, mark: dnd::Mark::Row(row), dest })
+        // A folder row or tile (a drive row on This PC too) opens when the drag is held over it.
+        Some(dnd::DropSpot { pane, mark: dnd::Mark::Row(row), dest, springs: row >= 0 })
     })
 }
 
@@ -3285,15 +3355,100 @@ fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
         .collect()
 }
 
-/// The sidebar and the tab strips for `dnd::hit_all`.
-fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)]) -> dnd::Strips<'a> {
+/// The sidebar, the tab strips and the breadcrumbs (`crumb_geometry_now`) for `dnd::hit_all`.
+fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)], crumb_row: [(f32, f32); 2], crumbs: &'a [Vec<(f32, f32)>; 2]) -> dnd::Strips<'a> {
     let tab = |p: usize| (st.panes[p].len(), app.invoke_tab_width(p as i32), app.invoke_tab_offset(p as i32));
     dnd::Strips {
         side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { 0.0 },
         side_scroll: app.invoke_side_scroll(),
         side_rows,
         tabs: [tab(0), tab(1)],
+        crumb_row,
+        crumbs: [&crumbs[0], &crumbs[1]],
     }
+}
+
+/// One pane's breadcrumb geometry as Slint reports it (`crumb-geometry`): the crumb row's offset
+/// in the bar and the width the bar shows of it, each crumb's x in the row and its label's width
+/// (None until that crumb has reported), and whether the full set was logged.
+struct CrumbGeom {
+    row: (f32, f32),
+    crumbs: Vec<Option<(f32, f32)>>,
+    logged: bool,
+}
+
+thread_local! {
+    /// Both panes' breadcrumb geometry. Kept outside the app state: Slint reports it from its
+    /// instantiation and change-handler passes, which a call holding the state's borrow could
+    /// set off. Until the bar's width is reported, the whole row counts as shown.
+    static CRUMB_GEOM: RefCell<[CrumbGeom; 2]> = const {
+        RefCell::new([
+            CrumbGeom { row: (0.0, f32::MAX), crumbs: Vec::new(), logged: false },
+            CrumbGeom { row: (0.0, f32::MAX), crumbs: Vec::new(), logged: false },
+        ])
+    };
+}
+
+/// The pane's breadcrumb was rebuilt with `n` crumbs (`set_path`): their geometry comes again as
+/// Slint makes the buttons.
+fn crumb_geometry_reset(pane: usize, n: usize) {
+    CRUMB_GEOM.with(|g| {
+        let g = &mut g.borrow_mut()[pane];
+        g.crumbs = vec![None; n];
+        g.logged = false;
+    });
+}
+
+/// `crumb-geometry(pane, index, x, width)` from pane.slint: crumb `index`'s x in the crumb row and
+/// its label's width, or with index -1 the row's offset in the bar and the bar's shown width. Once
+/// per crumb when the path is rebuilt and once per change of its place after that (a resize, the
+/// filter box opening); one `[crumb]` line per rebuild, when every crumb has reported.
+fn crumb_geometry(pane: usize, index: i32, x: f32, w: f32) {
+    CRUMB_GEOM.with(|g| {
+        let g = &mut g.borrow_mut()[pane];
+        match usize::try_from(index) {
+            Err(_) => g.row = (x, w),
+            Ok(i) => {
+                if let Some(c) = g.crumbs.get_mut(i) {
+                    *c = Some((x, w));
+                }
+            }
+        }
+        if !g.logged && !g.crumbs.is_empty() && g.crumbs.iter().all(Option::is_some) {
+            g.logged = true;
+            eprintln!("[crumb] pane={pane} geometry: {} crumbs", g.crumbs.len());
+        }
+    });
+}
+
+/// The breadcrumbs as `dnd::Strips` takes them: each pane's row offset and shown width, and its
+/// crumbs (none while its bar shows the text entry; a crumb that has not reported yet has no
+/// width, so nothing hits it).
+fn crumb_geometry_now(app: &App) -> ([(f32, f32); 2], [Vec<(f32, f32)>; 2]) {
+    CRUMB_GEOM.with(|g| {
+        let g = g.borrow();
+        let crumbs = |p: usize| {
+            if app.invoke_path_entry_shown(p as i32) { Vec::new() } else { g[p].crumbs.iter().map(|c| c.unwrap_or((0.0, 0.0))).collect() }
+        };
+        ([g[0].row, g[1].row], [crumbs(0), crumbs(1)])
+    })
+}
+
+/// For the driver's `dropfiles crumb` and `dragover crumb`: the centre of crumb `i`'s label in the
+/// window (logical px); a negative `i` counts from the end (-1: the folder itself, -2 its parent).
+/// None when the crumb is not on screen.
+pub fn crumb_centre(app: &App, pane: usize, i: i32) -> Option<slint::LogicalPosition> {
+    let (row, crumbs) = crumb_geometry_now(app);
+    let c = &crumbs[pane];
+    let i = if i < 0 { c.len().checked_sub(i.unsigned_abs() as usize)? } else { i as usize };
+    let (x, w) = *c.get(i)?;
+    let layout = window_layout(app);
+    let bx = row[pane].0 + x + w / 2.0;
+    if w <= 0.0 || bx < 0.0 || bx >= row[pane].1 {
+        return None;
+    }
+    let (left, _) = dnd::pane_x(&layout, pane);
+    Some(slint::LogicalPosition::new(left + dnd::PANE_PAD + bx, dnd::crumb_top(&layout, pane) + dnd::CRUMB_H / 2.0))
 }
 
 /// For the driver's `dropfiles side <row>`: sidebar row `i`'s vertical centre in the window
@@ -3309,9 +3464,20 @@ pub fn side_row_centre(i: i32) -> Option<f32> {
     })
 }
 
+/// What `drop_autoscroll` scrolls, read under the state's borrow: a list's line (`edge_line`); the
+/// sidebar list in a direction; a pane's tab strip in a direction, with its tab count and its
+/// width.
+enum AutoScroll {
+    List(EdgeLine),
+    Side(App, i32),
+    Strip(App, usize, i32, f32, f32),
+}
+
 /// For the drop target's DragOver: a drag hovering near a list's top or bottom edge (client
-/// point, physical px) scrolls that list by one row. True when it scrolled. The state is read
-/// under a short borrow, released before the scroll is set (`set-scroll` is a property set).
+/// point, physical px) scrolls that list by one row; near the sidebar list's top or bottom, that
+/// list by one 24 px row (sidebar.slint `SideRow`); near either end of a tab strip whose tabs
+/// overflow it, the strip by one tab. True when it scrolled. The state is read under a short
+/// borrow, released before the scroll is set (each scroll is a property set).
 pub fn drop_autoscroll(px: i32, py: i32) -> bool {
     let found = STATE.with(|s| {
         let guard = s.try_borrow().ok()?;
@@ -3319,13 +3485,47 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
         let app = st.app.upgrade()?;
         let scale = app.window().scale_factor();
         let layout = window_layout(&app);
-        let (pane, dir) = dnd::edge_scroll(&layout, px as f32 / scale, py as f32 / scale)?;
-        Some(edge_line(st, &app, &layout, pane, dir))
+        let side_rows = side_rows(st, &app);
+        // The edges need no crumbs.
+        let no_crumbs = [Vec::new(), Vec::new()];
+        let strips = strips(st, &app, &side_rows, [(0.0, 0.0); 2], &no_crumbs);
+        Some(match dnd::edge_scroll_all(&layout, &strips, px as f32 / scale, py as f32 / scale)? {
+            dnd::Edge::List(pane, dir) => AutoScroll::List(edge_line(st, &app, &layout, pane, dir)),
+            dnd::Edge::Side(dir) => AutoScroll::Side(app.clone_strong(), dir),
+            dnd::Edge::Strip(pane, dir) => {
+                let (a, b) = dnd::pane_x(&layout, pane);
+                AutoScroll::Strip(app.clone_strong(), pane, dir, st.panes[pane].len() as f32, b - a - 2.0 * dnd::PANE_PAD)
+            }
+        })
     });
-    let Some(line) = found else { return false };
-    let Some((pane, dir, from, to)) = scroll_line(line) else { return false };
+    let Some(scroll) = found else { return false };
+    match scroll {
+        AutoScroll::List(line) => {
+            let Some((pane, dir, from, to)) = scroll_line(line) else { return false };
+            eprintln!("[dnd] auto-scroll pane {pane} {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
+        }
+        AutoScroll::Side(app, dir) => {
+            // The ListView's own content height (an estimate for rows of mixed heights, a px or
+            // two off their sum, which it corrects as it scrolls), so the end is where it stops.
+            let from = app.invoke_side_scroll();
+            let to = dnd::scroll_step(from, dir, 24.0, app.invoke_side_content_height(), app.invoke_side_visible_height());
+            if to == from {
+                return false;
+            }
+            app.invoke_set_side_scroll(to);
+            eprintln!("[dnd] auto-scroll sidebar {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
+        }
+        AutoScroll::Strip(app, pane, dir, tabs, visible) => {
+            let (w, from) = (app.invoke_tab_width(pane as i32), app.invoke_tab_offset(pane as i32));
+            let to = dnd::scroll_step(from, dir, w, tabs * w, visible);
+            if to == from {
+                return false;
+            }
+            app.invoke_set_tab_scroll(pane as i32, to);
+            eprintln!("[dnd] auto-scroll pane {pane} tab strip {}: x {from:.0} -> {to:.0}", if dir < 0 { "left" } else { "right" });
+        }
+    }
     dnd::repaint_during_own_drag();
-    eprintln!("[dnd] auto-scroll pane {pane} {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
     true
 }
 
@@ -3524,7 +3724,8 @@ fn band_restore(pane: usize, b: &band::Band, why: &str) {
 }
 
 /// For the drop target: highlight what a drop would land on (a pane's row, or with row -1 its
-/// whole list; a tab; a sidebar row), or nothing. Sets the properties only when they change.
+/// whole list; a tab; a sidebar row; a crumb), or nothing. Sets the properties only when they
+/// change.
 pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
     // The sidebar row's place, under a short borrow (only for a sidebar mark).
     let found = STATE.with(|s| {
@@ -3541,20 +3742,26 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
         Some((app, side))
     });
     let Some((app, side)) = found else { return };
-    let (pane, row, tab_pane, tab) = match at {
-        Some((p, dnd::Mark::Row(r))) => (p as i32, r, -1, -1),
-        Some((p, dnd::Mark::Tab(i))) => (-1, -1, p as i32, i as i32),
-        _ => (-1, -1, -1, -1),
+    let (pane, row, tab_pane, tab, crumb_pane, crumb) = match at {
+        Some((p, dnd::Mark::Row(r))) => (p as i32, r, -1, -1, -1, -1),
+        Some((p, dnd::Mark::Tab(i))) => (-1, -1, p as i32, i as i32, -1, -1),
+        Some((p, dnd::Mark::Crumb(i))) => (-1, -1, -1, -1, p as i32, i as i32),
+        _ => (-1, -1, -1, -1, -1, -1),
     };
     let (side_row, side_y, side_h) = side.unwrap_or((-1, 0.0, 0.0));
-    let now = (app.get_drop_pane(), app.get_drop_row(), app.get_drop_tab_pane(), app.get_drop_tab(), app.get_drop_side_row());
-    if now == (pane, row, tab_pane, tab, side_row) {
+    let now = (
+        (app.get_drop_pane(), app.get_drop_row(), app.get_drop_tab_pane(), app.get_drop_tab(), app.get_drop_side_row()),
+        (app.get_drop_crumb_pane(), app.get_drop_crumb()),
+    );
+    if now == ((pane, row, tab_pane, tab, side_row), (crumb_pane, crumb)) {
         return;
     }
     app.set_drop_pane(pane);
     app.set_drop_row(row);
     app.set_drop_tab_pane(tab_pane);
     app.set_drop_tab(tab);
+    app.set_drop_crumb_pane(crumb_pane);
+    app.set_drop_crumb(crumb);
     app.set_drop_side_y(side_y);
     app.set_drop_side_h(side_h);
     app.set_drop_side_row(side_row);
@@ -3570,6 +3777,24 @@ pub fn drop_files(pane: usize, sources: Vec<PathBuf>, dest: PathBuf, effect: u32
         eprintln!("[dnd] drop into pane {pane}: {} {} item(s) to {}", dnd::effect_name(effect), sources.len(), dest.display());
         let job = if effect == dnd::MOVE { Job::Move { sources, dest_dir: dest } } else { Job::Copy { sources, dest_dir: dest } };
         submit(st, &app, pane, job);
+    });
+}
+
+/// A drag held over a folder row or tile (`dnd::Spring`): that pane's active tab opens it, as a
+/// click would. Called from DragOver, which may run inside our own drag loop, so the navigation
+/// runs from the event loop, as the closures that loop already runs do (they take `with_state`
+/// and open no modal loop).
+pub fn spring_open(pane: usize, dest: PathBuf) {
+    let _ = slint::invoke_from_event_loop(move || navigate(pane, dest));
+}
+
+/// A drag held over tab `index` of the pane's strip: it becomes the pane's active tab, as a
+/// click on it does (`tab-select`), through the event loop as `spring_open` does.
+pub fn spring_tab(pane: usize, index: usize) {
+    let _ = slint::invoke_from_event_loop(move || {
+        switch_tab(pane, |t| {
+            t.select(index);
+        })
     });
 }
 
@@ -4501,6 +4726,7 @@ fn main() -> Result<(), slint::PlatformError> {
             grid_slots: Default::default(),
             strip_rows,
             gesture: Default::default(),
+            drag_icon: None,
             band: None,
             band_at: (0.0, 0.0),
             band_timer: slint::Timer::default(),
@@ -4589,6 +4815,10 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         }
         with_state(|st| {
+            if op == SelOp::Context {
+                // A right press on a row, which may become a right-button drag.
+                prefetch_drag_icon(st, pane as usize, row as usize);
+            }
             let model = st.model(pane as usize);
             model.select(op, row.max(0) as usize);
             eprintln!("[select] pane={pane} {op:?} row={row} selected={}", model.selected_count());
@@ -4675,6 +4905,7 @@ fn main() -> Result<(), slint::PlatformError> {
             crumb_menu(pane as usize, i, x, y);
         }
     });
+    app.on_crumb_geometry(|pane, i, x, w| crumb_geometry(pane as usize, i, x, w));
     app.on_crumb_pick(|i| {
         if let Ok(i) = usize::try_from(i) {
             crumb_pick(i);
