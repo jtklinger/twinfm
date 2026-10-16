@@ -11,7 +11,8 @@ deferred and the Phase 4 candidates), `docs/phase-4-plan.md` the Phase 4 record 
 grid with thumbnails, three milestones, closed 2026-10-15; § Phase 4 close holds what is deferred
 and the Phase 5 candidates; settings triplets are part of its gate), `docs/phase-5-plan.md` the
 Phase 5 record (the Phase 2 lists finished: directory watching, file operations, drag and drop;
-three milestones, kicked off 2026-10-15). Read them before changing the list.
+three milestones, closed 2026-10-16; § Phase 5 close holds what is deferred and the Phase 6
+candidates). Read them before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (176 tests; eight touch the real shell and clipboard, one of them the Recycle
