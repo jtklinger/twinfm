@@ -9,6 +9,7 @@ mod fs {
 }
 mod auto;
 mod band;
+mod cloud;
 mod devices;
 mod dnd;
 mod fileops;
@@ -54,8 +55,8 @@ struct IconCounts {
     composes: u64,
     compose_ns: u64,
     /// (requests, replies, worker renders, worker ns, composes, overlays, slow renders,
-    /// thumbnails, thumbnail ns, thumbnails dropped) at the last report.
-    reported: (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64),
+    /// thumbnails, thumbnail ns, thumbnails dropped, cloud lookups) at the last report.
+    reported: (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64),
 }
 
 /// Per-tab timing bookkeeping for the gate measurements.
@@ -209,6 +210,8 @@ struct State {
     icon_views: Arc<icons::Views>,
     resolve_seq: [u64; 2],
     icon_stats: Arc<icons::Stats>,
+    /// The sync roots and Google Drive volumes: which folders carry cloud marks (P6-M1).
+    cloud: cloud::Locations,
     icon_counts: IconCounts,
     /// The (content-y, visible-height) each list last reported, in logical px.
     view: [(f32, f32); 2],
@@ -551,7 +554,8 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         app.invoke_reset_scroll(pane as i32);
         eprintln!("[nav] pane={pane} gen={generation} path={shown}");
         let tx = st.tx.clone();
-        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, tx, wake);
+        let cloud = cloud_of(st, pane, &path);
+        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, cloud, tx, wake);
         schedule_save(st);
     });
 }
@@ -582,8 +586,23 @@ fn refresh(pane: usize) {
             fs::enumerate::spawn_search(path, pattern, hidden, cancel, pane, generation, st.tx.clone(), wake);
             return;
         }
-        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, st.tx.clone(), wake);
+        let cloud = cloud_of(st, pane, &path);
+        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, cloud, st.tx.clone(), wake);
     });
+}
+
+/// The folder's cloud location (`cloud::Locations::of`), logged when it has one; This PC and
+/// archive levels have none (nor do search tabs, which never come here).
+fn cloud_of(st: &mut State, pane: usize, path: &Path) -> icons::Cloud {
+    if is_this_pc(&path.to_string_lossy()) || fs::archive::split(path).is_some() {
+        return icons::Cloud::None;
+    }
+    let c = st.cloud.of(path);
+    if c != icons::Cloud::None {
+        let what = if c == icons::Cloud::SyncRoot { "sync root" } else { "google drive" };
+        eprintln!("[cloud] pane={pane} {}: {what}", path.display());
+    }
+    c
 }
 
 /// The pane's status bar from its active tab: items, hidden, note and error on the left, the
@@ -1053,6 +1072,8 @@ struct StatJob {
     generation: u64,
     pass: u64,
     thumbnails: bool,
+    /// The folder's cloud location, for the edited entries' keys.
+    cloud: icons::Cloud,
     /// The listing is younger than the longest window (`young_listing`): a name it does not have
     /// may be one the window's early records saw go before the listing began.
     young: bool,
@@ -1079,7 +1100,7 @@ fn edit_worker() -> Sender<StatJob> {
                 let t0 = Instant::now();
                 let dir = stat_dir(&job.path);
                 let mut types = fs::enumerate::TypeNames::default();
-                let mut keys = icons::IconKeys::new(job.path.clone(), job.thumbnails);
+                let mut keys = icons::IconKeys::new(job.path.clone(), job.thumbnails).with_cloud(job.cloud);
                 let zone = model::LocalZone::current();
                 let mut failed = false;
                 let (edits, vanished) = edits_from(&job.changes, |n| {
@@ -1231,7 +1252,10 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                             pass: t.model.pass.get(),
                             young: young_listing(t),
                             thumbnails: st.config.thumbnails,
+                            cloud: icons::Cloud::None,
                         };
+                        let cloud = st.cloud.of(&job.path);
+                        let job = StatJob { cloud, ..job };
                         let _ = st.stat_tx.send(job);
                         return;
                     }
@@ -1798,8 +1822,9 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
         let path = if e.kind == Kind::Drive { PathBuf::from(e.name.as_str()) } else { folder.join(e.name.as_str()) };
         let overlay = icons::wants_overlay(e.kind, e.attrs, &e.name);
         let thumbnail = thumbs && e.icon_key.starts_with("thumb:");
-        let (row, wanted) = if thumbnail { (i, wanted) } else { (0, 0) };
-        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay, thumbnail, row, wanted });
+        let (row, wanted) = if thumbnail { (i, wanted) } else { (if icons::is_look_key(&e.icon_key) { i } else { 0 }, 0) };
+        let mark = icons::key_mark(&e.icon_key);
+        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay, thumbnail, row, wanted, mark });
         sent += 1;
     };
     let changed = if thumbs {
@@ -2008,6 +2033,7 @@ fn drain_icons() {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let mut any = false;
+        let mut looked = Vec::new();
         {
             let mut table = st.icons.borrow_mut();
             while let Ok(r) = st.icon_rx.try_recv() {
@@ -2020,9 +2046,19 @@ fn drain_icons() {
                     }
                     continue;
                 }
+                if let icons::Outcome::Looked(mark) = r.outcome {
+                    looked.push((r.pane, r.row, r.key.clone(), mark));
+                }
                 table.complete(r.key, r.size_px, r.outcome);
                 st.icon_counts.replies += 1;
                 any = true;
+            }
+        }
+        // A lookup's entry takes its marked key (a placeholder until that key's icon lands; a
+        // reply whose entry is gone, refreshed or navigated away, finds nothing).
+        for (pane, row, key, mark) in looked {
+            if let Some(to) = icons::looked(&key, mark) {
+                st.panes[pane].active().model.relabel(row, &key, to.into());
             }
         }
         if any {
@@ -2045,14 +2081,15 @@ fn report_icons() {
         let thumbs = st.icon_stats.thumbs.load(Ordering::Relaxed);
         let thumb_ns = st.icon_stats.thumb_ns.load(Ordering::Relaxed);
         let dropped = st.icon_stats.dropped.load(Ordering::Relaxed);
-        let (req0, rep0, ren0, ns0, comp0, ov0, slow0, th0, tns0, drop0) = c.reported;
+        let cloud = st.icon_stats.cloud.load(Ordering::Relaxed);
+        let (req0, rep0, ren0, ns0, comp0, ov0, slow0, th0, tns0, drop0, cloud0) = c.reported;
         if c.requests == req0 && c.replies == rep0 && c.composes == comp0 {
             return;
         }
         let n = rendered - ren0;
         let t = thumbs - th0;
         eprintln!(
-            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, thumbs {t} avg {:.2} ms dropped {}, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
+            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, thumbs {t} avg {:.2} ms dropped {}, cloud {}, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
             c.requests - req0,
             c.replies - rep0,
             c.requests,
@@ -2063,12 +2100,13 @@ fn report_icons() {
             slow - slow0,
             if t > 0 { (thumb_ns - tns0) as f64 / t as f64 / 1e6 } else { 0.0 },
             dropped - drop0,
+            cloud - cloud0,
             c.resolves,
             if c.resolves > 0 { c.resolve_ns as f64 / c.resolves as f64 / 1e3 } else { 0.0 },
             c.composes,
             if c.composes > 0 { c.compose_ns as f64 / c.composes as f64 / 1e3 } else { 0.0 },
         );
-        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes, overlays, slow, thumbs, thumb_ns, dropped);
+        c.reported = (c.requests, c.replies, rendered, render_ns, c.composes, overlays, slow, thumbs, thumb_ns, dropped, cloud);
     });
 }
 
@@ -3020,7 +3058,7 @@ fn prefetch_drag_icon(st: &mut State, pane: usize, row: usize) {
     let path = st.tab(pane).path.join(e.name.as_str());
     let generation = model.generation.get();
     let key = icons::drag_key(&path);
-    let _ = st.icon_tx.send(icons::Request { generation, pane, key, path: path.clone(), size_px, overlay: false, thumbnail: false, row: 0, wanted: 0 });
+    let _ = st.icon_tx.send(icons::Request { generation, pane, key, path: path.clone(), size_px, overlay: false, thumbnail: false, row: 0, wanted: 0, mark: icons::Mark::None });
     st.drag_icon = Some((path, None));
 }
 
@@ -4158,6 +4196,7 @@ fn devices_changed() {
         (0..2).filter(|&p| (p == 0 || split) && is_this_pc(&st.tab(p).path.to_string_lossy())).collect::<Vec<_>>()
     });
     eprintln!("[devices] drives changed: drive list re-read, This PC refreshed in {} pane(s)", panes.len());
+    with_state(|st| st.cloud.reload());
     refresh_drives();
     for p in panes {
         refresh(p);
@@ -4706,6 +4745,7 @@ fn main() -> Result<(), slint::PlatformError> {
             icon_views,
             resolve_seq: [0; 2],
             icon_stats,
+            cloud: cloud::Locations::load(),
             icon_counts: IconCounts::default(),
             view: [(0.0, 0.0); 2],
             ops,
