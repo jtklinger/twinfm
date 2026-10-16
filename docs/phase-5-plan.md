@@ -1144,7 +1144,36 @@ second; a drop on a crumb; a drag resting at the sidebar's bottom edge with the 
 overflowing, and at a tab strip's end with many tabs; the first drag of a run starting without a
 pause.
 
-The triplet's table is recorded here once Jeremy has run it; the milestone is not closed until then.
+Run on 2026-10-16 (15:46 to 15:51), Jeremy elevated at the console, accessibility on, Narrator off,
+no other TwinFM window. `target-p5m2` (6b1d0f1) against `target-p5m3` (074ccb2, the PR head, built with
+`--locked` from the detached checkout `.claude\worktrees\gate-p5m3`). Every run's stderr shows the two
+`watching` and two `parent watch on` lines, the candidate's two `[crumb] pane=N geometry: 4 crumbs`
+lines, and no `[fileops]`, `[undo]`, `spring`, `drop description` or `panicked` line. Analysed with
+`tools/analyze-trace.py --symbols --exe`; traces `C:	races	winfm-ab21-*.etl`, reports under
+`C:	races\export\`.
+
+| Run | reference `target-p5m2`, WPR | P5-M3 `target-p5m3`, WPR | in-app (ref / cand) | peak working set (ref / cand) |
+|---|---|---|---|---|
+| 1 | 17.9% | 17.9% | 19.7 / 20.5 | 154 / 187 MB |
+| 2 | 17.8% | 17.8% | 16.6 / 19.2 | 151 / 150 MB |
+| 3 | 17.7% | 17.9% | 20.9 / 15.6 | 151 / 151 MB |
+| **median** | **17.8%** | **17.9%** | 19.7 / 19.2 | |
+
+**P5-M3 passes the gate**: every run of both binaries sits under the 20% bar, the runs interleave
+(the candidate's 17.8 sits between the reference's 17.7 and 17.9), and the medians differ by 0.1.
+Frame shares, reference runs 1 to 3 / candidate runs 1 to 3 (sampled ms in the window):
+accessibility 199, 200, 182 / 196, 204, 202; render 1053, 1048, 1037 / 1044, 1043, 1040; draw_text
+619, 621, 615 / 637, 588, 614; ListView 331, 323, 344 / 334, 311, 336; timers 634, 633, 628 / 656,
+626, 645; heap 153, 181, 177 / 171, 175, 178. The candidate's reports hold no spring, describe,
+volume or drag frame in the window (the scenario never drags); the crumb geometry's change trackers
+appear only as the Slint runtime's own frames the reference has too. The first candidate run's peak
+working set was 187 MB against 150 to 154 MB in the other five, the same pattern as ab20's first
+candidate run (§ P5-M2 Gate); its busy figure was unremarkable; not explained. The in-app lines
+(15.6 to 20.9) swing wider than the WPR figures and do not decide.
+
+Console checks, 2026-10-16, Jeremy at the console with the `target-p5m3` build: in progress. First
+finding: **a drag from File Explorer onto TwinFM shows the denied icon and does not drop**, while a
+drag from TwinFM to File Explorer copies. Under investigation (below) before the merge.
 
 ## Open questions
 
