@@ -1191,9 +1191,271 @@ candidate run (§ P5-M2 Gate); its busy figure was unremarkable; not explained. 
   folder row, a tile and a tab opening it, a drop on a crumb, the sidebar and tab-strip edge scrolls,
   and the first drag of a run starting without a pause. **P5-M3 is closed**; merged on Jeremy's word.
 
+## Phase 5 close
+
+Written 2026-10-16. P5-M1 to P5-M3 are in, each squash-merged on Jeremy's word: P5-M1 directory
+watching finished (#46, 3131d06; PR head ef7f057; no gate build of its own, its triplet deferred
+to P5-M2's, below), P5-M2 file operations finished (#47, 876a0b9; gate build `target-p5m2`,
+6b1d0f1, the PR head), P5-M3 drag and drop finished (#48, ca798cd; gate build `target-p5m3`,
+074ccb2, the PR head). The phase ran from the kickoff (#45, bdd6c34, 2026-10-15) to the last merge
+on 2026-10-16, two days. Tests went from 134 at the start of P5-M1 to 176 (159 after P5-M1, 171
+after P5-M2).
+
+Phase 5's goal, "TwinFM finishes the Phase 2 lists still open" (chosen 2026-10-15), held: the
+directory watching, file operation and drag-and-drop items deferred from P2-M1, P2-M2 and P2-M4
+and carried through two phases are in, and the gate gave nothing back. Milestone by milestone:
+
+- **P5-M1, directory watching finished** (#46, 3131d06, from bdd6c34). The plain watch's records
+  are parsed and folded per name into their net effect (departures first, so a safe-save loses
+  nothing) and reach the listing as row edits (`apply_edits`, all-or-nothing, the cursor, the
+  selection and the cut marks following), with the whole-folder refresh kept as the fallback for
+  an overflow, a listing or pass in flight, a network path, more than 500 edits or an unknown name,
+  every fallback logged with its reason. Background tabs are watched under a cap of 8 handles for
+  the app; a parent watch on the active tabs follows the folder's own rename and notices its
+  delete; a window our own job explains is not refreshed again; a folder that keeps changing backs
+  off from 250 ms to 2 s; network shares are watched with the blocking calls on helper threads and a
+  stalled open refused for 30 s; removable drives are watched and still eject. Its gate was not run
+  before the merge: Jeremy deferred the ab20 triplet to run after P5-M2 (§ P5-M1 Gate), on the
+  strength of the in-app pairs (the candidate below the reference in all three defaults pairs,
+  medians 17.0 against 19.1; the grid 10.5 against 10.3, inside the reference's spread) and the
+  generated rows being the reference's (6,091 lines, 0 differences). The one triplet judged both
+  milestones, at the cost that a gap would have been bisected across two. Its console checks ran
+  with P5-M2's on 2026-10-16 on the `target-p5m2` build: a USB stick written to from Explorer,
+  "Safely remove" succeeding, the stick re-inserted; a folder renamed in Explorer under a tab, the
+  path bar following; a background tab written into, then selected, its rows there with no
+  re-listing. A dead share was not available: that check stays owed.
+- **P5-M2, file operations finished** (#47, 876a0b9, from 3131d06). Redo (Ctrl+Y, a second stack,
+  cleared by the next job that changed something), undo of a delete to the Recycle Bin through the
+  bin's own "undelete" verb with a move back from `$Recycle.Bin` as the fallback (never after a
+  cancel, refused when the original path is taken), undo of a move the shell renamed on collision
+  by a `MoveAs` back under the old names, Ctrl+Z and Ctrl+Y refused while a job runs, the cut
+  row's icon dimmed at compose time in both views, and the running job's percentage in the status
+  bar beside its note (at most four hops a second, throttled on the worker). Gate ab20 on
+  2026-10-16, `target-p4m3` (53dbc50) against `target-p5m2` (6b1d0f1): WPR medians 18.5% for the
+  reference, 17.4% for the defaults candidate and 10.0% for the grid candidate, every run under the
+  bar, the runs interleaving (18.4 against 18.5 and 17.6; 17.3 and 17.4 below all three), the
+  grid's 10.0 beside P4-M3's own 10.2 (ab19); the frame shares the reference's, with no fileops,
+  undo, compose, `cut_flags` or `dim_line` frame in any candidate window. Console checks the same
+  day: the delete, Ctrl+Z, Ctrl+Y round trip with Explorer's Recycle Bin agreeing at each step; the
+  busy refusal during a copy; the taken-name refusal (as designed; the order of the steps decides
+  which of the two outcomes a person sees); the dimmed icon in both views; the percentage climbing
+  beside the shell's window; a collision move undone back under its original name. Two findings
+  went to Deferred: a delete through the shell context menu leaves no undo record, and Escape does
+  not cancel a cut.
+- **P5-M3, drag and drop finished** (#48, ca798cd, from 876a0b9). Spring-loaded folder rows, tiles
+  and inactive tabs after 1000 ms, clocked by OLE's own DragOver calls (no timer of ours can run
+  inside our drag loop), opened from the event loop, once per spot until the pointer leaves it,
+  for our own drags and other programs' alike; drop descriptions ("Move to", "Copy to", the
+  shell's "not allowed" image for a refused spot) set by our target on the drag's data object and
+  allowed by our source, so Explorer shows them in both directions; drops on breadcrumb crumbs with
+  the crumbs' places reported by Slint's `changed` callbacks (16 reports in the gate scenario, none
+  while the lists scroll); auto-scroll of the sidebar list and an overflowing tab strip; mounted
+  folders counted as their own volume through `GetVolumePathNameW`, UNC paths and mapped drives
+  kept on the string rule so no DragEnter waits on a server; the first drag's icon asked of the
+  icon worker at the press (8 to 20 ms from the shell before, 0.7 to 4.8 ms from the worker after,
+  one 28.9 ms shell fallback when the reply had not landed).
+  Gate ab21 on 2026-10-16, `target-p5m2` (6b1d0f1) against `target-p5m3` (074ccb2), the defaults
+  triplet only (nothing in the milestone is per row; the list and grid components the reference's,
+  6,138 normalised lines, 0 differences): WPR medians 17.8% against 17.9%, every run under the
+  bar, the candidate's 17.8 between the reference's 17.7 and 17.9, no spring, describe, volume or
+  drag frame in any candidate window. Console checks the same day: a drag from File Explorer first
+  showed the denied icon and never reached the drop target, because TwinFM had been started from
+  the elevated console the triplet ran in (Windows blocks drag and drop from a normal-integrity
+  program into an elevated window; the other direction is allowed); started unelevated, every
+  check passed: the description text with File Explorer as the source and as the target and
+  between TwinFM's own panes, a drag held over a folder row, a tile and a tab opening it, a drop on
+  a crumb, the sidebar and tab-strip edge scrolls, the first drag of a run starting without a
+  pause.
+
+Every milestone passed by the triplet rule against the previous milestone's build (medians,
+reference / candidate on defaults / candidate with the settings file):
+
+| Milestone | Tag | Reference | Medians | Note |
+|---|---|---|---|---|
+| P5-M1 | ab20 (with P5-M2) | `target-p4m3` (53dbc50) | judged by P5-M2's triplet | in-app pairs 19.1 / 17.0, grid 10.3 / 10.5, the candidate below in every defaults pair |
+| P5-M2 | ab20 | `target-p4m3` (53dbc50) | 18.5 / 17.4 / grid 10.0 | the defaults candidate 1.1 below the reference; the grid at P4-M3's 10.2 |
+| P5-M3 | ab21 | `target-p5m2` (6b1d0f1) | 17.8 / 17.9 (defaults only) | the runs interleave; the medians 0.1 apart |
+
+The details list never moved: nothing in the three milestones touched a row or a tile, the
+generated list and grid components were diffed against the reference's before each gate (0
+differences each time), and what the triplets measured was the wiring (two idle parent handles,
+`landed_pass`, `cmp_entries` on the sort worker; the `cut_flags` read inside the compose; the crumb
+geometry reports and the per-crumb `drop-here` binding). The peak working set was 150 to 161 MB in
+every run but one per session: the first candidate run read 187 MB in ab20 and again in ab21, with
+an unremarkable busy figure both times; not explained.
+
+Lessons of the phase, each in its milestone's record and, where it changes how work is done, to be
+carried into `CLAUDE.md`:
+
+- **The in-app run-order bias is real and symmetric** (P5-M3 Measurements, confirming P4-M2's
+  note): with two sets of six pairs, one with the reference first and one with the candidate first,
+  the second slot read above the first in nine of twelve pairs whichever binary sat in it, and the
+  two sets' medians cancelled (18.75 against 18.6 over all twelve). An in-app set is read in both
+  orders or not at all; the console triplet decides.
+- **Console checks start TwinFM unelevated** (P5-M3 Gate): File Explorer cannot drag into an
+  elevated window. The gate script's elevated start is fine for the gate, whose scenario never
+  drags; a console check of drag and drop, or of anything another program hands to TwinFM, is run
+  from an unelevated shell. This belongs in `CLAUDE.md` § Measuring beside the "close every TwinFM
+  window" rule; it is recorded in § P5-M3 Gate until then.
+- **A disconnected session is not a measuring session** (P5-M2 Measurements): with Jeremy's
+  session disconnected (`query session`: `Disc`) the window presented at about 21 Hz and the in-app
+  busy figures sat far below P5-M1's and swung from 2.2 to 17.2; they were comparable only with
+  each other. The frame interval p50 in the `[perf]` lines (46.6 to 47.3 ms there, 16.4 to 16.5
+  ms at the console in P5-M3; RDP presents at 32 Hz) says which session a set was taken in.
+- **One triplet can judge two milestones, at a price** (P5-M1 Gate): the deferred ab20 triplet
+  passed both P5-M1 and P5-M2, and both were merged; had it failed, the gap would have been
+  bisected across two milestones' diffs. It worked because the in-app pairs and the generated-row
+  diff carried the first milestone; it is not the rule, which stays one triplet per milestone.
+- **The protocol itself is unchanged**: `tools/wpr-triplet.ps1` elevated at the console, three
+  runs per binary interleaved, compared by median, the one-point rule, console checks after the
+  triplet, settings triplets for a milestone that touches the list, the grid or the icons. Tags
+  continue from ab22; the reference is `target-p5m3`.
+
+Open questions at the close (§ Open questions is updated above):
+
+- **The Slint whole-row snap patch**: still Jeremy's call. Nothing in Phase 5 touched the fork;
+  every view switch still shows the snap; the one-line patch (`target-zcfix`) waits for the fork
+  to be touched next, with its own triplet.
+- **Upstreaming the two accessibility patches**: still deferred; Jeremy decides when.
+- **The spring-load delay**: 1000 ms as `dnd::SPRING_MS`, a constant; the console checks found no
+  reason to change it.
+- **The dead share**: the one P5-M1 console check never run (none was available on 2026-10-16);
+  `stalled: no watch`, the 30 s cool-down and F5 still listing or showing the error are checked
+  only by the watcher's unit tests.
+- **The 187 MB first candidate run** in both ab20 and ab21: the same binary read 150 to 154 MB in
+  its other runs; a trace with heap sampling of a first run would say whether it is the candidate,
+  the first start of a fresh exe, or the machine.
+
+Deferred, pulled together from the three milestones and the console checks, grouped by list, each
+with where it came from. The Phase 4 close's list (`phase-4-plan.md` § Phase 4 close) still stands
+in full: Phase 5 touched neither the views, the grid's accessibility, the thumbnails nor the band.
+The Phase 3 close's list stands except for what this phase finished (directory watching, Redo and
+progress inside TwinFM, spring-loaded folders and drop descriptions).
+
+- **Directory watching** (§ P5-M1 Deferred unless noted): subtree records are not turned into edits
+  (a change in the folder itself on a tab with sizes still re-lists it) and subtree watches do not
+  survive a tab switch, so a background tab's sizes are dropped; USB hard disks (`DRIVE_FIXED`) get
+  no device registration, so a tab on one still blocks "Safely remove" while shown; the network
+  path's stall and cool-down have run under no test or script but the watcher's own (the dead
+  share, above); `the folder was deleted` rarely appears because the main handle reports `Access
+  is denied` first; a folder moved to another parent is `Lost`, not `Moved`; a case-insensitive
+  removal miss still costs 33 ms per window on a 40k listing, and a rename onto a name that exists
+  under another casing leaves the twin row until the next listing unless that map was built; an
+  `Opened` packet posted after the watcher thread exited leaks its handle at process end;
+  `explained` is by name and time only, so a program touching a just-copied file within 3 s is
+  dropped with it, a job writing into a subfolder is not explained, and a pane with folder sizes
+  still refreshes twice after a job; `land_edits` after a navigation or a requested pass falls back
+  to a refresh of the new folder; up to eight background handles and the active tabs' parent
+  handles may block a rename of an ancestor folder ("folder in use"), a console check still owed;
+  rows inserted or removed above the viewport shift the visible rows (the scroll offset is not
+  compensated), `row_insert` and `row_remove` cost grows with the selection, the parent watch's
+  `pane` is not updated when a tab changes pane, and `Moved` follows neither tabs on descendants
+  of the renamed folder nor the icon keys built with the old path; `window_refusal`,
+  `land_edits`'s leniency and `watch_tabs`'s stale marking are covered by the scripted checks and
+  the soak only, and `apply_edits_notifies_rows_not_resets` leans on `slint::private_unstable_api`
+  (fragile across a fork bump); records queued for a tab's old folder can arrive after a navigation
+  and cost at worst a fallback refresh; a busy network share re-lists on every window, up to once
+  per 2 s (§ P5-M1 Decisions).
+- **File operations** (§ P5-M2 Deferred unless noted): a restore with one failed item is `Failed`
+  and records nothing, so the items that did come back cannot be redone; a mixed recycle (some
+  items nuked for size or on a volume without a bin) restores the subset the bin reported under
+  "Undid: Deleted N items"; progress through the fallback is per move (0 to 100 per item) and the
+  verb path reports none; a restore through the verb leaves its `$I` metadata file in
+  `$Recycle.Bin\<SID>\`, as Windows's own restores do, while the fallback removes its own; each
+  fallback move adds an entry to Explorer's own undo list; an undo or redo refused by `check`
+  drops its record (P2-M2's decision, now on two stacks); the percent is per job, not per queue;
+  Ctrl+Y is not taken from the sidebar, the tab strip or a crumb button (window-level, so the
+  generated list components stayed the reference's); undo of a copy or move that replaced an
+  existing file still does not restore the replaced file (P2-M2 Deferred); **a delete through the
+  shell context menu leaves no undo record** (console check 2026-10-16: the menu's verb runs the
+  shell's own operation, outside the worker and the sink); **Escape does not cancel a cut** as
+  Explorer's does (console check 2026-10-16; the marks clear on a paste, a copy or another program
+  taking the clipboard).
+- **Drag and drop** (§ P5-M3 Deferred unless noted): our own `GiveFeedback` still returns
+  `DRAGDROP_S_USEDEFAULTCURSORS`, so with a description showing ours may draw the OLE cursor glyph
+  beside the description's icon where Explorer's sources draw their own (the console checks of
+  2026-10-16 passed the descriptions without a word on the glyph; a check that looks for it
+  decides whether it is worth changing); spring-loading a sidebar row or a crumb (not in the
+  brief); a spring-load into a folder that then fails to list leaves the drag over an empty pane;
+  the pane-to-pane OLE drop stays unscripted (P2-M4: a scripted drop once landed on another
+  program's window); a right-click costs the icon worker one 64 px render it does not use (§
+  P5-M3 Deviations); the description text as painted was the one P5-M3 item that needed a person
+  at the console, and the checks of 2026-10-16 closed it.
+- **Checks that need Jeremy at the console**: the dead share (P5-M1); an ancestor folder renamed
+  over watched handles (P5-M1); the OLE cursor glyph beside a description (P5-M3); and the Phase 4
+  close's list unchanged (Narrator over the grid, video and Office thumbnails, and Phase 3's).
+- **Accessibility**, deferred for much later by Jeremy's word (2026-10-15): the grid read by a
+  screen reader, the Narrator passes over everything since Phase 2. Not a Phase 6 candidate.
+
+Phase 6 candidates, in no agreed order, for Jeremy's decision (none is decided). Sizes are rough,
+in this project's own units: a milestone is what P5-M2 or P5-M3 was, a day of implementer work
+with its review, checks and triplet; a small item is an afternoon.
+
+- **The shell menu's verbs through TwinFM's jobs** (P5-M2 Deferred): Delete, Cut, Copy and Rename
+  picked in the context menu would run as TwinFM's own jobs, so they get an undo record, the
+  progress percentage and the soak fence, where today the shell's verb runs outside the worker and
+  the sink and Ctrl+Z knows nothing of it. The P2-M3 menu would route those four verbs by their
+  canonical names to the existing jobs and let every other verb through. With it, **Escape
+  cancelling a cut** (P5-M2 Deferred; Escape in the list already cancels the queued jobs, so the
+  cut's clearing may join that path without a change to the generated list components, to be
+  checked by the diff). Together about half a milestone.
+- **The drag cursor beside the description** (P5-M3 Deferred): a console check first (does the OLE
+  glyph show beside the description's icon when TwinFM is the source?); if it does, `GiveFeedback`
+  returns `S_OK` and sets the cursor itself while a description is showing, as Explorer's sources
+  do. A small item, or nothing.
+- **Content search** (P3-M2; Jeremy said out for now on 2026-10-13): a search for text inside
+  files, in the search tab, with the walker already there and the reading on workers. A milestone
+  at least, with questions of encoding, size limits and binary files to settle first.
+- **Archives beyond zip** (P3-M4): other formats through the shell's own folder handlers where
+  Windows has them, writing into archives, a foreign synchronous zip drop moved off the UI thread.
+  A milestone for the formats alone; writing is its own question.
+- **The compact Windows 11 context menu and menu icons** (P2-M3, cut from Phase 3 and from Phase 5):
+  `IExplorerCommand` for the Windows 11 menu, with the icons the shell gives each item. A milestone;
+  it touches the menu's modal loop and the routing above would sit well beside it.
+- **OneDrive status marks and the P2-M5 icon items** (named out of Phase 5 at the kickoff): cloud
+  marks through `PHCM_EXPOSE_PLACEHOLDERS` (first a decision on whether cloud marks are wanted at
+  all, then its own check), the shell call per overlaid key, "other" reparse overlays. Half a
+  milestone after the decision, with a triplet because overlays are per key.
+- **Search polish** (P3-M2): the Name column width in search tabs, results from several folders in
+  one menu or drag, results following changes. Small items; together half a milestone.
+- **Folder sizes polish** (P3-M3, and P5-M1 Deferred): forcing the subtree-watch overflow in a
+  test, the drive-root subtree watch, subtree records as edits, subtree watches surviving a tab
+  switch. Half a milestone; the last two are the watching list's own leftovers.
+- **The P2-M3 polish leftovers** (named out of Phase 5 at the kickoff): the toolbar, the tab strip
+  on resize, the crumb dropdown's keyboard, F2 for a bookmark, restored tabs' state, the Back
+  button over a text entry, the protected-files switch. Each small; a milestone as a bundle.
+- **The views finished** (`phase-4-plan.md` § Phase 4 close, not chosen for Phase 5): the view in
+  the settings dialog, Explorer's extra large and medium icons as the same grid at other tile
+  sizes, a frame around thumbnails, the cursor following the band, PageUp and PageDown in the
+  details list. A milestone, with the grid triplets.
+- **Thumbnails beyond the listing** (P3-M5, not chosen for Phase 5): search tabs, archives, the
+  details list's drag image. Half a milestone.
+- **The Slint fork** (open question above): the whole-row snap patch as the fork's third commit
+  with its own triplet, and the upstreaming decision (`docs/upstream-issue-draft.md`,
+  `docs/patches/`), both Jeremy's. The patch is a small item once the fork is touched; the
+  upstreaming is a decision, not work in this repo.
+- **Daily use**: TwinFM in place of Files for a stretch of days, with what bites written down as
+  the milestones; `docs/cleanup.md` names what goes once Files is retired. No size; it produces the
+  next list rather than consuming one. Two of this phase's deferred items (the menu's Delete with
+  no undo, Escape over a cut) came from Jeremy's console checks rather than from any plan, which
+  is the argument for it.
+
+The fleet of gate binaries at the close (each `target-<name>\release\twinfm.exe` in the main
+checkout): `target-p5m3` (074ccb2, P5-M3's gate build; its squash on main is ca798cd) is the
+reference for Phase 6's first milestone, next tag ab22; `target-p5m2` (6b1d0f1) was P5-M3's
+reference and is deleted once `target-p5m3` has served as one; `target-p4m1` (cb589c8) was
+superseded on 2026-10-15, is still on disk and is owed deletion on Jeremy's word
+(`docs/cleanup.md`); `target-p4m3` went on 2026-10-16 after serving for ab20. The everyday
+`target\release` is rebuilt from main by hand after each merge (`CLAUDE.md` § Measuring).
+Worktrees: `.claude/worktrees/p5-m3-milestone-setup-c40a6d` belongs to the P5-M3 session and goes
+when that session is archived; `.claude/worktrees/enable-mod-c3ee7a` (at 3929c06, not Phase 5's)
+is also present for Jeremy to decide on; the detached gate checkouts `gate-p5m2` and `gate-p5m3`
+are no longer listed. Then `git worktree prune`.
+
 ## Open questions
 
 Written 2026-10-15 at the kickoff; the Phase 4 close's open questions are absorbed here.
+Updated 2026-10-16 at the Phase 5 close (§ Phase 5 close holds where each stands).
 
 - **The cap on watched background tabs** (P5-M1): settled, 8 for the app, active tabs first
   (§ P5-M1 Decisions).
