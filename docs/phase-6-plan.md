@@ -252,13 +252,338 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   put to him and kept; its shape (Ctrl+H for hidden only, protected per pane in the dialog with no
   key, system-only files always shown) is the lead's call (P6-M3).
 
+## P6-M1: cloud marks and the icon items
+
+The first milestone of the phase (2026-10-16): a file or folder in a cloud location shows a status
+mark over its icon, the cloud for what is only in the cloud and the tick for what is on this disk,
+in the details list, the 32 px list and the grid; the two P2-M5 icon items ride along. Branch
+`feat/p6-m1-cloud-marks`, from b1a688d (the Phase 6 kickoff). The brief is the P6-M1 entry of the
+kickoff above. One implementer (Opus 5.5); the lead reviews the PR.
+
+### Settled first (2026-10-16, before any code)
+
+The kickoff's three questions, answered with probes in this session (Windows PowerShell with C#
+P/Invoke, each probe on its own MTA thread as the icon workers are, the placeholder mode set per
+probe with `RtlSetProcessPlaceholderCompatibilityMode` and `RtlSetThreadPlaceholderCompatibilityMode`;
+Windows PowerShell itself runs in expose mode, 2, so every "TwinFM's mode" run set disguise, 1,
+which is what TwinFM gets: `phase-2-plan.md` § P2-M5 Deviations). The folders: `OneDrive` (13
+entries), `OneDrive\Documents` (21, local files and folders of both states), `OneDrive\Archive
+Docs_Online_only\...\jfoschi\15` (987 `.tif` files, every one cloud-only), `G:\My Drive` (125).
+
+1. **OneDrive's overlay handlers mark nothing, in either placeholder mode.** `SHGetFileInfoW(path, 0,
+   SHGFI_ICON | SHGFI_SMALLICON | SHGFI_ADDOVERLAYS | SHGFI_OVERLAYINDEX)`, TwinFM's call, gave overlay
+   index 0 for all 987 cloud-only files and for every local file and folder, with disguise and with
+   expose, on an MTA thread and on an STA thread; only `Personal Vault.lnk` and `Jeremy's
+   Notebook.url` got an index (2, the link arrow). `FileSyncShell64.dll` (OneDrive 26.178) was loaded
+   in the probe each time, so its seven `ShellIconOverlayIdentifiers` were asked and answered no.
+   Explorer's marks come from elsewhere: the shell property `System.StorageProviderState` (read
+   through `SHGetPropertyStoreFromParsingName`), which the property's own description maps to
+   imageres.dll icons (read through `PSGetPropertyDescription` and its enumeration): 1 "Available
+   when online" -1404 (the cloud), 2 "Available on this device" -1400 (the outlined tick), 3 "Always
+   available on this device" -1405 (the solid tick), 4, 5 and 10 "Sync pending" and 6 "Syncing"
+   -1401, 7 "Error" -1402, 8 "Warning" -1403, 9 "Excluded (not synced)" no image. The same store's
+   `System.StorageProviderUIStatus` names `System.PropList.StatusIcons =
+   prop:System.StorageProviderState;System.StorageProviderCustomStates` with
+   `StatusIconsDisplayFlag = 3`: these are the Status column's icons and the ones Explorer draws over
+   the icons in its icon views. **So exposing placeholders cannot help the marks and stays off**
+   (`PHCM_EXPOSE_PLACEHOLDERS` is never set; enumeration, `stat_entry` and the file operations see
+   what they saw in Phase 5). Google Drive's handlers do answer: every entry of `G:\My Drive` but its
+   `desktop.ini` got index 12, which the image list draws as the blue cloud
+   (`GoogleDriveCloudOverlayIconHandler`; nothing in My Drive is kept offline here).
+2. **What a lookup costs.** The overlay index call, one thread, per file: the 987 cloud-only files
+   3.0 to 3.9 ms (p50 2.7 to 3.5 ms, p99 4.5 to 7.1 ms, the first call 80 to 125 ms; 3.0 to 3.9 s for
+   the folder), the same in both modes; `G:\My Drive` 4.2 to 4.9 ms p50 (0.74 to 0.84 s for 125). The
+   property read that does carry OneDrive's state: 23 to 24 ms per entry p50 (24.9 s for the 987,
+   GPS_DEFAULT; `GPS_FASTPROPERTIESONLY` fails with 0x80004005 for this property), about seven times
+   the index call. P2-M5's 568 ms was neither.
+3. **The attributes decide a file's state exactly; they say nothing about a folder's.** In disguise
+   mode the cloud filter hides the reparse point and `FILE_ATTRIBUTE_OFFLINE` but keeps
+   `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`: all 987 cloud-only files carry it and read state 1, every
+   local file lacks it and reads 2 (Documents 5 of 5, the root 1 of 1, the archive folder 1 of 1), and
+   OneDrive's own files (`Personal Vault.lnk`, `.849C9593-...`) carry both `PINNED` and `UNPINNED` and
+   read 9 or nothing. Folders carry none of these: Documents' 5 folders in state 1 and 10 in state 2
+   have the same attributes (no `RECALL_ON_OPEN` either). A pinned file (state 3) was not available
+   to check without changing a file in the cloud; `FILE_ATTRIBUTE_PINNED` is the documented mark for
+   it. So a file's mark costs no call at all, and only folders are looked up, with the property.
+
+The record of the probes (scripts and their output) is in the session scratchpad, not the repo.
+
+### What landed
+
+- **Cloud locations** (`src/cloud.rs`, `icons::Cloud`). Decided per listing on the UI thread
+  (`main.rs` `cloud_of`, from `navigate` and `refresh`; the watch's stat jobs ask the same
+  `Locations::of` quietly), never per file: a folder at or under a registered sync root is
+  `Cloud::SyncRoot`; one on a volume named "Google Drive" is `Cloud::Overlays`; This PC, archive
+  levels, search tabs, UNC paths and mapped network drives are `Cloud::None`. The sync roots are
+  every `UserSyncRoots` value under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\
+  SyncRootManager\*` (two here: OneDrive and Phone Link's `CrossDevice\Jeremy Pixel 10`), read at
+  start and again on every device change (`devices_changed`, the debounced `WM_DEVICECHANGE` volume
+  path, which also forgets the volume names). A volume's name is read once per volume key
+  (`dnd::volume_key`, P5-M3's mount-point key, then `GetVolumeInformationW`) and cached; the root
+  test is component-wise (`c:\onedrive2` is not under `c:\onedrive`).
+- **Keys** (`icons::Mark`, `marked`, `key_mark`, `IconKeys::with_cloud`). Outside a cloud location
+  every key is as before (one extra comparison per entry on the enumeration worker). Inside one, the
+  key carries the mark: `ext:<mark>:.txt`, `folder:<mark>`, `thumb:<mark>:<path>|<modified>|<size>`,
+  and `cloud:<mark>:<path>` for an entry keyed by its full path (an `.exe`, a customised folder such
+  as OneDrive's own Documents), with the mark `s<N>` (a storage provider state) or `o<N>` (a shell
+  overlay index). So the type icons stay shared per (type, mark): the 987 `.tif` files are one key,
+  `ext:s1:.tif`. No mark (state 9, overlay 0) is today's key. Links (`.lnk`, `.url`), junctions,
+  symbolic links, app aliases, other reparse points and drives keep their own keys and the shell's
+  arrow (`wants_overlay`), so a shortcut in OneDrive shows the arrow, not a status.
+- **Where a mark comes from.** A sync root file: its attributes, on the enumeration worker
+  (`state_from_attrs`: recall on data access or offline, 1; pinned and unpinned both, none; pinned,
+  3; else 2), so it costs nothing and is in the key when the listing lands. A sync root folder and
+  every Google Drive entry: a lookup. Such an entry is listed with `look:<s|o>:<plain key>|<path>`;
+  when its row is on screen (plus the usual margin) `resolve_icons` asks the icon workers for it as
+  it asks for an icon, and the worker makes one call (`storage_state`: the property store's
+  `System.StorageProviderState`; or `overlay_index`) and replies `Outcome::Looked(mark)` with the
+  row; the UI thread (`drain_icons`) gives the entry `looked`'s key in the listing and its row
+  (`PaneModel::relabel`, found at the row or else by key), and the next resolve asks for that key's
+  icon. A lookup is never `taken` (it runs every time a row asks), so a refresh or a watch record,
+  which list the entry again with its `look:` key, look it up again; an icon key is still rendered
+  once per process. Lookups are bounded by what is scrolled to, not by the folder's size.
+- **The marks' images.** `Overlay(i)`: the shell's overlay image from the system image list, the
+  P2-M5 path. `State(s)`: imageres.dll's icon for the state (`STATE_GLYPHS`, `SHDefExtractIconW` at
+  the glyph size) drawn into the bottom-left corner of a transparent icon square
+  (`state_glyph`, `icon_pixels_at`), `glyph_px` square: 9 px over a 16 px icon, 18 over 32, a quarter
+  of a tile's 96 (24 px). Both are fetched once per (mark, size) per process
+  (`Pool::overlays`, now keyed by `Mark`) and composed by the existing `overlay`, so nothing is
+  drawn by hand and the strips are unchanged.
+- **Thumbnails** (`icons::Thumb`, `Mark::cache_only`). A thumbnail request whose key carries the
+  cloud state (1) or any Google Drive overlay goes to `IThumbnailCache::GetThumbnail` with
+  `WTS_INCACHEONLY`, so a cached thumbnail shows and nothing is extracted; without one the row shows
+  its type's icon with the mark. Google Drive's index does not tell its handlers apart (only the
+  cloud one fires here), so every Google file is held to the cache.
+- **`[cloud]` and `[icons]` lines**: `[cloud] sync roots: N (...)`, `volume <key> named "..."
+  (google drive|not cloud)`, `pane=N <folder>: sync root|google drive`; `[icons] status glyph state S
+  (imageres -R) fetched at G px over P px`, `slow cloud lookup T ms: <path>`, and `cloud N` on the
+  once-a-second line after `dropped D`. No new driver step.
+- **The two P2-M5 items.** The one `SHGetFileInfoW` per overlaid key is made once per key per
+  process: the mark is in the key and the key is `taken` once, and the scripted refreshes below show
+  `overlays 0` with every key already held (the lookups, which are per row, are what a refresh
+  repeats). "Other" reparse points checked on a real one: a Unix domain socket bound in
+  `%TEMP%\twinfm-p6m1-wof\sock` (C# `socket(AF_UNIX)` and `bind`; `fsutil reparsepoint query` shows
+  tag 0x80000023, which `Kind::from_tag` maps to `Reparse`) gets overlay index 0 from the shell, so
+  it shows its plain icon; the rule (ask the shell, draw what it gives) stays. A WOF-compressed file
+  (`compact /c /exe:xpress4k`) is not a reparse point to a process (the WOF filter hides the tag:
+  "not a reparse point"), and neither ProjFS (`ProjectedFSLib.dll` absent) nor a WCI point can be
+  made here.
+- **Tests**, 176 to 183: `cloud::tests::cloud_location_rule` (normalising, component-wise roots,
+  `\\?\` paths, a UNC path never asking for a volume name); `cloud::tests::reads_this_machines_sync_roots_and_volume_names`
+  (reads the registry and the system drive's label only; one name lookup per volume);
+  `icons::tests::cloud_mark_keys` (every key form, `key_mark` against drive-letter paths such as
+  `S:\` and `o:\`, the `look:` round trip, the thumbnail cap's fallback keeping the mark);
+  `sync_root_state_from_attributes` (the attribute rule, `cache_only`, `glyph_px`);
+  `cloud_location_keys` (no location: today's keys; a sync root: shared marked keys per type and
+  state, folders looked up, links and junctions untouched, thumbnails marked; Google Drive: every
+  entry looked up); `pool_keeps_cloud_thumbnails_to_the_cache_and_looks_up_every_time` (through the
+  `spawn_with` seam: the render function sees `Thumb::CacheOnly` for a cloud-only and a Google file,
+  `Extract` otherwise; a lookup asked twice is made twice and carries its row; lookups are not
+  renders; the table interns nothing for one); `status_glyphs_come_from_imageres` (reads imageres.dll:
+  every state's glyph at 16, 32 and 96 px is visible and only in its corner, the cloud differs from
+  the tick); `model` `relabel` inside `resolve_icons_requests_each_key_once` (found by key after a
+  pass moved it, the row then asks for the marked key). No test needs a cloud folder.
+- **Docs**: `CLAUDE.md` (test count, the cloud lines and key forms under § Measuring, the reference
+  build `target-p5m3`).
+
+### Decisions
+
+- **OneDrive's marks are its storage provider state, not a shell overlay.** Settled-first (1): the
+  overlay path gives nothing for OneDrive in any mode, and the state is what Explorer shows. The
+  glyphs are the Windows images Explorer's Status column draws for each state, so they look as
+  Explorer's do without our own drawing.
+- **A file's state from its attributes, a folder's from the property.** (3) shows the attributes
+  agree with the property for files, at no cost; a property read per file would be 23 ms per row on
+  a worker, a full screen of 40 rows about half a second on the two workers before the marks land.
+  Folders are few in most listings, so their read is affordable, and nothing else tells their state.
+- **Lookups ride the icon queue and only for rows on screen.** The workers already serve the rows on
+  screen first (newest first) and skip what a pane navigated away from; a separate pass over a
+  whole folder would make a 10,000-file Google folder 50 s of shell calls whoever scrolls. The cost
+  is that a row's mark lands a few milliseconds after the listing, with the placeholder in between,
+  as icons do.
+- **The row keeps the placeholder until its marked icon lands**, rather than first showing the plain
+  type icon: a `look:` row never resolves (its key is no icon), and its key changes once. Without a
+  per-row flag in `resolve_icons` (per-row work the amendment forbids without a trace) there is no
+  way to show the plain icon and still ask again.
+- **Every registered sync root counts, not only OneDrive's.** The state property and its glyphs are
+  Windows' own for any cloud files provider (Phone Link's CrossDevice folder is one here); filtering
+  by provider name would need a list of names.
+- **Google Drive's thumbnails come from the cache only, whatever the file's state**: the index alone
+  does not say whether a file is offline, and an extraction of a streamed file downloads it.
+- **The glyph sizes** (9 / 18 / 24 px over 16 / 32 / 96) are ours: Explorer draws the status glyphs
+  in its icon views but not over the details list's 16 px icons (it has the Status column there);
+  half the icon for the lists matches where the shell's link arrow sits, a quarter for the tiles keeps
+  the picture visible.
+
+### Deviations
+
+- **The kickoff's mechanism for OneDrive ("drawn by the overlay path the links already use",
+  `ext:<index>:<ext>` with the overlay index) cannot work**: the handlers answer index 0 for every
+  OneDrive file (settled-first 1). OneDrive's marks are the storage provider state's glyphs instead,
+  and the key's mark is `s<state>`; Google Drive's follow the kickoff (`o<index>`, the overlay path).
+  What Jeremy sees is what he asked for (the cloud, the tick, Explorer's own images), but **two
+  things differ from the kickoff's "unfiltered" call** and are his to accept: (a) a OneDrive *file*
+  that is syncing, pending, in error or with a warning shows the tick, because its attributes do not
+  say so and a per-file property read was not paid for (folders do show those states); (b) the
+  glyph's size over the 16 px list icon is our choice, since Explorer shows no glyph there. Asked in
+  the PR.
+- **Key forms**: `ext:s1:.txt` and `ext:o12:.txt` rather than `ext:1:.txt` (two kinds of mark), and
+  `cloud:<mark>:<path>` and the thumbnail form, which the kickoff did not name.
+- **`[icons]`'s `cloud N` counts lookups only**, so for OneDrive files it stays 0 (they need none);
+  the lookups of folders and of Google Drive entries are what it shows.
+- **The soak's OneDrive writer** was not added (the kickoff's default: a console check only; the
+  fence stays `%TEMP%`).
+
+### Deferred
+
+- **The sync states of OneDrive files beyond tick and cloud** (syncing, pending, error, warning):
+  a property read per file on the workers (23 ms each), if Jeremy wants them.
+- **Google Drive's overlay at tile size** is the shell's jumbo overlay drawn over the whole 96 px
+  picture, as the link arrow in the grid has been since P4-M1: a large cloud covering the tile's lower
+  left (screenshot `shots/run3.png`). A smaller glyph would mean choosing the overlay image list by
+  glyph size instead of icon size, which changes the link arrow too; a console check decides.
+- **A mark goes stale between a change and the next record or refresh** (the kickoff's recorded
+  limitation). A hydration or a "Free up space" changes a file's attributes; whether the folder's
+  watch delivers a record for that (so the edit path stats the file again and its key changes) was
+  not checked, since it means changing a file's state in Jeremy's OneDrive: a console check. Google
+  Drive entries and sync root folders are looked up again only on a refresh, a navigation or a
+  record that touches them.
+- **A refresh of a Google Drive folder (or of a sync root's folders) puts the rows on screen back
+  to the placeholder** until their lookups return (the new listing carries `look:` keys, which never
+  match the marked keys a refresh would keep): about 5 ms a row on two workers, a screen of 40 rows
+  in about 0.1 s, then every marked key is already held. Keeping the old icon would need the old
+  mark carried across the refresh by name.
+- **A renamed Google Drive volume loses its marks** (the kickoff's open question, unchanged).
+- **The thumbnail cache's 300 to 570 ms on Google Drive** per cache-only request (`[icons] thumbnail
+  ... ms` in the grid run below), on the workers; the shell's own cost of asking the cache about a
+  file on that volume, not an extraction (nothing downloaded: the OneDrive check below).
+
+### Scripted checks
+
+Harness session (no console session attached: frame interval p50 about 47 ms, about 21 Hz), 1216 x
+800 window, scale 1.0, this worktree's `target\release\twinfm.exe` copied to the session scratchpad
+and run from there; stderr kept; screenshots with `SLINT_BACKEND=winit-software` and `PrintWindow`
+(the femtovg window captures black). Exit code 0 and no `panicked` line in every run.
+
+- **(i) OneDrive and Google Drive side by side**, `nav 0 C:\Users\jtkli\OneDrive\Documents; split;
+  nav 1 G:\My Drive; sleep 5000; key F5`: `[cloud] sync roots: 2 (c:\users\jtkli\crossdevice\jeremy
+  pixel 10; c:\users\jtkli\onedrive)`, `[cloud] pane=0 ...\OneDrive\Documents: sync root`, `[icons]
+  status glyph state 2 (imageres -1400) fetched at 9 px over 16 px`, `status glyph state 1 (imageres
+  -1404) ...`, `[cloud] volume g: named "Google Drive" (google drive)` (logged as `g::` before the
+  wording fix), `[cloud] pane=1 G:\My Drive: google drive`, `[icons] overlay index 12 fetched at 16
+  px`; the first listing of My Drive made `cloud 72` then `cloud 16` lookups (88 for the rows on
+  screen and their margin of 125), `overlays 11` (one per marked key: the types and folders), one
+  `slow cloud lookup 107 ms: ...\Documents\DeDRM` (the first property read); the F5 made `cloud 39`
+  and `cloud 5` with `overlays 0` and `worker 0 rendered`: the lookups again, no icon fetched twice.
+- **(ii) The cloud-only files** (`nav 0 ...\Archive Docs_Online_only`, software renderer,
+  `shots/run2.png`): the eight folders show the cloud or the tick from their lookups, the seven
+  `Jeremy_Backup_*` files and the two `.xlsx` files the 9 px cloud over their type icons; My Drive's
+  folders and files Google's cloud.
+- **(iii) The grid with thumbnails** (`TWINFM_CONFIG=C:\traces\grid-thumbs.toml`, read-only:
+  `[settings] file C:\traces\grid-thumbs.toml (read)`, `[view] pane=0 starts as large icons`, `[icons]
+  list geometry: 32 px rows, 32 px icons`; `shots/run3.png`): `OneDrive\Documents`' folders with 24 px
+  ticks and clouds, its files with the tick, `Jeremy's Notebook.url` with the arrow only;
+  `G:\My Drive\Wedding`'s 23 files with Google's cloud, four of them (two `.docx`, two `.jpg`) with
+  real thumbnails from the cache, the rest their type icons; `thumbs 34`, `cloud 33` and the
+  `thumbnail 302 ms` to `571 ms` lines of Deferred.
+- **(iv) Nothing is downloaded.** `C:\traces\thumbs.toml` (read-only) on the 987-file cloud-only
+  folder, scrolled through with `drag 0 300 1500` and refreshed: `thumbs 34`, `31`, `34`, `28`
+  (127 cache-only requests, `dropped 341` for rows scrolled past), `[icons] status glyph state 1
+  (imageres -1404) fetched at 18 px over 32 px`, `cloud 0` (files need no lookup); counted with
+  `Get-ChildItem` before and after the run: 987 of 987 files still carry
+  `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`. The F5: `+0 requests +0 replies`, the keys kept.
+- **(v) The lists are the reference's.** The generated `app.rs` of `target-p5m3` (074ccb2) and this
+  build's, with quoted drive paths blanked (the checkout paths Slint embeds), differ in 0 lines: no
+  `.slint` file changed, and the whole generated app, not only the list and grid components, is
+  the reference's.
+
+### Measurements
+
+In-app, RELATIVE only: the same harness session, no console session attached (frame interval p50
+about 47 ms, so these busy figures sit far below a console run's and say nothing against the bar),
+1216 x 800 window, scale 1.0, accessibility on, the gate scenario (`tools/wpr-gate.ps1`'s script) on
+`C:\traces\bigdir`, `[busy]` over the 10 s after the split, `target-p5m3` (074ccb2, the reference)
+and this build interleaved by one runner, in two sets per settings file: the reference in the first
+slot of each pair, then the candidate first. No cargo or agent ran beside.
+
+Defaults, six pairs per set:
+
+| Pair | set 1: reference first | set 1: P6-M1 second | set 2: P6-M1 first | set 2: reference second |
+|---|---|---|---|---|
+| 1 | 7.0 | 8.4 | 12.6 | 9.3 |
+| 2 | 13.2 | 8.3 | 10.0 | 10.6 |
+| 3 | 16.1 | 8.6 | 11.4 | 9.0 |
+| 4 | 9.7 | 10.3 | 14.0 | 7.2 |
+| 5 | 10.4 | 6.7 | 7.8 | 15.4 |
+| 6 | 8.4 | 8.1 | 5.1 | 9.5 |
+| **median** | **10.05** | **8.35** | **10.7** | **9.4** |
+| composes | 371 strips at 21.1 to 21.8 us | 371 at 21.5 to 22.3 us | 371 at 21.4 to 22.6 us | 371 at 21.2 to 22.3 us |
+
+Thumbnails (`TWINFM_CONFIG=C:\traces\thumbs.toml`, read-only; every candidate log shows `[settings]
+file C:\traces\thumbs.toml (read)` and `[icons] list geometry: 32 px rows, 32 px icons`), four pairs
+per set:
+
+| Pair | set 1: reference first | set 1: P6-M1 second | set 2: P6-M1 first | set 2: reference second |
+|---|---|---|---|---|
+| 1 | 7.8 | 9.2 | 10.3 | 9.0 |
+| 2 | 6.8 | 8.3 | 5.8 | 8.0 |
+| 3 | 8.7 | 6.1 | 8.3 | 7.8 |
+| 4 | 8.4 | 8.6 | 7.8 | 4.5 |
+| **median** | **8.1** | **8.45** | **8.05** | **7.9** |
+| composes | 251 strips at 36.3 to 38.3 us | 251 at 37.4 to 39.7 us | 251 at 36.5 to 37.8 us | 251 at 36.6 to 38.0 us |
+
+Over all twelve defaults pairs the reference's median is 9.6 and the candidate's 8.5; over all eight
+thumbnails pairs 7.9 and 8.3. Each sits inside the other's spread (defaults 7.0 to 16.1 against 5.1
+to 14.0; thumbnails 4.5 to 9.0 against 5.8 to 10.3), and the first slot of a defaults pair read
+higher in eight of twelve pairs whichever binary sat in it (the P4-M2 note's run-order bias, the
+other way round in this session). What the scenario runs of the branch: one registry read at start
+(`[cloud] sync roots: 2 (...)`), one volume name for `c:` (`[cloud] volume c: has no name (not
+cloud)`), one `Locations::of` per listing, and on the enumeration worker one comparison per entry;
+no `[cloud] pane=` line (bigdir is no cloud location), and the strips compose the same number of
+times in the same time. The console triplets decide.
+
+### Gate
+
+For Jeremy, elevated at the console, accessibility on, Narrator off, no other TwinFM window: a gate
+build of the PR head from a detached checkout with `--locked` into `target-p6m1`, then
+
+```
+tools/wpr-triplet.ps1 -Reference p5m3 -Candidate p6m1,p6m1@C:\traces\thumbs.toml -Tag ab22
+```
+
+(the defaults triplet and the thumbnails triplet; the thumbnails runs are labelled `p6m1-thumbs`).
+Before reading the thumbnails triplet, each `p6m1-thumbs` run's stderr must show `[settings] file
+C:\traces\thumbs.toml (read)` and `[icons] list geometry: 32 px rows, 32 px icons`; every candidate
+run should show `[cloud] sync roots: 2 (...)` and `[cloud] volume c: has no name (not cloud)` and no
+`[cloud] pane=` line, `cloud 0` on every `[icons]` line, and no `panicked` line.
+
+Console checks after the triplet, TwinFM started unelevated:
+
+1. `C:\Users\jtkli\OneDrive\Documents` in TwinFM beside the same folder in File Explorer (details
+   view, then Large icons; TwinFM's grid with Ctrl+Shift+2): the folders' ticks and clouds match
+   Explorer's Status column one for one, the files show the outlined tick, `Jeremy's Notebook.url` the
+   shortcut arrow.
+2. `C:\Users\jtkli\OneDrive\Archive Docs_Online_only` the same way: the cloud on the `Jeremy_Backup_*`
+   files and the two `.xlsx` files.
+3. A file's state changed by hand in Explorer ("Always keep on this device" on one small file, then
+   "Free up space"): in TwinFM the mark should go from cloud to the solid tick and back, after the
+   watch's record or an F5 (whether the watch alone follows is unchecked, Deferred).
+4. `G:\My Drive` beside Explorer: Google's cloud on every entry, in the list and in the grid (where
+   it is drawn large, as the link arrow is; say whether that is acceptable).
+5. An F5 on `G:\My Drive`: the `[icons]` lines show `cloud N` lookups and `overlays 0`, and
+   `worker 0 rendered`.
+6. Whether the 9 px glyph over the 16 px list icons reads well, or should be larger or absent in the
+   details list (Explorer shows none there).
+
 ## Open questions
 
 Written 2026-10-16 at the kickoff.
 
 - **Whether OneDrive's overlay handlers mark placeholders without `PHCM_EXPOSE_PLACEHOLDERS`**
   (P6-M1): the first thing the milestone checks. If they do not, the mode is turned on for the
-  process and the record names every file API whose answers changed.
+  process and the record names every file API whose answers changed. **Answered (P6-M1, settled
+  first):** they mark nothing in either mode; Explorer's marks are the storage provider state, so the
+  mode stays off and OneDrive's marks come from that state (§ P6-M1 Deviations).
 - **Whether Google Drive's volume is stable to find by name** (P6-M1): `G:` carries the volume
   name "Google Drive" on this machine; a user who renamed it would lose the marks. The process
   name of the mount's owner is not available from the volume. Acceptable for now; recorded.
