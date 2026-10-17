@@ -383,6 +383,11 @@ The record of the probes (scripts and their output) is in the session scratchpad
   every state's glyph at 16, 32 and 96 px is visible and only in its corner, the cloud differs from
   the tick); `model` `relabel` inside `resolve_icons_requests_each_key_once` (found by key after a
   pass moved it, the row then asks for the marked key). No test needs a cloud folder.
+- **OneDrive in the sidebar** (after the console check, 2026-10-17): a Places row "OneDrive" after
+  Home, the `FOLDERID_SkyDrive` known folder (`C:\Users\jtkli\OneDrive` here), so the folder the
+  marks are for is one click away as in Explorer's navigation pane. Known folders that resolve to a
+  path that does not exist are now left out (OneDrive's on a machine without it set up). The sidebar's
+  rows below Home move down by one; no script or soak aims at a Places row by number.
 - **Docs**: `CLAUDE.md` (test count, the cloud lines and key forms under § Measuring, the reference
   build `target-p5m3`).
 
@@ -453,6 +458,15 @@ The record of the probes (scripts and their output) is in the session scratchpad
   match the marked keys a refresh would keep): about 5 ms a row on two workers, a screen of 40 rows
   in about 0.1 s, then every marked key is already held. Keeping the old icon would need the old
   mark carried across the refresh by name.
+- **A shell command from the context menu freezes the window while it runs** (seen at the console on
+  2026-10-17: "Create shortcut" on `G:`, picked by accident, left a white window for about a minute
+  before the shell's dialog came up; Jeremy cancelled it). Not new in P6-M1: `shellmenu::show` calls
+  `IContextMenu::InvokeCommand` on the UI thread, as it has since Phase 1, so a verb that waits on a
+  slow file system (Google Drive's virtual volume here, most likely) holds the window. Not
+  reproduced by script (the driver never invokes a shell verb, by design, and creating a shortcut on
+  `G:` would write into Jeremy's Google Drive). Running the shell's verbs off the UI thread is the
+  item the kickoff left out of Phase 6 ("the shell menu's verbs through TwinFM's jobs"); Jeremy's call
+  whether it moves in.
 - **A renamed Google Drive volume loses its marks** (the kickoff's open question, unchanged).
 - **The thumbnail cache's 300 to 570 ms on Google Drive** per cache-only request (`[icons] thumbnail
   ... ms` in the grid run below), on the workers; the shell's own cost of asking the cache about a
@@ -588,7 +602,15 @@ folder, and the strips compose as the reference's (371 strips at 24.6 to 25.3 us
 251 at 46.2 to 48.2 us with thumbnails). Peak working set 150 to 153 MB in every run but the
 reference's first (164 MB). The in-app lines (14.2 to 21.2) do not decide.
 
-The milestone is not closed until the console checks below are recorded.
+**Console checks, 2026-10-17, Jeremy at the console:** `OneDrive\Archive Docs_Online_only` in File
+Explorer (details, Status column) beside `G:\` in TwinFM; Google Drive's marks show in TwinFM, and
+taking a Google Drive file offline and back online changes its mark as expected. OneDrive could not
+be compared: TwinFM's sidebar had no OneDrive row (Explorer lists it as "Jeremy - Personal"), so the
+OneDrive row above was added and the OneDrive checks are to be repeated with it. Jeremy prefers the
+mark on the icon to a Status column, which answers the glyph question for the lists (the marks stay
+over the 16 and 32 px icons). The "Create shortcut" freeze is under Deferred.
+
+The milestone is not closed until the OneDrive console checks are recorded.
 
 Console checks after the triplet, TwinFM started unelevated:
 
