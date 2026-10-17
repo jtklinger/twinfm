@@ -961,6 +961,9 @@ medium about 3 points above large, as the in-app pairs said (twice the tiles), a
 bar; frame shares, run 3 grid / medium: render 631 / 889, `draw_text` 298 / 505, `ListView` rows
 39 / 68, accessibility 82 / 95 (the medium grid's extra cost is text: twice the names).
 
+**P6-M2 passes the gate.** Jeremy accepted ab23 as recorded (2026-10-17: "Accept ab23 as recorded"),
+without a re-run of the defaults triplet. The console checks follow.
+
 Console checks after the triplet, TwinFM started unelevated:
 
 1. A photo folder (`%TEMP%\twinfm-p3m5-thumbs` or Pictures) with thumbnails on, Ctrl+Shift+3: the
