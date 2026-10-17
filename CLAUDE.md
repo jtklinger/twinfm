@@ -18,7 +18,7 @@ section quotes Jeremy's kickoff decisions and § Calls made lists the lead's). R
 changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (183 tests; eight touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (185 tests; eight touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -168,7 +168,8 @@ changing the list.
   up|down`, `about open` (F1) and `about close`, `settings open` (Ctrl+, , key name `CtrlComma`),
   `settings set <field> <value>` (stages a value through the function the dialog's control calls:
   `start_left`, `start_right` take a path, `hidden_left`, `hidden_right`, `type_column`,
-  `thumbnails`, `sidebar` take `true|false`, `path_bar` takes `entry|crumb`), `settings ok` and `settings close` (the OK
+  `thumbnails`, `sidebar` take `true|false`, `path_bar` takes `entry|crumb`, since P6-M2 `view_left`,
+  `view_right` take `details|large|medium`), `settings ok` and `settings close` (the OK
   and Cancel buttons; `key Escape` cancels through the key path); `window max|restore|close` maximises or restores
   the window, or closes it through `WM_CLOSE` (the close button's path, which saves the settings;
   `quit` does not); `[sidebar]` and `[settings]` lines on stderr, the dialog's among them:
@@ -307,7 +308,7 @@ changing the list.
   press released under the threshold clears the selection (Explorer) unless Ctrl or Shift is held.
   `[band]` lines: `pane=N start at (x, y), Replace|Toggle|Add` (content coordinates), `pane=N K
   selected, rect (x, y) W x H` (at most four a second), `auto-scroll pane N up|down: content-y A ->
-  B`, `pane=N done: K selected`, `pane=N cancelled (Escape|the pointer grab ended): K selected`. A
+  B`, `pane=N done: K selected` (since P6-M2 `, cursor R`), `pane=N cancelled (Escape|the pointer grab ended): K selected`. A
   drag out of a grid pane carries a 128 px drag image (at 100%) with the pressed tile's 96 px
   picture, the thumbnail or the type icon the tile shows (`icon from the tile`; a placeholder tile
   asks the shell); the `[dnd] drag image` line reads `WxW px, I px icon, N item(s), icon from
@@ -334,6 +335,28 @@ changing the list.
   `slow`), and the once-a-second line's `cloud N` (lookups made in the period, after `dropped D`);
   `overlays N` counts every icon drawn with a mark or an overlay, so a refresh of a cloud folder
   whose keys are known shows `cloud N` lookups and `overlays 0`.
+  Since P6-M2, the views finished: `view medium` presses Ctrl+Shift+3 on the active pane (key name
+  `CtrlShift3`): the grid at medium tiles, 80 x 72 px with the shell's 48 px icon (`icons::TileGeom`,
+  `MEDIUM`; `LARGE` is P4-M1's 96 x 120 with 96 px), chosen per pane and saved as `tile_left` /
+  `tile_right`; a gate run with it takes `TWINFM_CONFIG=C:\traces\grid-medium.toml` (read-only: both
+  panes `"icons"` at `"medium"`), whose stderr shows `[view] pane=0 starts as medium icons`. The
+  medium tile is its own component (`FileGridMedium`, a copy of `FileGrid` with its constants), picked
+  by `FileListHost` once per pane; the pane's overlays, `window_layout` (`Layout::tile`), `dnd::hit`,
+  the band, the menu point and the driver read the tile from the pane (every step that takes a row
+  aims at a medium tile as it does at a large one). `[view]` lines name the view as `details`, `large
+  icons` or `medium icons` (`pane=N large icons -> medium icons (K tiles to a row, R grid rows) ...`).
+  A view switch puts every entry of the pane's tabs back to its placeholder so the icons are asked
+  again at the new size (before P6-M2 the first screenful of a details list showed its 16 px icons
+  blown up in the grid). PageUp and PageDown move the cursor a viewport of rows in the details list
+  too (key names `PageUp`, `PageDown`, `ShiftPageUp`, `ShiftPageDown`; `scrollpos` reads the result);
+  Ctrl+Shift+PageUp / PageDown pass to the tab strip from either list. The band moves the cursor to
+  the touched tile under its moving corner and anchors Shift there (`band::cursor`; `[band] ... done:
+  K selected, cursor R`). A thumbnail in a tile (large or medium) gets a one-pixel grey frame
+  (`icons::FRAME`) around its picture, drawn when the grid row is composed from the picture's
+  rectangle the worker reports (`Outcome::Picture`, `IconTable::picture`); never around a type icon,
+  never in the lists. A drag out of medium tiles carries an 80 px image with the tile's 48 px picture
+  (`[dnd] drag image 80x80 px, 48 px icon`). The settings dialog has a View row (a choice per pane:
+  details, large icons, medium icons; `[settings] dialog: view_left details -> medium`).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -355,8 +378,11 @@ changing the list.
   chosen per pane by `show_type` x `thumbnails`, never per row); since P4-M1 `view_left` and
   `view_right` (`"details"`, the default, or `"icons"`, the large-icon grid: a fifth list component,
   `FileGridList`, chosen under the same per-pane `if`s; Ctrl+Shift+1 / Ctrl+Shift+2 set and save it;
-  not in the settings dialog yet; since P4-M2 a grid pane with `thumbnails` on shows thumbnails in
-  its tiles, at the grid's icon size, through the same workers and table). `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  since P4-M2 a grid pane with `thumbnails` on shows thumbnails in its tiles, at the grid's icon size,
+  through the same workers and table); since P6-M2 `tile_left` and `tile_right` (`"large"`, the
+  default, or `"medium"`: a sixth list component, `FileGridMedium`; Ctrl+Shift+3 sets medium, and a
+  pane on details keeps its tile size), and the view (details, large icons, medium icons) is in the
+  settings dialog. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -390,7 +416,12 @@ changing the list.
   switched), then back to `spring` and Shift+Delete on the two copies; it reports spring armed,
   spring-loaded rows (and the navigations into `inner`) and tabs (must be 0), spring disarmed,
   crumb drops, and the sidebar and tab-strip auto-scroll lines (counted, not required: the sidebar
-  scrolls only when it overflows) besides the P4-M3 counts.
+  scrolls only when it overflows) besides the P4-M3 counts. Since P6-M2 each cycle also runs a
+  medium-grid cycle after the large one (two files into `dst`, the right pane on medium tiles, a drop
+  onto tile 0, a cancelled drag out of it, a band from the gap after the last tile that selects both
+  and leaves the cursor on tile 0, Shift+Right from there, back to details, Shift+Delete); it reports
+  medium switches, 80 px drag images, bands done with the cursor on tile 0 and the Shift+Right's
+  range.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per

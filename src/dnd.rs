@@ -328,15 +328,17 @@ pub struct Layout {
     pub left: f32,
     /// The lists' row height (`icons::ListGeom`: 22 px, or 32 px with thumbnails on).
     pub row_px: f32,
-    /// Each pane showing the large-icon grid: its tiles to a grid row (`icons::TILE_W` wide,
-    /// `TILE_H` tall); None for a pane showing the details list.
+    /// Each pane showing the icon grid: its tiles to a grid row; None for a pane showing the
+    /// details list.
     pub grid: [Option<usize>; 2],
+    /// Each pane's tiles in the grid (large or medium, `icons::TileGeom`; P6-M2).
+    pub tile: [crate::icons::TileGeom; 2],
 }
 
 impl Layout {
     /// The height of one line of the pane's list: a row, or a grid row of tiles.
     pub fn row_px_of(&self, pane: usize) -> f32 {
-        if self.grid[pane].is_some() { crate::icons::TILE_H } else { self.row_px }
+        if self.grid[pane].is_some() { self.tile[pane].h } else { self.row_px }
     }
 }
 
@@ -497,7 +499,7 @@ pub fn hit(l: &Layout, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> 
     let i = match l.grid[pane] {
         None => r as usize,
         Some(cols) => {
-            let c = ((x - a - PANE_PAD) / crate::icons::TILE_W).floor() as usize;
+            let c = ((x - a - PANE_PAD) / l.tile[pane].w).floor() as usize;
             if c >= cols {
                 return Spot::Pane(pane);
             }
@@ -2526,10 +2528,11 @@ impl ImageGeom {
         Self::sized(scale, 96.0, 64.0, 8.0)
     }
 
-    /// Out of the grid (P4-M3): the tile's picture at the tile's icon size (96 px at 100%),
-    /// with the inset doubled so the badge still fits inside the square.
-    pub fn tile(scale: f32) -> ImageGeom {
-        Self::sized(scale, 128.0, crate::icons::GRID_ICON_PX, 16.0)
+    /// Out of the grid (P4-M3): the tile's picture at the tile's icon size (96 px at 100%, 48 px
+    /// out of medium tiles, P6-M2), with the inset doubled so the badge still fits inside the
+    /// square: 128 px, or 80 px.
+    pub fn tile(scale: f32, tile: crate::icons::TileGeom) -> ImageGeom {
+        Self::sized(scale, tile.icon_px + 32.0, tile.icon_px, 16.0)
     }
 
     fn sized(scale: f32, size: f32, icon: f32, inset: f32) -> ImageGeom {
@@ -2715,7 +2718,7 @@ pub struct DragImage {
     /// out of the grid (`tile`), what the tile shows when it is a real picture (`tile_picture`:
     /// the thumbnail or the type icon, not a placeholder), drawn in place of the shell's icon.
     pub cached: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
-    pub tile: bool,
+    pub tile: Option<crate::icons::TileGeom>,
     pub tile_picture: bool,
     /// The shell's icon for `path` at the image's icon size, rendered by the icon worker when the
     /// row was pressed (P5-M3), so the drag start need not wait for the shell; None when the reply
@@ -2727,9 +2730,12 @@ pub struct DragImage {
 
 /// Compose the image and store it on `data` through the source helper; logs the result.
 fn attach_drag_image(data: *mut c_void, img: &DragImage) {
-    let g = if img.tile { ImageGeom::tile(img.scale) } else { ImageGeom::new(img.scale) };
+    let g = match img.tile {
+        Some(tile) => ImageGeom::tile(img.scale, tile),
+        None => ImageGeom::new(img.scale),
+    };
     let t0 = std::time::Instant::now();
-    let (icon, from) = match (&img.cached, img.tile && img.tile_picture) {
+    let (icon, from) = match (&img.cached, img.tile.is_some() && img.tile_picture) {
         (Some(c), true) => (Some(crate::icons::fit(c, g.icon)), "the tile"),
         _ if img.prefetched.is_some() => (img.prefetched.as_ref().map(|p| crate::icons::fit(p, g.icon)), "the worker"),
         _ => match crate::icons::render(&img.path, g.icon) {
@@ -3121,7 +3127,7 @@ mod tests {
 
     #[test]
     fn hit_testing_and_drop_folder() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2] };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
         // Rows start at y 63, 22 px each; the list ends 23 px above the bottom (y 577).
@@ -3160,6 +3166,12 @@ mod tests {
         // Scrolled by ten grid rows: the first visible tile is entry 50.
         assert_eq!(hit(&grid, 50.0, 70.0, [-1200.0, 0.0], [1000, 0]), Spot::Row(0, 50));
         assert_eq!(hit(&grid, 3.0 + 3.0 * 96.0 + 1.0, 70.0 + 120.0 * 2.0, [-1200.0, 0.0], [1000, 0]), Spot::Row(0, 63));
+        // Medium tiles (P6-M2), 12 of 80 x 72 px to a grid row: the column and line from the tile.
+        let medium = Layout { grid: [Some(12), None], tile: [crate::icons::TileGeom::MEDIUM, crate::icons::TileGeom::LARGE], ..one };
+        assert_eq!(medium.row_px_of(0), 72.0);
+        assert_eq!(hit(&medium, 3.0 + 80.0, 63.0 + 72.0, none, [100, 0]), Spot::Row(0, 13));
+        assert_eq!(hit(&medium, 3.0 + 79.9, 63.0 + 71.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(hit(&medium, 3.0 + 12.0 * 80.0 + 1.0, 70.0, none, [100, 0]), Spot::Pane(0), "right of the tiles");
         // With the split, each pane has its own view: the right pane stays a 22 px list.
         let both = Layout { split: true, grid: [Some(5), None], ..one };
         assert_eq!(hit(&both, 50.0, 183.0, none, [12, 7]), Spot::Row(0, 5));
@@ -3206,7 +3218,7 @@ mod tests {
     #[test]
     fn hit_sidebar_rows_and_tabs() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000.
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2] };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
         // Header 26, two drives 24, header 26, a place 24, header 26, a bookmark being renamed 30.
         let rows = [(26.0, false), (24.0, true), (24.0, true), (26.0, false), (24.0, true), (26.0, false), (30.0, true)];
         let s = Strips {
@@ -3261,7 +3273,7 @@ mod tests {
 
     #[test]
     fn auto_scroll_near_the_list_edges() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2] };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
         // The list runs from y 63 to 577; the edge zones are 24 px inside it.
         assert_eq!(edge_scroll(&one, 500.0, 63.0), Some((0, -1)), "the top edge scrolls up");
         assert_eq!(edge_scroll(&one, 500.0, 86.9), Some((0, -1)));
@@ -3295,7 +3307,7 @@ mod tests {
     fn auto_scroll_sidebar_and_tab_strip() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000;
         // the right pane shows a strip of 6 tabs of 120 px in its 399 px (720 px of tabs).
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2] };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
         let rows = [(26.0, false), (24.0, true)];
         let s = Strips {
             side_w: 180.0,
@@ -3347,7 +3359,7 @@ mod tests {
     fn hit_breadcrumb_crumbs() {
         // One pane from x 0 (no sidebar), 600 px tall; the bar's crumb row reported at offset 0,
         // 900 px of it shown; crumbs "This PC", "C:", "Users" at 0, 70 and 110 in the row.
-        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2] };
+        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
         let crumbs = [(0.0, 54.0), (70.0, 24.0), (110.0, 60.0)];
         let s = Strips { side_w: 0.0, side_scroll: 0.0, side_rows: &[], tabs: [(1, 160.0, 0.0); 2], crumb_row: [(0.0, 900.0), (0.0, 0.0)], crumbs: [&crumbs, &[]] };
         let none = [0.0, 0.0];
@@ -3571,12 +3583,17 @@ mod tests {
     #[test]
     fn tile_drag_image_holds_the_tile_picture() {
         // Out of the grid (P4-M3): the tile's 96 px picture with room for the badge.
-        let g = ImageGeom::tile(1.0);
+        let g = ImageGeom::tile(1.0, crate::icons::TileGeom::LARGE);
         assert_eq!((g.size, g.icon, g.inset, g.cursor), (128, 96, 16, (16, 16)));
         let (cx, cy) = g.badge_centre();
         assert!(cx + g.badge_r < g.size as f32 && cy + g.badge_r < g.size as f32, "the badge fits");
-        let g2 = ImageGeom::tile(1.5);
+        let g2 = ImageGeom::tile(1.5, crate::icons::TileGeom::LARGE);
         assert_eq!((g2.size, g2.icon, g2.inset), (192, 144, 24));
+        // Out of medium tiles (P6-M2): the 48 px picture in an 80 px image, the badge inside.
+        let m = ImageGeom::tile(1.0, crate::icons::TileGeom::MEDIUM);
+        assert_eq!((m.size, m.icon, m.inset), (80, 48, 16));
+        let (mx, my) = m.badge_centre();
+        assert!(mx + m.badge_r < m.size as f32 && my + m.badge_r < m.size as f32, "the badge fits");
         let blue = slint::Rgba8Pixel { r: 0, g: 0, b: 255, a: 255 };
         let pic = vec![blue; 96 * 96];
         let one = compose_image(&g, Some(&pic), 1, None);

@@ -695,6 +695,299 @@ Console checks after the triplet, TwinFM started unelevated:
 6. Whether the 9 px glyph over the 16 px list icons reads well, or should be larger or absent in the
    details list (Explorer shows none there).
 
+## P6-M2: the views finished
+
+The second milestone (2026-10-17): PageUp and PageDown in the details list, the grid's medium tiles,
+a frame around the tiles' thumbnails, the view in the settings dialog, and the cursor following the
+band. Branch `feat/p6-m2-views`, from 5212b87 (main after P6-M1 and its two docs PRs). The brief is
+the P6-M2 entry of the kickoff above. One implementer (Opus 5.5, the session that wrote this); the
+lead's review is the PR's.
+
+### Settled first (2026-10-17, before any code)
+
+- **Explorer's tiles, measured** with UI Automation on a scratch folder (`%TEMP%\twinfm-p6m2-explorer`,
+  twelve `.txt` files with 31-character names and a folder; Explorer at 96 dpi, Ctrl+Shift+3 then
+  Ctrl+Shift+2): medium items are 74 px wide on an 82 x 99 px pitch (98 px tall with a name on two or
+  three lines, 68 px with one); large items 105 px wide on a 110 x 132 pitch. Explorer wraps names;
+  TwinFM's tiles hold one elided line (P4-M1), so the medium tile keeps the large tile's layout at
+  the medium icon: 2 px, the 48 px icon, 1 px, the 19 px name, 2 px = **80 x 72 px**, a 76 px name,
+  the icon centred (16 px each side). The kickoff's "around 64 x 84" assumed a narrower tile with
+  more room under the icon; 64 px leaves a 60 px name, about seven characters.
+- **The icon size is 48 px**, the shell's `SHIL_EXTRALARGE` and one of the thumbnail cache's sizes,
+  so neither the icons nor the thumbnails are scaled at 100% (the open question, answered below).
+
+### What landed
+
+- **PageUp and PageDown in the details list** (`pane.slint` `FileListHost.key`): the grid's handler,
+  no longer limited to the grid, moves the cursor by `max(1, floor(visible height / row height))`
+  lines times `step` (1 in the list, the tiles to a row in the grid), clamped to the first and last
+  entry; Shift extends the range from the anchor (`cursor-moved`), and the cursor row is scrolled into
+  view as Up and Down do. With Ctrl held the key passes, so Ctrl+Shift+PageUp / PageDown reach the
+  window's tab keys from either list (in the grid the list used to take them: a latent P4-M1 bug).
+  Driver key names `ShiftPageUp`, `ShiftPageDown` (`PageUp`, `PageDown` existed).
+- **Medium tiles** (`icons::TileGeom`, `LARGE` 96 x 120 at 96 px and `MEDIUM` 80 x 72 at 48 px, icon
+  2 px from the top). `GridGeom` carries its tile; `State::tile` holds each pane's, `Layout::tile`
+  the window's view of it (`window_layout` reads `left-medium` / `right-medium`), and every reader of
+  the old `TILE_W` / `TILE_H` / `GRID_ICON_PX` constants takes the pane's tile instead: `line_of`,
+  `resolve_view`, `compose_grid_rows` (the ring of slots is sized by the tile's height), `set_view`,
+  `dnd::hit`, `Layout::row_px_of`, the band (`band::touched`), `shellmenu::tile_menu_point`, the drag
+  image (`ImageGeom::tile(scale, tile)`: 80 px with the 48 px picture out of medium tiles, 128 px with
+  96 px out of large ones) and the driver's `row_pos`. In Slint the medium grid is its own component,
+  `FileGridMedium` / `FileGridMediumList`, a copy of `FileGrid` / `FileGridList` with the medium
+  constants (`x: c * 80px`, the name at 51 px, 76 px wide); `FileListHost` gains `medium`, `tile-w`
+  and `tile-h` (its `cols` and `row-h` follow them) and picks the large or the medium list with `if
+  root.grid && !root.medium` / `if root.grid && root.medium`, outside any `for`; the pane's overlays
+  (the drop highlight, the grid's empty space, the rename editor: `list.tile-h - 25px` down, `list.tile-w
+  - 4px` wide) read `list.tile-w` and `list.tile-h`. Ctrl+Shift+3 picks medium (`set-view` now takes
+  0, 1 or 2); Ctrl+Shift+1 and Ctrl+Shift+2 keep their meaning; the driver's `view medium` presses it.
+- **The view is `settings::View`** (`Details`, `Large`, `Medium`): `Config::view(pane)` reads
+  `view_*` and the new `tile_left` / `tile_right` (`"large"`, the default, or `"medium"`; anything
+  else large; a file from before P6-M2 has a large grid), `Config::set_view` writes them, keeping the
+  tile size while the pane shows details, so Ctrl+Shift+1 and back to the grid returns to the same
+  size. `[view]` lines name `details`, `large icons` or `medium icons`, and `[view] pane=N starts as
+  medium icons` at start.
+- **The settings dialog's View row**: a ComboBox per pane ("Left: details", "Left: large icons",
+  "Left: medium icons", and the same for the right), beside the hidden files; staged as `view_left` /
+  `view_right` (`details|large|medium`, also the driver's `settings set view_left medium`), applied on
+  OK through `set_view`, the path the keys take (`[settings] dialog: view_left details -> medium`).
+  The dialog is 38 px taller (368 px).
+- **The frame around thumbnails in the tiles** (`icons::FRAME`, a neutral grey (190, 190, 190), one
+  logical pixel, at least one physical): the worker reports where a thumbnail's picture lies in its
+  square (`letterbox_rect`, `Outcome::Picture(pixels, rect)`; a type icon, including the icon a
+  thumbnail request falls back to, stays `Outcome::Pixels`), the table keeps the rectangle per buffer
+  (`IconTable::picture`, rescaled when the buffer is fitted to another size), and `compose_grid`
+  draws the rectangle's edge pixels after copying the icon, dimmed with a cut icon. Large and medium
+  tiles; never the 32 px lists. The medium grid asks for its thumbnails at 48 px through the P3-M5
+  path, as the large one asks at 96.
+- **The cursor follows the band** (`band::cursor`, `Band::cursor`): on every move that selects, the
+  cursor goes to the touched tile under the band's moving corner (clamped into the touched columns
+  and grid rows; in a partial last grid row, the last touched entry before it), and Shift's anchor
+  goes there too (`PaneModel::set_anchor`), so the arrow keys, Shift+arrow and Shift+click continue
+  from it (Explorer). `[band] pane=N done: K selected, cursor R`.
+- **Icons asked again after a view switch** (`PaneModel::forget_icons`, from `set_view` for every
+  tab of the pane): found while checking the medium grid. `resolve_icons` resolves an entry once per
+  listing, so after Ctrl+Shift+2 the first screenful of the details list (the rows it had resolved,
+  44 at the default window) kept its 16 px buffer, which `fitted` blew up to 96 px (the reference
+  build shows it the same way, Scripted checks (iv)); the other rows asked at 96 px. Now every entry goes
+  back to its placeholder on a switch and asks again at the new size; a key already held at that
+  size is taken without a request (16 px and 96 px buffers both stay in the table, as P3-M5 keeps
+  every key per size).
+- **Tests**, 183 to 185: `band::tests::band_cursor_follows_the_moving_corner` (the cursor rule, large
+  and medium); `icons::tests::tiles_frame_thumbnails_and_never_icons` (the frame on a letterboxed
+  picture's edge and nowhere else, none on an icon, two physical pixels at 200%, dimmed with a cut
+  icon, `IconTable::picture` rescaled); grown: `grid_compose_places_icons_in_their_tiles` (every scale
+  at both tiles, the medium tile's positions), `pool_serves_others_while_one_icon_is_slow` (a picture's
+  rectangle comes back from the worker), `worker_renders_exe_drive_and_extension` (the shell's PNG
+  thumbnail arrives as `Outcome::Picture` with its rectangle), `band_touches_the_tiles_it_overlaps`,
+  `dnd::tests` hit testing (medium tiles), `tile_drag_image_holds_the_tile_picture` (the 80 px image),
+  `tile_menu_point_sits_under_the_tile` (medium), `view_defaults_to_details_and_round_trips_icons`
+  (the `View` rules, a pre-P6-M2 file), `dialog_changes_are_the_differing_fields` (the view fields),
+  `resolve_icons_requests_each_key_once_and_applies_replies` (`forget_icons`).
+- **Soak**: `tools/soak-p5m3.ps1` gains the medium-grid cycle (see `CLAUDE.md`).
+- **Docs**: `CLAUDE.md` (test count, `view medium`, the key names, the settings keys and dialog, the
+  band's cursor, the frame, the soak).
+
+### Decisions
+
+- **Medium is a second component, not a tile size bound in the tile.** The P3-M1 amendment: nothing
+  in a row or tile may depend on a runtime property. The large grid's generated code is the
+  reference's (Scripted checks (v)); the cost is a 50-line copy in `pane.slint` that must change
+  with `FileGrid`.
+- **The frame is drawn at compose from a rectangle the worker reports**, not baked into the
+  thumbnail's pixels. The table keys a buffer by key and size in px, and a 32 px list thumbnail at
+  150% and a medium tile's at 100% are both 48 px: a frame baked in would show in the list after a
+  move between monitors of different scale. The extra cost is the rectangle's edge pixels per tile
+  composed (192 writes for a 48 px picture), on grid rows that are composed anyway.
+- **PageDown moves the cursor a viewport**, as the grid's has since P4-M1 and as the brief says.
+  Explorer's details view first moves the cursor to the last row on screen and pages only from there;
+  not copied (Deferred).
+- **The band's cursor is the tile under its moving corner**, so a band dragged down and right leaves
+  the cursor bottom right and one dragged up and left top left, which is where Explorer leaves its
+  focus rectangle. The anchor goes with it; Explorer's Shift+click after a band extends from that
+  focused item.
+- **A pane on details keeps its tile size** (`tile_*` is written only for a grid), so the size is the
+  pane's preference and the view the current choice.
+- **The dialog's choice is a ComboBox per pane**, the "one choice" of the brief; the labels carry the
+  pane's name because the GridLayout row has one label for both controls.
+
+### Deviations
+
+- **The medium tile is 80 x 72 px, not about 64 x 84** (Settled first): Explorer's measured tile is
+  wider than the kickoff's guess, and TwinFM's one-line names need no room for three lines.
+- **Not in the brief**: the icons asked again after a view switch (a P4-M1 bug found here, fixed
+  because the medium size made it worse: large to medium showed downscaled 96 px icons, medium to
+  large upscaled 48 px ones), and Ctrl+Shift+PageUp / PageDown passing through the grid's list.
+
+### Deferred
+
+- **Explorer's PageDown in the details list** (to the last row on screen first, then a page).
+- **Names on more than one line** in either tile (Explorer wraps up to three lines in medium tiles).
+- **The ComboBox in the settings popup** is checked by script only through `settings set`; a mouse
+  click opening its list inside the popup is for the console check.
+- Accessibility of the medium grid, with the rest of the grid's (deferred for much later).
+- **Escape clears the selection** (Explorer does; TwinFM's Escape in a list cancels the queued
+  jobs, and in the grid a band under way, and leaves the selection). Found at the P6-M2 console
+  check; Jeremy sent it to P6-M3's polish bundle on 2026-10-17 ("Put it in P6-M3").
+
+### Scripted checks
+
+Harness session (frame interval near a console's this time: the defaults pairs below read about 20%
+busy), 1216 x 839 window, scale 1.0, this branch's `target\release\twinfm.exe` (d0db2ee plus the
+docs) copied to the session scratchpad and run from there; stderr kept; screenshots with
+`SLINT_BACKEND=winit-software` and `tools/shot.ps1`. Exit code 0 and no `panicked` line in every run.
+
+- **(i) PageUp and PageDown in the details list** on `C:\traces\bigdir` (`click 0 0`, then `key
+  PageDown|ShiftPageDown|ShiftPageUp|PageUp|End|Home` with `scrollpos 0` after each): the cursor goes
+  0, 32, 64 (a viewport is 32 rows at this height), Shift+PageDown 96 with `[select] pane=0 Range
+  row=96 selected=33`, Shift+PageUp back to 64 (`selected=1`), PageUp 32 and 0; from End (39999)
+  PageDown stays at 39999 and PageUp goes to 39967; the content-y follows the cursor (-12, -716,
+  -1420, ...). Then `key CtrlT`, `click 0 0`, `key CtrlShiftPageUp` with the list focused: `[tab]
+  pane=0 moved tab 2 to 1`.
+- **(ii) Medium tiles** (`view medium` on bigdir): `[view] pane=0 details -> medium icons (12 tiles
+  to a row, 3334 grid rows)`; `click 0 5`, Right, Down: cursor 6 then 18; PageDown: 126 (nine grid
+  rows of twelve); `band 0 990 10 500 150` from the gap right of the last column: `[band] pane=0 done:
+  18 selected, cursor 30`, `scrollpos` reads current-row 30, and `key ShiftRight` gives `[select]
+  pane=0 Range row=31 selected=2` (the anchor moved with the cursor); F2 opens the rename editor over
+  tile 31's name (`shots`: `c-medium.png` in the scratchpad); `view icons`, `view details`, `view
+  medium`, `view medium` log `medium icons -> large icons (10 tiles to a row, 4000 grid rows)`,
+  `large icons -> details`, `details -> medium icons`, `already medium icons`.
+- **(iii) Medium tiles with thumbnails, through the settings dialog**: `TWINFM_CONFIG` a scratch file
+  with `thumbnails = true`, on `%TEMP%\twinfm-p3m5-thumbs` (the P3-M5 fixture, 200 JPEGs), `settings
+  open`, `settings set view_left medium`, `settings ok`: `[settings] dialog: view_left details ->
+  medium`, `[view] pane=0 details -> medium icons (12 tiles to a row, 17 grid rows)`, `dialog closed
+  (ok), 1 change(s)`, the file saved with `view_left = "icons"`, `tile_left = "medium"`, `tile_right =
+  "large"`; `thumbs 80 avg 16.29 ms` then `thumbs 62 avg 12.32 ms` (the 48 px thumbnails); every
+  photo letterboxed in its 48 px square with the grey frame on the picture's edge, the selected tile's
+  too (`d-medium-thumbs.png`).
+- **(iv) Icons after a view switch**: the reference build (`target-p6m1`) on bigdir, `view icons`:
+  the first 44 tiles show the 16 px `.txt` icon blown up to 96 px, the rest the 96 px icon
+  (`ref-large.png`); this build: every tile the 96 px icon, one request at 96 px (`[icons] +1
+  requests +1 replies (total 2 / 2)`, `e-large.png`).
+- **(v) The lists and the large grid are the reference's.** The generated `app.rs` of `target-p6m1`
+  (0d4a23f) and this build's, from `InnerFileList_root_60` up to the first component after the five
+  lists (the reference's `FileListHost`, this build's `FileGridMedium`), with quoted drive paths
+  blanked and two counters normalised (the global singletons' numbers, `FluentPalette_552` against
+  `_650`, since every component added before them shifts them, and the compiler's
+  `returned_expression` / `return_check_merge` temporaries): 7,654 lines each, 0 differing. The span
+  holds `FileList`, `FileListNoType`, `FileList32`, `FileListNoType32` and `FileGridList` with their
+  repeated rows and tiles (`InnerComponent_rectangle_63`, `_101`, `_138`, `_176`, `_213`, `_214`).
+  The palette global itself gained fields (the ComboBox reads more of the palette); the host and the
+  pane changed as intended.
+- **(vi) Soak**: `tools/soak-p5m3.ps1 -Minutes 4`: exit code 0, 0 `panicked`, 5 cycles started, 127
+  jobs done (0 failed, 0 cancelled), 0 soak refusals, 0 `waitops` timeouts; drags dropped 0; medium
+  grid switched on 4 and off 4, 80 px drag images 4, bands done with the cursor on tile 0: 8 (large
+  and medium), Shift+Right from the band's cursor 4; every P4-M3 and P5-M3 count as expected (tile
+  drops 8, 128 px images 8, bands 8 of 8 done with 2 selected, spring-loaded rows 4, tabs 0, crumb
+  drops 4); working set 149.7 MB at 5 s, 204.5 at 35 s, then 220.8 to 238.6 MB, 229.9 at 241 s (a
+  plateau, as the earlier soaks' first minutes).
+
+The UI Automation measure of Explorer used a scratch folder that is removed again.
+
+### Measurements
+
+In-app, RELATIVE only: the same harness session, 1216 x 839 window, scale 1.0, accessibility on, the
+gate scenario (`tools/wpr-gate.ps1`'s script) on `C:\traces\bigdir`, `[busy]` over the 10 s after the
+split, `target-p6m1` (0d4a23f, the reference) and this build interleaved by one runner, in two sets
+per settings file: the reference in the first slot of each pair, then the candidate first. No cargo
+or agent ran beside.
+
+| Settings | pairs | reference first: ref / P6-M2 | P6-M2 first: P6-M2 / ref | median over all, ref / P6-M2 |
+|---|---|---|---|---|
+| defaults | 6 + 6 | 20.2/17.2, 17.5/16.2, 21.1/19.4, 16.4/23.1, 17.8/18.7, 21.1/19.4 | 18.4/20.0, 21.6/21.2, 19.4/17.3, 17.7/18.9, 21.6/21.6, 19.7/20.0 | **20.0 / 19.4** |
+| `grid.toml` | 4 + 4 | 10.0/11.2, 11.1/11.4, 10.5/13.6, 10.5/12.5 | 10.5/10.0, 11.9/10.2, 10.6/9.8, 10.8/11.9 | 10.35 / 11.3 |
+| `grid.toml`, again | 4 + 4 | 10.0/10.9, 10.2/11.4, 10.0/11.2, 12.2/12.5 | 9.7/11.6, 11.2/10.3, 11.7/11.9, 12.0/12.0 | 10.95 / 11.3 |
+| `grid-medium.toml` | 4 + 4 | 10.3/13.6, 10.8/17.5, 12.2/16.2, 10.2/14.5 | 14.8/10.0, 15.0/11.6, 15.5/8.9, 15.0/10.8 | 10.55 / 15.0 |
+
+Defaults: the two binaries interleave (16.4 to 21.6 against 16.2 to 23.1). The large grid: the
+candidate reads higher in the second slot in all eight pairs and in the first slot in four of eight;
+over the eight candidate-first pairs the medians are 11.0 (P6-M2) and 10.95 (the reference), so the
+gap follows the slot (the P4-M2 note's run-order bias); the grid rows compose in the same time (1,422
+rows at 72.7 to 79.2 us against 70.8 to 75.2 us: about 3.5 ms over a run, against 100 ms per point).
+`grid-medium.toml`: the reference does not know `tile_*` and shows its large grid, so this compares
+medium tiles with large ones, as P6-M1's thumbnails triplet did 32 px rows with 22 px: the medium
+grid draws 12 tiles to a row on 11 visible grid rows against 10 on 6, about twice the tiles and
+names on screen, and reads 4.5 points above the large grid here, about 4.5 below the details list.
+Every candidate medium run shows `[settings] file C:\traces\grid-medium.toml (read)` and `[view]
+pane=0 starts as medium icons`; the grid runs `starts as large icons`. The console triplets decide.
+
+### Gate
+
+For Jeremy, elevated at the console, accessibility on, Narrator off, no other TwinFM window: a gate
+build of the PR head from a detached checkout with `--locked` into `target-p6m2`, then
+
+```
+tools/wpr-triplet.ps1 -Reference p6m1 -Candidate p6m2,p6m2@C:\traces\grid.toml,p6m2@C:\traces\grid-medium.toml -Tag ab23
+```
+
+(the defaults triplet, the grid triplet and the medium triplet; the settings runs are labelled
+`p6m2-grid` and `p6m2-grid-medium`; `C:\traces\grid-medium.toml` is new, read-only, both panes
+`"icons"` at `"medium"`). Before reading the settings triplets, each `p6m2-grid` run's stderr must
+show `[settings] file C:\traces\grid.toml (read)` and `[view] pane=0 starts as large icons`, each
+`p6m2-grid-medium` run's `[settings] file C:\traces\grid-medium.toml (read)` and `[view] pane=0
+starts as medium icons`; no run may show a `panicked` line. The grid triplet reads against the
+defaults reference runs as P4-M1's did (its reference is the list); the medium triplet the same way.
+
+Run on 2026-10-17 (15:55 to 16:07), Jeremy elevated at the console, accessibility on, Narrator off,
+no other TwinFM window, through a one-off wrapper (`gate-p6m2.ps1`, not in the repo: the
+preconditions, the triplet script of the detached checkout `.claude\worktrees\gate-p6m2` at ca12be0,
+then `analyze-trace.py --symbols --exe` and the stderr checks on every run). `target-p6m1` (0d4a23f)
+against `target-p6m2` (ca12be0, the PR head, built with `--locked`), each round reference, defaults,
+grid, medium. Every grid run's stderr shows `[settings] file C:\traces\grid.toml (read)` and `[view]
+pane=0 starts as large icons`, every medium run's `[settings] file C:\traces\grid-medium.toml (read)`
+and `starts as medium icons`; no `panicked` line in any of the twelve. Traces
+`C:\traces\twinfm-ab23-*.etl`, reports under `C:\traces\export\`, summary
+`C:\traces\gate-ab23-summary.txt`.
+
+| Run | reference `target-p6m1` | P6-M2 defaults | P6-M2 `grid.toml` | P6-M2 `grid-medium.toml` | render p50 per frame (ref / defaults / grid / medium) |
+|---|---|---|---|---|---|
+| 1 | 24.4% (2440 ms) | 24.1% | 14.3% | 17.7% | 3.19 / 3.10 / 1.46 / 2.06 ms |
+| 2 | 23.1% | 17.8% | 10.3% | 13.5% | 3.02 / 2.24 / 1.14 / 1.60 ms |
+| 3 | 18.3% | 18.7% | 10.3% | 13.3% | 2.30 / 2.29 / 1.10 / 1.56 ms |
+| **median** | **23.1%** | **18.7%** | **10.3%** | **13.5%** | |
+
+**The session changed state part-way, so the medians are not like for like.** Every run kept the
+console's cadence (frame interval p50 16.4 to 16.5 ms, 132 to 137 frames), but in four runs each
+frame cost about a third more: all of round 1 (the reference 3.19 ms render p50, the candidate 3.10,
+and the grid and medium runs above their own later runs, 1.46 against 1.10 to 1.14 and 2.06 against
+1.56 to 1.60) and the reference's run 2 (3.02); from the candidate's run 2 on, every run sat at the
+lower cost. The frame shares move together in those runs (render 1,437 to 1,474 sampled ms against
+1,067 to 1,104, `draw_text` 829 to 864 against 631 to 663, `ListView` rows 401 to 421 against 337
+to 375, timers 745 to 806 against 625 to 675), the pattern of a machine-wide slowdown, not of code
+(the lists are the reference's: Scripted checks (v)). Read like for like: at the higher cost, the
+reference 24.4 and 23.1 against the candidate's 24.1; at the lower, the reference 18.3 against
+18.7 and 17.8. The candidate sits inside the reference's spread in both states, and the wrapper's
+"a gap that counts: True" is the candidate's median 4.4 points **below** the reference's (the
+wrapper tested the difference both ways; the rule is about a cost). The runs at or over 20% are the
+three at the higher cost, the reference's two among them; at the lower cost every defaults run is
+under the bar. Grid 10.3 and medium 13.5 (runs 2 and 3) against the defaults list's 17.8 to 18.7:
+medium about 3 points above large, as the in-app pairs said (twice the tiles), and well under the
+bar; frame shares, run 3 grid / medium: render 631 / 889, `draw_text` 298 / 505, `ListView` rows
+39 / 68, accessibility 82 / 95 (the medium grid's extra cost is text: twice the names).
+
+**P6-M2 passes the gate.** Jeremy accepted ab23 as recorded (2026-10-17: "Accept ab23 as recorded"),
+without a re-run of the defaults triplet. The console checks follow.
+
+**Console checks, 2026-10-17, Jeremy at the console with `target-p6m2`:** 1 (medium tiles and the
+frame beside Explorer), 3 (PageUp / PageDown in the details list) and 4 (the band's cursor, the view
+switches with no blown-up icons) "work as expected". 2 (the settings dialog's View row): "I don't see
+a view row"; not reproduced here: the same build, with the GPU renderer and with a copy of Jeremy's
+`config.toml` on the same desktop, shows the row (fourth, "Left: medium icons" / "Right: details",
+matching the file's `tile_left = "medium"`). Looked at again: "The View row is there and the
+dropdowns work; console checks all pass." Escape not clearing a selection was raised at the same
+time; it is under Deferred, for P6-M3. **P6-M2 is closed**; it merges on Jeremy's word.
+
+Console checks after the triplet, TwinFM started unelevated:
+
+1. A photo folder (`%TEMP%\twinfm-p3m5-thumbs` or Pictures) with thumbnails on, Ctrl+Shift+3: the
+   medium tiles beside Explorer's Medium icons (Ctrl+Shift+3 there too); the grey frame around each
+   picture and none around the type icons; the size and the one-line names acceptable.
+2. The settings dialog (Ctrl+,): the View row's two lists open with the mouse inside the dialog, a
+   choice applies on OK and not on Cancel, and comes back after a restart.
+3. The details list: PageDown and PageUp a screen at a time, Shift+PageDown extending the selection.
+4. The grid (large and medium): a band drawn with the mouse, then Shift+Right or Shift+click
+   continuing from the tile under the band's last corner; Ctrl+Shift+1, 2 and 3 back and forth with
+   no blown-up icons after a switch.
+
 ## Open questions
 
 Written 2026-10-16 at the kickoff.
@@ -712,7 +1005,8 @@ Written 2026-10-16 at the kickoff.
   from the cloud afterwards. Jeremy's call; the default is a console check only.
 - **Where the medium grid's thumbnails come from** (P6-M2): the shell's thumbnail cache has
   fixed sizes (16, 32, 48, 96, 256, 768, 1280, 1920, 2560); medium at 48 px hits one of them,
-  which is the argument for 48.
+  which is the argument for 48. **Answered (P6-M2):** 48 px, through the P3-M5 path at the tile's
+  icon size (§ P6-M2 Settled first).
 - **The in-pane toolbar's height against the bar** (P6-M3): it takes a row from each list, so
   the gate scenario scrolls one row fewer per pane; a cost within the noise is expected, and the
   toolbar triplet says.

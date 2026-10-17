@@ -2,7 +2,7 @@
 //! means, in content coordinates (logical px, y from the top of the first grid row), free of
 //! Slint and the window. main.rs runs the gesture and applies the result to the model.
 
-use crate::icons::{TILE_H, TILE_W};
+use crate::icons::TileGeom;
 use std::collections::BTreeSet;
 
 /// What the band does to the selection it found at the press: Ctrl toggles the touched tiles,
@@ -33,20 +33,21 @@ pub fn rect(a: (f32, f32), b: (f32, f32)) -> (f32, f32, f32, f32) {
     (x0, y0, x1 - x0, y1 - y0)
 }
 
-/// The entries whose tile the band between `a` and `b` overlaps, `cols` tiles to a grid row and
-/// `len` entries. A tile's left and top edges belong to it (half-open), so a band of zero width or
-/// height touches nothing; the space right of the last column and below the last entry is empty.
-pub fn touched(a: (f32, f32), b: (f32, f32), cols: usize, len: usize) -> BTreeSet<usize> {
+/// The entries whose tile the band between `a` and `b` overlaps, `cols` tiles of `t` to a grid
+/// row and `len` entries. A tile's left and top edges belong to it (half-open), so a band of zero
+/// width or height touches nothing; the space right of the last column and below the last entry is
+/// empty.
+pub fn touched(a: (f32, f32), b: (f32, f32), cols: usize, len: usize, t: TileGeom) -> BTreeSet<usize> {
     let (x, y, w, h) = rect(a, b);
     let mut out = BTreeSet::new();
     if cols == 0 || len == 0 || w <= 0.0 || h <= 0.0 {
         return out;
     }
     // The first column and grid row the band reaches, and the last (exclusive) it reaches into.
-    let c0 = (x.max(0.0) / TILE_W).floor() as usize;
-    let c1 = (((x + w) / TILE_W).ceil().max(0.0) as usize).min(cols);
-    let r0 = (y.max(0.0) / TILE_H).floor() as usize;
-    let r1 = (((y + h) / TILE_H).ceil().max(0.0) as usize).min(len.div_ceil(cols));
+    let c0 = (x.max(0.0) / t.w).floor() as usize;
+    let c1 = (((x + w) / t.w).ceil().max(0.0) as usize).min(cols);
+    let r0 = (y.max(0.0) / t.h).floor() as usize;
+    let r1 = (((y + h) / t.h).ceil().max(0.0) as usize).min(len.div_ceil(cols));
     for r in r0..r1 {
         for c in c0..c1 {
             let i = r * cols + c;
@@ -56,6 +57,21 @@ pub fn touched(a: (f32, f32), b: (f32, f32), cols: usize, len: usize) -> BTreeSe
         }
     }
     out
+}
+
+/// Where the cursor goes as the band between `anchor` and `now` (its moving corner) selects
+/// (P6-M2, Explorer): the touched tile under `now`, or, with the pointer outside the touched tiles
+/// (past the last column, below the rows, above or left of the content), the touched tile nearest
+/// it in the same grid row and column, and in a partial last grid row the last touched entry
+/// before it. None when the band touches nothing.
+pub fn cursor(anchor: (f32, f32), now: (f32, f32), cols: usize, len: usize, t: TileGeom) -> Option<usize> {
+    let touched = touched(anchor, now, cols, len, t);
+    let (first, last) = (*touched.first()?, *touched.last()?);
+    let cols = cols.max(1);
+    let (c_lo, c_hi) = touched.iter().fold((usize::MAX, 0), |(lo, hi), &i| (lo.min(i % cols), hi.max(i % cols)));
+    let c = ((now.0.max(0.0) / t.w).floor() as usize).clamp(c_lo, c_hi);
+    let r = ((now.1.max(0.0) / t.h).floor() as usize).clamp(first / cols, last / cols);
+    touched.range(..=r * cols + c).next_back().copied()
 }
 
 /// The selection the band means: `before` (the selection at the press) combined with the
@@ -114,13 +130,18 @@ impl Band {
     }
 
     /// The tiles the band touches now.
-    pub fn touched(&self, cols: usize, len: usize) -> BTreeSet<usize> {
-        touched(self.anchor, self.now, cols, len)
+    pub fn touched(&self, cols: usize, len: usize, t: TileGeom) -> BTreeSet<usize> {
+        touched(self.anchor, self.now, cols, len, t)
     }
 
     /// The selection the band means now.
-    pub fn selection(&self, cols: usize, len: usize) -> BTreeSet<usize> {
-        selection(self.mode, &self.before, &self.touched(cols, len))
+    pub fn selection(&self, cols: usize, len: usize, t: TileGeom) -> BTreeSet<usize> {
+        selection(self.mode, &self.before, &self.touched(cols, len, t))
+    }
+
+    /// Where the cursor goes now (`cursor`).
+    pub fn cursor(&self, cols: usize, len: usize, t: TileGeom) -> Option<usize> {
+        cursor(self.anchor, self.now, cols, len, t)
     }
 }
 
@@ -133,23 +154,41 @@ mod tests {
         v.iter().copied().collect()
     }
 
+    const L: TileGeom = TileGeom::LARGE;
+
+    #[test]
+    fn band_cursor_follows_the_moving_corner() {
+        // Five large tiles to a grid row, twelve entries (rows 0 and 1 full, row 2 holds 10 and 11).
+        assert_eq!(cursor((10.0, 10.0), (300.0, 200.0), 5, 12, L), Some(8), "the tile under the corner");
+        assert_eq!(cursor((300.0, 200.0), (10.0, 10.0), 5, 12, L), Some(0), "dragged up and left");
+        assert_eq!(cursor((10.0, 10.0), (600.0, 200.0), 5, 12, L), Some(9), "right of the last column: the last column");
+        assert_eq!(cursor((10.0, 10.0), (400.0, 340.0), 5, 12, L), Some(11), "in the partial row past its last entry");
+        assert_eq!(cursor((10.0, 10.0), (300.0, 900.0), 5, 12, L), Some(11), "below the rows");
+        assert_eq!(cursor((200.0, 130.0), (-40.0, -40.0), 5, 12, L), Some(0), "above and left of the content");
+        assert_eq!(cursor((50.0, 10.0), (50.0, 300.0), 5, 12, L), None, "a zero-width band touches nothing");
+        // Medium tiles: 80 x 72.
+        let m = TileGeom::MEDIUM;
+        assert_eq!(cursor((5.0, 5.0), (170.0, 80.0), 5, 12, m), Some(7));
+        assert_eq!(touched((5.0, 5.0), (170.0, 80.0), 5, 12, m), set(&[0, 1, 2, 5, 6, 7]));
+    }
+
     #[test]
     fn band_touches_the_tiles_it_overlaps() {
         // Five tiles to a grid row, twelve entries: rows 0 and 1 full, row 2 holds 10 and 11.
-        assert_eq!(touched((10.0, 10.0), (20.0, 20.0), 5, 12), set(&[0]), "inside one tile");
-        assert_eq!(touched((90.0, 10.0), (200.0, 20.0), 5, 12), set(&[0, 1, 2]), "across three tiles");
-        assert_eq!(touched((0.0, 100.0), (100.0, 130.0), 5, 12), set(&[0, 1, 5, 6]), "two rows, two columns");
-        assert_eq!(touched((100.0, 130.0), (0.0, 100.0), 5, 12), set(&[0, 1, 5, 6]), "corners in any order");
-        assert_eq!(touched((480.0, 0.0), (600.0, 240.0), 5, 12), set(&[]), "right of the last column");
-        assert_eq!(touched((0.0, 240.0), (480.0, 360.0), 5, 12), set(&[10, 11]), "the partial last row");
-        assert_eq!(touched((0.0, 400.0), (480.0, 500.0), 5, 12), set(&[]), "below the last row");
-        assert_eq!(touched((-50.0, -50.0), (10.0, 10.0), 5, 12), set(&[0]), "above and left of the content");
-        assert_eq!(touched((96.0, 0.0), (100.0, 10.0), 5, 12), set(&[1]), "a tile's left edge belongs to it");
-        assert_eq!(touched((50.0, 120.0), (60.0, 130.0), 5, 12), set(&[5]), "a grid row's top edge belongs to it");
-        assert_eq!(touched((50.0, 10.0), (50.0, 300.0), 5, 12), set(&[]), "zero width touches nothing");
-        assert_eq!(touched((0.0, 50.0), (480.0, 50.0), 5, 12), set(&[]), "zero height touches nothing");
-        assert_eq!(touched((0.0, 0.0), (480.0, 360.0), 0, 12), set(&[]), "no columns, nothing");
-        assert_eq!(touched((0.0, 0.0), (480.0, 360.0), 5, 0), set(&[]), "no entries, nothing");
+        assert_eq!(touched((10.0, 10.0), (20.0, 20.0), 5, 12, L), set(&[0]), "inside one tile");
+        assert_eq!(touched((90.0, 10.0), (200.0, 20.0), 5, 12, L), set(&[0, 1, 2]), "across three tiles");
+        assert_eq!(touched((0.0, 100.0), (100.0, 130.0), 5, 12, L), set(&[0, 1, 5, 6]), "two rows, two columns");
+        assert_eq!(touched((100.0, 130.0), (0.0, 100.0), 5, 12, L), set(&[0, 1, 5, 6]), "corners in any order");
+        assert_eq!(touched((480.0, 0.0), (600.0, 240.0), 5, 12, L), set(&[]), "right of the last column");
+        assert_eq!(touched((0.0, 240.0), (480.0, 360.0), 5, 12, L), set(&[10, 11]), "the partial last row");
+        assert_eq!(touched((0.0, 400.0), (480.0, 500.0), 5, 12, L), set(&[]), "below the last row");
+        assert_eq!(touched((-50.0, -50.0), (10.0, 10.0), 5, 12, L), set(&[0]), "above and left of the content");
+        assert_eq!(touched((96.0, 0.0), (100.0, 10.0), 5, 12, L), set(&[1]), "a tile's left edge belongs to it");
+        assert_eq!(touched((50.0, 120.0), (60.0, 130.0), 5, 12, L), set(&[5]), "a grid row's top edge belongs to it");
+        assert_eq!(touched((50.0, 10.0), (50.0, 300.0), 5, 12, L), set(&[]), "zero width touches nothing");
+        assert_eq!(touched((0.0, 50.0), (480.0, 50.0), 5, 12, L), set(&[]), "zero height touches nothing");
+        assert_eq!(touched((0.0, 0.0), (480.0, 360.0), 0, 12, L), set(&[]), "no columns, nothing");
+        assert_eq!(touched((0.0, 0.0), (480.0, 360.0), 5, 0, L), set(&[]), "no entries, nothing");
     }
 
     #[test]

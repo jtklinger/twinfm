@@ -333,7 +333,14 @@ fn parse(script: &str) -> Vec<Step> {
                 "backclick" => Step::XButton { pane: num(1) as usize, forward: false },
                 "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true },
                 "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
-                "view" => Step::Key(if a.get(1) == Some(&"icons") { "CtrlShift2" } else { "CtrlShift1" }.into()),
+                "view" => Step::Key(
+                    match a.get(1).copied() {
+                        Some("icons") => "CtrlShift2",
+                        Some("medium") => "CtrlShift3",
+                        _ => "CtrlShift1",
+                    }
+                    .into(),
+                ),
                 "copy" => Step::Key("ShiftF5".into()),
                 "move" => Step::Key("ShiftF6".into()),
                 "delete" => Step::Key("Delete".into()),
@@ -555,8 +562,8 @@ fn thumb(app: &App, pane: usize) -> LogicalPosition {
 
 /// Centre of a visible row: rows start under the 3 px padding, the tab strip when there is one,
 /// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing; 22 px each (32 px with thumbnails on).
-/// In the large-icon grid, the centre of visible entry `row`'s tile (`row / cols` grid rows down,
-/// `row % cols` tiles across, 96 x 120 px each).
+/// In the icon grid, the centre of visible entry `row`'s tile (`row / cols` grid rows down,
+/// `row % cols` tiles across, 96 x 120 px each, 80 x 72 px medium).
 fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
     let (_, _, mid) = geometry(app, pane);
     let l = crate::window_layout(app);
@@ -565,8 +572,9 @@ fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
         Some(cols) => {
             let (r, c) = crate::model::grid_cell(row, cols);
             let (left, _) = crate::dnd::pane_x(&l, pane);
-            let x = left + crate::dnd::PANE_PAD + (c as f32 + 0.5) * crate::icons::TILE_W;
-            LogicalPosition::new(x, list_top(app, pane) + (r as f32 + 0.5) * crate::icons::TILE_H)
+            let t = l.tile[pane];
+            let x = left + crate::dnd::PANE_PAD + (c as f32 + 0.5) * t.w;
+            LogicalPosition::new(x, list_top(app, pane) + (r as f32 + 0.5) * t.h)
         }
     }
 }
@@ -894,10 +902,13 @@ fn chord(name: &str) -> Vec<SharedString> {
         "End" => vec![k(Key::End)],
         "ShiftUp" => vec![k(Key::Shift), k(Key::UpArrow)],
         "ShiftDown" => vec![k(Key::Shift), k(Key::DownArrow)],
+        "ShiftPageUp" => vec![k(Key::Shift), k(Key::PageUp)],
+        "ShiftPageDown" => vec![k(Key::Shift), k(Key::PageDown)],
         "ShiftLeft" => vec![k(Key::Shift), k(Key::LeftArrow)],
         "ShiftRight" => vec![k(Key::Shift), k(Key::RightArrow)],
         "CtrlShift1" => vec![k(Key::Control), k(Key::Shift), "1".into()],
         "CtrlShift2" => vec![k(Key::Control), k(Key::Shift), "2".into()],
+        "CtrlShift3" => vec![k(Key::Control), k(Key::Shift), "3".into()],
         "ShiftF5" => vec![k(Key::Shift), k(Key::F5)],
         "ShiftF6" => vec![k(Key::Shift), k(Key::F6)],
         "ShiftDelete" => vec![k(Key::Shift), k(Key::Delete)],
