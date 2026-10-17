@@ -295,6 +295,24 @@ impl PaneModel {
         changed
     }
 
+    /// Give the entry keyed `from` (a cloud lookup's `look:` key, at `row` unless a pass moved it)
+    /// the key `to`, in the listing and in its row; its icon stays the placeholder, so the next
+    /// resolve asks for `to`. False when no entry has `from` any more (a refresh replaced it).
+    pub fn relabel(&self, row: usize, from: &SharedString, to: SharedString) -> bool {
+        if let Some(e) = self.all.borrow_mut().iter_mut().find(|e| &e.icon_key == from) {
+            e.icon_key = to.clone();
+        }
+        let mut shown = self.shown.borrow_mut();
+        let i = if shown.get(row).is_some_and(|e| &e.icon_key == from) { Some(row) } else { shown.iter().position(|e| &e.icon_key == from) };
+        match i {
+            Some(i) => {
+                shown[i].icon_key = to;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The icon table index of every row in `first..=last` (clamped to the list), in order.
     pub fn icon_indices(&self, first: usize, last: usize) -> Vec<u16> {
         let shown = self.shown.borrow();
@@ -2416,6 +2434,19 @@ mod tests {
     fn resolve_icons_requests_each_key_once_and_applies_replies() {
         use crate::icons::Outcome;
         let keyed = |name: &str, key: &str| Entry { icon_key: key.into(), ..e(name, 0, false) };
+        // A cloud lookup's key is replaced in the listing and its row (found by key when a pass
+        // moved it), and the row then asks for the marked key.
+        {
+            let m = PaneModel::default();
+            m.append(vec![keyed("a", "look:o:ext:.txt|G:\\a"), keyed("b", "look:o:dir|G:\\b")]);
+            assert!(m.relabel(1, &"look:o:ext:.txt|G:\\a".into(), "ext:o12:.txt".into()), "found by key, not by the stale row");
+            assert!(!m.relabel(0, &"look:o:ext:.txt|G:\\a".into(), "x".into()), "already relabelled");
+            assert_eq!(m.entry(0).unwrap().icon_key, "ext:o12:.txt");
+            assert_eq!(m.snapshot_all()[0].icon_key, "ext:o12:.txt");
+            let mut asked = Vec::new();
+            m.resolve_icons(0, 1, 16, |_, e| asked.push(e.icon_key.to_string()));
+            assert_eq!(asked, ["ext:o12:.txt", "look:o:dir|G:\\b"]);
+        }
         let m = PaneModel::default();
         m.append(vec![keyed("a.txt", "ext:.txt"), keyed("b.txt", "ext:.txt"), keyed("c.png", "ext:.png"), keyed("d.txt", "ext:.txt")]);
         let mut asked = Vec::new();

@@ -18,8 +18,9 @@ section quotes Jeremy's kickoff decisions and § Calls made lists the lead's). R
 changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (176 tests; eight touch the real shell and clipboard, one of them the Recycle
-  Bin, and fourteen of the
+- `cargo test --release` (183 tests; eight touch the real shell and clipboard, one of them the Recycle
+  Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
+  imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
   tests write to scratch folders, see below)
@@ -312,6 +313,27 @@ changing the list.
   asks the shell); the `[dnd] drag image` line reads `WxW px, I px icon, N item(s), icon from
   ...` (the details list's stays 96 px with a 64 px icon from the shell). Shift and Ctrl across
   tiles, drops onto a tile and onto empty space and the drag auto-scroll by grid rows are P4-M1's.
+  Since P6-M1, cloud marks (`src/cloud.rs`, `icons::Cloud`, `icons::Mark`): no new driver step (a
+  `nav` to a OneDrive folder or to `G:\My Drive` is the check). A listing is a cloud location when its
+  folder is under a registered sync root (`HKLM\...\Explorer\SyncRootManager\*\UserSyncRoots`, read
+  at start and on every device change; OneDrive and Phone Link's CrossDevice here) or on a volume
+  named "Google Drive"; This PC, archive levels and search tabs never are. Keys there:
+  `ext:<mark>:.txt`, `folder:<mark>`, `thumb:<mark>:<path>|<modified>|<size>`, `cloud:<mark>:<path>`
+  (a full-path key), the mark `s<N>` (a sync root's `System.StorageProviderState`, drawn with the
+  imageres.dll glyph Explorer's Status column uses) or `o<N>` (the shell's overlay index, Google
+  Drive's handlers); a sync root file's state comes from its attributes on the enumeration worker, a
+  sync root folder and every Google Drive entry first carry `look:<s|o>:<plain key>|<path>` and the
+  icon workers look the mark up when the row is on screen (one property read, about 23 ms, or one
+  `SHGFI_OVERLAYINDEX` call, about 5 ms), after which the row takes the marked key. Links and reparse
+  points keep their own keys and arrow. A thumbnail for a cloud-only file (state 1) and for any
+  Google Drive file is asked with `WTS_INCACHEONLY`. `[cloud]` lines: `sync roots: N (<roots>)` at
+  start and after a device change, `volume <key> named "<name>" (google drive|not cloud)` or `volume
+  <key> has no name (not cloud)` once per volume, `pane=N <folder>: sync root|google drive` per
+  listing of a cloud location. `[icons]` adds `status glyph state S (imageres -R) fetched at G px over
+  P px` once per state and size, `slow cloud lookup <ms> ms: <path>` (100 ms or more, counted in
+  `slow`), and the once-a-second line's `cloud N` (lookups made in the period, after `dropped D`);
+  `overlays N` counts every icon drawn with a mark or an overlay, so a refresh of a cloud folder
+  whose keys are known shows `cloud N` lookups and `overlays 0`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -458,7 +480,7 @@ changing the list.
   labelled `name-<basename>` in the trace names; run the script from the checkout whose `tools/`
   it sits in, since it calls the `wpr-gate.ps1` beside it); a gap counts only when every reference run sits below every candidate run or the
   medians differ by more than one point. The reference binary is the last merged milestone's
-  gate build (`target-p5m2`, 6b1d0f1, after P5-M2); the previous one is deleted once the new one
+  gate build (`target-p5m3`, 074ccb2, after P5-M3); the previous one is deleted once the new one
   has served as a reference. Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile,
-    FOLDERID_Videos, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    FOLDERID_SkyDrive, FOLDERID_Videos, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
 };
 use windows_sys::core::GUID;
 
@@ -33,9 +33,11 @@ pub struct Row {
     pub index: usize,
 }
 
-/// The Places section, in order: label and known folder.
-const PLACES: [(&str, GUID); 7] = [
+/// The Places section, in order: label and known folder. OneDrive's is its sync root (P6-M1: the
+/// cloud marks' folder, which Explorer lists under the account's name).
+const PLACES: [(&str, GUID); 8] = [
     ("Home", FOLDERID_Profile),
+    ("OneDrive", FOLDERID_SkyDrive),
     ("Desktop", FOLDERID_Desktop),
     ("Documents", FOLDERID_Documents),
     ("Downloads", FOLDERID_Downloads),
@@ -44,7 +46,9 @@ const PLACES: [(&str, GUID); 7] = [
     ("Videos", FOLDERID_Videos),
 ];
 
-/// The known folders that resolve on this machine (a folder the shell does not know is left out).
+/// The known folders that resolve on this machine to an existing folder (a folder the shell does
+/// not know, or one it names that is not there, such as OneDrive's without OneDrive set up, is
+/// left out).
 pub fn known_folders() -> Vec<(String, PathBuf)> {
     PLACES
         .iter()
@@ -60,7 +64,7 @@ pub fn known_folders() -> Vec<(String, PathBuf)> {
             });
             // SAFETY: CoTaskMemFree accepts null.
             unsafe { CoTaskMemFree(p as *const std::ffi::c_void) };
-            path.map(|p| (label.to_string(), p))
+            path.filter(|p| p.is_dir()).map(|p| (label.to_string(), p))
         })
         .collect()
 }
@@ -205,6 +209,10 @@ mod tests {
         assert!(known.iter().any(|(l, _)| l == "Documents"));
         assert_eq!(known.first().map(|(l, _)| l.as_str()), Some("Home"));
         assert!(known.iter().all(|(_, p)| p.is_dir()), "{known:?}");
+        // OneDrive, where this machine has it set up, comes right after Home.
+        if let Some(i) = known.iter().position(|(l, _)| l == "OneDrive") {
+            assert_eq!(i, 1, "{known:?}");
+        }
         // Drive labels.
         let e = Entry::drive(r"C:\".into(), None, "Local Disk".into());
         assert_eq!(drive_label(&e), "Local Disk (C:)");

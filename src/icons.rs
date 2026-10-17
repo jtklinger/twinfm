@@ -34,11 +34,12 @@ use windows_sys::Win32::Graphics::Gdi::{
     GdiFlush, GetDC, GetDIBits, GetObjectW, HBITMAP, ReleaseDC, SelectObject,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_PINNED, FILE_ATTRIBUTE_READONLY,
+    FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM, FILE_ATTRIBUTE_UNPINNED,
 };
 use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::UI::Shell::{
-    SHCreateItemFromParsingName, SHFILEINFOW, SHGFI_ADDOVERLAYS, SHGFI_ICON, SHGFI_OVERLAYINDEX, SHGFI_SMALLICON, SHGetFileInfoW,
+    SHCreateItemFromParsingName, SHDefExtractIconW, SHFILEINFOW, SHGFI_ADDOVERLAYS, SHGFI_ICON, SHGFI_OVERLAYINDEX, SHGFI_SMALLICON, SHGetFileInfoW,
     SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_LARGE, SHIL_SMALL, SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON};
@@ -108,9 +109,13 @@ pub struct Request {
     /// icon as the fallback.
     pub thumbnail: bool,
     /// For a thumbnail: the row it was asked for and the pane's resolve it was asked in
-    /// (`Views`), so a worker can drop it once the list has scrolled away. 0 otherwise.
+    /// (`Views`), so a worker can drop it once the list has scrolled away; for a lookup (a
+    /// `look:` key) the row, handed back in the reply. 0 otherwise.
     pub row: usize,
     pub wanted: u64,
+    /// The cloud mark drawn over the icon (`key_mark` of the key; P6-M1), which also keeps a
+    /// cloud-only file's thumbnail to the shell's cache (`Mark::cache_only`).
+    pub mark: Mark,
 }
 
 /// The key of a drag image's icon (P5-M3): asked for when a row is pressed, at the drag image's
@@ -164,6 +169,8 @@ pub enum Outcome {
     Failed,
     /// Not rendered (the pane navigated away, or the key was delivered before); the UI may ask again.
     Skipped,
+    /// A `look:` key's mark (None when the shell gave none): the entry takes `looked`'s key.
+    Looked(Mark),
 }
 
 pub struct Reply {
@@ -171,6 +178,9 @@ pub struct Reply {
     /// The size asked for: the table keeps each key per size.
     pub size_px: u32,
     pub outcome: Outcome,
+    /// The request's pane and row (a lookup's entry is found by them, then by its key).
+    pub pane: usize,
+    pub row: usize,
 }
 
 /// Worker-side counters, read by the UI's once-a-second `[icons]` line.
@@ -188,6 +198,8 @@ pub struct Stats {
     pub thumb_ns: AtomicU64,
     /// Thumbnail requests dropped because the list scrolled away from their row (`Views`).
     pub dropped: AtomicU64,
+    /// Cloud mark lookups made (`look:` keys: one shell call each; P6-M1).
+    pub cloud: AtomicU64,
 }
 
 /// Lowercase extension after the last dot, as Explorer and `TypeNames` read it, or None.
@@ -262,23 +274,183 @@ pub fn thumb_key(full: &Path, modified: i64, size: u64) -> String {
     format!("thumb:{}|{modified}|{size}", full.display())
 }
 
+/// Where a listing's entries carry cloud marks (P6-M1), decided once per folder on the UI thread
+/// (`cloud::Locations::of`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cloud {
+    /// Today's keys and today's cost.
+    #[default]
+    None,
+    /// Under a registered sync root (OneDrive): a file's state comes from its attributes, a
+    /// folder's from the shell's `System.StorageProviderState` (a lookup on a worker).
+    SyncRoot,
+    /// On Google Drive's volume: every entry's mark is the shell's overlay (a lookup on a worker).
+    Overlays,
+}
+
+/// A cloud mark over an icon (P6-M1). `Overlay` is the shell's overlay at that index (Google
+/// Drive's handlers answer `SHGFI_OVERLAYINDEX`); `State` is a sync root's
+/// `System.StorageProviderState` value, drawn with the glyph Explorer's Status column draws for it
+/// (`STATE_GLYPHS`, from imageres.dll). OneDrive's own overlay handlers mark nothing for any
+/// process but Explorer's status code reads (the P6-M1 record), hence the second kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Mark {
+    #[default]
+    None,
+    Overlay(u8),
+    State(u8),
+}
+
+impl Mark {
+    /// The mark's part of a key: `o12`, `s1`; None for no mark.
+    fn tag(self) -> Option<String> {
+        match self {
+            Mark::None => None,
+            Mark::Overlay(i) => Some(format!("o{i}")),
+            Mark::State(s) => Some(format!("s{s}")),
+        }
+    }
+
+    /// Whether a thumbnail for a file with this mark may only come from the shell's cache: a
+    /// sync root's cloud-only file (state 1, "Available when online"), and every Google Drive
+    /// file, whose overlay index does not say which of its handlers set it. An extraction would
+    /// download the file.
+    pub fn cache_only(self) -> bool {
+        matches!(self, Mark::Overlay(_) | Mark::State(STATE_CLOUD))
+    }
+}
+
+/// `System.StorageProviderState`'s "Available when online": the file is only in the cloud.
+pub const STATE_CLOUD: u8 = 1;
+
+/// `System.StorageProviderState` values and the imageres.dll icon Explorer's Status column draws
+/// for each (the property's enumeration, read through `IPropertyDescription` on 2026-10-16): 1
+/// "Available when online" (the cloud), 2 "Available on this device" (the outlined tick), 3
+/// "Always available on this device" (the solid tick), 4, 5 and 10 "Sync pending" and 6 "Syncing"
+/// (the arrows), 7 "Error", 8 "Warning". 9, "Excluded (not synced)", has no image.
+const STATE_GLYPHS: [(u8, u16); 9] = [(1, 1404), (2, 1400), (3, 1405), (4, 1401), (5, 1401), (6, 1401), (7, 1402), (8, 1403), (10, 1401)];
+
+/// A sync root file's state from its attributes, as the shell's property gives it (checked on
+/// 987 cloud-only and 6 local files, P6-M1): recall on data access (the cloud filter keeps that
+/// one visible to a process that does not expose placeholders) or offline, the cloud; pinned and
+/// unpinned both (OneDrive's own files, "Excluded"), no mark; pinned, always available; else on
+/// this device. Folders carry none of this and are looked up instead.
+pub fn state_from_attrs(attrs: u32) -> Mark {
+    if attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE) != 0 {
+        Mark::State(STATE_CLOUD)
+    } else if attrs & FILE_ATTRIBUTE_PINNED != 0 && attrs & FILE_ATTRIBUTE_UNPINNED != 0 {
+        Mark::None
+    } else if attrs & FILE_ATTRIBUTE_PINNED != 0 {
+        Mark::State(3)
+    } else {
+        Mark::State(2)
+    }
+}
+
+/// `o<digits>:` or `s<digits>:` at the start of `s`: the mark and what follows it.
+fn parse_tag(s: &str) -> Option<(Mark, &str)> {
+    let (tag, rest) = s.split_once(':')?;
+    let (kind, digits) = tag.split_at_checked(1)?;
+    let n: u8 = if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) { return None } else { digits.parse().ok()? };
+    match kind {
+        "o" => Some((Mark::Overlay(n), rest)),
+        "s" => Some((Mark::State(n), rest)),
+        _ => None,
+    }
+}
+
+/// The key of an entry whose plain key is `plain` with `mark` over its icon: `ext:<mark>:.txt`,
+/// `folder:<mark>`, `thumb:<mark>:<path>|<modified>|<size>`, and `cloud:<mark>:<path>` for a key
+/// that is a full path (its own icon). Type keys stay shared by every file of that type and mark;
+/// no mark gives `plain` back.
+pub fn marked(plain: &str, mark: Mark) -> String {
+    let Some(tag) = mark.tag() else { return plain.to_string() };
+    if plain == "dir" {
+        format!("folder:{tag}")
+    } else if let Some(rest) = plain.strip_prefix("ext:") {
+        format!("ext:{tag}:{rest}")
+    } else if let Some(rest) = plain.strip_prefix("thumb:") {
+        format!("thumb:{tag}:{rest}")
+    } else {
+        format!("cloud:{tag}:{plain}")
+    }
+}
+
+/// The mark a key carries (`marked`), or None.
+pub fn key_mark(key: &str) -> Mark {
+    if let Some(rest) = key.strip_prefix("folder:") {
+        return parse_tag(&format!("{rest}:")).map_or(Mark::None, |(m, _)| m);
+    }
+    ["ext:", "thumb:", "cloud:"]
+        .iter()
+        .find_map(|p| key.strip_prefix(p))
+        .and_then(parse_tag)
+        .map_or(Mark::None, |(m, _)| m)
+}
+
+const LOOK_PREFIX: &str = "look:";
+
+/// The key of an entry whose mark is not known yet: `look:<o|s>:<plain key>|<full path>`. A row
+/// with it asks the workers for the mark (a lookup, `Outcome::Looked`) instead of an icon, and
+/// takes `looked`'s key when the reply lands. One per file (a path has no `|`), never cached.
+fn look_key(kind: char, plain: &str, full: &Path) -> String {
+    format!("{LOOK_PREFIX}{kind}:{plain}|{}", full.display())
+}
+
+pub fn is_look_key(key: &str) -> bool {
+    key.starts_with(LOOK_PREFIX)
+}
+
+/// A looked-up entry's key: its plain key with the mark found.
+pub fn looked(look: &str, mark: Mark) -> Option<String> {
+    let rest = look.strip_prefix(LOOK_PREFIX)?;
+    let (plain, _path) = rest.get(2..)?.rsplit_once('|')?;
+    Some(marked(plain, mark))
+}
+
 /// Per-enumeration key builder: extension keys and `dir` are shared SharedStrings, so most
 /// entries get a refcount bump rather than an allocation. Lives on the enumeration worker.
-/// `thumbnails`: plain files in `THUMB_EXTS` get their own `thumb:` key (`thumb_key`).
+/// `thumbnails`: plain files in `THUMB_EXTS` get their own `thumb:` key (`thumb_key`). `cloud`
+/// (`with_cloud`): the folder's cloud location, which marks every key but those of links, reparse
+/// points and drives (they keep the shell's own overlay, the link arrow).
 pub struct IconKeys {
     folder: PathBuf,
     dir: SharedString,
     ext: HashMap<String, SharedString>,
     thumbnails: bool,
+    cloud: Cloud,
+    /// Marked type keys, shared like `ext`.
+    marked: HashMap<(SharedString, Mark), SharedString>,
 }
 
 impl IconKeys {
     pub fn new(folder: PathBuf, thumbnails: bool) -> IconKeys {
-        IconKeys { folder, dir: "dir".into(), ext: HashMap::new(), thumbnails }
+        IconKeys { folder, dir: "dir".into(), ext: HashMap::new(), thumbnails, cloud: Cloud::None, marked: HashMap::new() }
+    }
+
+    pub fn with_cloud(mut self, cloud: Cloud) -> IconKeys {
+        self.cloud = cloud;
+        self
     }
 
     /// `modified` (unix seconds) and `size` go into a thumbnail's key only.
     pub fn for_entry(&mut self, name: &str, attrs: u32, kind: Kind, modified: i64, size: u64) -> SharedString {
+        let plain = self.plain(name, attrs, kind, modified, size);
+        if self.cloud == Cloud::None || kind == Kind::Drive || wants_overlay(kind, attrs, name) {
+            return plain;
+        }
+        if self.cloud == Cloud::Overlays || attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            let kind = if self.cloud == Cloud::Overlays { 'o' } else { 's' };
+            return look_key(kind, &plain, &self.folder.join(name)).into();
+        }
+        let mark = state_from_attrs(attrs);
+        if plain.starts_with("thumb:") || mark == Mark::None {
+            return marked(&plain, mark).into();
+        }
+        self.marked.entry((plain, mark)).or_insert_with_key(|(p, m)| marked(p, *m).into()).clone()
+    }
+
+    fn plain(&mut self, name: &str, attrs: u32, kind: Kind, modified: i64, size: u64) -> SharedString {
         if self.thumbnails && kind == Kind::File && is_thumbnail(name) {
             return thumb_key(&self.folder.join(name), modified, size).into();
         }
@@ -691,6 +863,17 @@ const IID_ITHUMBNAILCACHE: GUID = GUID::from_u128(0xf676c15d_596a_4ce2_8234_3399
 const IID_ISHELLITEM: GUID = GUID::from_u128(0x43826d1e_e718_42ee_bc55_a1e261c37bfe);
 /// WTS_EXTRACT (thumbcache.h): from the cache, or extracted (and cached) when it is not there.
 const WTS_EXTRACT: u32 = 0;
+/// WTS_INCACHEONLY: from the cache only, never extracted (a cloud-only file's content would be
+/// downloaded by an extraction; P6-M1).
+const WTS_INCACHEONLY: u32 = 1;
+
+/// Whether a request is for a thumbnail, and where the thumbnail may come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Thumb {
+    No,
+    Extract,
+    CacheOnly,
+}
 
 thread_local! {
     /// This worker thread's IThumbnailCache, made on its first thumbnail and released before the
@@ -699,11 +882,12 @@ thread_local! {
 }
 
 /// The shell's thumbnail for `path` from the system thumbnail cache (extracted and cached on a
-/// miss), letterboxed into a `size_px` square, or None (no handler, or the extraction failed).
+/// miss, unless `wts` is `WTS_INCACHEONLY`), letterboxed into a `size_px` square, or None (no
+/// handler, the extraction failed, or not in the cache).
 /// The cache hands back its own stored size (32, 96, 256 px ...), fitted here. Measured against
 /// `IShellItemImageFactory::GetImage(SIIGBF_THUMBNAILONLY)` on 200 JPEGs (P3-M5 decision 1): 7.3 ms
 /// against 8.9 warm and 36 against 38 cold per thumbnail. Worker threads only (COM, MTA).
-fn thumbnail(path: &Path, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+fn thumbnail(path: &Path, size_px: u32, wts: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let cache = THUMB_CACHE.with(|c| {
         if c.get().is_null() {
             let mut p: *mut c_void = std::ptr::null_mut();
@@ -729,7 +913,7 @@ fn thumbnail(path: &Path, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>>
     // SAFETY: `cache` is this thread's live IThumbnailCache and `item` a live IShellItem, released
     // once here; `shared` receives an ISharedBitmap or stays null.
     let hr = unsafe {
-        let hr = ((**(cache as *const *const ThumbnailCacheVtbl)).get_thumbnail)(cache, item, size_px, WTS_EXTRACT, &mut shared, &mut flags, std::ptr::null_mut());
+        let hr = ((**(cache as *const *const ThumbnailCacheVtbl)).get_thumbnail)(cache, item, size_px, wts, &mut shared, &mut flags, std::ptr::null_mut());
         ((**(item as *const *const UnknownVtbl)).release)(item);
         hr
     };
@@ -757,11 +941,12 @@ fn release_thumbnail_cache() {
     }
 }
 
-/// What a worker renders for a request: with `thumbnail` the shell's thumbnail (`thumbnail`),
-/// else, or when there is none, the icon (`render`).
-fn render_request(path: &Path, size_px: u32, thumb: bool) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-    if thumb {
-        if let Some(t) = thumbnail(path, size_px) {
+/// What a worker renders for a request: for a thumbnail the shell's thumbnail (`thumbnail`;
+/// from its cache only for `Thumb::CacheOnly`), else, or when there is none, the icon (`render`).
+fn render_request(path: &Path, size_px: u32, thumb: Thumb) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    let flags = if thumb == Thumb::CacheOnly { WTS_INCACHEONLY } else { WTS_EXTRACT };
+    if thumb != Thumb::No {
+        if let Some(t) = thumbnail(path, size_px, flags) {
             return Some(t);
         }
     }
@@ -778,7 +963,7 @@ const SLOW_MS: u64 = 100;
 
 /// How a worker turns a path (a size in px, thumbnail or not) into pixels: `render_request`, or a
 /// stand-in in the tests.
-type RenderFn = fn(&Path, u32, bool) -> Option<SharedPixelBuffer<Rgba8Pixel>>;
+type RenderFn = fn(&Path, u32, Thumb) -> Option<SharedPixelBuffer<Rgba8Pixel>>;
 
 /// What the worker threads share.
 #[derive(Default)]
@@ -790,8 +975,9 @@ struct Pool {
     /// the two threads never render one key twice at one size. A failed key is given back (the
     /// UI's `failed` set is what stops it being asked for again).
     taken: Mutex<HashSet<(SharedString, u32)>>,
-    /// Overlay images by (overlay index, size in px), fetched once per process (`overlay_image`).
-    overlays: Mutex<HashMap<(i32, u32), Option<SharedPixelBuffer<Rgba8Pixel>>>>,
+    /// Overlay images by (mark, size in px), fetched once per process (`mark_image`): the shell's
+    /// overlays by index, and the sync roots' status glyphs.
+    overlays: Mutex<HashMap<(Mark, u32), Option<SharedPixelBuffer<Rgba8Pixel>>>>,
 }
 
 /// A lock that a panic elsewhere cannot poison for good: the data is plain sets and queues.
@@ -880,10 +1066,12 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
             stats.dropped.fetch_add(1, Ordering::Relaxed);
         }
         let taken = (r.key.clone(), r.size_px);
-        // A drag image's icon (`drag_key`) is rendered for every press that asks, never cached.
+        // A drag image's icon (`drag_key`) is rendered for every press that asks, never cached;
+        // a lookup (`look:`) is made for every row that asks (a refresh asks again).
         let drag = is_drag_key(&r.key);
-        if stale || passed || (!drag && !lock(&pool.taken).insert(taken.clone())) {
-            if tx.send(Reply { key: r.key, size_px: r.size_px, outcome: Outcome::Skipped }).is_err() {
+        let look = is_look_key(&r.key);
+        if stale || passed || (!drag && !look && !lock(&pool.taken).insert(taken.clone())) {
+            if tx.send(Reply { key: r.key, size_px: r.size_px, outcome: Outcome::Skipped, pane: r.pane, row: r.row }).is_err() {
                 break;
             }
             if idle {
@@ -892,12 +1080,41 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
             continue;
         }
         let t0 = Instant::now();
-        let mut pixels = if com >= 0 { render(&r.path, r.size_px, r.thumbnail) } else { None };
-        if r.overlay {
-            if let (Some(p), Some(over)) = (&pixels, overlay_image(pool, &r.path, r.size_px)) {
-                pixels = Some(overlay(&fit(p, r.size_px), &over));
-                stats.overlays.fetch_add(1, Ordering::Relaxed);
+        if look {
+            let mark = if com < 0 {
+                Mark::None
+            } else if r.key[LOOK_PREFIX.len()..].starts_with('s') {
+                storage_state(&r.path).map_or(Mark::None, Mark::State)
+            } else {
+                overlay_index(&r.path).map_or(Mark::None, |i| Mark::Overlay(i as u8))
+            };
+            stats.cloud.fetch_add(1, Ordering::Relaxed);
+            let took = t0.elapsed().as_millis() as u64;
+            if took >= SLOW_MS {
+                stats.slow.fetch_add(1, Ordering::Relaxed);
+                eprintln!("[icons] slow cloud lookup {took} ms: {}", r.path.display());
             }
+            if tx.send(Reply { key: r.key, size_px: r.size_px, outcome: Outcome::Looked(mark), pane: r.pane, row: r.row }).is_err() {
+                break;
+            }
+            wake();
+            continue;
+        }
+        let thumb = match (r.thumbnail, r.mark.cache_only()) {
+            (false, _) => Thumb::No,
+            (true, false) => Thumb::Extract,
+            (true, true) => Thumb::CacheOnly,
+        };
+        let mut pixels = if com >= 0 { render(&r.path, r.size_px, thumb) } else { None };
+        let over = match (&pixels, r.mark) {
+            (None, _) => None,
+            (Some(_), Mark::None) if r.overlay => overlay_image(pool, &r.path, r.size_px),
+            (Some(_), Mark::None) => None,
+            (Some(_), m) => mark_image(pool, m, r.size_px),
+        };
+        if let (Some(p), Some(over)) = (&pixels, over) {
+            pixels = Some(overlay(&fit(p, r.size_px), &over));
+            stats.overlays.fetch_add(1, Ordering::Relaxed);
         }
         let took = t0.elapsed();
         let (n, ns) = if r.thumbnail { (&stats.thumbs, &stats.thumb_ns) } else { (&stats.rendered, &stats.render_ns) };
@@ -917,7 +1134,7 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
                 Outcome::Failed
             }
         };
-        if tx.send(Reply { key: r.key, size_px: r.size_px, outcome }).is_err() {
+        if tx.send(Reply { key: r.key, size_px: r.size_px, outcome, pane: r.pane, row: r.row }).is_err() {
             break;
         }
         wake();
@@ -976,14 +1193,126 @@ const ILD_TRANSPARENT: u32 = 1;
 /// once per (index, size) per process and shared by the worker threads.
 fn overlay_image(pool: &Pool, path: &Path, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let index = overlay_index(path)?;
+    mark_image(pool, Mark::Overlay(index as u8), size_px)
+}
+
+/// A mark's image drawn at `size_px`, fetched once per (mark, size) per process and shared by the
+/// worker threads: the shell's overlay at its index, or a sync root state's glyph.
+fn mark_image(pool: &Pool, mark: Mark, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let mut cache = lock(&pool.overlays);
-    if let Some(o) = cache.get(&(index, size_px)) {
+    if let Some(o) = cache.get(&(mark, size_px)) {
         return o.clone();
     }
-    let o = overlay_pixels(index, size_px);
-    eprintln!("[icons] overlay index {index} fetched at {size_px} px{}", if o.is_some() { "" } else { ": no image" });
-    cache.insert((index, size_px), o.clone());
+    let none = |o: &Option<SharedPixelBuffer<Rgba8Pixel>>| if o.is_some() { "" } else { ": no image" };
+    let o = match mark {
+        Mark::None => None,
+        Mark::Overlay(index) => {
+            let o = overlay_pixels(index as i32, size_px);
+            eprintln!("[icons] overlay index {index} fetched at {size_px} px{}", none(&o));
+            o
+        }
+        Mark::State(state) => {
+            let res = STATE_GLYPHS.iter().find(|(s, _)| *s == state).map(|&(_, r)| r);
+            let o = res.and_then(|r| state_glyph(r, size_px));
+            let g = glyph_px(size_px);
+            eprintln!("[icons] status glyph state {state} (imageres -{}) fetched at {g} px over {size_px} px{}", res.unwrap_or(0), none(&o));
+            o
+        }
+    };
+    cache.insert((mark, size_px), o.clone());
     o
+}
+
+/// A status glyph's size over an icon of `size_px`: about half a list icon (9 px over 16, 18 over
+/// 32, as the shell's link arrow sits), a quarter of a tile's (24 px over 96).
+pub fn glyph_px(size_px: u32) -> u32 {
+    if size_px >= 64 { size_px / 4 } else { (size_px * 9).div_ceil(16) }
+}
+
+/// imageres.dll's icon `res` drawn `glyph_px` square in the bottom-left corner of a transparent
+/// `size_px` square, where the shell's overlays sit; None when it cannot be loaded.
+fn state_glyph(res: u16, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let file: Vec<u16> = Path::new(&root).join(r"System32\imageres.dll").as_os_str().encode_wide().chain([0]).collect();
+    let g = glyph_px(size_px);
+    let mut hicon: HICON = std::ptr::null_mut();
+    // SAFETY: `file` is NUL-terminated; a negative index names the resource id; the icon, when
+    // made, is ours to destroy.
+    let hr = unsafe { SHDefExtractIconW(file.as_ptr(), -(res as i32), 0, &mut hicon, std::ptr::null_mut(), g) };
+    if hr != 0 || hicon.is_null() {
+        return None;
+    }
+    let pixels = icon_pixels_at(hicon, size_px, 0, size_px - g, g);
+    // SAFETY: made for us above.
+    unsafe { DestroyIcon(hicon) };
+    pixels
+}
+
+#[repr(C)]
+struct PropertyKey {
+    fmtid: GUID,
+    pid: u32,
+}
+
+/// PROPVARIANT's layout as far as a VT_UI4 needs it (24 bytes on x64).
+#[repr(C)]
+struct PropVariant {
+    vt: u16,
+    _reserved: [u16; 3],
+    value: u64,
+    _more: u64,
+}
+
+/// IPropertyStore (propsys.h): IUnknown, GetCount, GetAt, GetValue (the rest unused).
+#[repr(C)]
+struct PropertyStoreVtbl {
+    _query_interface: usize,
+    _add_ref: usize,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    _get_count: usize,
+    _get_at: usize,
+    get_value: unsafe extern "system" fn(*mut c_void, *const PropertyKey, *mut PropVariant) -> HRESULT,
+}
+
+#[link(name = "shell32")]
+unsafe extern "system" {
+    fn SHGetPropertyStoreFromParsingName(path: *const u16, bc: *mut c_void, flags: i32, riid: *const GUID, out: *mut *mut c_void) -> HRESULT;
+}
+
+#[link(name = "ole32")]
+unsafe extern "system" {
+    fn PropVariantClear(v: *mut PropVariant) -> HRESULT;
+}
+
+const IID_IPROPERTYSTORE: GUID = GUID::from_u128(0x886d8eeb_8cf2_4446_8d02_cdba1dbdcf99);
+/// PKEY_StorageProviderState: {E77E90DF-6271-4F5B-834F-2DD1F245DDA4}, 3.
+const PKEY_STORAGE_PROVIDER_STATE: PropertyKey = PropertyKey { fmtid: GUID::from_u128(0xe77e90df_6271_4f5b_834f_2dd1f245dda4), pid: 3 };
+const VT_UI4: u16 = 19;
+
+/// A sync root entry's `System.StorageProviderState` (the value Explorer's Status column draws),
+/// or None (no value, or 0). One property store read through the shell, about 23 ms each on
+/// OneDrive (P6-M1 record), so only folders ask: a file's state is in its attributes.
+fn storage_state(path: &Path) -> Option<u8> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut store: *mut c_void = std::ptr::null_mut();
+    // SAFETY: `wide` is NUL-terminated and outlives the call; `store` receives an IPropertyStore
+    // or stays null (GPS_DEFAULT: GPS_FASTPROPERTIESONLY fails for this property).
+    let hr = unsafe { SHGetPropertyStoreFromParsingName(wide.as_ptr(), std::ptr::null_mut(), 0, &IID_IPROPERTYSTORE, &mut store) };
+    if hr < 0 || store.is_null() {
+        return None;
+    }
+    // SAFETY: `store` is a live IPropertyStore, released once; `v` is a writable PROPVARIANT,
+    // cleared once.
+    let state = unsafe {
+        let vt = &**(store as *const *const PropertyStoreVtbl);
+        let mut v: PropVariant = std::mem::zeroed();
+        let ok = (vt.get_value)(store, &PKEY_STORAGE_PROVIDER_STATE, &mut v) >= 0 && v.vt == VT_UI4;
+        let state = ok.then_some(v.value as u32);
+        PropVariantClear(&mut v);
+        (vt.release)(store);
+        state
+    };
+    state.filter(|&s| s > 0 && s < 256).map(|s| s as u8)
 }
 
 /// The overlay index the shell gives `path` (the top eight bits of `iIcon` with
@@ -1052,6 +1381,11 @@ fn overlay_pixels(index: i32, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pix
 /// An icon drawn at `px` square into a transparent 32-bit DIB: `DrawIconEx` alpha-blends an
 /// alpha icon, which leaves premultiplied BGRA. None when nothing visible was drawn.
 fn icon_pixels(hicon: HICON, px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    icon_pixels_at(hicon, px, 0, 0, px)
+}
+
+/// `icon_pixels` with the icon drawn `w` square at (`x`, `y`) of the `px` square.
+fn icon_pixels_at(hicon: HICON, px: u32, x: u32, y: u32, w: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     // SAFETY: zeroed BITMAPINFO is a valid starting point; the header fields are set below.
     let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
     bmi.bmiHeader = BITMAPINFOHEADER {
@@ -1072,7 +1406,7 @@ fn icon_pixels(hicon: HICON, px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
         let mut out = None;
         if !bmp.is_null() && !bits.is_null() {
             let old = SelectObject(dc, bmp);
-            if DrawIconEx(dc, 0, 0, hicon, px as i32, px as i32, 0, std::ptr::null_mut(), DI_NORMAL) != 0 {
+            if DrawIconEx(dc, x as i32, y as i32, hicon, w as i32, w as i32, 0, std::ptr::null_mut(), DI_NORMAL) != 0 {
                 GdiFlush();
                 out = Some(std::slice::from_raw_parts(bits as *const u8, (px * px * 4) as usize).to_vec());
             }
@@ -1099,9 +1433,11 @@ pub const THUMB_TABLE_CAP: usize = 20_000;
 /// The extension key a thumbnail key falls back to past `THUMB_TABLE_CAP`. Thumbnail
 /// extensions are never keyed by full path, so this is the key the file has with thumbnails off.
 pub fn thumb_fallback(key: &str) -> SharedString {
-    let path = key.trim_start_matches("thumb:").rsplitn(3, '|').last().unwrap_or_default();
+    let rest = key.trim_start_matches("thumb:");
+    let (mark, rest) = parse_tag(rest).unwrap_or((Mark::None, rest));
+    let path = rest.rsplitn(3, '|').last().unwrap_or_default();
     match extension(path) {
-        Some(e) => format!("ext:.{}", e.to_ascii_lowercase()).into(),
+        Some(e) => marked(&format!("ext:.{}", e.to_ascii_lowercase()), mark).into(),
         None => path.into(),
     }
 }
@@ -1254,7 +1590,7 @@ impl IconTable {
                 keys.failed.insert(key);
                 false
             }
-            Outcome::Skipped => false,
+            Outcome::Skipped | Outcome::Looked(_) => false,
         }
     }
 }
@@ -1305,6 +1641,7 @@ mod tests {
     use super::*;
     use crossbeam_channel::unbounded;
     use std::time::Duration;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_ARCHIVE;
 
     #[test]
     fn key_rules() {
@@ -1793,11 +2130,14 @@ mod tests {
     }
 
     fn req(generation: u64, key: &str, path: &str) -> Request {
-        Request { generation, pane: 0, key: key.into(), path: PathBuf::from(path), size_px: 1, overlay: false, thumbnail: false, row: 0, wanted: 0 }
+        Request { generation, pane: 0, key: key.into(), path: PathBuf::from(path), size_px: 1, overlay: false, thumbnail: false, row: 0, wanted: 0, mark: Mark::None }
     }
 
     /// A stand-in render: "slow" takes 2 s, "busy" 50 ms (counted in BUSY_RENDERS), others none.
-    fn fake_render(path: &Path, _size_px: u32, _thumbnail: bool) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    fn fake_render(path: &Path, _size_px: u32, thumb: Thumb) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+        if path.to_str().is_some_and(|p| p.starts_with("thumbmode")) {
+            lock(&THUMB_MODES).push((path.to_string_lossy().into_owned(), thumb));
+        }
         match path.to_str() {
             Some("slow") => std::thread::sleep(Duration::from_secs(2)),
             Some("busy") => {
@@ -1811,6 +2151,7 @@ mod tests {
     }
 
     static BUSY_RENDERS: AtomicU64 = AtomicU64::new(0);
+    static THUMB_MODES: Mutex<Vec<(String, Thumb)>> = Mutex::new(Vec::new());
 
     #[test]
     fn pool_serves_others_while_one_icon_is_slow() {
@@ -1867,7 +2208,7 @@ mod tests {
             match rep_rx.recv_timeout(Duration::from_secs(2)).expect("20 replies").outcome {
                 Outcome::Pixels(_) => pixels += 1,
                 Outcome::Skipped => {}
-                Outcome::Failed => panic!("the fake render does not fail here"),
+                Outcome::Failed | Outcome::Looked(_) => panic!("the fake render does not fail here"),
             }
         }
         assert_eq!(pixels, 1, "one reply carries the icon, the other 19 are skipped");
@@ -1947,6 +2288,7 @@ mod tests {
             thumbnail: true,
             row,
             wanted,
+            mark: Mark::None,
         };
         for row in 0..200 {
             req_tx.send(thumb(row, 1)).unwrap();
@@ -1993,6 +2335,169 @@ mod tests {
     }
 
     #[test]
+    fn cloud_mark_keys() {
+        // The key format: type keys stay shared per type and mark, a full-path key carries the mark
+        // as a prefix, no mark is today's key.
+        let (cloud, local, overlay) = (Mark::State(1), Mark::State(2), Mark::Overlay(12));
+        assert_eq!(marked("ext:.txt", cloud), "ext:s1:.txt");
+        assert_eq!(marked("ext:.txt", overlay), "ext:o12:.txt");
+        assert_eq!(marked("dir", local), "folder:s2");
+        assert_eq!(marked("dir", overlay), "folder:o12");
+        assert_eq!(marked(r"thumb:C:\a\p.jpg|5|6", cloud), r"thumb:s1:C:\a\p.jpg|5|6");
+        assert_eq!(marked(r"C:\a\setup.exe", local), r"cloud:s2:C:\a\setup.exe");
+        assert_eq!(marked("ext:.txt", Mark::None), "ext:.txt", "index 0 shares today's key");
+        assert_eq!(marked("dir", Mark::None), "dir");
+        for (key, m) in [
+            ("ext:s1:.txt", cloud),
+            ("ext:o12:.txt", overlay),
+            ("folder:s2", local),
+            (r"thumb:s1:C:\a\p.jpg|5|6", cloud),
+            (r"cloud:s2:C:\a\setup.exe", local),
+            ("ext:.txt", Mark::None),
+            ("dir", Mark::None),
+            (r"thumb:C:\a\p.jpg|5|6", Mark::None),
+            (r"thumb:S:\a\p.jpg|5|6", Mark::None),
+            (r"thumb:o:\a\p.jpg|5|6", Mark::None),
+            (r"C:\a\setup.exe", Mark::None),
+            ("folder:", Mark::None),
+            ("ext:x9:.txt", Mark::None),
+        ] {
+            assert_eq!(key_mark(key), m, "{key}");
+        }
+        // A lookup's key names the entry's plain key and its path; the answer marks the plain key.
+        let full = Path::new(r"G:\My Drive\a.txt");
+        let look = look_key('o', "ext:.txt", full);
+        assert_eq!(look, r"look:o:ext:.txt|G:\My Drive\a.txt");
+        assert!(is_look_key(&look) && !is_look_key("ext:.txt"));
+        assert_eq!(key_mark(&look), Mark::None, "a lookup draws nothing");
+        assert_eq!(looked(&look, overlay).as_deref(), Some("ext:o12:.txt"));
+        assert_eq!(looked(&look, Mark::None).as_deref(), Some("ext:.txt"));
+        let thumb = look_key('o', r"thumb:G:\My Drive\p.jpg|5|6", Path::new(r"G:\My Drive\p.jpg"));
+        assert_eq!(looked(&thumb, overlay).as_deref(), Some(r"thumb:o12:G:\My Drive\p.jpg|5|6"));
+        assert_eq!(looked(&look_key('s', "dir", Path::new(r"C:\OneDrive\sub")), cloud).as_deref(), Some("folder:s1"));
+        assert_eq!(looked("ext:.txt", cloud), None);
+        // The thumbnail cap's fallback keeps the mark.
+        assert_eq!(thumb_fallback(r"thumb:s1:C:\a\p.JPG|5|6"), "ext:s1:.jpg");
+        assert_eq!(thumb_fallback(r"thumb:o12:G:\a\clip.mp4|5|6"), "ext:o12:.mp4");
+    }
+
+    #[test]
+    fn sync_root_state_from_attributes() {
+        let recall = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+        assert_eq!(state_from_attrs(recall | FILE_ATTRIBUTE_ARCHIVE), Mark::State(STATE_CLOUD), "a cloud-only file, as seen without exposed placeholders");
+        assert_eq!(state_from_attrs(recall | FILE_ATTRIBUTE_UNPINNED), Mark::State(STATE_CLOUD), "freed up by the user");
+        assert_eq!(state_from_attrs(FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_REPARSE_POINT), Mark::State(STATE_CLOUD), "as seen with exposed placeholders");
+        assert_eq!(state_from_attrs(FILE_ATTRIBUTE_ARCHIVE), Mark::State(2), "on this device");
+        assert_eq!(state_from_attrs(0), Mark::State(2));
+        assert_eq!(state_from_attrs(FILE_ATTRIBUTE_PINNED), Mark::State(3), "always available");
+        assert_eq!(state_from_attrs(FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED), Mark::None, "OneDrive's own files: excluded");
+        // Only a cloud-only file, and any Google Drive file, keep their thumbnail to the cache.
+        assert!(Mark::State(1).cache_only() && Mark::Overlay(12).cache_only() && Mark::Overlay(2).cache_only());
+        assert!(!Mark::State(2).cache_only() && !Mark::State(3).cache_only() && !Mark::State(6).cache_only() && !Mark::None.cache_only());
+        assert_eq!((glyph_px(16), glyph_px(24), glyph_px(32), glyph_px(96), glyph_px(192)), (9, 14, 18, 24, 48));
+    }
+
+    #[test]
+    fn cloud_location_keys() {
+        let f = Path::new(r"C:\OneDrive\dir");
+        let (file, dir) = (Kind::File, Kind::Directory);
+        let recall = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+        // Not a cloud location: today's keys, untouched.
+        let mut plain = IconKeys::new(f.to_path_buf(), false);
+        assert_eq!(plain.for_entry("a.txt", recall, file, 0, 0), "ext:.txt");
+        assert_eq!(plain.for_entry("sub", FILE_ATTRIBUTE_DIRECTORY, dir, 0, 0), "dir");
+        // Under a sync root: files by their attributes, shared per type and state; folders looked up.
+        let mut sync = IconKeys::new(f.to_path_buf(), false).with_cloud(Cloud::SyncRoot);
+        let a = sync.for_entry("a.txt", recall, file, 0, 0);
+        assert_eq!(a, "ext:s1:.txt");
+        assert_eq!(sync.for_entry("b.TXT", recall, file, 0, 0), a);
+        assert_eq!(sync.for_entry("c.txt", 0, file, 0, 0), "ext:s2:.txt");
+        assert_eq!(sync.for_entry("d.txt", FILE_ATTRIBUTE_PINNED, file, 0, 0), "ext:s3:.txt");
+        assert_eq!(sync.for_entry("e.txt", FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED, file, 0, 0), "ext:.txt");
+        assert_eq!(sync.for_entry("setup.exe", recall, file, 0, 0), r"cloud:s1:C:\OneDrive\dir\setup.exe");
+        assert_eq!(sync.for_entry("sub", FILE_ATTRIBUTE_DIRECTORY, dir, 0, 0), r"look:s:dir|C:\OneDrive\dir\sub");
+        // Links and reparse points keep the shell's own overlay (the arrow) and today's key.
+        assert_eq!(sync.for_entry("Vault.lnk", FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED, file, 0, 0), r"C:\OneDrive\dir\Vault.lnk");
+        let rdir = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        assert_eq!(sync.for_entry("j", rdir, Kind::Junction, 0, 0), r"C:\OneDrive\dir\j");
+        let mut thumbs = IconKeys::new(f.to_path_buf(), true).with_cloud(Cloud::SyncRoot);
+        assert_eq!(thumbs.for_entry("p.jpg", recall, file, 5, 6), r"thumb:s1:C:\OneDrive\dir\p.jpg|5|6");
+        assert_eq!(thumbs.for_entry("q.jpg", 0, file, 5, 6), r"thumb:s2:C:\OneDrive\dir\q.jpg|5|6");
+        // On Google Drive's volume: every entry is looked up.
+        let g = Path::new(r"G:\My Drive");
+        let mut google = IconKeys::new(g.to_path_buf(), true).with_cloud(Cloud::Overlays);
+        assert_eq!(google.for_entry("a.txt", 0, file, 0, 0), r"look:o:ext:.txt|G:\My Drive\a.txt");
+        assert_eq!(google.for_entry("Wedding", FILE_ATTRIBUTE_DIRECTORY, dir, 0, 0), r"look:o:dir|G:\My Drive\Wedding");
+        assert_eq!(google.for_entry("p.png", 0, file, 5, 6), r"look:o:thumb:G:\My Drive\p.png|5|6|G:\My Drive\p.png");
+        assert_eq!(google.for_entry("x.url", 0, file, 0, 0), r"G:\My Drive\x.url");
+    }
+
+    #[test]
+    fn pool_keeps_cloud_thumbnails_to_the_cache_and_looks_up_every_time() {
+        let (req_tx, req_rx) = unbounded();
+        let (rep_tx, rep_rx) = unbounded();
+        let gens = Arc::new([AtomicU64::new(1), AtomicU64::new(0)]);
+        let stats = Arc::new(Stats::default());
+        spawn_with(req_rx, rep_tx, gens, Arc::default(), stats.clone(), || {}, fake_render);
+        let ask = |key: &str, path: &str, thumbnail: bool, mark: Mark| Request { thumbnail, mark, ..req(1, key, path) };
+        // The marks' images come from the shell, which a stand-in render does not need: Overlay(0)
+        // and State(0) have none, so these replies are the stand-in's pixels.
+        req_tx.send(ask("t1", "thumbmode-cloud", true, Mark::State(STATE_CLOUD))).unwrap();
+        req_tx.send(ask("t2", "thumbmode-local", true, Mark::State(0))).unwrap();
+        req_tx.send(ask("t3", "thumbmode-google", true, Mark::Overlay(0))).unwrap();
+        req_tx.send(ask("t4", "thumbmode-plain", true, Mark::None)).unwrap();
+        req_tx.send(ask("t5", "thumbmode-icon", false, Mark::State(STATE_CLOUD))).unwrap();
+        for _ in 0..5 {
+            rep_rx.recv_timeout(Duration::from_secs(2)).expect("five replies");
+        }
+        let mut modes = lock(&THUMB_MODES).clone();
+        modes.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            modes,
+            vec![
+                ("thumbmode-cloud".into(), Thumb::CacheOnly),
+                ("thumbmode-google".into(), Thumb::CacheOnly),
+                ("thumbmode-icon".into(), Thumb::No),
+                ("thumbmode-local".into(), Thumb::Extract),
+                ("thumbmode-plain".into(), Thumb::Extract),
+            ]
+        );
+        // A lookup is made every time it is asked (never `taken`), and replies with the row.
+        let missing = std::env::temp_dir().join("twinfm-p6m1-no-such-file.txt");
+        let look = look_key('o', "ext:.txt", &missing);
+        for row in [7, 9] {
+            req_tx.send(Request { row, path: missing.clone(), ..req(1, &look, "") }).unwrap();
+            let r = rep_rx.recv_timeout(Duration::from_secs(5)).expect("a lookup reply");
+            assert_eq!((r.key.as_str(), r.row), (look.as_str(), row));
+            assert!(matches!(r.outcome, Outcome::Looked(Mark::None)), "no file, no overlay");
+        }
+        assert_eq!(stats.cloud.load(Ordering::Relaxed), 2);
+        assert_eq!(stats.rendered.load(Ordering::Relaxed), 1, "lookups are not renders");
+        // The table treats a lookup's reply as nothing to intern.
+        let mut t = IconTable::default();
+        t.keys(16).0.begin(&look.as_str().into());
+        assert!(!t.complete(look.as_str().into(), 16, Outcome::Looked(Mark::Overlay(12))));
+        assert_eq!(t.keys(16).0.state(&look.as_str().into()), KeyState::Missing);
+    }
+
+    #[test]
+    fn status_glyphs_come_from_imageres() {
+        // Reads imageres.dll only: each state's glyph sits in the bottom-left corner of the square.
+        for (state, res) in STATE_GLYPHS {
+            for size in [16, 32, 96] {
+                let g = state_glyph(res, size).unwrap_or_else(|| panic!("state {state} at {size} px: no glyph"));
+                assert_eq!((g.width(), g.height()), (size, size));
+                let (gp, px) = (glyph_px(size), g.as_slice());
+                let inside = |x: u32, y: u32| x < gp && y >= size - gp;
+                assert!(px.iter().enumerate().any(|(i, p)| p.a != 0 && inside(i as u32 % size, i as u32 / size)), "state {state}: visible");
+                assert!(px.iter().enumerate().all(|(i, p)| p.a == 0 || inside(i as u32 % size, i as u32 / size)), "state {state}: only in its corner");
+            }
+        }
+        // The cloud and the tick differ.
+        assert_ne!(state_glyph(1404, 16).unwrap().as_slice(), state_glyph(1400, 16).unwrap().as_slice());
+    }
+
+    #[test]
     fn worker_renders_exe_drive_and_extension() {
         let (req_tx, req_rx) = unbounded();
         let (rep_tx, rep_rx) = unbounded();
@@ -2022,14 +2527,14 @@ mod tests {
             ("junction".to_string(), junction.clone()),
         ];
         for (key, path) in &jobs {
-            req_tx.send(Request { generation: 1, pane: 0, key: key.as_str().into(), path: path.clone(), size_px: 16, overlay: false, thumbnail: false, row: 0, wanted: 0 }).unwrap();
+            req_tx.send(Request { generation: 1, pane: 0, key: key.as_str().into(), path: path.clone(), size_px: 16, overlay: false, thumbnail: false, row: 0, wanted: 0, mark: Mark::None }).unwrap();
         }
         let key = "junction+overlay";
-        req_tx.send(Request { generation: 1, pane: 0, key: key.into(), path: junction.clone(), size_px: 16, overlay: true, thumbnail: false, row: 0, wanted: 0 }).unwrap();
+        req_tx.send(Request { generation: 1, pane: 0, key: key.into(), path: junction.clone(), size_px: 16, overlay: true, thumbnail: false, row: 0, wanted: 0, mark: Mark::None }).unwrap();
         let thumb: SharedString = thumb_key(&png, 0, 0).into();
-        req_tx.send(Request { generation: 1, pane: 0, key: thumb.clone(), path: png.clone(), size_px: 32, overlay: false, thumbnail: true, row: 0, wanted: 0 }).unwrap();
+        req_tx.send(Request { generation: 1, pane: 0, key: thumb.clone(), path: png.clone(), size_px: 32, overlay: false, thumbnail: true, row: 0, wanted: 0, mark: Mark::None }).unwrap();
         // A stale request (pane 1 is at generation 0) is skipped, not rendered.
-        req_tx.send(Request { generation: 5, pane: 1, key: "stale".into(), path: txt.clone(), size_px: 16, overlay: false, thumbnail: false, row: 0, wanted: 0 }).unwrap();
+        req_tx.send(Request { generation: 5, pane: 1, key: "stale".into(), path: txt.clone(), size_px: 16, overlay: false, thumbnail: false, row: 0, wanted: 0, mark: Mark::None }).unwrap();
         let mut got = HashMap::new();
         while got.len() < 7 {
             let r = rep_rx.recv_timeout(Duration::from_secs(5)).expect("reply within 5 s");

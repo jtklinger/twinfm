@@ -64,11 +64,11 @@ impl ReparseCounts {
 }
 
 /// List `path` on a worker thread; `thumbnails`: thumbnail files get their own icon keys
-/// (`icons::IconKeys`).
-pub fn spawn(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, tx: Sender<Msg>, wake: impl Fn() + Send + 'static) {
+/// (`icons::IconKeys`); `cloud`: the folder's cloud location, which marks the keys.
+pub fn spawn(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, cloud: crate::icons::Cloud, tx: Sender<Msg>, wake: impl Fn() + Send + 'static) {
     std::thread::Builder::new()
         .name(format!("enum-{pane}-{generation}"))
-        .spawn(move || run(path, pane, generation, thumbnails, tx, wake))
+        .spawn(move || run(path, pane, generation, thumbnails, cloud, tx, wake))
         .expect("spawn enumeration thread");
 }
 
@@ -81,7 +81,7 @@ pub fn is_this_pc(path: &str) -> bool {
     t.is_empty() || t.eq_ignore_ascii_case(THIS_PC)
 }
 
-fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, tx: Sender<Msg>, wake: impl Fn()) {
+fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, cloud: crate::icons::Cloud, tx: Sender<Msg>, wake: impl Fn()) {
     let t0 = Instant::now();
     if is_this_pc(&path.to_string_lossy()) {
         let entries = drive_entries();
@@ -96,7 +96,7 @@ fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, tx: Sender
         return run_archive(&zip, &inner, pane, generation, tx, wake, t0);
     }
     let mut types = TypeNames::default();
-    let mut icon_keys = crate::icons::IconKeys::new(path.clone(), thumbnails);
+    let mut icon_keys = crate::icons::IconKeys::new(path.clone(), thumbnails).with_cloud(cloud);
     let zone = crate::model::LocalZone::current();
     let mut batch: Vec<Entry> = Vec::with_capacity(BATCH_SIZE);
     let mut total = 0usize;
@@ -715,7 +715,7 @@ mod tests {
 
     fn collect(path: PathBuf) -> Vec<Msg> {
         let (tx, rx) = unbounded();
-        spawn(path, 1, 7, false, tx, || {});
+        spawn(path, 1, 7, false, crate::icons::Cloud::None, tx, || {});
         let mut out = Vec::new();
         loop {
             let m = rx.recv().expect("worker sends Done before exiting");
