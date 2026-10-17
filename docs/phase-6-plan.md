@@ -972,8 +972,9 @@ frame beside Explorer), 3 (PageUp / PageDown in the details list) and 4 (the ban
 switches with no blown-up icons) "work as expected". 2 (the settings dialog's View row): "I don't see
 a view row"; not reproduced here: the same build, with the GPU renderer and with a copy of Jeremy's
 `config.toml` on the same desktop, shows the row (fourth, "Left: medium icons" / "Right: details",
-matching the file's `tile_left = "medium"`). Open until Jeremy looks again. Escape not clearing a
-selection was raised at the same time; it is under Deferred, for P6-M3.
+matching the file's `tile_left = "medium"`). Looked at again: "The View row is there and the
+dropdowns work; console checks all pass." Escape not clearing a selection was raised at the same
+time; it is under Deferred, for P6-M3. **P6-M2 is closed**; it merges on Jeremy's word.
 
 Console checks after the triplet, TwinFM started unelevated:
 
