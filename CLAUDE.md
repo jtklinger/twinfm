@@ -511,7 +511,7 @@ changing the list.
   labelled `name-<basename>` in the trace names; run the script from the checkout whose `tools/`
   it sits in, since it calls the `wpr-gate.ps1` beside it); a gap counts only when every reference run sits below every candidate run or the
   medians differ by more than one point. The reference binary is the last merged milestone's
-  gate build (`target-p6m1`, 0d4a23f, after P6-M1); the previous one is deleted once the new one
+  gate build (`target-p6m2`, ca12be0, after P6-M2); the previous one is deleted once the new one
   has served as a reference. Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running
