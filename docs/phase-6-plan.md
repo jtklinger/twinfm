@@ -924,6 +924,43 @@ show `[settings] file C:\traces\grid.toml (read)` and `[view] pane=0 starts as l
 starts as medium icons`; no run may show a `panicked` line. The grid triplet reads against the
 defaults reference runs as P4-M1's did (its reference is the list); the medium triplet the same way.
 
+Run on 2026-10-17 (15:55 to 16:07), Jeremy elevated at the console, accessibility on, Narrator off,
+no other TwinFM window, through a one-off wrapper (`gate-p6m2.ps1`, not in the repo: the
+preconditions, the triplet script of the detached checkout `.claude\worktrees\gate-p6m2` at ca12be0,
+then `analyze-trace.py --symbols --exe` and the stderr checks on every run). `target-p6m1` (0d4a23f)
+against `target-p6m2` (ca12be0, the PR head, built with `--locked`), each round reference, defaults,
+grid, medium. Every grid run's stderr shows `[settings] file C:\traces\grid.toml (read)` and `[view]
+pane=0 starts as large icons`, every medium run's `[settings] file C:\traces\grid-medium.toml (read)`
+and `starts as medium icons`; no `panicked` line in any of the twelve. Traces
+`C:\traces\twinfm-ab23-*.etl`, reports under `C:\traces\export\`, summary
+`C:\traces\gate-ab23-summary.txt`.
+
+| Run | reference `target-p6m1` | P6-M2 defaults | P6-M2 `grid.toml` | P6-M2 `grid-medium.toml` | render p50 per frame (ref / defaults / grid / medium) |
+|---|---|---|---|---|---|
+| 1 | 24.4% (2440 ms) | 24.1% | 14.3% | 17.7% | 3.19 / 3.10 / 1.46 / 2.06 ms |
+| 2 | 23.1% | 17.8% | 10.3% | 13.5% | 3.02 / 2.24 / 1.14 / 1.60 ms |
+| 3 | 18.3% | 18.7% | 10.3% | 13.3% | 2.30 / 2.29 / 1.10 / 1.56 ms |
+| **median** | **23.1%** | **18.7%** | **10.3%** | **13.5%** | |
+
+**The session changed state part-way, so the medians are not like for like.** Every run kept the
+console's cadence (frame interval p50 16.4 to 16.5 ms, 132 to 137 frames), but in four runs each
+frame cost about a third more: all of round 1 (the reference 3.19 ms render p50, the candidate 3.10,
+and the grid and medium runs above their own later runs, 1.46 against 1.10 to 1.14 and 2.06 against
+1.56 to 1.60) and the reference's run 2 (3.02); from the candidate's run 2 on, every run sat at the
+lower cost. The frame shares move together in those runs (render 1,437 to 1,474 sampled ms against
+1,067 to 1,104, `draw_text` 829 to 864 against 631 to 663, `ListView` rows 401 to 421 against 337
+to 375, timers 745 to 806 against 625 to 675), the pattern of a machine-wide slowdown, not of code
+(the lists are the reference's: Scripted checks (v)). Read like for like: at the higher cost, the
+reference 24.4 and 23.1 against the candidate's 24.1; at the lower, the reference 18.3 against
+18.7 and 17.8. The candidate sits inside the reference's spread in both states, and the wrapper's
+"a gap that counts: True" is the candidate's median 4.4 points **below** the reference's (the
+wrapper tested the difference both ways; the rule is about a cost). The runs at or over 20% are the
+three at the higher cost, the reference's two among them; at the lower cost every defaults run is
+under the bar. Grid 10.3 and medium 13.5 (runs 2 and 3) against the defaults list's 17.8 to 18.7:
+medium about 3 points above large, as the in-app pairs said (twice the tiles), and well under the
+bar; frame shares, run 3 grid / medium: render 631 / 889, `draw_text` 298 / 505, `ListView` rows
+39 / 68, accessibility 82 / 95 (the medium grid's extra cost is text: twice the names).
+
 Console checks after the triplet, TwinFM started unelevated:
 
 1. A photo folder (`%TEMP%\twinfm-p3m5-thumbs` or Pictures) with thumbnails on, Ctrl+Shift+3: the
