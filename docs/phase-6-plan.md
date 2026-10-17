@@ -557,6 +557,39 @@ C:\traces\thumbs.toml (read)` and `[icons] list geometry: 32 px rows, 32 px icon
 run should show `[cloud] sync roots: 2 (...)` and `[cloud] volume c: has no name (not cloud)` and no
 `[cloud] pane=` line, `cloud 0` on every `[icons]` line, and no `panicked` line.
 
+Run on 2026-10-17 (09:56 to 10:05), Jeremy elevated at the console, accessibility on, Narrator off,
+no other TwinFM window, through a one-off wrapper (`gate-p6m1.ps1`, not in the repo: the preconditions,
+the triplet script of the detached checkout, then `analyze-trace.py --symbols --exe` and the stderr
+checks on every run). `target-p5m3` (074ccb2) against `target-p6m1` (0d4a23f, the PR head, built with
+`--locked` from the detached checkout `.claude\worktrees\gate-p6m1`), each round reference, defaults,
+thumbnails. Every candidate run's stderr shows `[cloud] sync roots: 2 (...)`, no `[cloud] pane=` line
+and `cloud 0`; the thumbnails runs `[settings] file C:\traces\thumbs.toml (read)` and `[icons] list
+geometry: 32 px rows, 32 px icons`; all nine show the two `watching` lines and no `panicked` line.
+Traces `C:\traces\twinfm-ab22-*.etl`, reports under `C:\traces\export\`, summary
+`C:\traces\gate-ab22-summary.txt`.
+
+| Run | reference `target-p5m3` | P6-M1 defaults | P6-M1 `thumbs.toml` | in-app (ref / defaults / thumbs) |
+|---|---|---|---|---|
+| 1 | 18.4% (1835 ms) | 18.7% (1868 ms) | 14.9% (1490 ms) | 19.8 / 19.7 / 14.2 |
+| 2 | 18.9% (1891 ms) | 18.8% (1881 ms) | 14.9% (1489 ms) | 18.3 / 19.8 / 16.6 |
+| 3 | 19.0% (1904 ms) | 19.1% (1907 ms) | 15.2% (1518 ms) | 20.3 / 21.2 / 14.5 |
+| **median** | **18.9%** | **18.8%** | **14.9%** | |
+
+**P6-M1 passes the gate.** Defaults: every run of both binaries under the 20% bar, the runs interleave
+(the reference's 18.4 below the candidate's 18.7, its 19.0 above the candidate's 18.8), and the medians
+differ by 0.1, so neither half of the rule calls a gap. Thumbnails: 14.9 to 15.2, read against the same
+reference runs as in P3-M5 and P4-M2 (32 px rows, so fewer rows to draw: not like for like). Frame
+shares, reference runs 1 to 3 / defaults runs 1 to 3 (sampled ms in the window): accessibility 207,
+225, 215 / 219, 218, 207; render 1053, 1087, 1117 / 1090, 1090, 1108; draw_text 605, 607, 661 / 636,
+627, 619; ListView rows 358, 371, 352 / 352, 360, 357; timers 662, 698, 673 / 678, 678, 682; heap 202,
+178, 179 / 202, 172, 175. No `twinfm::cloud` frame and none of the key functions (`marked`,
+`key_mark`, `looked`, `is_look_key`) appear in any candidate's window: the scenario lists no cloud
+folder, and the strips compose as the reference's (371 strips at 24.6 to 25.3 us against 25.0 to 25.1;
+251 at 46.2 to 48.2 us with thumbnails). Peak working set 150 to 153 MB in every run but the
+reference's first (164 MB). The in-app lines (14.2 to 21.2) do not decide.
+
+The milestone is not closed until the console checks below are recorded.
+
 Console checks after the triplet, TwinFM started unelevated:
 
 1. `C:\Users\jtkli\OneDrive\Documents` in TwinFM beside the same folder in File Explorer (details
