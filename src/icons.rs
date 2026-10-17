@@ -72,13 +72,32 @@ impl ListGeom {
     }
 }
 
-/// The large-icon grid (P4-M1): tiles of TILE_W x TILE_H logical px, N to a grid row (N = floor(list
-/// width / TILE_W), at least 1), each with a GRID_ICON_PX icon centred horizontally GRID_ICON_TOP
-/// px below the tile's top and the name under it (pane.slint FileGrid).
-pub const TILE_W: f32 = 96.0;
-pub const TILE_H: f32 = 120.0;
-pub const GRID_ICON_PX: f32 = 96.0;
-pub const GRID_ICON_TOP: f32 = 2.0;
+/// A grid's tiles (P4-M1; the medium size P6-M2), logical px: `w` x `h`, N to a grid row (N =
+/// floor(list width / w), at least 1), each with an `icon_px` icon centred horizontally `icon_top`
+/// px below the tile's top and the name under it (pane.slint FileGrid, FileGridMedium). Chosen per
+/// pane (settings `tile_left` / `tile_right`) and read at layout, never bound in a tile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TileGeom {
+    pub w: f32,
+    pub h: f32,
+    pub icon_px: f32,
+    pub icon_top: f32,
+}
+
+impl TileGeom {
+    /// Large icons: the shell's 96 px icon filling the tile's width, a one-line name under it.
+    pub const LARGE: TileGeom = TileGeom { w: 96.0, h: 120.0, icon_px: 96.0, icon_top: 2.0 };
+    /// Medium icons: the shell's 48 px icon (SHIL_EXTRALARGE, a thumbnail cache size), so nothing
+    /// is scaled. Explorer's medium tile at 100% is 74 px wide on an 82 x 99 pitch with names on up
+    /// to three lines (measured with UI Automation, 2026-10-17); ours keeps the large tile's
+    /// one-line name: 2 + 48 + 1 + 19 + 2 px tall, 80 px wide (a 76 px name).
+    pub const MEDIUM: TileGeom = TileGeom { w: 80.0, h: 72.0, icon_px: 48.0, icon_top: 2.0 };
+
+    pub fn of(medium: bool) -> TileGeom {
+        if medium { TileGeom::MEDIUM } else { TileGeom::LARGE }
+    }
+}
+
 /// Grid rows composed into the strip above and below the visible ones: one 120 px row, about the
 /// details strip's 88 px (4 rows of 22) of scroll before a recompose, at a fraction of the size.
 pub const GRID_MARGIN_ROWS: usize = 1;
@@ -165,6 +184,9 @@ impl Views {
 
 pub enum Outcome {
     Pixels(SharedPixelBuffer<Rgba8Pixel>),
+    /// A thumbnail: its pixels and its picture's rectangle (x, y, w, h) in the square, which the
+    /// tiles frame (P6-M2). Interned as `Pixels` are.
+    Picture(SharedPixelBuffer<Rgba8Pixel>, [u32; 4]),
     /// The shell had no icon for this path; the rows keep their placeholder.
     Failed,
     /// Not rendered (the pane navigated away, or the key was delivered before); the UI may ask again.
@@ -597,45 +619,53 @@ pub fn grid_strip_range((first, last): (usize, usize), rows: usize) -> (usize, u
     (first.saturating_sub(GRID_MARGIN_ROWS), (last + GRID_MARGIN_ROWS).min(rows.saturating_sub(1)))
 }
 
-/// Physical geometry of a grid strip: `cols` tiles to a grid row, at one scale factor.
+/// Physical geometry of a grid strip: `cols` tiles of `tile` to a grid row, at one scale factor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridGeom {
-    /// Icon edge in physical pixels (GRID_ICON_PX times the scale factor, rounded).
+    /// Icon edge in physical pixels (the tile's icon size times the scale factor, rounded).
     pub icon_px: u32,
     pub cols: usize,
     pub scale: f32,
+    pub tile: TileGeom,
 }
 
 impl GridGeom {
-    pub fn new(scale: f32, cols: usize) -> GridGeom {
-        GridGeom { icon_px: ((GRID_ICON_PX * scale).round() as u32).max(1), cols: cols.max(1), scale }
+    pub fn new(scale: f32, cols: usize, tile: TileGeom) -> GridGeom {
+        GridGeom { icon_px: ((tile.icon_px * scale).round() as u32).max(1), cols: cols.max(1), scale, tile }
     }
 
     /// Physical (x, y) of the icon of the k-th entry of the strip (grid row k / cols, column
     /// k % cols): its tile's corner plus the centring offset and the top margin.
     pub fn icon_pos(&self, k: usize) -> (u32, u32) {
         let (r, c) = (k / self.cols, k % self.cols);
-        let x = ((c as f32 * TILE_W + (TILE_W - GRID_ICON_PX) / 2.0) * self.scale).round() as u32;
-        let y = ((r as f32 * TILE_H + GRID_ICON_TOP) * self.scale).round() as u32;
+        let t = self.tile;
+        let x = ((c as f32 * t.w + (t.w - t.icon_px) / 2.0) * self.scale).round() as u32;
+        let y = ((r as f32 * t.h + t.icon_top) * self.scale).round() as u32;
         (x, y)
     }
 
     /// Physical width of the strip: `cols` tiles.
     pub fn width(&self) -> u32 {
-        (self.cols as f32 * TILE_W * self.scale).round() as u32
+        (self.cols as f32 * self.tile.w * self.scale).round() as u32
     }
 
     /// Physical height of a strip of `rows` grid rows.
     pub fn height(&self, rows: usize) -> u32 {
-        (rows as f32 * TILE_H * self.scale).round() as u32
+        (rows as f32 * self.tile.h * self.scale).round() as u32
     }
 }
 
+/// The frame drawn around a thumbnail's picture in a tile (P6-M2): a neutral grey, one logical
+/// pixel wide (at least one physical pixel).
+pub const FRAME: Rgba8Pixel = Rgba8Pixel { r: 190, g: 190, b: 190, a: 255 };
+
 /// Compose a grid strip of `rows` grid rows: `icons[k]` (each `g.icon_px` square,
 /// premultiplied; entry k of the strip) is copied scanline by scanline to `g.icon_pos(k)`, dimmed
-/// when `dim[k]` is true, as `compose` does. An icon of any other size is left out; anything past
-/// the buffer's edge is clipped.
-pub fn compose_grid(icons: &[SharedPixelBuffer<Rgba8Pixel>], dim: &[bool], g: &GridGeom, rows: usize) -> SharedPixelBuffer<Rgba8Pixel> {
+/// when `dim[k]` is true, as `compose` does. `frames[k]`, when given, is the picture's rectangle
+/// (x, y, w, h) inside a thumbnail's square (`IconTable::picture`): its edge pixels are drawn in
+/// `FRAME`, dimmed with the icon. A type icon has none. An icon of any other size is left out;
+/// anything past the buffer's edge is clipped.
+pub fn compose_grid(icons: &[SharedPixelBuffer<Rgba8Pixel>], dim: &[bool], frames: &[Option<[u32; 4]>], g: &GridGeom, rows: usize) -> SharedPixelBuffer<Rgba8Pixel> {
     let (w, h) = (g.width() as usize, g.height(rows) as usize);
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(w as u32, h as u32);
     let dst = buf.make_mut_slice();
@@ -659,6 +689,22 @@ pub fn compose_grid(icons: &[SharedPixelBuffer<Rgba8Pixel>], dim: &[bool], g: &G
             dst[at..at + span].copy_from_slice(&line[..span]);
             if dimmed {
                 dim_line(&mut dst[at..at + span]);
+            }
+        }
+        if let Some(&Some([fx, fy, fw, fh])) = frames.get(k) {
+            let t = (g.scale.round() as usize).max(1);
+            let (fx, fy, fw, fh) = (fx as usize, fy as usize, fw as usize, fh as usize);
+            for y in fy..(fy + fh).min(n) {
+                for x in fx..(fx + fw).min(n) {
+                    let edge = x < fx + t || x + t >= fx + fw || y < fy + t || y + t >= fy + fh;
+                    if edge && x0 + x < w && y0 + y < h {
+                        let at = (y0 + y) * w + x0 + x;
+                        dst[at] = FRAME;
+                        if dimmed {
+                            dim_line(&mut dst[at..at + 1]);
+                        }
+                    }
+                }
             }
         }
     }
@@ -707,19 +753,28 @@ fn resample(src: &SharedPixelBuffer<Rgba8Pixel>, w: u32, h: u32) -> SharedPixelB
     out
 }
 
-/// A thumbnail in a `px` square: its longer side fitted to `px` (box filter, aspect kept), centred,
-/// with transparent bands, so it composes into the strip like any icon.
-pub fn letterbox(src: &SharedPixelBuffer<Rgba8Pixel>, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
-    let (sw, sh) = (src.width() as u64, src.height() as u64);
+/// Where `letterbox` puts a `sw` x `sh` picture in a `px` square: (x, y, w, h), its longer side
+/// `px`, centred. None for an empty picture.
+pub fn letterbox_rect(sw: u32, sh: u32, px: u32) -> Option<[u32; 4]> {
+    let (sw, sh) = (sw as u64, sh as u64);
     if sw == 0 || sh == 0 {
-        return SharedPixelBuffer::new(px, px);
+        return None;
     }
     let long = sw.max(sh);
     let side = |d: u64| ((d * px as u64 + long / 2) / long).clamp(1, px as u64) as u32;
     let (w, h) = (side(sw), side(sh));
+    Some([(px - w) / 2, (px - h) / 2, w, h])
+}
+
+/// A thumbnail in a `px` square: its longer side fitted to `px` (box filter, aspect kept), centred,
+/// with transparent bands, so it composes into the strip like any icon.
+pub fn letterbox(src: &SharedPixelBuffer<Rgba8Pixel>, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    let Some([x0, y0, w, h]) = letterbox_rect(src.width(), src.height(), px) else {
+        return SharedPixelBuffer::new(px, px);
+    };
     let scaled = resample(src, w, h);
     let mut out = SharedPixelBuffer::<Rgba8Pixel>::new(px, px);
-    let (x0, y0, n) = (((px - w) / 2) as usize, ((px - h) / 2) as usize, px as usize);
+    let (x0, y0, n) = (x0 as usize, y0 as usize, px as usize);
     let dst = out.make_mut_slice();
     for (r, line) in scaled.as_slice().chunks_exact(w as usize).enumerate() {
         let at = (y0 + r) * n + x0;
@@ -887,7 +942,7 @@ thread_local! {
 /// The cache hands back its own stored size (32, 96, 256 px ...), fitted here. Measured against
 /// `IShellItemImageFactory::GetImage(SIIGBF_THUMBNAILONLY)` on 200 JPEGs (P3-M5 decision 1): 7.3 ms
 /// against 8.9 warm and 36 against 38 cold per thumbnail. Worker threads only (COM, MTA).
-fn thumbnail(path: &Path, size_px: u32, wts: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+fn thumbnail(path: &Path, size_px: u32, wts: u32) -> Option<Rendered> {
     let cache = THUMB_CACHE.with(|c| {
         if c.get().is_null() {
             let mut p: *mut c_void = std::ptr::null_mut();
@@ -929,7 +984,7 @@ fn thumbnail(path: &Path, size_px: u32, wts: u32) -> Option<SharedPixelBuffer<Rg
         (vt.release)(shared);
         p
     };
-    pixels.map(|p| letterbox(&p, size_px))
+    pixels.map(|p| (letterbox(&p, size_px), letterbox_rect(p.width(), p.height(), size_px)))
 }
 
 /// Release this thread's IThumbnailCache, if it made one.
@@ -943,15 +998,19 @@ fn release_thumbnail_cache() {
 
 /// What a worker renders for a request: for a thumbnail the shell's thumbnail (`thumbnail`;
 /// from its cache only for `Thumb::CacheOnly`), else, or when there is none, the icon (`render`).
-fn render_request(path: &Path, size_px: u32, thumb: Thumb) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+fn render_request(path: &Path, size_px: u32, thumb: Thumb) -> Option<Rendered> {
     let flags = if thumb == Thumb::CacheOnly { WTS_INCACHEONLY } else { WTS_EXTRACT };
     if thumb != Thumb::No {
         if let Some(t) = thumbnail(path, size_px, flags) {
             return Some(t);
         }
     }
-    render(path, size_px)
+    render(path, size_px).map(|p| (p, None))
 }
+
+/// A render's pixels and, for a thumbnail, where its picture lies in the square (`letterbox_rect`;
+/// the tiles frame it, P6-M2); None for an icon.
+type Rendered = (SharedPixelBuffer<Rgba8Pixel>, Option<[u32; 4]>);
 
 /// Threads that render icons. Two, so one slow shell call (a network path, a dead share, a
 /// placeholder the sync engine must answer) does not hold the icons queued behind it: a
@@ -963,7 +1022,7 @@ const SLOW_MS: u64 = 100;
 
 /// How a worker turns a path (a size in px, thumbnail or not) into pixels: `render_request`, or a
 /// stand-in in the tests.
-type RenderFn = fn(&Path, u32, Thumb) -> Option<SharedPixelBuffer<Rgba8Pixel>>;
+type RenderFn = fn(&Path, u32, Thumb) -> Option<Rendered>;
 
 /// What the worker threads share.
 #[derive(Default)]
@@ -1105,7 +1164,10 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
             (true, false) => Thumb::Extract,
             (true, true) => Thumb::CacheOnly,
         };
-        let mut pixels = if com >= 0 { render(&r.path, r.size_px, thumb) } else { None };
+        let (mut pixels, picture) = match if com >= 0 { render(&r.path, r.size_px, thumb) } else { None } {
+            Some((p, picture)) => (Some(p), picture),
+            None => (None, None),
+        };
         let over = match (&pixels, r.mark) {
             (None, _) => None,
             (Some(_), Mark::None) if r.overlay => overlay_image(pool, &r.path, r.size_px),
@@ -1125,9 +1187,10 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
             let what = if r.thumbnail { "thumbnail" } else { "slow icon" };
             eprintln!("[icons] {what} {} ms: {}", took.as_millis(), r.path.display());
         }
-        let outcome = match pixels {
-            Some(p) => Outcome::Pixels(p),
-            None => {
+        let outcome = match (pixels, picture) {
+            (Some(p), Some(rect)) => Outcome::Picture(p, rect),
+            (Some(p), None) => Outcome::Pixels(p),
+            (None, _) => {
                 if !drag {
                     lock(&pool.taken).remove(&taken);
                 }
@@ -1464,6 +1527,8 @@ pub struct IconTable {
     /// One entry per icon size asked for (one or two in practice), searched linearly.
     sizes: Vec<(u32, SizeKeys)>,
     cap: Cap,
+    /// The picture's rectangle in each thumbnail's buffer (`Outcome::Picture`), for the tiles' frame.
+    pictures: HashMap<u16, [u32; 4]>,
 }
 
 /// The keys the table knows at one icon size: interned (to their buffer's index), in flight, failed.
@@ -1523,6 +1588,7 @@ impl Default for IconTable {
             fitted_px: 0,
             sizes: Vec::new(),
             cap: Cap::default(),
+            pictures: HashMap::new(),
         }
     }
 }
@@ -1551,6 +1617,19 @@ impl IconTable {
             .clone()
     }
 
+    /// For a thumbnail at `i`, its picture's rectangle in the buffer resampled to `px` (`fitted`),
+    /// which the tiles frame; None for an icon or a placeholder.
+    pub fn picture(&self, i: u16, px: u32) -> Option<[u32; 4]> {
+        let r = *self.pictures.get(&i)?;
+        let from = self.bufs.get(i as usize)?.width();
+        if from == px || from == 0 {
+            return Some(r);
+        }
+        let s = |v: u32| ((v as u64 * px as u64 + from as u64 / 2) / from as u64) as u32;
+        let (x, y) = (s(r[0]).min(px.saturating_sub(1)), s(r[1]).min(px.saturating_sub(1)));
+        Some([x, y, s(r[2]).clamp(1, (px - x).max(1)), s(r[3]).clamp(1, (px - y).max(1))])
+    }
+
     /// Buffers held, placeholders included.
     pub fn len(&self) -> usize {
         self.bufs.len()
@@ -1576,22 +1655,26 @@ impl IconTable {
     pub fn complete(&mut self, key: SharedString, px: u32, outcome: Outcome) -> bool {
         let keys = Self::at(&mut self.sizes, px);
         keys.pending.remove(&key);
-        match outcome {
-            Outcome::Pixels(p) => {
-                if keys.index.contains_key(&key) || self.bufs.len() >= u16::MAX as usize {
-                    return false;
-                }
-                self.cap.thumbs += usize::from(key.starts_with("thumb:"));
-                keys.index.insert(key, self.bufs.len() as u16);
-                self.bufs.push(p);
-                true
-            }
+        let (p, picture) = match outcome {
+            Outcome::Pixels(p) => (p, None),
+            Outcome::Picture(p, rect) => (p, Some(rect)),
             Outcome::Failed => {
                 keys.failed.insert(key);
-                false
+                return false;
             }
-            Outcome::Skipped | Outcome::Looked(_) => false,
+            Outcome::Skipped | Outcome::Looked(_) => return false,
+        };
+        if keys.index.contains_key(&key) || self.bufs.len() >= u16::MAX as usize {
+            return false;
         }
+        self.cap.thumbs += usize::from(key.starts_with("thumb:"));
+        let i = self.bufs.len() as u16;
+        keys.index.insert(key, i);
+        self.bufs.push(p);
+        if let Some(rect) = picture {
+            self.pictures.insert(i, rect);
+        }
+        true
     }
 }
 
@@ -1945,16 +2028,16 @@ mod tests {
 
     #[test]
     fn grid_compose_places_icons_in_their_tiles() {
-        for scale in [1.0f32, 1.25, 1.5, 2.0] {
-            let g = GridGeom::new(scale, 3);
-            assert_eq!(g.icon_px, (96.0 * scale).round() as u32);
-            assert_eq!(g.width(), (3.0 * 96.0 * scale).round() as u32);
+        for (scale, tile) in [1.0f32, 1.25, 1.5, 2.0].into_iter().flat_map(|s| [(s, TileGeom::LARGE), (s, TileGeom::MEDIUM)]) {
+            let g = GridGeom::new(scale, 3, tile);
+            assert_eq!(g.icon_px, (tile.icon_px * scale).round() as u32);
+            assert_eq!(g.width(), (3.0 * tile.w * scale).round() as u32);
             // Every icon lies inside its own tile: column band in x, grid-row band in y.
             for k in 0..30 {
                 let (r, c) = (k / 3, k % 3);
                 let (x, y) = g.icon_pos(k);
-                let tile_x0 = (c as f32 * TILE_W * scale).round() as u32;
-                let tile_x1 = ((c + 1) as f32 * TILE_W * scale).round() as u32;
+                let tile_x0 = (c as f32 * tile.w * scale).round() as u32;
+                let tile_x1 = ((c + 1) as f32 * tile.w * scale).round() as u32;
                 assert!(x >= tile_x0 && x + g.icon_px <= tile_x1 + 1, "scale {scale} entry {k} x {x}");
                 assert!(y >= g.height(r) && y + g.icon_px <= g.height(r + 1), "scale {scale} entry {k} y {y}");
             }
@@ -1967,7 +2050,7 @@ mod tests {
                 b
             };
             let icons: Vec<_> = (1..=5).map(|v| solid(v * 10)).collect();
-            let strip = compose_grid(&icons, &[], &g, 2);
+            let strip = compose_grid(&icons, &[], &[], &g, 2);
             assert_eq!((strip.width(), strip.height()), (g.width(), g.height(2)));
             let w = strip.width() as usize;
             let px = strip.as_slice();
@@ -1982,14 +2065,68 @@ mod tests {
             }
             assert_eq!(px.iter().filter(|p| p.a != 0).count(), drawn, "scale {scale}: only the icons are drawn");
             // A wrong-sized icon is left out.
-            assert!(compose_grid(&[solid(1), SharedPixelBuffer::new(2, 2)], &[], &g, 1).as_slice().iter().filter(|p| p.a != 0).count() == (n * n) as usize);
+            assert!(compose_grid(&[solid(1), SharedPixelBuffer::new(2, 2)], &[], &[], &g, 1).as_slice().iter().filter(|p| p.a != 0).count() == (n * n) as usize);
         }
         // Grid strip range: visible grid rows plus the margin, clamped.
         let m = GRID_MARGIN_ROWS;
         assert_eq!(grid_strip_range((10, 18), 1000), (10 - m, 18 + m));
         assert_eq!(grid_strip_range((0, 3), 4), (0, 3));
-        assert_eq!(visible_range(-120.0, 600.0, 1000, TILE_H), Some((1, 6)));
-        assert_eq!(GridGeom::new(1.0, 0).cols, 1, "no width yet reads as one column");
+        assert_eq!(visible_range(-120.0, 600.0, 1000, TileGeom::LARGE.h), Some((1, 6)));
+        assert_eq!(visible_range(-144.0, 600.0, 1000, TileGeom::MEDIUM.h), Some((2, 11)));
+        assert_eq!(GridGeom::new(1.0, 0, TileGeom::LARGE).cols, 1, "no width yet reads as one column");
+        // The medium tile: a 48 px icon centred in an 80 px tile, 2 px from its top.
+        let m = GridGeom::new(1.0, 4, TileGeom::MEDIUM);
+        assert_eq!((m.icon_px, m.icon_pos(0), m.icon_pos(5), m.width(), m.height(2)), (48, (16, 2), (96, 74), 320, 144));
+        assert_eq!(TileGeom::of(true), TileGeom::MEDIUM);
+        assert_eq!(TileGeom::of(false), TileGeom::LARGE);
+    }
+
+    #[test]
+    fn tiles_frame_thumbnails_and_never_icons() {
+        let g = GridGeom::new(1.0, 2, TileGeom::MEDIUM);
+        let n = g.icon_px;
+        let solid = |v: u8| {
+            let mut b = SharedPixelBuffer::<Rgba8Pixel>::new(n, n);
+            b.make_mut_slice().iter_mut().for_each(|p| *p = Rgba8Pixel { r: v, g: v, b: v, a: 255 });
+            b
+        };
+        // Entry 0 a wide picture letterboxed in its square (48 x 24 at y 12), entry 1 an icon.
+        let rect = letterbox_rect(200, 100, n).unwrap();
+        assert_eq!(rect, [0, 12, 48, 24]);
+        let strip = compose_grid(&[solid(10), solid(20)], &[], &[Some(rect), None], &g, 1);
+        let w = strip.width() as usize;
+        let px = strip.as_slice();
+        let at = |k: usize, x: u32, y: u32| {
+            let (x0, y0) = g.icon_pos(k);
+            px[(y0 + y) as usize * w + (x0 + x) as usize]
+        };
+        for (x, y) in [(0, 12), (47, 12), (0, 35), (47, 35), (20, 12), (20, 35), (0, 20), (47, 20)] {
+            assert_eq!(at(0, x, y), FRAME, "the picture's edge at ({x}, {y})");
+        }
+        for (x, y) in [(1, 13), (46, 34), (20, 20), (0, 11), (0, 36)] {
+            assert_eq!(at(0, x, y).r, 10, "inside the frame or outside the picture ({x}, {y})");
+        }
+        assert!((0..n).all(|y| (0..n).all(|x| at(1, x, y).r == 20)), "an icon gets no frame");
+        // At 200% the frame is two physical pixels; a cut thumbnail's frame is dimmed with it.
+        let g2 = GridGeom::new(2.0, 1, TileGeom::MEDIUM);
+        let big = SharedPixelBuffer::<Rgba8Pixel>::new(g2.icon_px, g2.icon_px);
+        let r2 = [0, 0, g2.icon_px, g2.icon_px];
+        let s2 = compose_grid(&[big], &[true], &[Some(r2)], &g2, 1);
+        let (x0, y0) = g2.icon_pos(0);
+        let w2 = s2.width() as usize;
+        let p2 = |x: u32, y: u32| s2.as_slice()[(y0 + y) as usize * w2 + (x0 + x) as usize];
+        let mut dimmed = [FRAME];
+        dim_line(&mut dimmed);
+        assert_eq!((p2(0, 50), p2(1, 50), p2(2, 50)), (dimmed[0], dimmed[0], Rgba8Pixel::default()));
+        // The rectangle follows a buffer resampled to another size (`IconTable::picture`).
+        let mut t = IconTable::default();
+        assert!(t.complete("thumb:a".into(), 96, Outcome::Picture(SharedPixelBuffer::new(96, 96), [0, 24, 96, 48])));
+        assert!(t.complete("ext:.txt".into(), 96, Outcome::Pixels(SharedPixelBuffer::new(96, 96))));
+        let (a, b) = (PLACEHOLDERS, PLACEHOLDERS + 1);
+        assert_eq!(t.picture(a, 96), Some([0, 24, 96, 48]));
+        assert_eq!(t.picture(a, 48), Some([0, 12, 48, 24]));
+        assert_eq!(t.picture(b, 96), None, "an icon has no picture");
+        assert_eq!(t.picture(PLACEHOLDER_FILE, 48), None);
     }
 
     #[test]
@@ -2024,10 +2161,10 @@ mod tests {
         assert!(rows(2).iter().all(|&p| p == full));
         assert_eq!(px.iter().filter(|p| p.a != 0).count(), 12, "nothing else drawn");
         // The grid: entry 0 of two dimmed, entry 1 not.
-        let g = GridGeom::new(1.0, 2);
+        let g = GridGeom::new(1.0, 2, TileGeom::LARGE);
         let n = g.icon_px;
         let icons = vec![solid(n, 200); 2];
-        let strip = compose_grid(&icons, &[true, false], &g, 1);
+        let strip = compose_grid(&icons, &[true, false], &[], &g, 1);
         let w = strip.width() as usize;
         let px = strip.as_slice();
         for (k, want) in [(0, dimmed), (1, full)] {
@@ -2134,7 +2271,7 @@ mod tests {
     }
 
     /// A stand-in render: "slow" takes 2 s, "busy" 50 ms (counted in BUSY_RENDERS), others none.
-    fn fake_render(path: &Path, _size_px: u32, thumb: Thumb) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    fn fake_render(path: &Path, _size_px: u32, thumb: Thumb) -> Option<Rendered> {
         if path.to_str().is_some_and(|p| p.starts_with("thumbmode")) {
             lock(&THUMB_MODES).push((path.to_string_lossy().into_owned(), thumb));
         }
@@ -2145,9 +2282,10 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
             }
             Some("fail") => return None,
+            Some("picture") => return Some((SharedPixelBuffer::new(1, 1), Some([0, 0, 1, 1]))),
             _ => {}
         }
-        Some(SharedPixelBuffer::new(1, 1))
+        Some((SharedPixelBuffer::new(1, 1), None))
     }
 
     static BUSY_RENDERS: AtomicU64 = AtomicU64::new(0);
@@ -2189,6 +2327,10 @@ mod tests {
         req_tx.send(req(1, "f", "fail")).unwrap();
         assert!(matches!(rep_rx.recv_timeout(Duration::from_millis(500)).unwrap().outcome, Outcome::Failed));
 
+        // A thumbnail's picture rectangle comes back with its pixels (P6-M2, the tiles' frame).
+        req_tx.send(req(1, "p", "picture")).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_millis(500)).unwrap().outcome, Outcome::Picture(_, [0, 0, 1, 1])));
+
         let r = rep_rx.recv_timeout(Duration::from_secs(3)).expect("the slow icon arrives");
         assert_eq!(r.key, "slow");
         assert_eq!(stats.slow.load(Ordering::Relaxed), 1, "only the 2 s render is slow");
@@ -2208,7 +2350,7 @@ mod tests {
             match rep_rx.recv_timeout(Duration::from_secs(2)).expect("20 replies").outcome {
                 Outcome::Pixels(_) => pixels += 1,
                 Outcome::Skipped => {}
-                Outcome::Failed | Outcome::Looked(_) => panic!("the fake render does not fail here"),
+                Outcome::Failed | Outcome::Looked(_) | Outcome::Picture(..) => panic!("the fake render does not fail here"),
             }
         }
         assert_eq!(pixels, 1, "one reply carries the icon, the other 19 are skipped");
@@ -2565,16 +2707,17 @@ mod tests {
             _ => panic!("the junction's icons did not both arrive"),
         }
         match got.get(thumb.as_str()) {
-            Some(Outcome::Pixels(p)) => {
+            Some(Outcome::Picture(p, rect)) => {
                 assert_eq!((p.width(), p.height()), (32, 32), "letterboxed into the size asked for");
                 let centre = p.as_slice()[16 * 32 + 16];
-                if (centre.r, centre.g, centre.b, centre.a) == (220, 20, 20, 255) {
-                    assert!(p.as_slice().iter().all(|q| q.a == 255), "a square image fills the square");
-                } else {
-                    // The shell gave the type's icon (no thumbnail handler or cache here).
-                    eprintln!("skipping the thumbnail check: the shell returned no thumbnail (centre pixel {centre:?})");
-                    assert!(p.as_slice().iter().any(|q| q.a != 0));
-                }
+                assert_eq!((centre.r, centre.g, centre.b, centre.a), (220, 20, 20, 255), "the PNG's own pixels");
+                assert!(p.as_slice().iter().all(|q| q.a == 255), "a square image fills the square");
+                assert_eq!(*rect, [0, 0, 32, 32], "the picture's rectangle, for the tiles' frame");
+            }
+            Some(Outcome::Pixels(p)) => {
+                // The shell gave the type's icon (no thumbnail handler or cache here): no picture.
+                eprintln!("skipping the thumbnail check: the shell returned no thumbnail");
+                assert!(p.as_slice().iter().any(|q| q.a != 0));
             }
             _ => panic!("the PNG got no thumbnail and no icon"),
         }

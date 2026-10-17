@@ -1,5 +1,5 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow } from "pane.slint";
-import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox } from "std-widgets.slint";
+import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
 export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
@@ -102,11 +102,14 @@ export component App inherits Window {
 
     in property <[Row]> left-rows;
     in property <[Row]> right-rows;
-    // The large-icon grid per pane (settings `view_left` / `view_right`; Ctrl+Shift+1 details,
-    // Ctrl+Shift+2 large icons): its rows (model.rs GridModel over the pane's entries) and, read by
-    // Rust for hit testing, the tiles to a grid row the pane's list fits.
+    // The icon grid per pane (settings `view_left` / `view_right`; Ctrl+Shift+1 details,
+    // Ctrl+Shift+2 large icons, Ctrl+Shift+3 medium icons): its rows (model.rs GridModel over the
+    // pane's entries) and, read by Rust for hit testing, the tiles to a grid row the pane's list
+    // fits; `medium` picks the medium tiles (settings `tile_left` / `tile_right`).
     in property <bool> left-grid: false;
     in property <bool> right-grid: false;
+    in property <bool> left-medium: false;
+    in property <bool> right-medium: false;
     in property <[GridRow]> left-grid-rows;
     in property <[GridRow]> right-grid-rows;
     out property <int> left-grid-cols: left.tiles-per-row;
@@ -193,11 +196,11 @@ export component App inherits Window {
     // viewport-changed(pane, content-y, visible-height)
     callback viewport-changed(int, length, length);
     // grid-cols(pane, n): the pane's grid now fits n tiles to a grid row; grid-cursor(pane, row):
-    // its cursor entry changed; set-view(pane, grid): Ctrl+Shift+1 (false) or Ctrl+Shift+2 (true)
-    // for the active pane.
+    // its cursor entry changed; set-view(pane, view): Ctrl+Shift+1 (0, details), Ctrl+Shift+2 (1,
+    // large icons) or Ctrl+Shift+3 (2, medium icons) for the active pane.
     callback grid-cols(int, int);
     callback grid-cursor(int, int);
-    callback set-view(int, bool);
+    callback set-view(int, int);
     // command(pane, name): a file operation key in that pane's list (pane.slint FileList).
     callback command(int, string);
     // edit-commit(pane, mode, original, typed): the inline name editor's Return.
@@ -285,6 +288,9 @@ export component App inherits Window {
     in-out property <string> dlg-start-right;
     in-out property <bool> dlg-hidden-left;
     in-out property <bool> dlg-hidden-right;
+    // Each pane's view in the dialog: 0 details, 1 large icons, 2 medium icons (ComboBox index).
+    in-out property <int> dlg-view-left;
+    in-out property <int> dlg-view-right;
     in-out property <bool> dlg-type-column;
     in-out property <bool> dlg-thumbnails;
     in-out property <bool> dlg-sidebar;
@@ -309,7 +315,8 @@ export component App inherits Window {
     public function settings-cancel() { finish-settings(false); }
     // What each control calls when the user changes it (and the driver's `settings set`): field
     // start_left, start_right (a path), hidden_left, hidden_right, type_column, thumbnails, sidebar
-    // ("true" or "false"), path_bar ("entry" or "crumb").
+    // ("true" or "false"), path_bar ("entry" or "crumb"), view_left, view_right ("details", "large"
+    // or "medium").
     public function settings-stage(field: string, value: string) {
         if (field == "start_left") { dlg-start-left = value; }
         if (field == "start_right") { dlg-start-right = value; }
@@ -319,6 +326,8 @@ export component App inherits Window {
         if (field == "thumbnails") { dlg-thumbnails = value == "true"; }
         if (field == "sidebar") { dlg-sidebar = value == "true"; }
         if (field == "path_bar") { dlg-crumbs = value != "entry"; }
+        if (field == "view_left") { dlg-view-left = value == "medium" ? 2 : value == "large" ? 1 : 0; }
+        if (field == "view_right") { dlg-view-right = value == "medium" ? 2 : value == "large" ? 1 : 0; }
     }
 
     // The breadcrumb dropdown's contents and place, set from Rust before show-crumb-menu.
@@ -425,9 +434,10 @@ export component App inherits Window {
                 return accept;
             }
             // Explorer's view keys. With Shift held a US keyboard reports the digit's shifted
-            // character ("!" and "@"); the driver sends the digit.
-            if (e.modifiers.control && e.modifiers.shift && (e.text == "1" || e.text == "!")) { root.set-view(active-pane, false); return accept; }
-            if (e.modifiers.control && e.modifiers.shift && (e.text == "2" || e.text == "@")) { root.set-view(active-pane, true); return accept; }
+            // character ("!", "@" and "#"); the driver sends the digit.
+            if (e.modifiers.control && e.modifiers.shift && (e.text == "1" || e.text == "!")) { root.set-view(active-pane, 0); return accept; }
+            if (e.modifiers.control && e.modifiers.shift && (e.text == "2" || e.text == "@")) { root.set-view(active-pane, 1); return accept; }
+            if (e.modifiers.control && e.modifiers.shift && (e.text == "3" || e.text == "#")) { root.set-view(active-pane, 2); return accept; }
             if (e.modifiers.control && (e.text == "l" || e.text == "L")) { root.set-path-mode(active-pane, true); return accept; }
             if (e.modifiers.control && (e.text == "f" || e.text == "F")) {
                 if (e.modifiers.shift) { root.search(active-pane); } else { root.open-filter(active-pane); }
@@ -558,7 +568,7 @@ export component App inherits Window {
             left := Pane {
                 x: 0; y: 0; height: parent.height;
                 width: split ? parent.width * split-ratio - 3px : parent.width;
-                rows: left-rows; grid: left-grid; grid-rows: left-grid-rows; strip-rows: left-strip-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
+                rows: left-rows; grid: left-grid; medium: left-medium; grid-rows: left-grid-rows; strip-rows: left-strip-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
@@ -608,7 +618,7 @@ export component App inherits Window {
                 visible: split;
                 x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
                 width: split ? parent.width - self.x : 0px;
-                rows: right-rows; grid: right-grid; grid-rows: right-grid-rows; strip-rows: right-strip-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
+                rows: right-rows; grid: right-grid; medium: right-medium; grid-rows: right-grid-rows; strip-rows: right-strip-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;
@@ -780,9 +790,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 330px) / 2);
+        y: max(10px, (root.height - 368px) / 2);
         width: 480px;
-        height: 330px;
+        height: 368px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Palette.background;
@@ -839,6 +849,24 @@ export component App inherits Window {
                                     checked: root.dlg-hidden-right;
                                     accessible-label: "Show hidden files in the right pane";
                                     toggled => { root.settings-stage("hidden_right", self.checked ? "true" : "false"); }
+                                }
+                            }
+                        }
+                        Row {
+                            Text { text: "View"; vertical-alignment: center; }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                ComboBox {
+                                    model: ["Left: details", "Left: large icons", "Left: medium icons"];
+                                    current-index: root.dlg-view-left;
+                                    accessible-label: "View in the left pane";
+                                    selected => { root.settings-stage("view_left", self.current-index == 2 ? "medium" : self.current-index == 1 ? "large" : "details"); }
+                                }
+                                ComboBox {
+                                    model: ["Right: details", "Right: large icons", "Right: medium icons"];
+                                    current-index: root.dlg-view-right;
+                                    accessible-label: "View in the right pane";
+                                    selected => { root.settings-stage("view_right", self.current-index == 2 ? "medium" : self.current-index == 1 ? "large" : "details"); }
                                 }
                             }
                         }

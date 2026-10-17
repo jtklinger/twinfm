@@ -22,6 +22,14 @@
 # from the gap after the last tile (x 202, y 60 of the right list: the grid holds 5 tiles to a
 # row at this window width), the right pane goes back to details (it is active after the band),
 # Shift+Delete removes the selection, and the left pane goes back to details.
+#
+# P6-M2's medium-grid cycle follows: two files are dropped into dst again, the right pane goes to
+# medium tiles (Ctrl+Shift+3), a drop lands on tile 0, a left-button drag out of it is cancelled
+# (its 80 px drag image), the band selects both files from the gap after the last tile (x 202, y
+# 40: tile 2 of a medium grid row starts at 160) and leaves the cursor on tile 0, Shift+Right
+# extends the selection from there (anchor 0 to 1), the right pane goes back to details, and
+# Shift+Delete removes the selection. Reported: medium switches, 80 px drag images, the bands' and
+# the Shift+Right's lines.
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -111,6 +119,14 @@ $cycle = @(
     'band 1 202 60 5 10', 'sleep 200',
     'view details', 'sdelete', $wait,
     'click 0 0', 'view details', 'sleep 200',
+    # P6-M2: the medium-grid cycle (see the header).
+    "dropfiles 1 -1 copy $pick", $wait,
+    'click 1 0', 'view medium', 'sleep 300',
+    "dropfiles 1 0 copy $pick", $wait,
+    'dragrow 1 0 0 40', 'sleep 300', 'dragcancel', 'sleep 300',
+    'band 1 202 40 5 10', 'sleep 200',
+    'key ShiftRight', 'sleep 200',
+    'view details', 'sdelete', $wait,
     # P5-M3: the spring-load into spring\inner, the crumb drop into spring, the sidebar's bottom
     # edge, the inactive tab under the spring time, and the cleanup (see the header).
     "nav 1 $spring", 'sleep 500',
@@ -201,6 +217,12 @@ $leftDrags = @($log | Select-String -SimpleMatch 'DoDragDrop starts (left button
 $bandsStarted = @($log | Select-String -SimpleMatch '[band] pane=1 start at').Count
 $bandsDone = @($log | Select-String -SimpleMatch '[band] pane=1 done: 2 selected').Count
 $bandsCancelled = @($log | Select-String -SimpleMatch '[band] pane=1 cancelled').Count
+# P6-M2 counts.
+$mediumOn = @($log | Select-String -SimpleMatch 'details -> medium icons').Count
+$mediumOff = @($log | Select-String -SimpleMatch 'medium icons -> details').Count
+$mediumImages = @($log | Select-String -SimpleMatch 'drag image 80x80 px, 48 px icon').Count
+$bandsCursor = @($log | Select-String -SimpleMatch '[band] pane=1 done: 2 selected, cursor 0').Count
+$shiftFromCursor = @($log | Select-String -SimpleMatch '[select] pane=1 Range row=1 selected=2').Count
 # P5-M3 counts.
 $springArmed = @($log | Select-String -SimpleMatch '[dnd] spring armed:').Count
 $springRows = @($log | Select-String -SimpleMatch '[dnd] spring-loaded:' | Select-String -SimpleMatch ' opens ').Count
@@ -222,7 +244,8 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "drop menus: $dropMenus (loops that found the app state busy: $dropMenuBusy)"
 "right-button drags: $rightDrags; drags cancelled: $dragsCancelled, dropped: $dragsDropped (must be 0); drag loops that found the state busy: $dragBusy; drag images set: $images"
 "menus opened and closed: $menus; in-menu ticks: $($ticks.Count), with state or driver busy: $ticksBusy"
-"grid: switched on $gridOn, off $gridOff; tile drops: $dropTile; 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected, $bandsCancelled cancelled"
+"grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (two per cycle: large and medium); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
+"medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
 "spring: armed $springArmed, spring-loaded rows $springRows (navigations into spring\inner: $springInner), tabs $springTabs (must be 0), disarmed $springDisarmed; crumb drops: $dropCrumb; auto-scroll lines: sidebar $sideScrolls, tab strip $stripScrolls"
 "working set: start $($first.working_set_mb) MB at $($first.seconds) s, end $($last.working_set_mb) MB at $($last.seconds) s; private: $($first.private_mb) -> $($last.private_mb) MB"
 "min/max working set: {0} / {1} MB" -f ($samples | Measure-Object working_set_mb -Minimum).Minimum, ($samples | Measure-Object working_set_mb -Maximum).Maximum

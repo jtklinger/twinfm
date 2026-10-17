@@ -103,10 +103,15 @@ pub struct Config {
     /// Thumbnails for image, video and document files, in 32 px rows with 32 px icons, in both
     /// panes (the settings dialog sets it). Missing in an older file: off (22 px rows).
     pub thumbnails: bool,
-    /// Each pane's view: "details" (the list) or "icons" (the large-icon grid, Ctrl+Shift+2).
-    /// Missing in an older file: details. Anything else reads as details.
+    /// Each pane's view: "details" (the list) or "icons" (the icon grid, Ctrl+Shift+2 and
+    /// Ctrl+Shift+3, or the settings dialog). Missing in an older file: details. Anything else
+    /// reads as details.
     pub view_left: String,
     pub view_right: String,
+    /// Each pane's grid tiles (P6-M2): "large" or "medium" (Ctrl+Shift+3). Missing in an older
+    /// file: large. Anything else reads as large. Kept while the pane shows the details list.
+    pub tile_left: String,
+    pub tile_right: String,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
     /// "breadcrumb" or "entry" (the text entry for good).
@@ -156,6 +161,8 @@ impl Default for Config {
             thumbnails: false,
             view_left: "details".into(),
             view_right: "details".into(),
+            tile_left: "large".into(),
+            tile_right: "large".into(),
             sidebar_visible: true,
             sidebar_width: 180.0,
             path_bar: "breadcrumb".into(),
@@ -166,14 +173,98 @@ impl Default for Config {
     }
 }
 
-/// The settings file's name for a pane's view (`view_left` / `view_right`), and back: "icons" is
-/// the large-icon grid, anything else the details list.
-pub fn view_name(grid: bool) -> &'static str {
-    if grid { "icons" } else { "details" }
+/// A pane's view: the details list, or the grid at large or medium tiles (Ctrl+Shift+1, 2, 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    Details,
+    Large,
+    Medium,
 }
 
-pub fn view_is_grid(s: &str) -> bool {
-    s == "icons"
+impl View {
+    /// From the settings file's `view_*` and `tile_*` values: "icons" is the grid, anything else
+    /// the details list; "medium" the medium tiles, anything else the large ones.
+    pub fn from_config(view: &str, tile: &str) -> View {
+        match (view == "icons", tile == "medium") {
+            (false, _) => View::Details,
+            (true, false) => View::Large,
+            (true, true) => View::Medium,
+        }
+    }
+
+    /// Ctrl+Shift+1, 2 and 3 (`set-view`'s int) and the dialog's choice: 0 details, 1 large, 2
+    /// medium (anything else details).
+    pub fn from_index(i: i32) -> View {
+        match i {
+            1 => View::Large,
+            2 => View::Medium,
+            _ => View::Details,
+        }
+    }
+
+    pub fn index(self) -> i32 {
+        match self {
+            View::Details => 0,
+            View::Large => 1,
+            View::Medium => 2,
+        }
+    }
+
+    pub fn is_grid(self) -> bool {
+        self != View::Details
+    }
+
+    pub fn is_medium(self) -> bool {
+        self == View::Medium
+    }
+
+    /// The `view_*` value it saves as.
+    pub fn view_value(self) -> &'static str {
+        if self.is_grid() { "icons" } else { "details" }
+    }
+
+    /// The dialog's name for it (`settings set view_left <name>`, the `[settings]` lines).
+    pub fn name(self) -> &'static str {
+        match self {
+            View::Details => "details",
+            View::Large => "large",
+            View::Medium => "medium",
+        }
+    }
+
+    pub fn from_name(s: &str) -> View {
+        match s {
+            "large" => View::Large,
+            "medium" => View::Medium,
+            _ => View::Details,
+        }
+    }
+
+    /// For the `[view]` lines.
+    pub fn label(self) -> &'static str {
+        match self {
+            View::Details => "details",
+            View::Large => "large icons",
+            View::Medium => "medium icons",
+        }
+    }
+}
+
+impl Config {
+    /// Pane `pane`'s view, from `view_*` and `tile_*`.
+    pub fn view(&self, pane: usize) -> View {
+        if pane == 0 { View::from_config(&self.view_left, &self.tile_left) } else { View::from_config(&self.view_right, &self.tile_right) }
+    }
+
+    /// Set pane `pane`'s view: `view_*` always, `tile_*` for a grid (the details list keeps the
+    /// last tile size, so Ctrl+Shift+1 then back to the grid keeps it in the file too).
+    pub fn set_view(&mut self, pane: usize, v: View) {
+        let (view, tile) = if pane == 0 { (&mut self.view_left, &mut self.tile_left) } else { (&mut self.view_right, &mut self.tile_right) };
+        *view = v.view_value().into();
+        if v.is_grid() {
+            *tile = if v.is_medium() { "medium" } else { "large" }.into();
+        }
+    }
 }
 
 /// The settings file's name for a sort column, and back (anything unknown sorts by name).
@@ -206,6 +297,9 @@ pub struct Dialog {
     /// The active tab's hidden-file filter in each pane (what Ctrl+H toggles).
     pub show_hidden_left: bool,
     pub show_hidden_right: bool,
+    /// Each pane's view, as `View::name`: "details", "large" or "medium" (P6-M2).
+    pub view_left: String,
+    pub view_right: String,
     pub show_type: bool,
     pub thumbnails: bool,
     pub sidebar_visible: bool,
@@ -225,12 +319,14 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 8] {
+    fn fields(&self) -> [(&'static str, String); 10] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
             ("show_hidden_left", self.show_hidden_left.to_string()),
             ("show_hidden_right", self.show_hidden_right.to_string()),
+            ("view_left", self.view_left.clone()),
+            ("view_right", self.view_right.clone()),
             ("show_type", self.show_type.to_string()),
             ("thumbnails", self.thumbnails.to_string()),
             ("sidebar_visible", self.sidebar_visible.to_string()),
@@ -483,16 +579,32 @@ mod tests {
     fn view_defaults_to_details_and_round_trips_icons() {
         // A file from before the keys existed: both panes show the details list.
         let old = Config::parse("split = true\n").unwrap();
-        assert!(!view_is_grid(&old.view_left) && !view_is_grid(&old.view_right));
-        assert_eq!(view_name(false), "details");
-        assert_eq!(view_name(true), "icons");
-        assert!(view_is_grid("icons"));
-        assert!(!view_is_grid("details") && !view_is_grid("") && !view_is_grid("tiles"));
-        let c = Config { view_right: view_name(true).into(), ..Config::default() };
+        assert_eq!((old.view(0), old.view(1)), (View::Details, View::Details));
+        // A file from before P6-M2 (no tile keys): its grid is the large one.
+        let p4 = Config::parse("view_right = \"icons\"\n").unwrap();
+        assert_eq!((p4.view(0), p4.view(1)), (View::Details, View::Large));
+        assert_eq!(View::from_config("icons", "medium"), View::Medium);
+        assert_eq!(View::from_config("icons", "huge"), View::Large, "an unknown tile is large");
+        assert_eq!(View::from_config("tiles", "medium"), View::Details, "an unknown view is details");
+        let mut c = Config::default();
+        c.set_view(1, View::Medium);
         let text = c.to_toml();
         assert!(text.contains("view_left = \"details\"") && text.contains("view_right = \"icons\""), "{text}");
+        assert!(text.contains("tile_left = \"large\"") && text.contains("tile_right = \"medium\""), "{text}");
         let back = Config::parse(&text).unwrap();
-        assert!(!view_is_grid(&back.view_left) && view_is_grid(&back.view_right));
+        assert_eq!((back.view(0), back.view(1)), (View::Details, View::Medium));
+        // Back to details keeps the last tile size in the file.
+        c.set_view(1, View::Details);
+        assert_eq!((c.view_right.as_str(), c.tile_right.as_str()), ("details", "medium"));
+        c.set_view(1, View::Large);
+        assert_eq!((c.view_right.as_str(), c.tile_right.as_str()), ("icons", "large"));
+        for v in [View::Details, View::Large, View::Medium] {
+            assert_eq!(View::from_index(v.index()), v);
+            assert_eq!(View::from_name(v.name()), v);
+        }
+        assert_eq!(View::from_index(7), View::Details);
+        assert_eq!(View::from_name("icons"), View::Details, "the dialog's names, not the file's");
+        assert!(View::Medium.is_grid() && View::Medium.is_medium() && View::Large.is_grid() && !View::Details.is_grid());
     }
 
     #[test]
@@ -526,17 +638,20 @@ show_type = false
             start_right: String::new(),
             show_hidden_left: false,
             show_hidden_right: false,
+            view_left: "details".into(),
+            view_right: "large".into(),
             show_type: true,
             thumbnails: false,
             sidebar_visible: true,
             path_bar: "breadcrumb".into(),
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, show_type: false, thumbnails: true, path_bar: "entry".into(), ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
                 ("show_hidden_left", "false".into(), "true".into()),
+                ("view_right", "large".into(), "medium".into()),
                 ("show_type", "true".into(), "false".into()),
                 ("thumbnails", "false".into(), "true".into()),
                 ("path_bar", "breadcrumb".into(), "entry".into()),

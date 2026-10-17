@@ -295,6 +295,25 @@ impl PaneModel {
         changed
     }
 
+    /// Every entry back to its placeholder, its key kept, so the next resolve asks for its icon at
+    /// the size the list now draws: a view switch changes the icon size, and an entry resolved at
+    /// the old size kept that buffer, fitted to the new size (the first screenful of a details
+    /// list showed its 16 px icons blown up to 96 px in the grid, P4-M1 to P6-M1). A key already
+    /// held at the new size is taken on that resolve, with no request.
+    pub fn forget_icons(&self) {
+        let placeholder = |e: &Entry| match e.kind {
+            Kind::Drive => PLACEHOLDER_DRIVE,
+            _ if e.is_dir() => PLACEHOLDER_FOLDER,
+            _ => PLACEHOLDER_FILE,
+        };
+        for e in self.all.borrow_mut().iter_mut() {
+            e.icon = placeholder(e);
+        }
+        for e in self.shown.borrow_mut().iter_mut() {
+            e.icon = placeholder(e);
+        }
+    }
+
     /// Give the entry keyed `from` (a cloud lookup's `look:` key, at `row` unless a pass moved it)
     /// the key `to`, in the listing and in its row; its icon stays the placeholder, so the next
     /// resolve asks for `to`. False when no entry has `from` any more (a refresh replaced it).
@@ -409,6 +428,11 @@ impl PaneModel {
         let len = self.shown.borrow().len();
         let changed = self.sel.borrow_mut().replace(new, len);
         self.selection_changed(&changed);
+    }
+
+    /// Anchor Shift's range at `row` (the cursor the band left, P6-M2).
+    pub fn set_anchor(&self, row: usize) {
+        self.sel.borrow_mut().anchor = Some(row);
     }
 
     /// The selected rows' indices.
@@ -2467,6 +2491,25 @@ mod tests {
         assert_eq!(m.icon_indices(2, 2), [PLACEHOLDER_FILE]);
         assert!(m.resolve_icons(5, 9, 16, |_, _| panic!("out of range")).is_empty());
         assert!(m.icon_indices(5, 9).is_empty());
+        // A view switch to the grid (P6-M2): every entry back to its placeholder, so the rows
+        // resolved at 16 px ask again at 96 px; a key held at 96 px is taken with no request.
+        m.forget_icons();
+        assert_eq!(m.icon_indices(0, 99), [PLACEHOLDER_FILE; 4]);
+        assert_eq!(m.snapshot_all().iter().map(|e| e.icon).collect::<Vec<_>>(), [PLACEHOLDER_FILE; 4]);
+        let mut asked = Vec::new();
+        m.resolve_icons(0, 3, 96, |_, e| asked.push(e.icon_key.to_string()));
+        assert_eq!(asked, ["ext:.txt", "ext:.png"]);
+        m.icons.borrow_mut().complete("ext:.txt".into(), 96, Outcome::Pixels(slint::SharedPixelBuffer::new(1, 1)));
+        assert_eq!(m.resolve_icons(0, 3, 96, |_, _| panic!("held at 96 px")), [0, 1, 3]);
+        assert_eq!(m.icon_indices(0, 0), [PLACEHOLDERS + 1], "the 96 px buffer, not the 16 px one");
+        // Back to the details list: the 16 px buffer again, with no request.
+        m.forget_icons();
+        assert_eq!(m.resolve_icons(0, 3, 16, |_, _| panic!("held at 16 px")), [0, 1, 3]);
+        assert_eq!(m.icon_indices(0, 0), [PLACEHOLDERS]);
+        let d = PaneModel::default();
+        d.append(vec![e("sub", 0, true)]);
+        d.forget_icons();
+        assert_eq!(d.icon_indices(0, 0), [PLACEHOLDER_FOLDER], "a folder's placeholder");
     }
 
     #[test]
