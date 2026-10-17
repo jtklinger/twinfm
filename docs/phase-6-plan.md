@@ -610,7 +610,11 @@ OneDrive row above was added and the OneDrive checks are to be repeated with it.
 mark on the icon to a Status column, which answers the glyph question for the lists (the marks stay
 over the 16 and 32 px icons). The "Create shortcut" freeze is under Deferred.
 
-The milestone is not closed until the OneDrive console checks are recorded.
+**OneDrive console checks, 2026-10-17, Jeremy at the console** with this worktree's build (0cd85e6,
+the sidebar's OneDrive row): "Console checks for onedrive pass as expected" (the OneDrive items of the check list below:
+the marks beside Explorer's and a file's state change). **P6-M1 is closed**; it merges on
+Jeremy's word. The gate triplet ran on 0d4a23f; the commit after it adds the sidebar row only
+(outside the lists, not in the gate scenario), so the triplet was not repeated.
 
 Console checks after the triplet, TwinFM started unelevated:
 
