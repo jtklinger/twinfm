@@ -825,6 +825,9 @@ lead's review is the PR's.
 - **The ComboBox in the settings popup** is checked by script only through `settings set`; a mouse
   click opening its list inside the popup is for the console check.
 - Accessibility of the medium grid, with the rest of the grid's (deferred for much later).
+- **Escape clears the selection** (Explorer does; TwinFM's Escape in a list cancels the queued
+  jobs, and in the grid a band under way, and leaves the selection). Found at the P6-M2 console
+  check; Jeremy sent it to P6-M3's polish bundle on 2026-10-17 ("Put it in P6-M3").
 
 ### Scripted checks
 
@@ -963,6 +966,14 @@ bar; frame shares, run 3 grid / medium: render 631 / 889, `draw_text` 298 / 505,
 
 **P6-M2 passes the gate.** Jeremy accepted ab23 as recorded (2026-10-17: "Accept ab23 as recorded"),
 without a re-run of the defaults triplet. The console checks follow.
+
+**Console checks, 2026-10-17, Jeremy at the console with `target-p6m2`:** 1 (medium tiles and the
+frame beside Explorer), 3 (PageUp / PageDown in the details list) and 4 (the band's cursor, the view
+switches with no blown-up icons) "work as expected". 2 (the settings dialog's View row): "I don't see
+a view row"; not reproduced here: the same build, with the GPU renderer and with a copy of Jeremy's
+`config.toml` on the same desktop, shows the row (fourth, "Left: medium icons" / "Right: details",
+matching the file's `tile_left = "medium"`). Open until Jeremy looks again. Escape not clearing a
+selection was raised at the same time; it is under Deferred, for P6-M3.
 
 Console checks after the triplet, TwinFM started unelevated:
 
