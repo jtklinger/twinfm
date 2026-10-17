@@ -226,6 +226,67 @@ from a detached checkout with `--locked`, `tools/wpr-triplet.ps1 -Reference p5m3
 <name>[,<name>@C:\traces\<toml>] -Tag <next>`, console checks after the triplet, merge on
 Jeremy's word, `target\release` rebuilt from main and said so.
 
+## Recorded for Phase 7
+
+Items found during Phase 6 that Jeremy sent to Phase 7, for the Phase 6 close to carry into its
+candidates.
+
+### Shell verbs off the UI thread
+
+Decided 2026-10-17, in Jeremy's words: "Run the shell-menu fix as phase 7 item". It waits because
+the kickoff put the shell menu's verbs out of Phase 6 (the first section above); the P6-M1
+record lists it under its Deferred as well.
+
+**What happens today.** A shell command picked from TwinFM's context menu runs on the UI thread:
+`shellmenu::show` (called from `main.rs` with no app-state borrow) shows the menu with
+`TrackPopupMenuEx`, then for `Pick::Shell` reads the verb with `GetCommandString(GCS_VERBW)` and
+calls `IContextMenu::InvokeCommand` right there. A verb that waits on a slow file system holds the
+UI thread for as long as it waits. On 2026-10-17 Jeremy picked "Create shortcut" on `G:` (Google
+Drive's virtual volume) and TwinFM went white for about a minute before the shell's dialog
+appeared.
+
+**Design notes for the implementer** (a starting point, each to be checked against a trace):
+
+- Marshalling the menu object to another thread does not help: the shell's menus are
+  apartment-threaded, so a call through a proxy still runs on the UI thread that made the object,
+  and the UI thread would block on the proxy as well. The menu has to be rebuilt where the verb
+  runs.
+- A dedicated verb worker: one STA thread (`CoInitializeEx` apartment-threaded, with a message
+  loop, since shell verbs post messages and some show their own windows). It takes a job of the
+  folder, the item names, the verb string, the command offset and its menu label, the invoke
+  point and the menu flags (extended or not); it runs `parse_items`, `GetUIObjectOf` (or
+  `CreateViewObject` for the background), `QueryContextMenu` into a hidden menu of its own with
+  the same base and id range, and `InvokeCommand`. Every COM object the job makes is made,
+  used and released on the worker; the UI thread's menu objects stay on the UI thread, as now.
+- Invoke by verb string when the command has one (most do: `link`, `properties`, `copy`,
+  handler verbs), since a rebuilt menu can number its items differently (handlers loading in a
+  different order, a state change between the two builds). With no verb string, invoke by
+  offset only if the rebuilt menu's item at that id carries the same label; otherwise refuse and
+  log. That choice is a pure function and takes the unit tests.
+- Stays as it is: TwinFM's own items (`Pick::Own`) and the "rename" verb (`Picked::Rename`, to
+  TwinFM's name editor) are decided on the UI thread from the menu that was shown and never go
+  to the worker. `GetCommandString` stays on the UI thread too; it is cheap and needs the
+  shown menu.
+- The owner window: passing TwinFM's HWND as `CMINVOKECOMMANDINFOEX.hwnd` from another thread
+  attaches the two threads' input queues while a dialog is up, which can let a hung verb stall
+  TwinFM's input. The alternatives are a hidden window owned by the worker, or no owner (the
+  dialog then is not modal to TwinFM, as when Explorer's verbs run). The milestone tries the
+  hung case on `G:` and records which it chose and why.
+- `CMIC_MASK_ASYNCOK` lets a verb hand itself off; if used, the worker must stay alive and pump
+  until the shell lets go (the process reference the shell asks for through
+  `SHSetInstanceExplorer`), and quitting TwinFM while a verb runs needs a bounded wait, logged.
+- The result comes back to the UI thread through `slint::invoke_from_event_loop` (only the UI
+  thread touches Slint models); the `[menu] InvokeCommand verb=... = 0x...` line moves to the
+  worker and gains the time the verb took. No `RefCell` borrow is held across the worker's modal
+  loops, since they are on another thread and touch no app state.
+- The scripted check: the driver never presses Return in a menu by design, so it needs a seam.
+  A driver step that queues a verb job on the worker directly (no menu), with a test-only verb
+  that sleeps on the worker for a given time, run behind the `TWINFM_SOAK` fence, while the
+  script scrolls a list; the check passes when frames keep rendering (`[perf]` lines) through the
+  sleep. A real verb end to end through the worker with the same step: `copy` on a scratch file
+  (it overwrites the clipboard, as the soak already does). The gate scenario opens no menu, so
+  the triplet is expected flat; it runs under the protocol anyway.
+
 ## Calls made in this kickoff, for Jeremy to check
 
 Decisions Jeremy did not make and the lead settled, each reversible before its milestone starts:
@@ -465,8 +526,8 @@ The record of the probes (scripts and their output) is in the session scratchpad
   slow file system (Google Drive's virtual volume here, most likely) holds the window. Not
   reproduced by script (the driver never invokes a shell verb, by design, and creating a shortcut on
   `G:` would write into Jeremy's Google Drive). Running the shell's verbs off the UI thread is the
-  item the kickoff left out of Phase 6 ("the shell menu's verbs through TwinFM's jobs"); Jeremy's call
-  whether it moves in.
+  item the kickoff left out of Phase 6 ("the shell menu's verbs through TwinFM's jobs"); Jeremy sent it to
+  Phase 7 on 2026-10-17 (§ Recorded for Phase 7).
 - **A renamed Google Drive volume loses its marks** (the kickoff's open question, unchanged).
 - **The thumbnail cache's 300 to 570 ms on Google Drive** per cache-only request (`[icons] thumbnail
   ... ms` in the grid run below), on the workers; the shell's own cost of asking the cache about a
