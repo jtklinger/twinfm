@@ -1305,3 +1305,160 @@ Written 2026-10-16 at the kickoff.
   the gate scenario scrolls one row fewer per pane; a cost within the noise is expected, and the
   toolbar triplet says. **Answered (P6-M3, ab24):** the toolbar triplet's median 20.2% against the
   reference's 20.3%, within its spread in both session states (§ P6-M3 Gate).
+
+## Phase 6 close
+
+Written 2026-10-18. P6-M1 to P6-M3 are in, each squash-merged on Jeremy's word: P6-M1 cloud marks
+and the icon items (#52, 2f256c5; gate build `target-p6m1`, 0d4a23f), P6-M2 the views finished
+(#56, b8f3b06; gate build `target-p6m2`, ca12be0), P6-M3 the toolbar and the polish bundle (#59,
+c927594; gate build `target-p6m3`, c632e93, the toolbar move after the triplet's 02a9103). The
+phase ran from the kickoff (#51, b1a688d, 2026-10-16) to the last merge on 2026-10-18, three days.
+Tests went from 176 to 190 (183 after P6-M1, 185 after P6-M2).
+
+Phase 6's goal, Jeremy's three candidates in his order (cloud status marks and the remaining icon
+items, the views finished, a polish bundle led by a toolbar), held: every item of the kickoff's
+three entries is in, four calls in P6-M1 and four in P6-M3 changed the mechanism with Jeremy's
+agreement, and the gate gave nothing back. Milestone by milestone:
+
+- **P6-M1, cloud marks and the icon items** (#52, 2f256c5, from b1a688d). A listing in a
+  registered sync root (OneDrive, Phone Link) or on a volume named "Google Drive" is a cloud
+  location, decided once per listing on the UI thread; there a file's key carries its mark. OneDrive's
+  marks turned out to be its storage provider state, not a shell overlay (settled first: the overlay
+  handlers mark nothing, with or without `PHCM_EXPOSE_PLACEHOLDERS`, which stays off), drawn with the
+  imageres.dll glyphs Explorer's Status column uses; Google Drive's are the shell's overlay index,
+  looked up on the icon workers for the rows on screen only. Cloud-only and Google Drive files ask
+  the thumbnail cache only, so nothing is downloaded. The two P2-M5 items rode along (one overlay
+  call per key per process; "other" reparse points checked). OneDrive gained a Places row after the
+  console check found none. Gate ab22: WPR medians 18.9% (`target-p5m3`) against 18.8% defaults and
+  14.9% with thumbnails, every defaults run under the bar. Console checks: Google Drive's marks
+  beside Explorer's and following a file taken offline and back; OneDrive's the same after the
+  sidebar row; Jeremy prefers the mark on the icon to a Status column.
+- **P6-M2, the views finished** (#56, b8f3b06, from 5212b87). PageUp and PageDown in the details
+  list (a viewport of rows, Shift extending), medium tiles (80 x 72 px with the shell's 48 px icon,
+  measured against Explorer's; a second grid component, so no tile binds to the size), a one-pixel
+  grey frame around thumbnails in the tiles (drawn at compose from the rectangle the worker reports),
+  the view in the settings dialog, the cursor following the band, and the icons asked again after a
+  view switch (a P4-M1 bug the medium size made worse). Gate ab23: the session changed state part-way
+  (four runs at about a third more per frame), so the medians (23.1 reference, 18.7 defaults, 10.3
+  grid, 13.5 medium) were read like for like: at the lower cost the reference 18.3 against 18.7 and
+  17.8. Jeremy accepted it as recorded. Console checks passed; Escape not clearing a selection was
+  raised and went to P6-M3.
+- **P6-M3, the toolbar and the polish bundle** (#59, c927594, from b6ecc21). The toolbar (seven
+  buttons, each calling its key's command, across the window by default or in each pane or none,
+  Explorer's glyph font), New file (Ctrl+Alt+N), Escape clearing the selection, protected files
+  apart from hidden ones, F2 for a bookmark (a click on a sidebar row gives it the keys), the
+  breadcrumb dropdown's keyboard, restored tabs keeping their sort, hidden files, cursor and scroll,
+  the tab strip re-revealing its active tab on resize, search rows showing the file name first,
+  folder sizes surviving a tab switch, and the Back button ignored over a text entry. Gate ab24:
+  20.3% reference, 18.6% defaults (the toolbar across the top), 20.2% with the in-pane toolbar; round
+  3 at a higher cost per frame for all three, read like for like. Console checks passed but one: a
+  pane with a tab strip had its in-pane toolbar lower than a pane without, fixed by c632e93 (the bar
+  above the tab strip; the gate scenario's layout unchanged, so ab24 stands).
+
+Every milestone passed by the triplet rule against the previous milestone's build (WPR medians,
+reference / candidate on defaults / candidate with the settings file):
+
+| Milestone | Tag | Reference | Medians | Note |
+|---|---|---|---|---|
+| P6-M1 | ab22 | `target-p5m3` (074ccb2) | 18.9 / 18.8 / thumbnails 14.9 | the runs interleave; every defaults run under the bar |
+| P6-M2 | ab23 | `target-p6m1` (0d4a23f) | 23.1 / 18.7 / grid 10.3 / medium 13.5 | a state change mid-triplet; like for like 18.3 against 18.7 and 17.8; accepted as recorded |
+| P6-M3 | ab24 | `target-p6m2` (ca12be0) | 20.3 / 18.6 / in-pane toolbar 20.2 | round 3 slower for all three; like for like the candidates at or below the reference |
+
+The lists' rows and tiles never moved: before each gate the generated list and grid components were
+diffed against the reference's (P6-M2: 7,654 lines, 0 different; P6-M3: 11,072 items, none on one
+side only, with block order the only difference once the numbers shifted). What the triplets
+measured was the wiring: the cloud key rule's branch (P6-M1), the tile geometry read per layout
+(P6-M2), the toolbar's place in the window or the pane and its button state set in `update_status`
+(P6-M3). Since P6-M3 the gate scenario runs with the toolbar across the top (the default), so its
+lists are 36 px shorter than before; the reference for the next gate, `target-p6m3`, has the same
+layout, so the comparison is like for like again.
+
+Lessons of the phase, each in its milestone's record and, where it changes how work is done, in
+`CLAUDE.md` or the memory already:
+
+- **A session can change state part-way through a triplet** (ab23, again in ab24's round 3): at the
+  same 60 Hz cadence, some runs of every binary cost about a third more per frame. The `[perf] ...
+  render[... p50=...]` figure per run says which runs share a state; read the medians like for like.
+  In `CLAUDE.md` § Measuring since #58; the gate wrapper prints the figure per run since P6-M3.
+- **Settle the brief against the code before writing it** (P6-M1 settled first; P6-M3 settled
+  first): the kickoff's mechanism for OneDrive's marks was wrong (they are a provider state, not an
+  overlay), and four P6-M3 items clashed with the code's rules (no stock images for Cut, Copy and
+  Paste; a per-row width; a sidebar that never took the keys; two meanings for Escape). Each was put
+  to Jeremy with a recommendation before any code, and each answer is quoted in its record.
+- **A scripted check covers the layouts it sets up, not the ones a person uses** (P6-M3 console
+  check): the in-pane toolbar's scripted checks ran with one tab per pane, so a pane with a strip
+  beside one without was first seen at the console. A layout change is checked with the panes
+  unequal (tabs, filter box, thumbnails) before it goes to the console.
+- **The gate binary is built by the implementer every milestone** (Jeremy, 2026-10-18), with the
+  gate wrapper handed over as one PowerShell file ready to run (P6-M2, 2026-10-17); Jeremy runs only
+  the script and the console checks.
+- **`gh pr merge --delete-branch` run from the session's own worktree deletes that worktree's files**
+  (P6-M3 merge): the folder stays, locked, and the next git command there falls through to the main
+  checkout. Merge from the main checkout, or expect it.
+- **The protocol itself is unchanged**: `tools/wpr-triplet.ps1` elevated at the console, three runs
+  per binary interleaved, compared by median, the one-point rule (one-sided: a cost), console checks
+  after the triplet and unelevated, settings triplets for a milestone that touches the list, the
+  grid, the icons or the pane's layout. Tags continue from ab25; the reference is `target-p6m3`
+  (c632e93), and `target-p6m2` goes once it has served.
+
+Open questions at the close (§ Open questions is above):
+
+- **Google Drive's volume found by its name** (P6-M1): a renamed volume loses its marks; unchanged.
+- **A sync-root scratch folder for the soak** (P6-M1): still a console check only; Jeremy's call.
+- **The Slint whole-row snap patch and upstreaming the two accessibility patches**: still Jeremy's;
+  nothing in Phase 6 touched the fork.
+- **The dead share** (P5-M1): the one console check still owed from Phase 5.
+
+Deferred, pulled together from the three milestones and the console checks, each with where it came
+from. The Phase 5 close's list (`phase-5-plan.md` § Phase 5 close) still stands except for what this
+phase finished (cloud marks, the P2-M5 icon items, the views list, the P2-M3 polish leftovers, folder
+sizes across a tab switch, the search Name column); the Phase 4 and Phase 3 closes' lists stand as
+the Phase 5 close left them.
+
+- **Cloud marks** (§ P6-M1 Deferred): OneDrive's sync states beyond tick and cloud (syncing, error:
+  a property read per file, 23 ms each); Google Drive's overlay drawn large over a tile (the shell's
+  jumbo overlay, as the link arrow); a mark stale between a change and the next record or refresh
+  (whether the watch alone follows a hydration is unchecked); a refresh of a Google Drive folder
+  showing placeholders until the lookups return; the thumbnail cache's 300 to 570 ms per request on
+  Google Drive (on the workers).
+- **Views** (§ P6-M2 Deferred): Explorer's PageDown in the details list (to the last row on screen
+  first); names on more than one line in the tiles.
+- **Toolbar and the bundle** (§ P6-M3 Deferred): Back and Forward over a toolbar button do nothing;
+  no tooltips on the icon-only buttons (Slint has none built in); subtree records as edits (a
+  background tab with sizes goes stale on a change in its folder itself and is listed again when
+  shown); search results sorted by the file's own name; Up and Down in the sidebar.
+- **Accessibility**, deferred for much later by Jeremy's word (2026-10-15): not a Phase 7 candidate.
+
+Phase 7 candidates, in no agreed order, for Jeremy's decision. Only the first is decided. Sizes in
+this project's units: a milestone is what P6-M2 or P6-M3 was; a small item is an afternoon.
+
+- **Shell verbs off the UI thread** (decided 2026-10-17, "Run the shell-menu fix as phase 7 item";
+  § Recorded for Phase 7 holds the design notes): a verb picked in the context menu runs on a
+  dedicated STA worker that rebuilds the menu there and invokes by verb string, so a verb waiting on
+  a slow file system (Google Drive's "Create shortcut", a minute of white window) no longer holds
+  the UI thread. A milestone, with a scripted seam (a test verb that sleeps on the worker while the
+  lists scroll).
+- **The shell menu's verbs through TwinFM's jobs** (Phase 5 candidate, left out of Phase 6): Delete,
+  Cut, Copy and Rename picked in the menu routed to TwinFM's own jobs (undo records, progress, the
+  soak fence), with **Escape cancelling a cut**. It sits beside the item above (the same menu code,
+  the routing decided on the UI thread before the verb goes to the worker). Half a milestone.
+- **The compact Windows 11 context menu and menu icons** (P2-M3): `IExplorerCommand` and the icons
+  the shell gives each item. A milestone; it touches the same menu, so it pairs with the two above.
+- **The drag cursor beside the description** (P5-M3): a console check first, then perhaps
+  `GiveFeedback` setting the cursor. A small item, or nothing.
+- **Content search** (P3-M2; out for now since 2026-10-13): text inside files in the search tab. A
+  milestone at least, with encoding, size limits and binary files to settle first.
+- **Archives beyond zip** (P3-M4): other formats through the shell's handlers, writing into
+  archives. A milestone for the formats alone.
+- **Thumbnails beyond the listing** (P3-M5): search tabs, archives, the details list's drag image.
+  Half a milestone.
+- **Cloud polish** (P6-M1 Deferred): the sync states beyond tick and cloud if wanted, a smaller
+  overlay in the tiles, the hydration check. Half a milestone after Jeremy's word on each.
+- **The polish leftovers of Phases 5 and 6** (above): toolbar tooltips and side buttons, subtree
+  records as edits, search sorted by name, sidebar arrows, Explorer's PageDown, multi-line tile
+  names. Each small; a bundle as P6-M3 was.
+- **The Slint fork**: the whole-row snap patch with its own triplet, and the upstreaming decision.
+  Jeremy's.
+- **Daily use**: TwinFM in place of Files for a stretch of days, with what bites written down as the
+  milestones. Phase 6's last finding (the toolbars not lining up) and P6-M2's (Escape) came from the
+  console, not from a plan.

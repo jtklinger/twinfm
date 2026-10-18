@@ -13,8 +13,9 @@ and the Phase 5 candidates; settings triplets are part of its gate), `docs/phase
 Phase 5 record (the Phase 2 lists finished: directory watching, file operations, drag and drop;
 three milestones, closed 2026-10-16; § Phase 5 close holds what is deferred and the Phase 6
 candidates), `docs/phase-6-plan.md` the Phase 6 record (cloud marks and the icon items, the views
-finished, the toolbar and the polish bundle; three milestones, kicked off 2026-10-16; its first
-section quotes Jeremy's kickoff decisions and § Calls made lists the lead's). Read them before
+finished, the toolbar and the polish bundle; three milestones, closed 2026-10-18; its first
+section quotes Jeremy's kickoff decisions, § Calls made lists the lead's, § Recorded for Phase 7
+holds the shell verbs item, and § Phase 6 close holds what is deferred and the Phase 7 candidates). Read them before
 changing the list.
 
 ## Gates (run before every commit)
