@@ -20,8 +20,9 @@ previous one is deleted once the new one has served as a reference". Four previo
 | `target-p4m3` | 1.5 GB | deleted 2026-10-16 (served as the reference for P5-M1 and P5-M2, ab20) |
 | `target-p5m2` | 1.5 GB | deleted 2026-10-17 on Jeremy's word (served as the reference for P5-M3, ab21) |
 | `target-p5m3` | 1.5 GB | deleted 2026-10-17 after `target-p6m1` served (P6-M2, ab23) |
-| `target-p6m1` | 1.66 GB | served as the reference for P6-M2 (ab23); delete once `target-p6m2` has served |
-| `target-p6m2` | 1.66 GB | **keep** - current reference (ca12be0, P6-M2's gate build), for P6-M3's triplet |
+| `target-p6m1` | 1.5 GB | deleted 2026-10-18 after `target-p6m2` served (P6-M3, ab24) |
+| `target-p6m2` | 1.66 GB | served as the reference for P6-M3 (ab24); delete once `target-p6m3` has served |
+| `target-p6m3` | 1.66 GB | **keep** - current reference (c632e93, P6-M3's gate build); its checkout is `.claude\worktrees\gate-p6m3` |
 | `target` | 3.50 GB | ordinary dev builds; `cargo clean` any time |
 
 The four superseded ones were deleted on 2026-10-15 (6.6 GB freed). For the next round, from the checkout root:
