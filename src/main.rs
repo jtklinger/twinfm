@@ -535,6 +535,7 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         if let Some(s) = t.search.take() {
             s.cancel(fs::enumerate::SEARCH_NAVIGATED);
         }
+        t.model.search_names.set(false);
         // Another folder starts unfiltered (Explorer's behaviour).
         let filtered = !t.model.filter.borrow().is_empty();
         *t.model.filter.borrow_mut() = NameMatch::default();
@@ -4505,6 +4506,7 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
             old.cancel(fs::enumerate::SEARCH_REPLACED);
         }
         t.search = Some(Search { pattern: matcher.clone(), cancel: cancel.clone() });
+        t.model.search_names.set(true);
         *t.model.filter.borrow_mut() = NameMatch::default();
         t.model.generation.set(generation);
         t.model.clear();

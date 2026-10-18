@@ -221,6 +221,9 @@ pub struct PaneModel {
     pub show_protected: Cell<bool>,
     /// The tab's name filter (Ctrl+F), applied by the same pass as `show_hidden`; empty: none.
     pub filter: RefCell<NameMatch>,
+    /// The names are paths under a search's root (`sub\file.txt`): the rows show them file name
+    /// first (`search_label`, P6-M3). The entries, the sort and every command keep the path.
+    pub search_names: Cell<bool>,
     /// Shell icons, shared by both panes; `Entry::icon` indexes it and the pane's icon strip
     /// is composed from it (`icons::compose`).
     icons: Rc<RefCell<IconTable>>,
@@ -257,6 +260,7 @@ impl PaneModel {
             show_hidden: Cell::new(false),
             show_protected: Cell::new(false),
             filter: RefCell::new(NameMatch::default()),
+            search_names: Cell::new(false),
         }
     }
 
@@ -1065,7 +1069,7 @@ impl Model for PaneModel {
         let shown = self.shown.borrow();
         let e = shown.get(row)?;
         Some(Row {
-            name: e.name.clone(),
+            name: if self.search_names.get() { search_label(&e.name) } else { e.name.clone() },
             type_text: e.type_text.clone(),
             size: e.size_text.clone(),
             modified: e.modified_text.clone(),
@@ -1081,6 +1085,16 @@ impl Model for PaneModel {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+/// A search result's name as its row shows it (P6-M3): the file's own name first, then the folder
+/// it is in under the search's root, so the name is never the part that is cut short
+/// (`sub\dir\file.txt` reads `file.txt  (sub\dir)`). A result in the root itself is its name.
+pub fn search_label(name: &str) -> SharedString {
+    match name.rsplit_once('\\') {
+        Some((dir, leaf)) => format!("{leaf}  ({dir})").into(),
+        None => name.into(),
     }
 }
 
@@ -1124,7 +1138,7 @@ impl Model for GridModel {
         let tiles: Vec<Tile> = shown[span]
             .iter()
             .enumerate()
-            .map(|(k, e)| Tile { name: e.name.clone(), selected: e.selected, cut: e.cut, current: (first + k) as i32 == cursor })
+            .map(|(k, e)| Tile { name: if m.search_names.get() { search_label(&e.name) } else { e.name.clone() }, selected: e.selected, cut: e.cut, current: (first + k) as i32 == cursor })
             .collect();
         Some(GridRow { first: first as i32, tiles: ModelRc::new(VecModel::from(tiles)) })
     }
@@ -1755,6 +1769,18 @@ mod tests {
         assert_eq!(m.show(), both);
         m.replace(filter_sort(m.snapshot_all(), m.show(), &NameMatch::default(), SortCol::Name, true, &Restore::default()));
         assert_eq!((m.row_count(), m.hidden_count()), (5, 0));
+    }
+
+    #[test]
+    fn search_rows_show_the_file_name_first() {
+        assert_eq!(search_label(r"Windows\WinSxS\amd64_x\kernel32.dll").as_str(), r"kernel32.dll  (Windows\WinSxS\amd64_x)");
+        assert_eq!(search_label("top.txt").as_str(), "top.txt", "a result in the root is its name");
+        let m = PaneModel::default();
+        m.append(vec![Entry::new(r"sub\a.txt".into(), 0, 0, 0, "".into())]);
+        assert_eq!(m.row_data(0).unwrap().name.as_str(), r"sub\a.txt", "a folder tab shows names as they are");
+        m.search_names.set(true);
+        assert_eq!(m.row_data(0).unwrap().name.as_str(), "a.txt  (sub)");
+        assert_eq!(m.entry(0).unwrap().name.as_str(), r"sub\a.txt", "the entry keeps its path");
     }
 
     #[test]
