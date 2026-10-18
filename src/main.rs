@@ -96,6 +96,10 @@ struct Tab {
     /// Saved when the tab goes to the background, restored when it comes back.
     cursor: i32,
     scroll: f32,
+    /// A restored tab's saved cursor row (by name) and scroll (P6-M3): its first pass after a
+    /// complete listing puts the cursor there, and the scroll is applied when that pass lands.
+    restore_cursor: Option<SharedString>,
+    restore_scroll: Option<f32>,
     /// What happened to its folder is unknown (it is in the background without a watch, its
     /// watch fell back or was lost, or a file operation finished while it was unwatched): it
     /// refreshes when it comes to the front.
@@ -356,6 +360,8 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         free: None,
         cursor: -1,
         scroll: 0.0,
+        restore_cursor: None,
+        restore_scroll: None,
         stale: false,
         refresh_pending: false,
         watch_refresh: false,
@@ -542,6 +548,11 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         let Some(app) = st.app.upgrade() else { return };
         let generation = st.generation();
         let t = st.tab_mut(pane);
+        // A restored tab's saved cursor and scroll belong to its own folder only (P6-M3).
+        if t.path != path {
+            t.restore_cursor = None;
+            t.restore_scroll = None;
+        }
         // A folder that then fails to list still counts as visited, as in Explorer.
         // From a search tab the search goes on the back stack (Back runs it again).
         let from = t.place();
@@ -815,11 +826,29 @@ fn save_now() {
         let app = st.app.upgrade()?;
         // Each pane's tabs; a pane whose tabs never had a folder (the second pane before the
         // split was first opened) keeps the saved list.
-        let tab_paths = |tabs: &Tabs<Tab>| {
-            let v: Vec<String> = tabs.iter().map(|t| t.path.to_string_lossy().to_string()).collect();
-            v.iter().all(|p| !p.is_empty()).then_some((v, tabs.active_index()))
+        // Each tab with its view (P6-M3): the active one's cursor and scroll as the list has them
+        // now, the others' as they were left.
+        let tab_paths = |pane: usize, tabs: &Tabs<Tab>| {
+            let active = tabs.active_index();
+            let v: Vec<settings::SavedTab> = tabs
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let (cursor, scroll) = if i == active { (current_row(&app, pane), app.invoke_get_scroll(pane as i32)) } else { (t.cursor, t.scroll) };
+                    let cursor = t.restore_cursor.clone().or_else(|| usize::try_from(cursor).ok().and_then(|r| t.model.entry(r)).map(|e| e.name));
+                    settings::SavedTab {
+                        path: t.path.to_string_lossy().to_string(),
+                        sort: Some(settings::sort_name(t.model.sort_col.get()).into()),
+                        ascending: Some(t.model.sort_asc.get()),
+                        hidden: Some(t.model.show_hidden.get()),
+                        cursor: cursor.map(|c| c.to_string()),
+                        scroll: Some(t.restore_scroll.unwrap_or(scroll)),
+                    }
+                })
+                .collect();
+            v.iter().all(|t| !t.path.is_empty()).then_some((v, active))
         };
-        let (left_tabs, right_tabs) = (tab_paths(&st.panes[0]), tab_paths(&st.panes[1]));
+        let (left_tabs, right_tabs) = (tab_paths(0, &st.panes[0]), tab_paths(1, &st.panes[1]));
         let c = &mut st.config;
         if let Some((v, a)) = left_tabs {
             (c.left_tabs, c.left_active) = (v, a);
@@ -1792,6 +1821,12 @@ fn request_pass(st: &mut State, pane: usize, id: u64) {
         restore.cursor = Some(name.clone());
         restore.selected = vec![name];
     }
+    // A restored tab's cursor row, once its listing is complete (P6-M3).
+    if t.timing.done_ms.is_some() {
+        if let Some(name) = t.restore_cursor.take() {
+            restore.cursor = Some(name);
+        }
+    }
     let sel_version = model.sel_version.get();
     let t0 = Instant::now();
     std::thread::spawn(move || {
@@ -1856,6 +1891,13 @@ fn land_pass(
     if let (Some(y), Some(_)) = (scroll, cursor) {
         app.invoke_set_scroll(pane as i32, y);
         eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
+    }
+    // A restored tab's saved scroll, on the pass that placed its cursor (P6-M3).
+    if t.restore_cursor.is_none() && t.timing.done_ms.is_some() {
+        if let Some(y) = t.restore_scroll.take() {
+            app.invoke_set_scroll(pane as i32, y);
+            eprintln!("[tab] pane={pane} tab={id} restored: cursor {cursor:?}, scroll {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
+        }
     }
     // Once per pass swap, never per frame: bring an operation's cursor row (its grid row in the
     // grid) into view.
@@ -4885,27 +4927,32 @@ fn main() -> Result<(), slint::PlatformError> {
     // the others are stale and list their folder when first shown.
     let arg = std::env::args().nth(1);
     let (left_paths, left_active) = match &arg {
-        Some(a) => (vec![a.clone()], 0),
+        Some(a) => (vec![settings::SavedTab::path(a)], 0),
         None => settings::start_tabs(&config.left_tabs, config.left_active, &config.start_left),
     };
-    let right_start = if config.start_right.is_empty() { left_paths[left_active].clone() } else { config.start_right.clone() };
+    let right_start = if config.start_right.is_empty() { left_paths[left_active].path.clone() } else { config.start_right.clone() };
     let (right_paths, right_active) = if config.split {
         settings::start_tabs(&config.right_tabs, config.right_active, &right_start)
     } else {
-        (vec![String::new()], 0)
+        (vec![settings::SavedTab::path("")], 0)
     };
     let mut next_tab = 0;
-    let mut restore = |paths: &[String], active: usize, hidden: bool, protected: bool| {
+    // A tab saved with its view (P6-M3) gets its sort, hidden files, cursor and scroll back; a bare
+    // path takes the defaults new tabs have. A saved Type sort with the Type column off sorts by name.
+    let mut restore = |paths: &[settings::SavedTab], active: usize, hidden: bool, protected: bool| {
         let mut tabs: Vec<Tab> = paths
             .iter()
             .enumerate()
             .map(|(i, p)| {
                 next_tab += 1;
-                let t = Tab { path: PathBuf::from(p), stale: i != active, ..blank_tab(next_tab, &icons) };
-                t.model.sort_col.set(settings::sort_from_name(&config.sort_column));
-                t.model.sort_asc.set(config.sort_ascending);
-                t.model.show_hidden.set(hidden);
+                let mut t = Tab { path: PathBuf::from(&p.path), stale: i != active, ..blank_tab(next_tab, &icons) };
+                let sort = settings::sort_from_name(p.sort.as_deref().unwrap_or(&config.sort_column));
+                t.model.sort_col.set(if sort == SortCol::Type && !config.show_type { SortCol::Name } else { sort });
+                t.model.sort_asc.set(p.ascending.unwrap_or(config.sort_ascending));
+                t.model.show_hidden.set(p.hidden.unwrap_or(hidden));
                 t.model.show_protected.set(protected);
+                t.restore_cursor = p.cursor.as_deref().map(SharedString::from);
+                t.restore_scroll = p.scroll.filter(|y| y.is_finite() && *y < 0.0);
                 t
             })
             .collect();
@@ -5225,10 +5272,10 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     // Each pane's active tab lists its folder; the restored background tabs wait until shown.
-    navigate(0, PathBuf::from(&left_paths[left_active]));
+    navigate(0, PathBuf::from(&left_paths[left_active].path));
     if config.split {
         app.set_split(true);
-        navigate(1, PathBuf::from(&right_paths[right_active]));
+        navigate(1, PathBuf::from(&right_paths[right_active].path));
     }
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);

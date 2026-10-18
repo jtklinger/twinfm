@@ -81,13 +81,14 @@ pub struct Config {
     /// the left one. A command-line path replaces the left pane's tabs.
     pub start_left: String,
     pub start_right: String,
-    /// Each pane's tabs, left to right, as folder paths (`left_tabs = ["C:\\", "D:\\work"]`), and
-    /// the index of its active tab (`left_active = 1`), as TwinFM last saved them. Empty or
-    /// missing: the pane opens one tab on its start folder, so a file from before tabs were
-    /// saved still works. The right pane's tabs are restored only when the split is.
-    pub left_tabs: Vec<String>,
+    /// Each pane's tabs, left to right, as `[[left_tabs]]` tables (`SavedTab`: the folder, and
+    /// since P6-M3 its sort, hidden files, cursor and scroll), and the index of its active tab
+    /// (`left_active = 1`), as TwinFM last saved them. A bare list of paths (`left_tabs = ["C:\\"]`,
+    /// before P6-M3) still loads. Empty or missing: the pane opens one tab on its start folder.
+    /// The right pane's tabs are restored only when the split is.
+    pub left_tabs: Vec<SavedTab>,
     pub left_active: usize,
-    pub right_tabs: Vec<String>,
+    pub right_tabs: Vec<SavedTab>,
     pub right_active: usize,
     /// New tabs in each pane show files with the hidden attribute (Ctrl+H sets it for its pane).
     pub show_hidden_left: bool,
@@ -135,6 +136,62 @@ pub struct Config {
     /// `[[bookmark]]` entries when loaded, never written.
     #[serde(rename = "bookmarks", skip_serializing)]
     pub legacy_bookmarks: Vec<String>,
+}
+
+/// One saved tab (P6-M3): its folder and, when TwinFM saved them, its sort (`sort_name`), its
+/// hidden-file switch, the name of its cursor row and its list's scroll offset (logical px, zero or
+/// negative). A missing field (a bare path from an older file) takes the default a new tab has.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "TabEntry")]
+pub struct SavedTab {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ascending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<f32>,
+}
+
+impl SavedTab {
+    /// A tab that is only a folder (an old entry, a start folder).
+    pub fn path(path: &str) -> SavedTab {
+        SavedTab { path: path.into(), sort: None, ascending: None, hidden: None, cursor: None, scroll: None }
+    }
+}
+
+impl From<&str> for SavedTab {
+    fn from(path: &str) -> SavedTab {
+        SavedTab::path(path)
+    }
+}
+
+/// What a `left_tabs` / `right_tabs` entry may be in the file: a table, or a bare path.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TabEntry {
+    Path(String),
+    Table {
+        path: String,
+        sort: Option<String>,
+        ascending: Option<bool>,
+        hidden: Option<bool>,
+        cursor: Option<String>,
+        scroll: Option<f32>,
+    },
+}
+
+impl From<TabEntry> for SavedTab {
+    fn from(e: TabEntry) -> SavedTab {
+        match e {
+            TabEntry::Path(p) => SavedTab::path(&p),
+            TabEntry::Table { path, sort, ascending, hidden, cursor, scroll } => SavedTab { path, sort, ascending, hidden, cursor, scroll },
+        }
+    }
 }
 
 /// One bookmark: the folder and, if renamed, the title the sidebar shows.
@@ -412,10 +469,10 @@ impl Dialog {
 
 /// The tabs a pane opens at start: the saved list (blank entries dropped) with its active index
 /// clamped, or one tab on `fallback` (the pane's start folder) when there is no list.
-pub fn start_tabs(tabs: &[String], active: usize, fallback: &str) -> (Vec<String>, usize) {
-    let tabs: Vec<String> = tabs.iter().filter(|t| !t.trim().is_empty()).cloned().collect();
+pub fn start_tabs(tabs: &[SavedTab], active: usize, fallback: &str) -> (Vec<SavedTab>, usize) {
+    let tabs: Vec<SavedTab> = tabs.iter().filter(|t| !t.path.trim().is_empty()).cloned().collect();
     if tabs.is_empty() {
-        return (vec![fallback.to_string()], 0);
+        return (vec![SavedTab::path(fallback)], 0);
     }
     let active = active.min(tabs.len() - 1);
     (tabs, active)
@@ -595,26 +652,38 @@ mod tests {
 
     #[test]
     fn tab_lists_round_trip_and_fall_back() {
+        let full = SavedTab {
+            path: r"C:\b".into(),
+            sort: Some("size".into()),
+            ascending: Some(false),
+            hidden: Some(true),
+            cursor: Some("notes.txt".into()),
+            scroll: Some(-440.0),
+        };
         let c = Config {
             start_left: r"C:\b".into(),
-            left_tabs: vec![r"C:\a".into(), r"C:\b".into(), "This PC".into()],
+            left_tabs: vec![r"C:\a".into(), full.clone(), "This PC".into()],
             left_active: 1,
             right_tabs: vec![r"D:\x".into()],
             ..Config::default()
         };
         let text = c.to_toml();
-        assert!(text.contains("left_tabs = ["), "{text}");
+        assert!(text.contains("[[left_tabs]]") && text.contains("cursor = \"notes.txt\""), "{text}");
         assert_eq!(Config::parse(&text).unwrap(), c);
         let (tabs, active) = start_tabs(&c.left_tabs, c.left_active, &c.start_left);
         assert_eq!((tabs.len(), active), (3, 1));
+        assert_eq!(tabs[1], full, "a tab's view comes back with it (P6-M3)");
+        // A bare list of paths, from before P6-M3: folders only.
+        let bare = Config::parse("left_tabs = ['C:\\a', 'D:\\']\nleft_active = 1\n").unwrap();
+        assert_eq!(bare.left_tabs, vec![SavedTab::path(r"C:\a"), SavedTab::path(r"D:\")]);
         // A file from before tabs were saved: one tab on the start folder.
         let old = Config::parse("start_left = 'C:\\Windows'\nstart_right = 'D:\\'\n").unwrap();
         assert!(old.left_tabs.is_empty() && old.right_tabs.is_empty());
-        assert_eq!(start_tabs(&old.left_tabs, old.left_active, &old.start_left), (vec![r"C:\Windows".to_string()], 0));
-        assert_eq!(start_tabs(&old.right_tabs, old.right_active, &old.start_right), (vec![r"D:\".to_string()], 0));
+        assert_eq!(start_tabs(&old.left_tabs, old.left_active, &old.start_left), (vec![SavedTab::path(r"C:\Windows")], 0));
+        assert_eq!(start_tabs(&old.right_tabs, old.right_active, &old.start_right), (vec![SavedTab::path(r"D:\")], 0));
         // An active index past the end is clamped; blank entries are dropped.
-        assert_eq!(start_tabs(&["a".into(), " ".into(), "b".into()], 7, "x"), (vec!["a".to_string(), "b".to_string()], 1));
-        assert_eq!(start_tabs(&["".into()], 0, "x"), (vec!["x".to_string()], 0));
+        assert_eq!(start_tabs(&["a".into(), " ".into(), "b".into()], 7, "x"), (vec![SavedTab::path("a"), SavedTab::path("b")], 1));
+        assert_eq!(start_tabs(&["".into()], 0, "x"), (vec![SavedTab::path("x")], 0));
     }
 
     #[test]
