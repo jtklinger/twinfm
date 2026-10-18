@@ -37,6 +37,14 @@
 # src, Delete of it there (the Recycle Bin), and Shift+Delete of t. Reported: toolbar presses
 # (eight per cycle), presses refused as disabled (must be 0), new files made and undone, renames.
 # The cycle adds two Recycle Bin entries (the new file's undo and the Delete button), three in all.
+#
+# P7-M1's verb cycle follows, in dst (empty again): two files are dropped there, the test verb
+# sleeps 1500 ms on the verb worker while the left list scrolls (`menuverb 1 sleep:1500`), the
+# menu's Delete recycles f01 through TwinFM's job and Ctrl+Z restores it, the menu's Cut of f02 is
+# cancelled by Escape (marks cleared, clipboard emptied), Create shortcut (`link`) runs on the
+# worker by its verb, and Shift+Delete removes the three files. Reported: verb jobs queued, slept,
+# invoked by verb with S_OK, routed deletes and their restores, cuts cancelled by Escape. One more
+# Recycle Bin entry per cycle (the restore takes it out again), four in all.
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -143,6 +151,13 @@ $cycle = @(
     'click 1 1', 'toolbar 1 cut', 'click 0 0', 'toolbar 0 paste', $wait,
     'click 0 0', 'toolbar 0 delete', $wait,
     'click 1 0', 'sdelete', $wait,
+    # P7-M1: the verb cycle (see the header).
+    "dropfiles 1 -1 copy $pick", $wait,
+    'click 1 0', 'menuverb 1 sleep:1500', 'wheel 0 -20 30', $wait,
+    'click 1 0', 'menuverb 1 delete', $wait, 'undo', $wait,
+    'click 1 1', 'menuverb 1 cut', 'sleep 200', 'key Escape', 'sleep 200',
+    'click 1 0', 'menuverb 1 link', $wait,
+    'click 1 0', 'key CtrlA', 'sdelete', $wait,
     # P5-M3: the spring-load into spring\inner, the crumb drop into spring, the sidebar's bottom
     # edge, the inactive tab under the spring time, and the cleanup (see the header).
     "nav 1 $spring", 'sleep 500',
@@ -245,6 +260,13 @@ $toolDisabled = @($log | Select-String -SimpleMatch 'disabled, not pressed').Cou
 $newFiles = @($log | Select-String -SimpleMatch 'Done: Created New Text Document.txt').Count
 $newFilesUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Created New Text Document.txt').Count
 $renamedT = @($log | Select-String -SimpleMatch 'Done: Renamed to t').Count
+# P7-M1 counts.
+$verbJobs = @($log | Select-String -SimpleMatch 'queued on the verb worker').Count
+$verbSlept = @($log | Select-String -SimpleMatch 'slept in').Count
+$verbOk = @($log | Select-String -SimpleMatch 'verb="link"' | Select-String -SimpleMatch 'by verb = 0x00000000').Count
+$routedDeletes = @($log | Select-String -SimpleMatch 'menuverb pane=1 "delete"').Count
+$restores = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Deleted 1 item to the Recycle Bin').Count
+$cutsCancelled = @($log | Select-String -SimpleMatch 'Escape: cut cancelled, marks cleared, clipboard emptied').Count
 # P5-M3 counts.
 $springArmed = @($log | Select-String -SimpleMatch '[dnd] spring armed:').Count
 $springRows = @($log | Select-String -SimpleMatch '[dnd] spring-loaded:' | Select-String -SimpleMatch ' opens ').Count
@@ -269,6 +291,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (two per cycle: large and medium); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
 "medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
 "toolbar: presses $toolPresses (eight per cycle), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
+"verbs: jobs queued $verbJobs (two per cycle), slept $verbSlept, link by verb with S_OK $verbOk; routed deletes $routedDeletes, restored $restores; cuts cancelled by Escape $cutsCancelled"
 "spring: armed $springArmed, spring-loaded rows $springRows (navigations into spring\inner: $springInner), tabs $springTabs (must be 0), disarmed $springDisarmed; crumb drops: $dropCrumb; auto-scroll lines: sidebar $sideScrolls, tab strip $stripScrolls"
 "working set: start $($first.working_set_mb) MB at $($first.seconds) s, end $($last.working_set_mb) MB at $($last.seconds) s; private: $($first.private_mb) -> $($last.private_mb) MB"
 "min/max working set: {0} / {1} MB" -f ($samples | Measure-Object working_set_mb -Minimum).Minimum, ($samples | Measure-Object working_set_mb -Maximum).Maximum

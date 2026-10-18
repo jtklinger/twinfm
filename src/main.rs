@@ -23,6 +23,7 @@ mod sidebar;
 mod statusbar;
 mod tabs;
 mod toolbar;
+mod verbs;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fileops::{Job, Outcome, clipboard, same_dir};
@@ -39,7 +40,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tabs::{Place, Tabs};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON, VK_RBUTTON};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON, VK_RBUTTON, VK_SHIFT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG, SW_MAXIMIZE, ShowWindow};
 
 /// Rows above and below the viewport whose icons are fetched ahead of a scroll.
@@ -242,6 +243,9 @@ struct State {
     view: [(f32, f32); 2],
     /// The file operation worker (STA thread, owns every IFileOperation).
     ops: fileops::Worker,
+    /// The verb worker (STA thread): shell commands picked in the context menu run there (P7-M1).
+    verbs: verbs::Worker,
+    next_verb: u64,
     /// The main window's HWND once it exists (0 before): owner of the shell's dialogs and of
     /// the clipboard.
     hwnd: isize,
@@ -2415,8 +2419,9 @@ fn command(pane: usize, cmd: &str) {
                 return;
             }
             // Explorer's Escape clears the selection; ours stops a search and cancels queued
-            // jobs first, and clears the selection only when it did neither (P6-M3).
-            if !cancel_queued(pane) {
+            // jobs first (P6-M3), then cancels a cut (P7-M1), and clears the selection only when
+            // it did none of those.
+            if !cancel_queued(pane) && !cancel_cut(pane) {
                 clear_selection(pane);
             }
             return;
@@ -2688,6 +2693,36 @@ fn cancel_queued(pane: usize) -> bool {
     })
 }
 
+/// Escape over a cut (P7-M1): the cut marks go, and the clipboard is emptied while it still holds
+/// TwinFM's cut, so a later paste cannot move the files. False when no cut is marked.
+fn cancel_cut(pane: usize) -> bool {
+    let Some((hwnd, ours)) = with_state(|st| {
+        st.cut_source?;
+        clear_cuts(st);
+        Some((st.hwnd, clipboard::sequence() == st.clip_seq))
+    }) else {
+        return false;
+    };
+    // Outside the state borrow: the clipboard's own change notice arrives as a message.
+    let emptied = ours && hwnd != 0 && match clipboard::clear(hwnd) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("[clipboard] pane={pane} Escape: emptying the clipboard failed: {e}");
+            false
+        }
+    };
+    eprintln!(
+        "[clipboard] pane={pane} Escape: cut cancelled, marks cleared, {}",
+        if emptied { "clipboard emptied" } else { "clipboard left (not TwinFM's cut any more)" }
+    );
+    with_state(|st| {
+        if let Some(app) = st.app.upgrade() {
+            note(st, &app, pane, "Cut cancelled".into());
+        }
+    });
+    true
+}
+
 /// Escape with nothing to cancel: the pane's selection is cleared (the cursor stays).
 fn clear_selection(pane: usize) {
     with_state(|st| {
@@ -2955,7 +2990,22 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
     }
     // Take everything the menu needs out of the state, then drop the borrow: the menu runs a
     // modal message loop (see shellmenu), and no RefCell borrow may be held across it.
-    let taken = with_state(|st| {
+    let Some((req, ctx)) = menu_request(pane, row, x, y, extended) else { return };
+    let picked = shellmenu::show(&req);
+    match picked {
+        Err(e) => with_state(|st| {
+            if let Some(app) = st.app.upgrade() {
+                note(st, &app, pane, format!("context menu: {e}"));
+            }
+        }),
+        Ok(picked) => menu_picked(pane, picked, &req, ctx),
+    }
+}
+
+/// What the context menu needs, taken out of the state: the request for `shellmenu::show` and
+/// what its own items need afterwards. None (with a note) when there is no menu to show.
+fn menu_request(pane: usize, row: i32, x: f32, y: f32, extended: bool) -> Option<(shellmenu::Request, MenuContext)> {
+    with_state(|st| {
         let app = st.app.upgrade()?;
         let hwnd = main_hwnd(st, &app);
         if hwnd == 0 {
@@ -2988,36 +3038,87 @@ fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
         eprintln!("[menu] pane={pane} row={row} {} target(s) at ({x:.0}, {y:.0}) -> screen ({sx}, {sy})", names.len());
         let req = shellmenu::Request { hwnd, folder, names, own, x: sx, y: sy, extended };
         Some((req, MenuContext { hwnd, dir, paths }))
-    });
-    let Some((req, ctx)) = taken else { return };
-    let picked = shellmenu::show(&req);
+    })
+}
+
+/// The driver's `menuverb <pane> <verb>`: as if the shell command with that canonical verb had
+/// been picked in the menu for the cursor row's selection (the driver never presses Return in a
+/// shell menu): routed to TwinFM's command, or run on the verb worker by its verb.
+pub fn script_menu_verb(pane: usize, verb: &str) {
+    let Some(row) = with_state(|st| st.app.upgrade().map(|app| current_row(&app, pane))) else { return };
+    let Some((req, ctx)) = menu_request(pane, row, 0.0, 0.0, false) else { return };
+    eprintln!("[auto] menuverb pane={pane} \"{verb}\" for {} item(s)", req.names.len());
+    let picked = match shellmenu::route(verb) {
+        Some("rename") => shellmenu::Picked::Rename,
+        Some(cmd) => shellmenu::Picked::Route(cmd),
+        None => shellmenu::Picked::Shell { verb: verb.to_string(), offset: 0, label: verb.to_string() },
+    };
+    menu_picked(pane, picked, &req, ctx);
+}
+
+/// What the menu's pick does, once the menu has closed (and for the driver's `menuverb`).
+fn menu_picked(pane: usize, picked: shellmenu::Picked, req: &shellmenu::Request, ctx: MenuContext) {
     match picked {
-        Err(e) => with_state(|st| {
-            if let Some(app) = st.app.upgrade() {
-                note(st, &app, pane, format!("context menu: {e}"));
-            }
-        }),
-        Ok(shellmenu::Picked::Nothing) => {}
-        Ok(shellmenu::Picked::Rename) => command(pane, "rename"),
-        Ok(shellmenu::Picked::Own(item)) => own_item(pane, item, ctx),
-        Ok(shellmenu::Picked::Invoked { verb, hr }) => {
-            if hr < 0 && hr != fileops::HR_CANCELLED {
-                with_state(|st| {
-                    if let Some(app) = st.app.upgrade() {
-                        note(st, &app, pane, format!("\"{verb}\" failed: 0x{:08X}", hr as u32));
-                    }
-                });
-            }
-            // The shell may have created, renamed or deleted entries in either folder.
-            let split = with_state(|st| {
-                mark_background_stale(st, false);
-                st.app.upgrade().is_some_and(|a| a.get_split())
-            });
-            refresh(0);
-            if split {
-                refresh(1);
-            }
+        shellmenu::Picked::Nothing => {}
+        shellmenu::Picked::Rename => command(pane, "rename"),
+        shellmenu::Picked::Own(item) => own_item(pane, item, ctx),
+        shellmenu::Picked::Route(cmd) => {
+            // The menu's Delete with Shift held deletes permanently, as the key does.
+            // SAFETY: a plain key state query on the UI thread.
+            let shift = unsafe { GetKeyState(VK_SHIFT as i32) } < 0;
+            command(pane, if cmd == "delete" && shift { "sdelete" } else { cmd });
         }
+        shellmenu::Picked::Shell { verb, offset, label } => {
+            let sleep_ms = verb.strip_prefix(TEST_SLEEP_VERB).and_then(|ms| ms.parse().ok());
+            let request = shellmenu::VerbRequest {
+                folder: req.folder.clone(),
+                names: req.names.clone(),
+                verb,
+                offset,
+                label,
+                x: req.x,
+                y: req.y,
+                extended: req.extended,
+            };
+            with_state(|st| {
+                st.next_verb += 1;
+                let id = st.next_verb;
+                eprintln!("[menu] verb \"{}\" (\"{}\") queued on the verb worker, id {id}", request.verb, request.label);
+                if !st.verbs.submit(verbs::Job { id, pane, req: request, sleep_ms }) {
+                    if let Some(app) = st.app.upgrade() {
+                        note(st, &app, pane, "context menu: the verb worker has stopped".into());
+                    }
+                }
+            });
+        }
+    }
+}
+
+/// The driver's test verb: `menuverb <pane> sleep:<ms>` sleeps on the verb worker.
+const TEST_SLEEP_VERB: &str = "sleep:";
+
+/// A verb job finished on the verb worker (on the UI thread).
+fn verb_done(d: verbs::Done) {
+    let msg = match (&d.how, &d.error) {
+        (_, Some(e)) => Some(format!("\"{}\": {e}", d.label)),
+        (Some(shellmenu::Invoke::Refuse(why)), _) => Some(format!("\"{}\" was not run: {why}", d.label)),
+        _ if d.hr < 0 && d.hr != fileops::HR_CANCELLED => Some(format!("\"{}\" failed: 0x{:08X}", d.label, d.hr as u32)),
+        _ => None,
+    };
+    if d.how.is_none() && d.error.is_none() {
+        return; // the test verb: nothing ran
+    }
+    // The shell may have created, renamed or deleted entries in either folder.
+    let split = with_state(|st| {
+        if let (Some(m), Some(app)) = (msg, st.app.upgrade()) {
+            note(st, &app, d.pane, m);
+        }
+        mark_background_stale(st, false);
+        st.app.upgrade().is_some_and(|a| a.get_split())
+    });
+    refresh(0);
+    if split {
+        refresh(1);
     }
 }
 
@@ -4073,7 +4174,7 @@ pub fn state_is_free() -> bool {
 /// For the scripted driver: a job is in flight, a tab is still re-enumerating, or a virtual-file
 /// drop is still writing.
 pub fn ops_busy() -> bool {
-    if dnd::virtual_drops_running() {
+    if dnd::virtual_drops_running() || verbs::busy() {
         return true;
     }
     STATE.with(|s| match s.try_borrow() {
@@ -4121,7 +4222,7 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
     if pane == 0 { app.set_left_rows(rows) } else { app.set_right_rows(rows) }
     model.set_grid_n(st.grid_n[pane]);
     model.set_grid_cursor(cursor);
-    let grid = ModelRc::new(GridModel(model.clone()));
+    let grid = ModelRc::new(GridModel::new(model.clone()));
     if pane == 0 { app.set_left_grid_rows(grid) } else { app.set_right_grid_rows(grid) }
     let (col, asc) = (model.sort_col.get() as i32, model.sort_asc.get());
     if pane == 0 {
@@ -4890,6 +4991,9 @@ fn main() -> Result<(), slint::PlatformError> {
     }, |p| {
         let _ = slint::invoke_from_event_loop(move || job_progress(p));
     });
+    let verbs = verbs::Worker::spawn(|d| {
+        let _ = slint::invoke_from_event_loop(move || verb_done(d));
+    });
     let soak = (std::env::var("TWINFM_SOAK").as_deref() == Ok("1"))
         .then(|| vec![std::env::temp_dir().join("twinfm-m3"), std::env::temp_dir().join("twinfm-m5")]);
     if let Some(roots) = &soak {
@@ -4970,8 +5074,8 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     app.set_left_rows(ModelRc::from(panes[0].active().model.clone()));
     app.set_right_rows(ModelRc::from(panes[1].active().model.clone()));
-    app.set_left_grid_rows(ModelRc::new(GridModel(panes[0].active().model.clone())));
-    app.set_right_grid_rows(ModelRc::new(GridModel(panes[1].active().model.clone())));
+    app.set_left_grid_rows(ModelRc::new(GridModel::new(panes[0].active().model.clone())));
+    app.set_right_grid_rows(ModelRc::new(GridModel::new(panes[1].active().model.clone())));
     let strip_rows: [Rc<VecModel<StripRow>>; 2] = Default::default();
     app.set_left_strip_rows(ModelRc::from(strip_rows[0].clone()));
     app.set_right_strip_rows(ModelRc::from(strip_rows[1].clone()));
@@ -5030,6 +5134,8 @@ fn main() -> Result<(), slint::PlatformError> {
             icon_counts: IconCounts::default(),
             view: [(0.0, 0.0); 2],
             ops,
+            verbs,
+            next_verb: 0,
             hwnd: 0,
             next_job: 0,
             jobs: HashMap::new(),

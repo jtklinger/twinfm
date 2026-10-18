@@ -1117,17 +1117,30 @@ pub fn grid_span(r: usize, n: usize, len: usize) -> std::ops::Range<usize> {
 
 /// The pane's entries as grid rows of `grid_n` tiles (the large-icon view's ListView model).
 /// Notifications come from the PaneModel (`grid_notify`), which knows when entries change.
-pub struct GridModel(pub Rc<PaneModel>);
+///
+/// Each grid row keeps one tile model, updated in place by `row_data` (P7-M1): a new model per
+/// call made Slint build the row's tiles again on every selection change, so the tile under the
+/// pointer forgot the first click of a double-click.
+pub struct GridModel {
+    model: Rc<PaneModel>,
+    tiles: RefCell<Vec<Rc<VecModel<Tile>>>>,
+}
+
+impl GridModel {
+    pub fn new(model: Rc<PaneModel>) -> GridModel {
+        GridModel { model, tiles: RefCell::new(Vec::new()) }
+    }
+}
 
 impl Model for GridModel {
     type Data = GridRow;
 
     fn row_count(&self) -> usize {
-        self.0.grid_len()
+        self.model.grid_len()
     }
 
     fn row_data(&self, row: usize) -> Option<GridRow> {
-        let m = &self.0;
+        let m = &self.model;
         let shown = m.shown.borrow();
         let span = grid_span(row, m.grid_n.get(), shown.len());
         if span.is_empty() {
@@ -1140,11 +1153,34 @@ impl Model for GridModel {
             .enumerate()
             .map(|(k, e)| Tile { name: if m.search_names.get() { search_label(&e.name) } else { e.name.clone() }, selected: e.selected, cut: e.cut, current: (first + k) as i32 == cursor })
             .collect();
-        Some(GridRow { first: first as i32, tiles: ModelRc::new(VecModel::from(tiles)) })
+        let mut cache = self.tiles.borrow_mut();
+        // Rows past the end go when the grid shrinks by more than a screenful.
+        let rows = m.grid_len();
+        if cache.len() > rows + 64 {
+            cache.truncate(rows);
+        }
+        while cache.len() <= row {
+            cache.push(Rc::new(VecModel::default()));
+        }
+        let vm = cache[row].clone();
+        drop(cache);
+        drop(shown);
+        // Only what changed is set, so Slint updates those tiles and keeps the rest.
+        for (k, t) in tiles.iter().enumerate() {
+            if k >= vm.row_count() {
+                vm.push(t.clone());
+            } else if vm.row_data(k).as_ref() != Some(t) {
+                vm.set_row_data(k, t.clone());
+            }
+        }
+        while vm.row_count() > tiles.len() {
+            vm.remove(vm.row_count() - 1);
+        }
+        Some(GridRow { first: first as i32, tiles: ModelRc::from(vm) })
     }
 
     fn model_tracker(&self) -> &dyn ModelTracker {
-        &self.0.grid_notify
+        &self.model.grid_notify
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1996,7 +2032,7 @@ mod tests {
         assert!(m.set_grid_n(7));
         assert!(!m.set_grid_n(7));
         m.set_grid_cursor(8);
-        let g = GridModel(m.clone());
+        let g = GridModel::new(m.clone());
         assert_eq!(g.row_count(), 3);
         let r1 = g.row_data(1).unwrap();
         assert_eq!(r1.first, 7);
@@ -2011,6 +2047,33 @@ mod tests {
         m.set_grid_n(4);
         assert_eq!(g.row_count(), 4);
         assert_eq!(g.row_data(3).unwrap().first, 12);
+    }
+
+    #[test]
+    fn grid_rows_keep_their_tile_model_across_changes() {
+        // A selection change must update a grid row's tiles in place: a new tile model per
+        // row_data made Slint build the row's tiles again, so the TouchArea under the pointer
+        // forgot the first click of a double-click (P7-M1 console check).
+        let m = Rc::new(PaneModel::default());
+        m.append((0..15).map(|i| Entry::new(format!("f{i:02}").into(), 1, 0, 0, "File".into())).collect());
+        m.set_grid_n(7);
+        let g = GridModel::new(m.clone());
+        let before = g.row_data(1).unwrap();
+        assert!(!before.tiles.row_data(1).unwrap().selected);
+        m.select(SelOp::Only, 8);
+        let after = g.row_data(1).unwrap();
+        assert!(before.tiles == after.tiles, "the same tile model, so Slint keeps the tiles");
+        assert!(after.tiles.row_data(1).unwrap().selected, "updated in place");
+        assert!(before.tiles.row_data(1).unwrap().selected, "the model Slint holds sees it");
+        // A width change gives the row other entries and another length; still one model per row.
+        m.set_grid_n(4);
+        let narrow = g.row_data(3).unwrap();
+        assert_eq!(narrow.tiles.row_count(), 3);
+        assert_eq!(narrow.tiles.row_data(0).unwrap().name, "f12");
+        let wide = g.row_data(1).unwrap();
+        assert!(wide.tiles == after.tiles);
+        assert_eq!(wide.tiles.row_count(), 4);
+        assert_eq!(wide.tiles.row_data(0).unwrap().name, "f04");
     }
 
     #[test]
@@ -2082,7 +2145,7 @@ mod tests {
         let rows: Peer = Box::pin(ModelChangeListenerContainer::new(Rec::default()));
         let grid: Peer = Box::pin(ModelChangeListenerContainer::new(Rec::default()));
         m.model_tracker().attach_peer(rows.as_ref().model_peer());
-        GridModel(m.clone()).model_tracker().attach_peer(grid.as_ref().model_peer());
+        GridModel::new(m.clone()).model_tracker().attach_peer(grid.as_ref().model_peer());
         (m, rows, grid)
     }
 

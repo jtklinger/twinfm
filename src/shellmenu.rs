@@ -1,7 +1,10 @@
 //! The Windows shell context menu (`IContextMenu`) for a pane's selection or its folder
 //! background, with TwinFM's own items above the shell's.
 //!
-//! Everything here runs on the UI thread. `IContextMenu` wants the owner window's thread, and
+//! Everything here runs on the UI thread except `run_verb`, which the verb worker calls
+//! (`crate::verbs`, P7-M1): a picked shell command runs there, from a menu built again for the
+//! same items, so a verb that waits on a slow file system never holds the UI thread.
+//! `IContextMenu` wants the owner window's thread, and
 //! `TrackPopupMenuEx` runs a modal message loop on it. winit has already made the UI thread a
 //! single-threaded apartment (`OleInitialize`, for drag and drop); `ensure_com` checks that once
 //! and never uninitialises. Every COM object made here is created, used and released inside one
@@ -40,8 +43,8 @@ use windows_sys::Win32::UI::Shell::{
     DefSubclassProc, GCS_VERBW, RemoveWindowSubclass, SHBindToObject, SHParseDisplayName, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemInfoW, GetMenuStringW, HMENU, InsertMenuW,
-    MENUITEMINFOW, MF_BYPOSITION, MF_SEPARATOR, MF_STRING, MFT_SEPARATOR, MIIM_FTYPE, MIIM_SUBMENU, SW_SHOWNORMAL,
+    CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemInfoW, GetMenuStringW, GetSubMenu, HMENU, InsertMenuW,
+    MENUITEMINFOW, MF_BYCOMMAND, MF_BYPOSITION, MF_SEPARATOR, MF_STRING, MFT_SEPARATOR, MIIM_FTYPE, MIIM_SUBMENU, SW_SHOWNORMAL,
     TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, WM_DRAWITEM, WM_INITMENUPOPUP,
     WM_MEASUREITEM, WM_MENUCHAR,
 };
@@ -115,8 +118,12 @@ pub enum Picked {
     /// The shell's "rename" verb: it needs an `IShellView` site to start an in-place edit and
     /// does nothing without one, so TwinFM opens its own name editor instead.
     Rename,
-    /// A shell command ran; `hr` is what `InvokeCommand` returned.
-    Invoked { verb: String, hr: HRESULT },
+    /// A shell verb TwinFM runs as its own command (`route`): the command's name for
+    /// `main::command` ("delete", "cx", "cc", "cv").
+    Route(&'static str),
+    /// A shell command for the verb worker: its canonical verb (empty when it has none), its
+    /// offset from `SHELL_FIRST` and its label in the menu that was shown.
+    Shell { verb: String, offset: u32, label: String },
 }
 
 pub struct Request {
@@ -463,7 +470,15 @@ impl Drop for Pidl {
 }
 
 /// A popup menu, destroyed on drop.
-struct Menu(HMENU);
+pub(crate) struct Menu(pub(crate) HMENU);
+
+impl Menu {
+    fn new() -> Result<Menu, String> {
+        // SAFETY: a new empty popup menu, destroyed by `Menu`'s drop.
+        let m = unsafe { CreatePopupMenu() };
+        if m.is_null() { Err("CreatePopupMenu failed".into()) } else { Ok(Menu(m)) }
+    }
+}
 
 impl Drop for Menu {
     fn drop(&mut self) {
@@ -516,7 +531,7 @@ unsafe extern "system" fn subclass_proc(
 }
 
 /// The items of a menu as text: "---" for a separator, " >" after a submenu's name.
-fn menu_items(hmenu: HMENU) -> Vec<String> {
+pub(crate) fn menu_items(hmenu: HMENU) -> Vec<String> {
     // SAFETY: read-only queries on a live menu with valid buffers.
     unsafe {
         let n = GetMenuItemCount(hmenu).max(0) as u32;
@@ -555,7 +570,7 @@ fn submenu_name(sub: HMENU) -> Option<String> {
     }
     // SAFETY: read-only queries on the live root menu.
     let n = unsafe { GetMenuItemCount(root) }.max(0);
-    (0..n).find(|&i| unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSubMenu(root, i) } == sub).map(|i| {
+    (0..n).find(|&i| unsafe { GetSubMenu(root, i) } == sub).map(|i| {
         let mut buf = [0u16; 128];
         // SAFETY: as above.
         let len = unsafe { GetMenuStringW(root, i as u32, buf.as_mut_ptr(), buf.len() as i32, MF_BYPOSITION) }.max(0);
@@ -576,7 +591,7 @@ fn log_popup(sub: HMENU, handled: bool) {
     );
 }
 
-fn check(hr: HRESULT, what: &str) -> Result<(), String> {
+pub(crate) fn check(hr: HRESULT, what: &str) -> Result<(), String> {
     if hr < 0 { Err(format!("{what} failed: 0x{:08X}", hr as u32)) } else { Ok(()) }
 }
 
@@ -639,32 +654,10 @@ pub fn show(req: &Request) -> Result<Picked, String> {
     // Objects are declared in creation order so they drop in reverse: the menu interfaces
     // first, then the HMENU, the child PIDLs, the folder and its PIDL.
     let (_folder_pidl, folder, children) = parse_items(hwnd, &req.folder, &req.names)?;
-    // SAFETY: `folder` is an IShellFolder.
-    let fv = unsafe { folder.vtbl::<ShellFolderVtbl>() };
-    let mut p: *mut c_void = std::ptr::null_mut();
-    let hr = if children.is_empty() {
-        // SAFETY: the folder's background menu ("New", "Paste", "Properties", handlers).
-        unsafe { (fv.create_view_object)(folder.0, hwnd, &IID_ICONTEXTMENU, &mut p) }
-    } else {
-        let apidl: Vec<*const ITEMIDLIST> = children.iter().map(|c| c.0 as *const ITEMIDLIST).collect();
-        // SAFETY: child PIDLs relative to `folder`, alive for the call.
-        unsafe {
-            (fv.get_ui_object_of)(folder.0, hwnd, apidl.len() as u32, apidl.as_ptr(), &IID_ICONTEXTMENU, std::ptr::null_mut(), &mut p)
-        }
-    };
-    check(hr, if children.is_empty() { "CreateViewObject" } else { "GetUIObjectOf" })?;
-    if p.is_null() {
-        return Err("the shell returned no context menu".into());
-    }
-    let cm = Com(p);
+    let cm = context_menu_of(hwnd, &folder, &children)?;
     // SAFETY: `cm` is an IContextMenu.
     let cv = unsafe { cm.vtbl::<ContextMenuVtbl>() };
-
-    // SAFETY: a new empty popup menu, destroyed by `Menu`'s drop.
-    let menu = Menu(unsafe { CreatePopupMenu() });
-    if menu.0.is_null() {
-        return Err("CreatePopupMenu failed".into());
-    }
+    let menu = Menu::new()?;
     for (i, item) in req.own.iter().enumerate() {
         let label = wide(std::ffi::OsStr::new(item.label()));
         // SAFETY: inserting a string item into our own menu.
@@ -734,36 +727,226 @@ pub fn show(req: &Request) -> Result<Picked, String> {
         Pick::Nothing => Ok(Picked::Nothing),
         Pick::Own(o) => Ok(Picked::Own(o)),
         Pick::Shell(offset) => {
-            let mut verb = [0u16; 64];
-            // SAFETY: GCS_VERBW writes at most `verb.len()` wide chars; failure leaves it empty.
-            let hr = unsafe { (cv.get_command_string)(cm.0, offset as usize, GCS_VERBW, std::ptr::null_mut(), verb.as_mut_ptr() as *mut u8, verb.len() as u32) };
-            let verb = if hr >= 0 {
-                String::from_utf16_lossy(&verb[..verb.iter().position(|&u| u == 0).unwrap_or(verb.len())])
-            } else {
-                String::new()
-            };
-            if verb.eq_ignore_ascii_case("rename") {
-                eprintln!("[menu] shell verb \"rename\" goes to TwinFM's name editor");
-                return Ok(Picked::Rename);
+            // The verb and the label are read here, from the menu that was shown; the verb itself
+            // runs on the verb worker (`crate::verbs`), which builds the menu again (P7-M1).
+            let verb = verb_of(&cm, offset);
+            let label = command_label(menu.0, SHELL_FIRST + offset);
+            if let Some(cmd) = route(&verb) {
+                eprintln!("[menu] shell verb \"{verb}\" routed to TwinFM's {cmd}");
+                return Ok(if cmd == "rename" { Picked::Rename } else { Picked::Route(cmd) });
             }
-            let dir = wide(req.folder.as_os_str());
-            let mut ici: CMINVOKECOMMANDINFOEX = CMINVOKECOMMANDINFOEX::default();
-            ici.cbSize = std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32;
-            ici.fMask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
-            ici.hwnd = hwnd;
+            Ok(Picked::Shell { verb, offset, label })
+        }
+    }
+}
+
+/// The shell verbs TwinFM runs as its own commands (P7-M1), by canonical verb: the command the
+/// key and the toolbar button call (`main::command`). Every other verb goes to the verb worker.
+pub fn route(verb: &str) -> Option<&'static str> {
+    match verb.to_ascii_lowercase().as_str() {
+        "delete" => Some("delete"),
+        "cut" => Some("cx"),
+        "copy" => Some("cc"),
+        "paste" => Some("cv"),
+        "rename" => Some("rename"),
+        _ => None,
+    }
+}
+
+/// The context menu for `children` of `folder`, or the folder's background menu when there are
+/// none.
+fn context_menu_of(hwnd: HWND, folder: &Com, children: &[Pidl]) -> Result<Com, String> {
+    // SAFETY: `folder` is an IShellFolder.
+    let fv = unsafe { folder.vtbl::<ShellFolderVtbl>() };
+    let mut p: *mut c_void = std::ptr::null_mut();
+    let hr = if children.is_empty() {
+        // SAFETY: the folder's background menu ("New", "Paste", "Properties", handlers).
+        unsafe { (fv.create_view_object)(folder.0, hwnd, &IID_ICONTEXTMENU, &mut p) }
+    } else {
+        let apidl: Vec<*const ITEMIDLIST> = children.iter().map(|c| c.0 as *const ITEMIDLIST).collect();
+        // SAFETY: child PIDLs relative to `folder`, alive for the call.
+        unsafe {
+            (fv.get_ui_object_of)(folder.0, hwnd, apidl.len() as u32, apidl.as_ptr(), &IID_ICONTEXTMENU, std::ptr::null_mut(), &mut p)
+        }
+    };
+    check(hr, if children.is_empty() { "CreateViewObject" } else { "GetUIObjectOf" })?;
+    if p.is_null() {
+        return Err("the shell returned no context menu".into());
+    }
+    Ok(Com(p))
+}
+
+/// The canonical verb of the command at `offset` (`GCS_VERBW`), or empty when it has none.
+fn verb_of(cm: &Com, offset: u32) -> String {
+    let mut verb = [0u16; 64];
+    // SAFETY: `cm` is an IContextMenu; GCS_VERBW writes at most `verb.len()` wide chars, and a
+    // failure leaves the buffer as it was.
+    let hr = unsafe {
+        (cm.vtbl::<ContextMenuVtbl>().get_command_string)(cm.0, offset as usize, GCS_VERBW, std::ptr::null_mut(), verb.as_mut_ptr() as *mut u8, verb.len() as u32)
+    };
+    if hr < 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&verb[..verb.iter().position(|&u| u == 0).unwrap_or(verb.len())])
+}
+
+/// The text of the item with command id `cmd` anywhere in `hmenu` (submenus included), without
+/// its `&`; empty when there is none.
+fn command_label(hmenu: HMENU, cmd: u32) -> String {
+    let mut buf = [0u16; 128];
+    // SAFETY: a read-only query on a live menu; MF_BYCOMMAND searches the submenus too.
+    let len = unsafe { GetMenuStringW(hmenu, cmd, buf.as_mut_ptr(), buf.len() as i32, MF_BYCOMMAND) }.max(0) as usize;
+    String::from_utf16_lossy(&buf[..len]).replace('&', "")
+}
+
+/// What the verb worker runs: the command picked in a menu the UI thread showed, for the same
+/// items (P7-M1).
+#[derive(Clone, Debug)]
+pub struct VerbRequest {
+    pub folder: PathBuf,
+    pub names: Vec<String>,
+    /// The canonical verb (`GCS_VERBW`), empty when the command has none.
+    pub verb: String,
+    /// The command's offset from `SHELL_FIRST` in the menu that was shown.
+    pub offset: u32,
+    /// Its label there, for the check when it has no verb.
+    pub label: String,
+    pub x: i32,
+    pub y: i32,
+    pub extended: bool,
+}
+
+/// How the verb worker invoked a command (`choose`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Invoke {
+    /// By its canonical verb: a rebuilt menu can number its items differently.
+    Verb,
+    /// By its offset: it has no verb, and the rebuilt menu's item there carries the same label.
+    Offset,
+    /// Not invoked, and why.
+    Refuse(String),
+}
+
+/// How to invoke a command picked in the shown menu from the menu the worker rebuilt: by `verb`
+/// when it has one, else by its offset only when `rebuilt` (the label at the same id in the
+/// rebuilt menu, None when there is no item there) matches `label`.
+pub fn choose(verb: &str, label: &str, rebuilt: Option<&str>) -> Invoke {
+    if !verb.is_empty() {
+        return Invoke::Verb;
+    }
+    let norm = |s: &str| s.replace('&', "").trim().to_string();
+    match rebuilt {
+        Some(r) if !norm(label).is_empty() && norm(r) == norm(label) => Invoke::Offset,
+        Some(r) => Invoke::Refuse(format!("the rebuilt menu has \"{}\" at that id, not \"{}\"", norm(r), norm(label))),
+        None => Invoke::Refuse(format!("the rebuilt menu has no item at that id (\"{}\")", norm(label))),
+    }
+}
+
+/// Fill the dynamic submenus ("Send to", "Open with") of a rebuilt menu as opening them would, so
+/// a command without a verb can be found by its id: `WM_INITMENUPOPUP` to the handler for every
+/// submenu, two levels deep.
+fn fill_submenus(cm: &Com, hmenu: HMENU, depth: u32) {
+    let (routed, v3) = match cm.query(&IID_ICONTEXTMENU3) {
+        Some(c) => (Some(c), true),
+        None => (cm.query(&IID_ICONTEXTMENU2), false),
+    };
+    let Some(r) = routed else { return };
+    fn walk(r: &Com, v3: bool, hmenu: HMENU, depth: u32) {
+        // SAFETY: read-only queries on a live menu.
+        let n = unsafe { GetMenuItemCount(hmenu) }.max(0);
+        for i in 0..n {
+            // SAFETY: as above.
+            let sub = unsafe { GetSubMenu(hmenu, i) };
+            if sub.is_null() {
+                continue;
+            }
+            let (wp, lp) = (sub as WPARAM, i as LPARAM);
+            // SAFETY: `r` is the IContextMenu3 or IContextMenu2 its flag says, alive for the call.
+            unsafe {
+                if v3 {
+                    let mut res: LRESULT = 0;
+                    (r.vtbl::<ContextMenu3Vtbl>().handle_menu_msg2)(r.0, WM_INITMENUPOPUP, wp, lp, &mut res);
+                } else {
+                    (r.vtbl::<ContextMenu2Vtbl>().handle_menu_msg)(r.0, WM_INITMENUPOPUP, wp, lp);
+                }
+            }
+            if depth > 1 {
+                walk(r, v3, sub, depth - 1);
+            }
+        }
+    }
+    walk(&r, v3, hmenu, depth);
+}
+
+/// On the verb worker (an STA with a message loop): build the menu for the request's items again,
+/// pick the command by `choose`, and invoke it with no owner window. Every COM object is made,
+/// used and released here. Returns how it was invoked and what `InvokeCommand` returned (0 when
+/// refused).
+pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
+    // No owner window: a dialog owned by the main window from this thread would attach the two
+    // threads' input queues while it is up (P7-M1 Decisions).
+    let hwnd: HWND = std::ptr::null_mut();
+    let (_folder_pidl, folder, children) = parse_items(hwnd, &req.folder, &req.names)?;
+    let cm = context_menu_of(hwnd, &folder, &children)?;
+    // SAFETY: `cm` is an IContextMenu.
+    let cv = unsafe { cm.vtbl::<ContextMenuVtbl>() };
+    let menu = Menu::new()?;
+    let flags = CMF_NORMAL | CMF_EXPLORE | if req.extended { CMF_EXTENDEDVERBS } else { 0 };
+    // SAFETY: a live menu and IContextMenu.
+    check(unsafe { (cv.query_context_menu)(cm.0, menu.0, 0, SHELL_FIRST, SHELL_LAST, flags) }, "QueryContextMenu")?;
+    let cmd = SHELL_FIRST + req.offset;
+    let rebuilt = |cm: &Com| {
+        if req.verb.is_empty() && !crate::fs::archive::inside(&req.folder) {
+            // The zip folder's menus crash in their own QueryInterface for IContextMenu2/3 (P3-M4).
+            fill_submenus(cm, menu.0, 2);
+        }
+        let l = command_label(menu.0, cmd);
+        (!l.is_empty()).then_some(l)
+    };
+    let how = choose(&req.verb, &req.label, if req.verb.is_empty() { rebuilt(&cm) } else { None }.as_deref());
+    let dir = wide(req.folder.as_os_str());
+    let verb_w = wide(std::ffi::OsStr::new(&req.verb));
+    let verb_a: Vec<u8> = req.verb.bytes().map(|b| if b.is_ascii() { b } else { b'?' }).chain([0]).collect();
+    let invoke = |by_verb: bool| {
+        let mut ici: CMINVOKECOMMANDINFOEX = CMINVOKECOMMANDINFOEX::default();
+        ici.cbSize = std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32;
+        ici.fMask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
+        ici.hwnd = hwnd;
+        if by_verb {
+            ici.lpVerb = verb_a.as_ptr();
+            ici.lpVerbW = verb_w.as_ptr();
+        } else {
             // MAKEINTRESOURCE(offset): the command's offset in place of a verb string.
-            ici.lpVerb = offset as usize as *const u8;
-            ici.lpVerbW = offset as usize as *const u16;
-            if !children.is_empty() {
-                ici.lpDirectoryW = dir.as_ptr();
+            ici.lpVerb = req.offset as usize as *const u8;
+            ici.lpVerbW = req.offset as usize as *const u16;
+        }
+        if !children.is_empty() {
+            ici.lpDirectoryW = dir.as_ptr();
+        }
+        ici.nShow = SW_SHOWNORMAL;
+        ici.ptInvoke = POINT { x: req.x, y: req.y };
+        // MODAL LOOP: a command may show a dialog on this thread; no app state lives here.
+        // SAFETY: a live IContextMenu and a fully initialised CMINVOKECOMMANDINFOEX whose
+        // strings outlive the call.
+        unsafe { (cv.invoke_command)(cm.0, &ici) }
+    };
+    match how {
+        Invoke::Refuse(_) => Ok((how, 0)),
+        Invoke::Offset => Ok((how, invoke(false))),
+        Invoke::Verb => {
+            let hr = invoke(true);
+            if hr >= 0 || hr == crate::fileops::HR_CANCELLED {
+                return Ok((Invoke::Verb, hr));
             }
-            ici.nShow = SW_SHOWNORMAL;
-            ici.ptInvoke = POINT { x: req.x, y: req.y };
-            // MODAL LOOP again: a command may show a dialog on this thread. Still no borrow.
-            // SAFETY: a live IContextMenu and a fully initialised CMINVOKECOMMANDINFOEX.
-            let hr = unsafe { (cv.invoke_command)(cm.0, &ici) };
-            eprintln!("[menu] InvokeCommand verb=\"{verb}\" offset={offset} = 0x{:08X}", hr as u32);
-            Ok(Picked::Invoked { verb, hr })
+            // A handler that names its verb but takes only its id: by offset, when the rebuilt
+            // menu's item there is the one that was picked.
+            match choose("", &req.label, rebuilt(&cm).as_deref()) {
+                Invoke::Offset => {
+                    eprintln!("[menu] InvokeCommand by verb \"{}\" = 0x{:08X}: by offset instead", req.verb, hr as u32);
+                    Ok((Invoke::Offset, invoke(false)))
+                }
+                _ => Ok((Invoke::Verb, hr)),
+            }
         }
     }
 }
@@ -785,6 +968,30 @@ mod tests {
         assert_eq!(common_parent(root, &s(&[r"a\b\c.txt"])), Ok((PathBuf::from(r"C:\Windows\a\b"), s(&["c.txt"]))));
         assert!(common_parent(root, &s(&[r"System32\kernel32.dll", r"SysWOW64\kernel32.dll"])).is_err());
         assert!(common_parent(root, &s(&["top.txt", r"sub\x.txt"])).is_err());
+    }
+
+    #[test]
+    fn verb_worker_invokes_by_verb_or_by_a_matching_label() {
+        assert_eq!(choose("link", "Create shortcut", None), Invoke::Verb, "a verb is enough, whatever the rebuilt menu holds");
+        assert_eq!(choose("link", "Create shortcut", Some("Delete")), Invoke::Verb);
+        assert_eq!(choose("", "&Desktop (create shortcut)", Some("Desktop (create shortcut)")), Invoke::Offset, "the & is ignored");
+        assert_eq!(choose("", " Documents ", Some("Documents")), Invoke::Offset);
+        assert!(matches!(choose("", "Documents", Some("Desktop")), Invoke::Refuse(w) if w.contains("Desktop")));
+        assert!(matches!(choose("", "Documents", None), Invoke::Refuse(w) if w.contains("no item")));
+        assert!(matches!(choose("", "", Some("")), Invoke::Refuse(_)), "no verb and no label: nothing to match");
+    }
+
+    #[test]
+    fn canonical_verbs_route_to_twinfm_commands() {
+        assert_eq!(route("delete"), Some("delete"));
+        assert_eq!(route("Delete"), Some("delete"), "verbs are matched without case");
+        assert_eq!(route("cut"), Some("cx"));
+        assert_eq!(route("copy"), Some("cc"));
+        assert_eq!(route("paste"), Some("cv"));
+        assert_eq!(route("rename"), Some("rename"));
+        for other in ["", "link", "properties", "open", "copyaspath", "pastelink", "undelete"] {
+            assert_eq!(route(other), None, "{other} goes to the verb worker");
+        }
     }
 
     #[test]
