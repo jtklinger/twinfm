@@ -1,6 +1,6 @@
-import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow } from "pane.slint";
+import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar } from "pane.slint";
 import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
-export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow }
+export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
 // the bookmark's index in the bookmark list.
@@ -134,6 +134,15 @@ export component App inherits Window {
     in property <[SideItem]> side-items;
     in-out property <bool> sidebar-visible: true;
     in-out property <length> sidebar-width: 180px;
+    // The toolbar (P6-M3, settings `toolbar`): 0 none, 1 across the window under the title (labelled,
+    // acting on the active pane), 2 inside each pane above its path bar (icons only, acting on that
+    // pane). Each pane's button state (toolbar.rs `state`), and toolbar-clicked(pane, name) for a
+    // press (main.rs makes the pane active and focuses its list, or lets the name editor take it).
+    in property <int> toolbar: 1;
+    in property <ToolState> left-tools;
+    in property <ToolState> right-tools;
+    callback toolbar-clicked(int, string);
+    private property <length> top-h: root.toolbar == 1 ? 36px : 0px;
     // For the About dialog (CARGO_PKG_VERSION).
     in property <string> version;
     // The Type column in both panes (settings `show_type`; set at start and by the dialog).
@@ -298,6 +307,8 @@ export component App inherits Window {
     in-out property <bool> dlg-thumbnails;
     in-out property <bool> dlg-sidebar;
     in-out property <bool> dlg-crumbs;
+    // The toolbar's place in the dialog: 0 none, 1 top, 2 in each pane (ComboBox index).
+    in-out property <int> dlg-toolbar;
     // "Saved to <file>", or that a scripted run saves nothing.
     in property <string> settings-note;
     private property <bool> settings-shown: false;
@@ -318,8 +329,8 @@ export component App inherits Window {
     public function settings-cancel() { finish-settings(false); }
     // What each control calls when the user changes it (and the driver's `settings set`): field
     // start_left, start_right (a path), hidden_left, hidden_right, protected_left, protected_right,
-    // type_column, thumbnails, sidebar ("true" or "false"), path_bar ("entry" or "crumb"), view_left, view_right ("details", "large"
-    // or "medium").
+    // type_column, thumbnails, sidebar ("true" or "false"), path_bar ("entry" or "crumb"), view_left,
+    // view_right ("details", "large" or "medium"), toolbar ("top", "pane" or "none").
     public function settings-stage(field: string, value: string) {
         if (field == "start_left") { dlg-start-left = value; }
         if (field == "start_right") { dlg-start-right = value; }
@@ -333,6 +344,7 @@ export component App inherits Window {
         if (field == "path_bar") { dlg-crumbs = value != "entry"; }
         if (field == "view_left") { dlg-view-left = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "view_right") { dlg-view-right = value == "medium" ? 2 : value == "large" ? 1 : 0; }
+        if (field == "toolbar") { dlg-toolbar = value == "none" ? 0 : value == "pane" ? 2 : 1; }
     }
 
     // The breadcrumb dropdown's contents and place, set from Rust before show-crumb-menu.
@@ -453,9 +465,21 @@ export component App inherits Window {
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "d" || e.text == "D")) { root.bookmark-add(); return accept; }
             return reject;
         }
+        // The toolbar across the window, over the sidebar and the panes (dnd.rs TOP_BAR).
+        if root.toolbar == 1: Rectangle {
+            x: 0; y: 0; width: parent.width; height: root.top-h;
+            background: Palette.alternate-background;
+            Toolbar {
+                x: 4px; y: 2px; height: parent.height - 4px;
+                tools: root.split && root.active-pane == 1 ? root.right-tools : root.left-tools;
+                labelled: true;
+                tool(c) => { root.toolbar-clicked(root.split && root.active-pane == 1 ? 1 : 0, c); }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
+        }
         sidebar := Rectangle {
             visible: sidebar-visible;
-            x: 0; y: 0; width: sidebar-width; height: parent.height;
+            x: 0; y: root.top-h; width: sidebar-width; height: parent.height - root.top-h;
             background: Palette.alternate-background;
             // The renderer draws the whole window every frame; cached as one texture, the sidebar
             // costs a blit while the panes scroll and is redrawn only when its own properties change.
@@ -546,7 +570,7 @@ export component App inherits Window {
         // Drag the sidebar's right edge to resize it.
         Rectangle {
             visible: sidebar-visible;
-            x: sidebar-width; y: 0; width: 4px; height: parent.height;
+            x: sidebar-width; y: root.top-h; width: 4px; height: parent.height - root.top-h;
             background: side-ta.has-hover || side-ta.pressed ? Palette.accent-background : Palette.border;
             side-ta := TouchArea {
                 mouse-cursor: col-resize;
@@ -561,15 +585,15 @@ export component App inherits Window {
         // The collapsed sidebar: a strip that brings it back.
         Rectangle {
             visible: !sidebar-visible;
-            x: 0; y: 0; width: 12px; height: parent.height;
+            x: 0; y: root.top-h; width: 12px; height: parent.height - root.top-h;
             background: show-ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background;
             Text { y: 6px; text: "\u{00bb}"; horizontal-alignment: center; }
             show-ta := TouchArea { clicked => { root.toggle-sidebar(); } }
         }
         // The two panes and the split line, right of the sidebar (dnd.rs Layout.left).
         panes := Rectangle {
-            x: sidebar-visible ? sidebar-width + 4px : 12px; y: 0;
-            width: parent.width - self.x; height: parent.height;
+            x: sidebar-visible ? sidebar-width + 4px : 12px; y: root.top-h;
+            width: parent.width - self.x; height: parent.height - root.top-h;
             left := Pane {
                 x: 0; y: 0; height: parent.height;
                 width: split ? parent.width * split-ratio - 3px : parent.width;
@@ -618,6 +642,9 @@ export component App inherits Window {
                 filter-edited(t) => { root.filter-edited(0, t); }
                 filter-apply(t) => { root.filter-apply(0, t); }
                 filter-clear => { root.filter-clear(0); }
+                toolbar: root.toolbar == 2;
+                tools: root.left-tools;
+                tool(c) => { root.toolbar-clicked(0, c); }
             }
             right := Pane {
                 visible: split;
@@ -668,6 +695,9 @@ export component App inherits Window {
                 filter-edited(t) => { root.filter-edited(1, t); }
                 filter-apply(t) => { root.filter-apply(1, t); }
                 filter-clear => { root.filter-clear(1); }
+                toolbar: root.toolbar == 2;
+                tools: root.right-tools;
+                tool(c) => { root.toolbar-clicked(1, c); }
             }
             splitter := Rectangle {
                 visible: split;
@@ -795,9 +825,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 406px) / 2);
+        y: max(10px, (root.height - 444px) / 2);
         width: 480px;
-        height: 406px;
+        height: 444px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Palette.background;
@@ -918,6 +948,15 @@ export component App inherits Window {
                                 checked: root.dlg-sidebar;
                                 accessible-label: "Show the sidebar";
                                 toggled => { root.settings-stage("sidebar", self.checked ? "true" : "false"); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Toolbar"; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["None", "Across the top", "In each pane"];
+                                current-index: root.dlg-toolbar;
+                                accessible-label: "Toolbar";
+                                selected => { root.settings-stage("toolbar", self.current-index == 0 ? "none" : self.current-index == 2 ? "pane" : "top"); }
                             }
                         }
                         Row {

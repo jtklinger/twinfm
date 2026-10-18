@@ -57,6 +57,78 @@ export struct StatusInfo {
     right: string,
 }
 
+// Which toolbar buttons apply to a pane (toolbar.rs `state`, set from Rust in update_status's
+// rhythm, on change only).
+export struct ToolState {
+    new: bool,
+    cut: bool,
+    copy: bool,
+    paste: bool,
+    rename: bool,
+    delete: bool,
+}
+
+// One toolbar button: a Segoe Fluent Icons glyph (the font of Explorer's own command bar, part of
+// Windows 11), with its label beside it in the toolbar across the window. A disabled button is
+// dimmed and takes no clicks.
+component ToolButton inherits Rectangle {
+    in property <string> glyph;
+    in property <string> text;
+    in property <bool> labelled;
+    in property <bool> enabled: true;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: root.text;
+    border-radius: 4px;
+    background: !root.enabled ? transparent : ta.pressed ? Palette.alternate-background.darker(0.1) : ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+    HorizontalLayout {
+        padding-left: root.labelled ? 8px : 6px;
+        padding-right: root.labelled ? 10px : 6px;
+        spacing: 6px;
+        Text {
+            text: root.glyph;
+            font-family: "Segoe Fluent Icons";
+            font-size: 16px;
+            vertical-alignment: center;
+            color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(65%);
+        }
+        if root.labelled: Text {
+            text: root.text;
+            vertical-alignment: center;
+            color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(65%);
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+component ToolSeparator inherits Rectangle {
+    width: 9px;
+    Rectangle { x: 4px; y: 5px; width: 1px; height: parent.height - 10px; background: Palette.border; }
+}
+
+// The toolbar (P6-M3), in its three groups: New file, New folder; Cut, Copy, Paste; Rename, Delete.
+// tool(name) names the button (toolbar.rs `command` maps it to its key's command).
+export component Toolbar inherits HorizontalLayout {
+    in property <ToolState> tools;
+    in property <bool> labelled;
+    callback tool(string);
+    alignment: start;
+    padding: 2px;
+    spacing: 2px;
+    ToolButton { glyph: "\u{E8A5}"; text: "New file"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfile"); } }
+    ToolButton { glyph: "\u{E8F4}"; text: "New folder"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfolder"); } }
+    ToolSeparator { }
+    ToolButton { glyph: "\u{E8C6}"; text: "Cut"; labelled: root.labelled; enabled: root.tools.cut; clicked => { root.tool("cut"); } }
+    ToolButton { glyph: "\u{E8C8}"; text: "Copy"; labelled: root.labelled; enabled: root.tools.copy; clicked => { root.tool("copy"); } }
+    ToolButton { glyph: "\u{E77F}"; text: "Paste"; labelled: root.labelled; enabled: root.tools.paste; clicked => { root.tool("paste"); } }
+    ToolSeparator { }
+    ToolButton { glyph: "\u{E8AC}"; text: "Rename"; labelled: root.labelled; enabled: root.tools.rename; clicked => { root.tool("rename"); } }
+    ToolButton { glyph: "\u{E74D}"; text: "Delete"; labelled: root.labelled; enabled: root.tools.delete; clicked => { root.tool("delete"); } }
+}
+
 // One tab; the strip places and sizes it. The left press activates it (as browsers do), and
 // moving with the button held reports the pointer's x inside the tab, for the strip's reorder.
 component TabButton inherits Rectangle {
@@ -894,6 +966,12 @@ export component Pane inherits Rectangle {
     // Medium tiles in the grid (FileListHost.medium).
     in property <bool> medium: false;
     out property <int> tiles-per-row: list.cols;
+    // The toolbar inside the pane, above the path bar (settings `toolbar = "pane"`), its buttons'
+    // state and tool(name) for a press (main.rs makes the pane active). A sibling of the
+    // list, created only with the setting (dnd.rs PANE_BAR).
+    in property <bool> toolbar: false;
+    in property <ToolState> tools;
+    callback tool(string);
     callback grid-cols(int);
     callback grid-cursor(int);
     // The rubber band (P4-M3, grid only): band-pointer(kind, window x, window y, ctrl, shift) for
@@ -1159,6 +1237,12 @@ export component Pane inherits Rectangle {
                 border-width: 2px;
                 border-color: Palette.accent-background;
             }
+        }
+        if root.toolbar: Toolbar {
+            height: 28px;
+            tools: root.tools;
+            labelled: false;
+            tool(c) => { root.tool(c); }
         }
         // Same height whichever mode shows, so the list's top does not move (dnd.rs LIST_TOP).
         Rectangle {

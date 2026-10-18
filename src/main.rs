@@ -22,6 +22,7 @@ mod shellmenu;
 mod sidebar;
 mod statusbar;
 mod tabs;
+mod toolbar;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fileops::{Job, Outcome, clipboard, same_dir};
@@ -227,6 +228,9 @@ struct State {
     cut_source: Option<(usize, u64)>,
     /// The clipboard's sequence number right after TwinFM's last copy or cut.
     clip_seq: u32,
+    /// The clipboard holds files (`CF_HDROP`): what the toolbar's Paste needs. Read at start and on
+    /// every `WM_CLIPBOARDUPDATE` (P6-M3).
+    clip_files: bool,
     /// Ctrl+Z's record, newest last, shared by both panes (`fileops::undo`).
     undo: Vec<fileops::undo::Record>,
     /// Ctrl+Y's record, fed by completed undo jobs and cleared by the next new job.
@@ -640,6 +644,45 @@ fn update_status(st: &State, app: &App, pane: usize) {
         right: statusbar::free_text(t.free).into(),
     };
     if pane == 0 { app.set_left_status(s) } else { app.set_right_status(s) }
+    update_tools(st, app, pane);
+}
+
+/// The pane's toolbar buttons, from what its status bar shows (where the tab is, its selection)
+/// and the clipboard; set only when they change, in `update_status`'s rhythm (P6-M3).
+fn update_tools(st: &State, app: &App, pane: usize) {
+    let path = st.tab(pane).path.to_string_lossy();
+    let place = if is_this_pc(&path) {
+        toolbar::Place::ThisPc
+    } else if st.is_search(pane) {
+        toolbar::Place::Search
+    } else if in_archive(st, pane) {
+        toolbar::Place::Archive
+    } else {
+        toolbar::Place::Folder
+    };
+    let tools = toolbar::state(place, st.model(pane).selected_count(), st.clip_files);
+    let now = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
+    if now != tools {
+        if pane == 0 { app.set_left_tools(tools) } else { app.set_right_tools(tools) }
+    }
+}
+
+/// A toolbar button (P6-M3): the pane becomes active and the button runs its key's command, so
+/// there is one path per command. The list takes the keys after it, except after the three
+/// buttons that open the name editor, which takes them itself: the list's focus request lands a
+/// moment later (a `changed` handler) and would close the editor again.
+fn toolbar_clicked(pane: usize, button: &str) {
+    let Some(cmd) = toolbar::command(button) else {
+        return eprintln!("[toolbar] pane={pane} no button {button}");
+    };
+    eprintln!("[toolbar] pane={pane} {button} -> {cmd}");
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    if matches!(cmd, "rename" | "newfile" | "newfolder") {
+        app.set_active_pane(pane as i32);
+    } else {
+        app.invoke_focus_pane(pane as i32);
+    }
+    command(pane, cmd);
 }
 
 /// The running job's percentage for a tab's status bar: only on the pane and tab that submitted
@@ -3309,6 +3352,8 @@ pub fn window_layout(app: &App) -> dnd::Layout {
             app.get_right_grid().then(|| app.get_right_grid_cols().max(1) as usize),
         ],
         tile: [icons::TileGeom::of(app.get_left_medium()), icons::TileGeom::of(app.get_right_medium())],
+        top: if app.get_toolbar() == settings::Toolbar::Top.index() { dnd::TOP_BAR } else { 0.0 },
+        bar: if app.get_toolbar() == settings::Toolbar::Pane.index() { dnd::PANE_BAR } else { 0.0 },
     }
 }
 
@@ -3551,7 +3596,7 @@ pub fn side_row_centre(i: i32) -> Option<f32> {
         let rows = side_rows(st, &app);
         let i = if i < 0 { rows.len().checked_sub(i.unsigned_abs() as usize)? } else { i as usize };
         let h = rows.get(i)?.0;
-        Some(dnd::SIDE_TOP + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
+        Some(dnd::side_top(&window_layout(&app)) + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
     })
 }
 
@@ -4241,6 +4286,16 @@ pub fn crumb_menu_index(name: &str) -> Option<usize> {
 /// TwinFM's own write and rows show as cut, the cut is no longer on the clipboard: clear them.
 pub fn clipboard_changed() {
     with_state(|st| {
+        // Paste applies with files on the clipboard (the toolbar), whoever put them there.
+        let files = toolbar::clipboard_has_files();
+        if files != st.clip_files {
+            st.clip_files = files;
+            eprintln!("[toolbar] clipboard {} files", if files { "holds" } else { "holds no" });
+            if let Some(app) = st.app.upgrade() {
+                update_tools(st, &app, 0);
+                update_tools(st, &app, 1);
+            }
+        }
         if clipboard::taken_from_cut(clipboard::sequence(), st.clip_seq, st.cut_source.is_some()) {
             clear_cuts(st);
             eprintln!("[clipboard] another program took the clipboard: cut marks cleared");
@@ -4546,6 +4601,7 @@ fn settings_open() {
             thumbnails: st.config.thumbnails,
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
+            toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
         };
         st.dialog = Some(d.clone());
         let note = match &st.config_path {
@@ -4568,6 +4624,7 @@ fn settings_open() {
     app.set_dlg_thumbnails(d.thumbnails);
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
+    app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
     // Outside the state borrow: showing the popup moves keyboard focus.
@@ -4592,6 +4649,7 @@ fn settings_closed(ok: bool) {
         thumbnails: app.get_dlg_thumbnails(),
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
+        toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
     }
     .normalized();
     let changes = opened.changes(&staged);
@@ -4627,6 +4685,11 @@ fn settings_closed(ok: bool) {
                 }
             }
             "path_bar" => app.set_path_entry_sticky(staged.path_bar == "entry"),
+            "toolbar" => {
+                let t = settings::Toolbar::from_name(&staged.toolbar);
+                app.set_toolbar(t.index());
+                with_state(|st| st.config.toolbar = t.name().into());
+            }
             _ => {}
         }
     }
@@ -4814,6 +4877,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_sidebar_width(config.sidebar_width);
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
+    app.set_toolbar(settings::Toolbar::from_name(&config.toolbar).index());
     app.set_show_type(config.show_type);
     app.set_thumbnails(config.thumbnails);
     if config.thumbnails {
@@ -4856,6 +4920,7 @@ fn main() -> Result<(), slint::PlatformError> {
             jobs: HashMap::new(),
             cut_source: None,
             clip_seq: 0,
+            clip_files: toolbar::clipboard_has_files(),
             undo: Vec::new(),
             redo: Vec::new(),
             progress: None,
@@ -5019,6 +5084,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_context_menu(|pane, row, x, y, extended| context_menu(pane as usize, row, x, y, extended));
     app.on_context_key(|pane, row, lx, ly, cy, vh| context_key(pane as usize, row, lx, ly, cy, vh));
     app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
+    app.on_toolbar_clicked(|pane, button| toolbar_clicked(pane as usize, button.as_str()));
     app.on_edit_commit(|pane, mode, original, typed| edit_commit(pane as usize, mode, original.as_str(), typed.as_str()));
     app.on_tab_select(|pane, i| {
         if let Ok(i) = usize::try_from(i) {

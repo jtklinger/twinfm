@@ -121,6 +121,10 @@ pub struct Config {
     pub sidebar_width: f32,
     /// "breadcrumb" or "entry" (the text entry for good).
     pub path_bar: String,
+    /// Where the toolbar is (P6-M3): "top" (labelled, across the window, acting on the active
+    /// pane), "pane" (icons only, inside each pane above its path bar) or "none". Missing in an
+    /// older file: top. Anything else reads as top.
+    pub toolbar: String,
     /// Restored only when its title bar would be on a monitor.
     pub window: Option<WindowGeom>,
     /// Bookmarked folders in sidebar order, as `[[bookmark]]` tables with `path` and an optional
@@ -173,6 +177,7 @@ impl Default for Config {
             sidebar_visible: true,
             sidebar_width: 180.0,
             path_bar: "breadcrumb".into(),
+            toolbar: "top".into(),
             window: None,
             bookmarks: Vec::new(),
             legacy_bookmarks: Vec::new(),
@@ -274,6 +279,50 @@ impl Config {
     }
 }
 
+/// Where the toolbar is (`Config::toolbar`; the app's `toolbar` property is `index`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Toolbar {
+    None,
+    Top,
+    Pane,
+}
+
+impl Toolbar {
+    /// "none" and "pane" as written; anything else (a missing key, a typo) the default, top.
+    pub fn from_name(s: &str) -> Toolbar {
+        match s {
+            "none" => Toolbar::None,
+            "pane" => Toolbar::Pane,
+            _ => Toolbar::Top,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Toolbar::None => "none",
+            Toolbar::Top => "top",
+            Toolbar::Pane => "pane",
+        }
+    }
+
+    /// The app's `toolbar` property and the dialog's choice: 0 none, 1 top, 2 in each pane.
+    pub fn index(self) -> i32 {
+        match self {
+            Toolbar::None => 0,
+            Toolbar::Top => 1,
+            Toolbar::Pane => 2,
+        }
+    }
+
+    pub fn from_index(i: i32) -> Toolbar {
+        match i {
+            0 => Toolbar::None,
+            2 => Toolbar::Pane,
+            _ => Toolbar::Top,
+        }
+    }
+}
+
 /// The settings file's name for a sort column, and back (anything unknown sorts by name).
 pub fn sort_name(c: crate::model::SortCol) -> &'static str {
     use crate::model::SortCol;
@@ -315,6 +364,8 @@ pub struct Dialog {
     pub sidebar_visible: bool,
     /// "breadcrumb" or "entry", as in `Config::path_bar`.
     pub path_bar: String,
+    /// "top", "pane" or "none", as in `Config::toolbar`.
+    pub toolbar: String,
 }
 
 impl Dialog {
@@ -329,7 +380,7 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 12] {
+    fn fields(&self) -> [(&'static str, String); 13] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
@@ -343,6 +394,7 @@ impl Dialog {
             ("thumbnails", self.thumbnails.to_string()),
             ("sidebar_visible", self.sidebar_visible.to_string()),
             ("path_bar", self.path_bar.clone()),
+            ("toolbar", self.toolbar.clone()),
         ]
     }
 
@@ -658,9 +710,10 @@ show_type = false
             thumbnails: false,
             sidebar_visible: true,
             path_bar: "breadcrumb".into(),
+            toolbar: "top".into(),
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), toolbar: "pane".into(), ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
@@ -670,6 +723,7 @@ show_type = false
                 ("show_type", "true".into(), "false".into()),
                 ("thumbnails", "false".into(), "true".into()),
                 ("path_bar", "breadcrumb".into(), "entry".into()),
+                ("toolbar", "top".into(), "pane".into()),
             ]
         );
         // Start folders: trimmed; an empty left one is the default, so blanking it changes nothing.
@@ -679,6 +733,20 @@ show_type = false
         // A folder that does not exist is accepted as typed.
         let missing = Dialog { start_left: r"Q:\nowhere".into(), ..open.clone() }.normalized();
         assert_eq!(open.changes(&missing), vec![("start_left", r"C:\".into(), r"Q:\nowhere".into())]);
+    }
+
+    #[test]
+    fn toolbar_defaults_to_top_and_round_trips() {
+        assert_eq!(Toolbar::from_name(&Config::default().toolbar), Toolbar::Top);
+        // A file from before P6-M3 has no key: top.
+        assert_eq!(Config::parse("split = true\n").unwrap().toolbar, "top");
+        for t in [Toolbar::None, Toolbar::Top, Toolbar::Pane] {
+            assert_eq!(Toolbar::from_name(t.name()), t);
+            assert_eq!(Toolbar::from_index(t.index()), t);
+            let c = Config { toolbar: t.name().into(), ..Config::default() };
+            assert_eq!(Config::parse(&c.to_toml()).unwrap(), c);
+        }
+        assert_eq!(Toolbar::from_name("left"), Toolbar::Top, "anything else is the default");
     }
 
     #[test]

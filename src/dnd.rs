@@ -333,6 +333,11 @@ pub struct Layout {
     pub grid: [Option<usize>; 2],
     /// Each pane's tiles in the grid (large or medium, `icons::TileGeom`; P6-M2).
     pub tile: [crate::icons::TileGeom; 2],
+    /// Where the sidebar and the panes start: under the toolbar across the window (`TOP_BAR`) or
+    /// at 0 (P6-M3).
+    pub top: f32,
+    /// The toolbar inside each pane above its path bar and its spacing (`PANE_BAR`), or 0.
+    pub bar: f32,
 }
 
 impl Layout {
@@ -352,9 +357,25 @@ pub const PANE_PAD: f32 = 3.0;
 /// when the pane has more than one tab.
 pub const TAB_STRIP: f32 = 28.0;
 
+/// The toolbar across the window (app.slint, `toolbar = "top"`): 36 px over the sidebar and the
+/// panes. The toolbar in each pane (`toolbar = "pane"`): 28 px under the tab strip, above the path
+/// bar, and the 2 px layout spacing under it (P6-M3).
+pub const TOP_BAR: f32 = 36.0;
+pub const PANE_BAR: f32 = 30.0;
+
 /// The top of the pane's list, in window px.
 pub fn list_top(l: &Layout, pane: usize) -> f32 {
-    if l.tabs[pane] { LIST_TOP + TAB_STRIP } else { LIST_TOP }
+    l.top + l.bar + if l.tabs[pane] { LIST_TOP + TAB_STRIP } else { LIST_TOP }
+}
+
+/// The top of the panes' tab strips, in window px.
+pub fn tab_top(l: &Layout) -> f32 {
+    l.top + TAB_TOP
+}
+
+/// The top of the sidebar's list, in window px.
+pub fn side_top(l: &Layout) -> f32 {
+    l.top + SIDE_TOP
 }
 
 /// Where a window point lands.
@@ -390,7 +411,7 @@ pub const CRUMB_H: f32 = 26.0;
 
 /// The top of pane `pane`'s breadcrumb buttons, in window px.
 pub fn crumb_top(l: &Layout, pane: usize) -> f32 {
-    PANE_PAD + if l.tabs[pane] { TAB_STRIP } else { 0.0 } + CRUMB_PAD
+    l.top + PANE_PAD + if l.tabs[pane] { TAB_STRIP } else { 0.0 } + l.bar + CRUMB_PAD
 }
 
 /// What `hit_all` needs beyond the panes: the sidebar, the tab strips and the breadcrumbs
@@ -420,14 +441,14 @@ pub fn side_row_top(rows: &[(f32, bool)], i: usize) -> f32 {
 
 /// `hit`, plus the sidebar's rows, the panes' tab strips and their breadcrumbs.
 pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> Spot {
-    if y < 0.0 || y >= l.height || x < 0.0 {
+    if y < l.top || y >= l.height || x < 0.0 {
         return Spot::Outside;
     }
     if x < s.side_w {
-        if y < SIDE_TOP || y >= l.height - SIDE_FOOTER {
+        if y < side_top(l) || y >= l.height - SIDE_FOOTER {
             return Spot::Outside;
         }
-        let ly = y - SIDE_TOP - s.side_scroll;
+        let ly = y - side_top(l) - s.side_scroll;
         let mut top = 0.0;
         for (i, &(h, target)) in s.side_rows.iter().enumerate() {
             if ly >= top && ly < top + h {
@@ -440,7 +461,7 @@ pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len:
     let panes = if l.split { 2 } else { 1 };
     for pane in 0..panes {
         let (a, b) = pane_x(l, pane);
-        if l.tabs[pane] && x >= a + PANE_PAD && x < b - PANE_PAD && y >= TAB_TOP && y < TAB_TOP + TAB_H {
+        if l.tabs[pane] && x >= a + PANE_PAD && x < b - PANE_PAD && y >= tab_top(l) && y < tab_top(l) + TAB_H {
             let (n, w, off) = s.tabs[pane];
             let i = ((x - a - PANE_PAD - off) / w).floor();
             return if w > 0.0 && i >= 0.0 && (i as usize) < n { Spot::Tab(pane, i as usize) } else { Spot::Pane(pane) };
@@ -475,7 +496,7 @@ pub fn pane_x(l: &Layout, pane: usize) -> (f32, f32) {
 /// Hit-test a window point (logical px) against the panes and their rows. `content_y` is each
 /// list's scroll offset (zero or negative), `len` its row count.
 pub fn hit(l: &Layout, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> Spot {
-    if y < 0.0 || y >= l.height {
+    if y < l.top || y >= l.height {
         return Spot::Outside;
     }
     let panes = if l.split { 2 } else { 1 };
@@ -564,7 +585,7 @@ pub enum Edge {
 /// that cannot move where it is.
 pub fn edge_scroll_all(l: &Layout, s: &Strips, x: f32, y: f32) -> Option<Edge> {
     if x >= 0.0 && x < s.side_w {
-        let (top, bottom) = (SIDE_TOP, l.height - SIDE_FOOTER);
+        let (top, bottom) = (side_top(l), l.height - SIDE_FOOTER);
         return if y >= top && y < top + EDGE_PX {
             Some(Edge::Side(-1))
         } else if y >= bottom - EDGE_PX && y < bottom {
@@ -577,7 +598,7 @@ pub fn edge_scroll_all(l: &Layout, s: &Strips, x: f32, y: f32) -> Option<Edge> {
     for pane in 0..panes {
         let (a, b) = pane_x(l, pane);
         let (left, right) = (a + PANE_PAD, b - PANE_PAD);
-        if l.tabs[pane] && x >= left && x < right && y >= TAB_TOP && y < TAB_TOP + TAB_H {
+        if l.tabs[pane] && x >= left && x < right && y >= tab_top(l) && y < tab_top(l) + TAB_H {
             return if x < left + EDGE_PX {
                 Some(Edge::Strip(pane, -1))
             } else if x >= right - EDGE_PX {
@@ -3127,7 +3148,7 @@ mod tests {
 
     #[test]
     fn hit_testing_and_drop_folder() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
         // Rows start at y 63, 22 px each; the list ends 23 px above the bottom (y 577).
@@ -3195,6 +3216,19 @@ mod tests {
         assert_eq!(hit(&tabbed, 100.0, 113.0, none, [5, 7]), Spot::Row(0, 1));
         assert_eq!(hit(&tabbed, 700.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
         assert_eq!((list_top(&tabbed, 0), list_top(&tabbed, 1)), (91.0, 63.0));
+        // The toolbar across the window moves everything down by 36 px and is no target itself;
+        // the one inside each pane moves the path bar and the list by 30 px, not the tab strip
+        // (P6-M3).
+        let top = Layout { top: TOP_BAR, ..tabbed };
+        assert_eq!(hit(&top, 100.0, 20.0, none, [5, 7]), Spot::Outside, "the toolbar");
+        assert_eq!((list_top(&top, 0), list_top(&top, 1)), (127.0, 99.0));
+        assert_eq!(hit(&top, 700.0, 99.0, none, [5, 7]), Spot::Row(1, 0));
+        assert_eq!((tab_top(&top), side_top(&top), crumb_top(&top, 1)), (39.0, 39.0, 42.0));
+        let bar = Layout { bar: PANE_BAR, ..tabbed };
+        assert_eq!((list_top(&bar, 0), list_top(&bar, 1)), (121.0, 93.0));
+        assert_eq!(hit(&bar, 700.0, 92.0, none, [5, 7]), Spot::Pane(1), "the header, under the pane's toolbar");
+        assert_eq!(hit(&bar, 700.0, 93.0, none, [5, 7]), Spot::Row(1, 0));
+        assert_eq!((tab_top(&bar), crumb_top(&bar, 0), crumb_top(&bar, 1)), (3.0, 64.0, 36.0));
         // A sidebar 180 px wide (plus its 4 px edge): the panes start at 184 and split their own width.
         let side = Layout { left: 184.0, ..two };
         assert_eq!(pane_x(&side, 0), (184.0, 589.0));
@@ -3218,7 +3252,7 @@ mod tests {
     #[test]
     fn hit_sidebar_rows_and_tabs() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000.
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
         // Header 26, two drives 24, header 26, a place 24, header 26, a bookmark being renamed 30.
         let rows = [(26.0, false), (24.0, true), (24.0, true), (26.0, false), (24.0, true), (26.0, false), (30.0, true)];
         let s = Strips {
@@ -3273,7 +3307,7 @@ mod tests {
 
     #[test]
     fn auto_scroll_near_the_list_edges() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
         // The list runs from y 63 to 577; the edge zones are 24 px inside it.
         assert_eq!(edge_scroll(&one, 500.0, 63.0), Some((0, -1)), "the top edge scrolls up");
         assert_eq!(edge_scroll(&one, 500.0, 86.9), Some((0, -1)));
@@ -3307,7 +3341,7 @@ mod tests {
     fn auto_scroll_sidebar_and_tab_strip() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000;
         // the right pane shows a strip of 6 tabs of 120 px in its 399 px (720 px of tabs).
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
         let rows = [(26.0, false), (24.0, true)];
         let s = Strips {
             side_w: 180.0,
@@ -3359,7 +3393,7 @@ mod tests {
     fn hit_breadcrumb_crumbs() {
         // One pane from x 0 (no sidebar), 600 px tall; the bar's crumb row reported at offset 0,
         // 900 px of it shown; crumbs "This PC", "C:", "Users" at 0, 70 and 110 in the row.
-        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2] };
+        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
         let crumbs = [(0.0, 54.0), (70.0, 24.0), (110.0, 60.0)];
         let s = Strips { side_w: 0.0, side_scroll: 0.0, side_rows: &[], tabs: [(1, 160.0, 0.0); 2], crumb_row: [(0.0, 900.0), (0.0, 0.0)], crumbs: [&crumbs, &[]] };
         let none = [0.0, 0.0];

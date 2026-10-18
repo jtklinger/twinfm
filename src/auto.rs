@@ -127,6 +127,11 @@
 //!                                    and runs the next steps meanwhile (the edge auto-scroll runs,
 //!                                    a `key Escape` cancels the band; no waitops/waitwatch inside)
 //!   crumb <pane> <index>             breadcrumb button <index> (0 is This PC), through its callback
+//!   toolbar <pane> <button>          a toolbar button (P6-M3: newfile, newfolder, cut, copy, paste,
+//!                                    rename, delete) through the callback a press calls, which makes
+//!                                    the pane active (`[toolbar]` lines);
+//!                                    pressed with the toolbar hidden too, since a button only calls
+//!                                    its key's command; a disabled button is not pressed (logged)
 //!   crumbmenu <pane> <index>         the chevron after crumb <index>: its subfolders in a dropdown
 //!                                    (listed on a worker; sleep before crumbpick)
 //!   crumbpick <name>                 pick the dropdown's folder <name> (the pane navigates there)
@@ -271,6 +276,7 @@ enum Step {
     /// Hover a drag of `paths` at `at` for `ms`, then leave.
     DragOver { at: HoverAt, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
+    Toolbar { pane: usize, button: String },
     CrumbMenu { pane: usize, index: i32 },
     CrumbPick(String),
     CrumbClose,
@@ -444,6 +450,7 @@ fn parse(script: &str) -> Vec<Step> {
                     hold_ms: a.iter().position(|w| &**w == "hold").and_then(|i| a.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0),
                 },
                 "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
+                "toolbar" => Step::Toolbar { pane: num(1) as usize, button: a.get(2).unwrap_or(&"").to_string() },
                 "crumbmenu" => Step::CrumbMenu { pane: num(1) as usize, index: num(2) as i32 },
                 "crumbpick" => Step::CrumbPick(a[1..].join(" ")),
                 "crumbclose" => Step::CrumbClose,
@@ -729,7 +736,7 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
             let (left, _) = crate::dnd::pane_x(&l, pane);
             let w = app.invoke_tab_width(pane as i32);
             let x = left + crate::dnd::PANE_PAD + app.invoke_tab_offset(pane as i32) + (index as f32 + 0.5) * w;
-            Some(LogicalPosition::new(x, crate::dnd::TAB_TOP + crate::dnd::TAB_H / 2.0))
+            Some(LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
         DropAt::Crumb(pane, index) => crate::crumb_centre(app, pane, index),
     }
@@ -746,13 +753,13 @@ fn hover_point(app: &App, at: HoverAt) -> Option<LogicalPosition> {
         }
         HoverAt::At(spot) => drop_point(app, spot),
         HoverAt::Side(top) => {
-            let y = if top { crate::dnd::SIDE_TOP + 6.0 } else { l.height - crate::dnd::SIDE_FOOTER - 6.0 };
+            let y = if top { crate::dnd::side_top(&l) + 6.0 } else { l.height - crate::dnd::SIDE_FOOTER - 6.0 };
             app.get_sidebar_visible().then(|| LogicalPosition::new(app.get_sidebar_width() / 2.0, y))
         }
         HoverAt::Strip(pane, right) => {
             let (a, b) = crate::dnd::pane_x(&l, pane);
             let x = if right { b - crate::dnd::PANE_PAD - 6.0 } else { a + crate::dnd::PANE_PAD + 6.0 };
-            l.tabs[pane].then(|| LogicalPosition::new(x, crate::dnd::TAB_TOP + crate::dnd::TAB_H / 2.0))
+            l.tabs[pane].then(|| LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
     }
 }
@@ -1077,6 +1084,24 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::Crumb { pane, index } => {
             app.invoke_crumb_clicked(pane as i32, index);
+            schedule(runner, 1);
+        }
+        Step::Toolbar { pane, button } => {
+            let t = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
+            let enabled = match button.as_str() {
+                "newfile" | "newfolder" => t.new,
+                "cut" => t.cut,
+                "copy" => t.copy,
+                "paste" => t.paste,
+                "rename" => t.rename,
+                "delete" => t.delete,
+                _ => true,
+            };
+            if enabled {
+                app.invoke_toolbar_clicked(pane as i32, button.as_str().into());
+            } else {
+                eprintln!("[auto] toolbar pane={pane} {button}: disabled, not pressed");
+            }
             schedule(runner, 1);
         }
         Step::CrumbMenu { pane, index } => {
