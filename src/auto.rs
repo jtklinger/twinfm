@@ -141,7 +141,9 @@
 //!   crumbclose                       close the dropdown (as Escape does)
 //!   pathmode <pane> <entry|crumb>    the path bar as text entry (as Ctrl+L) or back to the breadcrumb
 //!   sidebar toggle                   F9: show or hide the sidebar
-//!   sidebar click <row>              sidebar row <row> (headers count; 0 is "Drives"), through its callback
+//!   sidebar click <row>              sidebar row <row> (headers count; 0 is "Drives"; -1 the last row), as a left click: the
+//!                                    sidebar takes the keys (P6-M3: `key F2` then opens a bookmark's
+//!                                    title editor, `key Escape` gives the keys back to the list)
 //!   bookmark add                     Ctrl+D: bookmark the active tab's folder
 //!   bookmark remove <index>          the bookmark menu's "Remove bookmark" for bookmark <index>
 //!   bookmark rename <index> <title>  what the bookmark row's title editor commits (an empty title
@@ -1210,7 +1212,9 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             schedule(runner, 1);
         }
         Step::SideClick(row) => {
-            app.invoke_side_clicked(row, false);
+            // A negative row counts from the end (-1: the last row, the newest bookmark).
+            let row = if row < 0 { slint::Model::row_count(&app.get_side_items()) as i32 + row } else { row };
+            app.invoke_side_click(row);
             schedule(runner, 1);
         }
         Step::BookmarkRemove(i) => {

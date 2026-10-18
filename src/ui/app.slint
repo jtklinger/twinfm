@@ -14,6 +14,8 @@ component SideRow inherits Rectangle {
     in property <SideItem> item;
     // The row's inline title editor is open ("Rename bookmark").
     in property <bool> editing;
+    // The row was clicked last and the sidebar has the keys (F2 renames a bookmark row).
+    in property <bool> current;
     // clicked(middle): the left or the middle button released over the row.
     callback clicked(bool);
     // menu(x, y): the right button released over a bookmark, at window coordinates.
@@ -22,7 +24,7 @@ component SideRow inherits Rectangle {
     callback renamed(string);
     callback edit-cancelled(bool);
     height: item.kind == 0 ? 26px : (root.editing ? 30px : 24px);
-    background: item.kind != 0 && ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+    background: root.current ? Palette.accent-background.transparentize(60%) : item.kind != 0 && ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
     accessible-role: list-item;
     accessible-label: item.label;
     HorizontalLayout {
@@ -258,6 +260,17 @@ export component App inherits Window {
     // editor is open (-1: none).
     in property <int> bookmark-count;
     in-out property <int> side-edit: -1;
+    // The sidebar row clicked last (-1: none). A left click on a row gives the sidebar the keys,
+    // as Explorer's navigation pane takes them (P6-M3): F2 on a bookmark opens its title editor,
+    // Escape and Tab give the keys back to the active pane's list, and a click in a list takes them.
+    private property <int> side-current: -1;
+    // A sidebar row's left click (and the driver's `sidebar click`): the row becomes current, the
+    // sidebar takes the keys, the row's folder opens in the active pane.
+    public function side-click(i: int) {
+        root.side-current = i;
+        side-keys.focus();
+        root.side-clicked(i, false);
+    }
     // The name filter in each pane (pane.slint): whether its box shows and its text, set from Rust
     // on a tab switch and a navigation. filter-edited(pane, text): an edit (applied 150 ms after the
     // last one); filter-apply(pane, text): Return or Down in the box (at once; with a search waiting
@@ -496,6 +509,23 @@ export component App inherits Window {
             // The renderer draws the whole window every frame; cached as one texture, the sidebar
             // costs a blit while the panes scroll and is redrawn only when its own properties change.
             cache-rendering-hint: true;
+            side-keys := FocusScope {
+                width: 0px;
+                height: 0px;
+                key-pressed(e) => {
+                    if (e.text == Key.F2) {
+                        if (root.side-current >= 0 && root.side-current < root.side-items.length && root.side-items[root.side-current].kind == 3) {
+                            root.side-edit = root.side-current;
+                        }
+                        return accept;
+                    }
+                    if (e.text == Key.Escape || e.text == Key.Tab) {
+                        root.focus-pane(root.active-pane);
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
             VerticalLayout {
                 padding-top: 3px;
                 side-list := ListView {
@@ -503,7 +533,10 @@ export component App inherits Window {
                     for item[i] in root.side-items: SideRow {
                         item: item;
                         editing: i == root.side-edit;
-                        clicked(middle) => { root.side-clicked(i, middle); }
+                        current: i == root.side-current && side-keys.has-focus;
+                        clicked(middle) => {
+                            if (middle) { root.side-clicked(i, true); } else { root.side-click(i); }
+                        }
                         menu(x, y) => {
                             root.menu-index = item.index;
                             root.menu-row = i;
