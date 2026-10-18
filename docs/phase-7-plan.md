@@ -409,6 +409,62 @@ against the reference's spread, as the protocol says. Each settings run's stderr
 read and its view. Console check after the triplet (Jeremy, unelevated, `target-p7m1` at 3f8e786):
 a double-click on an unselected folder opens it in the large and the medium icon views.
 
+P7-M1 merged 2026-10-18 as a6391c8 (#63); `target\release` rebuilt from it. The reference for
+P7-M2 is `target-p7m1` (3f8e786); `target-p6m2` deleted.
+
+## P7-M2: the Windows 11 style context menu
+
+Branch `feat/p7-m2-win11-menu`, from a6391c8.
+
+### Settled first (2026-10-18, before any code)
+
+Checked against the machine and the code first:
+
+- **The packaged apps' items can be found.** Each package declares them in its manifest
+  (`AppxManifest.xml`, `desktop4:Extension Category="windows.fileExplorerContextMenus"`): an
+  `ItemType` (`*`, an extension, `Directory`, `Directory\Background`) and per verb a `Clsid`, the
+  packaged COM class that implements `IExplorerCommand`. On this machine 11 packages declare them
+  (Windows Terminal, Notepad, Paint, Photos, OneDrive, three PowerToys, Python's manager, Nearby
+  Share, AMD's). TwinFM reads the manifests once at start on a worker (the installed packages and
+  their paths from the package registry) and creates each class with `CoCreateInstance` when a menu
+  opens, as Explorer's new menu does; a package change re-reads them.
+- **Slint draws TwinFM's popups inside the main window.** With the breadcrumb dropdown open
+  TwinFM still has one top-level window (`EnumWindows`: the main window, winit's event target, the
+  pseudo-console), so this Slint build puts a `PopupWindow` in the window (`ChildWindow`), clipped
+  to its edges.
+
+Then put to Jeremy with a recommendation, his answers:
+
+- **Drawing**: inside the window, as the bookmark menu and the breadcrumb dropdown are; near an
+  edge the menu opens upward or leftward to fit, and in a small window a long menu scrolls.
+  Jeremy: "Inside the window" (the recommendation; a borderless window of its own, which could
+  pass the edge as Explorer's does, was the alternative).
+- **Items**: mirror Explorer's Windows 11 list for the item (the icon row Cut, Copy, Rename,
+  Share, Delete; Open; Open with; the packaged apps' items; Compress to; Copy as path; Properties),
+  with TwinFM's own three (Open in other pane, Open in terminal, Copy path) after Open with, and
+  "Show more options" (Shift+F10) for the rest. Jeremy: "Mirror Explorer", with this layout:
+
+  ```
+  [Cut] [Copy] [Rename] [Share] [Delete]
+  ----------------------------------
+  Open                     Enter
+  Open with              >
+  Open in other pane
+  Open in terminal
+  ----------------------------------
+  Open in Terminal  (app)
+  Edit in Notepad   (app)
+  Compress to...         >
+  Copy path
+  Properties         Alt+Enter
+  ----------------------------------
+  Show more options  Shift+F10
+  ```
+
+- **The classic menu directly**: Shift+right-click (and Shift+F10 inside the new menu) opens
+  today's full classic menu at once, with the extended verbs as Shift gives them today, as in
+  Explorer. Jeremy: "Shift+right-click".
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.
