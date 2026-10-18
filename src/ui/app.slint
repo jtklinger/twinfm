@@ -354,7 +354,17 @@ export component App inherits Window {
     in property <string> crumb-menu-note;
     in property <length> crumb-menu-x;
     in property <length> crumb-menu-y;
-    public function show-crumb-menu() { crumb-menu.show(); }
+    // The dropdown's keyboard (P6-M3): the highlighted folder (-1: none yet; Down enters the list,
+    // Up and Down move along it, Return picks, Escape closes), and a token bumped after each show
+    // so its key scope takes the focus (showing a popup gives the focus to nothing, as with the
+    // settings dialog below).
+    private property <int> crumb-hl: -1;
+    private property <int> crumb-focus-token: 0;
+    public function show-crumb-menu() {
+        crumb-hl = -1;
+        crumb-menu.show();
+        crumb-focus-token += 1;
+    }
     public function close-crumb-menu() { crumb-menu.close(); }
 
     // Ctrl+L, and the driver's `pathmode`: the pane's path bar as text entry or breadcrumb.
@@ -784,11 +794,29 @@ export component App inherits Window {
             border-width: 1px;
             border-color: Palette.border;
             crumb-keys := FocusScope {
-                init => { self.focus(); }
+                property <int> focus-token: root.crumb-focus-token;
+                changed focus-token => { self.focus(); }
                 key-pressed(e) => {
                     if (e.text == Key.Escape) {
                         crumb-menu.close();
                         root.focus-pane(root.active-pane);
+                        return accept;
+                    }
+                    let n = root.crumb-menu-items.length;
+                    if (n > 0 && (e.text == Key.DownArrow || e.text == Key.UpArrow)) {
+                        root.crumb-hl = e.text == Key.DownArrow ? min(n - 1, root.crumb-hl + 1) : max(0, root.crumb-hl - 1);
+                        // Keep the highlighted row in view (22 px rows).
+                        if (crumb-list.content-y + root.crumb-hl * 22px < 0px) {
+                            crumb-list.content-y = -root.crumb-hl * 22px;
+                        }
+                        if (crumb-list.content-y + (root.crumb-hl + 1) * 22px > crumb-list.visible-height) {
+                            crumb-list.content-y = crumb-list.visible-height - (root.crumb-hl + 1) * 22px;
+                        }
+                        return accept;
+                    }
+                    if (e.text == Key.Return && root.crumb-hl >= 0 && root.crumb-hl < n) {
+                        crumb-menu.close();
+                        root.crumb-pick(root.crumb-hl);
                         return accept;
                     }
                     return reject;
@@ -796,13 +824,14 @@ export component App inherits Window {
             }
             VerticalLayout {
                 padding: 4px;
-                ListView {
+                crumb-list := ListView {
                     accessible-label: "Folders";
                     for name[i] in root.crumb-menu-items: Rectangle {
                         height: 22px;
                         accessible-role: list-item;
                         accessible-label: name;
-                        background: pick-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+                        accessible-item-selected: i == root.crumb-hl;
+                        background: i == root.crumb-hl ? Palette.accent-background.transparentize(60%) : pick-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
                         Text { x: 8px; width: parent.width - 12px; text: name; vertical-alignment: center; overflow: elide; }
                         pick-ta := TouchArea {
                             clicked => {
