@@ -391,6 +391,23 @@ Shift+Right ranges, 14 tile drops, drags dropped 0); verbs 14 queued, 7 slept, 7
 routed deletes and restores, 7 cuts cancelled; working set 113.9 MB at 5 s, 217.8 at most and at
 the end.
 
+**Gate ab26** (2026-10-18, the wrapper's second version: 3f8e786 against `target-p6m3`, the
+defaults, grid and medium triplets interleaved; one session state throughout, render p50 1.11 to
+2.49 ms by view and 2.27 to 2.49 for every details run):
+
+| Binary | WPR runs % | Median % | Render p50 ms |
+|---|---|---|---|
+| `target-p6m3` | 20.0, 18.4, 18.8 | 18.8 | 2.27 to 2.36 |
+| `target-p7m1` defaults | 18.2, 18.6, 20.1 | 18.6 | 2.29 to 2.49 |
+| `target-p7m1` grid (`C:\traces\grid.toml`) | 10.9, 10.8, 11.3 | 10.9 | 1.11 to 1.21 |
+| `target-p7m1` medium (`C:\traces\grid-medium.toml`) | 14.2, 14.0, 13.8 | 14.0 | 1.63 to 1.65 |
+
+No gap counts: the defaults runs interleave with the reference's (median 18.6 against 18.8), and
+the grid and medium triplets sit far below it with every run under 20%, as in ab23 (10.3 and 13.5
+in that session). One defaults run read 20.1 against the reference's own 20.0, so the bar is read
+against the reference's spread, as the protocol says. Each settings run's stderr showed its toml
+read and its view.
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.
