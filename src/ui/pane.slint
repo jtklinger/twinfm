@@ -57,6 +57,78 @@ export struct StatusInfo {
     right: string,
 }
 
+// Which toolbar buttons apply to a pane (toolbar.rs `state`, set from Rust in update_status's
+// rhythm, on change only).
+export struct ToolState {
+    new: bool,
+    cut: bool,
+    copy: bool,
+    paste: bool,
+    rename: bool,
+    delete: bool,
+}
+
+// One toolbar button: a Segoe Fluent Icons glyph (the font of Explorer's own command bar, part of
+// Windows 11), with its label beside it in the toolbar across the window. A disabled button is
+// dimmed and takes no clicks.
+component ToolButton inherits Rectangle {
+    in property <string> glyph;
+    in property <string> text;
+    in property <bool> labelled;
+    in property <bool> enabled: true;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: root.text;
+    border-radius: 4px;
+    background: !root.enabled ? transparent : ta.pressed ? Palette.alternate-background.darker(0.1) : ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+    HorizontalLayout {
+        padding-left: root.labelled ? 8px : 6px;
+        padding-right: root.labelled ? 10px : 6px;
+        spacing: 6px;
+        Text {
+            text: root.glyph;
+            font-family: "Segoe Fluent Icons";
+            font-size: 16px;
+            vertical-alignment: center;
+            color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(65%);
+        }
+        if root.labelled: Text {
+            text: root.text;
+            vertical-alignment: center;
+            color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(65%);
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+component ToolSeparator inherits Rectangle {
+    width: 9px;
+    Rectangle { x: 4px; y: 5px; width: 1px; height: parent.height - 10px; background: Palette.border; }
+}
+
+// The toolbar (P6-M3), in its three groups: New file, New folder; Cut, Copy, Paste; Rename, Delete.
+// tool(name) names the button (toolbar.rs `command` maps it to its key's command).
+export component Toolbar inherits HorizontalLayout {
+    in property <ToolState> tools;
+    in property <bool> labelled;
+    callback tool(string);
+    alignment: start;
+    padding: 2px;
+    spacing: 2px;
+    ToolButton { glyph: "\u{E8A5}"; text: "New file"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfile"); } }
+    ToolButton { glyph: "\u{E8F4}"; text: "New folder"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfolder"); } }
+    ToolSeparator { }
+    ToolButton { glyph: "\u{E8C6}"; text: "Cut"; labelled: root.labelled; enabled: root.tools.cut; clicked => { root.tool("cut"); } }
+    ToolButton { glyph: "\u{E8C8}"; text: "Copy"; labelled: root.labelled; enabled: root.tools.copy; clicked => { root.tool("copy"); } }
+    ToolButton { glyph: "\u{E77F}"; text: "Paste"; labelled: root.labelled; enabled: root.tools.paste; clicked => { root.tool("paste"); } }
+    ToolSeparator { }
+    ToolButton { glyph: "\u{E8AC}"; text: "Rename"; labelled: root.labelled; enabled: root.tools.rename; clicked => { root.tool("rename"); } }
+    ToolButton { glyph: "\u{E74D}"; text: "Delete"; labelled: root.labelled; enabled: root.tools.delete; clicked => { root.tool("delete"); } }
+}
+
 // One tab; the strip places and sizes it. The left press activates it (as browsers do), and
 // moving with the button held reports the pointer's x inside the tab, for the strip's reorder.
 component TabButton inherits Rectangle {
@@ -605,7 +677,8 @@ component FileListHost inherits Rectangle {
     // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
     // turns it into the visible row range and fetches icons for it.
     callback viewport-changed(length, length);
-    // File operations on the active pane: copy, move, delete, sdelete, rename, newfolder, cc, cx, cv.
+    // File operations on the active pane: copy, move, delete, sdelete, rename, newfolder, newfile,
+    // cc, cx, cv.
     callback command(string);
     // context-key(row, list x, list y, content-y, visible-height): Shift+F10 or the Menu key, after
     // the cursor row was scrolled into view; Rust places the menu under the row.
@@ -770,12 +843,18 @@ component FileListHost inherits Rectangle {
             root.command("newfolder");
             return EventResult.accept;
         }
+        // Ctrl+Alt+N: a new empty file (P6-M3), named in the editor as a new folder is.
+        if (e.modifiers.control && e.modifiers.alt && !e.modifiers.shift && (e.text == "n" || e.text == "N")) {
+            root.command("newfile");
+            return EventResult.accept;
+        }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "c" || e.text == "C")) { root.command("cc"); return EventResult.accept; }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "x" || e.text == "X")) { root.command("cx"); return EventResult.accept; }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "v" || e.text == "V")) { root.command("cv"); return EventResult.accept; }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "z" || e.text == "Z")) { root.command("undo"); return EventResult.accept; }
-        // Reject after the cancel: the runtime closes the topmost popup (crumb menu, bookmark menu,
-        // About) on an Escape the focused item did not take; accepting it here broke that (P2-M2).
+        // Escape stops a search, cancels queued jobs, or else clears the selection (main.rs). Reject
+        // after it: the runtime closes the topmost popup (crumb menu, bookmark menu, About) on an
+        // Escape the focused item did not take; accepting it here broke that (P2-M2).
         if (e.text == Key.Escape) { root.command("cancelqueued"); return EventResult.reject; }
         if (e.text == " ") { if (root.current-row >= 0) { root.select(1, root.current-row); } return EventResult.accept; }
         if (e.modifiers.control && (e.text == "a" || e.text == "A")) { root.select(3, root.current-row); return EventResult.accept; }
@@ -887,6 +966,13 @@ export component Pane inherits Rectangle {
     // Medium tiles in the grid (FileListHost.medium).
     in property <bool> medium: false;
     out property <int> tiles-per-row: list.cols;
+    // The toolbar inside the pane, at its top above the tab strip and the path bar (settings
+    // `toolbar = "pane"`), its buttons'
+    // state and tool(name) for a press (main.rs makes the pane active). A sibling of the
+    // list, created only with the setting (dnd.rs PANE_BAR).
+    in property <bool> toolbar: false;
+    in property <ToolState> tools;
+    callback tool(string);
     callback grid-cols(int);
     callback grid-cursor(int);
     // The rubber band (P4-M3, grid only): band-pointer(kind, window x, window y, ctrl, shift) for
@@ -933,7 +1019,7 @@ export component Pane inherits Rectangle {
     callback select(int, int);
     callback viewport-changed(length, length);
     callback command(string);
-    // edit-commit(mode, original name, typed name): mode 1 rename, 2 new folder.
+    // edit-commit(mode, original name, typed name): mode 1 rename, 2 new folder, 3 new file.
     callback edit-commit(int, string, string);
     callback context-menu(int, length, length, bool);
     callback context-key(int, length, length, length, length);
@@ -983,7 +1069,8 @@ export component Pane inherits Rectangle {
         list.focus-list();
     }
 
-    // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder.
+    // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder, 3 a new
+    // file.
     in-out property <int> edit-mode: 0;
     private property <string> edit-original;
 
@@ -1016,6 +1103,10 @@ export component Pane inherits Rectangle {
     out property <length> shown-tab-scroll: max(root.tab-scroll-min, min(0px, root.tab-scroll));
     // The tab a left-button drag in the strip is moving (-1: none).
     private property <int> drag-tab: -1;
+    // The strip's width changed (a window resize, the split or the splitter, the sidebar): main.rs
+    // scrolls the active tab back into view (P6-M3). Only while the strip shows.
+    callback strip-resized();
+    changed tab-strip-w => { if (root.tabs.length > 1) { root.strip-resized(); } }
 
     border-width: active ? 2px : 1px;
     border-color: active ? Palette.accent-background : Palette.border;
@@ -1101,6 +1192,14 @@ export component Pane inherits Rectangle {
     VerticalLayout {
         padding: 3px;
         spacing: 2px;
+        // The in-pane toolbar first, above the tab strip, so both panes' bars line up whether or
+        // not a pane shows its strip.
+        if root.toolbar: Toolbar {
+            height: 28px;
+            tools: root.tools;
+            labelled: false;
+            tool(c) => { root.tool(c); }
+        }
         // Not a Flickable: its drag-to-flick would take the presses a tab drag needs.
         if root.tabs.length > 1: Rectangle {
             height: 26px;
@@ -1160,6 +1259,9 @@ export component Pane inherits Rectangle {
                 visible: root.path-entry;
                 x: 0;
                 width: parent.width - 26px - root.filter-w;
+                // Behind the entry, which takes no side button: the mouse's Back or Forward button
+                // over it is ignored, not taken by the pane as a move in the history (P6-M3).
+                TouchArea { }
                 path-edit := LineEdit {
                     width: 100%;
                     height: 100%;
@@ -1481,10 +1583,13 @@ export component Pane inherits Rectangle {
         width: root.grid ? list.tile-w - 4px : max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - (root.show-type ? 350px : 230px) - 12px);
         height: 28px;
         background: Palette.background;
+        // As behind the path entry: Back or Forward over the editor is ignored, not taken by the
+        // row under it (P6-M3).
+        TouchArea { }
         edit := LineEdit {
             width: 100%;
             height: 100%;
-            accessible-label: root.edit-mode == 1 ? "Rename" : "New folder name";
+            accessible-label: root.edit-mode == 1 ? "Rename" : root.edit-mode == 3 ? "New file name" : "New folder name";
             accepted(t) => {
                 root.edit-commit(root.edit-mode, root.edit-original, t);
                 root.end-edit();

@@ -365,6 +365,27 @@ impl TabSizes {
         self.cache.remove(name).is_some()
     }
 
+    /// The tab goes to the background (P6-M3): its finished sizes stay (its watch there is a subtree
+    /// watch while it has any), its walks in flight are cancelled and its out-of-date sizes, which
+    /// would be walked again, are forgotten. Returns both lists of names, for the log.
+    pub fn to_background(&mut self) -> (Vec<String>, Vec<String>) {
+        let mut cancelled: Vec<String> = self
+            .pending
+            .drain()
+            .map(|(n, p)| {
+                p.cancel.store(true, Ordering::Relaxed);
+                n
+            })
+            .collect();
+        cancelled.sort();
+        let mut stale: Vec<String> = self.stale.keys().cloned().collect();
+        stale.sort();
+        for n in &stale {
+            self.forget(n);
+        }
+        (cancelled, stale)
+    }
+
     /// Forget everything: cancel every request (returned, for the log) and empty the cache
     /// (returns how many sizes it held). Bumps the generation.
     pub fn clear(&mut self) -> (usize, Vec<String>) {
@@ -412,6 +433,24 @@ mod tests {
 
     fn write(p: &Path, n: usize) {
         std::fs::write(p, vec![b'x'; n]).unwrap();
+    }
+
+    #[test]
+    fn a_background_tab_keeps_its_finished_sizes() {
+        let mut s = TabSizes::default();
+        let t = |bytes| Totals { bytes, ..Default::default() };
+        s.cache.insert("done".into(), t(10));
+        s.cache.insert("old".into(), t(20));
+        let flag = Arc::new(AtomicBool::new(false));
+        s.pending.insert("walking".into(), Pending { cancel: flag.clone(), partial: t(5), all: false });
+        assert!(s.invalidate("OLD", Instant::now()).is_some());
+        let generation = s.generation;
+        let (cancelled, stale) = s.to_background();
+        assert_eq!((cancelled, stale), (vec!["walking".to_string()], vec!["old".to_string()]));
+        assert!(flag.load(Ordering::Relaxed), "the walk in flight is told to stop");
+        assert_eq!(s.cache.keys().collect::<Vec<_>>(), ["done"], "the finished size stays");
+        assert!(s.any(), "so the background watch stays a subtree watch");
+        assert_eq!(s.generation, generation, "nothing cleared: the cached sizes are still current");
     }
 
     #[test]

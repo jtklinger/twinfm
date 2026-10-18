@@ -1,6 +1,6 @@
-import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow } from "pane.slint";
+import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar } from "pane.slint";
 import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
-export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow }
+export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
 // the bookmark's index in the bookmark list.
@@ -14,6 +14,8 @@ component SideRow inherits Rectangle {
     in property <SideItem> item;
     // The row's inline title editor is open ("Rename bookmark").
     in property <bool> editing;
+    // The row was clicked last and the sidebar has the keys (F2 renames a bookmark row).
+    in property <bool> current;
     // clicked(middle): the left or the middle button released over the row.
     callback clicked(bool);
     // menu(x, y): the right button released over a bookmark, at window coordinates.
@@ -22,7 +24,7 @@ component SideRow inherits Rectangle {
     callback renamed(string);
     callback edit-cancelled(bool);
     height: item.kind == 0 ? 26px : (root.editing ? 30px : 24px);
-    background: item.kind != 0 && ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+    background: root.current ? Palette.accent-background.transparentize(60%) : item.kind != 0 && ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
     accessible-role: list-item;
     accessible-label: item.label;
     HorizontalLayout {
@@ -134,6 +136,15 @@ export component App inherits Window {
     in property <[SideItem]> side-items;
     in-out property <bool> sidebar-visible: true;
     in-out property <length> sidebar-width: 180px;
+    // The toolbar (P6-M3, settings `toolbar`): 0 none, 1 across the window under the title (labelled,
+    // acting on the active pane), 2 inside each pane above its path bar (icons only, acting on that
+    // pane). Each pane's button state (toolbar.rs `state`), and toolbar-clicked(pane, name) for a
+    // press (main.rs makes the pane active and focuses its list, or lets the name editor take it).
+    in property <int> toolbar: 1;
+    in property <ToolState> left-tools;
+    in property <ToolState> right-tools;
+    callback toolbar-clicked(int, string);
+    private property <length> top-h: root.toolbar == 1 ? 36px : 0px;
     // For the About dialog (CARGO_PKG_VERSION).
     in property <string> version;
     // The Type column in both panes (settings `show_type`; set at start and by the dialog).
@@ -221,6 +232,8 @@ export component App inherits Window {
     callback tab-close(int, int);
     // tab-move(pane, from, to): a tab dragged within its strip.
     callback tab-move(int, int, int);
+    // strip-resized(pane): the pane's tab strip changed width; Rust reveals the active tab again.
+    callback strip-resized(int);
     // tab-key(pane, what): for the active pane, Ctrl+T "new", Ctrl+W "close", Ctrl+Tab "next",
     // Ctrl+Shift+Tab "prev", Ctrl+1..9 "1".."9", Ctrl+Shift+PageUp "moveleft",
     // Ctrl+Shift+PageDown "moveright".
@@ -247,6 +260,17 @@ export component App inherits Window {
     // editor is open (-1: none).
     in property <int> bookmark-count;
     in-out property <int> side-edit: -1;
+    // The sidebar row clicked last (-1: none). A left click on a row gives the sidebar the keys,
+    // as Explorer's navigation pane takes them (P6-M3): F2 on a bookmark opens its title editor,
+    // Escape and Tab give the keys back to the active pane's list, and a click in a list takes them.
+    private property <int> side-current: -1;
+    // A sidebar row's left click (and the driver's `sidebar click`): the row becomes current, the
+    // sidebar takes the keys, the row's folder opens in the active pane.
+    public function side-click(i: int) {
+        root.side-current = i;
+        side-keys.focus();
+        root.side-clicked(i, false);
+    }
     // The name filter in each pane (pane.slint): whether its box shows and its text, set from Rust
     // on a tab switch and a navigation. filter-edited(pane, text): an edit (applied 150 ms after the
     // last one); filter-apply(pane, text): Return or Down in the box (at once; with a search waiting
@@ -288,6 +312,9 @@ export component App inherits Window {
     in-out property <string> dlg-start-right;
     in-out property <bool> dlg-hidden-left;
     in-out property <bool> dlg-hidden-right;
+    // Protected operating system files (hidden and system both) per pane, shown with hidden files.
+    in-out property <bool> dlg-protected-left;
+    in-out property <bool> dlg-protected-right;
     // Each pane's view in the dialog: 0 details, 1 large icons, 2 medium icons (ComboBox index).
     in-out property <int> dlg-view-left;
     in-out property <int> dlg-view-right;
@@ -295,6 +322,8 @@ export component App inherits Window {
     in-out property <bool> dlg-thumbnails;
     in-out property <bool> dlg-sidebar;
     in-out property <bool> dlg-crumbs;
+    // The toolbar's place in the dialog: 0 none, 1 top, 2 in each pane (ComboBox index).
+    in-out property <int> dlg-toolbar;
     // "Saved to <file>", or that a scripted run saves nothing.
     in property <string> settings-note;
     private property <bool> settings-shown: false;
@@ -314,20 +343,23 @@ export component App inherits Window {
     public function settings-ok() { finish-settings(true); }
     public function settings-cancel() { finish-settings(false); }
     // What each control calls when the user changes it (and the driver's `settings set`): field
-    // start_left, start_right (a path), hidden_left, hidden_right, type_column, thumbnails, sidebar
-    // ("true" or "false"), path_bar ("entry" or "crumb"), view_left, view_right ("details", "large"
-    // or "medium").
+    // start_left, start_right (a path), hidden_left, hidden_right, protected_left, protected_right,
+    // type_column, thumbnails, sidebar ("true" or "false"), path_bar ("entry" or "crumb"), view_left,
+    // view_right ("details", "large" or "medium"), toolbar ("top", "pane" or "none").
     public function settings-stage(field: string, value: string) {
         if (field == "start_left") { dlg-start-left = value; }
         if (field == "start_right") { dlg-start-right = value; }
         if (field == "hidden_left") { dlg-hidden-left = value == "true"; }
         if (field == "hidden_right") { dlg-hidden-right = value == "true"; }
+        if (field == "protected_left") { dlg-protected-left = value == "true"; }
+        if (field == "protected_right") { dlg-protected-right = value == "true"; }
         if (field == "type_column") { dlg-type-column = value == "true"; }
         if (field == "thumbnails") { dlg-thumbnails = value == "true"; }
         if (field == "sidebar") { dlg-sidebar = value == "true"; }
         if (field == "path_bar") { dlg-crumbs = value != "entry"; }
         if (field == "view_left") { dlg-view-left = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "view_right") { dlg-view-right = value == "medium" ? 2 : value == "large" ? 1 : 0; }
+        if (field == "toolbar") { dlg-toolbar = value == "none" ? 0 : value == "pane" ? 2 : 1; }
     }
 
     // The breadcrumb dropdown's contents and place, set from Rust before show-crumb-menu.
@@ -335,7 +367,17 @@ export component App inherits Window {
     in property <string> crumb-menu-note;
     in property <length> crumb-menu-x;
     in property <length> crumb-menu-y;
-    public function show-crumb-menu() { crumb-menu.show(); }
+    // The dropdown's keyboard (P6-M3): the highlighted folder (-1: none yet; Down enters the list,
+    // Up and Down move along it, Return picks, Escape closes), and a token bumped after each show
+    // so its key scope takes the focus (showing a popup gives the focus to nothing, as with the
+    // settings dialog below).
+    private property <int> crumb-hl: -1;
+    private property <int> crumb-focus-token: 0;
+    public function show-crumb-menu() {
+        crumb-hl = -1;
+        crumb-menu.show();
+        crumb-focus-token += 1;
+    }
     public function close-crumb-menu() { crumb-menu.close(); }
 
     // Ctrl+L, and the driver's `pathmode`: the pane's path bar as text entry or breadcrumb.
@@ -448,13 +490,42 @@ export component App inherits Window {
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "d" || e.text == "D")) { root.bookmark-add(); return accept; }
             return reject;
         }
+        // The toolbar across the window, over the sidebar and the panes (dnd.rs TOP_BAR).
+        if root.toolbar == 1: Rectangle {
+            x: 0; y: 0; width: parent.width; height: root.top-h;
+            background: Palette.alternate-background;
+            Toolbar {
+                x: 4px; y: 2px; height: parent.height - 4px;
+                tools: root.split && root.active-pane == 1 ? root.right-tools : root.left-tools;
+                labelled: true;
+                tool(c) => { root.toolbar-clicked(root.split && root.active-pane == 1 ? 1 : 0, c); }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
+        }
         sidebar := Rectangle {
             visible: sidebar-visible;
-            x: 0; y: 0; width: sidebar-width; height: parent.height;
+            x: 0; y: root.top-h; width: sidebar-width; height: parent.height - root.top-h;
             background: Palette.alternate-background;
             // The renderer draws the whole window every frame; cached as one texture, the sidebar
             // costs a blit while the panes scroll and is redrawn only when its own properties change.
             cache-rendering-hint: true;
+            side-keys := FocusScope {
+                width: 0px;
+                height: 0px;
+                key-pressed(e) => {
+                    if (e.text == Key.F2) {
+                        if (root.side-current >= 0 && root.side-current < root.side-items.length && root.side-items[root.side-current].kind == 3) {
+                            root.side-edit = root.side-current;
+                        }
+                        return accept;
+                    }
+                    if (e.text == Key.Escape || e.text == Key.Tab) {
+                        root.focus-pane(root.active-pane);
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
             VerticalLayout {
                 padding-top: 3px;
                 side-list := ListView {
@@ -462,7 +533,10 @@ export component App inherits Window {
                     for item[i] in root.side-items: SideRow {
                         item: item;
                         editing: i == root.side-edit;
-                        clicked(middle) => { root.side-clicked(i, middle); }
+                        current: i == root.side-current && side-keys.has-focus;
+                        clicked(middle) => {
+                            if (middle) { root.side-clicked(i, true); } else { root.side-click(i); }
+                        }
                         menu(x, y) => {
                             root.menu-index = item.index;
                             root.menu-row = i;
@@ -541,7 +615,7 @@ export component App inherits Window {
         // Drag the sidebar's right edge to resize it.
         Rectangle {
             visible: sidebar-visible;
-            x: sidebar-width; y: 0; width: 4px; height: parent.height;
+            x: sidebar-width; y: root.top-h; width: 4px; height: parent.height - root.top-h;
             background: side-ta.has-hover || side-ta.pressed ? Palette.accent-background : Palette.border;
             side-ta := TouchArea {
                 mouse-cursor: col-resize;
@@ -556,15 +630,15 @@ export component App inherits Window {
         // The collapsed sidebar: a strip that brings it back.
         Rectangle {
             visible: !sidebar-visible;
-            x: 0; y: 0; width: 12px; height: parent.height;
+            x: 0; y: root.top-h; width: 12px; height: parent.height - root.top-h;
             background: show-ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background;
             Text { y: 6px; text: "\u{00bb}"; horizontal-alignment: center; }
             show-ta := TouchArea { clicked => { root.toggle-sidebar(); } }
         }
         // The two panes and the split line, right of the sidebar (dnd.rs Layout.left).
         panes := Rectangle {
-            x: sidebar-visible ? sidebar-width + 4px : 12px; y: 0;
-            width: parent.width - self.x; height: parent.height;
+            x: sidebar-visible ? sidebar-width + 4px : 12px; y: root.top-h;
+            width: parent.width - self.x; height: parent.height - root.top-h;
             left := Pane {
                 x: 0; y: 0; height: parent.height;
                 width: split ? parent.width * split-ratio - 3px : parent.width;
@@ -576,6 +650,7 @@ export component App inherits Window {
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
                 tab-move(f, t) => { root.tab-move(0, f, t); }
+                strip-resized => { root.strip-resized(0); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(0, i, x, y); }
                 crumb-geometry(i, x, w) => { root.crumb-geometry(0, i, x, w); }
@@ -613,6 +688,9 @@ export component App inherits Window {
                 filter-edited(t) => { root.filter-edited(0, t); }
                 filter-apply(t) => { root.filter-apply(0, t); }
                 filter-clear => { root.filter-clear(0); }
+                toolbar: root.toolbar == 2;
+                tools: root.left-tools;
+                tool(c) => { root.toolbar-clicked(0, c); }
             }
             right := Pane {
                 visible: split;
@@ -626,6 +704,7 @@ export component App inherits Window {
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
                 tab-move(f, t) => { root.tab-move(1, f, t); }
+                strip-resized => { root.strip-resized(1); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(1, i, x, y); }
                 crumb-geometry(i, x, w) => { root.crumb-geometry(1, i, x, w); }
@@ -663,6 +742,9 @@ export component App inherits Window {
                 filter-edited(t) => { root.filter-edited(1, t); }
                 filter-apply(t) => { root.filter-apply(1, t); }
                 filter-clear => { root.filter-clear(1); }
+                toolbar: root.toolbar == 2;
+                tools: root.right-tools;
+                tool(c) => { root.toolbar-clicked(1, c); }
             }
             splitter := Rectangle {
                 visible: split;
@@ -745,11 +827,29 @@ export component App inherits Window {
             border-width: 1px;
             border-color: Palette.border;
             crumb-keys := FocusScope {
-                init => { self.focus(); }
+                property <int> focus-token: root.crumb-focus-token;
+                changed focus-token => { self.focus(); }
                 key-pressed(e) => {
                     if (e.text == Key.Escape) {
                         crumb-menu.close();
                         root.focus-pane(root.active-pane);
+                        return accept;
+                    }
+                    let n = root.crumb-menu-items.length;
+                    if (n > 0 && (e.text == Key.DownArrow || e.text == Key.UpArrow)) {
+                        root.crumb-hl = e.text == Key.DownArrow ? min(n - 1, root.crumb-hl + 1) : max(0, root.crumb-hl - 1);
+                        // Keep the highlighted row in view (22 px rows).
+                        if (crumb-list.content-y + root.crumb-hl * 22px < 0px) {
+                            crumb-list.content-y = -root.crumb-hl * 22px;
+                        }
+                        if (crumb-list.content-y + (root.crumb-hl + 1) * 22px > crumb-list.visible-height) {
+                            crumb-list.content-y = crumb-list.visible-height - (root.crumb-hl + 1) * 22px;
+                        }
+                        return accept;
+                    }
+                    if (e.text == Key.Return && root.crumb-hl >= 0 && root.crumb-hl < n) {
+                        crumb-menu.close();
+                        root.crumb-pick(root.crumb-hl);
                         return accept;
                     }
                     return reject;
@@ -757,13 +857,14 @@ export component App inherits Window {
             }
             VerticalLayout {
                 padding: 4px;
-                ListView {
+                crumb-list := ListView {
                     accessible-label: "Folders";
                     for name[i] in root.crumb-menu-items: Rectangle {
                         height: 22px;
                         accessible-role: list-item;
                         accessible-label: name;
-                        background: pick-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+                        accessible-item-selected: i == root.crumb-hl;
+                        background: i == root.crumb-hl ? Palette.accent-background.transparentize(60%) : pick-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
                         Text { x: 8px; width: parent.width - 12px; text: name; vertical-alignment: center; overflow: elide; }
                         pick-ta := TouchArea {
                             clicked => {
@@ -790,9 +891,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 368px) / 2);
+        y: max(10px, (root.height - 444px) / 2);
         width: 480px;
-        height: 368px;
+        height: 444px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Palette.background;
@@ -853,6 +954,24 @@ export component App inherits Window {
                             }
                         }
                         Row {
+                            Text { text: "Protected files"; vertical-alignment: center; }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                CheckBox {
+                                    text: "Left pane";
+                                    checked: root.dlg-protected-left;
+                                    accessible-label: "Show protected operating system files in the left pane";
+                                    toggled => { root.settings-stage("protected_left", self.checked ? "true" : "false"); }
+                                }
+                                CheckBox {
+                                    text: "Right pane";
+                                    checked: root.dlg-protected-right;
+                                    accessible-label: "Show protected operating system files in the right pane";
+                                    toggled => { root.settings-stage("protected_right", self.checked ? "true" : "false"); }
+                                }
+                            }
+                        }
+                        Row {
                             Text { text: "View"; vertical-alignment: center; }
                             HorizontalLayout {
                                 spacing: 12px;
@@ -895,6 +1014,15 @@ export component App inherits Window {
                                 checked: root.dlg-sidebar;
                                 accessible-label: "Show the sidebar";
                                 toggled => { root.settings-stage("sidebar", self.checked ? "true" : "false"); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Toolbar"; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["None", "Across the top", "In each pane"];
+                                current-index: root.dlg-toolbar;
+                                accessible-label: "Toolbar";
+                                selected => { root.settings-stage("toolbar", self.current-index == 0 ? "none" : self.current-index == 2 ? "pane" : "top"); }
                             }
                         }
                         Row {

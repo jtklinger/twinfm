@@ -81,17 +81,23 @@ pub struct Config {
     /// the left one. A command-line path replaces the left pane's tabs.
     pub start_left: String,
     pub start_right: String,
-    /// Each pane's tabs, left to right, as folder paths (`left_tabs = ["C:\\", "D:\\work"]`), and
-    /// the index of its active tab (`left_active = 1`), as TwinFM last saved them. Empty or
-    /// missing: the pane opens one tab on its start folder, so a file from before tabs were
-    /// saved still works. The right pane's tabs are restored only when the split is.
-    pub left_tabs: Vec<String>,
+    /// Each pane's tabs, left to right, as `[[left_tabs]]` tables (`SavedTab`: the folder, and
+    /// since P6-M3 its sort, hidden files, cursor and scroll), and the index of its active tab
+    /// (`left_active = 1`), as TwinFM last saved them. A bare list of paths (`left_tabs = ["C:\\"]`,
+    /// before P6-M3) still loads. Empty or missing: the pane opens one tab on its start folder.
+    /// The right pane's tabs are restored only when the split is.
+    pub left_tabs: Vec<SavedTab>,
     pub left_active: usize,
-    pub right_tabs: Vec<String>,
+    pub right_tabs: Vec<SavedTab>,
     pub right_active: usize,
-    /// New tabs in each pane show hidden and system files (Ctrl+H sets it for its pane).
+    /// New tabs in each pane show files with the hidden attribute (Ctrl+H sets it for its pane).
     pub show_hidden_left: bool,
     pub show_hidden_right: bool,
+    /// Each pane shows protected operating system files (hidden and system both) while it shows
+    /// hidden files (P6-M3; the settings dialog only). A file with the system attribute alone is
+    /// always shown. Missing in an older file: off.
+    pub show_protected_left: bool,
+    pub show_protected_right: bool,
     /// The second pane is open, and the split line's position (0.15 to 0.85 of the panes' width).
     pub split: bool,
     pub split_ratio: f32,
@@ -116,6 +122,10 @@ pub struct Config {
     pub sidebar_width: f32,
     /// "breadcrumb" or "entry" (the text entry for good).
     pub path_bar: String,
+    /// Where the toolbar is (P6-M3): "top" (labelled, across the window, acting on the active
+    /// pane), "pane" (icons only, inside each pane above its path bar) or "none". Missing in an
+    /// older file: top. Anything else reads as top.
+    pub toolbar: String,
     /// Restored only when its title bar would be on a monitor.
     pub window: Option<WindowGeom>,
     /// Bookmarked folders in sidebar order, as `[[bookmark]]` tables with `path` and an optional
@@ -126,6 +136,62 @@ pub struct Config {
     /// `[[bookmark]]` entries when loaded, never written.
     #[serde(rename = "bookmarks", skip_serializing)]
     pub legacy_bookmarks: Vec<String>,
+}
+
+/// One saved tab (P6-M3): its folder and, when TwinFM saved them, its sort (`sort_name`), its
+/// hidden-file switch, the name of its cursor row and its list's scroll offset (logical px, zero or
+/// negative). A missing field (a bare path from an older file) takes the default a new tab has.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "TabEntry")]
+pub struct SavedTab {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ascending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<f32>,
+}
+
+impl SavedTab {
+    /// A tab that is only a folder (an old entry, a start folder).
+    pub fn path(path: &str) -> SavedTab {
+        SavedTab { path: path.into(), sort: None, ascending: None, hidden: None, cursor: None, scroll: None }
+    }
+}
+
+impl From<&str> for SavedTab {
+    fn from(path: &str) -> SavedTab {
+        SavedTab::path(path)
+    }
+}
+
+/// What a `left_tabs` / `right_tabs` entry may be in the file: a table, or a bare path.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TabEntry {
+    Path(String),
+    Table {
+        path: String,
+        sort: Option<String>,
+        ascending: Option<bool>,
+        hidden: Option<bool>,
+        cursor: Option<String>,
+        scroll: Option<f32>,
+    },
+}
+
+impl From<TabEntry> for SavedTab {
+    fn from(e: TabEntry) -> SavedTab {
+        match e {
+            TabEntry::Path(p) => SavedTab::path(&p),
+            TabEntry::Table { path, sort, ascending, hidden, cursor, scroll } => SavedTab { path, sort, ascending, hidden, cursor, scroll },
+        }
+    }
 }
 
 /// One bookmark: the folder and, if renamed, the title the sidebar shows.
@@ -153,6 +219,8 @@ impl Default for Config {
             right_active: 0,
             show_hidden_left: false,
             show_hidden_right: false,
+            show_protected_left: false,
+            show_protected_right: false,
             split: false,
             split_ratio: 0.5,
             sort_column: "name".into(),
@@ -166,6 +234,7 @@ impl Default for Config {
             sidebar_visible: true,
             sidebar_width: 180.0,
             path_bar: "breadcrumb".into(),
+            toolbar: "top".into(),
             window: None,
             bookmarks: Vec::new(),
             legacy_bookmarks: Vec::new(),
@@ -267,6 +336,50 @@ impl Config {
     }
 }
 
+/// Where the toolbar is (`Config::toolbar`; the app's `toolbar` property is `index`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Toolbar {
+    None,
+    Top,
+    Pane,
+}
+
+impl Toolbar {
+    /// "none" and "pane" as written; anything else (a missing key, a typo) the default, top.
+    pub fn from_name(s: &str) -> Toolbar {
+        match s {
+            "none" => Toolbar::None,
+            "pane" => Toolbar::Pane,
+            _ => Toolbar::Top,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Toolbar::None => "none",
+            Toolbar::Top => "top",
+            Toolbar::Pane => "pane",
+        }
+    }
+
+    /// The app's `toolbar` property and the dialog's choice: 0 none, 1 top, 2 in each pane.
+    pub fn index(self) -> i32 {
+        match self {
+            Toolbar::None => 0,
+            Toolbar::Top => 1,
+            Toolbar::Pane => 2,
+        }
+    }
+
+    pub fn from_index(i: i32) -> Toolbar {
+        match i {
+            0 => Toolbar::None,
+            2 => Toolbar::Pane,
+            _ => Toolbar::Top,
+        }
+    }
+}
+
 /// The settings file's name for a sort column, and back (anything unknown sorts by name).
 pub fn sort_name(c: crate::model::SortCol) -> &'static str {
     use crate::model::SortCol;
@@ -297,6 +410,9 @@ pub struct Dialog {
     /// The active tab's hidden-file filter in each pane (what Ctrl+H toggles).
     pub show_hidden_left: bool,
     pub show_hidden_right: bool,
+    /// Each pane's protected-files setting (`Config::show_protected_*`).
+    pub show_protected_left: bool,
+    pub show_protected_right: bool,
     /// Each pane's view, as `View::name`: "details", "large" or "medium" (P6-M2).
     pub view_left: String,
     pub view_right: String,
@@ -305,6 +421,8 @@ pub struct Dialog {
     pub sidebar_visible: bool,
     /// "breadcrumb" or "entry", as in `Config::path_bar`.
     pub path_bar: String,
+    /// "top", "pane" or "none", as in `Config::toolbar`.
+    pub toolbar: String,
 }
 
 impl Dialog {
@@ -319,18 +437,21 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 10] {
+    fn fields(&self) -> [(&'static str, String); 13] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
             ("show_hidden_left", self.show_hidden_left.to_string()),
             ("show_hidden_right", self.show_hidden_right.to_string()),
+            ("show_protected_left", self.show_protected_left.to_string()),
+            ("show_protected_right", self.show_protected_right.to_string()),
             ("view_left", self.view_left.clone()),
             ("view_right", self.view_right.clone()),
             ("show_type", self.show_type.to_string()),
             ("thumbnails", self.thumbnails.to_string()),
             ("sidebar_visible", self.sidebar_visible.to_string()),
             ("path_bar", self.path_bar.clone()),
+            ("toolbar", self.toolbar.clone()),
         ]
     }
 
@@ -348,10 +469,10 @@ impl Dialog {
 
 /// The tabs a pane opens at start: the saved list (blank entries dropped) with its active index
 /// clamped, or one tab on `fallback` (the pane's start folder) when there is no list.
-pub fn start_tabs(tabs: &[String], active: usize, fallback: &str) -> (Vec<String>, usize) {
-    let tabs: Vec<String> = tabs.iter().filter(|t| !t.trim().is_empty()).cloned().collect();
+pub fn start_tabs(tabs: &[SavedTab], active: usize, fallback: &str) -> (Vec<SavedTab>, usize) {
+    let tabs: Vec<SavedTab> = tabs.iter().filter(|t| !t.path.trim().is_empty()).cloned().collect();
     if tabs.is_empty() {
-        return (vec![fallback.to_string()], 0);
+        return (vec![SavedTab::path(fallback)], 0);
     }
     let active = active.min(tabs.len() - 1);
     (tabs, active)
@@ -531,26 +652,38 @@ mod tests {
 
     #[test]
     fn tab_lists_round_trip_and_fall_back() {
+        let full = SavedTab {
+            path: r"C:\b".into(),
+            sort: Some("size".into()),
+            ascending: Some(false),
+            hidden: Some(true),
+            cursor: Some("notes.txt".into()),
+            scroll: Some(-440.0),
+        };
         let c = Config {
             start_left: r"C:\b".into(),
-            left_tabs: vec![r"C:\a".into(), r"C:\b".into(), "This PC".into()],
+            left_tabs: vec![r"C:\a".into(), full.clone(), "This PC".into()],
             left_active: 1,
             right_tabs: vec![r"D:\x".into()],
             ..Config::default()
         };
         let text = c.to_toml();
-        assert!(text.contains("left_tabs = ["), "{text}");
+        assert!(text.contains("[[left_tabs]]") && text.contains("cursor = \"notes.txt\""), "{text}");
         assert_eq!(Config::parse(&text).unwrap(), c);
         let (tabs, active) = start_tabs(&c.left_tabs, c.left_active, &c.start_left);
         assert_eq!((tabs.len(), active), (3, 1));
+        assert_eq!(tabs[1], full, "a tab's view comes back with it (P6-M3)");
+        // A bare list of paths, from before P6-M3: folders only.
+        let bare = Config::parse("left_tabs = ['C:\\a', 'D:\\']\nleft_active = 1\n").unwrap();
+        assert_eq!(bare.left_tabs, vec![SavedTab::path(r"C:\a"), SavedTab::path(r"D:\")]);
         // A file from before tabs were saved: one tab on the start folder.
         let old = Config::parse("start_left = 'C:\\Windows'\nstart_right = 'D:\\'\n").unwrap();
         assert!(old.left_tabs.is_empty() && old.right_tabs.is_empty());
-        assert_eq!(start_tabs(&old.left_tabs, old.left_active, &old.start_left), (vec![r"C:\Windows".to_string()], 0));
-        assert_eq!(start_tabs(&old.right_tabs, old.right_active, &old.start_right), (vec![r"D:\".to_string()], 0));
+        assert_eq!(start_tabs(&old.left_tabs, old.left_active, &old.start_left), (vec![SavedTab::path(r"C:\Windows")], 0));
+        assert_eq!(start_tabs(&old.right_tabs, old.right_active, &old.start_right), (vec![SavedTab::path(r"D:\")], 0));
         // An active index past the end is clamped; blank entries are dropped.
-        assert_eq!(start_tabs(&["a".into(), " ".into(), "b".into()], 7, "x"), (vec!["a".to_string(), "b".to_string()], 1));
-        assert_eq!(start_tabs(&["".into()], 0, "x"), (vec!["x".to_string()], 0));
+        assert_eq!(start_tabs(&["a".into(), " ".into(), "b".into()], 7, "x"), (vec![SavedTab::path("a"), SavedTab::path("b")], 1));
+        assert_eq!(start_tabs(&["".into()], 0, "x"), (vec![SavedTab::path("x")], 0));
     }
 
     #[test]
@@ -638,23 +771,28 @@ show_type = false
             start_right: String::new(),
             show_hidden_left: false,
             show_hidden_right: false,
+            show_protected_left: false,
+            show_protected_right: false,
             view_left: "details".into(),
             view_right: "large".into(),
             show_type: true,
             thumbnails: false,
             sidebar_visible: true,
             path_bar: "breadcrumb".into(),
+            toolbar: "top".into(),
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), toolbar: "pane".into(), ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
                 ("show_hidden_left", "false".into(), "true".into()),
+                ("show_protected_right", "false".into(), "true".into()),
                 ("view_right", "large".into(), "medium".into()),
                 ("show_type", "true".into(), "false".into()),
                 ("thumbnails", "false".into(), "true".into()),
                 ("path_bar", "breadcrumb".into(), "entry".into()),
+                ("toolbar", "top".into(), "pane".into()),
             ]
         );
         // Start folders: trimmed; an empty left one is the default, so blanking it changes nothing.
@@ -664,6 +802,20 @@ show_type = false
         // A folder that does not exist is accepted as typed.
         let missing = Dialog { start_left: r"Q:\nowhere".into(), ..open.clone() }.normalized();
         assert_eq!(open.changes(&missing), vec![("start_left", r"C:\".into(), r"Q:\nowhere".into())]);
+    }
+
+    #[test]
+    fn toolbar_defaults_to_top_and_round_trips() {
+        assert_eq!(Toolbar::from_name(&Config::default().toolbar), Toolbar::Top);
+        // A file from before P6-M3 has no key: top.
+        assert_eq!(Config::parse("split = true\n").unwrap().toolbar, "top");
+        for t in [Toolbar::None, Toolbar::Top, Toolbar::Pane] {
+            assert_eq!(Toolbar::from_name(t.name()), t);
+            assert_eq!(Toolbar::from_index(t.index()), t);
+            let c = Config { toolbar: t.name().into(), ..Config::default() };
+            assert_eq!(Config::parse(&c.to_toml()).unwrap(), c);
+        }
+        assert_eq!(Toolbar::from_name("left"), Toolbar::Top, "anything else is the default");
     }
 
     #[test]

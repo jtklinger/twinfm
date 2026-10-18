@@ -27,6 +27,8 @@
 //!   undo                             Ctrl+Z: undo the newest recorded operation (fileops::undo)
 //!   redo                             Ctrl+Y: redo the newest undone operation
 //!   newfolder <name>                 F7, type the name into the editor, Return
+//!   newfile <name>                   Ctrl+Alt+N (key name CtrlAltN), type the name, Return: an
+//!                                    empty file (P6-M3)
 //!   rename <name>                    F2 on the cursor row, type the new name, Return
 //!   waitops <ms>                     wait until no file operation runs, no pane refreshes and no
 //!                                    virtual-file drop writes (at most <ms>), then 300 ms more for
@@ -43,6 +45,9 @@
 //!                                    WM_XBUTTONUP (XBUTTON1) messages, so it takes winit's real path:
 //!                                    the pane becomes active and goes back in its tab's history
 //!   forwardclick <pane>              the same with the Forward button (XBUTTON2): forward in the history
+//!   backclick <pane> path|edit       the Back button over the path bar's middle (with `pathmode
+//!                                    <pane> entry`, the text entry) or over row 0's name cell (with F2,
+//!                                    the rename editor): ignored there (P6-M3)
 //!   history <back|forward>           Alt+Left / Alt+Right through the Slint key path, on the active pane
 //!   view <details|icons>             Ctrl+Shift+1 / Ctrl+Shift+2 (key names CtrlShift1, CtrlShift2): the
 //!                                    active pane's view, the details list or the large-icon grid
@@ -125,13 +130,20 @@
 //!                                    and runs the next steps meanwhile (the edge auto-scroll runs,
 //!                                    a `key Escape` cancels the band; no waitops/waitwatch inside)
 //!   crumb <pane> <index>             breadcrumb button <index> (0 is This PC), through its callback
+//!   toolbar <pane> <button>          a toolbar button (P6-M3: newfile, newfolder, cut, copy, paste,
+//!                                    rename, delete) through the callback a press calls, which makes
+//!                                    the pane active (`[toolbar]` lines);
+//!                                    pressed with the toolbar hidden too, since a button only calls
+//!                                    its key's command; a disabled button is not pressed (logged)
 //!   crumbmenu <pane> <index>         the chevron after crumb <index>: its subfolders in a dropdown
 //!                                    (listed on a worker; sleep before crumbpick)
 //!   crumbpick <name>                 pick the dropdown's folder <name> (the pane navigates there)
 //!   crumbclose                       close the dropdown (as Escape does)
 //!   pathmode <pane> <entry|crumb>    the path bar as text entry (as Ctrl+L) or back to the breadcrumb
 //!   sidebar toggle                   F9: show or hide the sidebar
-//!   sidebar click <row>              sidebar row <row> (headers count; 0 is "Drives"), through its callback
+//!   sidebar click <row>              sidebar row <row> (headers count; 0 is "Drives"; -1 the last row), as a left click: the
+//!                                    sidebar takes the keys (P6-M3: `key F2` then opens a bookmark's
+//!                                    title editor, `key Escape` gives the keys back to the list)
 //!   bookmark add                     Ctrl+D: bookmark the active tab's folder
 //!   bookmark remove <index>          the bookmark menu's "Remove bookmark" for bookmark <index>
 //!   bookmark rename <index> <title>  what the bookmark row's title editor commits (an empty title
@@ -246,7 +258,8 @@ enum Step {
     MidClick { pane: usize, row: usize },
     /// Post the mouse's Back (or, `forward`, Forward) button's press and release to the window, in
     /// the middle of the pane's list area.
-    XButton { pane: usize, forward: bool },
+    /// `at`: None the list's middle; "path" the path bar's middle; "edit" row 0's name cell.
+    XButton { pane: usize, forward: bool, at: Option<String> },
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
     WaitOps(u64),
@@ -269,6 +282,7 @@ enum Step {
     /// Hover a drag of `paths` at `at` for `ms`, then leave.
     DragOver { at: HoverAt, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
+    Toolbar { pane: usize, button: String },
     CrumbMenu { pane: usize, index: i32 },
     CrumbPick(String),
     CrumbClose,
@@ -330,8 +344,8 @@ fn parse(script: &str) -> Vec<Step> {
                 "shiftclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Shift) },
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
-                "backclick" => Step::XButton { pane: num(1) as usize, forward: false },
-                "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true },
+                "backclick" => Step::XButton { pane: num(1) as usize, forward: false, at: a.get(2).map(|s| s.to_string()) },
+                "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true, at: a.get(2).map(|s| s.to_string()) },
                 "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
                 "view" => Step::Key(
                     match a.get(1).copied() {
@@ -351,6 +365,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "undo" => Step::Key("CtrlZ".into()),
                 "redo" => Step::Key("CtrlY".into()),
                 "newfolder" => Step::Type { lead: "F7".into(), text: a[1..].join(" ") },
+                "newfile" => Step::Type { lead: "CtrlAltN".into(), text: a[1..].join(" ") },
                 "rename" => Step::Type { lead: "F2".into(), text: a[1..].join(" ") },
                 "waitops" => Step::WaitOps(num(1).max(1) as u64),
                 "rclick" => Step::RClick { pane: num(1) as usize, row: Some(num(2) as usize) },
@@ -441,6 +456,7 @@ fn parse(script: &str) -> Vec<Step> {
                     hold_ms: a.iter().position(|w| &**w == "hold").and_then(|i| a.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0),
                 },
                 "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
+                "toolbar" => Step::Toolbar { pane: num(1) as usize, button: a.get(2).unwrap_or(&"").to_string() },
                 "crumbmenu" => Step::CrumbMenu { pane: num(1) as usize, index: num(2) as i32 },
                 "crumbpick" => Step::CrumbPick(a[1..].join(" ")),
                 "crumbclose" => Step::CrumbClose,
@@ -726,7 +742,7 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
             let (left, _) = crate::dnd::pane_x(&l, pane);
             let w = app.invoke_tab_width(pane as i32);
             let x = left + crate::dnd::PANE_PAD + app.invoke_tab_offset(pane as i32) + (index as f32 + 0.5) * w;
-            Some(LogicalPosition::new(x, crate::dnd::TAB_TOP + crate::dnd::TAB_H / 2.0))
+            Some(LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
         DropAt::Crumb(pane, index) => crate::crumb_centre(app, pane, index),
     }
@@ -743,13 +759,13 @@ fn hover_point(app: &App, at: HoverAt) -> Option<LogicalPosition> {
         }
         HoverAt::At(spot) => drop_point(app, spot),
         HoverAt::Side(top) => {
-            let y = if top { crate::dnd::SIDE_TOP + 6.0 } else { l.height - crate::dnd::SIDE_FOOTER - 6.0 };
+            let y = if top { crate::dnd::side_top(&l) + 6.0 } else { l.height - crate::dnd::SIDE_FOOTER - 6.0 };
             app.get_sidebar_visible().then(|| LogicalPosition::new(app.get_sidebar_width() / 2.0, y))
         }
         HoverAt::Strip(pane, right) => {
             let (a, b) = crate::dnd::pane_x(&l, pane);
             let x = if right { b - crate::dnd::PANE_PAD - 6.0 } else { a + crate::dnd::PANE_PAD + 6.0 };
-            l.tabs[pane].then(|| LogicalPosition::new(x, crate::dnd::TAB_TOP + crate::dnd::TAB_H / 2.0))
+            l.tabs[pane].then(|| LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
     }
 }
@@ -890,6 +906,7 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlZ" => vec![k(Key::Control), "z".into()],
         "CtrlY" => vec![k(Key::Control), "y".into()],
         "CtrlShiftN" => vec![k(Key::Control), k(Key::Shift), "N".into()],
+        "CtrlAltN" => vec![k(Key::Control), k(Key::Alt), "n".into()],
         "CtrlF" => vec![k(Key::Control), "f".into()],
         "CtrlShiftF" => vec![k(Key::Control), k(Key::Shift), "F".into()],
         "Down" => vec![k(Key::DownArrow)],
@@ -1049,12 +1066,22 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Middle }).ok();
             schedule(runner, 1);
         }
-        Step::XButton { pane, forward } => {
+        Step::XButton { pane, forward, at } => {
             use windows_sys::Win32::System::SystemServices::{MK_XBUTTON1, MK_XBUTTON2};
             use windows_sys::Win32::UI::WindowsAndMessaging::{WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2};
             // Posted, not dispatched: winit's window procedure turns them into the side button's
             // press and release (after the move that places the pointer), as for a real mouse.
-            let (_, _, pos) = geometry(&app, pane);
+            let (_, _, mut pos) = geometry(&app, pane);
+            let l = crate::window_layout(&app);
+            let (left, _) = crate::dnd::pane_x(&l, pane);
+            match at.as_deref() {
+                Some("path") => pos.y = crate::dnd::crumb_top(&l, pane) + crate::dnd::CRUMB_H / 2.0,
+                Some("edit") => {
+                    pos.x = left + crate::dnd::PANE_PAD + l.row_px + 60.0;
+                    pos.y = list_top(&app, pane) + l.row_px / 2.0;
+                }
+                _ => {}
+            }
             let s = app.window().scale_factor();
             let (x, y) = ((pos.x * s).round() as i32, (pos.y * s).round() as i32);
             let lp = (((y as u16 as u32) << 16) | x as u16 as u32) as isize;
@@ -1073,6 +1100,24 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::Crumb { pane, index } => {
             app.invoke_crumb_clicked(pane as i32, index);
+            schedule(runner, 1);
+        }
+        Step::Toolbar { pane, button } => {
+            let t = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
+            let enabled = match button.as_str() {
+                "newfile" | "newfolder" => t.new,
+                "cut" => t.cut,
+                "copy" => t.copy,
+                "paste" => t.paste,
+                "rename" => t.rename,
+                "delete" => t.delete,
+                _ => true,
+            };
+            if enabled {
+                app.invoke_toolbar_clicked(pane as i32, button.as_str().into());
+            } else {
+                eprintln!("[auto] toolbar pane={pane} {button}: disabled, not pressed");
+            }
             schedule(runner, 1);
         }
         Step::CrumbMenu { pane, index } => {
@@ -1167,7 +1212,9 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             schedule(runner, 1);
         }
         Step::SideClick(row) => {
-            app.invoke_side_clicked(row, false);
+            // A negative row counts from the end (-1: the last row, the newest bookmark).
+            let row = if row < 0 { slint::Model::row_count(&app.get_side_items()) as i32 + row } else { row };
+            app.invoke_side_click(row);
             schedule(runner, 1);
         }
         Step::BookmarkRemove(i) => {

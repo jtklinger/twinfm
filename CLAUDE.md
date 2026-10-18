@@ -18,7 +18,7 @@ section quotes Jeremy's kickoff decisions and § Calls made lists the lead's). R
 changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (185 tests; eight touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (190 tests; eight touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -357,6 +357,47 @@ changing the list.
   never in the lists. A drag out of medium tiles carries an 80 px image with the tile's 48 px picture
   (`[dnd] drag image 80x80 px, 48 px icon`). The settings dialog has a View row (a choice per pane:
   details, large icons, medium icons; `[settings] dialog: view_left details -> medium`).
+  Since P6-M3, the toolbar (`src/toolbar.rs`, pane.slint `Toolbar`): seven buttons (New file, New
+  folder; Cut, Copy, Paste; Rename, Delete), each calling its key's command (`toolbar::command`:
+  `newfile`, `newfolder`, `cx`, `cc`, `cv`, `rename`, `delete`), placed by the setting `toolbar`:
+  `"top"` (the default, so **every scripted run, the gate's included, has the toolbar across the
+  window: the sidebar and the panes start 36 px down**, `dnd::TOP_BAR`, `Layout::top`), `"pane"` (icons
+  only, at the top of each pane above its tab strip and path bar, 30 px with the spacing,
+  `dnd::PANE_BAR`, `Layout::bar`) or `"none"`; the glyphs are Segoe Fluent Icons characters (the
+  font of Explorer's command bar, part of Windows 11). Which buttons apply (`toolbar::state`, the
+  app's `left-tools` / `right-tools`) is set in `update_status` on change only: New and Paste in a
+  folder (Paste with `CF_HDROP` on the clipboard, read at start and on each `WM_CLIPBOARDUPDATE`),
+  Cut, Copy and Delete with a selection, Rename with exactly one, nothing on This PC or in an archive
+  level, no New or Paste in a search tab. A gate run with the in-pane toolbar takes
+  `TWINFM_CONFIG=C:\traces\toolbar-pane.toml` (read-only, `toolbar = "pane"` only; no `split`).
+  Driver: `toolbar <pane> <button>` (`newfile`, `newfolder`, `cut`, `copy`, `paste`, `rename`,
+  `delete`) calls the callback a press calls, which makes the pane active (and focuses its list,
+  except for the three buttons that open the name editor); a disabled button is not pressed
+  (`[auto] toolbar pane=N <button>: disabled, not pressed`). `[toolbar]` lines: `pane=N <button> ->
+  <command>`, `clipboard holds files | holds no files`. New file: `Job::NewFile`, Ctrl+Alt+N (key
+  name `CtrlAltN`; driver `newfile <name>`, typed into the editor; `newfile` alone then `key Return`
+  keeps `New Text Document.txt`, numbered by the shell on a collision), undone to the Recycle Bin.
+  Escape in a list stops a search and cancels queued jobs, or else clears the selection (`[select]
+  pane=N Escape: selection cleared`). Ctrl+H shows files with the hidden attribute; files both hidden
+  and system need the pane's protected-files setting too (`show_protected_left` /
+  `show_protected_right`, the dialog's "Protected files" row, `settings set protected_left
+  true|false`; `[hidden] pane=N show_protected=true`), and a file with the system attribute alone is
+  always shown (`model::Show`, `shows`). `backclick <pane> path|edit` posts the Back button over the
+  path bar's middle or over row 0's name cell: ignored over the text entry and the rename editor.
+  `sidebar click <row>` is a left click (a negative row counts from the end): the sidebar takes the
+  keys, `key F2` opens a bookmark row's title editor, `key Escape` (or Tab) gives the keys back to
+  the list. In the breadcrumb dropdown (`crumbmenu`) `key Down` / `key Up` move a highlight and
+  `key Return` picks it. `[tab] pane=N strip resized: scrolled to X (tab I of N in view)` when the
+  pane's width changes moved its strip. Search results' rows read `file.txt  (sub\dir)`
+  (`model::search_label`; the entries, the sort and the commands keep `sub\dir\file.txt`). A tab sent
+  to the background keeps its finished folder sizes (`[size] pane=N tab=T keeps K size(s) in the
+  background`; walks in flight and stale sizes go: `[size] cancelled ... (tab in the background)`,
+  `[size] stale ...: tab in the background, size dropped`), its background watch is a subtree watch
+  while it has any (a stale background tab with sizes stays watched for them), a change below a sized
+  folder drops that size there (`[size] invalidated <path> (<change>): tab in the background, size
+  dropped`), and an unwatched one drops them all (`[size] cache cleared pane=N (not watched in the
+  background | watch lost)`). Restored tabs: `[tab] pane=N tab=T restored: cursor Some(R), scroll Y
+  (now Y)` when a restored tab's first pass lands.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -382,7 +423,12 @@ changing the list.
   through the same workers and table); since P6-M2 `tile_left` and `tile_right` (`"large"`, the
   default, or `"medium"`: a sixth list component, `FileGridMedium`; Ctrl+Shift+3 sets medium, and a
   pane on details keeps its tile size), and the view (details, large icons, medium icons) is in the
-  settings dialog. `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  settings dialog; since P6-M3 `toolbar` (`"top"`, the default, `"pane"` or `"none"`, in the
+  dialog), `show_protected_left` / `show_protected_right` (default false, in the dialog), and
+  `left_tabs` / `right_tabs` as `[[left_tabs]]` tables (`settings::SavedTab`: `path`, and `sort`,
+  `ascending`, `hidden`, `cursor` (the cursor row's name), `scroll`, each optional), so a restored tab
+  gets its sort, hidden files, cursor and scroll back; a bare list of paths still loads (the
+  defaults new tabs have), and the next save writes tables. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -421,7 +467,10 @@ changing the list.
   onto tile 0, a cancelled drag out of it, a band from the gap after the last tile that selects both
   and leaves the cursor on tile 0, Shift+Right from there, back to details, Shift+Delete); it reports
   medium switches, 80 px drag images, bands done with the cursor on tile 0 and the Shift+Right's
-  range.
+  range. Since P6-M3 each cycle also runs a toolbar cycle in `dst` (New file and its undo, New
+  folder, Rename to `t`, Copy and Paste, Cut and Paste into `src`, Delete there, then Shift+Delete
+  of `t`; three Recycle Bin entries per cycle in all); it reports toolbar presses (eight per cycle),
+  presses refused as disabled (must be 0), new files made and undone, and renames.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per

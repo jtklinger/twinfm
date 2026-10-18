@@ -30,6 +30,13 @@
 # extends the selection from there (anchor 0 to 1), the right pane goes back to details, and
 # Shift+Delete removes the selection. Reported: medium switches, 80 px drag images, the bands' and
 # the Shift+Right's lines.
+#
+# P6-M3's toolbar cycle follows, in dst (empty again), each button through the callback a press
+# calls (`toolbar <pane> <button>`): New file (the editor's name kept with Return) and its undo,
+# New folder, Rename (to t), Copy and Paste (t - Copy beside it), Cut of t - Copy and Paste into
+# src, Delete of it there (the Recycle Bin), and Shift+Delete of t. Reported: toolbar presses
+# (eight per cycle), presses refused as disabled (must be 0), new files made and undone, renames.
+# The cycle adds two Recycle Bin entries (the new file's undo and the Delete button), three in all.
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -127,6 +134,15 @@ $cycle = @(
     'band 1 202 40 5 10', 'sleep 200',
     'key ShiftRight', 'sleep 200',
     'view details', 'sdelete', $wait,
+    # P6-M3: the toolbar cycle (see the header).
+    'toolbar 1 newfile', 'sleep 300', 'key Return', $wait,
+    'undo', $wait,
+    'toolbar 1 newfolder', 'sleep 300', 'key Return', $wait,
+    'click 1 0', 'toolbar 1 rename', 'sleep 300', 'key t', 'key Return', $wait,
+    'click 1 0', 'toolbar 1 copy', 'toolbar 1 paste', $wait,
+    'click 1 1', 'toolbar 1 cut', 'click 0 0', 'toolbar 0 paste', $wait,
+    'click 0 0', 'toolbar 0 delete', $wait,
+    'click 1 0', 'sdelete', $wait,
     # P5-M3: the spring-load into spring\inner, the crumb drop into spring, the sidebar's bottom
     # edge, the inactive tab under the spring time, and the cleanup (see the header).
     "nav 1 $spring", 'sleep 500',
@@ -223,6 +239,12 @@ $mediumOff = @($log | Select-String -SimpleMatch 'medium icons -> details').Coun
 $mediumImages = @($log | Select-String -SimpleMatch 'drag image 80x80 px, 48 px icon').Count
 $bandsCursor = @($log | Select-String -SimpleMatch '[band] pane=1 done: 2 selected, cursor 0').Count
 $shiftFromCursor = @($log | Select-String -SimpleMatch '[select] pane=1 Range row=1 selected=2').Count
+# P6-M3 counts.
+$toolPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=').Count
+$toolDisabled = @($log | Select-String -SimpleMatch 'disabled, not pressed').Count
+$newFiles = @($log | Select-String -SimpleMatch 'Done: Created New Text Document.txt').Count
+$newFilesUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Created New Text Document.txt').Count
+$renamedT = @($log | Select-String -SimpleMatch 'Done: Renamed to t').Count
 # P5-M3 counts.
 $springArmed = @($log | Select-String -SimpleMatch '[dnd] spring armed:').Count
 $springRows = @($log | Select-String -SimpleMatch '[dnd] spring-loaded:' | Select-String -SimpleMatch ' opens ').Count
@@ -246,6 +268,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "menus opened and closed: $menus; in-menu ticks: $($ticks.Count), with state or driver busy: $ticksBusy"
 "grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (two per cycle: large and medium); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
 "medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
+"toolbar: presses $toolPresses (eight per cycle), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
 "spring: armed $springArmed, spring-loaded rows $springRows (navigations into spring\inner: $springInner), tabs $springTabs (must be 0), disarmed $springDisarmed; crumb drops: $dropCrumb; auto-scroll lines: sidebar $sideScrolls, tab strip $stripScrolls"
 "working set: start $($first.working_set_mb) MB at $($first.seconds) s, end $($last.working_set_mb) MB at $($last.seconds) s; private: $($first.private_mb) -> $($last.private_mb) MB"
 "min/max working set: {0} / {1} MB" -f ($samples | Measure-Object working_set_mb -Minimum).Minimum, ($samples | Measure-Object working_set_mb -Maximum).Maximum

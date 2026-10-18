@@ -93,6 +93,11 @@ pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
             let (_, folder) = made.into_iter().next()?;
             Some(Undo { job: Job::Delete { sources: vec![folder.clone()], permanent: false }, expect: vec![folder], must_be_empty: true })
         }
+        // To the Recycle Bin, whatever was written into it since.
+        Job::NewFile { .. } => {
+            let (_, file) = made.into_iter().next()?;
+            Some(Undo { job: Job::Delete { sources: vec![file.clone()], permanent: false }, expect: vec![file], must_be_empty: false })
+        }
         Job::Delete { permanent: true, .. } => None,
     }
 }
@@ -169,6 +174,11 @@ mod tests {
         let u = undo_for(&nf, &[ok(r"C:\a", r"C:\a\New folder (2)")]).unwrap();
         assert_eq!(u.job, Job::Delete { sources: vec![r"C:\a\New folder (2)".into()], permanent: false }, "the real name");
         assert!(u.must_be_empty);
+
+        let file = Job::NewFile { parent: r"C:\a".into(), name: "New Text Document.txt".into() };
+        let u = undo_for(&file, &[ok(r"C:\a", r"C:\a\New Text Document.txt")]).unwrap();
+        assert_eq!(u.job, Job::Delete { sources: vec![r"C:\a\New Text Document.txt".into()], permanent: false });
+        assert!(!u.must_be_empty, "a new file goes to the Recycle Bin whatever was written into it");
 
         let cp = Job::Copy { sources: vec![r"C:\a\x.txt".into()], dest_dir: r"C:\a".into() };
         let u = undo_for(&cp, &[ok(r"C:\a\x.txt", r"C:\a\x - Copy.txt")]).unwrap();

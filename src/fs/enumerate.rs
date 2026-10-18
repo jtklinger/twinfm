@@ -299,7 +299,7 @@ pub struct WalkStats {
 /// `SEARCH_BATCH` or every `SEARCH_FLUSH`. An entry's name is its path relative to `root`
 /// (`sub\dir\file.txt`). Never enters a reparse point (junction, symbolic link, cloud
 /// placeholder, app alias: only `Kind::Directory` is entered, so a loop through a link cannot
-/// happen), a hidden or system folder unless `show_hidden`, or a folder deeper than
+/// happen), a folder the tab's hidden-file switches keep out (`model::shows`), or a folder deeper than
 /// `SEARCH_MAX_DEPTH`. Hidden matches in the folders it enters are handed out too (the tab's
 /// hidden-file switch shows or hides them, as in a folder). `cancel` is read before each folder
 /// and after each batch. `emit` returning false (the receiver is gone) ends the walk. Err with
@@ -308,7 +308,7 @@ pub struct WalkStats {
 pub fn walk(
     root: &Path,
     matcher: &crate::model::NameMatch,
-    show_hidden: bool,
+    show: crate::model::Show,
     cancel: &std::sync::atomic::AtomicU8,
     mut emit: impl FnMut(Vec<Entry>) -> bool,
 ) -> Result<WalkStats, String> {
@@ -335,7 +335,7 @@ pub fn walk(
         let mut icon_keys = crate::icons::IconKeys::new(dir.clone(), false);
         let listed = list_dir(&dir, &mut types, &mut icon_keys, &zone, |mut e| {
             let leaf = e.name.clone();
-            let enter = e.kind == Kind::Directory && depth < SEARCH_MAX_DEPTH && (show_hidden || !(e.is_hidden() || e.is_system()));
+            let enter = e.kind == Kind::Directory && depth < SEARCH_MAX_DEPTH && crate::model::shows(&e, show);
             if enter {
                 stack.push((dir.join(leaf.as_str()), format!("{rel}{leaf}\\"), depth + 1));
             }
@@ -390,7 +390,7 @@ pub fn walk(
 pub fn spawn_search(
     root: PathBuf,
     matcher: crate::model::NameMatch,
-    show_hidden: bool,
+    show: crate::model::Show,
     cancel: std::sync::Arc<std::sync::atomic::AtomicU8>,
     pane: usize,
     generation: u64,
@@ -406,7 +406,7 @@ pub fn spawn_search(
             let t0 = Instant::now();
             let (mut batches, mut sent) = (0usize, 0usize);
             let mut logged: Option<Instant> = None;
-            let res = walk(&root, &matcher, show_hidden, &cancel, |entries| {
+            let res = walk(&root, &matcher, show, &cancel, |entries| {
                 batches += 1;
                 sent += entries.len();
                 if logged.is_none_or(|t| t.elapsed() >= SEARCH_FLUSH) {
@@ -863,6 +863,7 @@ mod tests {
 
         let hit = NameMatch::new("hit");
         let run = |root: &Path, show_hidden: bool, cancel_after_first: bool| {
+            let show_hidden = if show_hidden { crate::model::Show::HIDDEN } else { crate::model::Show::OFF };
             let cancel = AtomicU8::new(SEARCH_RUNNING);
             let mut batches: Vec<Vec<Entry>> = Vec::new();
             let stats = walk(root, &hit, show_hidden, &cancel, |b| {
@@ -878,7 +879,7 @@ mod tests {
         let (hidden, hidden_batches) = run(&root, true, false);
         let (cancelled, cancelled_batches) = run(&bulk, false, true);
         let (bulk_all, _) = run(&bulk, false, false);
-        let missing = walk(&dir.join("nope"), &hit, false, &AtomicU8::new(0), |_| true);
+        let missing = walk(&dir.join("nope"), &hit, crate::model::Show::OFF, &AtomicU8::new(0), |_| true);
         set_attrs(&root.join("secret"), FILE_ATTRIBUTE_DIRECTORY);
         std::fs::remove_dir_all(&dir).unwrap(); // removes the junction, not the tree twice
 

@@ -22,6 +22,7 @@ mod shellmenu;
 mod sidebar;
 mod statusbar;
 mod tabs;
+mod toolbar;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fileops::{Job, Outcome, clipboard, same_dir};
@@ -95,6 +96,10 @@ struct Tab {
     /// Saved when the tab goes to the background, restored when it comes back.
     cursor: i32,
     scroll: f32,
+    /// A restored tab's saved cursor row (by name) and scroll (P6-M3): its first pass after a
+    /// complete listing puts the cursor there, and the scroll is applied when that pass lands.
+    restore_cursor: Option<SharedString>,
+    restore_scroll: Option<f32>,
     /// What happened to its folder is unknown (it is in the background without a watch, its
     /// watch fell back or was lost, or a file operation finished while it was unwatched): it
     /// refreshes when it comes to the front.
@@ -146,6 +151,26 @@ impl Tab {
     /// inside an archive).
     fn sizable(&self) -> bool {
         self.search.is_none() && !is_this_pc(&self.path.to_string_lossy()) && !fs::archive::inside(&self.path)
+    }
+
+    /// The tab leaves the foreground (a tab switch, a new tab): its finished folder sizes stay,
+    /// watched below the folder in the background (`watch_tabs`); walks in flight and sizes waiting
+    /// for a re-walk go (P6-M3).
+    fn background_sizes(&mut self, pane: usize) {
+        if !self.sizable() {
+            return;
+        }
+        let (cancelled, stale) = self.sizes.to_background();
+        for n in &cancelled {
+            eprintln!("[size] cancelled {} (tab in the background)", self.path.join(n).display());
+        }
+        for n in &stale {
+            self.model.set_size(n, None);
+            eprintln!("[size] stale {}: tab in the background, size dropped", self.path.join(n).display());
+        }
+        if !self.sizes.cache.is_empty() {
+            eprintln!("[size] pane={pane} tab={} keeps {} size(s) in the background", self.id, self.sizes.cache.len());
+        }
     }
 
     /// Forget the tab's folder sizes: cancel the walks in flight and empty the cache.
@@ -227,6 +252,9 @@ struct State {
     cut_source: Option<(usize, u64)>,
     /// The clipboard's sequence number right after TwinFM's last copy or cut.
     clip_seq: u32,
+    /// The clipboard holds files (`CF_HDROP`): what the toolbar's Paste needs. Read at start and on
+    /// every `WM_CLIPBOARDUPDATE` (P6-M3).
+    clip_files: bool,
     /// Ctrl+Z's record, newest last, shared by both panes (`fileops::undo`).
     undo: Vec<fileops::undo::Record>,
     /// Ctrl+Y's record, fed by completed undo jobs and cleared by the next new job.
@@ -332,6 +360,8 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         free: None,
         cursor: -1,
         scroll: 0.0,
+        restore_cursor: None,
+        restore_scroll: None,
         stale: false,
         refresh_pending: false,
         watch_refresh: false,
@@ -406,7 +436,9 @@ impl State {
     /// Decide which tabs the watcher watches, and ask it. Every active tab (both panes with the
     /// split; the hidden second pane's tabs none) with a parent watch (and a subtree watch while
     /// folder sizes are cached or in flight); then background folder tabs whose listing is done,
-    /// not stale, most recently shown first, shallow and without a parent, up to
+    /// not stale (unless they keep folder sizes, P6-M3: their watch keeps the sizes current while
+    /// the listing waits to be refreshed on show), most recently shown first, shallow (a subtree
+    /// watch with sizes) and without a parent, up to
     /// `fs::watch::MAX_WATCHES`. Every other tab is unwatched; a background one goes stale (a
     /// search tab never: going stale would run its search again). Unwatches go first, so a slot
     /// freed here is free for the watches that follow. A no-op for a tab already watched the same
@@ -424,7 +456,7 @@ impl State {
                 let eligible = if i == active {
                     t.search.is_none() && listed
                 } else {
-                    folder_tab(t) && t.timing.done_ms.is_some() && listed && !t.stale
+                    folder_tab(t) && t.timing.done_ms.is_some() && listed && (!t.stale || t.sizes.any())
                 };
                 cands.push(WatchCand { id: t.id, active: i == active, eligible, shown_at: t.shown_at });
             }
@@ -450,13 +482,22 @@ impl State {
                     }
                     continue;
                 }
-                if t.search.is_some() || t.stale {
+                if t.search.is_some() {
+                    continue;
+                }
+                if t.stale {
+                    // Stale with sizes and past the cap: unwatched, the sizes could go out of date.
+                    if t.sizes.any() {
+                        t.drop_sizes(pane, "not watched in the background");
+                    }
                     continue;
                 }
                 if cands.iter().any(|c| c.id == t.id && c.eligible) {
                     eprintln!("[watch] pane={pane} tab={} past the cap: stale when shown", t.id);
                 }
                 t.stale = true;
+                // Unwatched, its sizes could go out of date unseen.
+                t.drop_sizes(pane, "not watched in the background");
             }
         }
         for &id in &set {
@@ -471,7 +512,9 @@ impl State {
                     asks.push((pane, id, t.path.clone(), subtree, true));
                     t.watched_bg = false;
                 } else {
-                    asks.push((pane, id, t.path.clone(), false, false));
+                    // A subtree watch while the tab keeps folder sizes (P6-M3), shallow otherwise.
+                    let subtree = t.sizes.any() && t.sizes.overflows < 2;
+                    asks.push((pane, id, t.path.clone(), subtree, false));
                     if !t.watched_bg {
                         eprintln!("[watch] pane={pane} tab={id} watched in the background");
                         t.watched_bg = true;
@@ -505,6 +548,11 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         let Some(app) = st.app.upgrade() else { return };
         let generation = st.generation();
         let t = st.tab_mut(pane);
+        // A restored tab's saved cursor and scroll belong to its own folder only (P6-M3).
+        if t.path != path {
+            t.restore_cursor = None;
+            t.restore_scroll = None;
+        }
         // A folder that then fails to list still counts as visited, as in Explorer.
         // From a search tab the search goes on the back stack (Back runs it again).
         let from = t.place();
@@ -531,6 +579,7 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         if let Some(s) = t.search.take() {
             s.cancel(fs::enumerate::SEARCH_NAVIGATED);
         }
+        t.model.search_names.set(false);
         // Another folder starts unfiltered (Explorer's behaviour).
         let filtered = !t.model.filter.borrow().is_empty();
         *t.model.filter.borrow_mut() = NameMatch::default();
@@ -584,7 +633,7 @@ fn refresh(pane: usize) {
         if let Some(s) = &mut t.search {
             s.cancel(fs::enumerate::SEARCH_REFRESH);
             s.cancel = Arc::new(AtomicU8::new(fs::enumerate::SEARCH_RUNNING));
-            let (pattern, cancel, hidden) = (s.pattern.clone(), s.cancel.clone(), t.model.show_hidden.get());
+            let (pattern, cancel, hidden) = (s.pattern.clone(), s.cancel.clone(), t.model.show());
             eprintln!("[search] pane={pane} gen={generation} start \"{}\" in {}", pattern.pattern, path.display());
             fs::enumerate::spawn_search(path, pattern, hidden, cancel, pane, generation, st.tx.clone(), wake);
             return;
@@ -640,6 +689,45 @@ fn update_status(st: &State, app: &App, pane: usize) {
         right: statusbar::free_text(t.free).into(),
     };
     if pane == 0 { app.set_left_status(s) } else { app.set_right_status(s) }
+    update_tools(st, app, pane);
+}
+
+/// The pane's toolbar buttons, from what its status bar shows (where the tab is, its selection)
+/// and the clipboard; set only when they change, in `update_status`'s rhythm (P6-M3).
+fn update_tools(st: &State, app: &App, pane: usize) {
+    let path = st.tab(pane).path.to_string_lossy();
+    let place = if is_this_pc(&path) {
+        toolbar::Place::ThisPc
+    } else if st.is_search(pane) {
+        toolbar::Place::Search
+    } else if in_archive(st, pane) {
+        toolbar::Place::Archive
+    } else {
+        toolbar::Place::Folder
+    };
+    let tools = toolbar::state(place, st.model(pane).selected_count(), st.clip_files);
+    let now = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
+    if now != tools {
+        if pane == 0 { app.set_left_tools(tools) } else { app.set_right_tools(tools) }
+    }
+}
+
+/// A toolbar button (P6-M3): the pane becomes active and the button runs its key's command, so
+/// there is one path per command. The list takes the keys after it, except after the three
+/// buttons that open the name editor, which takes them itself: the list's focus request lands a
+/// moment later (a `changed` handler) and would close the editor again.
+fn toolbar_clicked(pane: usize, button: &str) {
+    let Some(cmd) = toolbar::command(button) else {
+        return eprintln!("[toolbar] pane={pane} no button {button}");
+    };
+    eprintln!("[toolbar] pane={pane} {button} -> {cmd}");
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    if matches!(cmd, "rename" | "newfile" | "newfolder") {
+        app.set_active_pane(pane as i32);
+    } else {
+        app.invoke_focus_pane(pane as i32);
+    }
+    command(pane, cmd);
 }
 
 /// The running job's percentage for a tab's status bar: only on the pane and tab that submitted
@@ -676,6 +764,19 @@ fn update_tabs(st: &State, pane: usize) {
         if x <= -0.5 {
             eprintln!("[tab] pane={pane} strip scrolled to {x:.0} (tab {} of {} in view)", active + 1, tabs.len());
         }
+    }
+}
+
+/// The pane's tab strip changed width (pane.slint `strip-resized`): its active tab is scrolled back
+/// into view, logged when the strip's offset moves (a splitter drag calls this on every move).
+fn strip_resized(pane: usize) {
+    let Some((app, active, n)) = with_state(|st| Some((st.app.upgrade()?, st.panes[pane].active_index(), st.panes[pane].len()))) else {
+        return;
+    };
+    let before = app.invoke_tab_offset(pane as i32);
+    let x = app.invoke_reveal_tab(pane as i32, active as i32);
+    if (x - before).abs() >= 0.5 {
+        eprintln!("[tab] pane={pane} strip resized: scrolled to {x:.0} (tab {} of {n} in view)", active + 1);
     }
 }
 
@@ -725,11 +826,29 @@ fn save_now() {
         let app = st.app.upgrade()?;
         // Each pane's tabs; a pane whose tabs never had a folder (the second pane before the
         // split was first opened) keeps the saved list.
-        let tab_paths = |tabs: &Tabs<Tab>| {
-            let v: Vec<String> = tabs.iter().map(|t| t.path.to_string_lossy().to_string()).collect();
-            v.iter().all(|p| !p.is_empty()).then_some((v, tabs.active_index()))
+        // Each tab with its view (P6-M3): the active one's cursor and scroll as the list has them
+        // now, the others' as they were left.
+        let tab_paths = |pane: usize, tabs: &Tabs<Tab>| {
+            let active = tabs.active_index();
+            let v: Vec<settings::SavedTab> = tabs
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let (cursor, scroll) = if i == active { (current_row(&app, pane), app.invoke_get_scroll(pane as i32)) } else { (t.cursor, t.scroll) };
+                    let cursor = t.restore_cursor.clone().or_else(|| usize::try_from(cursor).ok().and_then(|r| t.model.entry(r)).map(|e| e.name));
+                    settings::SavedTab {
+                        path: t.path.to_string_lossy().to_string(),
+                        sort: Some(settings::sort_name(t.model.sort_col.get()).into()),
+                        ascending: Some(t.model.sort_asc.get()),
+                        hidden: Some(t.model.show_hidden.get()),
+                        cursor: cursor.map(|c| c.to_string()),
+                        scroll: Some(t.restore_scroll.unwrap_or(scroll)),
+                    }
+                })
+                .collect();
+            v.iter().all(|t| !t.path.is_empty()).then_some((v, active))
         };
-        let (left_tabs, right_tabs) = (tab_paths(&st.panes[0]), tab_paths(&st.panes[1]));
+        let (left_tabs, right_tabs) = (tab_paths(0, &st.panes[0]), tab_paths(1, &st.panes[1]));
         let c = &mut st.config;
         if let Some((v, a)) = left_tabs {
             (c.left_tabs, c.left_active) = (v, a);
@@ -1027,7 +1146,7 @@ fn explained_names(dir: &Path, job: &Job, results: &[fileops::ItemResult]) -> Ha
     }
     match job {
         Job::Rename { source, new_name } => add(&source.with_file_name(new_name)),
-        Job::NewFolder { parent, name } => add(&parent.join(name)),
+        Job::NewFolder { parent, name } | Job::NewFile { parent, name } => add(&parent.join(name)),
         _ => {}
     }
     set
@@ -1185,6 +1304,7 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                 t.watched_bg = false;
                 if !active && t.search.is_none() {
                     t.stale = true;
+                    t.drop_sizes(pane, "not watched in the background");
                 }
             }
             return;
@@ -1228,10 +1348,16 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
             } else if t.search.is_none() {
                 t.stale = true;
                 eprintln!("[watch] pane={pane} tab={tab_id} watch lost ({error}): stale");
+                t.drop_sizes(pane, "watch lost");
             }
             return;
         }
         Event::Changed { changes, records, overflow, .. } => {
+            // A stale background tab is watched only for its folder sizes; its listing is
+            // refreshed when it is shown.
+            if !active && t.stale {
+                return;
+            }
             let reason = if overflow {
                 "overflow".to_string()
             } else if changes.is_empty() {
@@ -1287,6 +1413,15 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                 // delay; changes meanwhile join that one re-walk (no line for them).
                 let now = Instant::now();
                 for (child, change) in &changes {
+                    // A background tab walks nothing: a changed folder's size is dropped there.
+                    if !active {
+                        if let Some(name) = t.sizes.cache.keys().find(|k| k.eq_ignore_ascii_case(child)).cloned() {
+                            t.sizes.forget(&name);
+                            t.model.set_size(&name, None);
+                            eprintln!("[size] invalidated {} ({change}): tab in the background, size dropped", t.path.join(&name).display());
+                        }
+                        continue;
+                    }
                     if let Some((name, delay)) = t.sizes.invalidate(child, now) {
                         let path = t.path.join(&name);
                         eprintln!("[size] invalidated {} ({change})", path.display());
@@ -1295,10 +1430,16 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                     }
                 }
             }
+            // As for `Changed`: a stale background tab refreshes when it is shown.
+            if !overflow && !active && t.stale {
+                return;
+            }
             if stale {
                 arm_rewalk(st, pane);
             }
-            if !(top || overflow || !active) {
+            // Re-sizing the selection is the active tab's (a background one keeps what it has).
+            let resize = resize && active;
+            if !(top || overflow) {
                 eprintln!("[watch] pane={pane} tab={tab_id} changed below the folder: no refresh");
                 if resize {
                     resize_after_change(st, pane);
@@ -1654,7 +1795,7 @@ fn request_pass(st: &mut State, pane: usize, id: u64) {
     let active = st.is_active(pane, id);
     let Some(t) = st.find(pane, id) else { return };
     let model = t.model.clone();
-    let (col, asc, show_hidden) = (model.sort_col.get(), model.sort_asc.get(), model.show_hidden.get());
+    let (col, asc, show_hidden) = (model.sort_col.get(), model.sort_asc.get(), model.show());
     let filter = model.filter.borrow().clone();
     if active {
         if pane == 0 {
@@ -1679,6 +1820,12 @@ fn request_pass(st: &mut State, pane: usize, id: u64) {
     if let Some(name) = focus {
         restore.cursor = Some(name.clone());
         restore.selected = vec![name];
+    }
+    // A restored tab's cursor row, once its listing is complete (P6-M3).
+    if t.timing.done_ms.is_some() {
+        if let Some(name) = t.restore_cursor.take() {
+            restore.cursor = Some(name);
+        }
     }
     let sel_version = model.sel_version.get();
     let t0 = Instant::now();
@@ -1744,6 +1891,13 @@ fn land_pass(
     if let (Some(y), Some(_)) = (scroll, cursor) {
         app.invoke_set_scroll(pane as i32, y);
         eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
+    }
+    // A restored tab's saved scroll, on the pass that placed its cursor (P6-M3).
+    if t.restore_cursor.is_none() && t.timing.done_ms.is_some() {
+        if let Some(y) = t.restore_scroll.take() {
+            app.invoke_set_scroll(pane as i32, y);
+            eprintln!("[tab] pane={pane} tab={id} restored: cursor {cursor:?}, scroll {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
+        }
     }
     // Once per pass swap, never per frame: bring an operation's cursor row (its grid row in the
     // grid) into view.
@@ -2260,7 +2414,12 @@ fn command(pane: usize, cmd: &str) {
             if band_cancel(pane) {
                 return;
             }
-            return cancel_queued(pane);
+            // Explorer's Escape clears the selection; ours stops a search and cancels queued
+            // jobs first, and clears the selection only when it did neither (P6-M3).
+            if !cancel_queued(pane) {
+                clear_selection(pane);
+            }
+            return;
         }
         _ => {}
     }
@@ -2270,10 +2429,14 @@ fn command(pane: usize, cmd: &str) {
         let at_drives = is_this_pc(&folder.to_string_lossy());
         match cmd {
             "sizeall" => size_all(st, &app, pane),
-            "newfolder" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
+            "newfolder" | "newfile" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
             "newfolder" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a folder in it".into()),
+            "newfile" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a file in it".into()),
             "newfolder" if in_archive(st, pane) => refuse_archive(st, &app, pane, "new folder", EDIT_ARCHIVE),
+            "newfile" if in_archive(st, pane) => refuse_archive(st, &app, pane, "new file", EDIT_ARCHIVE),
             "newfolder" => return Some((app, 2, SharedString::from("New folder"))),
+            // Explorer's name for a new empty file (P6-M3); the shell numbers it on a collision.
+            "newfile" => return Some((app, 3, SharedString::from(fileops::NEW_FILE_NAME))),
             "rename" | "delete" | "sdelete" if in_archive(st, pane) => {
                 let what = match cmd {
                     "sdelete" => "permanent delete",
@@ -2332,7 +2495,7 @@ fn command(pane: usize, cmd: &str) {
     }
 }
 
-/// The inline name editor's Return: rename the row or create the folder.
+/// The inline name editor's Return: rename the row, or create the folder or the file.
 fn edit_commit(pane: usize, mode: i32, original: &str, typed: &str) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
@@ -2350,6 +2513,7 @@ fn edit_commit(pane: usize, mode: i32, original: &str, typed: &str) {
             1 if name == original || (!parent.is_empty() && original.ends_with(&format!("\\{name}"))) => return,
             1 => Job::Rename { source: folder.join(original), new_name: name.into() },
             2 => Job::NewFolder { parent: folder, name: name.into() },
+            3 => Job::NewFile { parent: folder, name: name.into() },
             _ => return,
         };
         submit(st, &app, pane, job);
@@ -2501,22 +2665,41 @@ fn replay_text(replay: Replay, done: bool, orig: &str, status: &str) -> String {
 
 /// Escape in a pane's list: cancel every queued job that has not started (each reports
 /// `Cancelled` through `job_done`); the running one goes on.
-fn cancel_queued(pane: usize) {
+fn cancel_queued(pane: usize) -> bool {
     with_state(|st| {
         // Escape in a search tab's list also stops its walk; the results so far stay.
         let t = st.tab(pane);
+        let mut stopped = false;
         if let Some(s) = t.search.as_ref().filter(|_| t.timing.done_ms.is_none() && t.timing.error.is_none()) {
             s.cancel(fs::enumerate::SEARCH_ESCAPE);
             eprintln!("[search] pane={pane} Escape: stopping the search");
+            stopped = true;
         }
         let queued = st.jobs.len().saturating_sub(1);
         if queued == 0 {
-            return;
+            return stopped;
         }
         st.ops.cancel_queued(st.next_job);
         eprintln!("[fileops] Escape: cancelling {queued} queued operation(s) up to id {}", st.next_job);
         if let Some(app) = st.app.upgrade() {
             note(st, &app, pane, format!("Cancelling {queued} queued operation{}", if queued == 1 { "" } else { "s" }));
+        }
+        true
+    })
+}
+
+/// Escape with nothing to cancel: the pane's selection is cleared (the cursor stays).
+fn clear_selection(pane: usize) {
+    with_state(|st| {
+        let model = st.model(pane);
+        if model.selected_count() == 0 {
+            return;
+        }
+        model.select(SelOp::Clear, 0);
+        eprintln!("[select] pane={pane} Escape: selection cleared");
+        size_selection(st, pane);
+        if let Some(app) = st.app.upgrade() {
+            update_status(st, &app, pane);
         }
     });
 }
@@ -2701,7 +2884,7 @@ fn job_done(d: fileops::Done) {
             if d.outcome == Outcome::Done {
                 // The name the shell really used ("New folder (2)"), else the one asked for.
                 match &d.job {
-                    Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } => {
+                    Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } | Job::NewFile { name: n, .. } => {
                         let real = fileops::real_name(&d.job, &d.results).unwrap_or_else(|| n.clone());
                         t.focus_name = Some(real.as_str().into());
                     }
@@ -3280,6 +3463,8 @@ pub fn window_layout(app: &App) -> dnd::Layout {
             app.get_right_grid().then(|| app.get_right_grid_cols().max(1) as usize),
         ],
         tile: [icons::TileGeom::of(app.get_left_medium()), icons::TileGeom::of(app.get_right_medium())],
+        top: if app.get_toolbar() == settings::Toolbar::Top.index() { dnd::TOP_BAR } else { 0.0 },
+        bar: if app.get_toolbar() == settings::Toolbar::Pane.index() { dnd::PANE_BAR } else { 0.0 },
     }
 }
 
@@ -3522,7 +3707,7 @@ pub fn side_row_centre(i: i32) -> Option<f32> {
         let rows = side_rows(st, &app);
         let i = if i < 0 { rows.len().checked_sub(i.unsigned_abs() as usize)? } else { i as usize };
         let h = rows.get(i)?.0;
-        Some(dnd::SIDE_TOP + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
+        Some(dnd::side_top(&window_layout(&app)) + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
     })
 }
 
@@ -3990,10 +4175,10 @@ fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
         if st.panes[pane].active_index() == before {
             return None;
         }
-        // It keeps a shallow watch if the watch set has room for it (`watch_tabs`, from
-        // `show_tab`), else it goes stale. Its sizes go: a background watch sees no subfolder.
-        if let Some(t) = st.panes[pane].iter_mut().nth(before).filter(|t| t.search.is_none()) {
-            t.drop_sizes(pane, "tab in the background");
+        // It keeps a watch if the watch set has room for it (`watch_tabs`, from `show_tab`), a
+        // subtree watch while it has folder sizes, which it keeps; else it goes stale.
+        if let Some(t) = st.panes[pane].iter_mut().nth(before) {
+            t.background_sizes(pane);
         }
         check_gone(st, pane);
         show_tab(st, &app, pane);
@@ -4022,16 +4207,15 @@ fn open_tab(pane: usize, path: Option<PathBuf>) {
         let app = st.app.upgrade()?;
         save_view(st, &app, pane);
         // Leaves the foreground, watched in the background if the set has room (see switch_tab).
-        if !st.is_search(pane) {
-            st.tab_mut(pane).drop_sizes(pane, "tab in the background");
-        }
+        st.tab_mut(pane).background_sizes(pane);
         let cur = st.tab(pane);
-        let (col, asc, hidden) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get());
+        let (col, asc, show) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show());
         let path = path.unwrap_or_else(|| cur.path.clone());
         let t = st.new_tab(path.clone());
         t.model.sort_col.set(col);
         t.model.sort_asc.set(asc);
-        t.model.show_hidden.set(hidden);
+        t.model.show_hidden.set(show.hidden);
+        t.model.show_protected.set(show.protected);
         let id = t.id;
         st.panes[pane].open(t);
         show_tab(st, &app, pane);
@@ -4211,6 +4395,16 @@ pub fn crumb_menu_index(name: &str) -> Option<usize> {
 /// TwinFM's own write and rows show as cut, the cut is no longer on the clipboard: clear them.
 pub fn clipboard_changed() {
     with_state(|st| {
+        // Paste applies with files on the clipboard (the toolbar), whoever put them there.
+        let files = toolbar::clipboard_has_files();
+        if files != st.clip_files {
+            st.clip_files = files;
+            eprintln!("[toolbar] clipboard {} files", if files { "holds" } else { "holds no" });
+            if let Some(app) = st.app.upgrade() {
+                update_tools(st, &app, 0);
+                update_tools(st, &app, 1);
+            }
+        }
         if clipboard::taken_from_cut(clipboard::sequence(), st.clip_seq, st.cut_source.is_some()) {
             clear_cuts(st);
             eprintln!("[clipboard] another program took the clipboard: cut marks cleared");
@@ -4248,6 +4442,20 @@ fn toggle_hidden(pane: usize) {
         // The pane's new tabs follow its last Ctrl+H.
         if pane == 0 { st.config.show_hidden_left = shown } else { st.config.show_hidden_right = shown }
         schedule_save(st);
+        let id = st.tab(pane).id;
+        request_pass(st, pane, id);
+    });
+}
+
+/// The settings dialog's protected-files switch for a pane (P6-M3): every tab of the pane follows
+/// it, the active one at once, the others when next listed (their pass runs on show).
+fn set_protected(pane: usize, on: bool) {
+    with_state(|st| {
+        if pane == 0 { st.config.show_protected_left = on } else { st.config.show_protected_right = on }
+        for t in st.panes[pane].iter() {
+            t.model.show_protected.set(on);
+        }
+        eprintln!("[hidden] pane={pane} show_protected={on}");
         let id = st.tab(pane).id;
         request_pass(st, pane, id);
     });
@@ -4369,13 +4577,14 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
             save_view(st, &app, pane);
             // Leaves the foreground, watched in the background if the set has room (see
             // switch_tab).
-            st.tab_mut(pane).drop_sizes(pane, "tab in the background");
+            st.tab_mut(pane).background_sizes(pane);
             let cur = st.tab(pane);
-            let (col, asc, hidden, root) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get(), cur.path.clone());
+            let (col, asc, show, root) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show(), cur.path.clone());
             let mut t = st.new_tab(root.clone());
             t.model.sort_col.set(col);
             t.model.sort_asc.set(asc);
-            t.model.show_hidden.set(hidden);
+            t.model.show_hidden.set(show.hidden);
+            t.model.show_protected.set(show.protected);
             if t.history.push(&Place::folder(root.clone()), &to(&root)) {
                 eprintln!("[nav] pane={pane} history push {} ({} back)", root.display(), t.history.back_len());
             }
@@ -4392,6 +4601,7 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
             old.cancel(fs::enumerate::SEARCH_REPLACED);
         }
         t.search = Some(Search { pattern: matcher.clone(), cancel: cancel.clone() });
+        t.model.search_names.set(true);
         *t.model.filter.borrow_mut() = NameMatch::default();
         t.model.generation.set(generation);
         t.model.clear();
@@ -4406,7 +4616,7 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
         t.watch_refresh = false;
         t.cursor = -1;
         t.scroll = 0.0;
-        let (id, root, hidden) = (t.id, t.path.clone(), t.model.show_hidden.get());
+        let (id, root, hidden) = (t.id, t.path.clone(), t.model.show());
         if st.cut_source == Some((pane, id)) {
             st.cut_source = None;
         }
@@ -4493,12 +4703,15 @@ fn settings_open() {
             start_right: st.config.start_right.clone(),
             show_hidden_left: st.model(0).show_hidden.get(),
             show_hidden_right: st.model(1).show_hidden.get(),
+            show_protected_left: st.config.show_protected_left,
+            show_protected_right: st.config.show_protected_right,
             view_left: view_of(st, 0).name().into(),
             view_right: view_of(st, 1).name().into(),
             show_type: st.config.show_type,
             thumbnails: st.config.thumbnails,
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
+            toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
         };
         st.dialog = Some(d.clone());
         let note = match &st.config_path {
@@ -4513,12 +4726,15 @@ fn settings_open() {
     app.set_dlg_start_right(d.start_right.into());
     app.set_dlg_hidden_left(d.show_hidden_left);
     app.set_dlg_hidden_right(d.show_hidden_right);
+    app.set_dlg_protected_left(d.show_protected_left);
+    app.set_dlg_protected_right(d.show_protected_right);
     app.set_dlg_view_left(settings::View::from_name(&d.view_left).index());
     app.set_dlg_view_right(settings::View::from_name(&d.view_right).index());
     app.set_dlg_type_column(d.show_type);
     app.set_dlg_thumbnails(d.thumbnails);
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
+    app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
     // Outside the state borrow: showing the popup moves keyboard focus.
@@ -4535,12 +4751,15 @@ fn settings_closed(ok: bool) {
         start_right: app.get_dlg_start_right().to_string(),
         show_hidden_left: app.get_dlg_hidden_left(),
         show_hidden_right: app.get_dlg_hidden_right(),
+        show_protected_left: app.get_dlg_protected_left(),
+        show_protected_right: app.get_dlg_protected_right(),
         view_left: settings::View::from_index(app.get_dlg_view_left()).name().into(),
         view_right: settings::View::from_index(app.get_dlg_view_right()).name().into(),
         show_type: app.get_dlg_type_column(),
         thumbnails: app.get_dlg_thumbnails(),
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
+        toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
     }
     .normalized();
     let changes = opened.changes(&staged);
@@ -4559,6 +4778,10 @@ fn settings_closed(ok: bool) {
                     toggle_hidden(pane);
                 }
             }
+            "show_protected_left" | "show_protected_right" => {
+                let pane = usize::from(*key == "show_protected_right");
+                set_protected(pane, if pane == 0 { staged.show_protected_left } else { staged.show_protected_right });
+            }
             "view_left" | "view_right" => set_view(usize::from(*key == "view_right"), settings::View::from_name(new)),
             "show_type" => with_state(|st| set_show_type(st, &app, staged.show_type)),
             "thumbnails" => {
@@ -4572,6 +4795,11 @@ fn settings_closed(ok: bool) {
                 }
             }
             "path_bar" => app.set_path_entry_sticky(staged.path_bar == "entry"),
+            "toolbar" => {
+                let t = settings::Toolbar::from_name(&staged.toolbar);
+                app.set_toolbar(t.index());
+                with_state(|st| st.config.toolbar = t.name().into());
+            }
             _ => {}
         }
     }
@@ -4699,26 +4927,32 @@ fn main() -> Result<(), slint::PlatformError> {
     // the others are stale and list their folder when first shown.
     let arg = std::env::args().nth(1);
     let (left_paths, left_active) = match &arg {
-        Some(a) => (vec![a.clone()], 0),
+        Some(a) => (vec![settings::SavedTab::path(a)], 0),
         None => settings::start_tabs(&config.left_tabs, config.left_active, &config.start_left),
     };
-    let right_start = if config.start_right.is_empty() { left_paths[left_active].clone() } else { config.start_right.clone() };
+    let right_start = if config.start_right.is_empty() { left_paths[left_active].path.clone() } else { config.start_right.clone() };
     let (right_paths, right_active) = if config.split {
         settings::start_tabs(&config.right_tabs, config.right_active, &right_start)
     } else {
-        (vec![String::new()], 0)
+        (vec![settings::SavedTab::path("")], 0)
     };
     let mut next_tab = 0;
-    let mut restore = |paths: &[String], active: usize, hidden: bool| {
+    // A tab saved with its view (P6-M3) gets its sort, hidden files, cursor and scroll back; a bare
+    // path takes the defaults new tabs have. A saved Type sort with the Type column off sorts by name.
+    let mut restore = |paths: &[settings::SavedTab], active: usize, hidden: bool, protected: bool| {
         let mut tabs: Vec<Tab> = paths
             .iter()
             .enumerate()
             .map(|(i, p)| {
                 next_tab += 1;
-                let t = Tab { path: PathBuf::from(p), stale: i != active, ..blank_tab(next_tab, &icons) };
-                t.model.sort_col.set(settings::sort_from_name(&config.sort_column));
-                t.model.sort_asc.set(config.sort_ascending);
-                t.model.show_hidden.set(hidden);
+                let mut t = Tab { path: PathBuf::from(&p.path), stale: i != active, ..blank_tab(next_tab, &icons) };
+                let sort = settings::sort_from_name(p.sort.as_deref().unwrap_or(&config.sort_column));
+                t.model.sort_col.set(if sort == SortCol::Type && !config.show_type { SortCol::Name } else { sort });
+                t.model.sort_asc.set(p.ascending.unwrap_or(config.sort_ascending));
+                t.model.show_hidden.set(p.hidden.unwrap_or(hidden));
+                t.model.show_protected.set(protected);
+                t.restore_cursor = p.cursor.as_deref().map(SharedString::from);
+                t.restore_scroll = p.scroll.filter(|y| y.is_finite() && *y < 0.0);
                 t
             })
             .collect();
@@ -4726,8 +4960,8 @@ fn main() -> Result<(), slint::PlatformError> {
         Tabs::restored(first, tabs, active)
     };
     let panes = [
-        restore(&left_paths, left_active, config.show_hidden_left),
-        restore(&right_paths, right_active, config.show_hidden_right),
+        restore(&left_paths, left_active, config.show_hidden_left, config.show_protected_left),
+        restore(&right_paths, right_active, config.show_hidden_right, config.show_protected_right),
     ];
     for (pane, tabs) in panes.iter().enumerate() {
         if tabs.len() > 1 {
@@ -4758,6 +4992,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_sidebar_width(config.sidebar_width);
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
+    app.set_toolbar(settings::Toolbar::from_name(&config.toolbar).index());
     app.set_show_type(config.show_type);
     app.set_thumbnails(config.thumbnails);
     if config.thumbnails {
@@ -4800,6 +5035,7 @@ fn main() -> Result<(), slint::PlatformError> {
             jobs: HashMap::new(),
             cut_source: None,
             clip_seq: 0,
+            clip_files: toolbar::clipboard_has_files(),
             undo: Vec::new(),
             redo: Vec::new(),
             progress: None,
@@ -4963,6 +5199,8 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_context_menu(|pane, row, x, y, extended| context_menu(pane as usize, row, x, y, extended));
     app.on_context_key(|pane, row, lx, ly, cy, vh| context_key(pane as usize, row, lx, ly, cy, vh));
     app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
+    app.on_strip_resized(|pane| strip_resized(pane as usize));
+    app.on_toolbar_clicked(|pane, button| toolbar_clicked(pane as usize, button.as_str()));
     app.on_edit_commit(|pane, mode, original, typed| edit_commit(pane as usize, mode, original.as_str(), typed.as_str()));
     app.on_tab_select(|pane, i| {
         if let Ok(i) = usize::try_from(i) {
@@ -5034,10 +5272,10 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     // Each pane's active tab lists its folder; the restored background tabs wait until shown.
-    navigate(0, PathBuf::from(&left_paths[left_active]));
+    navigate(0, PathBuf::from(&left_paths[left_active].path));
     if config.split {
         app.set_split(true);
-        navigate(1, PathBuf::from(&right_paths[right_active]));
+        navigate(1, PathBuf::from(&right_paths[right_active].path));
     }
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);

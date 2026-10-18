@@ -181,7 +181,7 @@ impl SortCol {
 pub struct PaneModel {
     /// Every entry of the listing, unfiltered, in enumeration order.
     all: RefCell<Vec<Entry>>,
-    /// What the list shows: `all` without hidden/system entries (unless `show_hidden`), sorted
+    /// What the list shows: `all` without the hidden entries `show` keeps out, sorted
     /// by the last worker pass. `row_count` and `row_data` read only this.
     shown: RefCell<Vec<Entry>>,
     /// How many entries of `all` the hidden-file switch currently keeps out of `shown`.
@@ -216,8 +216,14 @@ pub struct PaneModel {
     pub sort_col: Cell<SortCol>,
     pub sort_asc: Cell<bool>,
     pub show_hidden: Cell<bool>,
+    /// The pane's protected-files setting (P6-M3; `show_protected_*`, the settings dialog): with
+    /// `show_hidden` too, entries both hidden and system are shown.
+    pub show_protected: Cell<bool>,
     /// The tab's name filter (Ctrl+F), applied by the same pass as `show_hidden`; empty: none.
     pub filter: RefCell<NameMatch>,
+    /// The names are paths under a search's root (`sub\file.txt`): the rows show them file name
+    /// first (`search_label`, P6-M3). The entries, the sort and every command keep the path.
+    pub search_names: Cell<bool>,
     /// Shell icons, shared by both panes; `Entry::icon` indexes it and the pane's icon strip
     /// is composed from it (`icons::compose`).
     icons: Rc<RefCell<IconTable>>,
@@ -252,8 +258,15 @@ impl PaneModel {
             sort_col: Cell::new(SortCol::Name),
             sort_asc: Cell::new(true),
             show_hidden: Cell::new(false),
+            show_protected: Cell::new(false),
             filter: RefCell::new(NameMatch::default()),
+            search_names: Cell::new(false),
         }
+    }
+
+    /// The tab's hidden-file switches, as the passes apply them.
+    pub fn show(&self) -> Show {
+        Show { hidden: self.show_hidden.get(), protected: self.show_protected.get() }
     }
 
     /// Give the rows in `first..=last` (clamped to the list) their shell icon at `px` where the
@@ -540,7 +553,7 @@ impl PaneModel {
             self.incoming.borrow_mut().append(&mut batch);
             return;
         }
-        let show_hidden = self.show_hidden.get();
+        let show_hidden = self.show();
         let filter = self.filter.borrow();
         let start = self.shown.borrow().len();
         {
@@ -795,7 +808,7 @@ impl PaneModel {
         }
 
         // Phase 2: apply the plan; nothing below can fail.
-        let (col, asc, show_hidden) = (self.sort_col.get(), self.sort_asc.get(), self.show_hidden.get());
+        let (col, asc, show_hidden) = (self.sort_col.get(), self.sort_asc.get(), self.show());
         let filter = self.filter.borrow();
         let mut shown = self.shown.borrow_mut();
         let mut sel = self.sel.borrow_mut();
@@ -1056,7 +1069,7 @@ impl Model for PaneModel {
         let shown = self.shown.borrow();
         let e = shown.get(row)?;
         Some(Row {
-            name: e.name.clone(),
+            name: if self.search_names.get() { search_label(&e.name) } else { e.name.clone() },
             type_text: e.type_text.clone(),
             size: e.size_text.clone(),
             modified: e.modified_text.clone(),
@@ -1072,6 +1085,16 @@ impl Model for PaneModel {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+/// A search result's name as its row shows it (P6-M3): the file's own name first, then the folder
+/// it is in under the search's root, so the name is never the part that is cut short
+/// (`sub\dir\file.txt` reads `file.txt  (sub\dir)`). A result in the root itself is its name.
+pub fn search_label(name: &str) -> SharedString {
+    match name.rsplit_once('\\') {
+        Some((dir, leaf)) => format!("{leaf}  ({dir})").into(),
+        None => name.into(),
     }
 }
 
@@ -1115,7 +1138,7 @@ impl Model for GridModel {
         let tiles: Vec<Tile> = shown[span]
             .iter()
             .enumerate()
-            .map(|(k, e)| Tile { name: e.name.clone(), selected: e.selected, cut: e.cut, current: (first + k) as i32 == cursor })
+            .map(|(k, e)| Tile { name: if m.search_names.get() { search_label(&e.name) } else { e.name.clone() }, selected: e.selected, cut: e.cut, current: (first + k) as i32 == cursor })
             .collect();
         Some(GridRow { first: first as i32, tiles: ModelRc::new(VecModel::from(tiles)) })
     }
@@ -1129,14 +1152,36 @@ impl Model for GridModel {
     }
 }
 
-/// Whether the hidden-file switch and the name filter let an entry through.
-pub fn visible(e: &Entry, show_hidden: bool, filter: &NameMatch) -> bool {
-    shows(e, show_hidden) && filter.matches(&e.name)
+/// The hidden-file switches (P6-M3, Explorer's two): `hidden` (Ctrl+H, per tab) shows entries
+/// with the hidden attribute; entries both hidden and system ("protected operating system files")
+/// need `protected` (a per-pane setting) as well. An entry with the system attribute alone is
+/// always shown, as Explorer shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Show {
+    pub hidden: bool,
+    pub protected: bool,
 }
 
-/// Whether the hidden-file switch lets an entry through.
-fn shows(e: &Entry, show_hidden: bool) -> bool {
-    show_hidden || !(e.is_hidden() || e.is_system())
+#[cfg(test)]
+impl Show {
+    /// Neither switch: what a new pane shows by default.
+    pub const OFF: Show = Show { hidden: false, protected: false };
+    /// Ctrl+H on, protected files still kept out.
+    pub const HIDDEN: Show = Show { hidden: true, protected: false };
+}
+
+/// Whether the hidden-file switches and the name filter let an entry through.
+pub fn visible(e: &Entry, show: Show, filter: &NameMatch) -> bool {
+    shows(e, show) && filter.matches(&e.name)
+}
+
+/// Whether the hidden-file switches let an entry through.
+pub fn shows(e: &Entry, show: Show) -> bool {
+    match (e.is_hidden(), e.is_system()) {
+        (false, _) => true,
+        (true, false) => show.hidden,
+        (true, true) => show.hidden && show.protected,
+    }
 }
 
 /// The name filter's pattern, prepared once per pass: case-insensitive (Unicode lowercase on both
@@ -1238,9 +1283,9 @@ impl PassOutput {
     }
 }
 
-/// The worker pass: filter a snapshot of `all` (hidden-file switch, then name filter), sort it,
+/// The worker pass: filter a snapshot of `all` (hidden-file switches, then name filter), sort it,
 /// and carry the cursor and selection over by name. Pure, runs off the UI thread.
-pub fn filter_sort(mut all: Vec<Entry>, show_hidden: bool, filter: &NameMatch, col: SortCol, asc: bool, r: &Restore) -> PassOutput {
+pub fn filter_sort(mut all: Vec<Entry>, show_hidden: Show, filter: &NameMatch, col: SortCol, asc: bool, r: &Restore) -> PassOutput {
     let before = all.len();
     all.retain(|e| shows(e, show_hidden));
     let hidden = before - all.len();
@@ -1688,7 +1733,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_hides_hidden_and_system_unless_shown() {
+    fn filter_hides_hidden_and_protected_unless_shown() {
         let a = |name: &str, attrs: u32| Entry::new(name.into(), 0, 0, attrs, "".into());
         let all = vec![
             a("b", 0),
@@ -1697,23 +1742,45 @@ mod tests {
             a("a", 0),
             a("both", FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM),
         ];
-        let off = filter_sort(all.clone(), false, &NameMatch::default(), SortCol::Name, true, &Restore::default());
-        let names: Vec<&str> = off.shown.iter().map(|x| x.name.as_str()).collect();
-        assert_eq!(names, ["a", "b"]);
-        assert_eq!(off.hidden, 3);
-        let on = filter_sort(all.clone(), true, &NameMatch::default(), SortCol::Name, true, &Restore::default());
-        assert_eq!(on.shown.len(), 5);
-        assert_eq!(on.hidden, 0);
+        let names = |o: &PassOutput| o.shown.iter().map(|x| x.name.to_string()).collect::<Vec<_>>();
+        // A system file alone is always shown (Explorer); hidden ones need Ctrl+H, hidden and
+        // system ones the protected-files setting as well (P6-M3).
+        let off = filter_sort(all.clone(), Show::OFF, &NameMatch::default(), SortCol::Name, true, &Restore::default());
+        assert_eq!(names(&off), ["a", "b", "sys"]);
+        assert_eq!(off.hidden, 2);
+        let on = filter_sort(all.clone(), Show::HIDDEN, &NameMatch::default(), SortCol::Name, true, &Restore::default());
+        assert_eq!(names(&on), ["a", "b", "hid", "sys"]);
+        assert_eq!(on.hidden, 1);
+        let protected_only = Show { hidden: false, protected: true };
+        let p = filter_sort(all.clone(), protected_only, &NameMatch::default(), SortCol::Name, true, &Restore::default());
+        assert_eq!(names(&p), names(&off), "protected files need Ctrl+H too");
+        let both = Show { hidden: true, protected: true };
+        let all_on = filter_sort(all.clone(), both, &NameMatch::default(), SortCol::Name, true, &Restore::default());
+        assert_eq!((all_on.shown.len(), all_on.hidden), (5, 0));
 
         // Batches during enumeration: `all` keeps everything, `shown` only what passes.
         let m = PaneModel::default();
         m.append(all[..3].to_vec());
         m.append(all[3..].to_vec());
-        assert_eq!((m.total(), m.row_count(), m.hidden_count()), (5, 2, 3));
-        assert_eq!(m.row_data(1).unwrap().name.as_str(), "a");
+        assert_eq!((m.total(), m.row_count(), m.hidden_count()), (5, 3, 2));
+        assert_eq!(m.row_data(2).unwrap().name.as_str(), "a");
         m.show_hidden.set(true);
-        m.replace(filter_sort(m.snapshot_all(), true, &NameMatch::default(), SortCol::Name, true, &Restore::default()));
+        m.show_protected.set(true);
+        assert_eq!(m.show(), both);
+        m.replace(filter_sort(m.snapshot_all(), m.show(), &NameMatch::default(), SortCol::Name, true, &Restore::default()));
         assert_eq!((m.row_count(), m.hidden_count()), (5, 0));
+    }
+
+    #[test]
+    fn search_rows_show_the_file_name_first() {
+        assert_eq!(search_label(r"Windows\WinSxS\amd64_x\kernel32.dll").as_str(), r"kernel32.dll  (Windows\WinSxS\amd64_x)");
+        assert_eq!(search_label("top.txt").as_str(), "top.txt", "a result in the root is its name");
+        let m = PaneModel::default();
+        m.append(vec![Entry::new(r"sub\a.txt".into(), 0, 0, 0, "".into())]);
+        assert_eq!(m.row_data(0).unwrap().name.as_str(), r"sub\a.txt", "a folder tab shows names as they are");
+        m.search_names.set(true);
+        assert_eq!(m.row_data(0).unwrap().name.as_str(), "a.txt  (sub)");
+        assert_eq!(m.entry(0).unwrap().name.as_str(), r"sub\a.txt", "the entry keeps its path");
     }
 
     #[test]
@@ -1737,15 +1804,15 @@ mod tests {
     #[test]
     fn filter_and_hidden_combine_in_the_pass_and_the_batches() {
         let a = |name: &str, attrs: u32| Entry::new(name.into(), 0, 0, attrs, "".into());
-        let all = vec![a("one.txt", 0), a("two.log", 0), a("three.txt", FILE_ATTRIBUTE_HIDDEN), a("four.TXT", 0), a("sys.txt", FILE_ATTRIBUTE_SYSTEM)];
+        let all = vec![a("one.txt", 0), a("two.log", 0), a("three.txt", FILE_ATTRIBUTE_HIDDEN), a("four.TXT", 0), a("sys.txt", FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)];
         let txt = NameMatch::new("*.txt");
-        assert!(visible(&all[0], false, &txt) && !visible(&all[1], false, &txt) && !visible(&all[2], false, &txt));
-        assert!(visible(&all[2], true, &txt), "the filter never reveals a hidden file, the switch does");
-        let off = filter_sort(all.clone(), false, &txt, SortCol::Name, true, &Restore::default());
+        assert!(visible(&all[0], Show::OFF, &txt) && !visible(&all[1], Show::OFF, &txt) && !visible(&all[2], Show::OFF, &txt));
+        assert!(visible(&all[2], Show::HIDDEN, &txt), "the filter never reveals a hidden file, the switch does");
+        let off = filter_sort(all.clone(), Show::OFF, &txt, SortCol::Name, true, &Restore::default());
         let names: Vec<&str> = off.shown.iter().map(|x| x.name.as_str()).collect();
         assert_eq!(names, ["four.TXT", "one.txt"]);
         assert_eq!((off.hidden, off.filtered), (2, 1));
-        let on = filter_sort(all.clone(), true, &txt, SortCol::Name, true, &Restore::default());
+        let on = filter_sort(all.clone(), Show { hidden: true, protected: true }, &txt, SortCol::Name, true, &Restore::default());
         assert_eq!((on.shown.len(), on.hidden, on.filtered), (4, 0, 1));
 
         // Batches during enumeration count the two apart as the pass does.
@@ -1755,7 +1822,7 @@ mod tests {
         m.append(all[2..].to_vec());
         assert_eq!((m.total(), m.row_count(), m.hidden_count(), m.filtered_count()), (5, 2, 2, 1));
         // Cleared: the next pass shows every entry the hidden switch lets through.
-        m.replace(filter_sort(m.snapshot_all(), false, &NameMatch::default(), SortCol::Name, true, &Restore::default()));
+        m.replace(filter_sort(m.snapshot_all(), Show::OFF, &NameMatch::default(), SortCol::Name, true, &Restore::default()));
         assert_eq!((m.row_count(), m.hidden_count(), m.filtered_count()), (3, 2, 0));
     }
 
@@ -1861,7 +1928,7 @@ mod tests {
         let gone = Restore { cursor: Some("zz".into()), selected: vec!["zz".into()], cut: vec![], fallback_index: None };
         assert_eq!(restore_by_name(&gone, &new), (None, BTreeSet::new()));
         // A pass carries the selection over a re-sort, and marks the rows.
-        let out = filter_sort(m.snapshot_all(), false, &NameMatch::default(), SortCol::Name, false, &r);
+        let out = filter_sort(m.snapshot_all(), Show::OFF, &NameMatch::default(), SortCol::Name, false, &r);
         let names: Vec<&str> = out.shown.iter().map(|x| x.name.as_str()).collect();
         assert_eq!(names, ["d", "c", "b", "a"]);
         assert_eq!((out.cursor, out.selection.clone()), (Some(0), set(&[0, 2])));
@@ -1971,7 +2038,7 @@ mod tests {
         m.finish_refresh();
         assert!(!m.is_refreshing());
         assert_eq!((m.row_count(), m.total()), (2, 3));
-        let cursor = m.replace(filter_sort(m.snapshot_all(), false, &NameMatch::default(), SortCol::Name, true, &r));
+        let cursor = m.replace(filter_sort(m.snapshot_all(), Show::OFF, &NameMatch::default(), SortCol::Name, true, &r));
         assert_eq!(cursor, Some(1)); // new order "0", "b", "c"
         assert_eq!(m.selected_names(), ["b"]);
         assert_eq!(m.row_count(), 3);
@@ -2009,7 +2076,7 @@ mod tests {
         m.sort_col.set(col);
         m.sort_asc.set(asc);
         m.pass.set(1);
-        m.replace(filter_sort(m.snapshot_all(), false, &m.filter.borrow().clone(), col, asc, &Restore::default()));
+        m.replace(filter_sort(m.snapshot_all(), Show::OFF, &m.filter.borrow().clone(), col, asc, &Restore::default()));
         m.set_landed_pass(1);
         assert!(m.settled());
         let rows: Peer = Box::pin(ModelChangeListenerContainer::new(Rec::default()));
@@ -2226,7 +2293,7 @@ mod tests {
         assert!(details.iter().all(|n| n != "reset"), "the details list never resets: {details:?}");
         assert_eq!(log(&g), ["reset"], "the grid resets once");
         // The list is still in the sort's order and agrees with a fresh pass over the listing.
-        let fresh = filter_sort(m.snapshot_all(), false, &NameMatch::default(), SortCol::Modified, false, &Restore::default());
+        let fresh = filter_sort(m.snapshot_all(), Show::OFF, &NameMatch::default(), SortCol::Modified, false, &Restore::default());
         assert_eq!(rows(&m), fresh.shown.iter().map(|x| x.name.to_string()).collect::<Vec<_>>());
         assert_eq!((m.len(), m.total()), (59, 59));
         assert_eq!(m.grid_len(), 15);
@@ -2549,12 +2616,12 @@ mod tests {
         let cut: Vec<bool> = (0..3).map(|i| m.row_data(i).unwrap().cut).collect();
         assert_eq!(cut, [false, true, true]);
         // A re-sort pass carries the marks by name.
-        let out = filter_sort(m.snapshot_all(), false, &NameMatch::default(), SortCol::Name, false, &m.capture(0));
+        let out = filter_sort(m.snapshot_all(), Show::OFF, &NameMatch::default(), SortCol::Name, false, &m.capture(0));
         m.replace(out);
         let cut: Vec<(String, bool)> = (0..3).map(|i| m.row_data(i).unwrap()).map(|r| (r.name.to_string(), r.cut)).collect();
         assert_eq!(cut, [("c".into(), true), ("b".into(), true), ("a".into(), false)]);
         // Clearing the cut while a pass is out: the swap re-derives the marks (none).
-        let mut out = filter_sort(m.snapshot_all(), false, &NameMatch::default(), SortCol::Name, true, &m.capture(0));
+        let mut out = filter_sort(m.snapshot_all(), Show::OFF, &NameMatch::default(), SortCol::Name, true, &m.capture(0));
         m.set_cut(vec![]);
         out.restore(&m.capture(0));
         m.replace(out);

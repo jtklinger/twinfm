@@ -988,6 +988,300 @@ Console checks after the triplet, TwinFM started unelevated:
    continuing from the tile under the band's last corner; Ctrl+Shift+1, 2 and 3 back and forth with
    no blown-up icons after a switch.
 
+## P6-M3: the toolbar and the polish bundle
+
+The third milestone (2026-10-17): the toolbar in both placements, New file, and the polish bundle
+(F2 for a bookmark, the breadcrumb dropdown's keyboard, restored tabs' state, the tab strip on
+resize, search result names, folder sizes across a tab switch, the Back button over a text entry,
+the protected-files switch), plus Escape clearing the selection (P6-M2 Deferred). Branch
+`feat/p6-m3-toolbar-polish`, from b6ecc21 (main after P6-M2 and its two docs PRs). The brief is the
+P6-M3 entry of the kickoff above. One implementer (Opus 5.5); the lead's review is the PR's.
+
+### Settled first (2026-10-17, before any code)
+
+Four places where the brief clashed with the code's rules or left a gap were put to Jeremy, each
+with a recommendation; he took all four:
+
+- **The button icons are Segoe Fluent Icons glyphs**, not the shell's stock images: Windows has no
+  stock image for Cut, Copy or Paste (`SHGetStockIconInfo` has the folder, the document, rename and
+  delete). The glyph font is the one Explorer's own command bar uses and ships with Windows 11; no
+  shell call, sharp at every scale.
+- **Search results show the file name first** (`file.txt  (sub\dir)`) instead of a Name column whose
+  width follows the longest result: a width binding in every row is what the P3-M1 amendment rules
+  out (0.7 of a point on the gate then).
+- **A click on a sidebar row gives the sidebar the keys**, as Explorer's navigation pane takes them,
+  so F2 has a bookmark to act on; the sidebar never took keyboard focus before.
+- **Escape cancels queued jobs first**: it stops a search walk and cancels queued jobs when there are
+  any, and only otherwise clears the selection.
+
+### What landed
+
+- **The toolbar** (`src/toolbar.rs`; pane.slint `ToolButton`, `ToolSeparator`, `Toolbar`): New file,
+  New folder | Cut, Copy, Paste | Rename, Delete, each calling its key's command through
+  `toolbar::command` and `main.rs` `command` (one path per command, the P6 amendment). The setting
+  `toolbar` (`settings::Toolbar`): `"top"`, the default, a labelled bar 36 px tall across the window
+  over the sidebar and the panes, acting on the active pane; `"pane"`, an icon-only bar 28 px tall at
+  the top of each pane, above its tab strip and path bar, acting on that pane (first placed under the
+  tab strip; moved above it after the console check, where a pane with a strip and one without had
+  their bars at different heights); `"none"`. In the settings
+  dialog as a "Toolbar" row (a ComboBox: none, across the top, in each pane; the dialog is 444 px
+  tall). The window layout carries the bars (`Layout::top`, `Layout::bar`; `dnd::TOP_BAR`,
+  `dnd::PANE_BAR`, `list_top`, `crumb_top`, and the new `tab_top`, `side_top`), so hit testing, the
+  drop target, the band, the auto-scroll and the driver follow; a point on the top bar is no target.
+  The in-pane bar is an `if` in the pane's layout, a sibling of the list, never a row property.
+- **Which buttons apply** (`toolbar::state`, `main.rs` `update_tools`), set at the end of
+  `update_status` and only when they change: in a folder New always, Paste with files on the
+  clipboard, Cut, Copy and Delete with a selection, Rename with exactly one; in a search tab the same
+  without New and Paste; nothing on This PC or in an archive level. The clipboard fact
+  (`State::clip_files`, `IsClipboardFormatAvailable(CF_HDROP)`) is read at start and on every
+  `WM_CLIPBOARDUPDATE`, our own writes included (`[toolbar] clipboard holds files`).
+- **A press** (`toolbar_clicked`) makes the pane active and focuses its list, then runs the command;
+  for Rename and the two New buttons it only makes the pane active, because the list's focus request
+  lands a moment later (a `changed` handler) and closed the name editor again (found in the scripted
+  check below).
+- **New file** (`Job::NewFile`, `fileops::NEW_FILE_NAME` "New Text Document.txt"): Ctrl+Alt+N or the
+  button opens the name editor (mode 3, as the folder's mode 2) with that name; Return makes the
+  empty file through `IFileOperation::NewItem` with `FILE_ATTRIBUTE_NORMAL` and no template,
+  `FOF_RENAMEONCOLLISION` numbering it as the shell numbers a new folder ("New Text Document
+  (2).txt"), the cursor on it after; undone to the Recycle Bin whatever was written into it since
+  (`must_be_empty: false`).
+- **Escape** in a list: the band first (grid), then a search walk and the queued jobs; with neither,
+  the selection is cleared (`clear_selection`; the cursor stays).
+- **Hidden and protected files** (`model::Show`, `shows`): Ctrl+H (per tab, `show_hidden_*` as
+  before) shows files with the hidden attribute; a file both hidden and system needs the pane's
+  protected-files setting as well (`show_protected_left` / `show_protected_right`, default false, the
+  dialog's "Protected files" row, applied to every tab of the pane); a file with the system attribute
+  alone is always shown. The search walker enters folders by the same rule.
+- **F2 for a bookmark** (app.slint `side-click`, `side-keys`): a left click on a sidebar row makes it
+  current and gives the sidebar the keys (the row is lit while it has them); F2 on a bookmark row
+  opens its title editor; Escape or Tab gives the keys back to the active pane's list, and a click in
+  a list takes them as before.
+- **The breadcrumb dropdown's keyboard** (app.slint `crumb-menu`): Down enters the list and moves a
+  highlight, Up moves it back, Return picks the highlighted folder, Escape closes; the highlighted row
+  is kept in view. Its key scope now takes the focus after the popup is shown (a token, as the
+  settings dialog's: a `focus()` in `init` ran before the popup took the focus away).
+- **Restored tabs** (`settings::SavedTab`): `left_tabs` / `right_tabs` are `[[left_tabs]]` tables
+  with each tab's sort, direction, hidden switch, cursor row (by name) and scroll; a bare list of
+  paths still loads (the defaults new tabs have). A restored tab's first pass after a complete listing
+  puts the cursor on the saved name and the pass that lands applies the scroll
+  (`Tab::restore_cursor`, `restore_scroll`); a navigation elsewhere first drops both. A saved Type
+  sort with the Type column off sorts by name, as the global sort already did.
+- **The tab strip on resize** (pane.slint `strip-resized`): when the strip's width changes (the
+  window, the split, the splitter, the sidebar) Rust reveals the active tab again
+  (`strip_resized`, logged when the offset moves).
+- **Search result names** (`model::search_label`, `PaneModel::search_names`): the rows of a search
+  tab read the file's name first and its folder under the root after it; the entries, the sort, the
+  filter and every command keep the relative path.
+- **Folder sizes across a tab switch** (`TabSizes::to_background`, `Tab::background_sizes`): a tab
+  sent to the background keeps its finished sizes (its walks in flight and its stale sizes go); its
+  background watch is a subtree watch while it has any; a change below a sized folder drops that
+  folder's size there (no re-walk in the background); a tab past the watch cap, or whose watch is lost
+  or refused, drops them all. A stale background tab with sizes stays in the watch set for them (its
+  windows do nothing else; its listing is refreshed on show), because a change inside a sized
+  subfolder also changes that subfolder's own entry, which makes the tab stale.
+- **The Back button over a text entry**: a `TouchArea` behind the path entry and behind the rename
+  editor takes the side buttons, which the `LineEdit` does not, so the pane's and the row's handlers no
+  longer see them (Back over the breadcrumb, the header and the list still goes back).
+- **Driver**: `toolbar <pane> <button>`, `newfile [name]` (key name `CtrlAltN`), `backclick <pane>
+  path|edit`, `sidebar click <row>` as a left click with a negative row from the end, `settings set
+  toolbar|protected_left|protected_right`.
+- **Tests**, 185 to 190: `toolbar::tests::buttons_apply_where_their_command_would` and
+  `each_button_calls_its_keys_command`, `settings::tests::toolbar_defaults_to_top_and_round_trips`,
+  `model::tests::search_rows_show_the_file_name_first`,
+  `fs::sizes::tests::a_background_tab_keeps_its_finished_sizes`; grown:
+  `filter_hides_hidden_and_protected_unless_shown` (renamed), `filter_and_hidden_combine_in_the_pass_and_the_batches`,
+  `hit_testing_and_drop_folder` (both bars), `tab_lists_round_trip_and_fall_back` (tables and the bare
+  list), `dialog_changes_are_the_differing_fields`, the `fileops` flags and status tests and the real
+  shell test (an empty new file, numbered on a collision), the undo table (a new file's undo).
+- **Soak**: `tools/soak-p5m3.ps1` gains the toolbar cycle (see `CLAUDE.md`).
+- **Docs**: `CLAUDE.md` (test count, the toolbar and its lines, the driver steps, the settings keys,
+  the soak).
+
+### Decisions
+
+- **The toolbar's default is `"top"`, so every scripted run has it**, the gate's included: its lists
+  are 36 px shorter than the reference's, and the defaults triplet measures that layout (as the
+  brief intends: the defaults are what Jeremy runs).
+- **Delete recycles**; Shift+Delete has no button (the kickoff's call).
+- **Paste is enabled by `CF_HDROP` alone**, the format `clipboard::read` takes; a clipboard holding
+  only a shell IDList (a copy inside a zip folder in Explorer) leaves it disabled, as Ctrl+V finds no
+  files there either.
+- **Search results keep their sort on the relative path**, so a Name sort groups them by folder; the
+  label changed, not the order, which keeps the 40,000-row sort path untouched (a leaf-first compare
+  would add a scan per comparison to every folder's sort).
+- **Protected files need Ctrl+H too**, as Explorer's "Hide protected operating system files" takes
+  effect only while hidden files show.
+- **A background tab walks nothing**: a changed sized folder loses its size there rather than being
+  walked again; it is walked when it is selected or sized again after the tab is shown.
+- **The cursor is saved by name**, not by row, so a folder that changed between runs still finds the
+  row (or none).
+
+### Deviations
+
+- **Glyphs, not stock images; file name first, not a wider column; the sidebar takes the keys**
+  (Settled first).
+- **Not in the brief**: the toolbar's focus rule for the editor buttons, the breadcrumb dropdown's
+  focus token, a stale background tab with sizes staying watched, and `sidebar click -1`.
+
+### Deferred
+
+- **The Back and Forward buttons over a toolbar button** do nothing (the button's `TouchArea` takes
+  the press), as over the tab strip and the scrollbar before.
+- **Tooltips** on the icon-only buttons (Slint has none built in); the accessible names carry them.
+- **Subtree records as edits** (P5-M1's piece left): a background tab with sizes goes stale on a
+  change in its folder itself and is listed again when shown (the sizes stay).
+- **Sorting search results by the file's own name.**
+- **Up and Down in the sidebar**: the sidebar takes F2, Escape and Tab only.
+- Accessibility of the toolbar beyond its buttons' names and roles (deferred for much later).
+
+### Scripted checks
+
+Harness session, 1216 x 839 window, scale 1.0, this branch's `target\release\twinfm.exe`; stderr
+kept; screenshots with `SLINT_BACKEND=winit-software` and `tools/shot.ps1`. Exit code 0 and no
+`panicked` line in every run.
+
+- **(i) Both placements** (`%TEMP%\twinfm-p6m3-check`, split, `click 0 0`, then `settings set toolbar
+  pane`): the labelled bar across the top and the icon bars in the panes render with the glyphs; with
+  an empty clipboard Paste is dimmed, the right pane's Cut, Copy, Rename and Delete are dimmed with
+  nothing selected there; `click 0 0` lands on row 0 under the top bar (the shifted hit test).
+- **(ii) Every button** (`toolbar = "pane"` from a scratch config, split, scratch folders): Paste and
+  Copy refused while disabled (`disabled, not pressed`); Copy then Paste across the panes (`Copied 1
+  item`), Rename (`Renamed to c`), New file (`Created New Text Document.txt`), New folder, Cut and
+  Paste (`Moved 1 item`, then `clipboard holds no files` after the paste of a cut empties it), Delete
+  (`Deleted 1 item to the Recycle Bin`) and Ctrl+Z (`Undid: ...`); on This PC New file is refused as
+  disabled. The first run of this check found the editor buttons' focus problem (above).
+- **(iii) New file and Escape** (`newfile hello.txt`, `newfile` and Return, `key CtrlA`, `key
+  Escape`, `undo`): `hello.txt` and `New Text Document.txt` made, `[select] pane=0 Escape: selection
+  cleared`, the new file undone to the Recycle Bin.
+- **(iv) Back over a text entry**: before the change `backclick 0 path` (the entry open) and
+  `backclick 0 edit` (F2 open) both went back in the history; after it neither does, while
+  `backclick 0 path` over the breadcrumb and `backclick 0` over the list still go back.
+- **(v) The strip on resize**: nine tabs, the last one active, `split`: `[tab] pane=0 strip resized:
+  scrolled to -581 (tab 9 of 9 in view)`.
+- **(vi) The breadcrumb dropdown**: `crumbmenu 0 1` on `C:\Windows`, Down x3, Up, Return: `picked
+  C:\Dell` (the second folder); a second dropdown closed with Escape, after which `key Down` selects
+  row 0 of the list (the keys went back).
+- **(vii) F2 for a bookmark**: `sidebar click 1` (a drive) then F2 does nothing; `sidebar click -1`
+  (the bookmark) then F2, `Z`, Return: `[sidebar] renamed bookmark 0 (...): Some("Z")`; Escape gives
+  the list the keys back.
+- **(viii) Folder sizes**: two sized folders (`sizeall`), a new tab, a file added in `a` and then in
+  `b` from the new tab, back to the first tab: `keeps 2 size(s) in the background`, `invalidated ...\a
+  (added a\new.txt): tab in the background, size dropped`, the same for `b` after the tab went stale
+  (it stayed watched for its sizes); selecting each walks it again with its new file count. In a run
+  with only `a` changed, selecting `b` after the switch queued no walk (its size was kept).
+- **(ix) Restored tabs** (a writable scratch config, `window close`, then a second run): saved
+  `[[left_tabs]]` tables with `sort = "size"`, `ascending = false`, `cursor = "file_39831.txt"`,
+  `scroll = -3600.0` for bigdir and `sort = "modified"`, `hidden = true` for `C:\Windows`; the second
+  run lists `C:\Windows` by Modified with hidden files (`hidden=1`: one file both hidden and system
+  kept out) and its cursor on row 3, and on `tab 1` bigdir by Size descending with `restored: cursor
+  Some(169), scroll -3600 (now -3600)`.
+- **(x) The lists are the reference's.** The generated `app.rs` of `target-p6m2` (ca12be0) and this
+  build's, from `InnerFileList_root_` up to `InnerFileListHost_root_` (the six lists with their rows
+  and tiles), with quoted drive paths blanked and every generated number inside an identifier mapped
+  to its order of first appearance (the new toolbar components shift them all by 18): 9,218 lines
+  each; the 148 lines a unified diff still shows are whole binding blocks emitted in another order
+  (the compiler sorts them by their numbered names), and as multisets of lines (the field lists split
+  into fields) the two spans hold the same 11,072 items, none on only one side.
+- **(xi) Soak**: `tools/soak-p5m3.ps1 -Minutes 5` (a copy of this build): exit code 0, 0 `panicked`, 5
+  cycles started, 168 jobs done (0 failed, 0 cancelled), 0 soak refusals, 0 `waitops` timeouts;
+  drags dropped 0; toolbar presses 34 (four full cycles of eight and two of the fifth, which the
+  five minutes cut short), 0 refused as disabled, new files 5 made and 5 undone, renamed to `t` 4;
+  every P4-M3, P5-M3 and P6-M2 count as expected (tile drops 10, 128 px images 10, bands 10 of 10
+  done with 2 selected, medium switches 5, 80 px images 5, bands with the cursor on tile 0 10,
+  spring-loaded rows 4, tabs 0, crumb drops 4); working set 138.9 MB at 5 s, 237.3 MB at most, 212
+  MB at 300 s (the earlier soaks' first minutes).
+
+### Measurements
+
+In-app, RELATIVE only: one harness session, 1216 x 839 window, scale 1.0, accessibility on, the gate
+scenario (`tools/wpr-gate.ps1`'s script) on `C:\traces\bigdir`, `[busy]` over the 10 s after the
+split, copies of `target-p6m2` (ca12be0, the reference) and of this build interleaved by one runner,
+four pairs with the reference in the first slot and four with the candidate first, per settings
+file. This session read low throughout (about 10% busy against the 18 to 20% of P6-M2's), so the
+level says nothing; the pairs are read against each other. No cargo or agent ran beside.
+
+| Settings | reference first: ref / P6-M3 | P6-M3 first: P6-M3 / ref | median over all, ref / P6-M3 |
+|---|---|---|---|
+| defaults | 12.8/12.6, 9.5/9.0, 11.2/11.2, 7.3/11.9 | 9.2/10.5, 8.6/9.7, 11.4/8.7, 10.6/12.0 | **10.1 / 10.9** |
+| `toolbar-pane.toml` | 12.0/9.5, 12.0/10.5, 8.3/11.7, 9.7/8.7 | 8.1/11.8, 12.0/9.8, 11.2/12.0, 9.7/9.4 | **10.8 / 10.1** |
+
+The binaries interleave in both sets (defaults 7.3 to 12.8 against 8.6 to 12.6; toolbar 8.3 to 12.0
+against 8.1 to 12.0). In the defaults set the candidate has the toolbar across the top and the
+reference none; in the toolbar set the reference ignores the key, so it is the reference's list
+against the candidate's in-pane bars. Every toolbar run shows `[settings] file
+C:\traces\toolbar-pane.toml (read)`; no run shows a `panicked` line. The console triplets decide.
+
+### Gate
+
+For Jeremy, elevated at the console, accessibility on, Narrator off, no other TwinFM window: a gate
+build of the PR head from a detached checkout with `--locked` into `target-p6m3`, then
+
+```
+tools/wpr-triplet.ps1 -Reference p6m2 -Candidate p6m3,p6m3@C:\traces\toolbar-pane.toml -Tag ab24
+```
+
+(the defaults triplet and the toolbar triplet; the settings runs are labelled `p6m3-toolbar-pane`;
+`C:\traces\toolbar-pane.toml` is new, read-only, `toolbar = "pane"` only). Before reading the toolbar
+triplet, each `p6m3-toolbar-pane` run's stderr must show `[settings] file C:\traces\toolbar-pane.toml
+(read)`; no run may show a `panicked` line. The defaults candidate has the toolbar across the top
+(the default), the reference none; the toolbar triplet's reference is the same defaults reference
+runs (the reference does not know the key). Compare the `[perf] ... render[... p50=...]` figure of
+each run before reading the medians (the ab23 note).
+
+Run on 2026-10-18 (09:19 to 09:33), Jeremy elevated at the console, accessibility on, Narrator off,
+no other TwinFM window, through a one-off wrapper (`C:\traces\gate-p6m3.ps1`, not in the repo: the
+preconditions, the gate build (built beforehand by the implementer from the detached checkout
+`.claude\worktrees\gate-p6m3` at 02a9103 with `--locked`; the wrapper's own build was a no-op), the
+triplet script of that checkout, then `analyze-trace.py --symbols --exe` and the stderr checks on
+every run). `target-p6m2` (ca12be0) against `target-p6m3` (02a9103), each round reference, defaults,
+toolbar. Every toolbar run's stderr shows `[settings] file C:\traces\toolbar-pane.toml (read)`; no
+`panicked` line in any of the nine. Traces `C:\traces\twinfm-ab24-*.etl`, reports under
+`C:\traces\export\`, summary `C:\traces\gate-ab24-summary.txt`.
+
+| Run | reference `target-p6m2` | P6-M3 defaults (toolbar across the top) | P6-M3 `toolbar-pane.toml` | render p50 (ref / defaults / toolbar) |
+|---|---|---|---|---|
+| 1 | 19.1% | 18.5% | 20.2% | 2.19 / 2.19 / 2.26 ms |
+| 2 | 20.3% | 18.6% | 19.8% | 2.29 / 2.24 / 2.33 ms |
+| 3 | 22.4% | 21.3% | 23.0% | 2.96 / 2.88 / 2.96 ms |
+| **median** | **20.3%** | **18.6%** | **20.2%** | |
+
+**Round 3 ran at a higher cost per frame for all three binaries** (render p50 2.88 to 2.96 ms against
+2.19 to 2.33 in rounds 1 and 2), the machine-wide shift ab23 recorded, so the rounds are read like for
+like. Rounds 1 and 2: the reference 19.1 and 20.3, the defaults candidate 18.5 and 18.6 (below the
+reference in both), the toolbar candidate 20.2 and 19.8 (between the reference's two). Round 3: the
+reference 22.4, the defaults candidate 21.3, the toolbar candidate 23.0. Neither candidate has a gap
+that counts (the wrapper's one-sided rule: no reference run below every candidate run, no median more
+than a point above the reference's). The bar (under 20%) is met by the defaults candidate in both
+like-for-like rounds; the toolbar candidate's 20.2 sits beside the reference's 20.3 in the same state,
+and the round 3 runs over 20% are all three binaries at the higher cost. The defaults candidate draws
+its lists 36 px shorter (the toolbar across the top) and reads a point or two below the reference;
+the in-pane bars cost what the list's lost row saves, within the reference's spread.
+
+**P6-M3 passes the gate.** The console checks follow.
+
+**Console checks, 2026-10-18, Jeremy at the console with `target-p6m3`:** everything "seem[s] to be
+working as expected" but one: with the toolbar in each pane, a pane with a tab strip had its bar 28
+px lower than a pane without one ("The toolbar is not displayed on the same line when using it in
+both tabs"). c632e93 moves the in-pane bar to the top of the pane, above the tab strip (`tab_top`
+takes `Layout::bar`); a scripted check with three tabs on the left and one on the right shows both
+bars on one line, row clicks landing in both panes and a hovering drag finding the left pane's tab
+and crumb. With one tab per pane, the gate scenario's layout is the same before and after the move,
+so ab24 stands; `target-p6m3` was rebuilt at c632e93 for the console, and `C:\traces\gate-p6m3.ps1`
+now targets c632e93 as tag ab25 should a re-run be wanted.
+
+Console checks after the triplet, TwinFM started unelevated:
+
+1. The toolbar across the top (the default): each button against the left and the right pane (the
+   active one), the disabled states (nothing selected, two selected for Rename, an empty clipboard
+   for Paste, This PC, a search tab, inside a zip); New file and Ctrl+Z.
+2. The toolbar in each pane (Settings, Toolbar: in each pane): the same against both panes, a press
+   making its pane active; and Toolbar: none.
+3. The bundle: F2 on a bookmark after clicking it; the breadcrumb dropdown with Down, Up, Return and
+   Escape; Escape clearing a selection; the Back button over the path entry (Ctrl+L) and over the
+   rename editor (F2) doing nothing; a search's rows reading name first; folder sizes still shown
+   after a tab switch and back; protected files (Settings) with Ctrl+H; tabs, sorts, cursor and
+   scroll back after a restart; a narrow window keeping the active tab in view.
+
 ## Open questions
 
 Written 2026-10-16 at the kickoff.
@@ -1009,4 +1303,5 @@ Written 2026-10-16 at the kickoff.
   icon size (§ P6-M2 Settled first).
 - **The in-pane toolbar's height against the bar** (P6-M3): it takes a row from each list, so
   the gate scenario scrolls one row fewer per pane; a cost within the noise is expected, and the
-  toolbar triplet says.
+  toolbar triplet says. **Answered (P6-M3, ab24):** the toolbar triplet's median 20.2% against the
+  reference's 20.3%, within its spread in both session states (§ P6-M3 Gate).
