@@ -149,6 +149,26 @@ impl Tab {
         self.search.is_none() && !is_this_pc(&self.path.to_string_lossy()) && !fs::archive::inside(&self.path)
     }
 
+    /// The tab leaves the foreground (a tab switch, a new tab): its finished folder sizes stay,
+    /// watched below the folder in the background (`watch_tabs`); walks in flight and sizes waiting
+    /// for a re-walk go (P6-M3).
+    fn background_sizes(&mut self, pane: usize) {
+        if !self.sizable() {
+            return;
+        }
+        let (cancelled, stale) = self.sizes.to_background();
+        for n in &cancelled {
+            eprintln!("[size] cancelled {} (tab in the background)", self.path.join(n).display());
+        }
+        for n in &stale {
+            self.model.set_size(n, None);
+            eprintln!("[size] stale {}: tab in the background, size dropped", self.path.join(n).display());
+        }
+        if !self.sizes.cache.is_empty() {
+            eprintln!("[size] pane={pane} tab={} keeps {} size(s) in the background", self.id, self.sizes.cache.len());
+        }
+    }
+
     /// Forget the tab's folder sizes: cancel the walks in flight and empty the cache.
     fn drop_sizes(&mut self, pane: usize, why: &str) {
         let (cached, cancelled) = self.sizes.clear();
@@ -410,7 +430,9 @@ impl State {
     /// Decide which tabs the watcher watches, and ask it. Every active tab (both panes with the
     /// split; the hidden second pane's tabs none) with a parent watch (and a subtree watch while
     /// folder sizes are cached or in flight); then background folder tabs whose listing is done,
-    /// not stale, most recently shown first, shallow and without a parent, up to
+    /// not stale (unless they keep folder sizes, P6-M3: their watch keeps the sizes current while
+    /// the listing waits to be refreshed on show), most recently shown first, shallow (a subtree
+    /// watch with sizes) and without a parent, up to
     /// `fs::watch::MAX_WATCHES`. Every other tab is unwatched; a background one goes stale (a
     /// search tab never: going stale would run its search again). Unwatches go first, so a slot
     /// freed here is free for the watches that follow. A no-op for a tab already watched the same
@@ -428,7 +450,7 @@ impl State {
                 let eligible = if i == active {
                     t.search.is_none() && listed
                 } else {
-                    folder_tab(t) && t.timing.done_ms.is_some() && listed && !t.stale
+                    folder_tab(t) && t.timing.done_ms.is_some() && listed && (!t.stale || t.sizes.any())
                 };
                 cands.push(WatchCand { id: t.id, active: i == active, eligible, shown_at: t.shown_at });
             }
@@ -454,13 +476,22 @@ impl State {
                     }
                     continue;
                 }
-                if t.search.is_some() || t.stale {
+                if t.search.is_some() {
+                    continue;
+                }
+                if t.stale {
+                    // Stale with sizes and past the cap: unwatched, the sizes could go out of date.
+                    if t.sizes.any() {
+                        t.drop_sizes(pane, "not watched in the background");
+                    }
                     continue;
                 }
                 if cands.iter().any(|c| c.id == t.id && c.eligible) {
                     eprintln!("[watch] pane={pane} tab={} past the cap: stale when shown", t.id);
                 }
                 t.stale = true;
+                // Unwatched, its sizes could go out of date unseen.
+                t.drop_sizes(pane, "not watched in the background");
             }
         }
         for &id in &set {
@@ -475,7 +506,9 @@ impl State {
                     asks.push((pane, id, t.path.clone(), subtree, true));
                     t.watched_bg = false;
                 } else {
-                    asks.push((pane, id, t.path.clone(), false, false));
+                    // A subtree watch while the tab keeps folder sizes (P6-M3), shallow otherwise.
+                    let subtree = t.sizes.any() && t.sizes.overflows < 2;
+                    asks.push((pane, id, t.path.clone(), subtree, false));
                     if !t.watched_bg {
                         eprintln!("[watch] pane={pane} tab={id} watched in the background");
                         t.watched_bg = true;
@@ -1242,6 +1275,7 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                 t.watched_bg = false;
                 if !active && t.search.is_none() {
                     t.stale = true;
+                    t.drop_sizes(pane, "not watched in the background");
                 }
             }
             return;
@@ -1285,10 +1319,16 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
             } else if t.search.is_none() {
                 t.stale = true;
                 eprintln!("[watch] pane={pane} tab={tab_id} watch lost ({error}): stale");
+                t.drop_sizes(pane, "watch lost");
             }
             return;
         }
         Event::Changed { changes, records, overflow, .. } => {
+            // A stale background tab is watched only for its folder sizes; its listing is
+            // refreshed when it is shown.
+            if !active && t.stale {
+                return;
+            }
             let reason = if overflow {
                 "overflow".to_string()
             } else if changes.is_empty() {
@@ -1344,6 +1384,15 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                 // delay; changes meanwhile join that one re-walk (no line for them).
                 let now = Instant::now();
                 for (child, change) in &changes {
+                    // A background tab walks nothing: a changed folder's size is dropped there.
+                    if !active {
+                        if let Some(name) = t.sizes.cache.keys().find(|k| k.eq_ignore_ascii_case(child)).cloned() {
+                            t.sizes.forget(&name);
+                            t.model.set_size(&name, None);
+                            eprintln!("[size] invalidated {} ({change}): tab in the background, size dropped", t.path.join(&name).display());
+                        }
+                        continue;
+                    }
                     if let Some((name, delay)) = t.sizes.invalidate(child, now) {
                         let path = t.path.join(&name);
                         eprintln!("[size] invalidated {} ({change})", path.display());
@@ -1352,10 +1401,16 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                     }
                 }
             }
+            // As for `Changed`: a stale background tab refreshes when it is shown.
+            if !overflow && !active && t.stale {
+                return;
+            }
             if stale {
                 arm_rewalk(st, pane);
             }
-            if !(top || overflow || !active) {
+            // Re-sizing the selection is the active tab's (a background one keeps what it has).
+            let resize = resize && active;
+            if !(top || overflow) {
                 eprintln!("[watch] pane={pane} tab={tab_id} changed below the folder: no refresh");
                 if resize {
                     resize_after_change(st, pane);
@@ -4078,10 +4133,10 @@ fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
         if st.panes[pane].active_index() == before {
             return None;
         }
-        // It keeps a shallow watch if the watch set has room for it (`watch_tabs`, from
-        // `show_tab`), else it goes stale. Its sizes go: a background watch sees no subfolder.
-        if let Some(t) = st.panes[pane].iter_mut().nth(before).filter(|t| t.search.is_none()) {
-            t.drop_sizes(pane, "tab in the background");
+        // It keeps a watch if the watch set has room for it (`watch_tabs`, from `show_tab`), a
+        // subtree watch while it has folder sizes, which it keeps; else it goes stale.
+        if let Some(t) = st.panes[pane].iter_mut().nth(before) {
+            t.background_sizes(pane);
         }
         check_gone(st, pane);
         show_tab(st, &app, pane);
@@ -4110,9 +4165,7 @@ fn open_tab(pane: usize, path: Option<PathBuf>) {
         let app = st.app.upgrade()?;
         save_view(st, &app, pane);
         // Leaves the foreground, watched in the background if the set has room (see switch_tab).
-        if !st.is_search(pane) {
-            st.tab_mut(pane).drop_sizes(pane, "tab in the background");
-        }
+        st.tab_mut(pane).background_sizes(pane);
         let cur = st.tab(pane);
         let (col, asc, show) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show());
         let path = path.unwrap_or_else(|| cur.path.clone());
@@ -4482,7 +4535,7 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
             save_view(st, &app, pane);
             // Leaves the foreground, watched in the background if the set has room (see
             // switch_tab).
-            st.tab_mut(pane).drop_sizes(pane, "tab in the background");
+            st.tab_mut(pane).background_sizes(pane);
             let cur = st.tab(pane);
             let (col, asc, show, root) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show(), cur.path.clone());
             let mut t = st.new_tab(root.clone());
