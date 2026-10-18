@@ -291,8 +291,9 @@ Three points of the brief clashed with the code; each went to Jeremy with a reco
 - **Driver**: `menuverb <pane> <verb>` (a canonical verb as if picked for the cursor row's
   selection; `sleep:<ms>` the test verb that sleeps on the worker); `waitops` waits for the verb
   worker as well (`verbs::busy`).
-- **Tests**: 190 to 193 (`choose`, `route`, and `verbs::tests::worker_runs_a_real_verb_and_the_test_verb`,
-  which runs a real "Create shortcut" through the worker in a scratch folder).
+- **Tests**: 190 to 194 (`choose`, `route`, `verbs::tests::worker_runs_a_real_verb_and_the_test_verb`,
+  which runs a real "Create shortcut" through the worker in a scratch folder, and
+  `grid_rows_keep_their_tile_model_across_changes`, below).
 
 ### Decisions
 
@@ -338,6 +339,57 @@ routed deletes and 6 restores, 6 cuts cancelled by Escape (the seventh cycle sto
 limit before its verb steps); every earlier count as in P6-M3's soak (toolbar presses 50, none
 refused; drags dropped 0; spring-loaded tabs 0); working set 113.4 MB at 5 s, 231.9 at most, 211.1
 at 480 s (P6-M3's soak: 237.3 at most, 212 at the end).
+
+### Gate
+
+Tag ab25, 2026-10-18, `C:\traces\gate-p7m1.ps1` elevated at the console, Narrator off: the defaults
+triplet, `target-p6m3` (c632e93) against `target-p7m1` (755eeb2), interleaved.
+
+| Run | WPR % | In-app % | Render p50 ms |
+|---|---|---|---|
+| p6m3-1 | 19.6 | 22.3 | 2.35 |
+| p7m1-1 | 29.1 | 29.7 | 3.87 |
+| p6m3-2 | 28.4 | 28.4 | 4.06 |
+| p7m1-2 | 28.9 | 28.1 | 3.91 |
+| p6m3-3 | 21.1 | 22.7 | 2.57 |
+| p7m1-3 | 20.9 | 23.4 | 2.47 |
+
+Medians 21.1 (reference) and 28.9 (candidate); the wrapper's rule read "a gap that counts". The
+session changed state part-way, as in ab23: three runs at a render p50 of 3.9 to 4.1 ms, three at
+2.35 to 2.57. Like for like, the candidate sat within a point of the reference in both states
+(low: 20.9 against 19.6 and 21.1; high: 29.1 and 28.9 against 28.4); the candidate's median came
+from two of its runs falling in the slow state. The scenario opens no menu, so the verb worker
+idles in `GetMessageW`. Jeremy accepted the gate as read like for like (2026-10-18, "I accept the
+ab25 gate").
+
+### Console checks
+
+Jeremy, unelevated, `target-p7m1` (2026-10-18): Create shortcut on `G:`, Delete from the menu and
+Ctrl+Z, Cut from the menu and Escape, Properties and Open with: all as expected, and the shell's
+message box for Create shortcut on `G:` opened in front of TwinFM (no owner window). One finding:
+in the large and medium icon views a folder took three clicks to open (one selected it, then a
+double-click opened it); the details list was fine.
+
+### After the console check: a double-click in the grid
+
+**Cause.** `GridModel::row_data` built a new `VecModel` of tiles on every call. A press that selects
+a tile notifies its grid row (`grid_notify.row_changed`), Slint asks for the row again, gets a
+different tile model and builds the row's tiles anew; the new tile under the pointer had not seen
+the first click, so the second click was a first click again. Older than P7-M1 (P4-M1's grid);
+reproduced with real mouse messages (`WM_LBUTTONDOWN`/`UP` twice, 150 ms apart, posted to the
+window) on an unselected tile in `C:\Windows`: two `[select]` lines and no navigation.
+
+**Fix.** `GridModel` keeps one tile model per grid row and `row_data` updates it in place (tiles
+that changed are set, the length follows a width change), so Slint keeps the row's tiles and only
+re-renders what changed (`model::tests::grid_rows_keep_their_tile_model_across_changes`, written
+first, failing). The same posted double-click then opened the folder at once, in the large grid on
+`C:\Windows` and the medium grid on `G:\My Drive`. The tile components are unchanged; the grid's
+update path changed, so the gate re-runs with the grid and medium triplets (ab26).
+`tools/soak-p5m3.ps1 -Minutes 8` on the fix: exit code 0, no panics, 7 cycles, 267 jobs (0 failed);
+the grid counts as before (14 bands done with 2 selected, 14 with the cursor on tile 0, 7
+Shift+Right ranges, 14 tile drops, drags dropped 0); verbs 14 queued, 7 slept, 7 shortcuts, 7
+routed deletes and restores, 7 cuts cancelled; working set 113.9 MB at 5 s, 217.8 at most and at
+the end.
 
 ## Open questions
 

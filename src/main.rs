@@ -4222,7 +4222,7 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
     if pane == 0 { app.set_left_rows(rows) } else { app.set_right_rows(rows) }
     model.set_grid_n(st.grid_n[pane]);
     model.set_grid_cursor(cursor);
-    let grid = ModelRc::new(GridModel(model.clone()));
+    let grid = ModelRc::new(GridModel::new(model.clone()));
     if pane == 0 { app.set_left_grid_rows(grid) } else { app.set_right_grid_rows(grid) }
     let (col, asc) = (model.sort_col.get() as i32, model.sort_asc.get());
     if pane == 0 {
@@ -5074,8 +5074,8 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     app.set_left_rows(ModelRc::from(panes[0].active().model.clone()));
     app.set_right_rows(ModelRc::from(panes[1].active().model.clone()));
-    app.set_left_grid_rows(ModelRc::new(GridModel(panes[0].active().model.clone())));
-    app.set_right_grid_rows(ModelRc::new(GridModel(panes[1].active().model.clone())));
+    app.set_left_grid_rows(ModelRc::new(GridModel::new(panes[0].active().model.clone())));
+    app.set_right_grid_rows(ModelRc::new(GridModel::new(panes[1].active().model.clone())));
     let strip_rows: [Rc<VecModel<StripRow>>; 2] = Default::default();
     app.set_left_strip_rows(ModelRc::from(strip_rows[0].clone()));
     app.set_right_strip_rows(ModelRc::from(strip_rows[1].clone()));
