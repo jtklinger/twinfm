@@ -15,8 +15,10 @@ three milestones, closed 2026-10-16; § Phase 5 close holds what is deferred and
 candidates), `docs/phase-6-plan.md` the Phase 6 record (cloud marks and the icon items, the views
 finished, the toolbar and the polish bundle; three milestones, closed 2026-10-18; its first
 section quotes Jeremy's kickoff decisions, § Calls made lists the lead's, § Recorded for Phase 7
-holds the shell verbs item, and § Phase 6 close holds what is deferred and the Phase 7 candidates). Read them before
-changing the list.
+holds the shell verbs item, and § Phase 6 close holds what is deferred and the Phase 7 candidates),
+`docs/phase-7-plan.md` the Phase 7 plan (the context menu finished, archives beyond zip, the
+polish bundle; four milestones, opened 2026-10-18; its first section quotes Jeremy's kickoff
+decisions and § Calls made lists the lead's). Read them before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (190 tests; eight touch the real shell and clipboard, one of them the Recycle
@@ -548,6 +550,9 @@ changing the list.
   program (File Explorer) into an elevated window, so a TwinFM started from the elevated gate
   console shows the denied cursor and never gets `DragEnter` (2026-10-16, `docs/phase-5-plan.md`
   § P5-M3 Gate). The gate itself may stay elevated; its scenario never drags.
+- Scripted checks of a layout change set the two panes up unequal (tabs on one side only, the
+  filter box open in one, the split on): the in-pane toolbar's misalignment showed only that way
+  (2026-10-18, `docs/phase-6-plan.md` § Phase 6 close).
 - Close every TwinFM window before a gate run: a pre-existing one appears in the trace with
   start "MIN" (the analyzer picks the process that started inside the trace, but the extra
   process still shares the machine). Single runs of one unchanged binary ranged 19.6 to 22.8
