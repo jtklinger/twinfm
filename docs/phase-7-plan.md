@@ -406,7 +406,8 @@ No gap counts: the defaults runs interleave with the reference's (median 18.6 ag
 the grid and medium triplets sit far below it with every run under 20%, as in ab23 (10.3 and 13.5
 in that session). One defaults run read 20.1 against the reference's own 20.0, so the bar is read
 against the reference's spread, as the protocol says. Each settings run's stderr showed its toml
-read and its view.
+read and its view. Console check after the triplet (Jeremy, unelevated, `target-p7m1` at 3f8e786):
+a double-click on an unselected folder opens it in the large and the medium icon views.
 
 ## Open questions
 
