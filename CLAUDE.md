@@ -510,7 +510,12 @@ changing the list.
   `name@C:\path.toml`, a settings file for that candidate's runs, e.g. `C:\traces\thumbs.toml`,
   labelled `name-<basename>` in the trace names; run the script from the checkout whose `tools/`
   it sits in, since it calls the `wpr-gate.ps1` beside it); a gap counts only when every reference run sits below every candidate run or the
-  medians differ by more than one point. The reference binary is the last merged milestone's
+  medians differ by more than one point. A session can change state part-way through a triplet
+  (2026-10-17, ab23): at the same 60 Hz cadence, some runs of every binary cost about a third more
+  per frame. Compare the `[perf] ... render[... p50=...]` figure in each run's `.stderr.txt` (3.0 to
+  3.2 ms against 2.2 to 2.3 ms in ab23) before reading the medians, and read such a session like for
+  like; the gap rule is about a cost, so a candidate's median below the reference's is not a gap.
+  The reference binary is the last merged milestone's
   gate build (`target-p6m2`, ca12be0, after P6-M2); the previous one is deleted once the new one
   has served as a reference. Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
