@@ -240,6 +240,105 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 - Two-line tile names apply to the large and medium tiles both (P7-M4).
 - P7-M4's drag cursor stays as it is unless the console check shows the doubled glyph.
 
+## P7-M1: shell verbs off the UI thread, and the menu's verbs through TwinFM's jobs
+
+Branch `feat/p7-m1-verb-worker`, from 5a05fda (the kickoff).
+
+### Settled first (2026-10-18, before any code)
+
+Three points of the brief clashed with the code; each went to Jeremy with a recommendation.
+
+- **Escape over a cut and the clipboard.** Recommended: Escape cancels the cut completely, the
+  marks and the clipboard (emptied only while it still holds TwinFM's cut), so a later paste cannot
+  move the files. Jeremy: "Also empty it".
+- **Paste on the background menu.** The kickoff routed four verbs; the background menu's Paste is
+  the shell's own operation too (no undo, no progress). Recommended routing it to Ctrl+V's path.
+  Jeremy: "Yes, route Paste".
+- **The routed verbs inside an archive.** The menu's Delete inside a zip ran the shell's own delete
+  (which works); TwinFM's commands refuse inside archives until P7-M3. Recommended leaving the
+  shell's verbs there until then. Jeremy chose the other option, "Route and refuse": inside an
+  archive the menu's Delete, Cut and Rename are refused with the keys' note until P7-M3.
+
+### What landed
+
+- **The verb worker** (`src/verbs.rs`): one STA thread named `verbs` with its own message loop,
+  started beside the file operation worker. A job carries the folder, the item names, the canonical
+  verb, the command's offset and label in the menu that was shown, the invoke point and the
+  extended flag. The worker builds the menu again (`shellmenu::run_verb`: `parse_items`,
+  `GetUIObjectOf` or `CreateViewObject`, `QueryContextMenu` into a menu of its own with the same id
+  range) and invokes there; every COM object of a job is made, used and released on the worker.
+  Results come back through `invoke_from_event_loop` (`verb_done`: a note on failure or refusal,
+  then the panes refreshed, as the UI thread did before).
+- **Invoke by verb, else by a matching label** (`shellmenu::choose`, unit-tested): a command with a
+  canonical verb is invoked by it; one without (the "Send to" targets) by its id, only when the
+  rebuilt menu's item at that id has the same label, after the rebuilt menu's dynamic submenus are
+  filled (`WM_INITMENUPOPUP` to the handler, two levels; not inside an archive, whose menus crash on
+  `IContextMenu2/3`); otherwise refused and logged. A handler that names its verb but fails an
+  invoke by it gets one retry by id under the same label rule.
+- **The routing** (`shellmenu::route`, unit-tested), decided on the UI thread from the menu shown:
+  `delete`, `cut`, `copy`, `paste` and `rename` run `main::command`'s `delete` (Shift held:
+  `sdelete`), `cx`, `cc`, `cv` and `rename`, the functions the keys and the toolbar call; every
+  other verb goes to the worker. `context_menu` and the driver share `menu_request` and
+  `menu_picked`.
+- **Escape cancels a cut** (`cancel_cut`): after the band, the search and the queued jobs, before
+  the selection; the marks go in every tab and the clipboard is emptied while its sequence number
+  is still TwinFM's last write.
+- **No owner window** for the worker's invokes: a dialog owned by the main window from another
+  thread attaches the two threads' input queues while it is up. A dialog a verb shows is unowned,
+  as Explorer's verbs' are to another program. `CMIC_MASK_ASYNCOK` is not asked for, so the shell
+  holds no reference that needs the worker past the invoke; at exit a running verb is not waited
+  for (logged).
+- **Driver**: `menuverb <pane> <verb>` (a canonical verb as if picked for the cursor row's
+  selection; `sleep:<ms>` the test verb that sleeps on the worker); `waitops` waits for the verb
+  worker as well (`verbs::busy`).
+- **Tests**: 190 to 193 (`choose`, `route`, and `verbs::tests::worker_runs_a_real_verb_and_the_test_verb`,
+  which runs a real "Create shortcut" through the worker in a scratch folder).
+
+### Decisions
+
+- No owner window, recorded above; the console check on `G:` says whether its dialogs come up in
+  front.
+- The test verb is not behind the `TWINFM_SOAK` fence: it touches no file, and only the driver can
+  name it.
+- The menu's `copy` is routed, so the scripted real verb end to end is `link` (Create shortcut),
+  which makes a file and shows no dialog in a writable folder.
+
+### Scripted checks
+
+A scratch folder in `%TEMP%\twinfm-m5\p7m1` with three files, the right pane on System32, run
+with `TWINFM_SOAK=1`:
+
+```
+[menu] verb "sleep:2500" ("sleep:2500") queued on the verb worker, id 1
+[menu] verb worker: test verb sleeps 2500 ms (id 1)
+[perf] frames_total=51 render[n=51 p50=2.48ms ...] interval[n=44 p50=16.91ms ...]
+[menu] InvokeCommand verb="sleep:2500" offset=0 label="sleep:2500" slept in 2501 ms (verb worker, id 1)
+[menu] InvokeCommand verb="link" offset=0 label="link" by verb = 0x00000000 in 768 ms (verb worker, id 2)
+[fileops] pane=0 note: Cut 1 item to the clipboard
+[clipboard] pane=0 Escape: cut cancelled, marks cleared, clipboard emptied
+[select] pane=0 Escape: selection cleared
+[fileops] submit id=1 pane=0 ... Delete { sources: [...\p7m1\b.txt], permanent: false }
+[fileops] done id=2 pane=0 tab=1 Done: Undid: Deleted 1 item to the Recycle Bin
+[fileops] submit id=3 pane=0 ... Copy { sources: [...\p7m1\a - Shortcut.lnk], ... }
+[fileops] done id=4 pane=0 tab=1 Done: Undid: Copied 1 item
+```
+
+The list kept rendering through the test verb's 2.5 s (51 frames while the right list scrolled),
+Create shortcut ran on the worker by its verb, the routed Cut was cancelled by the first Escape and
+the second cleared the selection, and the routed Delete, Copy and Paste went through the jobs with
+their undo records. An earlier run that stayed on `C:\` by mistake (a byte-order mark in the script
+file hid its first `nav`) showed two things worth keeping: the soak fence refused the routed Delete
+there, as it refuses Delete's key, and Create shortcut in `C:\` returned 0x80070005 after 9.9 s on
+the worker while the window kept rendering.
+
+`tools/soak-p5m3.ps1 -Minutes 8` (with P7-M1's verb cycle, see `CLAUDE.md` § Measuring): exit code
+0, no panics, 7 cycles started, 262 jobs done (0 failed, 0 cancelled, 0 soak refusals, 0 waitops
+timeouts); verbs: 12 jobs queued (two per cycle), 6 slept, 6 shortcuts made by verb with S_OK, 6
+routed deletes and 6 restores, 6 cuts cancelled by Escape (the seventh cycle stopped at the time
+limit before its verb steps); every earlier count as in P6-M3's soak (toolbar presses 50, none
+refused; drags dropped 0; spring-loaded tabs 0); working set 113.4 MB at 5 s, 231.9 at most, 211.1
+at 480 s (P6-M3's soak: 237.3 at most, 212 at the end).
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.

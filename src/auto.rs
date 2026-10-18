@@ -135,6 +135,13 @@
 //!                                    the pane active (`[toolbar]` lines);
 //!                                    pressed with the toolbar hidden too, since a button only calls
 //!                                    its key's command; a disabled button is not pressed (logged)
+//!   menuverb <pane> <verb>           as if the shell command with canonical verb <verb> had been
+//!                                    picked in the context menu for the cursor row's selection (the
+//!                                    background with no cursor row; P7-M1): delete, cut, copy, paste
+//!                                    and rename go to TwinFM's own commands, any other verb to the
+//!                                    verb worker by its verb (`copy` never does: use a handler verb
+//!                                    such as `link`, Create shortcut); `sleep:<ms>` is a test verb that sleeps
+//!                                    on the worker; `waitops` waits for the worker too
 //!   crumbmenu <pane> <index>         the chevron after crumb <index>: its subfolders in a dropdown
 //!                                    (listed on a worker; sleep before crumbpick)
 //!   crumbpick <name>                 pick the dropdown's folder <name> (the pane navigates there)
@@ -283,6 +290,7 @@ enum Step {
     DragOver { at: HoverAt, ms: u64, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
     Toolbar { pane: usize, button: String },
+    MenuVerb { pane: usize, verb: String },
     CrumbMenu { pane: usize, index: i32 },
     CrumbPick(String),
     CrumbClose,
@@ -457,6 +465,7 @@ fn parse(script: &str) -> Vec<Step> {
                 },
                 "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
                 "toolbar" => Step::Toolbar { pane: num(1) as usize, button: a.get(2).unwrap_or(&"").to_string() },
+                "menuverb" => Step::MenuVerb { pane: num(1) as usize, verb: a.get(2..).unwrap_or(&[]).join(" ") },
                 "crumbmenu" => Step::CrumbMenu { pane: num(1) as usize, index: num(2) as i32 },
                 "crumbpick" => Step::CrumbPick(a[1..].join(" ")),
                 "crumbclose" => Step::CrumbClose,
@@ -1118,6 +1127,10 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             } else {
                 eprintln!("[auto] toolbar pane={pane} {button}: disabled, not pressed");
             }
+            schedule(runner, 1);
+        }
+        Step::MenuVerb { pane, verb } => {
+            crate::script_menu_verb(pane, &verb);
             schedule(runner, 1);
         }
         Step::CrumbMenu { pane, index } => {

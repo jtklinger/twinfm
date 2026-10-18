@@ -21,7 +21,7 @@ polish bundle; four milestones, opened 2026-10-18; its first section quotes Jere
 decisions and § Calls made lists the lead's). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (190 tests; eight touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (193 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -85,7 +85,23 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   popped), `record kept: "<status>"` (an undo or redo job that ran nothing, cancelled while
   queued or refused by the soak fence, goes back on its stack); the soak counts `redo "` lines as redo attempts, so no other line
   carries that substring); `[clipboard]` lines (`format listener added`,
-  `another program took the clipboard: cut marks cleared`). Context menu steps: `rclick <pane> <row>`, `rclickempty <pane>`, key names
+  `another program took the clipboard: cut marks cleared`, since P7-M1 `pane=N Escape: cut
+  cancelled, marks cleared, clipboard emptied | clipboard left (not TwinFM's cut any more)`: Escape
+  in a list with no search to stop and no queued job cancels a cut before it clears the selection).
+  Since P7-M1 a shell command picked in the menu runs on the verb worker (`src/verbs.rs`, an STA
+  thread with a message loop that builds the menu again for the same items, `shellmenu::run_verb`,
+  and invokes by the canonical verb, or by the id when the command has none and the rebuilt item
+  there has the same label, `shellmenu::choose`; no owner window), except the canonical verbs
+  `delete`, `cut`, `copy`, `paste` and `rename`, which run TwinFM's own commands (`shellmenu::route`;
+  the menu's Delete with Shift held is Shift+Delete; inside an archive they are refused as the keys
+  are). `menuverb <pane> <verb>` feeds a canonical verb as if picked in the menu for the cursor row's
+  selection (the background with no cursor row); `sleep:<ms>` is a test verb that sleeps on the
+  worker, and `waitops` waits for the worker too. `[menu]` adds `shell verb "<verb>" routed to
+  TwinFM's <cmd>`, `verb "<verb>" ("<label>") queued on the verb worker, id N`, `InvokeCommand
+  verb="..." offset=N label="..." by verb = 0x... | by offset = 0x... | refused: <why> | slept |
+  failed: <why> in T ms (verb worker, id N)`, `InvokeCommand by verb "<verb>" = 0x...: by offset
+  instead`, `verb worker CoInitializeEx(APARTMENTTHREADED) = 0x...`, and at exit `quit while N verb
+  job(s) queued or running: not waited for`. Context menu steps: `rclick <pane> <row>`, `rclickempty <pane>`, key names
   `ShiftF10` and `Menu`, each followed by in-menu steps (`sleep`, `menuopen <text>`,
   `menukey <key>`, `menupick <own item>`, `menuclose`) that run from a Win32 timer inside the
   menu's modal loop, because no Slint timer fires while it runs (`src/auto.rs` header);
@@ -473,7 +489,11 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   range. Since P6-M3 each cycle also runs a toolbar cycle in `dst` (New file and its undo, New
   folder, Rename to `t`, Copy and Paste, Cut and Paste into `src`, Delete there, then Shift+Delete
   of `t`; three Recycle Bin entries per cycle in all); it reports toolbar presses (eight per cycle),
-  presses refused as disabled (must be 0), new files made and undone, and renames.
+  presses refused as disabled (must be 0), new files made and undone, and renames. Since P7-M1 each
+  cycle also runs a verb cycle in `dst` (the test verb sleeping 1500 ms while the left list
+  scrolls, the menu's Delete and its undo, the menu's Cut cancelled by Escape, Create shortcut on the
+  worker, Shift+Delete of the three files); it reports verb jobs, sleeps, shortcuts made by verb,
+  routed deletes and restores, and cuts cancelled.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
@@ -490,6 +510,8 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   folder through the shell in `%TEMP%\twinfm-m3-test-queue-<pid>\`,
   `undo::tests::check_refuses_missing_and_non_empty` only reads folders it makes in
   `%TEMP%\twinfm-m3-test-undo-<pid>\` (none of the three uses the Recycle Bin);
+  `verbs::tests::worker_runs_a_real_verb_and_the_test_verb` (P7-M1) runs "Create shortcut" on the
+  verb worker for a file in `%TEMP%\twinfm-p7m1-test-<pid>\` and removes the folder;
   `fileops::tests::recycle_restore_move_as_and_progress` (P5-M2) recycles one file in
   `%TEMP%\twinfm-p5m2-test-<pid>\` and restores it through the bin's "undelete" verb (the bin's
   listing is as it found it; an orphan `$I` metadata file may stay on disk in `$Recycle.Bin\<SID>\`,
