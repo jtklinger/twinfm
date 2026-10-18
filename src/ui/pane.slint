@@ -605,7 +605,8 @@ component FileListHost inherits Rectangle {
     // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
     // turns it into the visible row range and fetches icons for it.
     callback viewport-changed(length, length);
-    // File operations on the active pane: copy, move, delete, sdelete, rename, newfolder, cc, cx, cv.
+    // File operations on the active pane: copy, move, delete, sdelete, rename, newfolder, newfile,
+    // cc, cx, cv.
     callback command(string);
     // context-key(row, list x, list y, content-y, visible-height): Shift+F10 or the Menu key, after
     // the cursor row was scrolled into view; Rust places the menu under the row.
@@ -770,12 +771,18 @@ component FileListHost inherits Rectangle {
             root.command("newfolder");
             return EventResult.accept;
         }
+        // Ctrl+Alt+N: a new empty file (P6-M3), named in the editor as a new folder is.
+        if (e.modifiers.control && e.modifiers.alt && !e.modifiers.shift && (e.text == "n" || e.text == "N")) {
+            root.command("newfile");
+            return EventResult.accept;
+        }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "c" || e.text == "C")) { root.command("cc"); return EventResult.accept; }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "x" || e.text == "X")) { root.command("cx"); return EventResult.accept; }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "v" || e.text == "V")) { root.command("cv"); return EventResult.accept; }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "z" || e.text == "Z")) { root.command("undo"); return EventResult.accept; }
-        // Reject after the cancel: the runtime closes the topmost popup (crumb menu, bookmark menu,
-        // About) on an Escape the focused item did not take; accepting it here broke that (P2-M2).
+        // Escape stops a search, cancels queued jobs, or else clears the selection (main.rs). Reject
+        // after it: the runtime closes the topmost popup (crumb menu, bookmark menu, About) on an
+        // Escape the focused item did not take; accepting it here broke that (P2-M2).
         if (e.text == Key.Escape) { root.command("cancelqueued"); return EventResult.reject; }
         if (e.text == " ") { if (root.current-row >= 0) { root.select(1, root.current-row); } return EventResult.accept; }
         if (e.modifiers.control && (e.text == "a" || e.text == "A")) { root.select(3, root.current-row); return EventResult.accept; }
@@ -933,7 +940,7 @@ export component Pane inherits Rectangle {
     callback select(int, int);
     callback viewport-changed(length, length);
     callback command(string);
-    // edit-commit(mode, original name, typed name): mode 1 rename, 2 new folder.
+    // edit-commit(mode, original name, typed name): mode 1 rename, 2 new folder, 3 new file.
     callback edit-commit(int, string, string);
     callback context-menu(int, length, length, bool);
     callback context-key(int, length, length, length, length);
@@ -983,7 +990,8 @@ export component Pane inherits Rectangle {
         list.focus-list();
     }
 
-    // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder.
+    // The inline name editor: 0 closed, 1 renaming the cursor row, 2 naming a new folder, 3 a new
+    // file.
     in-out property <int> edit-mode: 0;
     private property <string> edit-original;
 
@@ -1484,7 +1492,7 @@ export component Pane inherits Rectangle {
         edit := LineEdit {
             width: 100%;
             height: 100%;
-            accessible-label: root.edit-mode == 1 ? "Rename" : "New folder name";
+            accessible-label: root.edit-mode == 1 ? "Rename" : root.edit-mode == 3 ? "New file name" : "New folder name";
             accepted(t) => {
                 root.edit-commit(root.edit-mode, root.edit-original, t);
                 root.end-edit();

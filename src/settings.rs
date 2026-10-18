@@ -89,9 +89,14 @@ pub struct Config {
     pub left_active: usize,
     pub right_tabs: Vec<String>,
     pub right_active: usize,
-    /// New tabs in each pane show hidden and system files (Ctrl+H sets it for its pane).
+    /// New tabs in each pane show files with the hidden attribute (Ctrl+H sets it for its pane).
     pub show_hidden_left: bool,
     pub show_hidden_right: bool,
+    /// Each pane shows protected operating system files (hidden and system both) while it shows
+    /// hidden files (P6-M3; the settings dialog only). A file with the system attribute alone is
+    /// always shown. Missing in an older file: off.
+    pub show_protected_left: bool,
+    pub show_protected_right: bool,
     /// The second pane is open, and the split line's position (0.15 to 0.85 of the panes' width).
     pub split: bool,
     pub split_ratio: f32,
@@ -153,6 +158,8 @@ impl Default for Config {
             right_active: 0,
             show_hidden_left: false,
             show_hidden_right: false,
+            show_protected_left: false,
+            show_protected_right: false,
             split: false,
             split_ratio: 0.5,
             sort_column: "name".into(),
@@ -297,6 +304,9 @@ pub struct Dialog {
     /// The active tab's hidden-file filter in each pane (what Ctrl+H toggles).
     pub show_hidden_left: bool,
     pub show_hidden_right: bool,
+    /// Each pane's protected-files setting (`Config::show_protected_*`).
+    pub show_protected_left: bool,
+    pub show_protected_right: bool,
     /// Each pane's view, as `View::name`: "details", "large" or "medium" (P6-M2).
     pub view_left: String,
     pub view_right: String,
@@ -319,12 +329,14 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 10] {
+    fn fields(&self) -> [(&'static str, String); 12] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
             ("show_hidden_left", self.show_hidden_left.to_string()),
             ("show_hidden_right", self.show_hidden_right.to_string()),
+            ("show_protected_left", self.show_protected_left.to_string()),
+            ("show_protected_right", self.show_protected_right.to_string()),
             ("view_left", self.view_left.clone()),
             ("view_right", self.view_right.clone()),
             ("show_type", self.show_type.to_string()),
@@ -638,6 +650,8 @@ show_type = false
             start_right: String::new(),
             show_hidden_left: false,
             show_hidden_right: false,
+            show_protected_left: false,
+            show_protected_right: false,
             view_left: "details".into(),
             view_right: "large".into(),
             show_type: true,
@@ -646,11 +660,12 @@ show_type = false
             path_bar: "breadcrumb".into(),
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
                 ("show_hidden_left", "false".into(), "true".into()),
+                ("show_protected_right", "false".into(), "true".into()),
                 ("view_right", "large".into(), "medium".into()),
                 ("show_type", "true".into(), "false".into()),
                 ("thumbnails", "false".into(), "true".into()),

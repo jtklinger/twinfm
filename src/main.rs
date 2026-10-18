@@ -584,7 +584,7 @@ fn refresh(pane: usize) {
         if let Some(s) = &mut t.search {
             s.cancel(fs::enumerate::SEARCH_REFRESH);
             s.cancel = Arc::new(AtomicU8::new(fs::enumerate::SEARCH_RUNNING));
-            let (pattern, cancel, hidden) = (s.pattern.clone(), s.cancel.clone(), t.model.show_hidden.get());
+            let (pattern, cancel, hidden) = (s.pattern.clone(), s.cancel.clone(), t.model.show());
             eprintln!("[search] pane={pane} gen={generation} start \"{}\" in {}", pattern.pattern, path.display());
             fs::enumerate::spawn_search(path, pattern, hidden, cancel, pane, generation, st.tx.clone(), wake);
             return;
@@ -1027,7 +1027,7 @@ fn explained_names(dir: &Path, job: &Job, results: &[fileops::ItemResult]) -> Ha
     }
     match job {
         Job::Rename { source, new_name } => add(&source.with_file_name(new_name)),
-        Job::NewFolder { parent, name } => add(&parent.join(name)),
+        Job::NewFolder { parent, name } | Job::NewFile { parent, name } => add(&parent.join(name)),
         _ => {}
     }
     set
@@ -1654,7 +1654,7 @@ fn request_pass(st: &mut State, pane: usize, id: u64) {
     let active = st.is_active(pane, id);
     let Some(t) = st.find(pane, id) else { return };
     let model = t.model.clone();
-    let (col, asc, show_hidden) = (model.sort_col.get(), model.sort_asc.get(), model.show_hidden.get());
+    let (col, asc, show_hidden) = (model.sort_col.get(), model.sort_asc.get(), model.show());
     let filter = model.filter.borrow().clone();
     if active {
         if pane == 0 {
@@ -2260,7 +2260,12 @@ fn command(pane: usize, cmd: &str) {
             if band_cancel(pane) {
                 return;
             }
-            return cancel_queued(pane);
+            // Explorer's Escape clears the selection; ours stops a search and cancels queued
+            // jobs first, and clears the selection only when it did neither (P6-M3).
+            if !cancel_queued(pane) {
+                clear_selection(pane);
+            }
+            return;
         }
         _ => {}
     }
@@ -2270,10 +2275,14 @@ fn command(pane: usize, cmd: &str) {
         let at_drives = is_this_pc(&folder.to_string_lossy());
         match cmd {
             "sizeall" => size_all(st, &app, pane),
-            "newfolder" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
+            "newfolder" | "newfile" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
             "newfolder" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a folder in it".into()),
+            "newfile" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a file in it".into()),
             "newfolder" if in_archive(st, pane) => refuse_archive(st, &app, pane, "new folder", EDIT_ARCHIVE),
+            "newfile" if in_archive(st, pane) => refuse_archive(st, &app, pane, "new file", EDIT_ARCHIVE),
             "newfolder" => return Some((app, 2, SharedString::from("New folder"))),
+            // Explorer's name for a new empty file (P6-M3); the shell numbers it on a collision.
+            "newfile" => return Some((app, 3, SharedString::from(fileops::NEW_FILE_NAME))),
             "rename" | "delete" | "sdelete" if in_archive(st, pane) => {
                 let what = match cmd {
                     "sdelete" => "permanent delete",
@@ -2332,7 +2341,7 @@ fn command(pane: usize, cmd: &str) {
     }
 }
 
-/// The inline name editor's Return: rename the row or create the folder.
+/// The inline name editor's Return: rename the row, or create the folder or the file.
 fn edit_commit(pane: usize, mode: i32, original: &str, typed: &str) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
@@ -2350,6 +2359,7 @@ fn edit_commit(pane: usize, mode: i32, original: &str, typed: &str) {
             1 if name == original || (!parent.is_empty() && original.ends_with(&format!("\\{name}"))) => return,
             1 => Job::Rename { source: folder.join(original), new_name: name.into() },
             2 => Job::NewFolder { parent: folder, name: name.into() },
+            3 => Job::NewFile { parent: folder, name: name.into() },
             _ => return,
         };
         submit(st, &app, pane, job);
@@ -2501,22 +2511,41 @@ fn replay_text(replay: Replay, done: bool, orig: &str, status: &str) -> String {
 
 /// Escape in a pane's list: cancel every queued job that has not started (each reports
 /// `Cancelled` through `job_done`); the running one goes on.
-fn cancel_queued(pane: usize) {
+fn cancel_queued(pane: usize) -> bool {
     with_state(|st| {
         // Escape in a search tab's list also stops its walk; the results so far stay.
         let t = st.tab(pane);
+        let mut stopped = false;
         if let Some(s) = t.search.as_ref().filter(|_| t.timing.done_ms.is_none() && t.timing.error.is_none()) {
             s.cancel(fs::enumerate::SEARCH_ESCAPE);
             eprintln!("[search] pane={pane} Escape: stopping the search");
+            stopped = true;
         }
         let queued = st.jobs.len().saturating_sub(1);
         if queued == 0 {
-            return;
+            return stopped;
         }
         st.ops.cancel_queued(st.next_job);
         eprintln!("[fileops] Escape: cancelling {queued} queued operation(s) up to id {}", st.next_job);
         if let Some(app) = st.app.upgrade() {
             note(st, &app, pane, format!("Cancelling {queued} queued operation{}", if queued == 1 { "" } else { "s" }));
+        }
+        true
+    })
+}
+
+/// Escape with nothing to cancel: the pane's selection is cleared (the cursor stays).
+fn clear_selection(pane: usize) {
+    with_state(|st| {
+        let model = st.model(pane);
+        if model.selected_count() == 0 {
+            return;
+        }
+        model.select(SelOp::Clear, 0);
+        eprintln!("[select] pane={pane} Escape: selection cleared");
+        size_selection(st, pane);
+        if let Some(app) = st.app.upgrade() {
+            update_status(st, &app, pane);
         }
     });
 }
@@ -2701,7 +2730,7 @@ fn job_done(d: fileops::Done) {
             if d.outcome == Outcome::Done {
                 // The name the shell really used ("New folder (2)"), else the one asked for.
                 match &d.job {
-                    Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } => {
+                    Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } | Job::NewFile { name: n, .. } => {
                         let real = fileops::real_name(&d.job, &d.results).unwrap_or_else(|| n.clone());
                         t.focus_name = Some(real.as_str().into());
                     }
@@ -4026,12 +4055,13 @@ fn open_tab(pane: usize, path: Option<PathBuf>) {
             st.tab_mut(pane).drop_sizes(pane, "tab in the background");
         }
         let cur = st.tab(pane);
-        let (col, asc, hidden) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get());
+        let (col, asc, show) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show());
         let path = path.unwrap_or_else(|| cur.path.clone());
         let t = st.new_tab(path.clone());
         t.model.sort_col.set(col);
         t.model.sort_asc.set(asc);
-        t.model.show_hidden.set(hidden);
+        t.model.show_hidden.set(show.hidden);
+        t.model.show_protected.set(show.protected);
         let id = t.id;
         st.panes[pane].open(t);
         show_tab(st, &app, pane);
@@ -4253,6 +4283,20 @@ fn toggle_hidden(pane: usize) {
     });
 }
 
+/// The settings dialog's protected-files switch for a pane (P6-M3): every tab of the pane follows
+/// it, the active one at once, the others when next listed (their pass runs on show).
+fn set_protected(pane: usize, on: bool) {
+    with_state(|st| {
+        if pane == 0 { st.config.show_protected_left = on } else { st.config.show_protected_right = on }
+        for t in st.panes[pane].iter() {
+            t.model.show_protected.set(on);
+        }
+        eprintln!("[hidden] pane={pane} show_protected={on}");
+        let id = st.tab(pane).id;
+        request_pass(st, pane, id);
+    });
+}
+
 /// The pane's filter box: its text, shown while the text is not empty (a tab switch shows the new
 /// tab's filter; a navigation clears it). Closing an open box in the active pane gives its list
 /// the focus: the box may have held it, and a destroyed box leaves the focus nowhere (no key would
@@ -4371,11 +4415,12 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
             // switch_tab).
             st.tab_mut(pane).drop_sizes(pane, "tab in the background");
             let cur = st.tab(pane);
-            let (col, asc, hidden, root) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show_hidden.get(), cur.path.clone());
+            let (col, asc, show, root) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show(), cur.path.clone());
             let mut t = st.new_tab(root.clone());
             t.model.sort_col.set(col);
             t.model.sort_asc.set(asc);
-            t.model.show_hidden.set(hidden);
+            t.model.show_hidden.set(show.hidden);
+            t.model.show_protected.set(show.protected);
             if t.history.push(&Place::folder(root.clone()), &to(&root)) {
                 eprintln!("[nav] pane={pane} history push {} ({} back)", root.display(), t.history.back_len());
             }
@@ -4406,7 +4451,7 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
         t.watch_refresh = false;
         t.cursor = -1;
         t.scroll = 0.0;
-        let (id, root, hidden) = (t.id, t.path.clone(), t.model.show_hidden.get());
+        let (id, root, hidden) = (t.id, t.path.clone(), t.model.show());
         if st.cut_source == Some((pane, id)) {
             st.cut_source = None;
         }
@@ -4493,6 +4538,8 @@ fn settings_open() {
             start_right: st.config.start_right.clone(),
             show_hidden_left: st.model(0).show_hidden.get(),
             show_hidden_right: st.model(1).show_hidden.get(),
+            show_protected_left: st.config.show_protected_left,
+            show_protected_right: st.config.show_protected_right,
             view_left: view_of(st, 0).name().into(),
             view_right: view_of(st, 1).name().into(),
             show_type: st.config.show_type,
@@ -4513,6 +4560,8 @@ fn settings_open() {
     app.set_dlg_start_right(d.start_right.into());
     app.set_dlg_hidden_left(d.show_hidden_left);
     app.set_dlg_hidden_right(d.show_hidden_right);
+    app.set_dlg_protected_left(d.show_protected_left);
+    app.set_dlg_protected_right(d.show_protected_right);
     app.set_dlg_view_left(settings::View::from_name(&d.view_left).index());
     app.set_dlg_view_right(settings::View::from_name(&d.view_right).index());
     app.set_dlg_type_column(d.show_type);
@@ -4535,6 +4584,8 @@ fn settings_closed(ok: bool) {
         start_right: app.get_dlg_start_right().to_string(),
         show_hidden_left: app.get_dlg_hidden_left(),
         show_hidden_right: app.get_dlg_hidden_right(),
+        show_protected_left: app.get_dlg_protected_left(),
+        show_protected_right: app.get_dlg_protected_right(),
         view_left: settings::View::from_index(app.get_dlg_view_left()).name().into(),
         view_right: settings::View::from_index(app.get_dlg_view_right()).name().into(),
         show_type: app.get_dlg_type_column(),
@@ -4558,6 +4609,10 @@ fn settings_closed(ok: bool) {
                 if with_state(|st| st.model(pane).show_hidden.get()) != want {
                     toggle_hidden(pane);
                 }
+            }
+            "show_protected_left" | "show_protected_right" => {
+                let pane = usize::from(*key == "show_protected_right");
+                set_protected(pane, if pane == 0 { staged.show_protected_left } else { staged.show_protected_right });
             }
             "view_left" | "view_right" => set_view(usize::from(*key == "view_right"), settings::View::from_name(new)),
             "show_type" => with_state(|st| set_show_type(st, &app, staged.show_type)),
@@ -4709,7 +4764,7 @@ fn main() -> Result<(), slint::PlatformError> {
         (vec![String::new()], 0)
     };
     let mut next_tab = 0;
-    let mut restore = |paths: &[String], active: usize, hidden: bool| {
+    let mut restore = |paths: &[String], active: usize, hidden: bool, protected: bool| {
         let mut tabs: Vec<Tab> = paths
             .iter()
             .enumerate()
@@ -4719,6 +4774,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 t.model.sort_col.set(settings::sort_from_name(&config.sort_column));
                 t.model.sort_asc.set(config.sort_ascending);
                 t.model.show_hidden.set(hidden);
+                t.model.show_protected.set(protected);
                 t
             })
             .collect();
@@ -4726,8 +4782,8 @@ fn main() -> Result<(), slint::PlatformError> {
         Tabs::restored(first, tabs, active)
     };
     let panes = [
-        restore(&left_paths, left_active, config.show_hidden_left),
-        restore(&right_paths, right_active, config.show_hidden_right),
+        restore(&left_paths, left_active, config.show_hidden_left, config.show_protected_left),
+        restore(&right_paths, right_active, config.show_hidden_right, config.show_protected_right),
     ];
     for (pane, tabs) in panes.iter().enumerate() {
         if tabs.len() > 1 {

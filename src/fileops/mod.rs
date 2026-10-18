@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{E_FAIL, E_INVALIDARG, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_TIMEOUT, HWND};
-use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL};
 use windows_sys::Win32::System::Com::{CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Shell::{
@@ -57,6 +57,9 @@ pub const HR_CANCELLED: HRESULT = (0x8007_0000u32 | ERROR_CANCELLED) as HRESULT;
 /// HRESULT_FROM_WIN32(ERROR_TIMEOUT): the "undelete" verb returned but the item never came back.
 const HR_TIMEOUT: HRESULT = (0x8007_0000u32 | ERROR_TIMEOUT) as HRESULT;
 
+/// What New file names the file it makes (Explorer's "New > Text Document").
+pub const NEW_FILE_NAME: &str = "New Text Document.txt";
+
 /// HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS): a restore whose original path is taken.
 const HR_IN_THE_WAY: HRESULT = (0x8007_0000u32 | ERROR_ALREADY_EXISTS) as HRESULT;
 
@@ -72,6 +75,8 @@ pub enum Job {
     Delete { sources: Vec<PathBuf>, permanent: bool },
     Rename { source: PathBuf, new_name: String },
     NewFolder { parent: PathBuf, name: String },
+    /// An empty file (P6-M3: the toolbar's New file and Ctrl+Alt+N, "New Text Document.txt").
+    NewFile { parent: PathBuf, name: String },
     /// Restore recycled items: (the `$R` path in the bin, the original full path).
     Restore { items: Vec<(PathBuf, PathBuf)> },
 }
@@ -83,7 +88,7 @@ impl Job {
             Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } => sources.len(),
             Job::MoveAs { items, .. } => items.len(),
             Job::Restore { items } => items.len(),
-            Job::Rename { .. } | Job::NewFolder { .. } => 1,
+            Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } => 1,
         }
     }
 
@@ -98,7 +103,7 @@ impl Job {
             Job::Delete { sources, .. } => sources.iter().map(PathBuf::as_path).collect(),
             Job::Restore { items } => items.iter().map(|(_, original)| original.as_path()).collect(),
             Job::Rename { source, .. } => vec![source.as_path()],
-            Job::NewFolder { parent, .. } => vec![parent.as_path()],
+            Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => vec![parent.as_path()],
         }
     }
 }
@@ -145,11 +150,11 @@ pub struct Done {
     pub results: Vec<ItemResult>,
 }
 
-/// The name the shell really gave a renamed item or a new folder ("New folder (2)"), if the
-/// sink reported it; None for the other jobs.
+/// The name the shell really gave a renamed item, a new folder or a new file ("New folder (2)"),
+/// if the sink reported it; None for the other jobs.
 pub fn real_name(job: &Job, results: &[ItemResult]) -> Option<String> {
     match job {
-        Job::Rename { .. } | Job::NewFolder { .. } => results
+        Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } => results
             .iter()
             .filter(|r| r.ok())
             .find_map(|r| r.dest.as_ref()?.file_name().map(|n| n.to_string_lossy().into_owned())),
@@ -183,7 +188,7 @@ pub fn flags(job: &Job, no_confirm: bool) -> u32 {
         {
             f |= FOF_RENAMEONCOLLISION;
         }
-        Job::NewFolder { .. } => f |= FOF_RENAMEONCOLLISION,
+        Job::NewFolder { .. } | Job::NewFile { .. } => f |= FOF_RENAMEONCOLLISION,
         _ => {}
     }
     if no_confirm {
@@ -209,7 +214,9 @@ pub fn status_text(job: &Job, outcome: &Outcome, results: &[ItemResult]) -> Stri
             Job::Delete { permanent: false, .. } => format!("Deleted {} to the Recycle Bin", items(job.count())),
             Job::Delete { permanent: true, .. } => format!("Deleted {} permanently", items(job.count())),
             Job::Rename { new_name, .. } => format!("Renamed to {}", real_name(job, results).unwrap_or_else(|| new_name.clone())),
-            Job::NewFolder { name, .. } => format!("Created {}", real_name(job, results).unwrap_or_else(|| name.clone())),
+            Job::NewFolder { name, .. } | Job::NewFile { name, .. } => {
+                format!("Created {}", real_name(job, results).unwrap_or_else(|| name.clone()))
+            }
         },
     }
 }
@@ -223,6 +230,7 @@ pub fn running_text(job: &Job) -> String {
         Job::Delete { .. } => format!("deleting {}...", items(job.count())),
         Job::Rename { .. } => "renaming...".into(),
         Job::NewFolder { .. } => "creating folder...".into(),
+        Job::NewFile { .. } => "creating file...".into(),
     }
 }
 
@@ -683,14 +691,14 @@ fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
         }
         Job::MoveAs { items, .. } => items.iter().map(|(p, _)| p.as_path()).collect(),
         Job::Rename { source, .. } => vec![source.as_path()],
-        Job::NewFolder { parent, .. } => vec![parent.as_path()],
+        Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => vec![parent.as_path()],
         Job::Restore { .. } => return all, // one result per item, made by `restore`
     };
     // Top-level items share a parent with a source; checking the parent first keeps the
     // canonicalising comparison off a folder's contents.
     let parents: Vec<&Path> = mine.iter().filter_map(|p| p.parent()).collect();
     let is_top = |r: &ItemResult| match job {
-        Job::NewFolder { .. } => true,
+        Job::NewFolder { .. } | Job::NewFile { .. } => true,
         _ => r.source.parent().is_some_and(|rp| parents.iter().any(|p| same_dir(p, rp) || same_path(p, rp))),
     };
     all.into_iter().filter(|r| is_top(r) && mine.iter().any(|m| same_path(m, &r.source))).collect()
@@ -765,12 +773,12 @@ fn perform_inner(req: &Request, progress: &Rc<dyn Fn(Progress)>, results: &mut V
             check(unsafe { (v.rename_item)(op.0, item.0, name.as_ptr(), std::ptr::null_mut()) })?;
             keep.push(item);
         }
-        Job::NewFolder { parent, name } => {
+        Job::NewFolder { parent, name } | Job::NewFile { parent, name } => {
             let dir = shell_item(parent)?;
+            let attrs = if matches!(req.job, Job::NewFolder { .. }) { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
             let name = wide(std::ffi::OsStr::new(name));
-            check(unsafe {
-                (v.new_item)(op.0, dir.0, FILE_ATTRIBUTE_DIRECTORY, name.as_ptr(), std::ptr::null(), std::ptr::null_mut())
-            })?;
+            // No template: the new file is empty.
+            check(unsafe { (v.new_item)(op.0, dir.0, attrs, name.as_ptr(), std::ptr::null(), std::ptr::null_mut()) })?;
             keep.push(dir);
         }
         Job::Restore { .. } => unreachable!("restored above"),
@@ -1125,6 +1133,8 @@ mod tests {
         assert_eq!(flags(&there, false), base, "a conflict elsewhere asks");
         let nf = Job::NewFolder { parent: PathBuf::from(r"C:\d"), name: "New folder".into() };
         assert_eq!(flags(&nf, false), base | FOF_RENAMEONCOLLISION);
+        let file = Job::NewFile { parent: PathBuf::from(r"C:\d"), name: NEW_FILE_NAME.into() };
+        assert_eq!(flags(&file, false), base | FOF_RENAMEONCOLLISION, "a new file is numbered as a new folder is");
     }
 
     #[test]
@@ -1147,7 +1157,11 @@ mod tests {
         assert_eq!(real_name(&nf, &made).as_deref(), Some("New folder (2)"));
         let failed = [ItemResult { hr: -1, ..made[0].clone() }];
         assert_eq!(real_name(&nf, &failed), None, "a failed item names nothing");
-        assert_eq!(real_name(&copy, &made), None, "only renames and new folders have a real name");
+        assert_eq!(real_name(&copy, &made), None, "only renames and new folders and files have a real name");
+        let file = Job::NewFile { parent: PathBuf::new(), name: NEW_FILE_NAME.into() };
+        assert_eq!(running_text(&file), "creating file...");
+        let made = [ItemResult { source: PathBuf::from(r"C:\d"), dest: Some(PathBuf::from(r"C:\d\New Text Document (2).txt")), hr: 0 }];
+        assert_eq!(status_text(&file, &Outcome::Done, &made), "Created New Text Document (2).txt");
         assert_eq!(status_text(&copy, &Outcome::Cancelled, &[]), "Cancelled");
         assert_eq!(status_text(&copy, &Outcome::Failed(0x80070005u32 as i32), &[]), "Failed: 0x80070005");
         assert_eq!(running_text(&copy), "copying 3 items...");
@@ -1277,6 +1291,13 @@ mod tests {
         assert_eq!(dest(&r), [canon(&root.join("made (2)"))], "the real name of the new folder");
         assert_eq!(real_name(&job, &r).as_deref(), Some("made (2)"));
         assert_eq!(status_text(&job, &Outcome::Done, &r), "Created made (2)");
+        // A new file (P6-M3): empty, numbered over an existing name as the shell numbers it.
+        let job = Job::NewFile { parent: root.clone(), name: NEW_FILE_NAME.into() };
+        let r = run(job.clone());
+        assert_eq!(std::fs::metadata(root.join(NEW_FILE_NAME)).unwrap().len(), 0, "the new file is empty");
+        assert_eq!(dest(&r), [canon(&root.join(NEW_FILE_NAME))]);
+        let r = run(job.clone());
+        assert_eq!(real_name(&job, &r).as_deref(), Some("New Text Document (2).txt"));
 
         // A folder with contents: only the folder itself is reported.
         std::fs::write(root.join("made (2)").join("inner.txt"), b"x").unwrap();

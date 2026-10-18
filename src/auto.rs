@@ -27,6 +27,8 @@
 //!   undo                             Ctrl+Z: undo the newest recorded operation (fileops::undo)
 //!   redo                             Ctrl+Y: redo the newest undone operation
 //!   newfolder <name>                 F7, type the name into the editor, Return
+//!   newfile <name>                   Ctrl+Alt+N (key name CtrlAltN), type the name, Return: an
+//!                                    empty file (P6-M3)
 //!   rename <name>                    F2 on the cursor row, type the new name, Return
 //!   waitops <ms>                     wait until no file operation runs, no pane refreshes and no
 //!                                    virtual-file drop writes (at most <ms>), then 300 ms more for
@@ -351,6 +353,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "undo" => Step::Key("CtrlZ".into()),
                 "redo" => Step::Key("CtrlY".into()),
                 "newfolder" => Step::Type { lead: "F7".into(), text: a[1..].join(" ") },
+                "newfile" => Step::Type { lead: "CtrlAltN".into(), text: a[1..].join(" ") },
                 "rename" => Step::Type { lead: "F2".into(), text: a[1..].join(" ") },
                 "waitops" => Step::WaitOps(num(1).max(1) as u64),
                 "rclick" => Step::RClick { pane: num(1) as usize, row: Some(num(2) as usize) },
@@ -890,6 +893,7 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlZ" => vec![k(Key::Control), "z".into()],
         "CtrlY" => vec![k(Key::Control), "y".into()],
         "CtrlShiftN" => vec![k(Key::Control), k(Key::Shift), "N".into()],
+        "CtrlAltN" => vec![k(Key::Control), k(Key::Alt), "n".into()],
         "CtrlF" => vec![k(Key::Control), "f".into()],
         "CtrlShiftF" => vec![k(Key::Control), k(Key::Shift), "F".into()],
         "Down" => vec![k(Key::DownArrow)],

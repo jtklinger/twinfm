@@ -288,6 +288,9 @@ export component App inherits Window {
     in-out property <string> dlg-start-right;
     in-out property <bool> dlg-hidden-left;
     in-out property <bool> dlg-hidden-right;
+    // Protected operating system files (hidden and system both) per pane, shown with hidden files.
+    in-out property <bool> dlg-protected-left;
+    in-out property <bool> dlg-protected-right;
     // Each pane's view in the dialog: 0 details, 1 large icons, 2 medium icons (ComboBox index).
     in-out property <int> dlg-view-left;
     in-out property <int> dlg-view-right;
@@ -314,14 +317,16 @@ export component App inherits Window {
     public function settings-ok() { finish-settings(true); }
     public function settings-cancel() { finish-settings(false); }
     // What each control calls when the user changes it (and the driver's `settings set`): field
-    // start_left, start_right (a path), hidden_left, hidden_right, type_column, thumbnails, sidebar
-    // ("true" or "false"), path_bar ("entry" or "crumb"), view_left, view_right ("details", "large"
+    // start_left, start_right (a path), hidden_left, hidden_right, protected_left, protected_right,
+    // type_column, thumbnails, sidebar ("true" or "false"), path_bar ("entry" or "crumb"), view_left, view_right ("details", "large"
     // or "medium").
     public function settings-stage(field: string, value: string) {
         if (field == "start_left") { dlg-start-left = value; }
         if (field == "start_right") { dlg-start-right = value; }
         if (field == "hidden_left") { dlg-hidden-left = value == "true"; }
         if (field == "hidden_right") { dlg-hidden-right = value == "true"; }
+        if (field == "protected_left") { dlg-protected-left = value == "true"; }
+        if (field == "protected_right") { dlg-protected-right = value == "true"; }
         if (field == "type_column") { dlg-type-column = value == "true"; }
         if (field == "thumbnails") { dlg-thumbnails = value == "true"; }
         if (field == "sidebar") { dlg-sidebar = value == "true"; }
@@ -790,9 +795,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 368px) / 2);
+        y: max(10px, (root.height - 406px) / 2);
         width: 480px;
-        height: 368px;
+        height: 406px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Palette.background;
@@ -849,6 +854,24 @@ export component App inherits Window {
                                     checked: root.dlg-hidden-right;
                                     accessible-label: "Show hidden files in the right pane";
                                     toggled => { root.settings-stage("hidden_right", self.checked ? "true" : "false"); }
+                                }
+                            }
+                        }
+                        Row {
+                            Text { text: "Protected files"; vertical-alignment: center; }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                CheckBox {
+                                    text: "Left pane";
+                                    checked: root.dlg-protected-left;
+                                    accessible-label: "Show protected operating system files in the left pane";
+                                    toggled => { root.settings-stage("protected_left", self.checked ? "true" : "false"); }
+                                }
+                                CheckBox {
+                                    text: "Right pane";
+                                    checked: root.dlg-protected-right;
+                                    accessible-label: "Show protected operating system files in the right pane";
+                                    toggled => { root.settings-stage("protected_right", self.checked ? "true" : "false"); }
                                 }
                             }
                         }
