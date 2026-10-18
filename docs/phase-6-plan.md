@@ -1226,6 +1226,37 @@ triplet, each `p6m3-toolbar-pane` run's stderr must show `[settings] file C:\tra
 runs (the reference does not know the key). Compare the `[perf] ... render[... p50=...]` figure of
 each run before reading the medians (the ab23 note).
 
+Run on 2026-10-18 (09:19 to 09:33), Jeremy elevated at the console, accessibility on, Narrator off,
+no other TwinFM window, through a one-off wrapper (`C:\traces\gate-p6m3.ps1`, not in the repo: the
+preconditions, the gate build (built beforehand by the implementer from the detached checkout
+`.claude\worktrees\gate-p6m3` at 02a9103 with `--locked`; the wrapper's own build was a no-op), the
+triplet script of that checkout, then `analyze-trace.py --symbols --exe` and the stderr checks on
+every run). `target-p6m2` (ca12be0) against `target-p6m3` (02a9103), each round reference, defaults,
+toolbar. Every toolbar run's stderr shows `[settings] file C:\traces\toolbar-pane.toml (read)`; no
+`panicked` line in any of the nine. Traces `C:\traces\twinfm-ab24-*.etl`, reports under
+`C:\traces\export\`, summary `C:\traces\gate-ab24-summary.txt`.
+
+| Run | reference `target-p6m2` | P6-M3 defaults (toolbar across the top) | P6-M3 `toolbar-pane.toml` | render p50 (ref / defaults / toolbar) |
+|---|---|---|---|---|
+| 1 | 19.1% | 18.5% | 20.2% | 2.19 / 2.19 / 2.26 ms |
+| 2 | 20.3% | 18.6% | 19.8% | 2.29 / 2.24 / 2.33 ms |
+| 3 | 22.4% | 21.3% | 23.0% | 2.96 / 2.88 / 2.96 ms |
+| **median** | **20.3%** | **18.6%** | **20.2%** | |
+
+**Round 3 ran at a higher cost per frame for all three binaries** (render p50 2.88 to 2.96 ms against
+2.19 to 2.33 in rounds 1 and 2), the machine-wide shift ab23 recorded, so the rounds are read like for
+like. Rounds 1 and 2: the reference 19.1 and 20.3, the defaults candidate 18.5 and 18.6 (below the
+reference in both), the toolbar candidate 20.2 and 19.8 (between the reference's two). Round 3: the
+reference 22.4, the defaults candidate 21.3, the toolbar candidate 23.0. Neither candidate has a gap
+that counts (the wrapper's one-sided rule: no reference run below every candidate run, no median more
+than a point above the reference's). The bar (under 20%) is met by the defaults candidate in both
+like-for-like rounds; the toolbar candidate's 20.2 sits beside the reference's 20.3 in the same state,
+and the round 3 runs over 20% are all three binaries at the higher cost. The defaults candidate draws
+its lists 36 px shorter (the toolbar across the top) and reads a point or two below the reference;
+the in-pane bars cost what the list's lost row saves, within the reference's spread.
+
+**P6-M3 passes the gate.** The console checks follow.
+
 Console checks after the triplet, TwinFM started unelevated:
 
 1. The toolbar across the top (the default): each button against the left and the right pane (the
@@ -1260,5 +1291,5 @@ Written 2026-10-16 at the kickoff.
   icon size (§ P6-M2 Settled first).
 - **The in-pane toolbar's height against the bar** (P6-M3): it takes a row from each list, so
   the gate scenario scrolls one row fewer per pane; a cost within the noise is expected, and the
-  toolbar triplet says. The in-app pairs interleave (§ P6-M3 Measurements); the triplet (ab24) is
-  Jeremy's.
+  toolbar triplet says. **Answered (P6-M3, ab24):** the toolbar triplet's median 20.2% against the
+  reference's 20.3%, within its spread in both session states (§ P6-M3 Gate).
