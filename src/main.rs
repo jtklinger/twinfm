@@ -722,6 +722,19 @@ fn update_tabs(st: &State, pane: usize) {
     }
 }
 
+/// The pane's tab strip changed width (pane.slint `strip-resized`): its active tab is scrolled back
+/// into view, logged when the strip's offset moves (a splitter drag calls this on every move).
+fn strip_resized(pane: usize) {
+    let Some((app, active, n)) = with_state(|st| Some((st.app.upgrade()?, st.panes[pane].active_index(), st.panes[pane].len()))) else {
+        return;
+    };
+    let before = app.invoke_tab_offset(pane as i32);
+    let x = app.invoke_reveal_tab(pane as i32, active as i32);
+    if (x - before).abs() >= 0.5 {
+        eprintln!("[tab] pane={pane} strip resized: scrolled to {x:.0} (tab {} of {n} in view)", active + 1);
+    }
+}
+
 /// A tab's title: its folder's name, or `Search: <pattern>` for a search tab.
 fn tab_title(t: &Tab) -> String {
     match &t.search {
@@ -5084,6 +5097,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_context_menu(|pane, row, x, y, extended| context_menu(pane as usize, row, x, y, extended));
     app.on_context_key(|pane, row, lx, ly, cy, vh| context_key(pane as usize, row, lx, ly, cy, vh));
     app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
+    app.on_strip_resized(|pane| strip_resized(pane as usize));
     app.on_toolbar_clicked(|pane, button| toolbar_clicked(pane as usize, button.as_str()));
     app.on_edit_commit(|pane, mode, original, typed| edit_commit(pane as usize, mode, original.as_str(), typed.as_str()));
     app.on_tab_select(|pane, i| {

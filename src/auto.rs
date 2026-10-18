@@ -45,6 +45,9 @@
 //!                                    WM_XBUTTONUP (XBUTTON1) messages, so it takes winit's real path:
 //!                                    the pane becomes active and goes back in its tab's history
 //!   forwardclick <pane>              the same with the Forward button (XBUTTON2): forward in the history
+//!   backclick <pane> path|edit       the Back button over the path bar's middle (with `pathmode
+//!                                    <pane> entry`, the text entry) or over row 0's name cell (with F2,
+//!                                    the rename editor): ignored there (P6-M3)
 //!   history <back|forward>           Alt+Left / Alt+Right through the Slint key path, on the active pane
 //!   view <details|icons>             Ctrl+Shift+1 / Ctrl+Shift+2 (key names CtrlShift1, CtrlShift2): the
 //!                                    active pane's view, the details list or the large-icon grid
@@ -253,7 +256,8 @@ enum Step {
     MidClick { pane: usize, row: usize },
     /// Post the mouse's Back (or, `forward`, Forward) button's press and release to the window, in
     /// the middle of the pane's list area.
-    XButton { pane: usize, forward: bool },
+    /// `at`: None the list's middle; "path" the path bar's middle; "edit" row 0's name cell.
+    XButton { pane: usize, forward: bool, at: Option<String> },
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
     WaitOps(u64),
@@ -338,8 +342,8 @@ fn parse(script: &str) -> Vec<Step> {
                 "shiftclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Shift) },
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
-                "backclick" => Step::XButton { pane: num(1) as usize, forward: false },
-                "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true },
+                "backclick" => Step::XButton { pane: num(1) as usize, forward: false, at: a.get(2).map(|s| s.to_string()) },
+                "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true, at: a.get(2).map(|s| s.to_string()) },
                 "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
                 "view" => Step::Key(
                     match a.get(1).copied() {
@@ -1060,12 +1064,22 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Middle }).ok();
             schedule(runner, 1);
         }
-        Step::XButton { pane, forward } => {
+        Step::XButton { pane, forward, at } => {
             use windows_sys::Win32::System::SystemServices::{MK_XBUTTON1, MK_XBUTTON2};
             use windows_sys::Win32::UI::WindowsAndMessaging::{WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2};
             // Posted, not dispatched: winit's window procedure turns them into the side button's
             // press and release (after the move that places the pointer), as for a real mouse.
-            let (_, _, pos) = geometry(&app, pane);
+            let (_, _, mut pos) = geometry(&app, pane);
+            let l = crate::window_layout(&app);
+            let (left, _) = crate::dnd::pane_x(&l, pane);
+            match at.as_deref() {
+                Some("path") => pos.y = crate::dnd::crumb_top(&l, pane) + crate::dnd::CRUMB_H / 2.0,
+                Some("edit") => {
+                    pos.x = left + crate::dnd::PANE_PAD + l.row_px + 60.0;
+                    pos.y = list_top(&app, pane) + l.row_px / 2.0;
+                }
+                _ => {}
+            }
             let s = app.window().scale_factor();
             let (x, y) = ((pos.x * s).round() as i32, (pos.y * s).round() as i32);
             let lp = (((y as u16 as u32) << 16) | x as u16 as u32) as isize;

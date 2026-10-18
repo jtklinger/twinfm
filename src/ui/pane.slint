@@ -1102,6 +1102,10 @@ export component Pane inherits Rectangle {
     out property <length> shown-tab-scroll: max(root.tab-scroll-min, min(0px, root.tab-scroll));
     // The tab a left-button drag in the strip is moving (-1: none).
     private property <int> drag-tab: -1;
+    // The strip's width changed (a window resize, the split or the splitter, the sidebar): main.rs
+    // scrolls the active tab back into view (P6-M3). Only while the strip shows.
+    callback strip-resized();
+    changed tab-strip-w => { if (root.tabs.length > 1) { root.strip-resized(); } }
 
     border-width: active ? 2px : 1px;
     border-color: active ? Palette.accent-background : Palette.border;
@@ -1252,6 +1256,9 @@ export component Pane inherits Rectangle {
                 visible: root.path-entry;
                 x: 0;
                 width: parent.width - 26px - root.filter-w;
+                // Behind the entry, which takes no side button: the mouse's Back or Forward button
+                // over it is ignored, not taken by the pane as a move in the history (P6-M3).
+                TouchArea { }
                 path-edit := LineEdit {
                     width: 100%;
                     height: 100%;
@@ -1573,6 +1580,9 @@ export component Pane inherits Rectangle {
         width: root.grid ? list.tile-w - 4px : max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - (root.show-type ? 350px : 230px) - 12px);
         height: 28px;
         background: Palette.background;
+        // As behind the path entry: Back or Forward over the editor is ignored, not taken by the
+        // row under it (P6-M3).
+        TouchArea { }
         edit := LineEdit {
             width: 100%;
             height: 100%;

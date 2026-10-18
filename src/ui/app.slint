@@ -230,6 +230,8 @@ export component App inherits Window {
     callback tab-close(int, int);
     // tab-move(pane, from, to): a tab dragged within its strip.
     callback tab-move(int, int, int);
+    // strip-resized(pane): the pane's tab strip changed width; Rust reveals the active tab again.
+    callback strip-resized(int);
     // tab-key(pane, what): for the active pane, Ctrl+T "new", Ctrl+W "close", Ctrl+Tab "next",
     // Ctrl+Shift+Tab "prev", Ctrl+1..9 "1".."9", Ctrl+Shift+PageUp "moveleft",
     // Ctrl+Shift+PageDown "moveright".
@@ -605,6 +607,7 @@ export component App inherits Window {
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
                 tab-move(f, t) => { root.tab-move(0, f, t); }
+                strip-resized => { root.strip-resized(0); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(0, i, x, y); }
                 crumb-geometry(i, x, w) => { root.crumb-geometry(0, i, x, w); }
@@ -658,6 +661,7 @@ export component App inherits Window {
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
                 tab-move(f, t) => { root.tab-move(1, f, t); }
+                strip-resized => { root.strip-resized(1); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(1, i, x, y); }
                 crumb-geometry(i, x, w) => { root.crumb-geometry(1, i, x, w); }
