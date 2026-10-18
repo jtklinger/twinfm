@@ -336,7 +336,8 @@ pub struct Layout {
     /// Where the sidebar and the panes start: under the toolbar across the window (`TOP_BAR`) or
     /// at 0 (P6-M3).
     pub top: f32,
-    /// The toolbar inside each pane above its path bar and its spacing (`PANE_BAR`), or 0.
+    /// The toolbar at the top of each pane, above its tab strip and path bar, and its spacing
+    /// (`PANE_BAR`), or 0.
     pub bar: f32,
 }
 
@@ -358,8 +359,8 @@ pub const PANE_PAD: f32 = 3.0;
 pub const TAB_STRIP: f32 = 28.0;
 
 /// The toolbar across the window (app.slint, `toolbar = "top"`): 36 px over the sidebar and the
-/// panes. The toolbar in each pane (`toolbar = "pane"`): 28 px under the tab strip, above the path
-/// bar, and the 2 px layout spacing under it (P6-M3).
+/// panes. The toolbar in each pane (`toolbar = "pane"`): 28 px at the pane's top, above the tab
+/// strip and the path bar, and the 2 px layout spacing under it (P6-M3).
 pub const TOP_BAR: f32 = 36.0;
 pub const PANE_BAR: f32 = 30.0;
 
@@ -368,9 +369,9 @@ pub fn list_top(l: &Layout, pane: usize) -> f32 {
     l.top + l.bar + if l.tabs[pane] { LIST_TOP + TAB_STRIP } else { LIST_TOP }
 }
 
-/// The top of the panes' tab strips, in window px.
+/// The top of the panes' tab strips, in window px (under the in-pane toolbar when it shows).
 pub fn tab_top(l: &Layout) -> f32 {
-    l.top + TAB_TOP
+    l.top + l.bar + TAB_TOP
 }
 
 /// The top of the sidebar's list, in window px.
@@ -3217,7 +3218,7 @@ mod tests {
         assert_eq!(hit(&tabbed, 700.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
         assert_eq!((list_top(&tabbed, 0), list_top(&tabbed, 1)), (91.0, 63.0));
         // The toolbar across the window moves everything down by 36 px and is no target itself;
-        // the one inside each pane moves the path bar and the list by 30 px, not the tab strip
+        // the one at the top of each pane moves the tab strip, the path bar and the list by 30 px
         // (P6-M3).
         let top = Layout { top: TOP_BAR, ..tabbed };
         assert_eq!(hit(&top, 100.0, 20.0, none, [5, 7]), Spot::Outside, "the toolbar");
@@ -3228,7 +3229,7 @@ mod tests {
         assert_eq!((list_top(&bar, 0), list_top(&bar, 1)), (121.0, 93.0));
         assert_eq!(hit(&bar, 700.0, 92.0, none, [5, 7]), Spot::Pane(1), "the header, under the pane's toolbar");
         assert_eq!(hit(&bar, 700.0, 93.0, none, [5, 7]), Spot::Row(1, 0));
-        assert_eq!((tab_top(&bar), crumb_top(&bar, 0), crumb_top(&bar, 1)), (3.0, 64.0, 36.0));
+        assert_eq!((tab_top(&bar), crumb_top(&bar, 0), crumb_top(&bar, 1)), (33.0, 64.0, 36.0));
         // A sidebar 180 px wide (plus its 4 px edge): the panes start at 184 and split their own width.
         let side = Layout { left: 184.0, ..two };
         assert_eq!(pane_x(&side, 0), (184.0, 589.0));

@@ -362,7 +362,7 @@ changing the list.
   `newfile`, `newfolder`, `cx`, `cc`, `cv`, `rename`, `delete`), placed by the setting `toolbar`:
   `"top"` (the default, so **every scripted run, the gate's included, has the toolbar across the
   window: the sidebar and the panes start 36 px down**, `dnd::TOP_BAR`, `Layout::top`), `"pane"` (icons
-  only, in each pane under its tab strip and above its path bar, 30 px with the spacing,
+  only, at the top of each pane above its tab strip and path bar, 30 px with the spacing,
   `dnd::PANE_BAR`, `Layout::bar`) or `"none"`; the glyphs are Segoe Fluent Icons characters (the
   font of Explorer's command bar, part of Windows 11). Which buttons apply (`toolbar::state`, the
   app's `left-tools` / `right-tools`) is set in `update_status` on change only: New and Paste in a

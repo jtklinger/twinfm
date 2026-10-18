@@ -1020,8 +1020,10 @@ with a recommendation; he took all four:
   New folder | Cut, Copy, Paste | Rename, Delete, each calling its key's command through
   `toolbar::command` and `main.rs` `command` (one path per command, the P6 amendment). The setting
   `toolbar` (`settings::Toolbar`): `"top"`, the default, a labelled bar 36 px tall across the window
-  over the sidebar and the panes, acting on the active pane; `"pane"`, an icon-only bar 28 px tall in
-  each pane under its tab strip and above its path bar, acting on that pane; `"none"`. In the settings
+  over the sidebar and the panes, acting on the active pane; `"pane"`, an icon-only bar 28 px tall at
+  the top of each pane, above its tab strip and path bar, acting on that pane (first placed under the
+  tab strip; moved above it after the console check, where a pane with a strip and one without had
+  their bars at different heights); `"none"`. In the settings
   dialog as a "Toolbar" row (a ComboBox: none, across the top, in each pane; the dialog is 444 px
   tall). The window layout carries the bars (`Layout::top`, `Layout::bar`; `dnd::TOP_BAR`,
   `dnd::PANE_BAR`, `list_top`, `crumb_top`, and the new `tab_top`, `side_top`), so hit testing, the
