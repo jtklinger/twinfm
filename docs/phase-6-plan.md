@@ -1259,6 +1259,16 @@ the in-pane bars cost what the list's lost row saves, within the reference's spr
 
 **P6-M3 passes the gate.** The console checks follow.
 
+**Console checks, 2026-10-18, Jeremy at the console with `target-p6m3`:** everything "seem[s] to be
+working as expected" but one: with the toolbar in each pane, a pane with a tab strip had its bar 28
+px lower than a pane without one ("The toolbar is not displayed on the same line when using it in
+both tabs"). c632e93 moves the in-pane bar to the top of the pane, above the tab strip (`tab_top`
+takes `Layout::bar`); a scripted check with three tabs on the left and one on the right shows both
+bars on one line, row clicks landing in both panes and a hovering drag finding the left pane's tab
+and crumb. With one tab per pane, the gate scenario's layout is the same before and after the move,
+so ab24 stands; `target-p6m3` was rebuilt at c632e93 for the console, and `C:\traces\gate-p6m3.ps1`
+now targets c632e93 as tag ab25 should a re-run be wanted.
+
 Console checks after the triplet, TwinFM started unelevated:
 
 1. The toolbar across the top (the default): each button against the left and the right pane (the
