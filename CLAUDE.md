@@ -21,13 +21,14 @@ polish bundle; four milestones, opened 2026-10-18; its first section quotes Jere
 decisions and § Calls made lists the lead's). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (219 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (220 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
   tests write to scratch folders, and since P7-M3 five more (the zip writer's, the 7z and TAR
-  writers', the ArchiveFolder listing's, and two file operation worker tests) write archives into
+  writers', the ArchiveFolder listing's, and two file operation worker tests; since 2026-10-19 the
+  ArchiveFolder case test too) write archives into
   scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
@@ -665,7 +666,8 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   `%TEMP%\twinfm-p7m3-zipw-<pid>\`, `compress_seven_z_and_tar` makes a 7z and a TAR of a tree with
   non-ASCII names in `%TEMP%\twinfm-p7m3-pack-<pid>\` and lists them through `ArchiveFolder`,
   `fs::archive::tests::shell_levels_are_listed_and_cached` lists a 7z it makes in
-  `%TEMP%\twinfm-p7m3-shell-<pid>\`, `fileops::archive::tests::jobs_are_classified` writes zip- and
+  `%TEMP%\twinfm-p7m3-shell-<pid>\`, `shell_levels_take_any_case` another in
+  `%TEMP%\twinfm-archive-case-<pid>\`, `fileops::archive::tests::jobs_are_classified` writes zip- and
   7z-named files in `%TEMP%\twinfm-p7m3-classify-<pid>\`, and `zip_jobs_on_the_worker` runs zip jobs
   and a Compress through the real worker in `%TEMP%\twinfm-p7m3-jobs-<pid>\` (no Recycle Bin). All
   remove their folders.
