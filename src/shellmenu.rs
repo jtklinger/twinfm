@@ -931,6 +931,45 @@ fn fill_submenus(cm: &Com, hmenu: HMENU, depth: u32) {
     walk(&r, v3, hmenu, depth);
 }
 
+/// How long the verb worker waits for a dynamic submenu to fill: Windows fills "Send to" in the
+/// background, about 450 ms after it is first asked here (P7-M3's console check: "Compress to >
+/// ZIP file" was refused as "no ... in the menu" when the submenu was cold).
+const SUBMENU_WAIT_MS: u64 = 3000;
+
+/// `fill_submenus`, then, until `found` says yes or `SUBMENU_WAIT_MS` passes, this thread's
+/// messages pumped and the submenus asked again every 50 ms. True when found; logs a late find.
+/// On the verb worker only (its own messages; a `WM_QUIT` met here is posted again and ends the wait).
+fn fill_until(cm: &Com, hmenu: HMENU, what: &str, found: impl Fn() -> bool) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, TranslateMessage, WM_QUIT};
+    let t0 = std::time::Instant::now();
+    loop {
+        fill_submenus(cm, hmenu, 2);
+        if found() {
+            if t0.elapsed().as_millis() >= 50 {
+                eprintln!("[menu] \"{what}\" found after {} ms (a submenu filled late)", t0.elapsed().as_millis());
+            }
+            return true;
+        }
+        if t0.elapsed().as_millis() as u64 >= SUBMENU_WAIT_MS {
+            eprintln!("[menu] \"{what}\" not in the menu after {} ms", t0.elapsed().as_millis());
+            return false;
+        }
+        // SAFETY: this thread's own message queue; a zeroed MSG is a valid out-buffer.
+        unsafe {
+            let mut m: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut m, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                if m.message == WM_QUIT {
+                    PostQuitMessage(m.wParam as i32);
+                    return false;
+                }
+                TranslateMessage(&m);
+                DispatchMessageW(&m);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// On the verb worker (an STA with a message loop): build the menu for the request's items again,
 /// pick the command by `choose`, and invoke it with no owner window. Every COM object is made,
 /// used and released here. Returns how it was invoked and what `InvokeCommand` returned (0 when
@@ -951,14 +990,14 @@ pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
     let rebuilt = |cm: &Com| {
         if req.verb.is_empty() && !crate::fs::archive::inside(&req.folder) {
             // The zip folder's menus crash in their own QueryInterface for IContextMenu2/3 (P3-M4).
-            fill_submenus(cm, menu.0, 2);
+            fill_until(cm, menu.0, &req.label, || command_label(menu.0, cmd).replace('&', "").trim().eq_ignore_ascii_case(req.label.rsplit('>').next().unwrap_or("").replace('&', "").trim()));
         }
         let l = command_label(menu.0, cmd);
         (!l.is_empty()).then_some(l)
     };
     let (how, offset) = if req.find {
         if !crate::fs::archive::inside(&req.folder) {
-            fill_submenus(&cm, menu.0, 2);
+            fill_until(&cm, menu.0, &req.label, || find_command(&command_tree(&cm, menu.0), &req.verb, &req.label).is_some());
         }
         match find_command(&command_tree(&cm, menu.0), &req.verb, &req.label) {
             Some(id) => (Invoke::Offset, id - SHELL_FIRST),
@@ -1156,3 +1195,4 @@ mod tests {
         assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 7, 5, m), (10.0 + 2.0 * 80.0 + 2.0, 63.0 + 144.0));
     }
 }
+

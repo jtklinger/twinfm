@@ -1,12 +1,16 @@
-//! Zip archives listed as folders (P3-M4). A path such as `C:\dir\x.zip\sub` lies inside the
-//! archive `C:\dir\x.zip` when that component is a file (a folder named `x.zip` is a folder);
-//! `split` decides it, asking the file system only for components whose name ends in `.zip`.
+//! Archives listed as folders: zip since P3-M4, the formats of Windows' `ArchiveFolder` (7z, rar,
+//! tar, gz and the rest) since P7-M3. A path such as `C:\dir\x.zip\sub` lies inside the archive
+//! `C:\dir\x.zip` when that component is a file (a folder named `x.zip` is a folder); `split`
+//! decides it, asking the file system only for components whose extension names an archive.
 //!
-//! An archive's central directory is read once with the `zip` crate (no decompression: the shell
-//! extracts) into a map of levels, one per folder inside it, and kept in a cache of the
-//! `CACHE_MAX` most recently used archives, keyed by path, size and modified time. Listing a level
-//! is a map lookup. Workers only: the enumeration worker, the search walker and the crumb
-//! dropdown's lister call it; the UI thread never reads an archive.
+//! A zip's central directory is read once with the `zip` crate (no decompression: the shell
+//! extracts) into a map of levels, one per folder inside it. The other formats are listed by the
+//! shell's `ArchiveFolder` on the archive worker (`fs::archivefolder`), one level at a time as it is
+//! asked for (a tar.gz cannot seek: listing every level up front could decompress it once per
+//! folder). Both are kept in a cache of the `CACHE_MAX` most recently used archives, keyed by path,
+//! size and modified time, and dropped by `forget` after TwinFM writes one. Workers only: the
+//! enumeration worker, the search walker and the crumb dropdown's lister call it; the UI thread
+//! never reads an archive.
 
 use crate::fs::enumerate::TypeNames;
 use crate::model::{Entry, Kind, LocalZone, NameMatch};
@@ -15,26 +19,94 @@ use std::collections::HashMap;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
 
-/// Archives whose central directory stays cached (the most recently used).
+/// Archives whose levels stay cached (the most recently used), zip and the others alike.
 pub const CACHE_MAX: usize = 8;
 
-/// `path` lies inside a zip archive: the archive's own path and the path below its root (`\`
-/// separated, empty for the root itself). None for any other path, including a folder whose name
-/// ends in `.zip`. Only a component named `*.zip` costs a file system query.
-pub fn split(path: &Path) -> Option<(PathBuf, String)> {
-    if !path.to_string_lossy().to_ascii_lowercase().contains(".zip") {
+/// What lists an archive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handler {
+    /// TwinFM's own central directory reader; TwinFM also writes zips (P7-M3).
+    Zip,
+    /// Windows' `ArchiveFolder`, through the shell: read-only (it refuses every write).
+    Shell,
+}
+
+/// The extensions `ArchiveFolder` registers on Windows 11 (26H2: P7-M3's check). Only those whose
+/// `HKCR\.ext` still names `ArchiveFolder` open as folders, so an archive another program owns
+/// (7-Zip's `.7z`) keeps opening in that program.
+const SHELL_CANDIDATES: [&str; 16] = ["7z", "bz2", "cpio", "gz", "mtree", "nupkg", "rar", "tar", "tbz2", "tgz", "txz", "tzst", "uu", "xar", "xz", "zst"];
+
+/// `SHELL_CANDIDATES` that belong to `ArchiveFolder` on this machine, read from the registry once.
+fn shell_exts() -> &'static [&'static str] {
+    static EXTS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    EXTS.get_or_init(|| {
+        let t0 = Instant::now();
+        let exts: Vec<&str> = SHELL_CANDIDATES.iter().copied().filter(|e| prog_id(e).is_some_and(|p| p.eq_ignore_ascii_case("ArchiveFolder"))).collect();
+        eprintln!(
+            "[archive] ArchiveFolder takes {} of {} extensions ({}), read in {:.1} ms",
+            exts.len(),
+            SHELL_CANDIDATES.len(),
+            exts.iter().map(|e| format!(".{e}")).collect::<Vec<_>>().join(" "),
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+        exts
+    })
+}
+
+/// `HKCR\.ext`'s default value (the ProgID), if any.
+fn prog_id(ext: &str) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{HKEY_CLASSES_ROOT, RRF_RT_REG_SZ, RegGetValueW};
+    let key: Vec<u16> = format!(".{ext}").encode_utf16().chain([0]).collect();
+    let mut buf = [0u16; 128];
+    let mut len = (buf.len() * 2) as u32;
+    // SAFETY: NUL-terminated key; `buf` and `len` describe a writable buffer of `len` bytes.
+    let r = unsafe { RegGetValueW(HKEY_CLASSES_ROOT, key.as_ptr(), std::ptr::null(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len) };
+    if r != 0 {
         return None;
     }
+    let n = (len as usize / 2).saturating_sub(1).min(buf.len());
+    Some(String::from_utf16_lossy(&buf[..n]))
+}
+
+/// The handler for a file named `name`, by its extension (any case): zip, an `ArchiveFolder`
+/// extension of this machine, or None.
+pub fn handler_for_name(name: &str) -> Option<Handler> {
+    handler_with(name, shell_exts())
+}
+
+fn handler_with(name: &str, shell: &[&str]) -> Option<Handler> {
+    let (stem, ext) = name.rsplit_once('.')?;
+    if stem.is_empty() || ext.is_empty() {
+        return None;
+    }
+    if ext.eq_ignore_ascii_case("zip") {
+        Some(Handler::Zip)
+    } else if shell.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+        Some(Handler::Shell)
+    } else {
+        None
+    }
+}
+
+/// `path` lies inside an archive: the archive's own path and the path below its root (`\`
+/// separated, empty for the root itself). None for any other path, including a folder whose name
+/// ends in `.zip`. Only a component with an archive's extension costs a file system query.
+pub fn split(path: &Path) -> Option<(PathBuf, String)> {
+    split_with(path, |n| handler_for_name(n).is_some(), is_file)
+}
+
+/// `split`, with the name test and the file test given (the tests count the file queries).
+fn split_with(path: &Path, is_archive: impl Fn(&str) -> bool, is_file: impl Fn(&Path) -> bool) -> Option<(PathBuf, String)> {
     let mut acc = PathBuf::new();
     let mut comps = path.components();
     while let Some(c) = comps.next() {
         acc.push(c.as_os_str());
         if let Component::Normal(n) = c {
-            if n.to_string_lossy().to_ascii_lowercase().ends_with(".zip") && is_file(&acc) {
+            if is_archive(&n.to_string_lossy()) && is_file(&acc) {
                 let inner: Vec<String> = comps.map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
                 return Some((acc, inner.join("\\")));
             }
@@ -43,14 +115,30 @@ pub fn split(path: &Path) -> Option<(PathBuf, String)> {
     None
 }
 
-/// `path` lies inside a zip archive (or is one, as a folder to open).
+/// `path` lies inside an archive (or is one, as a folder to open).
 pub fn inside(path: &Path) -> bool {
     split(path).is_some()
 }
 
-/// A name ending in `.zip` (any case): a file of that name opens as a folder.
-pub fn is_zip_name(name: &str) -> bool {
-    name.to_ascii_lowercase().ends_with(".zip")
+/// The item at `path` is stored inside an archive: below its root, not the archive file itself
+/// (`inside` says yes for both, as a folder to open; an item named by its path asks this).
+pub fn within(path: &Path) -> bool {
+    split(path).is_some_and(|(_, inner)| !inner.is_empty())
+}
+
+/// `path` lies inside an archive TwinFM writes (a zip).
+pub fn writable(path: &Path) -> bool {
+    split(path).is_some_and(|(a, _)| handler_of(&a) == Handler::Zip)
+}
+
+/// The handler of an archive `split` found (from its name).
+pub fn handler_of(archive: &Path) -> Handler {
+    archive.file_name().and_then(|n| handler_for_name(&n.to_string_lossy())).unwrap_or(Handler::Shell)
+}
+
+/// A file of this name opens as a folder: a zip, or an `ArchiveFolder` extension of this machine.
+pub fn is_archive_name(name: &str) -> bool {
+    handler_for_name(name).is_some()
 }
 
 fn is_file(p: &Path) -> bool {
@@ -65,44 +153,79 @@ struct Item {
     name: String,
     dir: bool,
     size: u64,
-    /// Unix seconds (the entry's MS-DOS time, which is local, converted); `NO_TIME` for an implied
-    /// folder, which shows no date.
+    /// Unix seconds (a zip entry's MS-DOS time, which is local, converted); `NO_TIME` for an
+    /// implied folder or an item the shell gives no date, which shows none.
     modified: i64,
 }
 
 /// Out of every formatter's range: the Modified cell stays empty.
 const NO_TIME: i64 = i64::MIN;
 
-/// An archive's central directory as levels: the lowercase path below the root (`\` separated,
-/// "" for the root) to that folder's entries.
+type Level = Arc<Vec<Item>>;
+
+/// A zip's central directory as levels: the lowercase path below the root (`\` separated, ""
+/// for the root) to that folder's entries.
 pub struct Archive {
     /// Entries in the central directory.
     pub count: usize,
     /// Time to read the central directory and build the levels.
     pub read_ms: f64,
-    levels: HashMap<String, Vec<Item>>,
+    levels: HashMap<String, Level>,
+}
+
+/// What the cache holds for one archive: a zip's every level, or the levels of another format
+/// the shell has listed so far (with each one's listing time).
+enum Levels {
+    Zip(Arc<Archive>),
+    Shell(HashMap<String, (Level, f64)>),
 }
 
 struct Cached {
     path: PathBuf,
     key: String,
     stamp: (u64, u64),
-    archive: Arc<Archive>,
+    levels: Levels,
 }
 
 static CACHE: Mutex<Vec<Cached>> = Mutex::new(Vec::new());
 
-/// The archive's levels, from the cache when its size and modified time are unchanged (true),
-/// else read now (false) and cached, evicting the least recently used past `CACHE_MAX`.
+fn stamp(archive: &Path) -> Result<(u64, u64), String> {
+    let meta = std::fs::metadata(archive).map_err(|e| e.to_string())?;
+    Ok((meta.len(), meta.last_write_time()))
+}
+
+/// Keep `c` as the most recently used, evicting the least recently used past `CACHE_MAX`.
+fn insert(cache: &mut Vec<Cached>, c: Cached) {
+    cache.retain(|o| o.key != c.key);
+    cache.push(c);
+    while cache.len() > CACHE_MAX {
+        let old = cache.remove(0);
+        eprintln!("[archive] cache evicted {}", old.path.display());
+    }
+}
+
+/// Drop the archive's cached levels (after TwinFM wrote it), so the next listing reads it again.
+pub fn forget(archive: &Path) {
+    let key = archive.to_string_lossy().to_lowercase();
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let n = cache.len();
+    cache.retain(|c| c.key != key);
+    if cache.len() < n {
+        eprintln!("[archive] cache dropped {}", archive.display());
+    }
+}
+
+/// The zip's levels, from the cache when its size and modified time are unchanged (true), else
+/// read now (false) and cached.
 pub fn open(zip: &Path) -> Result<(Arc<Archive>, bool), String> {
-    let meta = std::fs::metadata(zip).map_err(|e| e.to_string())?;
-    let stamp = (meta.len(), meta.last_write_time());
+    let stamp = stamp(zip)?;
     let key = zip.to_string_lossy().to_lowercase();
     {
         let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(i) = cache.iter().position(|c| c.key == key && c.stamp == stamp) {
+        if let Some(i) = cache.iter().position(|c| c.key == key && c.stamp == stamp && matches!(c.levels, Levels::Zip(_))) {
             let c = cache.remove(i);
-            let a = c.archive.clone();
+            let Levels::Zip(a) = &c.levels else { unreachable!("matched above") };
+            let a = a.clone();
             cache.push(c);
             return Ok((a, true));
         }
@@ -110,13 +233,51 @@ pub fn open(zip: &Path) -> Result<(Arc<Archive>, bool), String> {
     let archive = Arc::new(read(zip)?);
     eprintln!("[archive] open {}: {} entries, central directory {:.1} ms", zip.display(), archive.count, archive.read_ms);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    cache.retain(|c| c.key != key);
-    cache.push(Cached { path: zip.to_path_buf(), key, stamp, archive: archive.clone() });
-    while cache.len() > CACHE_MAX {
-        let old = cache.remove(0);
-        eprintln!("[archive] cache evicted {}", old.path.display());
-    }
+    insert(&mut cache, Cached { path: zip.to_path_buf(), key, stamp, levels: Levels::Zip(archive.clone()) });
     Ok((archive, false))
+}
+
+/// One level of an `ArchiveFolder` archive: from the cache (true) when the archive is unchanged
+/// and the level was listed before, else listed now by the shell on the archive worker (false),
+/// with the time that took.
+fn shell_level(archive: &Path, inner: &str) -> Result<(Level, f64, bool), String> {
+    let stamp = stamp(archive)?;
+    let key = archive.to_string_lossy().to_lowercase();
+    let lkey = inner.to_lowercase();
+    {
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = cache.iter().position(|c| c.key == key && c.stamp == stamp) {
+            let c = cache.remove(i);
+            let hit = match &c.levels {
+                Levels::Shell(m) => m.get(&lkey).map(|(l, ms)| (l.clone(), *ms)),
+                Levels::Zip(_) => None,
+            };
+            cache.push(c);
+            if let Some((l, ms)) = hit {
+                return Ok((l, ms, true));
+            }
+        }
+    }
+    let full = if inner.is_empty() { archive.to_path_buf() } else { archive.join(inner) };
+    let (raw, ms) = crate::fs::archivefolder::level(&full)?;
+    let items: Vec<Item> = raw
+        .into_iter()
+        .map(|r| Item { name: r.name, dir: r.dir, size: r.size, modified: r.modified.unwrap_or(NO_TIME) })
+        .collect();
+    eprintln!("[archive] open {} level \"{inner}\": {} entries through ArchiveFolder in {ms:.1} ms", archive.display(), items.len());
+    let level: Level = Arc::new(items);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    match cache.iter_mut().find(|c| c.key == key && c.stamp == stamp) {
+        Some(Cached { levels: Levels::Shell(m), .. }) => {
+            m.insert(lkey, (level.clone(), ms));
+        }
+        _ => {
+            let mut m = HashMap::new();
+            m.insert(lkey, (level.clone(), ms));
+            insert(&mut cache, Cached { path: archive.to_path_buf(), key, stamp, levels: Levels::Shell(m) });
+        }
+    }
+    Ok((level, ms, false))
 }
 
 /// Read the central directory and build the levels. A damaged archive is an error, not a panic.
@@ -168,12 +329,13 @@ fn read(zip: &Path) -> Result<Archive, String> {
             parent = full;
         }
     }
+    let levels = levels.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
     Ok(Archive { count: za.len(), read_ms: t0.elapsed().as_secs_f64() * 1e3, levels })
 }
 
 impl Archive {
     /// The level at `inner` (any case), or None when the archive has no such folder.
-    fn level(&self, inner: &str) -> Option<&Vec<Item>> {
+    fn level(&self, inner: &str) -> Option<&Level> {
         self.levels.get(&inner.to_lowercase())
     }
 }
@@ -216,20 +378,48 @@ impl IconKeys {
 /// What the `[enum]` line says about an archive level.
 #[derive(Clone, Copy, Debug)]
 pub struct LevelInfo {
-    /// Entries in the archive's central directory.
+    pub handler: Handler,
+    /// A zip: entries in its central directory. Another format: entries in the level.
     pub count: usize,
+    /// A zip: the central directory's read. Another format: the shell's listing of the level.
     pub read_ms: f64,
     pub cached: bool,
 }
 
-/// The entries of one level of `zip` (`inner` below its root), for the enumeration worker. Err
-/// with the error text when the archive cannot be read or has no such folder.
-pub fn list(zip: &Path, inner: &str, types: &mut TypeNames, zone: &LocalZone) -> Result<(Vec<Entry>, LevelInfo), String> {
-    let (a, cached) = open(zip)?;
-    let items = a.level(inner).ok_or_else(not_found)?;
+impl LevelInfo {
+    /// The `[enum] ... done:` line's words for the level.
+    pub fn describe(&self) -> String {
+        let cached = if self.cached { "cached" } else { "fresh" };
+        match self.handler {
+            Handler::Zip => format!("archive level, central directory {} entries, read in {:.1} ms, {cached}", self.count, self.read_ms),
+            Handler::Shell => format!("archive level, ArchiveFolder, listed in {:.1} ms, {cached}", self.read_ms),
+        }
+    }
+}
+
+/// One level of `archive` (`inner` below its root), whichever handler lists it.
+fn level_of(archive: &Path, inner: &str) -> Result<(Level, LevelInfo), String> {
+    match handler_of(archive) {
+        Handler::Zip => {
+            let (a, cached) = open(archive)?;
+            let l = a.level(inner).ok_or_else(not_found)?.clone();
+            Ok((l, LevelInfo { handler: Handler::Zip, count: a.count, read_ms: a.read_ms, cached }))
+        }
+        Handler::Shell => {
+            let (l, ms, cached) = shell_level(archive, inner)?;
+            let count = l.len();
+            Ok((l, LevelInfo { handler: Handler::Shell, count, read_ms: ms, cached }))
+        }
+    }
+}
+
+/// The entries of one level of `archive` (`inner` below its root), for the enumeration worker.
+/// Err with the error text when the archive cannot be read or has no such folder.
+pub fn list(archive: &Path, inner: &str, types: &mut TypeNames, zone: &LocalZone) -> Result<(Vec<Entry>, LevelInfo), String> {
+    let (items, info) = level_of(archive, inner)?;
     let mut keys = IconKeys::default();
     let entries = items.iter().map(|it| entry(&it.name, it, types, &mut keys, zone)).collect();
-    Ok((entries, LevelInfo { count: a.count, read_ms: a.read_ms, cached }))
+    Ok((entries, info))
 }
 
 fn not_found() -> String {
@@ -238,9 +428,9 @@ fn not_found() -> String {
 
 /// The folder names of one level, for the crumb dropdown (sorted naturally, at most `cap`), and
 /// how many there are.
-pub fn subfolders(zip: &Path, inner: &str, cap: usize) -> Result<(Vec<String>, usize), String> {
-    let (a, _) = open(zip)?;
-    let mut names: Vec<String> = a.level(inner).ok_or_else(not_found)?.iter().filter(|i| i.dir).map(|i| i.name.clone()).collect();
+pub fn subfolders(archive: &Path, inner: &str, cap: usize) -> Result<(Vec<String>, usize), String> {
+    let (items, _) = level_of(archive, inner)?;
+    let mut names: Vec<String> = items.iter().filter(|i| i.dir).map(|i| i.name.clone()).collect();
     names.sort_by(|x, y| crate::model::natural_cmp(x, y));
     let total = names.len();
     names.truncate(cap);
@@ -249,22 +439,22 @@ pub fn subfolders(zip: &Path, inner: &str, cap: usize) -> Result<(Vec<String>, u
 
 /// The recursive name search inside an archive: every entry below `inner` whose own name matches,
 /// named by its path relative to `inner` (`sub\file.txt`), handed to `emit` in one batch. Returns
-/// (found, folders walked); nested archives are files here too.
-pub fn walk(zip: &Path, inner: &str, matcher: &NameMatch, mut emit: impl FnMut(Vec<Entry>) -> bool) -> Result<(usize, usize), String> {
-    let (a, _) = open(zip)?;
-    a.level(inner).ok_or_else(not_found)?;
+/// (found, folders walked); nested archives are files here too. Another format's levels are
+/// listed by the shell one by one (and cached).
+pub fn walk(archive: &Path, inner: &str, matcher: &NameMatch, mut emit: impl FnMut(Vec<Entry>) -> bool) -> Result<(usize, usize), String> {
+    level_of(archive, inner)?;
     let (mut types, zone, mut keys) = (TypeNames::default(), LocalZone::current(), IconKeys::default());
     let mut found = Vec::new();
     let mut walked = 0;
-    // (lowercase level key, relative path prefix with a trailing `\`)
-    let mut stack = vec![(inner.to_lowercase(), String::new())];
-    while let Some((key, rel)) = stack.pop() {
+    // (level path as given, relative path prefix with a trailing `\`)
+    let mut stack = vec![(inner.to_string(), String::new())];
+    while let Some((at, rel)) = stack.pop() {
         walked += 1;
-        for it in a.levels.get(&key).map_or(&[][..], Vec::as_slice) {
+        let Ok((items, _)) = level_of(archive, &at) else { continue };
+        for it in items.iter() {
             let name = format!("{rel}{}", it.name);
             if it.dir {
-                let lower = it.name.to_lowercase();
-                stack.push((if key.is_empty() { lower } else { format!("{key}\\{lower}") }, format!("{name}\\")));
+                stack.push((if at.is_empty() { it.name.clone() } else { format!("{at}\\{}", it.name) }, format!("{name}\\")));
             }
             if matcher.matches(&it.name) {
                 found.push(entry(&name, it, &mut types, &mut keys, &zone));
@@ -410,7 +600,91 @@ mod tests {
         assert_eq!(split(&dir.join("folder.zip").join("inner")), None, "a folder named .zip is a folder");
         assert_eq!(split(&dir.join("missing.zip").join("b")), None, "nothing there");
         assert_eq!(split(&dir), None);
-        assert!(is_zip_name("X.Zip") && !is_zip_name("x.zipx"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn handlers_by_extension() {
+        let shell = ["7z", "gz", "tar", "rar"];
+        assert_eq!(handler_with("a.zip", &shell), Some(Handler::Zip));
+        assert_eq!(handler_with("A.ZIP", &[]), Some(Handler::Zip), "zip is TwinFM's own, whatever the registry says");
+        assert_eq!(handler_with("x.7z", &shell), Some(Handler::Shell));
+        assert_eq!(handler_with("x.TAR.GZ", &shell), Some(Handler::Shell), "a .tar.gz is a .gz");
+        assert_eq!(handler_with("x.7z", &["gz"]), None, "an extension another program owns opens as a file");
+        assert_eq!(handler_with("a.zipx", &shell), None);
+        assert_eq!(handler_with(".7z", &shell), None, "no stem: a dot file");
+        assert_eq!(handler_with("x.", &shell), None);
+        assert_eq!(handler_with("readme", &shell), None);
+    }
+
+    /// The split asks the file system only about components named like archives, stops at the
+    /// first archive (an archive inside one is a path inside the outer), and treats a folder named
+    /// like an archive as a folder.
+    #[test]
+    fn split_asks_only_about_archive_names() {
+        let shell = ["7z", "gz"];
+        let is_archive = |n: &str| handler_with(n, &shell).is_some();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let files = [r"C:\d\x.7z", r"C:\d\a.zip", r"C:\d\t.tar.gz"];
+        let is_file = |p: &Path| {
+            asked.borrow_mut().push(p.to_string_lossy().into_owned());
+            files.iter().any(|f| Path::new(f) == p)
+        };
+        let split = |p: &str| split_with(Path::new(p), is_archive, is_file);
+        assert_eq!(split(r"C:\Windows\System32\drivers\etc"), None);
+        assert!(asked.borrow().is_empty(), "no archive names: no query");
+        assert_eq!(split(r"C:\d\x.7z\sub\f.txt"), Some((PathBuf::from(r"C:\d\x.7z"), r"sub\f.txt".into())));
+        assert_eq!(split(r"C:\d\t.tar.gz"), Some((PathBuf::from(r"C:\d\t.tar.gz"), String::new())), "the root");
+        assert_eq!(split(r"C:\d\a.zip\inner.7z\x"), Some((PathBuf::from(r"C:\d\a.zip"), r"inner.7z\x".into())), "the outer archive");
+        asked.borrow_mut().clear();
+        assert_eq!(split(r"C:\d\folder.7z\x"), None, "a folder named .7z");
+        assert_eq!(*asked.borrow(), vec![r"C:\d\folder.7z".to_string()], "one query, for the archive-named component");
+        assert_eq!(split(r"C:\d\x.rar\y"), None, "not this machine's archive");
+    }
+
+    /// A 7z TwinFM makes, listed through Windows' `ArchiveFolder` on the archive worker: its levels,
+    /// the cache, the crumb dropdown's folders, the search inside it, and `forget`.
+    #[test]
+    fn shell_levels_are_listed_and_cached() {
+        let dir = std::env::temp_dir().join(format!("twinfm-p7m3-shell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let top = dir.join("top");
+        std::fs::create_dir_all(top.join("b").join("c")).unwrap();
+        std::fs::write(top.join("one.txt"), b"12345").unwrap();
+        std::fs::write(top.join("b").join("two.TXT"), b"22").unwrap();
+        std::fs::write(top.join("b").join("c").join("deep.bin"), b"d").unwrap();
+        let a = dir.join("t.7z");
+        crate::fs::archivewrite::compress(&a, &[top.clone()], crate::fs::archivewrite::Format::SevenZ, &mut |_, _| {}).unwrap();
+        if handler_for_name("t.7z") != Some(Handler::Shell) {
+            eprintln!("ArchiveFolder does not take .7z on this machine: skipped");
+            return std::fs::remove_dir_all(&dir).unwrap();
+        }
+        assert_eq!(split(&a.join("top")), Some((a.clone(), "top".into())));
+        let (root, info) = list(&a, "", &mut TypeNames::default(), &LocalZone::current()).unwrap();
+        assert_eq!(names(&root), vec![("top".into(), Kind::Directory, 0)]);
+        assert_eq!((info.handler, info.count, info.cached), (Handler::Shell, 1, false));
+        let (lvl, _) = list(&a, "top", &mut TypeNames::default(), &LocalZone::current()).unwrap();
+        assert_eq!(names(&lvl), vec![("b".into(), Kind::Directory, 0), ("one.txt".into(), Kind::File, 5)]);
+        let one = lvl.iter().find(|e| e.name == "one.txt").unwrap();
+        assert!(!one.modified_text.is_empty(), "the shell gives the file's date");
+        assert_eq!(one.icon_key.as_str(), "ext:.txt");
+        let (_, info) = list(&a, "TOP", &mut TypeNames::default(), &LocalZone::current()).unwrap();
+        assert!(info.cached, "the level again (any case) comes from the cache");
+        assert!(info.describe().starts_with("archive level, ArchiveFolder, listed in "), "{}", info.describe());
+        assert!(list(&a, r"top\missing", &mut TypeNames::default(), &LocalZone::current()).is_err());
+        assert_eq!(subfolders(&a, "top", 10).unwrap(), (vec!["b".to_string()], 1));
+        let mut found = Vec::new();
+        let (n, walked) = walk(&a, "top", &NameMatch::new("*.txt"), |b| {
+            found.extend(b.into_iter().map(|e| e.name.to_string()));
+            true
+        })
+        .unwrap();
+        found.sort();
+        assert_eq!((n, walked), (2, 3), "two matches in three folders");
+        assert_eq!(found, vec![r"b\two.TXT".to_string(), "one.txt".into()]);
+        forget(&a);
+        let (_, info) = list(&a, "top", &mut TypeNames::default(), &LocalZone::current()).unwrap();
+        assert!(!info.cached, "forgotten: listed again");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

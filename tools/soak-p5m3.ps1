@@ -56,6 +56,16 @@
 # opened and the menu closed with Escape twice, and Shift+Delete of everything. Reported: menus
 # shown, rebuilt with the worker's answer, picks, ZIPs made, classic menus from Show more options,
 # menupicks refused (must be 0). One more Recycle Bin entry per cycle that the undo takes out.
+#
+# P7-M3's archive cycle follows the P5-M3 steps, in arch (made by the setup with Windows' tar.exe:
+# a.7z, a.tar.gz and a.zip of a.txt and d\c.txt, and c.txt): the left pane on dst, the right pane
+# browses a.tar.gz and a.7z (listed by Windows' ArchiveFolder), copies a.txt out of the 7z into dst,
+# a copy of it back into the 7z is refused (read-only), then in a.zip (TwinFM's writer): a.txt
+# copied in (replacing), a new folder nz, renamed nz2, deleted, a.txt moved out to dst and dropped
+# back in as a move (the original recycled), and from arch Compress to > 7z file and TAR file on
+# c.txt, each undone (recycled). Reported: archive levels listed by ArchiveFolder, zip jobs done by
+# kind, refusals of writes into the 7z, archives compressed and undone, archive jobs failed (must be
+# 0). Three more Recycle Bin entries per cycle.
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -92,7 +102,8 @@ $dst = Join-Path $root 'dst'
 $bm = Join-Path $root 'bm'
 $tabdir = Join-Path $root 'tabdir'
 $spring = Join-Path $root 'spring'
-foreach ($d in $src, $dst, $bm, $tabdir, $spring) {
+$arch = Join-Path $root 'arch'
+foreach ($d in $src, $dst, $bm, $tabdir, $spring, $arch) {
     if (Test-Path $d) { Remove-Item -LiteralPath $d -Recurse -Force }
 }
 for ($i = 1; $i -le 10; $i++) {
@@ -103,6 +114,17 @@ for ($i = 1; $i -le 10; $i++) {
     }
 }
 foreach ($d in $dst, $bm, $tabdir, (Join-Path $spring 'inner')) { New-Item -ItemType Directory -Force $d | Out-Null }
+# P7-M3: the archives, made with Windows' own tar.exe (bsdtar) from a small tree.
+$archSrc = Join-Path $root 'arch-src'
+if (Test-Path $archSrc) { Remove-Item -LiteralPath $archSrc -Recurse -Force }
+New-Item -ItemType Directory -Force (Join-Path $archSrc 'd'), $arch | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $archSrc 'a.txt'), "archive file a`r`n")
+[System.IO.File]::WriteAllText((Join-Path $archSrc 'd\c.txt'), "archive file c`r`n")
+[System.IO.File]::WriteAllText((Join-Path $arch 'c.txt'), "compress me`r`n")
+$bsdtar = Join-Path $env:SystemRoot 'System32\tar.exe'
+& $bsdtar -cf (Join-Path $arch 'a.7z') --format 7zip -C $archSrc a.txt d
+& $bsdtar -cf (Join-Path $arch 'a.zip') --format zip -C $archSrc a.txt d
+& $bsdtar -czf (Join-Path $arch 'a.tar.gz') -C $archSrc a.txt d
 
 $scroll = @($ScrollFolders | Where-Object { Test-Path $_ })
 $wait = 'waitops 60000'
@@ -187,7 +209,21 @@ $cycle = @(
     "dropfiles crumb 1 -2 copy $pick", $wait,
     "dragover side bottom 300 $pick", 'sleep 200',
     "dragover tab 0 1 300 $pick", 'sleep 200',
-    "nav 1 $spring", 'sleep 500', 'click 1 1', 'shiftclick 1 2', 'sdelete', $wait
+    "nav 1 $spring", 'sleep 500', 'click 1 1', 'shiftclick 1 2', 'sdelete', $wait,
+    # P7-M3: the archive cycle (see the header). Rows: a.7z and a.zip list d then a.txt; arch
+    # lists a.7z, a.tar.gz, a.zip, c.txt.
+    "nav 0 $dst", "nav 1 $arch\a.tar.gz", 'sleep 800', "nav 1 $arch\a.7z", 'sleep 800',
+    'click 1 1', 'copy', $wait,
+    'click 0 0', 'copy', 'sleep 300',
+    "nav 1 $arch\a.zip", 'sleep 800', 'click 0 0', 'copy', $wait,
+    'click 1 0', 'newfolder nz', $wait,
+    'click 1 1', 'rename nz2', $wait,
+    'click 1 1', 'delete', $wait,
+    'click 1 1', 'move', $wait,
+    "dropfiles 1 -1 move $dst\a.txt", $wait,
+    "nav 0 $arch", 'sleep 500',
+    'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick 7z file', $wait, 'undo', $wait,
+    'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick TAR file', $wait, 'undo', $wait
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -307,6 +343,14 @@ $springInner = @($log | Select-String -SimpleMatch '[nav] pane=1 gen=' | Select-
 $dropCrumb = @($drops | Select-String -SimpleMatch 'Crumb(1, -2) copy: 2 path(s), DragEnter effect copy, Drop reported copy').Count
 $sideScrolls = @($log | Select-String -SimpleMatch '[dnd] auto-scroll sidebar').Count
 $stripScrolls = @($log | Select-String -SimpleMatch 'tab strip left', 'tab strip right').Count
+# P7-M3 counts.
+$arLevels = @($log | Select-String -SimpleMatch '(archive level, ArchiveFolder, listed in').Count
+$arJobs = @($log | Select-String -SimpleMatch '[archive] job id=')
+$arKinds = ('copy in', 'new folder', 'rename', 'delete', 'move out', 'move in' | ForEach-Object { "$_ " + @($arJobs | Select-String -SimpleMatch "`"$_`"" | Select-String -SimpleMatch ': Done in').Count }) -join ', '
+$arFailed = @($arJobs | Select-String -SimpleMatch -NotMatch ': Done in').Count
+$arRefused = @($log | Select-String -SimpleMatch 'cannot write into .7z archives' | Select-String -SimpleMatch '[archive] refused').Count
+$arCompressed = @($log | Select-String -SimpleMatch '[archive] compress' | Select-String -SimpleMatch ': Ok(').Count
+$arUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Compressed').Count
 $menus = @($log | Select-String -SimpleMatch '[menu] closed').Count
 $ticks = @($log | Select-String -SimpleMatch '[auto] in-menu tick')
 $ticksBusy = @($ticks | Select-String -SimpleMatch 'free=false').Count
@@ -329,4 +373,5 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "min/max working set: {0} / {1} MB" -f ($samples | Measure-Object working_set_mb -Minimum).Minimum, ($samples | Measure-Object working_set_mb -Maximum).Maximum
 "memory samples: $csv"
 "stderr: $stderr"
+"archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

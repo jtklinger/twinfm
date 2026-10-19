@@ -39,6 +39,9 @@ pub enum Cmd {
     /// The Compress to submenu.
     Compress,
     Zip,
+    /// Compress to > 7z file and TAR file: TwinFM's own writers, as file jobs (P7-M3).
+    SevenZ,
+    Tar,
     CopyPath,
     Properties,
     More,
@@ -55,7 +58,7 @@ pub enum Cmd {
 }
 
 impl Cmd {
-    const FIXED: [Cmd; 18] = [
+    const FIXED: [Cmd; 20] = [
         Cmd::Cut,
         Cmd::Copy,
         Cmd::Rename,
@@ -74,9 +77,11 @@ impl Cmd {
         Cmd::NewFolder,
         Cmd::NewFile,
         Cmd::ChooseApp,
+        Cmd::SevenZ,
+        Cmd::Tar,
     ];
 
-    /// The id the Slint model carries: 1 to 18 for the fixed commands, 100 + i for a packaged
+    /// The id the Slint model carries: 1 to 20 for the fixed commands, 100 + i for a packaged
     /// command, 500 + k for an app, 1000 + 100 i + j for a command's own command.
     pub fn id(self) -> i32 {
         match self {
@@ -89,7 +94,7 @@ impl Cmd {
 
     pub fn from_id(id: i32) -> Option<Cmd> {
         match id {
-            1..=18 => Some(Cmd::FIXED[id as usize - 1]),
+            1..=20 => Some(Cmd::FIXED[id as usize - 1]),
             100..=499 => Some(Cmd::Packaged(id as usize - 100)),
             500..=999 => Some(Cmd::App(id as usize - 500)),
             1000.. => Some(Cmd::Sub((id as usize - 1000) / 100, (id as usize - 1000) % 100)),
@@ -250,10 +255,12 @@ pub fn items(ctx: &Ctx, commands: &[Command]) -> Vec<Entry> {
             if ctx.place == Place::Folder {
                 own.push(Entry::item(Cmd::OpenOther, "Open in other pane", G_OTHER_PANE, ""));
                 own.push(Entry::item(Cmd::Terminal, "Open in terminal", G_TERMINAL, ""));
+            }
+            if matches!(ctx.place, Place::Folder | Place::Zip) {
                 last.push(Entry::item(Cmd::NewFolder, "New folder", G_NEW_FOLDER, "Ctrl+Shift+N"));
                 last.push(Entry::item(Cmd::NewFile, "New file", G_NEW_FILE, "Ctrl+Alt+N"));
             }
-            if matches!(ctx.place, Place::Folder | Place::Archive) {
+            if matches!(ctx.place, Place::Folder | Place::Archive | Place::Zip) {
                 last.push(Entry::item(Cmd::CopyPath, "Copy path", G_COPY_PATH, ""));
             }
             if matches!(ctx.place, Place::Folder | Place::ThisPc) {
@@ -264,7 +271,7 @@ pub fn items(ctx: &Ctx, commands: &[Command]) -> Vec<Entry> {
         }
         What::Items { files, dirs, drives } => {
             let n = files + dirs + drives;
-            let archive = ctx.place == Place::Archive;
+            let archive = matches!(ctx.place, Place::Archive | Place::Zip);
             let mut open = Vec::new();
             if n == 1 {
                 open.push(Entry::item(Cmd::Open, "Open", G_OPEN, "Enter"));
@@ -301,7 +308,7 @@ pub fn items(ctx: &Ctx, commands: &[Command]) -> Vec<Entry> {
     out
 }
 
-/// A submenu's rows: Open with's apps then "Choose another app", Compress to's ZIP file, or a
+/// A submenu's rows: Open with's apps then "Choose another app", Compress to's formats, or a
 /// packaged command's own commands.
 pub fn sub_items(cmd: Cmd, commands: &[Command], apps: &[crate::explorercmd::App]) -> Vec<Entry> {
     match cmd {
@@ -317,7 +324,7 @@ pub fn sub_items(cmd: Cmd, commands: &[Command], apps: &[crate::explorercmd::App
             out.push(Entry::item(Cmd::ChooseApp, "Choose another app", G_OPEN_WITH, ""));
             out
         }
-        Cmd::Compress => vec![Entry::item(Cmd::Zip, "ZIP file", G_ZIP, "")],
+        Cmd::Compress => vec![Entry::item(Cmd::Zip, "ZIP file", G_ZIP, ""), Entry::item(Cmd::SevenZ, "7z file", G_ZIP, ""), Entry::item(Cmd::Tar, "TAR file", G_ZIP, "")],
         Cmd::Packaged(i) => commands.get(i).map_or_else(Vec::new, |c| {
             c.subs
                 .iter()
@@ -534,7 +541,7 @@ mod tests {
         assert_eq!(texts(&sub_items(Cmd::OpenWith, &[], &apps)), ["Notepad", "Word", "---", "Choose another app"]);
         assert_eq!(texts(&sub_items(Cmd::OpenWith, &[], &[])), ["Choose another app"]);
         assert_eq!(sub_items(Cmd::OpenWith, &[], &apps)[1].cmd, Some(Cmd::App(1)));
-        assert_eq!(texts(&sub_items(Cmd::Compress, &[], &[])), ["ZIP file"]);
+        assert_eq!(texts(&sub_items(Cmd::Compress, &[], &[])), ["ZIP file", "7z file", "TAR file"]);
     }
 
     #[test]
@@ -543,7 +550,7 @@ mod tests {
             assert_eq!(Cmd::from_id(c.id()), Some(c), "{c:?}");
         }
         assert_eq!(Cmd::from_id(0), None);
-        assert_eq!(Cmd::from_id(19), None);
+        assert_eq!(Cmd::from_id(21), None);
         assert_eq!(Cmd::Cut.key_command(), Some("cx"));
         assert_eq!(Cmd::Properties.key_command(), Some("properties"), "Alt+Enter's command");
         assert_eq!(Cmd::Share.key_command(), None);

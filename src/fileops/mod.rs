@@ -24,6 +24,7 @@
 //! bin's bookkeeping, and moved back from `$Recycle.Bin` only when the verb cannot be reached.
 
 pub mod clipboard;
+pub mod archive;
 pub mod undo;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -79,13 +80,16 @@ pub enum Job {
     NewFile { parent: PathBuf, name: String },
     /// Restore recycled items: (the `$R` path in the bin, the original full path).
     Restore { items: Vec<(PathBuf, PathBuf)> },
+    /// A new 7z or TAR archive of the items in `dest_dir` (Compress to, P7-M3), named after the
+    /// first item by the worker.
+    Compress { sources: Vec<PathBuf>, dest_dir: PathBuf, format: crate::fs::archivewrite::Format },
 }
 
 impl Job {
     /// Items the job acts on.
     pub fn count(&self) -> usize {
         match self {
-            Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } => sources.len(),
+            Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } | Job::Compress { sources, .. } => sources.len(),
             Job::MoveAs { items, .. } => items.len(),
             Job::Restore { items } => items.len(),
             Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } => 1,
@@ -96,7 +100,7 @@ impl Job {
     /// only: the `$R` paths are the bin's.
     pub fn paths(&self) -> Vec<&Path> {
         match self {
-            Job::Copy { sources, dest_dir } | Job::Move { sources, dest_dir } => {
+            Job::Copy { sources, dest_dir } | Job::Move { sources, dest_dir } | Job::Compress { sources, dest_dir, .. } => {
                 sources.iter().map(PathBuf::as_path).chain([dest_dir.as_path()]).collect()
             }
             Job::MoveAs { items, dest_dir } => items.iter().map(|(p, _)| p.as_path()).chain([dest_dir.as_path()]).collect(),
@@ -123,6 +127,8 @@ pub enum Outcome {
     /// The user cancelled a dialog, or skipped an item (`GetAnyOperationsAborted`).
     Cancelled,
     Failed(HRESULT),
+    /// TwinFM's own archive writers failed, or the job was refused on the worker (P7-M3).
+    Error(String),
 }
 
 /// One item as the progress sink saw it finish.
@@ -154,7 +160,7 @@ pub struct Done {
 /// if the sink reported it; None for the other jobs.
 pub fn real_name(job: &Job, results: &[ItemResult]) -> Option<String> {
     match job {
-        Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } => results
+        Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } | Job::Compress { .. } => results
             .iter()
             .filter(|r| r.ok())
             .find_map(|r| r.dest.as_ref()?.file_name().map(|n| n.to_string_lossy().into_owned())),
@@ -207,16 +213,22 @@ pub fn status_text(job: &Job, outcome: &Outcome, results: &[ItemResult]) -> Stri
     match outcome {
         Outcome::Cancelled => "Cancelled".into(),
         Outcome::Failed(hr) => format!("Failed: 0x{:08X}", *hr as u32),
+        Outcome::Error(e) => format!("Failed: {e}"),
         Outcome::Done => match job {
             Job::Copy { .. } => format!("Copied {}", items(job.count())),
             Job::Move { .. } | Job::MoveAs { .. } => format!("Moved {}", items(job.count())),
             Job::Restore { .. } => format!("Restored {} from the Recycle Bin", items(job.count())),
+            // Inside a zip nothing goes to the Recycle Bin (P7-M3): its results name no bin item.
+            Job::Delete { sources, .. } if sources.first().is_some_and(|s| crate::fs::archive::within(s)) => {
+                format!("Deleted {} from the archive", items(job.count()))
+            }
             Job::Delete { permanent: false, .. } => format!("Deleted {} to the Recycle Bin", items(job.count())),
             Job::Delete { permanent: true, .. } => format!("Deleted {} permanently", items(job.count())),
             Job::Rename { new_name, .. } => format!("Renamed to {}", real_name(job, results).unwrap_or_else(|| new_name.clone())),
             Job::NewFolder { name, .. } | Job::NewFile { name, .. } => {
                 format!("Created {}", real_name(job, results).unwrap_or_else(|| name.clone()))
             }
+            Job::Compress { .. } => format!("Compressed {} to {}", items(job.count()), real_name(job, results).unwrap_or_default()),
         },
     }
 }
@@ -231,6 +243,7 @@ pub fn running_text(job: &Job) -> String {
         Job::Rename { .. } => "renaming...".into(),
         Job::NewFolder { .. } => "creating folder...".into(),
         Job::NewFile { .. } => "creating file...".into(),
+        Job::Compress { format, .. } => format!("compressing {} to {}...", items(job.count()), format.ext()),
     }
 }
 
@@ -287,6 +300,40 @@ impl ProgressGate {
         }
         due
     }
+}
+
+/// The shell's dialogs of this process (class `#32770`: a password prompt, a conflict, an error)
+/// that are visible but not the foreground window: (window, title). The shell makes them on threads
+/// of its own, owned by its unowned progress window, and does not bring them forward, so behind
+/// TwinFM's window a job waits on a dialog nobody sees (P7-M3's console check: an encrypted zip's
+/// "Password needed").
+pub fn hidden_dialogs() -> Vec<(isize, String)> {
+    use windows_sys::Win32::Foundation::LPARAM;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible};
+    unsafe extern "system" fn each(h: HWND, l: LPARAM) -> BOOL {
+        // SAFETY: `l` is the Vec passed below, alive for EnumWindows; plain queries on `h`.
+        unsafe {
+            let out = &mut *(l as *mut Vec<(isize, String)>);
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, &mut pid);
+            if pid != GetCurrentProcessId() || IsWindowVisible(h) == 0 || h == GetForegroundWindow() {
+                return 1;
+            }
+            let mut class = [0u16; 16];
+            let n = GetClassNameW(h, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
+            if String::from_utf16_lossy(&class[..n]) == "#32770" {
+                let mut title = [0u16; 128];
+                let n = GetWindowTextW(h, title.as_mut_ptr(), title.len() as i32).max(0) as usize;
+                out.push((h as isize, String::from_utf16_lossy(&title[..n])));
+            }
+            1
+        }
+    }
+    let mut out: Vec<(isize, String)> = Vec::new();
+    // SAFETY: the callback only reads windows and pushes to `out`, which outlives the call.
+    unsafe { EnumWindows(Some(each), &mut out as *mut _ as LPARAM) };
+    out
 }
 
 /// Handle to the worker. Dropping it ends the worker's message loop.
@@ -692,7 +739,7 @@ fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
         Job::MoveAs { items, .. } => items.iter().map(|(p, _)| p.as_path()).collect(),
         Job::Rename { source, .. } => vec![source.as_path()],
         Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => vec![parent.as_path()],
-        Job::Restore { .. } => return all, // one result per item, made by `restore`
+        Job::Restore { .. } | Job::Compress { .. } => return all, // one result per item, made by `restore` or `archive`
     };
     // Top-level items share a parent with a source; checking the parent first keeps the
     // canonicalising comparison off a folder's contents.
@@ -704,8 +751,20 @@ fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
     all.into_iter().filter(|r| is_top(r) && mine.iter().any(|m| same_path(m, &r.source))).collect()
 }
 
-/// Run one job on this (STA, pumping) thread.
+/// Run one job on this (STA, pumping) thread: TwinFM's own archive writers for a Compress job and
+/// a zip's writes (`archive`), `IFileOperation` (or the restore) for the rest.
 fn perform(req: &Request, progress: &Rc<dyn Fn(Progress)>) -> (Outcome, Vec<ItemResult>) {
+    if let Job::Compress { sources, dest_dir, format } = &req.job {
+        return archive::compress(req, sources, dest_dir, *format, progress);
+    }
+    match archive::classify(&req.job) {
+        Err(why) => {
+            eprintln!("[archive] refused on the worker: {why}");
+            return (Outcome::Error(why), Vec::new());
+        }
+        Ok(Some(plan)) => return archive::run(req, plan, progress),
+        Ok(None) => {}
+    }
     let mut results = Vec::new();
     let outcome = match perform_inner(req, progress, &mut results) {
         Ok(false) => Outcome::Done,
@@ -782,6 +841,7 @@ fn perform_inner(req: &Request, progress: &Rc<dyn Fn(Progress)>, results: &mut V
             keep.push(dir);
         }
         Job::Restore { .. } => unreachable!("restored above"),
+        Job::Compress { .. } => unreachable!("compressed in `perform`"),
     }
     // The sink, advised for this one PerformOperations and unadvised right after. `sink` holds
     // our own reference; the operation takes its own in Advise and drops it in Unadvise (or
