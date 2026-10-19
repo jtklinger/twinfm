@@ -1057,9 +1057,19 @@ it had listed); recorded, not changed in this milestone.
 
 ### Gate
 
-To be run: tag ab29, `C:\traces\gate-p7m4.ps1`, `target-p7m3` (264770a) against `target-p7m4`, four
-pairs interleaved (defaults, `grid.toml`, `grid-medium.toml`, `toolbar-pane.toml`, the reference run
-with the same file as the candidate each time).
+`C:\traces\gate-p7m4.ps1`: `target-p7m3` (264770a) against `target-p7m4`, four pairs interleaved
+(defaults, `grid.toml`, `grid-medium.toml`, `toolbar-pane.toml`, the reference run with the same
+file as the candidate each time).
+
+**ab29 (2026-10-19, 15:54 to 16:28, on 8b9c488) is void**: a side session (the archive test fix,
+PRs #71 and #72) ran its test loop, six test processes at once, and rebuilt `target\release` on the
+same machine throughout the gate. Some runs reached the split 22 s late, so the 10 s window caught an
+idle app (WPR 1.5 to 2.2% beside in-app figures of 20 to 37%), two in-pane toolbar runs could not be
+analysed ("could not find the right-pane enumeration worker"), and render p50 ranged 1.48 to 6.15 ms
+across runs; the wrapper's verdicts were computed from those figures and read nothing. The lesson,
+already in the projects-root rules ("worktrees isolate the repo, not shared targets") and now in the
+wrapper: it refuses to start while `cargo`, `rustc` or a test binary runs. Re-run as ab30 on the
+branch after main's two merges.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
