@@ -258,7 +258,16 @@ fn shell_level(archive: &Path, inner: &str) -> Result<(Level, f64, bool), String
             }
         }
     }
-    let full = if inner.is_empty() { archive.to_path_buf() } else { archive.join(inner) };
+    // Windows' handler matches names inside the archive case-sensitively: each folder's stored
+    // name comes from its parent level (listed and cached as any level).
+    let mut stored = String::new();
+    for c in inner.split(['\\', '/']).filter(|c| !c.is_empty()) {
+        let (up, _, _) = shell_level(archive, &stored)?;
+        let c = c.to_lowercase();
+        let name = &up.iter().find(|i| i.name.to_lowercase() == c).ok_or_else(not_found)?.name;
+        stored = if stored.is_empty() { name.clone() } else { format!("{stored}\\{name}") };
+    }
+    let full = if stored.is_empty() { archive.to_path_buf() } else { archive.join(&stored) };
     let (raw, ms) = crate::fs::archivefolder::level(&full)?;
     let items: Vec<Item> = raw
         .into_iter()
@@ -691,6 +700,30 @@ mod tests {
         forget(&a);
         let (_, info) = list(&a, "top", &mut TypeNames::default(), &LocalZone::current()).unwrap();
         assert!(!info.cached, "forgotten: listed again");
+        crate::fs::archivefolder::remove_scratch(&dir);
+    }
+
+    /// Windows' `ArchiveFolder` matches names inside an archive case-sensitively; a level asked for
+    /// in another case, cold, is found by its stored names (a typed path, `x.7z\TOP\B`).
+    #[test]
+    fn shell_levels_take_any_case() {
+        let _cache = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("twinfm-archive-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let top = dir.join("top");
+        std::fs::create_dir_all(top.join("b")).unwrap();
+        std::fs::write(top.join("b").join("x.txt"), b"x").unwrap();
+        let a = dir.join("t.7z");
+        crate::fs::archivewrite::compress(&a, &[top.clone()], crate::fs::archivewrite::Format::SevenZ, &mut |_, _| {}).unwrap();
+        if handler_for_name("t.7z") != Some(Handler::Shell) {
+            eprintln!("ArchiveFolder does not take .7z on this machine: skipped");
+            return std::fs::remove_dir_all(&dir).unwrap();
+        }
+        let (lvl, info) = list(&a, r"TOP\B", &mut TypeNames::default(), &LocalZone::current()).unwrap();
+        assert_eq!(names(&lvl), vec![("x.txt".into(), Kind::File, 1)]);
+        assert!(!info.cached, "the first listing of that level");
+        assert!(list(&a, r"top\b", &mut TypeNames::default(), &LocalZone::current()).unwrap().1.cached, "the same level in its stored case");
+        assert_eq!(list(&a, r"Top\Missing", &mut TypeNames::default(), &LocalZone::current()).unwrap_err(), not_found());
         crate::fs::archivefolder::remove_scratch(&dir);
     }
 }
