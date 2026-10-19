@@ -45,6 +45,17 @@
 # worker by its verb, and Shift+Delete removes the three files. Reported: verb jobs queued, slept,
 # invoked by verb with S_OK, routed deletes and their restores, cuts cancelled by Escape. One more
 # Recycle Bin entry per cycle (the restore takes it out again), four in all.
+#
+# P7-M2: the context menus above open the Windows 11 style menu: the one on row 0 goes on to "Show
+# more options" (the classic menu, closed from the in-menu timer), the one on the right pane's
+# empty space is closed as it is, and the grid's tile menu is the classic one at once
+# (`rclick ... shift`). Then a menu cycle in dst (after P7-M1's): two files dropped there, the
+# menu's Delete on f01 and Ctrl+Z, its Cut on f02 cancelled by Escape, Compress to > ZIP file on
+# f01 (the shell's Send to > Compressed (zipped) folder, found by its label on the verb worker),
+# New folder from the background menu (the editor's name kept with Return), Open with's submenu
+# opened and the menu closed with Escape twice, and Shift+Delete of everything. Reported: menus
+# shown, rebuilt with the worker's answer, picks, ZIPs made, classic menus from Show more options,
+# menupicks refused (must be 0). One more Recycle Bin entry per cycle that the undo takes out.
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -114,9 +125,10 @@ $cycle = @(
     "dropfiles 1 -1 copy $pick", $wait,
     "dropfiles 0 -1 move $back", $wait,
     'click 0 1', 'shiftclick 0 2', 'sdelete', $wait,
-    # Context menus on a row and on empty space, closed from the in-menu timer.
-    'rclick 0 0', 'sleep 300', 'menuclose', 'sleep 200',
-    'rclickempty 1', 'sleep 300', 'menuclose', 'sleep 200',
+    # Context menus on a row (on to the classic menu, closed from the in-menu timer) and on empty
+    # space (P7-M2).
+    'rclick 0 0', 'waitmenu 2000', 'menuopen Show more options', 'sleep 300', 'menuclose', 'sleep 200',
+    'rclickempty 1', 'waitmenu 2000', 'menuclose', 'sleep 200',
     # P2-M4: a bookmark and a tab as drop targets, the right-button drop menu, a right-button drag.
     "dropfiles side -1 copy $pick", $wait,
     "dropfiles tab 0 1 copy $pick", $wait,
@@ -128,7 +140,7 @@ $cycle = @(
     'click 1 0', 'view icons', 'click 0 0', 'view icons', 'sleep 300',
     "dropfiles 1 0 copy $pick", $wait,
     "dropfiles 1 -1 copy $pick", $wait,
-    'rclick 0 0', 'sleep 300', 'menuclose', 'sleep 200',
+    'rclick 0 0 shift', 'sleep 300', 'menuclose', 'sleep 200',
     'dragrow 0 0 0 60', 'sleep 300', 'dragcancel', 'sleep 300',
     'dragrow 0 0 0 60 right', 'sleep 300', 'dragcancel', 'sleep 300',
     'band 1 202 60 5 10', 'sleep 200',
@@ -147,8 +159,10 @@ $cycle = @(
     'undo', $wait,
     'toolbar 1 newfolder', 'sleep 300', 'key Return', $wait,
     'click 1 0', 'toolbar 1 rename', 'sleep 300', 'key t', 'key Return', $wait,
-    'click 1 0', 'toolbar 1 copy', 'toolbar 1 paste', $wait,
-    'click 1 1', 'toolbar 1 cut', 'click 0 0', 'toolbar 0 paste', $wait,
+    # A pause after the copy: another program (AMD's Radeon Software here) opens the clipboard
+    # right after each change, and a paste in that instant finds it in use (P7-M2).
+    'click 1 0', 'toolbar 1 copy', 'sleep 200', 'toolbar 1 paste', $wait,
+    'click 1 1', 'toolbar 1 cut', 'click 0 0', 'sleep 200', 'toolbar 0 paste', $wait,
     'click 0 0', 'toolbar 0 delete', $wait,
     'click 1 0', 'sdelete', $wait,
     # P7-M1: the verb cycle (see the header).
@@ -157,6 +171,14 @@ $cycle = @(
     'click 1 0', 'menuverb 1 delete', $wait, 'undo', $wait,
     'click 1 1', 'menuverb 1 cut', 'sleep 200', 'key Escape', 'sleep 200',
     'click 1 0', 'menuverb 1 link', $wait,
+    'click 1 0', 'key CtrlA', 'sdelete', $wait,
+    # P7-M2: the Windows 11 menu cycle (see the header).
+    "dropfiles 1 -1 copy $pick", $wait,
+    'click 1 0', 'rclick 1 0', 'waitmenu 2000', 'menupick Delete', $wait, 'undo', $wait,
+    'click 1 1', 'rclick 1 1', 'waitmenu 2000', 'menupick Cut', 'sleep 200', 'key Escape', 'sleep 200',
+    'click 1 0', 'rclick 1 0', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick ZIP file', $wait,
+    'rclickempty 1', 'waitmenu 2000', 'menupick New folder', 'sleep 300', 'key Return', $wait,
+    'click 1 1', 'rclick 1 1', 'waitmenu 2000', 'menuopen Open with', 'sleep 200', 'menukey Escape', 'menukey Escape', 'sleep 200',
     'click 1 0', 'key CtrlA', 'sdelete', $wait,
     # P5-M3: the spring-load into spring\inner, the crumb drop into spring, the sidebar's bottom
     # edge, the inactive tab under the spring time, and the cleanup (see the header).
@@ -261,12 +283,21 @@ $newFiles = @($log | Select-String -SimpleMatch 'Done: Created New Text Document
 $newFilesUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Created New Text Document.txt').Count
 $renamedT = @($log | Select-String -SimpleMatch 'Done: Renamed to t').Count
 # P7-M1 counts.
-$verbJobs = @($log | Select-String -SimpleMatch 'queued on the verb worker').Count
+$verbJobs = @($log | Select-String -SimpleMatch '[menu] verb "' | Select-String -SimpleMatch 'queued on the verb worker').Count
 $verbSlept = @($log | Select-String -SimpleMatch 'slept in').Count
 $verbOk = @($log | Select-String -SimpleMatch 'verb="link"' | Select-String -SimpleMatch 'by verb = 0x00000000').Count
 $routedDeletes = @($log | Select-String -SimpleMatch 'menuverb pane=1 "delete"').Count
 $restores = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Deleted 1 item to the Recycle Bin').Count
 $cutsCancelled = @($log | Select-String -SimpleMatch 'Escape: cut cancelled, marks cleared, clipboard emptied').Count
+# P7-M2 counts.
+$wmShown = @($log | Select-String -SimpleMatch '[winmenu] pane=' | Select-String -SimpleMatch ' shown after ').Count
+$wmRebuilt = @($log | Select-String -SimpleMatch "rebuilt with the worker's answer").Count
+$wmPicks = @($log | Select-String -SimpleMatch '[winmenu] pane=' | Select-String -SimpleMatch ' runs ').Count
+$wmZips = @($log | Select-String -SimpleMatch 'label="Send to>Compressed (zipped) folder" by offset = 0x00000000').Count
+$wmMore = @($log | Select-String -SimpleMatch 'closed (Show more options)').Count
+$wmSubs = @($log | Select-String -SimpleMatch '[winmenu] submenu "').Count
+$wmRefused = @($log | Select-String -SimpleMatch 'menupick refused').Count
+$wmFolders = @($log | Select-String -SimpleMatch 'Done: Created New folder').Count
 # P5-M3 counts.
 $springArmed = @($log | Select-String -SimpleMatch '[dnd] spring armed:').Count
 $springRows = @($log | Select-String -SimpleMatch '[dnd] spring-loaded:' | Select-String -SimpleMatch ' opens ').Count
@@ -291,7 +322,8 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (two per cycle: large and medium); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
 "medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
 "toolbar: presses $toolPresses (eight per cycle), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
-"verbs: jobs queued $verbJobs (two per cycle), slept $verbSlept, link by verb with S_OK $verbOk; routed deletes $routedDeletes, restored $restores; cuts cancelled by Escape $cutsCancelled"
+"verbs: jobs queued $verbJobs (three per cycle: two of P7-M1's, P7-M2's ZIP), slept $verbSlept, link by verb with S_OK $verbOk; routed deletes $routedDeletes, restored $restores; cuts cancelled by Escape $cutsCancelled"
+"Windows 11 menu: shown $wmShown (seven per cycle, and each rebuild again), rebuilt with the worker's answer $wmRebuilt, picks run $wmPicks (four per cycle), ZIPs made $wmZips, new folders $wmFolders (two per cycle: the menu's and the toolbar's), submenus $wmSubs (two per cycle), classic menus from Show more options $wmMore, menupicks refused $wmRefused (must be 0)"
 "spring: armed $springArmed, spring-loaded rows $springRows (navigations into spring\inner: $springInner), tabs $springTabs (must be 0), disarmed $springDisarmed; crumb drops: $dropCrumb; auto-scroll lines: sidebar $sideScrolls, tab strip $stripScrolls"
 "working set: start $($first.working_set_mb) MB at $($first.seconds) s, end $($last.working_set_mb) MB at $($last.seconds) s; private: $($first.private_mb) -> $($last.private_mb) MB"
 "min/max working set: {0} / {1} MB" -f ($samples | Measure-Object working_set_mb -Minimum).Minimum, ($samples | Measure-Object working_set_mb -Maximum).Maximum

@@ -4481,6 +4481,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "raw-window-handle",
+ "roxmltree",
  "serde",
  "slint",
  "slint-build",

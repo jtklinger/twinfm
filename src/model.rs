@@ -486,7 +486,7 @@ impl PaneModel {
         sel.set.iter().filter_map(|&i| shown.get(i)).filter(|e| e.kind == Kind::Directory).map(|e| e.name.to_string()).collect()
     }
 
-    /// The plain folders shown, with their rows: what Alt+Return sizes.
+    /// The plain folders shown, with their rows: what Alt+Shift+Return sizes.
     pub fn folder_rows(&self) -> Vec<(usize, String)> {
         let shown = self.shown.borrow();
         shown.iter().enumerate().filter(|(_, e)| e.kind == Kind::Directory).map(|(i, e)| (i, e.name.to_string())).collect()

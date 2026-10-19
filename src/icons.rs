@@ -40,7 +40,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::UI::Shell::{
     SHCreateItemFromParsingName, SHDefExtractIconW, SHFILEINFOW, SHGFI_ADDOVERLAYS, SHGFI_ICON, SHGFI_OVERLAYINDEX, SHGFI_SMALLICON, SHGetFileInfoW,
-    SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_LARGE, SHIL_SMALL, SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
+    SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_LARGE, SHIL_SMALL, SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY, SIIGBF_THUMBNAILONLY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON};
 use windows_sys::core::{GUID, HRESULT};
@@ -827,6 +827,11 @@ const IID_ISHELLITEMIMAGEFACTORY: GUID = GUID::from_u128(0xbcc18b79_ba16_442f_80
 /// The shell's icon for `path` at `size_px` square, or None. Needs COM: the worker, and the UI
 /// thread once per drag for the drag image (`dnd::attach_drag_image`).
 pub(crate) fn render(path: &Path, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    render_with(path, size_px, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK)
+}
+
+/// `render` with the image factory's flags given.
+fn render_with(path: &Path, size_px: u32, flags: SIIGBF) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let mut factory: *mut c_void = std::ptr::null_mut();
     // SAFETY: `wide` is NUL-terminated and outlives the call; `factory` receives an interface
@@ -841,7 +846,7 @@ pub(crate) fn render(path: &Path, size_px: u32) -> Option<SharedPixelBuffer<Rgba
     // three methods followed by GetImage; it is released exactly once here.
     let hr = unsafe {
         let vtbl = *(factory as *const *const ImageFactoryVtbl);
-        let hr = ((*vtbl).get_image)(factory, size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK, &mut hbm);
+        let hr = ((*vtbl).get_image)(factory, size, flags, &mut hbm);
         ((*vtbl).release)(factory);
         hr
     };
@@ -1306,6 +1311,53 @@ fn state_glyph(res: u16, size_px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> 
         return None;
     }
     let pixels = icon_pixels_at(hicon, size_px, 0, size_px - g, g);
+    // SAFETY: made for us above.
+    unsafe { DestroyIcon(hicon) };
+    pixels
+}
+
+/// An icon location as the packaged menu commands' `GetIcon` and the Open with handlers give it:
+/// `C:\x\app.exe,-101` (a negative index names a resource id), `C:\x\app.ico` (index 0), with `/`
+/// allowed in the path. None for an empty one or an indirect `@` string.
+pub fn parse_icon_location(s: &str) -> Option<(String, i32)> {
+    let s = s.trim().trim_matches('"');
+    if s.is_empty() || s.starts_with('@') {
+        return None;
+    }
+    let (path, index) = match s.rsplit_once(',') {
+        Some((p, i)) if i.trim().parse::<i32>().is_ok() => (p, i.trim().parse().unwrap_or(0)),
+        _ => (s, 0),
+    };
+    let path = path.trim().trim_matches('"').replace('/', "\\");
+    (!path.is_empty()).then_some((path, index))
+}
+
+/// The icon at an icon location (`parse_icon_location`) drawn `px` square; None when it cannot be
+/// loaded. For the Windows 11 menu's packaged commands and Open with apps, on the verb worker.
+pub(crate) fn location_pixels(location: &str, px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    // A packaged app's indirect string (`@{Package?ms-resource://...}`) names a picture in the
+    // package, resolved for the display's scale; the shell draws it as its own thumbnail.
+    if let Some(r) = location.trim().strip_prefix("@{").and_then(|r| r.split_once('}')).map(|(r, _)| format!("@{{{r}}}")) {
+        use windows_sys::Win32::UI::Shell::SHLoadIndirectString;
+        let src: Vec<u16> = std::ffi::OsStr::new(&r).encode_wide().chain([0]).collect();
+        let mut buf = [0u16; 1024];
+        // SAFETY: `src` is NUL-terminated; `buf` is writable for its length.
+        if unsafe { SHLoadIndirectString(src.as_ptr(), buf.as_mut_ptr(), buf.len() as u32, std::ptr::null_mut()) } < 0 {
+            return None;
+        }
+        let n = buf.iter().position(|&c| c == 0).unwrap_or(0);
+        let picture = render_with(Path::new(&String::from_utf16_lossy(&buf[..n])), px, SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK)?;
+        return Some(if picture.width() == px && picture.height() == px { picture } else { fit(&picture, px) });
+    }
+    let (path, index) = parse_icon_location(location)?;
+    let file: Vec<u16> = std::ffi::OsStr::new(&path).encode_wide().chain([0]).collect();
+    let mut hicon: HICON = std::ptr::null_mut();
+    // SAFETY: `file` is NUL-terminated; the icon, when made, is ours to destroy.
+    let hr = unsafe { SHDefExtractIconW(file.as_ptr(), index, 0, &mut hicon, std::ptr::null_mut(), px) };
+    if hr != 0 || hicon.is_null() {
+        return None;
+    }
+    let pixels = icon_pixels(hicon, px);
     // SAFETY: made for us above.
     unsafe { DestroyIcon(hicon) };
     pixels
@@ -2474,6 +2526,20 @@ mod tests {
         assert_eq!(t.cap.capped(&key).as_deref(), Some("ext:.png"));
         assert_eq!(t.cap.capped(&"ext:.png".into()), None);
         assert_eq!(t.keys(32).0.state(&"thumb:7|0|0".into()), KeyState::Ready(PLACEHOLDERS + 7), "held thumbnails stay");
+    }
+
+    #[test]
+    fn icon_locations_as_the_menu_commands_give_them() {
+        let l = |s: &str| parse_icon_location(s);
+        assert_eq!(l(r"C:\Program Files\WindowsApps\T\WindowsTerminal.exe,-101"), Some((r"C:\Program Files\WindowsApps\T\WindowsTerminal.exe".into(), -101)));
+        assert_eq!(l(r"C:\Apps\N\Notepad/Notepad.exe,-2"), Some((r"C:\Apps\N\Notepad\Notepad.exe".into(), -2)), "a / in the path");
+        assert_eq!(l(r"C:\PowerToys\Assets\PowerRenameUI.ico"), Some((r"C:\PowerToys\Assets\PowerRenameUI.ico".into(), 0)));
+        assert_eq!(l(r"C:\Program Files\Google\NearbyShare\nearby_share.exe"), Some((r"C:\Program Files\Google\NearbyShare\nearby_share.exe".into(), 0)));
+        assert_eq!(l(r#""C:\a b\x.dll",3"#), Some((r"C:\a b\x.dll".into(), 3)), "quotes go");
+        assert_eq!(l(r"C:\odd,name\x.ico"), Some((r"C:\odd,name\x.ico".into(), 0)), "a comma not followed by a number is the path's");
+        assert_eq!(l("@{Microsoft.WindowsNotepad_1_x64__8wekyb3d8bbwe?ms-resource://Microsoft.WindowsNotepad/Files/Assets/A.png},0"), None, "an indirect string");
+        assert_eq!(l(""), None);
+        assert_eq!(l(",0"), None);
     }
 
     #[test]

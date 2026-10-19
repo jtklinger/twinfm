@@ -14,13 +14,13 @@
 //!                                    (hidden files), CtrlR (refresh), CtrlA, Down, ShiftUp, ShiftDown,
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
 //!                                    CtrlV, CtrlZ, CtrlY, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
-//!                                    the context menu and take in-menu steps like rclick); CtrlT,
+//!                                    the Windows 11 menu under the cursor row, as rclick does); CtrlT,
 //!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
 //!                                    CtrlShiftPageUp, CtrlShiftPageDown, AltLeft, AltRight (back
 //!                                    and forward in the tab's history), CtrlComma (settings),
-//!                                    CtrlF (the filter box), CtrlShiftF (search), AltReturn (size
-//!                                    every folder in the listing), and any single character, typed
-//!                                    as itself (`key a`)
+//!                                    CtrlF (the filter box), CtrlShiftF (search), AltReturn
+//!                                    (Properties, P7-M2), AltShiftReturn (size every folder in the
+//!                                    listing), and any single character, typed as itself (`key a`)
 //!   copy | move                      Shift+F5 / Shift+F6: the active pane's selection to the other pane
 //!   delete | sdelete                 Delete (Recycle Bin) / Shift+Delete (permanent)
 //!   cc | cx | cv                     Ctrl+C / Ctrl+X / Ctrl+V through the real clipboard
@@ -54,18 +54,34 @@
 //!                                    (P4-M1); `[view]` lines on stderr. Key names Up, Down, Left,
 //!                                    Right, PageUp, PageDown, Home, End (and ShiftLeft, ShiftRight)
 //!                                    move the cursor in the focused list
-//!   rclick <pane> <row>              right-click a visible row: press, 60 ms for a frame, release;
-//!                                    the release opens the real shell context menu
-//!   rclickempty <pane>               right-click the empty space below the last row (the folder's
+//!   rclick <pane> <row> [shift]      right-click a visible row: press, 60 ms for a frame, release;
+//!                                    the release opens the Windows 11 style menu (P7-M2), which
+//!                                    shows when the verb worker answers or after 250 ms (`waitmenu`);
+//!                                    with `shift` (Shift held over the release) the classic shell
+//!                                    menu opens at once, inside the release, and the step takes the
+//!                                    in-menu steps after it (below)
+//!   rclickempty <pane> [shift]       right-click the empty space below the last row (the folder's
 //!                                    background menu); when the rows fill the list there is none,
 //!                                    and the step calls the pane's context-menu callback directly
-//!   menuopen <text>                  inside the menu: open the submenu whose item reads <text>
+//!   waitmenu <ms>                    wait until the Windows 11 menu is shown and the verb worker has
+//!                                    answered (at most <ms>), then 100 ms
+//!   menuopen <text>                  in the Windows 11 menu: open the submenu of the item reading
+//!                                    <text> ("Open with", "Compress to"); "Show more options" opens
+//!                                    the classic menu and takes the in-menu steps after it. Inside
+//!                                    the classic menu: open the submenu whose item reads <text>
 //!                                    ("Send to"), with Down presses then Right; never Return
-//!   menukey <Down|Up|Right|Left|Escape>  inside the menu: one key
-//!   menupick <text>                  inside the menu: choose one of TwinFM's own items ("Copy path",
-//!                                    "Open in other pane", "Open in terminal", and the drop menu's
-//!                                    "Move here", "Copy here", "Cancel"); refuses shell items
-//!   menuclose                        inside the menu: close it (EndMenu)
+//!   menukey <Down|Up|Right|Left|Escape|Return|Home|End|ShiftF10>
+//!                                    one key in the menu (Return, Home, End and ShiftF10 in the
+//!                                    Windows 11 menu only)
+//!   menupick <text>                  in the Windows 11 menu: pick the item (or icon-row button)
+//!                                    reading <text>; one that runs on the verb worker (Share,
+//!                                    Properties, Open with's apps, the packaged apps' commands) is
+//!                                    refused and the menu closes, except Compress to > "ZIP file"
+//!                                    inside the TWINFM_SOAK fence. Inside the classic menu: one of
+//!                                    TwinFM's own items ("Copy path", "Open in other pane", "Open in
+//!                                    terminal", and the drop menu's "Move here", "Copy here",
+//!                                    "Cancel"); refuses shell items
+//!   menuclose                        close the Windows 11 menu, or inside the classic menu: EndMenu
 //!   dragrow <pane> <row> <dx> <dy> [right]
 //!                                    drag a visible row: press (the right button with `right`),
 //!                                    60 ms, move <dx>,<dy> px, which starts the OLE drag
@@ -185,7 +201,7 @@
 //!                                    filter box's text in a new tab (an empty box opens, focused)
 //!   waitsearch <ms>                  wait until no search tab is still walking (at most <ms>), then
 //!                                    300 ms more for the pass
-//!   sizeall <pane>                   Alt+Return in the pane's list (focused first): size every folder
+//!   sizeall <pane>                   Alt+Shift+Return in the pane's list (focused first): size every folder
 //!                                    of the listing (at most 500, nearest the cursor first)
 //!   waitsize <ms>                    wait until no folder size is queued or walking and the last
 //!                                    reply has landed (at most <ms>), then 300 ms more
@@ -195,8 +211,10 @@
 //! Events are dispatched with slint::Window::dispatch_event on the UI thread, so Slint's full
 //! input -> layout -> render path runs; only the OS WndProc hop is skipped.
 //!
-//! In-menu steps. The shell menu's `TrackPopupMenuEx` runs a modal loop inside the release
-//! event, and while it runs no Slint timer fires: winit buffers every event that reaches it
+//! In-menu steps. The Windows 11 style menu (P7-M2) is a Slint popup with no modal loop: its steps
+//! run as any other step. The classic shell menu's `TrackPopupMenuEx` (Shift+right-click, `rclick
+//! ... shift`, or "Show more options") runs a modal loop inside the event that opens it, and while
+//! it runs no Slint timer fires: winit buffers every event that reaches it
 //! while its handler is busy (and these steps run inside it), so a step scheduled with
 //! `slint::Timer` would only run after the menu has closed. So `rclick`/`rclickempty` take the
 //! steps that follow them, as long as they are `sleep`, `menuopen`, `menukey` or `menuclose`,
@@ -271,7 +289,9 @@ enum Step {
     Type { lead: String, text: String },
     WaitOps(u64),
     /// Right-click a row, or with `row: None` the empty space below the rows.
-    RClick { pane: usize, row: Option<usize> },
+    RClick { pane: usize, row: Option<usize>, shift: bool },
+    /// Wait until the Windows 11 menu is shown and settled (at most `ms`), then 100 ms.
+    WaitMenu(u64),
     MenuOpen(String),
     MenuKey(String),
     MenuPick(String),
@@ -321,7 +341,7 @@ enum Step {
     Search(usize),
     /// Wait until no search tab is still walking (at most `ms`), then 300 ms for the pass.
     WaitSearch(u64),
-    /// Alt+Return in the pane's list.
+    /// Alt+Shift+Return in the pane's list.
     SizeAll(usize),
     /// Wait until no folder size is queued or walking (at most `ms`), then 300 ms.
     WaitSize(u64),
@@ -376,8 +396,9 @@ fn parse(script: &str) -> Vec<Step> {
                 "newfile" => Step::Type { lead: "CtrlAltN".into(), text: a[1..].join(" ") },
                 "rename" => Step::Type { lead: "F2".into(), text: a[1..].join(" ") },
                 "waitops" => Step::WaitOps(num(1).max(1) as u64),
-                "rclick" => Step::RClick { pane: num(1) as usize, row: Some(num(2) as usize) },
-                "rclickempty" => Step::RClick { pane: num(1) as usize, row: None },
+                "rclick" => Step::RClick { pane: num(1) as usize, row: Some(num(2) as usize), shift: a.get(3) == Some(&"shift") },
+                "rclickempty" => Step::RClick { pane: num(1) as usize, row: None, shift: a.get(2) == Some(&"shift") },
+                "waitmenu" => Step::WaitMenu(num(1).max(1) as u64),
                 "menuopen" => Step::MenuOpen(a[1..].join(" ")),
                 "menukey" => Step::MenuKey(a.get(1).unwrap_or(&"").to_string()),
                 "menupick" => Step::MenuPick(a[1..].join(" ")),
@@ -904,6 +925,7 @@ fn chord(name: &str) -> Vec<SharedString> {
         "AltLeft" => vec![k(Key::Alt), k(Key::LeftArrow)],
         "AltRight" => vec![k(Key::Alt), k(Key::RightArrow)],
         "AltReturn" => vec![k(Key::Alt), k(Key::Return)],
+        "AltShiftReturn" => vec![k(Key::Alt), k(Key::Shift), k(Key::Return)],
         "CtrlComma" => vec![k(Key::Control), ",".into()],
         "CtrlShiftRight" => vec![k(Key::Control), k(Key::Shift), k(Key::RightArrow)],
         "CtrlH" => vec![k(Key::Control), "h".into()],
@@ -1006,14 +1028,6 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::Sort { pane, col } => {
             app.invoke_sort_by(pane as i32, col);
-            schedule(runner, 1);
-        }
-        Step::Key(name) if matches!(name.as_str(), "ShiftF10" | "Menu") => {
-            // The keyboard menu opens inside the key press, like rclick's inside the release.
-            let steps = take_menu_steps(&mut runner.borrow_mut());
-            arm_menu_steps(&app, steps);
-            press(&app, &chord(&name));
-            disarm_menu_steps();
             schedule(runner, 1);
         }
         Step::Key(name) => {
@@ -1319,7 +1333,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::SizeAll(pane) => {
             app.invoke_focus_pane(pane as i32);
-            press(&app, &chord("AltReturn"));
+            press(&app, &chord("AltShiftReturn"));
             schedule(runner, 1);
         }
         Step::WaitSize(max_ms) => {
@@ -1353,6 +1367,34 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::Quit => {
             let _ = slint::quit_event_loop();
+        }
+        Step::MenuOpen(t) | Step::MenuPick(t) | Step::MenuKey(t)
+            if (t.eq_ignore_ascii_case("Show more options") || t == "ShiftF10") && crate::winmenu_shown(false) =>
+        {
+            // The classic menu opens inside this call: its in-menu steps run from the Win32 timer.
+            let steps = take_menu_steps(&mut runner.borrow_mut());
+            arm_menu_steps(&app, steps);
+            crate::script_winmenu("open", "Show more options");
+            disarm_menu_steps();
+            schedule(runner, 1);
+        }
+        Step::MenuOpen(t) if crate::script_winmenu("open", &t) => schedule(runner, 1),
+        Step::MenuPick(t) if crate::script_winmenu("pick", &t) => schedule(runner, 1),
+        Step::MenuKey(k) if crate::script_winmenu("key", &if k == "ShiftF10" { "more".to_string() } else { k.to_ascii_lowercase() }) => schedule(runner, 1),
+        Step::MenuClose if crate::script_winmenu("close", "") => schedule(runner, 1),
+        Step::WaitMenu(max_ms) => {
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(20), move || {
+                let shown = crate::winmenu_shown(true);
+                if shown || std::time::Instant::now() >= deadline {
+                    if !shown {
+                        eprintln!("[auto] waitmenu: no settled Windows 11 menu after {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 100);
+                }
+            });
         }
         Step::MenuOpen(_)
         | Step::MenuKey(_)
@@ -1519,8 +1561,9 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             }
             schedule(runner, 1);
         }
-        Step::RClick { pane, row } => {
-            let mut menu_steps = take_menu_steps(&mut runner.borrow_mut());
+        Step::RClick { pane, row, shift } => {
+            // Only the classic menu (Shift) runs a modal loop that takes in-menu steps.
+            let mut menu_steps = if shift { take_menu_steps(&mut runner.borrow_mut()) } else { Vec::new() };
             let target = match row {
                 Some(r) => Some(row_pos(&app, pane, r)),
                 None => empty_pos(&app, pane),
@@ -1533,7 +1576,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 // What the empty space's right press does first: clear the selection.
                 app.invoke_select(pane as i32, 5, -1);
                 arm_menu_steps(&app, menu_steps);
-                app.invoke_context_menu(pane as i32, -1, mid.x, list_top(&app, pane) + crate::window_layout(&app).row_px_of(pane) / 2.0, false);
+                app.invoke_context_menu(pane as i32, -1, mid.x, list_top(&app, pane) + crate::window_layout(&app).row_px_of(pane) / 2.0, shift);
                 disarm_menu_steps();
                 schedule(runner, 1);
                 return;
@@ -1548,10 +1591,18 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             runner.borrow().sub.start(TimerMode::SingleShot, Duration::from_millis(60), move || {
                 let Some(app) = w.upgrade() else { return };
                 arm_menu_steps(&app, std::mem::take(&mut menu_steps));
-                // The menu opens and runs inside this dispatch; it returns when the menu closes.
+                // Shift held over the release: the classic menu opens and runs inside this
+                // dispatch, which returns when it closes. Without it the Windows 11 menu opens.
+                let shift_key = [SharedString::from(Key::Shift)];
+                if shift {
+                    app.window().dispatch_event_with_result(WindowEvent::KeyPressed { text: shift_key[0].clone() }).ok();
+                }
                 app.window()
                     .dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Right })
                     .ok();
+                if shift {
+                    app.window().dispatch_event_with_result(WindowEvent::KeyReleased { text: shift_key[0].clone() }).ok();
+                }
                 disarm_menu_steps();
                 schedule(r2.clone(), 1);
             });

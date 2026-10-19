@@ -29,7 +29,7 @@ pub const SIZE_MAX_DEPTH: usize = 64;
 pub const PARTIAL_EVERY: Duration = Duration::from_millis(250);
 /// At most this many selected folders are sized per selection; the rest stay unsized.
 pub const SELECTION_CAP: usize = 100;
-/// Alt+Return sizes at most this many folders of the listing.
+/// Alt+Shift+Return sizes at most this many folders of the listing.
 pub const ALL_CAP: usize = 500;
 /// A sized folder that changed is walked again no sooner than this, or twice its last walk's
 /// duration if that is longer; further changes meanwhile wait for that one re-walk.
@@ -241,7 +241,7 @@ pub struct Pending {
     pub cancel: Arc<AtomicBool>,
     /// The latest partial totals.
     pub partial: Totals,
-    /// Asked for by Alt+Return (not cancelled by a selection change).
+    /// Asked for by Alt+Shift+Return (not cancelled by a selection change).
     pub all: bool,
 }
 
@@ -285,7 +285,7 @@ pub struct TabSizes {
     pub stale: HashMap<String, Instant>,
     /// Each sized folder's last walk duration, for the re-walk delay.
     pub walk_ms: HashMap<String, u64>,
-    /// Folders Alt+Return sized: re-walked after a change even when not selected.
+    /// Folders Alt+Shift+Return sized: re-walked after a change even when not selected.
     pub from_all: HashSet<String>,
 }
 
@@ -296,7 +296,7 @@ impl TabSizes {
     }
 
     /// The first `cap` selected folders (display order) are sized; those neither cached nor in
-    /// flight are queued. Requests a selection made (not Alt+Return's) for folders no longer
+    /// flight are queued. Requests a selection made (not Alt+Shift+Return's) for folders no longer
     /// selected are cancelled.
     pub fn plan(&self, selected: &[String], cap: usize) -> Plan {
         let set: HashSet<&str> = selected.iter().map(String::as_str).collect();
@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(p.queue.first().map(String::as_str), Some("d000"));
         assert_eq!(p.queue.last().map(String::as_str), Some("d099"));
         assert_eq!(p.capped, Some((100, 150)));
-        // Two sized, one walking, one asked for by Alt+Return.
+        // Two sized, one walking, one asked for by Alt+Shift+Return.
         s.cache.insert("d000".into(), Totals { bytes: 10, ..Default::default() });
         s.cache.insert("d001".into(), Totals { bytes: 5, ..Default::default() });
         let partial = Totals { bytes: 7, ..Default::default() };
@@ -566,7 +566,7 @@ mod tests {
         // d000 changed: its old size still counts, as updating.
         s.stale.insert("d000".into(), Instant::now());
         assert_eq!(s.summary(&names[..2]), DirTotals { folders: 2, bytes: 15, pending: 0, not_sized: 0, updating: 1 });
-        // A new selection: d001 and d003; d002 (selection) is cancelled, zz (Alt+Return) is not.
+        // A new selection: d001 and d003; d002 (selection) is cancelled, zz (Alt+Shift+Return) is not.
         let p = s.plan(&["d001".into(), "d003".into()], SELECTION_CAP);
         assert_eq!(p, Plan { queue: vec!["d003".into()], cancel: vec!["d002".into()], capped: None });
     }

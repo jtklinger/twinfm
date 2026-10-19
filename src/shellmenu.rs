@@ -44,7 +44,7 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemInfoW, GetMenuStringW, GetSubMenu, HMENU, InsertMenuW,
-    MENUITEMINFOW, MF_BYCOMMAND, MF_BYPOSITION, MF_SEPARATOR, MF_STRING, MFT_SEPARATOR, MIIM_FTYPE, MIIM_SUBMENU, SW_SHOWNORMAL,
+    MENUITEMINFOW, MF_BYCOMMAND, MF_BYPOSITION, MF_SEPARATOR, MF_STRING, MFT_SEPARATOR, MIIM_FTYPE, MIIM_ID, MIIM_SUBMENU, SW_SHOWNORMAL,
     TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, WM_DRAWITEM, WM_INITMENUPOPUP,
     WM_MEASUREITEM, WM_MENUCHAR,
 };
@@ -598,8 +598,9 @@ pub(crate) fn check(hr: HRESULT, what: &str) -> Result<(), String> {
 /// `names` relative to `folder`, which may hold a `\` (a search tab's results, `sub\file.txt`), as
 /// the one folder they are in and their own names. Err when they are in different folders.
 pub(crate) fn common_parent(folder: &Path, names: &[String]) -> Result<(PathBuf, Vec<String>), String> {
+    // A drive on This PC is named by its root (`C:\`): a name, not a path to split.
     fn split(n: &str) -> (&str, &str) {
-        n.rsplit_once('\\').unwrap_or(("", n))
+        if n.ends_with('\\') { ("", n) } else { n.rsplit_once('\\').unwrap_or(("", n)) }
     }
     let parent = names.first().map_or("", |n| split(n).0);
     if names.iter().any(|n| !split(n).0.eq_ignore_ascii_case(parent)) {
@@ -814,6 +815,10 @@ pub struct VerbRequest {
     pub x: i32,
     pub y: i32,
     pub extended: bool,
+    /// No menu was shown (the Windows 11 menu's Share and Compress to, P7-M2): the worker finds
+    /// the command in the menu it builds, by `verb` when given, else by `label` as a path of item
+    /// labels joined by `>` ("Send to>Compressed (zipped) folder"); `offset` is unused.
+    pub find: bool,
 }
 
 /// How the verb worker invoked a command (`choose`).
@@ -825,6 +830,8 @@ pub enum Invoke {
     Offset,
     /// Not invoked, and why.
     Refuse(String),
+    /// A packaged command (`IExplorerCommand`) or an Open with app (`IAssocHandler`), P7-M2.
+    Command,
 }
 
 /// How to invoke a command picked in the shown menu from the menu the worker rebuilt: by `verb`
@@ -840,6 +847,52 @@ pub fn choose(verb: &str, label: &str, rebuilt: Option<&str>) -> Invoke {
         Some(r) => Invoke::Refuse(format!("the rebuilt menu has \"{}\" at that id, not \"{}\"", norm(r), norm(label))),
         None => Invoke::Refuse(format!("the rebuilt menu has no item at that id (\"{}\")", norm(label))),
     }
+}
+
+/// The command in a built menu that `verb` names (when not empty), else the one at the label path
+/// `label` (labels joined by `>`, compared without `&` and case): its id. `items` holds each
+/// command's label path, id and canonical verb.
+pub fn find_command(items: &[(Vec<String>, u32, String)], verb: &str, label: &str) -> Option<u32> {
+    if !verb.is_empty() {
+        return items.iter().find(|(_, _, v)| v.eq_ignore_ascii_case(verb)).map(|(_, id, _)| *id);
+    }
+    let norm = |s: &str| s.replace('&', "").trim().to_lowercase();
+    let want: Vec<String> = label.split('>').map(norm).collect();
+    items.iter().find(|(path, _, _)| path.len() == want.len() && path.iter().zip(&want).all(|(a, b)| norm(a) == *b)).map(|(_, id, _)| *id)
+}
+
+/// Every command of a built menu with its label path, id and canonical verb, two levels deep.
+fn command_tree(cm: &Com, hmenu: HMENU) -> Vec<(Vec<String>, u32, String)> {
+    fn walk(cm: &Com, hmenu: HMENU, path: &[String], depth: u32, out: &mut Vec<(Vec<String>, u32, String)>) {
+        // SAFETY: read-only queries on a live menu with valid buffers.
+        let n = unsafe { GetMenuItemCount(hmenu) }.max(0) as u32;
+        for i in 0..n {
+            // SAFETY: as above.
+            let mut mii: MENUITEMINFOW = unsafe { std::mem::zeroed() };
+            mii.cbSize = std::mem::size_of::<MENUITEMINFOW>() as u32;
+            mii.fMask = MIIM_FTYPE | MIIM_SUBMENU | MIIM_ID;
+            // SAFETY: as above.
+            unsafe { GetMenuItemInfoW(hmenu, i, 1, &mut mii) };
+            if mii.fType & MFT_SEPARATOR != 0 {
+                continue;
+            }
+            let mut buf = [0u16; 128];
+            // SAFETY: as above.
+            let len = unsafe { GetMenuStringW(hmenu, i, buf.as_mut_ptr(), buf.len() as i32, MF_BYPOSITION) }.max(0) as usize;
+            let mut p = path.to_vec();
+            p.push(String::from_utf16_lossy(&buf[..len]).replace('&', ""));
+            if !mii.hSubMenu.is_null() {
+                if depth > 1 {
+                    walk(cm, mii.hSubMenu, &p, depth - 1, out);
+                }
+            } else if (SHELL_FIRST..=SHELL_LAST).contains(&mii.wID) {
+                out.push((p, mii.wID, verb_of(cm, mii.wID - SHELL_FIRST)));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(cm, hmenu, &[], 2, &mut out);
+    out
 }
 
 /// Fill the dynamic submenus ("Send to", "Open with") of a rebuilt menu as opening them would, so
@@ -903,7 +956,17 @@ pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
         let l = command_label(menu.0, cmd);
         (!l.is_empty()).then_some(l)
     };
-    let how = choose(&req.verb, &req.label, if req.verb.is_empty() { rebuilt(&cm) } else { None }.as_deref());
+    let (how, offset) = if req.find {
+        if !crate::fs::archive::inside(&req.folder) {
+            fill_submenus(&cm, menu.0, 2);
+        }
+        match find_command(&command_tree(&cm, menu.0), &req.verb, &req.label) {
+            Some(id) => (Invoke::Offset, id - SHELL_FIRST),
+            None => (Invoke::Refuse(format!("no \"{}\" in the menu", if req.verb.is_empty() { &req.label } else { &req.verb })), 0),
+        }
+    } else {
+        (choose(&req.verb, &req.label, if req.verb.is_empty() { rebuilt(&cm) } else { None }.as_deref()), req.offset)
+    };
     let dir = wide(req.folder.as_os_str());
     let verb_w = wide(std::ffi::OsStr::new(&req.verb));
     let verb_a: Vec<u8> = req.verb.bytes().map(|b| if b.is_ascii() { b } else { b'?' }).chain([0]).collect();
@@ -917,8 +980,8 @@ pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
             ici.lpVerbW = verb_w.as_ptr();
         } else {
             // MAKEINTRESOURCE(offset): the command's offset in place of a verb string.
-            ici.lpVerb = req.offset as usize as *const u8;
-            ici.lpVerbW = req.offset as usize as *const u16;
+            ici.lpVerb = offset as usize as *const u8;
+            ici.lpVerbW = offset as usize as *const u16;
         }
         if !children.is_empty() {
             ici.lpDirectoryW = dir.as_ptr();
@@ -931,7 +994,7 @@ pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
         unsafe { (cv.invoke_command)(cm.0, &ici) }
     };
     match how {
-        Invoke::Refuse(_) => Ok((how, 0)),
+        Invoke::Refuse(_) | Invoke::Command => Ok((how, 0)),
         Invoke::Offset => Ok((how, invoke(false))),
         Invoke::Verb => {
             let hr = invoke(true);
@@ -968,6 +1031,9 @@ mod tests {
         assert_eq!(common_parent(root, &s(&[r"a\b\c.txt"])), Ok((PathBuf::from(r"C:\Windows\a\b"), s(&["c.txt"]))));
         assert!(common_parent(root, &s(&[r"System32\kernel32.dll", r"SysWOW64\kernel32.dll"])).is_err());
         assert!(common_parent(root, &s(&["top.txt", r"sub\x.txt"])).is_err());
+        // This PC's drives are named by their roots (P7-M2 found the split cutting them).
+        let pc = Path::new("This PC");
+        assert_eq!(common_parent(pc, &s(&[r"C:\", r"G:\"])), Ok((pc.to_path_buf(), s(&[r"C:\", r"G:\"]))));
     }
 
     #[test]
@@ -979,6 +1045,26 @@ mod tests {
         assert!(matches!(choose("", "Documents", Some("Desktop")), Invoke::Refuse(w) if w.contains("Desktop")));
         assert!(matches!(choose("", "Documents", None), Invoke::Refuse(w) if w.contains("no item")));
         assert!(matches!(choose("", "", Some("")), Invoke::Refuse(_)), "no verb and no label: nothing to match");
+    }
+
+    #[test]
+    fn commands_are_found_by_verb_or_label_path() {
+        let s = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<Vec<String>>();
+        let items = vec![
+            (s(&["Open"]), 100, "open".to_string()),
+            (s(&["Share"]), 117, String::new()),
+            (s(&["Send to", "Compressed (zipped) folder"]), 131, String::new()),
+            (s(&["Send to", "Documents"]), 132, String::new()),
+            (s(&["Properties"]), 140, "properties".to_string()),
+        ];
+        assert_eq!(find_command(&items, "properties", "ignored"), Some(140), "a verb wins over the label");
+        assert_eq!(find_command(&items, "Open", ""), Some(100), "verbs without case");
+        assert_eq!(find_command(&items, "", "Share"), Some(117));
+        assert_eq!(find_command(&items, "", "Send to>Compressed (zipped) folder"), Some(131));
+        assert_eq!(find_command(&items, "", "send TO > &Compressed (zipped) folder"), Some(131), "& and case ignored");
+        assert_eq!(find_command(&items, "", "Compressed (zipped) folder"), None, "the path must be whole");
+        assert_eq!(find_command(&items, "openas", ""), None);
+        assert_eq!(find_command(&items, "", "Send to"), None, "a submenu is no command");
     }
 
     #[test]

@@ -6,9 +6,14 @@
 //! painting. The shell's menus are apartment-threaded, so the UI thread's menu object cannot be
 //! handed over: a call through a proxy would run on the UI thread again.
 //!
+//! Since P7-M2 the worker also answers the Windows 11 style menu: the packaged apps' commands and
+//! the Open with apps for a selection (`explorercmd::query`), and runs a pick among them
+//! (`explorercmd::run`), with the COM objects made, held and released here.
+//!
 //! One job at a time, in order. `done` is called on the worker after each; the caller wakes the
 //! UI thread with `slint::invoke_from_event_loop`. Nothing here touches app state.
 
+use crate::explorercmd;
 use crate::shellmenu::{Invoke, VerbRequest};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,10 +39,25 @@ pub struct Job {
     pub id: u64,
     /// The pane whose menu it came from (the status bar's note).
     pub pane: usize,
-    pub req: VerbRequest,
+    pub work: Work,
+}
+
+pub enum Work {
+    /// A shell command picked in a menu (P7-M1), or found by its verb or label (P7-M2).
+    Verb(VerbRequest),
     /// The driver's test verb (`menuverb <pane> sleep:<ms>`): sleep on the worker this long, run
-    /// nothing.
-    pub sleep_ms: Option<u64>,
+    /// nothing. The request is what the menu was for.
+    Sleep(VerbRequest, u64),
+    /// The Windows 11 menu's packaged commands and Open with apps for a selection (P7-M2).
+    Query(explorercmd::Query),
+    /// A pick among them.
+    Run(explorercmd::Run),
+}
+
+/// What the worker hands back after a job.
+pub enum Reply {
+    Done(Done),
+    Answer(explorercmd::Answer),
 }
 
 pub struct Done {
@@ -61,7 +81,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn spawn(done: impl Fn(Done) + Send + 'static) -> Worker {
+    pub fn spawn(done: impl Fn(Reply) + Send + 'static) -> Worker {
         let (tx, rx) = unbounded::<Job>();
         let (tid_tx, tid_rx) = crossbeam_channel::bounded(1);
         std::thread::Builder::new()
@@ -107,7 +127,7 @@ impl Drop for Worker {
     }
 }
 
-fn run_loop(rx: Receiver<Job>, done: impl Fn(Done)) {
+fn run_loop(rx: Receiver<Job>, done: impl Fn(Reply)) {
     // SAFETY: initialises COM for this thread as an STA; balanced by CoUninitialize below.
     let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     eprintln!("[menu] verb worker CoInitializeEx(APARTMENTTHREADED) = 0x{:08X}", com as u32);
@@ -134,31 +154,49 @@ fn run_loop(rx: Receiver<Job>, done: impl Fn(Done)) {
             DispatchMessageW(&msg);
         }
     }
+    explorercmd::release_all();
     if com >= 0 {
         // SAFETY: pairs the successful CoInitializeEx above, on the same thread.
         unsafe { CoUninitialize() };
     }
 }
 
-fn run(job: Job, com: HRESULT) -> Done {
+fn run(job: Job, com: HRESULT) -> Reply {
     let t0 = std::time::Instant::now();
-    let mut d = Done {
-        id: job.id,
-        pane: job.pane,
-        verb: job.req.verb.clone(),
-        label: job.req.label.clone(),
-        how: None,
-        hr: 0,
-        ms: 0.0,
-        error: None,
+    let (req, sleep_ms) = match job.work {
+        Work::Verb(req) => (req, None),
+        Work::Sleep(req, ms) => (req, Some(ms)),
+        Work::Query(q) if com >= 0 => return Reply::Answer(explorercmd::query(&q)),
+        Work::Query(q) => return Reply::Answer(explorercmd::Answer { seq: q.seq, ..Default::default() }),
+        Work::Run(r) => {
+            let mut d = Done { id: job.id, pane: job.pane, verb: String::new(), label: r.title.clone(), how: None, hr: 0, ms: 0.0, error: None };
+            match explorercmd::run(&r) {
+                Ok(hr) => {
+                    d.how = Some(Invoke::Command);
+                    d.hr = hr;
+                }
+                Err(e) => d.error = Some(e),
+            }
+            d.ms = crate::perf::elapsed_ms(t0);
+            eprintln!(
+                "[winmenu] Invoke {:?} \"{}\" {} in {:.0} ms (verb worker, id {})",
+                r.pick,
+                r.title,
+                d.error.as_ref().map_or_else(|| format!("= 0x{:08X}", d.hr as u32), |e| format!("failed: {e}")),
+                d.ms,
+                d.id
+            );
+            return Reply::Done(d);
+        }
     };
-    if let Some(ms) = job.sleep_ms {
+    let mut d = Done { id: job.id, pane: job.pane, verb: req.verb.clone(), label: req.label.clone(), how: None, hr: 0, ms: 0.0, error: None };
+    if let Some(ms) = sleep_ms {
         eprintln!("[menu] verb worker: test verb sleeps {ms} ms (id {})", job.id);
         std::thread::sleep(std::time::Duration::from_millis(ms));
     } else if com < 0 {
         d.error = Some(format!("CoInitializeEx failed: 0x{:08X}", com as u32));
     } else {
-        match crate::shellmenu::run_verb(&job.req) {
+        match crate::shellmenu::run_verb(&req) {
             Ok((how, hr)) => {
                 d.how = Some(how);
                 d.hr = hr;
@@ -172,13 +210,13 @@ fn run(job: Job, com: HRESULT) -> Done {
         (Some(Invoke::Verb), _) => format!("by verb = 0x{:08X}", d.hr as u32),
         (Some(Invoke::Offset), _) => format!("by offset = 0x{:08X}", d.hr as u32),
         (Some(Invoke::Refuse(why)), _) => format!("refused: {why}"),
-        (None, _) => "slept".into(),
+        (Some(Invoke::Command), _) | (None, _) => "slept".into(),
     };
     eprintln!(
         "[menu] InvokeCommand verb=\"{}\" offset={} label=\"{}\" {what} in {:.0} ms (verb worker, id {})",
-        d.verb, job.req.offset, d.label, d.ms, d.id
+        d.verb, req.offset, d.label, d.ms, d.id
     );
-    d
+    Reply::Done(d)
 }
 
 #[cfg(test)]
@@ -194,8 +232,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         let (tx, rx) = crossbeam_channel::unbounded();
-        let w = Worker::spawn(move |d| {
-            let _ = tx.send(d);
+        let w = Worker::spawn(move |r| {
+            if let Reply::Done(d) = r {
+                let _ = tx.send(d);
+            }
         });
         let req = VerbRequest {
             folder: dir.clone(),
@@ -206,9 +246,10 @@ mod tests {
             x: 0,
             y: 0,
             extended: false,
+            find: false,
         };
-        assert!(w.submit(Job { id: 1, pane: 0, req: req.clone(), sleep_ms: Some(50) }));
-        assert!(w.submit(Job { id: 2, pane: 0, req, sleep_ms: None }));
+        assert!(w.submit(Job { id: 1, pane: 0, work: Work::Sleep(req.clone(), 50) }));
+        assert!(w.submit(Job { id: 2, pane: 0, work: Work::Verb(req) }));
         let slept = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
         assert_eq!((slept.id, slept.how.clone(), slept.hr), (1, None, 0));
         assert!(slept.ms >= 45.0, "slept {} ms", slept.ms);

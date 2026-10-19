@@ -786,8 +786,9 @@ component FileListHost inherits Rectangle {
         if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return EventResult.accept; }
         if (e.text == Key.LeftArrow && e.modifiers.alt) { root.history(false); return EventResult.accept; }
         if (e.text == Key.RightArrow && e.modifiers.alt) { root.history(true); return EventResult.accept; }
-        // Alt+Return: the size of every folder in the listing (P3-M3).
-        if (e.text == Key.Return && e.modifiers.alt) { root.command("sizeall"); return EventResult.accept; }
+        // Alt+Return: Properties, as in Explorer (P7-M2); Alt+Shift+Return: the size of every folder
+        // in the listing (P3-M3, Alt+Return until P7-M2).
+        if (e.text == Key.Return && e.modifiers.alt) { root.command(e.modifiers.shift ? "sizeall" : "properties"); return EventResult.accept; }
         if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return EventResult.accept; }
         // The grid: Left and Right move one entry, Up and Down one grid row (step = cols entries;
         // Down from the last full grid row lands on the last entry), PageUp and PageDown a

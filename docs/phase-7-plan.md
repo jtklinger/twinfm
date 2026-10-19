@@ -409,6 +409,249 @@ against the reference's spread, as the protocol says. Each settings run's stderr
 read and its view. Console check after the triplet (Jeremy, unelevated, `target-p7m1` at 3f8e786):
 a double-click on an unselected folder opens it in the large and the medium icon views.
 
+P7-M1 merged 2026-10-18 as a6391c8 (#63); `target\release` rebuilt from it. The reference for
+P7-M2 is `target-p7m1` (3f8e786); `target-p6m2` deleted.
+
+## P7-M2: the Windows 11 style context menu
+
+Branch `feat/p7-m2-win11-menu`, from a6391c8.
+
+### Settled first (2026-10-18, before any code)
+
+Checked against the machine and the code first:
+
+- **The packaged apps' items can be found.** Each package declares them in its manifest
+  (`AppxManifest.xml`, `desktop4:Extension Category="windows.fileExplorerContextMenus"`): an
+  `ItemType` (`*`, an extension, `Directory`, `Directory\Background`) and per verb a `Clsid`, the
+  packaged COM class that implements `IExplorerCommand`. On this machine 11 packages declare them
+  (Windows Terminal, Notepad, Paint, Photos, OneDrive, three PowerToys, Python's manager, Nearby
+  Share, AMD's). TwinFM reads the manifests once at start on a worker (the installed packages and
+  their paths from the package registry) and creates each class with `CoCreateInstance` when a menu
+  opens, as Explorer's new menu does; a package change re-reads them.
+- **Slint draws TwinFM's popups inside the main window.** With the breadcrumb dropdown open
+  TwinFM still has one top-level window (`EnumWindows`: the main window, winit's event target, the
+  pseudo-console), so this Slint build puts a `PopupWindow` in the window (`ChildWindow`), clipped
+  to its edges.
+
+Then put to Jeremy with a recommendation, his answers:
+
+- **Drawing**: inside the window, as the bookmark menu and the breadcrumb dropdown are; near an
+  edge the menu opens upward or leftward to fit, and in a small window a long menu scrolls.
+  Jeremy: "Inside the window" (the recommendation; a borderless window of its own, which could
+  pass the edge as Explorer's does, was the alternative).
+- **Items**: mirror Explorer's Windows 11 list for the item (the icon row Cut, Copy, Rename,
+  Share, Delete; Open; Open with; the packaged apps' items; Compress to; Copy as path; Properties),
+  with TwinFM's own three (Open in other pane, Open in terminal, Copy path) after Open with, and
+  "Show more options" (Shift+F10) for the rest. Jeremy: "Mirror Explorer", with this layout:
+
+  ```
+  [Cut] [Copy] [Rename] [Share] [Delete]
+  ----------------------------------
+  Open                     Enter
+  Open with              >
+  Open in other pane
+  Open in terminal
+  ----------------------------------
+  Open in Terminal  (app)
+  Edit in Notepad   (app)
+  Compress to...         >
+  Copy path
+  Properties         Alt+Enter
+  ----------------------------------
+  Show more options  Shift+F10
+  ```
+
+- **The classic menu directly**: Shift+right-click (and Shift+F10 inside the new menu) opens
+  today's full classic menu at once, with the extended verbs as Shift gives them today, as in
+  Explorer. Jeremy: "Shift+right-click".
+
+Checked further against the machine and the code before any code (2026-10-18, the implementer):
+
+- **The packaged handlers answer an ordinary process.** All 17 classes the 11 manifests name are
+  created by `CoCreateInstance` from an unpackaged STA (a PowerShell probe), and `GetState`,
+  `GetTitle`, `GetIcon` and `GetFlags` answer for an `IShellItemArray` of a `.txt`, a `.png` and a
+  folder: the first creation of a class takes 48 to 74 ms (its DLL loading), later ones 4 to 7 ms.
+  The handlers do not filter by type themselves (IDLE's "Edit in IDLE", declared for `.py` and
+  `.pyw`, says enabled for a `.txt`), so the manifest's `ItemType` decides which classes are asked,
+  and `GetState` (enabled 0, disabled 1, hidden 2) decides the rest. Titles carry `&` access keys
+  ("Open in &Terminal"); icons are `path,-id` or a plain `.ico` or `.exe` path (one with a `/` in
+  it, Notepad's). IDLE's command has subcommands (`ECF_HASSUBCOMMANDS`). The classic menu already
+  carries the same commands (Edit in Notepad, Open in Terminal, Rename with PowerRename, Send with
+  Quick Share), so "Show more options" keeps them either way.
+- **The installed packages** come from the packaged COM catalog, `HKCR\PackagedCom\Package` (93
+  packages here, exactly the installed ones that register classes; the AppModel repository's 402
+  entries include superseded versions), each package's folder from `GetPackagePathByFullName`;
+  a package change shows as a new last-write time on that key, checked when a menu opens.
+- **Explorer's "Compress to" is not reachable**: it is built into Explorer (nothing in the
+  registry's `shell` or `shellex` keys names it). The classic menu offers "Send to > Compressed
+  (zipped) folder", and `tar.exe` here is bsdtar 3.8.9 (libarchive, which writes zip, 7z and tar).
+- **Share** has no canonical verb TwinFM can invoke by name ("Windows.ModernShare" by verb returns
+  0x80070483 on the verb worker), so the worker finds the classic menu's item by its label.
+- **Alt+Enter** was TwinFM's "size every folder" (P3-M3), and the layout shows it for Properties.
+
+Then put to Jeremy with a recommendation, his answers:
+
+- **Compress to**: recommended "Compress to > ZIP file" through the shell's own "Send to >
+  Compressed (zipped) folder" on the verb worker, 7z and TAR in P7-M3 (the archive writing
+  milestone). Jeremy: "ZIP now, 7z/TAR in P7-M3".
+- **Alt+Enter**: recommended keeping folder sizes and showing Properties with no key. Jeremy chose
+  the other option, "Properties, like Explorer"; the sizes move to **Alt+Shift+Enter** (Total
+  Commander's key for the same thing; recommended, Jeremy: "Alt+Shift+Enter").
+- **Open with >**: recommended the apps Windows recommends for the type, with their icons, read on
+  the verb worker, then "Choose another app". Jeremy: "Apps list, like Explorer".
+
+### What landed
+
+- **The menu** (`src/winmenu.rs`, pure and unit-tested; app.slint `wm-popup`): a Slint
+  `PopupWindow` covering the window (`no-auto-close`; a press outside the menu reaches its
+  background and closes it), with the menu and one submenu drawn at the places Rust computes. The
+  rows for a selection (`winmenu::tools`, `winmenu::items`): the icon row (Cut, Copy, Rename, Share,
+  Delete, each only where it applies, by the toolbar's rule; Share for files only; Paste on a
+  background with files on the clipboard), Open (one item), Open with > (one file), Open in other
+  pane (one folder or drive), Open in terminal, then the packaged commands, Compress to > (folders
+  and files), New folder and New file (a folder's background), Copy path, Properties, and Show
+  more options. Inside an archive: Open, Open in other pane (a folder), Copy path and Show more
+  options; on This PC's background: Properties and Show more options. Placement
+  (`winmenu::place`, `place_sub`): right of and below the pointer, leftward or upward when it would
+  pass the window's edge, pinned inside a 4 px margin when neither fits, cut to the window with
+  its rows scrolling; a submenu right of the menu or else left of it, level with its item.
+- **Keyboard**: Down and Up move the highlight over enabled items, skipping separators and wrapping
+  (`winmenu::next_hl`), Home and End, Right opens the highlighted item's submenu and moves into it,
+  Left and Escape leave it, Escape closes the menu, Return and Space pick, Shift+F10 opens the
+  classic menu; other keys stay in the menu. The pointer's hover moves the highlight and opens a
+  submenu at once. No access keys (a call; the console check beside Explorer says whether they are
+  missed).
+- **One path per command**: each item calls the command its key, toolbar button or P7-M1 route
+  calls (`winmenu::Cmd::key_command`; the icon row's Delete with Shift held is Shift+Delete), on the
+  next turn of the event loop after the popup closed (closing it gives the keys back to the list,
+  which would otherwise take them from the name editor New folder or Rename opens). Properties is
+  `command "properties"`, also Alt+Enter's: the shell's `properties` verb on the verb worker for the
+  cursor row's selection or the folder. Share and Compress to > ZIP file go to the verb worker as
+  jobs that find the classic menu's item by its label path (`VerbRequest::find`,
+  `shellmenu::find_command`, unit-tested): "Share", and "Send to > Compressed (zipped) folder";
+  "Choose another app" is the `openas` verb. Show more options opens the classic menu for the same
+  row at the same point one frame later (so the window is drawn without the new menu before the
+  classic menu's modal loop starts); Shift+right-click opens it at once with the extended verbs.
+- **The packaged commands and the Open with apps** (`src/explorercmd.rs`), on the verb worker: the
+  catalog from the manifests (`roxmltree`, already in the lockfile through Slint; the namespace
+  prefixes ignored), read at the first menu and again when `HKCR\PackagedCom\Package` changes; for
+  a menu, each class whose item types cover every target is created and asked for its state, title,
+  icon and subcommands with an `IShellItemArray` of the targets, and the shell's recommended
+  handlers for a single file's extension (`SHAssocEnumHandlers`) for their names and icons. The
+  objects are held on the worker until the next menu and invoked from there (`IExplorerCommand::
+  Invoke`, `IAssocHandler::Invoke` with the items' data object), and released before the worker
+  leaves its apartment. Icons (`icons::location_pixels`): `path,-id` and plain `.ico`/`.exe` paths
+  through `SHDefExtractIconW`, a packaged app's indirect string (`@{...}`, Notepad's) through
+  `SHLoadIndirectString` and the shell's image factory. The menu shows when the worker answers or
+  after 250 ms, and an answer after that rebuilds it.
+- **Alt+Enter is Properties; folder sizes moved to Alt+Shift+Enter** (Jeremy's decision above), in
+  the list's key handler (`pane.slint`), the driver (`sizeall` presses `AltShiftReturn`) and the
+  `[size]` line.
+- **Found on the way, fixed**: on This PC a drive is named by its root (`C:\`), and the search
+  results' path split (`shellmenu::common_parent`, P3-M2) cut it at the backslash, so every menu on a
+  drive failed with `parsing "" failed: 0x80070057`, the classic one on main included. A name ending
+  in `\` is now kept whole (test added).
+- **Found on the way, recorded**: the soak's toolbar cycle pastes within a millisecond of its copy,
+  and two P7-M2 soak runs failed there (`clipboard: the clipboard is in use by another program`,
+  then the rows shifted and later steps deleted the soak's own source tree, 74 failed jobs).
+  `GetOpenClipboardWindow` at the failure named a `CLIPBRDWNDCLASS` window of `RadeonSoftware.exe`
+  (AMD's driver software, a clipboard listener that opens the clipboard after each change), not
+  TwinFM; the same failure came with the classic menu alone, so P7-M1's passing soaks were the
+  race won. The soak now pauses 200 ms between a copy or cut and its paste. TwinFM's paste does not
+  retry; a person never pastes that fast, so it stays as it is.
+- **Driver**: `rclick`, `rclickempty` and the keys open the new menu; `waitmenu <ms>`; `menupick`,
+  `menuopen`, `menukey` and `menuclose` act on it as ordinary steps (`main::script_winmenu`; a pick
+  of anything that runs on the verb worker is refused, except Compress to > ZIP file inside the soak
+  fence); `menuopen Show more options`, `menukey ShiftF10` and `rclick ... shift` open the classic
+  menu with the in-menu steps after them, as before. `CLAUDE.md` § Measuring has the lines.
+- **Tests**: 194 to 210 (`winmenu`: the item lists for a file, a folder, a drive, several items,
+  an archive, search results and backgrounds, the packaged commands' submenus and states, ids,
+  heights, placement, submenu placement, the highlight, scrolling, the log line; `explorercmd`: the
+  manifest's commands, the item types, GUIDs and titles; `shellmenu::find_command`; the icon
+  locations; This PC's drives in `common_parent`).
+
+### Decisions
+
+- **Open** and **Open with** show for one item only (Explorer opens several at once; TwinFM's
+  Return opens the cursor row).
+- **Properties is left out inside an archive** (the zip folder's menu is reached through Show more
+  options) and **Open in terminal** too (an archive's path is no folder for a terminal).
+- **Nothing is asked of the packaged apps inside an archive or on This PC's background**; on a drive
+  the `Directory` type covers it (Open in Terminal shows there, as in Explorer).
+- **The wait**: 250 ms before the menu shows without the worker's answer. Once the handlers'
+  DLLs are loaded an answer takes 40 to 90 ms here; the first menu of a run takes 200 to 280 ms
+  (the classes' first creation and the Open with apps' icons), so it may show and then be rebuilt.
+- **The menu covers the window**: while it is open a click anywhere else only closes it (Explorer
+  also starts a new menu on a right click elsewhere; not copied).
+- **The driver's Show more options opens the classic menu at once** (inside the step, so its
+  in-menu steps can be armed); a person's pick waits one frame first. The rest of the path is the
+  same function.
+
+### Scripted checks
+
+`%TEMP%\twinfm-m5\p7m2` (folder `d`, `a.txt`, `b.txt`), the right pane on System32, `TWINFM_SOAK=1`,
+the release build of this branch:
+
+```
+[winmenu] catalog: 11 of 93 packages declare context menu commands, 17 classes, read in 15 ms
+[winmenu] query id=1: 5 of 11 commands shown (6 hidden), 5 open-with app(s), in 277 ms (verb worker)
+[winmenu] pane=0 seq=1 shown after 315 ms (rebuilt with the worker's answer): [Cut Copy Rename Share Delete] Open | Open with > | Open in terminal | --- | Move to OneDrive | Unlock with File Locksmith | Rename with PowerRename | Edit in Notepad | Send with Quick Share | Compress to > | Copy path | Properties | --- | Show more options
+[winmenu] submenu "Open with" at (444, 215): [] Notepad | The main calibre program | The calibre e-book viewer | Antigravity | Antigravity IDE | --- | Choose another app
+[winmenu] pane=0 seq=2 shown after 51 ms (the worker answered): [Cut Copy Rename Delete] Open | Open in other pane | Open in terminal | --- | Move to OneDrive | Unlock with File Locksmith | Rename with PowerRename | Open in Terminal | Send with Quick Share | Compress to > | Copy path | Properties | --- | Show more options
+[winmenu] placed at (692, 145) 280 x 326 for (692, 471) in a 1200 x 800 window: rightward, upward
+[menu] InvokeCommand verb="" offset=0 label="Send to>Compressed (zipped) folder" by offset = 0x00000000 in 600 ms (verb worker, id 3)
+[fileops] done id=1 pane=0 tab=1 Done: Created New folder
+[fileops] done id=3 pane=0 tab=1 Done: Undid: Deleted 1 item to the Recycle Bin
+[clipboard] pane=0 Escape: cut cancelled, marks cleared, clipboard emptied
+[winmenu] pane=0 seq=7 shown after 0 ms (no query): [] Open | --- | Copy path | --- | Show more options
+[winmenu] pane=0 seq=9 shown after 74 ms (the worker answered): [] Open | Open in other pane | Open in terminal | --- | Unlock with File Locksmith | Rename with PowerRename | Open in Terminal | Send with Quick Share | Copy path | Properties | --- | Show more options
+[winmenu] pane=0 seq=10 shown after 0 ms (no query): [] Properties | --- | Show more options
+```
+
+The first menu of the run showed after 250 ms without the worker's answer and was rebuilt with it
+at 315 ms (the classes' first creation and the Open with icons); later menus showed when the
+worker answered, after 40 to 150 ms. A file, a folder (Open in Terminal; Notepad's handler says
+hidden), the background (upward, near the window's bottom), inside a zip (seq 7, no query), a drive
+on This PC (seq 9) and its background (seq 10), and a search result each got the layout the
+tests describe; Copy path, Compress to > ZIP file (`a.zip` beside `a.txt`), New folder from the
+background, Delete and Ctrl+Z, Cut and Escape, Shift+F10 inside the menu (the classic menu) and
+Shift+right-click (the classic menu with the extended verbs) ran as their keys do. A screenshot
+with the software renderer (`SLINT_BACKEND=winit-software`; a capture of the femtovg window comes out
+blank) showed the menu as Explorer draws its own: rounded, shadowed, the icon row, the apps' own
+icons (Notepad's from its package after the indirect string was resolved), the keys right-aligned.
+
+The generated list and grid components (`FileList`, `FileListNoType`, `FileList32`,
+`FileListNoType32`, `FileGridList`, `FileGridMediumList`) are the reference's (`target-p7m1`), line
+for line once Slint's numbering of sub-components and globals is set aside; `FileListHost` differs
+in its key handler only (Alt+Return: `properties`, or `sizeall` with Shift).
+
+`tools/soak-p5m3.ps1 -Minutes 8` (with the P7-M2 cycle and the clipboard pause): exit code 0, no
+panics, 6 cycles started, 262 jobs done (0 failed, 0 cancelled, 0 soak refusals, 0 waitops
+timeouts); Windows 11 menu: shown 42 (seven per cycle), rebuilt 0, picks run 24, ZIPs made 6, new
+folders 12, submenus 12, classic menus from Show more options 6, menupicks refused 0; verbs 18
+queued (three per cycle), 6 slept, 6 shortcuts, 6 routed deletes, 12 restores, 12 cuts cancelled;
+the earlier counts as in P7-M1's soak (toolbar presses 48, none refused; drags dropped 0;
+spring-loaded tabs 0); working set 115.9 MB at 5 s, 209.6 at most, 182.1 at 480 s (P7-M1's: 217.8
+at most).
+
+### Gate
+
+Tag ab27, 2026-10-19, `C:\traces\gate-p7m2.ps1` elevated at the console, Narrator off: the defaults
+triplet, `target-p7m1` (3f8e786) against `target-p7m2` (f66ce33), interleaved.
+
+| Run | WPR % | In-app % | Render p50 ms |
+|---|---|---|---|
+| p7m1-1 | 18.5 | 18.4 | 2.29 |
+| p7m2-1 | 19.1 | 18.1 | 2.29 |
+| p7m1-2 | 19.1 | 21.4 | 2.33 |
+| p7m2-2 | 18.8 | 20.0 | 2.33 |
+| p7m1-3 | 18.4 | 17.7 | 2.30 |
+| p7m2-3 | 18.8 | 19.5 | 2.33 |
+
+Medians 18.5 (reference) and 18.8 (candidate): no gap counts (the reference's 19.1 sits above two
+candidate runs, and the medians are 0.3 apart), every candidate run under 20%. One session state
+throughout (render p50 2.29 to 2.33 ms in every run). The scenario opens no menu, as expected flat.
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.
