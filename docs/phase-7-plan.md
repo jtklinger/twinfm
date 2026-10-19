@@ -634,6 +634,24 @@ the earlier counts as in P7-M1's soak (toolbar presses 48, none refused; drags d
 spring-loaded tabs 0); working set 115.9 MB at 5 s, 209.6 at most, 182.1 at 480 s (P7-M1's: 217.8
 at most).
 
+### Gate
+
+Tag ab27, 2026-10-19, `C:\traces\gate-p7m2.ps1` elevated at the console, Narrator off: the defaults
+triplet, `target-p7m1` (3f8e786) against `target-p7m2` (f66ce33), interleaved.
+
+| Run | WPR % | In-app % | Render p50 ms |
+|---|---|---|---|
+| p7m1-1 | 18.5 | 18.4 | 2.29 |
+| p7m2-1 | 19.1 | 18.1 | 2.29 |
+| p7m1-2 | 19.1 | 21.4 | 2.33 |
+| p7m2-2 | 18.8 | 20.0 | 2.33 |
+| p7m1-3 | 18.4 | 17.7 | 2.30 |
+| p7m2-3 | 18.8 | 19.5 | 2.33 |
+
+Medians 18.5 (reference) and 18.8 (candidate): no gap counts (the reference's 19.1 sits above two
+candidate runs, and the medians are 0.3 apart), every candidate run under 20%. One session state
+throughout (render p50 2.29 to 2.33 ms in every run). The scenario opens no menu, as expected flat.
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.
