@@ -707,6 +707,7 @@ mod tests {
     /// in another case, cold, is found by its stored names (a typed path, `x.7z\TOP\B`).
     #[test]
     fn shell_levels_take_any_case() {
+        let _cache = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("twinfm-archive-case-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let top = dir.join("top");
@@ -723,6 +724,6 @@ mod tests {
         assert!(!info.cached, "the first listing of that level");
         assert!(list(&a, r"top\b", &mut TypeNames::default(), &LocalZone::current()).unwrap().1.cached, "the same level in its stored case");
         assert_eq!(list(&a, r"Top\Missing", &mut TypeNames::default(), &LocalZone::current()).unwrap_err(), not_found());
-        std::fs::remove_dir_all(&dir).unwrap();
+        crate::fs::archivefolder::remove_scratch(&dir);
     }
 }
