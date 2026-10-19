@@ -1071,6 +1071,30 @@ already in the projects-root rules ("worktrees isolate the repo, not shared targ
 wrapper: it refuses to start while `cargo`, `rustc` or a test binary runs. Re-run as ab30 on the
 branch after main's two merges.
 
+**ab30**, 2026-10-19 (finished 17:24, 31 min), on c796139, nothing else running; each pair reference
+then candidate, the four pairs interleaved round by round:
+
+| Pair | Reference runs (WPR %) | Candidate runs (WPR %) | Medians | Render p50 ms (ref / cand) |
+|---|---|---|---|---|
+| defaults | 18.4, 17.2, 20.4 | 19.3, 18.3, 20.5 | 18.4 / 19.3 | 2.16 2.13 2.87 / 2.15 2.31 2.88 |
+| large grid | 11.4, 11.5, 11.5 | 10.2, 11.4, 11.6 | 11.5 / 11.4 | 1.21 1.41 1.42 / 1.12 1.39 1.41 |
+| medium grid | 12.8, 15.0, 15.8 | 12.4, 14.3, 13.9 | 15.0 / 13.9 | 1.58 2.07 2.03 / 1.48 1.84 1.86 |
+| in-pane toolbar | 17.3, 20.5, 20.0 | 18.3, 21.1, 21.2 | 20.0 / 21.1 | 2.17 2.84 2.86 / 2.22 2.94 2.88 |
+
+The session changed state part-way (render p50 about 2.2 against 2.9 ms, a third higher, as in
+ab23): round 3 of the defaults and rounds 2 and 3 of the toolbar pair ran in the slower state, both
+builds alike, so each pair compares like for like. The grids: the candidate at or below the
+reference (the taller tiles show fewer grid rows; the generated height-for-width function costs
+nothing visible). The defaults: 0.9 points, under the rule's one point. The in-pane toolbar: 1.1
+points, a gap by the letter of the rule, with no run under 20% for either build in the slower
+state. The traces show no new work: the toolbar pair's main-thread breakdowns hold the same
+categories in the same shares (render pass 60.6 and 60.6%, text 34.3 and 33.6%, ListView rows 17.4
+and 17.7%, timers 34.4 and 35.0%, round 1), nothing of the tooltip or the new layout function among
+the frames, the extra 100 ms of 2,000 spread evenly. In every pair the candidate ran second, the
+slot that read one to three points higher whichever binary sat in it (2026-10-15, P4-M2); the
+swapped-order re-run (ab31, `C:\traces\gate-p7m4-swap.ps1`: the defaults and toolbar pairs with the
+candidate first) is to tell that bias from a cost.
+
 ### Console checks (for Jeremy, unelevated, after the gate)
 
 1. **The drag cursor**: drag a file from one pane over a folder in the other: the "Move to ..." label
