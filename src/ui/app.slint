@@ -93,6 +93,103 @@ component MenuItem inherits Rectangle {
     }
 }
 
+// One row of the Windows 11 style context menu or its submenu (P7-M2, winmenu.rs): an item with
+// its icon (the app's own, or a Segoe Fluent Icons glyph), text, key and submenu chevron, or a
+// separator. `y` is its top in the list, set from Rust (winmenu::rows_y).
+export struct MenuEntry {
+    id: int,
+    text: string,
+    glyph: string,
+    icon: image,
+    has-icon: bool,
+    key: string,
+    sub: bool,
+    enabled: bool,
+    sep: bool,
+    y: length,
+}
+
+// One button of the menu's icon row.
+export struct MenuTool {
+    id: int,
+    glyph: string,
+    text: string,
+}
+
+component MenuRow inherits Rectangle {
+    in property <MenuEntry> entry;
+    in property <bool> hl;
+    callback picked();
+    callback hovered();
+    height: root.entry.sep ? 9px : 30px;
+    if root.entry.sep: Rectangle {
+        x: 8px; y: 4px; width: parent.width - 16px; height: 1px;
+        background: Palette.border;
+    }
+    if !root.entry.sep: Rectangle {
+        border-radius: 4px;
+        background: (root.hl || ta.has-hover) && root.entry.enabled ? Palette.foreground.transparentize(91%) : transparent;
+        accessible-role: button;
+        accessible-label: root.entry.text;
+        if root.entry.has-icon: Image {
+            x: 12px; y: (parent.height - 16px) / 2; width: 16px; height: 16px;
+            source: root.entry.icon;
+            opacity: root.entry.enabled ? 1 : 0.45;
+        }
+        if !root.entry.has-icon: Text {
+            x: 12px; width: 16px;
+            text: root.entry.glyph;
+            font-family: "Segoe Fluent Icons";
+            font-size: 15px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: root.entry.enabled ? Palette.foreground : Palette.foreground.transparentize(55%);
+        }
+        Text {
+            x: 40px; width: parent.width - 40px - (root.entry.key != "" || root.entry.sub ? 96px : 12px);
+            text: root.entry.text;
+            vertical-alignment: center;
+            overflow: elide;
+            color: root.entry.enabled ? Palette.foreground : Palette.foreground.transparentize(55%);
+        }
+        Text {
+            x: parent.width - 96px; width: 84px;
+            text: root.entry.sub ? "\u{E76C}" : root.entry.key;
+            font-family: root.entry.sub ? "Segoe Fluent Icons" : "";
+            font-size: root.entry.sub ? 11px : 12px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            color: Palette.foreground.transparentize(40%);
+        }
+        ta := TouchArea {
+            enabled: root.entry.enabled;
+            clicked => { root.picked(); }
+            changed has-hover => {
+                if (self.has-hover) { root.hovered(); }
+            }
+        }
+    }
+}
+
+component MenuToolButton inherits Rectangle {
+    in property <MenuTool> tool;
+    callback picked();
+    width: 44px;
+    height: 36px;
+    border-radius: 4px;
+    background: ta.has-hover ? Palette.foreground.transparentize(91%) : transparent;
+    accessible-role: button;
+    accessible-label: root.tool.text;
+    Text {
+        text: root.tool.glyph;
+        font-family: "Segoe Fluent Icons";
+        font-size: 16px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea { clicked => { root.picked(); } }
+}
+
 export component App inherits Window {
     // "TwinFM - <folder>" for the active pane's active tab.
     title: "TwinFM - " + (split && active-pane == 1 ? right-title : left-title);
@@ -379,6 +476,40 @@ export component App inherits Window {
         crumb-focus-token += 1;
     }
     public function close-crumb-menu() { crumb-menu.close(); }
+
+    // The Windows 11 style context menu (P7-M2): its rows, icon row and submenu, placed and
+    // highlighted from Rust (winmenu.rs), which decides every pick, key and hover. The popup covers
+    // the window, so a click outside the menu reaches its background (wm-dismissed) and nothing
+    // under it; the menu and its submenu are drawn at (wm-x, wm-y) and (wm-sub-x, wm-sub-y).
+    in property <[MenuTool]> wm-tools;
+    in property <[MenuEntry]> wm-items;
+    in property <[MenuEntry]> wm-sub-items;
+    in property <length> wm-x;
+    in property <length> wm-y;
+    in property <length> wm-h;
+    in property <length> wm-list-h;
+    in property <bool> wm-sub-shown;
+    in property <length> wm-sub-x;
+    in property <length> wm-sub-y;
+    in property <length> wm-sub-h;
+    in property <length> wm-sub-list-h;
+    in property <int> wm-hl: -1;
+    in property <int> wm-sub-hl: -1;
+    in-out property <length> wm-scroll;
+    in-out property <length> wm-sub-scroll;
+    // wm-picked(id): an item or icon-row button clicked; wm-hover(id, in-sub): the pointer entered
+    // an item; wm-key(name): down, up, home, end, right, left, return, escape, more (Shift+F10);
+    // wm-dismissed(): a press outside the menu.
+    callback wm-picked(int);
+    callback wm-hover(int, bool);
+    callback wm-key(string);
+    callback wm-dismissed();
+    private property <int> wm-focus-token: 0;
+    public function show-wm() {
+        wm-popup.show();
+        wm-focus-token += 1;
+    }
+    public function close-wm() { wm-popup.close(); }
 
     // Ctrl+L, and the driver's `pathmode`: the pane's path bar as text entry or breadcrumb.
     public function set-path-mode(p: int, entry: bool) {
@@ -880,6 +1011,118 @@ export component App inherits Window {
                     text: root.crumb-menu-note;
                     vertical-alignment: center;
                     color: Palette.foreground.transparentize(35%);
+                }
+            }
+        }
+    }
+
+    wm-popup := PopupWindow {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        close-policy: PopupClosePolicy.no-auto-close;
+        TouchArea {
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) { root.wm-dismissed(); }
+            }
+        }
+        FocusScope {
+            property <int> focus-token: root.wm-focus-token;
+            changed focus-token => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.F10 && e.modifiers.shift) { root.wm-key("more"); return accept; }
+                if (e.text == Key.Escape) { root.wm-key("escape"); return accept; }
+                if (e.text == Key.DownArrow) { root.wm-key("down"); return accept; }
+                if (e.text == Key.UpArrow) { root.wm-key("up"); return accept; }
+                if (e.text == Key.Home) { root.wm-key("home"); return accept; }
+                if (e.text == Key.End) { root.wm-key("end"); return accept; }
+                if (e.text == Key.RightArrow) { root.wm-key("right"); return accept; }
+                if (e.text == Key.LeftArrow) { root.wm-key("left"); return accept; }
+                if (e.text == Key.Return || e.text == " ") { root.wm-key("return"); return accept; }
+                // Every other key stays in the menu, as in Explorer's.
+                return accept;
+            }
+        }
+        Rectangle {
+            x: root.wm-x;
+            y: root.wm-y;
+            width: 280px;
+            height: root.wm-h;
+            background: Palette.background;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Palette.border;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #00000040;
+            // A press on the menu's own padding is no press outside it.
+            TouchArea {}
+            if root.wm-tools.length > 0: HorizontalLayout {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: 44px;
+                padding-left: 4px;
+                padding-right: 4px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                alignment: space-between;
+                for t in root.wm-tools: MenuToolButton {
+                    tool: t;
+                    picked => { root.wm-picked(t.id); }
+                }
+            }
+            if root.wm-tools.length > 0: Rectangle {
+                x: 8px; y: 4px + 44px + 4px; width: parent.width - 16px; height: 1px;
+                background: Palette.border;
+            }
+            Flickable {
+                x: 4px;
+                y: root.wm-tools.length > 0 ? 4px + 44px + 9px : 4px;
+                width: parent.width - 8px;
+                height: parent.height - self.y - 4px;
+                content-height: root.wm-list-h;
+                content-y <=> root.wm-scroll;
+                for e[i] in root.wm-items: MenuRow {
+                    x: 0;
+                    y: e.y;
+                    width: parent.width;
+                    entry: e;
+                    hl: i == root.wm-hl;
+                    picked => { root.wm-picked(e.id); }
+                    hovered => { root.wm-hover(e.id, false); }
+                }
+            }
+        }
+        if root.wm-sub-shown: Rectangle {
+            x: root.wm-sub-x;
+            y: root.wm-sub-y;
+            width: 250px;
+            height: root.wm-sub-h;
+            background: Palette.background;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Palette.border;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #00000040;
+            TouchArea {}
+            Flickable {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+                content-height: root.wm-sub-list-h;
+                content-y <=> root.wm-sub-scroll;
+                for e[i] in root.wm-sub-items: MenuRow {
+                    x: 0;
+                    y: e.y;
+                    width: parent.width;
+                    entry: e;
+                    hl: i == root.wm-sub-hl;
+                    picked => { root.wm-picked(e.id); }
+                    hovered => { root.wm-hover(e.id, true); }
                 }
             }
         }

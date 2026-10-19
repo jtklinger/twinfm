@@ -21,7 +21,7 @@ polish bundle; four milestones, opened 2026-10-18; its first section quotes Jere
 decisions and § Calls made lists the lead's). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (194 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (210 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -101,12 +101,62 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   verb="..." offset=N label="..." by verb = 0x... | by offset = 0x... | refused: <why> | slept |
   failed: <why> in T ms (verb worker, id N)`, `InvokeCommand by verb "<verb>" = 0x...: by offset
   instead`, `verb worker CoInitializeEx(APARTMENTTHREADED) = 0x...`, and at exit `quit while N verb
-  job(s) queued or running: not waited for`. Context menu steps: `rclick <pane> <row>`, `rclickempty <pane>`, key names
-  `ShiftF10` and `Menu`, each followed by in-menu steps (`sleep`, `menuopen <text>`,
-  `menukey <key>`, `menupick <own item>`, `menuclose`) that run from a Win32 timer inside the
-  menu's modal loop, because no Slint timer fires while it runs (`src/auto.rs` header);
-  `[menu]` lines on stderr. A script must end every menu with `menuclose` or `menupick`, or the
-  run waits for a person. Drag and drop steps: `dropfiles <pane> <row> <copy|move|auto>
+  job(s) queued or running: not waited for`. Since P7-M2 a right click, Shift+F10 and the Menu key
+  open the **Windows 11 style menu** (`src/winmenu.rs` the items, placement and keyboard, pure and
+  tested; `src/explorercmd.rs` on the verb worker; app.slint `wm-popup`, a Slint `PopupWindow`
+  covering the window, `close-policy: no-auto-close`): an icon row (Cut, Copy, Rename, Share,
+  Delete where they apply, `toolbar::state`'s rule; Share for files only; Paste on a background
+  with files on the clipboard), Open (one item), Open with > (one file: the shell's recommended
+  apps, `SHAssocEnumHandlers`, then "Choose another app", the `openas` verb), Open in other pane,
+  Open in terminal, the packaged apps' `IExplorerCommand`s (from the manifests, below), Compress to
+  > ZIP file (the classic menu's "Send to > Compressed (zipped) folder", found by its label on the
+  worker), New folder and New file on a background, Copy path, Properties (Alt+Enter), Show more
+  options (Shift+F10). Every item calls the command its key, toolbar button or P7-M1 route calls
+  (`winmenu::Cmd::key_command`: `cx`, `cc`, `cv`, `rename`, `delete` (Shift held: `sdelete`),
+  `newfolder`, `newfile`, `properties`), run on the next turn of the event loop after the popup
+  closed. **Alt+Enter is Properties** (`command "properties"`: the shell's `properties` verb for the
+  cursor row's selection, or the folder's, on the verb worker) and **folder sizes moved to
+  Alt+Shift+Enter** (key name `AltShiftReturn`; `sizeall` presses it; key name `AltReturn` is now
+  Properties). Shift+right-click opens the classic menu at once with the extended verbs, and "Show
+  more options" opens it for the same row at the same point. The packaged commands: each installed
+  package with packaged COM (`HKCR\PackagedCom\Package`, its folder from
+  `GetPackagePathByFullName`) has its `AppxManifest.xml` read once on the verb worker for
+  `windows.fileExplorerContextMenus` (`ItemType` -> `Verb Clsid`; `*` any file, `.ext`, `Directory`
+  a folder or a drive, `Directory\Background`, `Drive`), and again when that key's subkey count or
+  last-write time changed (checked at each menu); for a menu the worker creates each class whose
+  types cover every target, asks `GetState` (hidden: left out), `GetTitle` (`&` removed), `GetIcon`
+  (`icons::location_pixels`: `path,-id`, a plain `.ico`/`.exe`, or a packaged app's `@{...}`
+  indirect string drawn through the shell's image factory) and its subcommands, and keeps the
+  objects until the next menu, so a pick invokes the object it asked (`explorercmd::run`, with an
+  `IShellItemArray`; an Open with app with the items' data object). Nothing is asked inside an
+  archive or on This PC's background. The menu shows when the worker answers or after 250 ms
+  (`WINMENU_WAIT_MS`), and an answer after that rebuilds it. `[winmenu]` lines: `catalog: P of N
+  packages declare context menu commands, C classes, read in T ms`, `packages changed: the catalog
+  is read again`, per class asked `{clsid} "<title>" state S flags 0x.. in T ms (<package>)`,
+  `open-with app "<name>": no icon from "<location>"`, `query id=Q: K of A commands shown (H
+  hidden), N open-with app(s), in T ms (verb worker)`, `pane=N seq=Q item menu|background menu for
+  K item(s) in <folder>: query queued on the verb worker | no query`, `pane=N seq=Q shown after T ms
+  (<why>): [<icon row>] <items, --- a separator, > a submenu, (off) disabled>` (why: `the worker
+  answered`, `the worker had not answered after 250 ms`, `rebuilt with the worker's answer`, `no
+  query`), `placed at (x, y) 280 x H for (ax, ay) in a W x H window: rightward|leftward,
+  downward|upward[, its rows scroll]`, `submenu "<item>" at (x, y): <items>`, `pane=N seq=Q closed
+  (<why>)`, `pane=N runs <Cmd>`, `<Pick> "<title>" queued on the verb worker, id N`, `Invoke <Pick>
+  "<title>" = 0x... | failed: <why> in T ms (verb worker, id N)`, `seq=Q answered after its menu
+  closed: dropped`; `[menu] verb ... queued on the verb worker (found there by its label)` for Share
+  and the ZIP (`InvokeCommand ... by offset` or `refused: no "<label>" in the menu`). Context menu
+  steps: `rclick <pane> <row>` and `rclickempty <pane>` (and key names `ShiftF10` and `Menu`) open
+  the Windows 11 menu; `waitmenu <ms>` waits until it is shown and the worker has answered, then
+  100 ms; in it `menupick <text>` picks an item or icon-row button by its text (refused, closing the
+  menu, for anything that runs on the verb worker: Share, Properties, Open with's apps, the packaged
+  commands, except "ZIP file" inside the `TWINFM_SOAK` fence), `menuopen <text>` opens a submenu
+  ("Open with", "Compress to"), `menukey <Down|Up|Home|End|Right|Left|Return|Escape|ShiftF10>`,
+  `menuclose`; these run as ordinary steps (no modal loop). `menuopen Show more options` (or
+  `menupick` of it, or `menukey ShiftF10`) and `rclick <pane> <row> shift` / `rclickempty <pane>
+  shift` open the classic menu, which takes the in-menu steps after it (`sleep`, `menuopen <text>`,
+  `menukey <key>`, `menupick <own item>`, `menuclose`) from a Win32 timer inside its modal loop,
+  because no Slint timer fires while it runs (`src/auto.rs` header); `[menu]` lines on stderr. A
+  script must end every classic menu with `menuclose` or `menupick`, or the run waits for a person.
+  Drag and drop steps: `dropfiles <pane> <row> <copy|move|auto>
   <path|path>` calls the drop target's DragEnter and Drop directly (no OLE loop; row -1 is the
   pane's folder; `|` separates paths); in place of `<pane> <row>`, `side <row>` aims at a sidebar
   row (headers count; -1 is the last row, the newest bookmark) and `tab <pane> <index>` at a tab
@@ -236,8 +286,8 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   after D folders (<why>)` (tab closed, navigated away, new search, Escape, F5), `skipped N
   folders`; `[watch] no watch for <root>: search results` and `[dnd] pane N tab I shows search
   results: no drop there` for search tabs.
-  Since P3-M3, folder sizes: `sizeall <pane>` focuses the pane's list and presses Alt+Return (key
-  name `AltReturn`: size every folder of the listing, at most 500, nearest the cursor first);
+  Since P3-M3, folder sizes: `sizeall <pane>` focuses the pane's list and presses Alt+Shift+Return
+  (key name `AltShiftReturn`, Alt+Return until P7-M2: size every folder of the listing, at most 500, nearest the cursor first);
   `waitsize <ms>` waits until no folder size is queued or walking and the last reply has landed (at
   most `<ms>`), then 300 ms; `click`, `ctrlclick`, `CtrlA`, `Space` select folders, which queues
   them (at most 100 per selection). `[size]` lines: `queued <path> (K in queue)`, `partial <path>:
@@ -247,7 +297,7 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   pane=N (<why>)`, `invalidated <path> (<change>)`, `stale <path>: re-walk in N s` (a changed sized
   folder keeps its old size and is walked again after max(2 s, twice its last walk), once per
   window; `waitsize` does not wait for that), `stale <path>: not selected any more, size dropped`,
-  `capped: K of M folders sized`, `pane=N Alt+Return: K of M folder(s) to size`. `[watch]` adds
+  `capped: K of M folders sized`, `pane=N Alt+Shift+Return: K of M folder(s) to size`. `[watch]` adds
   `subtree on <path>` / `subtree off <path>` (a tab with sizes cached or in flight watches every
   folder below its folder), `changed below the folder: no refresh`, `subtree overflow <path>: sizes
   dropped` and `subtree disabled for this tab after two overflows`.
@@ -493,7 +543,12 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   cycle also runs a verb cycle in `dst` (the test verb sleeping 1500 ms while the left list
   scrolls, the menu's Delete and its undo, the menu's Cut cancelled by Escape, Create shortcut on the
   worker, Shift+Delete of the three files); it reports verb jobs, sleeps, shortcuts made by verb,
-  routed deletes and restores, and cuts cancelled.
+  routed deletes and restores, and cuts cancelled. Since P7-M2 its menus open the Windows 11 menu
+  (row 0 goes on to "Show more options", the grid's tile menu is `rclick ... shift`), and each
+  cycle runs a menu cycle in `dst` (Delete and its undo, Cut and Escape, Compress to > ZIP file,
+  New folder from the background, Open with's submenu, then Shift+Delete of all); it reports menus
+  shown and rebuilt, picks run, ZIPs made, new folders, submenus, classic menus from Show more
+  options, and menupicks refused (must be 0).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per

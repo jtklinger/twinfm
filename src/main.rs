@@ -12,6 +12,7 @@ mod band;
 mod cloud;
 mod devices;
 mod dnd;
+mod explorercmd;
 mod fileops;
 mod icons;
 mod model;
@@ -24,6 +25,7 @@ mod statusbar;
 mod tabs;
 mod toolbar;
 mod verbs;
+mod winmenu;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fileops::{Job, Outcome, clipboard, same_dir};
@@ -116,7 +118,7 @@ struct Tab {
     /// A search tab (Ctrl+Shift+F): its listing is a recursive name search under `path`, its
     /// root. None for a folder tab.
     search: Option<Search>,
-    /// Folder sizes computed for this tab (selected folders, Alt+Return), and those in flight.
+    /// Folder sizes computed for this tab (selected folders, Alt+Shift+Return), and those in flight.
     sizes: fs::sizes::TabSizes,
     /// The UI asked the watcher to watch this tab's folder and has not heard `Refused` or `Lost`
     /// since (`State::watch_tabs`); `watched_bg`: that watch is a background one (shallow, no
@@ -246,6 +248,9 @@ struct State {
     /// The verb worker (STA thread): shell commands picked in the context menu run there (P7-M1).
     verbs: verbs::Worker,
     next_verb: u64,
+    /// The Windows 11 style context menu while it is open (P7-M2), and the last menu's number.
+    winmenu: Option<WinMenu>,
+    winmenu_seq: u64,
     /// The main window's HWND once it exists (0 before): owner of the shell's dialogs and of
     /// the clipboard.
     hwnd: isize,
@@ -696,11 +701,10 @@ fn update_status(st: &State, app: &App, pane: usize) {
     update_tools(st, app, pane);
 }
 
-/// The pane's toolbar buttons, from what its status bar shows (where the tab is, its selection)
-/// and the clipboard; set only when they change, in `update_status`'s rhythm (P6-M3).
-fn update_tools(st: &State, app: &App, pane: usize) {
+/// Where the pane's active tab is, as the toolbar and the Windows 11 menu (P7-M2) see it.
+fn tool_place(st: &State, pane: usize) -> toolbar::Place {
     let path = st.tab(pane).path.to_string_lossy();
-    let place = if is_this_pc(&path) {
+    if is_this_pc(&path) {
         toolbar::Place::ThisPc
     } else if st.is_search(pane) {
         toolbar::Place::Search
@@ -708,8 +712,13 @@ fn update_tools(st: &State, app: &App, pane: usize) {
         toolbar::Place::Archive
     } else {
         toolbar::Place::Folder
-    };
-    let tools = toolbar::state(place, st.model(pane).selected_count(), st.clip_files);
+    }
+}
+
+/// The pane's toolbar buttons, from what its status bar shows (where the tab is, its selection)
+/// and the clipboard; set only when they change, in `update_status`'s rhythm (P6-M3).
+fn update_tools(st: &State, app: &App, pane: usize) {
+    let tools = toolbar::state(tool_place(st, pane), st.model(pane).selected_count(), st.clip_files);
     let now = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
     if now != tools {
         if pane == 0 { app.set_left_tools(tools) } else { app.set_right_tools(tools) }
@@ -1629,7 +1638,7 @@ fn arm_rewalk(st: &mut State, pane: usize) {
 }
 
 /// The re-walk timer fired: walk the due stale folders again if they are still wanted (selected,
-/// or sized by Alt+Return in this listing); forget the others. Their old size stays shown until
+/// or sized by Alt+Shift+Return in this listing); forget the others. Their old size stays shown until
 /// the new one lands.
 fn rewalk_due(pane: usize) {
     with_state(|st| {
@@ -1639,7 +1648,7 @@ fn rewalk_due(pane: usize) {
         let selected: std::collections::HashSet<String> = t.model.selected_folders().into_iter().collect();
         for n in t.sizes.due(Instant::now()) {
             if t.sizes.pending.contains_key(&n) {
-                continue; // being walked already (Alt+Return, a selection)
+                continue; // being walked already (Alt+Shift+Return, a selection)
             }
             let all = t.sizes.from_all.contains(&n);
             if all || selected.contains(&n) {
@@ -1719,7 +1728,7 @@ fn size_selection(st: &mut State, pane: usize) {
     }
 }
 
-/// Alt+Return in the list: size every folder of the listing (at most `ALL_CAP`), the ones nearest
+/// Alt+Shift+Return in the list: size every folder of the listing (at most `ALL_CAP`), the ones nearest
 /// the cursor first.
 fn size_all(st: &mut State, app: &App, pane: usize) {
     let cursor = usize::try_from(current_row(app, pane)).unwrap_or(0);
@@ -1745,7 +1754,7 @@ fn size_all(st: &mut State, app: &App, pane: usize) {
     let m = rows.len();
     rows.sort_by_key(|(i, _)| i.abs_diff(cursor));
     rows.truncate(fs::sizes::ALL_CAP);
-    eprintln!("[size] pane={pane} Alt+Return: {} of {} folder(s) to size", rows.len(), m);
+    eprintln!("[size] pane={pane} Alt+Shift+Return: {} of {} folder(s) to size", rows.len(), m);
     if m > fs::sizes::ALL_CAP {
         eprintln!("[size] capped: {} of {m} folders sized", fs::sizes::ALL_CAP);
     }
@@ -2414,6 +2423,7 @@ fn command(pane: usize, cmd: &str) {
         "cv" => return clipboard_paste(pane),
         "undo" => return undo(pane),
         "redo" => return redo(pane),
+        "properties" => return properties(pane),
         "cancelqueued" => {
             if band_cancel(pane) {
                 return;
@@ -2980,14 +2990,25 @@ struct MenuContext {
     paths: Vec<PathBuf>,
 }
 
-/// The shell context menu: for the selection (`row` >= 0; a right press has already applied
-/// the right-click selection rule) or the folder background (`row` -1, or nothing to act on),
-/// at window position (`x`, `y`) in logical px. `extended`: Shift was held.
+/// The context menu: for the selection (`row` >= 0; a right press has already applied the
+/// right-click selection rule) or the folder background (`row` -1, or nothing to act on), at
+/// window position (`x`, `y`) in logical px. The Windows 11 style menu (P7-M2), or with Shift held
+/// (`extended`) the shell's classic menu at once, with its extended verbs, as in Explorer.
 fn context_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
     if shellmenu::is_open() {
         eprintln!("[menu] pane={pane} a menu is already open; ignored");
         return;
     }
+    if extended {
+        classic_menu(pane, row, x, y, true);
+    } else {
+        open_winmenu(pane, row, x, y);
+    }
+}
+
+/// The shell's classic context menu (`IContextMenu`), for Shift+right-click and "Show more
+/// options". Arguments as `context_menu`'s.
+fn classic_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
     // Take everything the menu needs out of the state, then drop the borrow: the menu runs a
     // modal message loop (see shellmenu), and no RefCell borrow may be held across it.
     let Some((req, ctx)) = menu_request(pane, row, x, y, extended) else { return };
@@ -3079,18 +3100,57 @@ fn menu_picked(pane: usize, picked: shellmenu::Picked, req: &shellmenu::Request,
                 x: req.x,
                 y: req.y,
                 extended: req.extended,
+                find: false,
             };
-            with_state(|st| {
-                st.next_verb += 1;
-                let id = st.next_verb;
-                eprintln!("[menu] verb \"{}\" (\"{}\") queued on the verb worker, id {id}", request.verb, request.label);
-                if !st.verbs.submit(verbs::Job { id, pane, req: request, sleep_ms }) {
-                    if let Some(app) = st.app.upgrade() {
-                        note(st, &app, pane, "context menu: the verb worker has stopped".into());
-                    }
-                }
-            });
+            queue_verb(pane, request, sleep_ms);
         }
+    }
+}
+
+/// Queue a shell command on the verb worker (the test verb when `sleep_ms` is given).
+fn queue_verb(pane: usize, request: shellmenu::VerbRequest, sleep_ms: Option<u64>) {
+    with_state(|st| {
+        st.next_verb += 1;
+        let id = st.next_verb;
+        eprintln!(
+            "[menu] verb \"{}\" (\"{}\") queued on the verb worker{}, id {id}",
+            request.verb,
+            request.label,
+            if request.find { " (found there by its label)" } else { "" }
+        );
+        let work = match sleep_ms {
+            Some(ms) => verbs::Work::Sleep(request, ms),
+            None => verbs::Work::Verb(request),
+        };
+        if !st.verbs.submit(verbs::Job { id, pane, work }) {
+            if let Some(app) = st.app.upgrade() {
+                note(st, &app, pane, "context menu: the verb worker has stopped".into());
+            }
+        }
+    });
+}
+
+/// Alt+Return in a list, and the Windows 11 menu's Properties (P7-M2): the shell's Properties for
+/// the cursor row's selection, or the folder's own with no cursor row, on the verb worker.
+fn properties(pane: usize) {
+    let Some(row) = with_state(|st| st.app.upgrade().map(|app| current_row(&app, pane))) else { return };
+    let Some((req, _)) = menu_request(pane, row, 0.0, 0.0, false) else { return };
+    queue_verb(pane, verb_request(&req, "properties", "Properties", false), None);
+}
+
+/// A verb job for the items of `req`, by its canonical verb, or (`find`) by its label in the menu
+/// the worker builds.
+fn verb_request(req: &shellmenu::Request, verb: &str, label: &str, find: bool) -> shellmenu::VerbRequest {
+    shellmenu::VerbRequest {
+        folder: req.folder.clone(),
+        names: req.names.clone(),
+        verb: verb.into(),
+        offset: 0,
+        label: label.into(),
+        x: req.x,
+        y: req.y,
+        extended: false,
+        find,
     }
 }
 
@@ -3138,6 +3198,539 @@ fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, 
         }
         None => context_menu(pane, -1, list_x + g.name_x(), list_y, false),
     }
+}
+
+/// How long a new Windows 11 menu waits for the verb worker's answer (the packaged commands and
+/// the Open with apps) before it shows without them; an answer after that rebuilds it.
+const WINMENU_WAIT_MS: u64 = 250;
+
+/// The Windows 11 style menu while it is open (P7-M2): what it was opened for, the verb worker's
+/// answer, and what it shows.
+struct WinMenu {
+    seq: u64,
+    pane: usize,
+    /// The row it was opened for (-1: the background) and the point, window logical px: "Show more
+    /// options" opens the classic menu for the same row at the same point.
+    row: i32,
+    at: (f32, f32),
+    req: shellmenu::Request,
+    ctx: MenuContext,
+    wctx: winmenu::Ctx,
+    /// A query is with the verb worker.
+    waiting: bool,
+    answer: explorercmd::Answer,
+    opened: Instant,
+    shown: bool,
+    tools: Vec<winmenu::Tool>,
+    items: Vec<winmenu::Entry>,
+    placed: winmenu::Placed,
+    hl: i32,
+    sub: Option<SubMenu>,
+}
+
+/// An open submenu: whose it is, its rows, where it is, its highlight, and whether the keyboard
+/// is in it.
+struct SubMenu {
+    of: winmenu::Cmd,
+    items: Vec<winmenu::Entry>,
+    placed: winmenu::Placed,
+    hl: i32,
+    keys: bool,
+}
+
+/// What the manifests' item types call one entry of the selection.
+fn menu_target(e: &model::Entry) -> explorercmd::Target {
+    if e.kind == Kind::Drive {
+        explorercmd::Target::Drive
+    } else if e.is_dir() {
+        explorercmd::Target::Dir
+    } else {
+        let ext = Path::new(e.name.as_str()).extension().map(|x| format!(".{}", x.to_string_lossy().to_lowercase())).unwrap_or_default();
+        explorercmd::Target::File(ext)
+    }
+}
+
+/// Open the Windows 11 style menu: its own items at once, the packaged commands and Open with apps
+/// asked of the verb worker, shown when it answers or after `WINMENU_WAIT_MS`.
+fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
+    winmenu_close("another menu opens");
+    let Some((req, ctx)) = menu_request(pane, row, x, y, false) else { return };
+    let opened = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let place = tool_place(st, pane);
+        let entries = if req.names.is_empty() { Vec::new() } else { st.model(pane).targets(current_row(&app, pane)) };
+        let targets: Vec<explorercmd::Target> = if entries.is_empty() { vec![explorercmd::Target::Background] } else { entries.iter().map(menu_target).collect() };
+        let what = if entries.is_empty() {
+            winmenu::What::Background
+        } else {
+            let count = |f: fn(&explorercmd::Target) -> bool| targets.iter().filter(|t| f(t)).count();
+            winmenu::What::Items {
+                files: count(|t| matches!(t, explorercmd::Target::File(_))),
+                dirs: count(|t| matches!(t, explorercmd::Target::Dir)),
+                drives: count(|t| matches!(t, explorercmd::Target::Drive)),
+            }
+        };
+        let open_with = match targets.as_slice() {
+            [explorercmd::Target::File(ext)] if !ext.is_empty() && matches!(place, toolbar::Place::Folder | toolbar::Place::Search) => Some(ext.clone()),
+            _ => None,
+        };
+        st.winmenu_seq += 1;
+        let seq = st.winmenu_seq;
+        // Nothing to ask inside an archive (its paths are no files to an app) or on This PC's own
+        // background.
+        let ask = place != toolbar::Place::Archive && !(place == toolbar::Place::ThisPc && entries.is_empty());
+        let waiting = ask && {
+            let q = explorercmd::Query {
+                seq,
+                folder: req.folder.clone(),
+                names: req.names.clone(),
+                targets,
+                icon_px: (16.0 * app.window().scale_factor()).round() as u32,
+                open_with,
+            };
+            st.next_verb += 1;
+            st.verbs.submit(verbs::Job { id: st.next_verb, pane, work: verbs::Work::Query(q) })
+        };
+        eprintln!(
+            "[winmenu] pane={pane} seq={seq} {} for {} item(s) in {}: {}",
+            if entries.is_empty() { "background menu" } else { "item menu" },
+            entries.len(),
+            req.folder.display(),
+            if waiting { "query queued on the verb worker" } else { "no query" }
+        );
+        let wctx = winmenu::Ctx { place, what, clipboard_files: st.clip_files };
+        let placed = winmenu::Placed { x, y, h: 0.0, scrolls: false, left: false, up: false };
+        st.winmenu = Some(WinMenu {
+            seq,
+            pane,
+            row,
+            at: (x, y),
+            req,
+            ctx,
+            wctx,
+            waiting,
+            answer: explorercmd::Answer { seq, ..Default::default() },
+            opened: Instant::now(),
+            shown: false,
+            tools: Vec::new(),
+            items: Vec::new(),
+            placed,
+            hl: -1,
+            sub: None,
+        });
+        Some((seq, waiting))
+    });
+    match opened {
+        Some((seq, true)) => slint::Timer::single_shot(Duration::from_millis(WINMENU_WAIT_MS), move || {
+            if with_state(|st| st.winmenu.as_ref().is_some_and(|m| m.seq == seq && !m.shown)) {
+                show_winmenu(&format!("the worker had not answered after {WINMENU_WAIT_MS} ms"));
+            }
+        }),
+        Some((_, false)) => show_winmenu("no query"),
+        None => {}
+    }
+}
+
+/// The verb worker's answer for a menu (on the UI thread): shown now, or rebuilt when the menu
+/// showed without it.
+fn winmenu_answer(a: explorercmd::Answer) {
+    let seq = a.seq;
+    let was = with_state(|st| {
+        let m = st.winmenu.as_mut().filter(|m| m.seq == seq)?;
+        m.waiting = false;
+        m.answer = a;
+        Some(m.shown)
+    });
+    match was {
+        Some(false) => show_winmenu("the worker answered"),
+        Some(true) => show_winmenu("rebuilt with the worker's answer"),
+        None => eprintln!("[winmenu] seq={seq} answered after its menu closed: dropped"),
+    }
+}
+
+/// The Slint rows for menu entries, with their tops.
+fn menu_entries(items: &[winmenu::Entry]) -> (ModelRc<MenuEntry>, f32) {
+    let (ys, h) = winmenu::rows_y(items);
+    let rows: Vec<MenuEntry> = items
+        .iter()
+        .zip(ys)
+        .map(|(e, y)| MenuEntry {
+            id: e.cmd.map_or(0, winmenu::Cmd::id),
+            text: e.text.as_str().into(),
+            glyph: e.glyph.into(),
+            icon: e.icon.clone().map(Image::from_rgba8).unwrap_or_default(),
+            has_icon: e.icon.is_some(),
+            key: e.key.into(),
+            sub: e.sub,
+            enabled: e.enabled,
+            sep: e.is_sep(),
+            y,
+        })
+        .collect();
+    (ModelRc::from(Rc::new(VecModel::from(rows))), h)
+}
+
+/// The window's size in logical px.
+fn window_logical(app: &App) -> (f32, f32) {
+    let (size, scale) = (app.window().size(), app.window().scale_factor());
+    (size.width as f32 / scale, size.height as f32 / scale)
+}
+
+/// Build the open menu's rows from what it knows now, place it and show it (or update it when it
+/// is shown already).
+fn show_winmenu(why: &str) {
+    let first = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let m = st.winmenu.as_mut()?;
+        m.tools = winmenu::tools(&m.wctx);
+        m.items = winmenu::items(&m.wctx, &m.answer.commands);
+        let win = window_logical(&app);
+        let h = winmenu::menu_height(!m.tools.is_empty(), &m.items);
+        m.placed = winmenu::place(m.at, winmenu::MENU_W, h, win);
+        m.hl = -1;
+        m.sub = None;
+        let tools: Vec<MenuTool> = m.tools.iter().map(|t| MenuTool { id: t.cmd.id(), glyph: t.glyph.into(), text: t.text.into() }).collect();
+        let (rows, list_h) = menu_entries(&m.items);
+        app.set_wm_tools(ModelRc::from(Rc::new(VecModel::from(tools))));
+        app.set_wm_items(rows);
+        app.set_wm_list_h(list_h);
+        app.set_wm_x(m.placed.x);
+        app.set_wm_y(m.placed.y);
+        app.set_wm_h(m.placed.h);
+        app.set_wm_scroll(0.0);
+        app.set_wm_hl(-1);
+        app.set_wm_sub_shown(false);
+        let p = &m.placed;
+        eprintln!(
+            "[winmenu] pane={} seq={} shown after {:.0} ms ({why}): {}",
+            m.pane,
+            m.seq,
+            perf::elapsed_ms(m.opened),
+            winmenu::describe(&m.tools, &m.items)
+        );
+        eprintln!(
+            "[winmenu] placed at ({:.0}, {:.0}) {:.0} x {:.0} for ({:.0}, {:.0}) in a {:.0} x {:.0} window: {}, {}{}",
+            p.x,
+            p.y,
+            winmenu::MENU_W,
+            p.h,
+            m.at.0,
+            m.at.1,
+            win.0,
+            win.1,
+            if p.left { "leftward" } else { "rightward" },
+            if p.up { "upward" } else { "downward" },
+            if p.scrolls { ", its rows scroll" } else { "" }
+        );
+        let first = !m.shown;
+        m.shown = true;
+        first.then_some(app)
+    });
+    if let Some(app) = first {
+        app.invoke_show_wm();
+    }
+}
+
+/// Close the Windows 11 menu (when one is open), give the keys back to its pane's list, and hand
+/// back what it was for.
+fn winmenu_close(why: &str) -> Option<WinMenu> {
+    let (m, app) = with_state(|st| Some((st.winmenu.take()?, st.app.upgrade()?)))?;
+    eprintln!("[winmenu] pane={} seq={} closed ({why})", m.pane, m.seq);
+    app.invoke_close_wm();
+    app.invoke_focus_pane(m.pane as i32);
+    Some(m)
+}
+
+/// The item with this id opens a submenu (Open with, Compress to, a packaged command with its own
+/// commands).
+fn opens_sub(items: &[winmenu::Entry], cmd: winmenu::Cmd) -> bool {
+    items.iter().any(|e| e.cmd == Some(cmd) && e.sub)
+}
+
+/// Open the submenu of `cmd` beside its item (`keys`: from the keyboard, which moves into it).
+fn winmenu_open_sub(cmd: winmenu::Cmd, keys: bool) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let Some(m) = st.winmenu.as_mut() else { return };
+        if let Some(s) = m.sub.as_mut().filter(|s| s.of == cmd) {
+            if keys && !s.keys {
+                s.keys = true;
+                s.hl = winmenu::next_hl(&s.items, -1, true);
+                app.set_wm_sub_hl(s.hl);
+            }
+            return;
+        }
+        let Some(i) = m.items.iter().position(|e| e.cmd == Some(cmd)) else { return };
+        let items = winmenu::sub_items(cmd, &m.answer.commands, &m.answer.apps);
+        let (ys, _) = winmenu::rows_y(&m.items);
+        let list_top = m.placed.y + winmenu::PAD + if m.tools.is_empty() { 0.0 } else { winmenu::TOOLS_H + winmenu::SEP_H };
+        let item_y = list_top + ys[i] + app.get_wm_scroll();
+        let h = 2.0 * winmenu::PAD + winmenu::rows_y(&items).1;
+        let placed = winmenu::place_sub(&m.placed, winmenu::MENU_W, item_y, winmenu::SUB_W, h, window_logical(&app));
+        let hl = if keys { winmenu::next_hl(&items, -1, true) } else { -1 };
+        let (rows, list_h) = menu_entries(&items);
+        app.set_wm_sub_items(rows);
+        app.set_wm_sub_list_h(list_h);
+        app.set_wm_sub_x(placed.x);
+        app.set_wm_sub_y(placed.y);
+        app.set_wm_sub_h(placed.h);
+        app.set_wm_sub_scroll(0.0);
+        app.set_wm_sub_hl(hl);
+        app.set_wm_sub_shown(true);
+        m.hl = i as i32;
+        app.set_wm_hl(m.hl);
+        eprintln!("[winmenu] submenu \"{}\" at ({:.0}, {:.0}): {}", m.items[i].text, placed.x, placed.y, winmenu::describe(&[], &items));
+        m.sub = Some(SubMenu { of: cmd, items, placed, hl, keys });
+    });
+}
+
+fn winmenu_close_sub() {
+    with_state(|st| {
+        let (Some(app), Some(m)) = (st.app.upgrade(), st.winmenu.as_mut()) else { return };
+        if m.sub.take().is_some() {
+            app.set_wm_sub_shown(false);
+        }
+    });
+}
+
+/// The pointer entered an item: it takes the highlight; one with a submenu opens it, any other
+/// in the menu closes an open submenu.
+fn winmenu_hover(id: i32, in_sub: bool) {
+    let Some(cmd) = winmenu::Cmd::from_id(id) else { return };
+    let opens = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let m = st.winmenu.as_mut()?;
+        if in_sub {
+            if let Some(s) = m.sub.as_mut() {
+                s.hl = s.items.iter().position(|e| e.cmd == Some(cmd)).map_or(-1, |i| i as i32);
+                app.set_wm_sub_hl(s.hl);
+            }
+            return None;
+        }
+        m.hl = m.items.iter().position(|e| e.cmd == Some(cmd)).map_or(-1, |i| i as i32);
+        app.set_wm_hl(m.hl);
+        Some(opens_sub(&m.items, cmd))
+    });
+    match opens {
+        Some(true) => winmenu_open_sub(cmd, false),
+        Some(false) => winmenu_close_sub(),
+        None => {}
+    }
+}
+
+/// A key in the menu (the popup's FocusScope, and the driver's `menukey`): Down, Up, Home and End
+/// move the highlight (in the submenu when the keyboard is in it), Right opens the highlighted
+/// item's submenu, Left and Escape leave a submenu, Escape closes the menu, Return picks, and
+/// Shift+F10 ("more") opens the classic menu.
+fn winmenu_key(name: &str) {
+    enum Then {
+        Nothing,
+        Pick(i32),
+        Open(winmenu::Cmd),
+        CloseSub,
+        Close,
+    }
+    let then = with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return Then::Nothing };
+        let Some(m) = st.winmenu.as_mut() else { return Then::Nothing };
+        let in_sub = m.sub.as_ref().is_some_and(|s| s.keys);
+        let (items, hl) = match (in_sub, m.sub.as_mut()) {
+            (true, Some(s)) => (&s.items, &mut s.hl),
+            _ => (&m.items, &mut m.hl),
+        };
+        let moved = match name {
+            "down" => Some(winmenu::next_hl(items, *hl, true)),
+            "up" => Some(winmenu::next_hl(items, *hl, false)),
+            "home" => Some(winmenu::next_hl(items, -1, true)),
+            "end" => Some(winmenu::next_hl(items, -1, false)),
+            _ => None,
+        };
+        if let Some(n) = moved {
+            *hl = n;
+            let (ys, _) = winmenu::rows_y(items);
+            let top = usize::try_from(n).ok().and_then(|i| ys.get(i).copied()).unwrap_or(0.0);
+            if in_sub {
+                let view = m.sub.as_ref().map_or(0.0, |s| s.placed.h) - 2.0 * winmenu::PAD;
+                app.set_wm_sub_hl(n);
+                app.set_wm_sub_scroll(winmenu::scroll_into_view(app.get_wm_sub_scroll(), top, winmenu::ITEM_H, view));
+            } else {
+                let tools = if m.tools.is_empty() { 0.0 } else { winmenu::TOOLS_H + winmenu::SEP_H };
+                let view = m.placed.h - 2.0 * winmenu::PAD - tools;
+                app.set_wm_hl(n);
+                app.set_wm_scroll(winmenu::scroll_into_view(app.get_wm_scroll(), top, winmenu::ITEM_H, view));
+            }
+            return Then::Nothing;
+        }
+        let current = usize::try_from(*hl).ok().and_then(|i| items.get(i)).and_then(|e| e.cmd.map(|c| (c, e.sub)));
+        match name {
+            "right" => match current {
+                Some((c, true)) if !in_sub => Then::Open(c),
+                _ => Then::Nothing,
+            },
+            "left" if in_sub => Then::CloseSub,
+            "escape" if m.sub.is_some() => Then::CloseSub,
+            "escape" => Then::Close,
+            "return" => match current {
+                Some((c, true)) if !in_sub => Then::Open(c),
+                Some((c, _)) => Then::Pick(c.id()),
+                None => Then::Nothing,
+            },
+            "more" => Then::Pick(winmenu::Cmd::More.id()),
+            _ => Then::Nothing,
+        }
+    });
+    match then {
+        Then::Nothing => {}
+        Then::Pick(id) => winmenu_picked(id),
+        Then::Open(c) => winmenu_open_sub(c, true),
+        Then::CloseSub => winmenu_close_sub(),
+        Then::Close => {
+            winmenu_close("Escape");
+        }
+    }
+}
+
+/// An item or icon-row button was picked: an item with a submenu opens it; any other closes the
+/// menu and runs its command, the one its key, its toolbar button or its P7-M1 route calls.
+fn winmenu_picked(id: i32) {
+    let Some(cmd) = winmenu::Cmd::from_id(id) else { return };
+    let (sub, enabled) = with_state(|st| {
+        st.winmenu.as_ref().map_or((false, false), |m| {
+            let all = m.items.iter().chain(m.sub.iter().flat_map(|s| s.items.iter()));
+            let tool = m.tools.iter().any(|t| t.cmd == cmd);
+            (opens_sub(&m.items, cmd), tool || all.clone().any(|e| e.cmd == Some(cmd) && e.enabled))
+        })
+    });
+    if sub {
+        return winmenu_open_sub(cmd, false);
+    }
+    if !enabled {
+        return;
+    }
+    let Some(m) = winmenu_close(&format!("picked {cmd:?}")) else { return };
+    // On the next turn of the event loop: closing the popup gives the keys back to the list after
+    // this callback, which would take them from a name editor the pick opens (New folder, Rename).
+    slint::Timer::single_shot(Duration::ZERO, move || run_winmenu_pick(m, cmd));
+}
+
+/// Run a picked item, after its menu closed.
+fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
+    use winmenu::Cmd;
+    let pane = m.pane;
+    eprintln!("[winmenu] pane={pane} runs {cmd:?}");
+    match cmd {
+        Cmd::Delete => {
+            // Shift held deletes permanently, as the key and the classic menu's Delete do.
+            // SAFETY: a plain key state query on the UI thread.
+            let shift = unsafe { GetKeyState(VK_SHIFT as i32) } < 0;
+            command(pane, if shift { "sdelete" } else { "delete" });
+        }
+        c if c.key_command().is_some() => command(pane, c.key_command().unwrap_or_default()),
+        Cmd::Open => {
+            let Some(row) = with_state(|st| st.app.upgrade().map(|app| current_row(&app, pane))) else { return };
+            open_row(pane, row);
+        }
+        Cmd::OpenOther => own_item(pane, shellmenu::OwnItem::OpenOther, m.ctx),
+        Cmd::Terminal => own_item(pane, shellmenu::OwnItem::Terminal, m.ctx),
+        Cmd::CopyPath => own_item(pane, shellmenu::OwnItem::CopyPath, m.ctx),
+        Cmd::Share => queue_verb(pane, verb_request(&m.req, "", "Share", true), None),
+        Cmd::Zip => queue_verb(pane, verb_request(&m.req, "", ZIP_LABEL, true), None),
+        Cmd::ChooseApp => queue_verb(pane, verb_request(&m.req, "openas", "Choose another app", false), None),
+        Cmd::More => {
+            // After a frame, so the window is drawn without the menu before the classic one's
+            // modal loop starts (nothing renders while it runs).
+            let (row, (x, y)) = (m.row, m.at);
+            slint::Timer::single_shot(Duration::from_millis(30), move || classic_menu(pane, row, x, y, false));
+        }
+        Cmd::Packaged(_) | Cmd::Sub(..) | Cmd::App(_) => {
+            let (pick, title) = match cmd {
+                Cmd::Packaged(i) => (explorercmd::Pick::Command(i), m.answer.commands.get(i).map(|c| c.title.clone())),
+                Cmd::Sub(i, j) => (explorercmd::Pick::Sub(i, j), m.answer.commands.get(i).and_then(|c| c.subs.get(j)).map(|c| c.title.clone())),
+                Cmd::App(k) => (explorercmd::Pick::App(k), m.answer.apps.get(k).map(|a| format!("Open with {}", a.name))),
+                _ => return,
+            };
+            let run = explorercmd::Run { seq: m.seq, pick, folder: m.req.folder.clone(), names: m.req.names.clone(), title: title.unwrap_or_default() };
+            with_state(|st| {
+                st.next_verb += 1;
+                let id = st.next_verb;
+                eprintln!("[winmenu] {:?} \"{}\" queued on the verb worker, id {id}", run.pick, run.title);
+                if !st.verbs.submit(verbs::Job { id, pane, work: verbs::Work::Run(run) }) {
+                    if let Some(app) = st.app.upgrade() {
+                        note(st, &app, pane, "context menu: the verb worker has stopped".into());
+                    }
+                }
+            });
+        }
+        // Submenus open; they are never run.
+        Cmd::OpenWith | Cmd::Compress => {}
+        _ => {}
+    }
+}
+
+/// The classic menu's "Send to > Compressed (zipped) folder", the Windows 11 menu's Compress to >
+/// ZIP file (P7-M2; Explorer's own Compress to is not reachable from another program).
+const ZIP_LABEL: &str = "Send to>Compressed (zipped) folder";
+
+/// For the scripted driver: the Windows 11 menu is shown, and (`settled`) the worker has answered
+/// or was not asked.
+pub fn winmenu_shown(settled: bool) -> bool {
+    STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().and_then(|st| st.winmenu.as_ref().map(|m| m.shown && (!settled || !m.waiting)))).unwrap_or(false))
+}
+
+/// For the scripted driver's in-menu steps on the Windows 11 menu: `open` a submenu by its item's
+/// text, `pick` an item (the submenu's first, then the icon row's, then the menu's) by its text,
+/// `key` a key name as `winmenu_key` takes it, `close` the menu. A pick of an item that runs on the
+/// verb worker is refused (the menu closes instead), except Compress to > ZIP file inside the soak
+/// fence. False when no Windows 11 menu is open.
+pub fn script_winmenu(what: &str, arg: &str) -> bool {
+    use winmenu::Cmd;
+    let Some((found, soak_ok)) = with_state(|st| {
+        let m = st.winmenu.as_ref().filter(|m| m.shown)?;
+        let by_text = |e: &winmenu::Entry| !e.is_sep() && e.text.eq_ignore_ascii_case(arg.trim());
+        let found = m
+            .sub
+            .iter()
+            .flat_map(|s| s.items.iter())
+            .find(|e| by_text(e))
+            .and_then(|e| e.cmd)
+            .or_else(|| m.tools.iter().find(|t| t.text.eq_ignore_ascii_case(arg.trim())).map(|t| t.cmd))
+            .or_else(|| m.items.iter().find(|e| by_text(e)).and_then(|e| e.cmd));
+        let soak_ok = st.soak.as_ref().is_some_and(|roots| roots.iter().any(|r| inside(&m.req.folder, r)));
+        Some((found, soak_ok))
+    }) else {
+        return false;
+    };
+    match what {
+        "key" => winmenu_key(arg),
+        "close" => {
+            winmenu_close("menuclose");
+        }
+        "open" => match found {
+            Some(c) if c == Cmd::More => winmenu_more_now(),
+            Some(c) => winmenu_open_sub(c, false),
+            None => eprintln!("[auto] menuopen \"{arg}\": no such item in the menu"),
+        },
+        _ => match found {
+            Some(c) if c.on_worker() && !(c == Cmd::Zip && soak_ok) => {
+                eprintln!("[auto] menupick \"{arg}\": {c:?} runs on the verb worker; closing instead");
+                winmenu_close("menupick refused");
+            }
+            Some(c) if c == Cmd::More => winmenu_more_now(),
+            Some(c) => {
+                eprintln!("[auto] menupick \"{arg}\": {c:?}");
+                winmenu_picked(c.id());
+            }
+            None => eprintln!("[auto] menupick \"{arg}\": no such item in the menu"),
+        },
+    }
+    true
+}
+
+/// "Show more options" from the driver: the classic menu at once, inside this call (its in-menu
+/// steps run from the driver's Win32 timer), without the frame's wait the pick takes.
+fn winmenu_more_now() {
+    let Some(m) = winmenu_close("Show more options") else { return };
+    classic_menu(m.pane, m.row, m.at.0, m.at.1, false);
 }
 
 /// One of TwinFM's own menu items, after the menu closed.
@@ -4991,8 +5584,11 @@ fn main() -> Result<(), slint::PlatformError> {
     }, |p| {
         let _ = slint::invoke_from_event_loop(move || job_progress(p));
     });
-    let verbs = verbs::Worker::spawn(|d| {
-        let _ = slint::invoke_from_event_loop(move || verb_done(d));
+    let verbs = verbs::Worker::spawn(|r| {
+        let _ = slint::invoke_from_event_loop(move || match r {
+            verbs::Reply::Done(d) => verb_done(d),
+            verbs::Reply::Answer(a) => winmenu_answer(a),
+        });
     });
     let soak = (std::env::var("TWINFM_SOAK").as_deref() == Ok("1"))
         .then(|| vec![std::env::temp_dir().join("twinfm-m3"), std::env::temp_dir().join("twinfm-m5")]);
@@ -5136,6 +5732,8 @@ fn main() -> Result<(), slint::PlatformError> {
             ops,
             verbs,
             next_verb: 0,
+            winmenu: None,
+            winmenu_seq: 0,
             hwnd: 0,
             next_job: 0,
             jobs: HashMap::new(),
@@ -5304,6 +5902,12 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_context_menu(|pane, row, x, y, extended| context_menu(pane as usize, row, x, y, extended));
     app.on_context_key(|pane, row, lx, ly, cy, vh| context_key(pane as usize, row, lx, ly, cy, vh));
+    app.on_wm_picked(winmenu_picked);
+    app.on_wm_hover(winmenu_hover);
+    app.on_wm_key(|k| winmenu_key(k.as_str()));
+    app.on_wm_dismissed(|| {
+        winmenu_close("a press outside it");
+    });
     app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
     app.on_strip_resized(|pane| strip_resized(pane as usize));
     app.on_toolbar_clicked(|pane, button| toolbar_clicked(pane as usize, button.as_str()));
