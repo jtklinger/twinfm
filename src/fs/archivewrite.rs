@@ -163,6 +163,13 @@ fn rewrite(zip: &Path, plan: Plan, progress: Progress) -> Result<(), String> {
     res
 }
 
+/// The zip holds an encrypted (password-protected) entry. TwinFM does not write such a zip: the
+/// `zip` crate's raw copy drops the entry's encryption flag (P7-M3's console check).
+pub fn encrypted(zip: &Path) -> Result<bool, String> {
+    let mut za = zip::ZipArchive::new(std::fs::File::open(zip).map_err(|e| e.to_string())?).map_err(|e| format!("not a readable zip archive: {e}"))?;
+    Ok((0..za.len()).any(|i| za.by_index_raw(i).is_ok_and(|e| e.encrypted())))
+}
+
 /// A file's modified time as the zip's local MS-DOS time (1980 for anything earlier).
 fn dos_time(meta: &std::fs::Metadata) -> zip::DateTime {
     use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};

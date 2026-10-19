@@ -45,6 +45,9 @@ pub fn read_only_why(archive: &Path) -> String {
     format!("Windows' archive handler cannot write into .{ext} archives")
 }
 
+/// Why a password-protected zip is not written: the `zip` crate's raw copy drops an encrypted
+/// entry's encryption flag, which leaves its bytes unreadable (P7-M3's console check).
+pub const PASSWORD: &str = "this zip is password-protected: TwinFM does not write into it";
 pub const BETWEEN_ARCHIVES: &str = "copying from one archive into another is not supported; copy the items out first";
 
 /// The archive each item is stored in (None for an item on disk, an archive file included), and
@@ -200,6 +203,15 @@ fn reporter(id: u64, progress: &Rc<dyn Fn(Progress)>) -> impl FnMut(u64, u64) + 
 pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outcome, Vec<ItemResult>) {
     let t0 = Instant::now();
     let zip = plan.zip().to_path_buf();
+    // Before anything is written or extracted (here, on the worker: the UI thread reads no archive).
+    match archivewrite::encrypted(&zip) {
+        Ok(false) => {}
+        Ok(true) => {
+            eprintln!("[archive] job id={} {:?} on {}: refused ({PASSWORD})", req.id, plan_name(&plan), zip.display());
+            return (Outcome::Error(PASSWORD.into()), Vec::new());
+        }
+        Err(e) => return (Outcome::Error(e), Vec::new()),
+    }
     let mut report = reporter(req.id, progress);
     let (outcome, results) = match &plan {
         Plan::Add { inner, sources, mv, .. } => {
@@ -424,6 +436,32 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("out").join("d").join("g.txt")).unwrap(), b"gg");
         assert!(dir.join("out").join("d").join("New folder").is_dir());
         assert_eq!(zip_names(&z), vec!["f2.txt"]);
+        // A password-protected zip is not written (a raw copy would drop its entries' encryption
+        // flag, P7-M3's console check): refused before anything happens, the zip untouched.
+        let tar = Path::new(r"C:\Windows\System32\tar.exe");
+        if tar.exists() {
+            let pw = dir.join("pw.zip");
+            let st = std::process::Command::new(tar)
+                .arg("-cf")
+                .arg(&pw)
+                .args(["--format", "zip", "--options", "zip:encryption=zipcrypt", "--passphrase", "x", "-C"])
+                .arg(dir.join("out"))
+                .arg("d")
+                .status()
+                .unwrap();
+            assert!(st.success());
+            let before = std::fs::read(&pw).unwrap();
+            for job in [
+                Job::Copy { sources: vec![dir.join("src").join("f.txt")], dest_dir: pw.clone() },
+                Job::Rename { source: pw.join("d"), new_name: "e".into() },
+                Job::Move { sources: vec![pw.join("d")], dest_dir: dir.join("src") },
+            ] {
+                let d = run(job);
+                assert_eq!(d.outcome, Outcome::Error(PASSWORD.into()), "{:?}", d.job);
+            }
+            assert_eq!(std::fs::read(&pw).unwrap(), before, "the protected zip is untouched");
+            assert!(!dir.join("src").join("d").join("New folder").exists(), "nothing was extracted");
+        }
         // Refused on the worker too (a job queued by another path).
         if archive::is_archive_name("r.7z") {
             let d = run(Job::Copy { sources: vec![dir.join("src").join("f.txt")], dest_dir: dir.join("r.7z") });

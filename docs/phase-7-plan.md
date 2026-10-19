@@ -871,6 +871,25 @@ Jeremy, unelevated, `target-p7m3` (2026-10-19), four findings:
   (shown in a zip with files on the clipboard, scripted: `[Paste] New folder | New file | ...`), on
   the toolbar and on Ctrl+V; Explorer's item menu has none either.
 
+Jeremy's second console check on ab43a49 (2026-10-19): as expected, no issues, except the
+password-protected archive he had none of. Made for him, `C:\traces\password-twinfm.zip` (ZipCrypto,
+password `twinfm`, by `tar.exe --options zip:encryption=zipcrypt --passphrase twinfm`; `secret.txt`
+and `sub\inner.txt`), then checked by script on a copy, which found damage:
+
+- **A write into a password-protected zip broke its encrypted entries.** The `zip` crate's raw copy
+  writes the entry again without its general-purpose flags (encrypted, bit 0, and data descriptor,
+  bit 3; the bytes stay encrypted), so after a copy in and a rename `tar.exe --passphrase` failed on
+  `secret.txt` ("ZIP decompression failed (-3)"). It also drops Info-ZIP's extended timestamp field
+  (0x5455), which Windows does not read. **Decision**: TwinFM refuses every write into a zip that
+  holds an encrypted entry (`archivewrite::encrypted`, read on the worker before the job does
+  anything, a move out included: `Failed: this zip is password-protected: TwinFM does not write
+  into it`); `zip_jobs_on_the_worker` makes one with `tar.exe` and checks copy in, rename and move
+  out are refused with the zip byte for byte and nothing extracted (written first, failing).
+  Scripted again: both writes refused, and `secret.txt` and `sub\inner.txt` still extract with the
+  password. Browsing it and copying out (the shell asks for the password) are unchanged. A byte
+  for byte copy of the entries of our own would let TwinFM write into such zips; not done (a
+  candidate if it is ever missed).
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.

@@ -359,7 +359,10 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   <zip>: Done | Cancelled | Error("<why>") in T ms`, `move into <zip>: originals recycled: <outcome>
   (N item(s))`, `N file(s) already in <zip>: replace|skip|cancelled`, `compress N item(s) to <archive>:
   Ok(files) | Err("<why>") in T ms`. `[fileops] done` reads `Failed: <why>` for an archive job's
-  error; a refused drop notes `drop: <why>` in the pane under the pointer. `fs::archive::within`
+  error; a refused drop notes `drop: <why>` in the pane under the pointer. A zip with an encrypted
+  (password-protected) entry is never written (the crate's raw copy drops the encryption flag):
+  `[archive] job id=N "<kind>" on <zip>: refused (this zip is password-protected: TwinFM does not
+  write into it)`; fixture `C:\traces\password-twinfm.zip` (password `twinfm`). `fs::archive::within`
   (an item below an archive's root) is the question for items, `inside` (the archive file itself
   too) for folders to open. Windows fills the Send to submenu in the background (about 450 ms
   cold), so the verb worker asks again for up to 3 s: `[menu] "<label>" found after T ms (a submenu
