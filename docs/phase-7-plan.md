@@ -904,6 +904,11 @@ allowed to the foreground process); with another program in front they are left 
 TwinFM in front: `[fileops] dialog "Password needed" was behind the window: brought to the front
 (ok)`.
 
+Jeremy's fourth console check on 264770a (2026-10-19): the password prompt comes up in front on a
+copy out of the password zip, and a copy into it is refused with the note: as expected. The gate
+(ab28, on 2cde49f) was not run again: none of the console check's fixes is on the scenario's path
+(the scenario runs no file job, opens no menu and drops nothing).
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.
