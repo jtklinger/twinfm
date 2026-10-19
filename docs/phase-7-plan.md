@@ -826,6 +826,25 @@ into the 7z refused, 6 archives compressed and 6 undone; every earlier count as 
 (menupicks refused 0, toolbar presses refused 0, drags dropped 0, spring-loaded tabs 0); working set
 122.3 MB at 5 s, 229.6 at most, 225.1 at 360 s (P7-M2's 8-minute soak: 209.6 at most).
 
+### Gate
+
+Tag ab28, 2026-10-19, `C:\traces\gate-p7m3.ps1` elevated at the console, Narrator off: the defaults
+triplet, `target-p7m2` (f66ce33) against `target-p7m3` (2cde49f), interleaved.
+
+| Run | WPR % | In-app % | Render p50 ms |
+|---|---|---|---|
+| p7m2-1 | 18.0 | 19.2 | 2.32 |
+| p7m3-1 | 17.7 | 17.3 | 2.18 |
+| p7m2-2 | 17.5 | 19.7 | 2.21 |
+| p7m3-2 | 17.8 | 19.8 | 2.20 |
+| p7m2-3 | 18.0 | 18.7 | 2.23 |
+| p7m3-3 | 17.5 | 20.2 | 2.19 |
+
+Medians 18.0 (reference) and 17.7 (candidate): no gap counts (the runs interleave, and the
+candidate's median is the lower), every candidate run under 20% by WPR. One session state
+throughout (render p50 2.18 to 2.32 ms in every run). `split` now knows the ArchiveFolder
+extensions and runs on every path the scenario lists; as expected, flat.
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.
