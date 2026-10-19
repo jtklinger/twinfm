@@ -302,6 +302,40 @@ impl ProgressGate {
     }
 }
 
+/// The shell's dialogs of this process (class `#32770`: a password prompt, a conflict, an error)
+/// that are visible but not the foreground window: (window, title). The shell makes them on threads
+/// of its own, owned by its unowned progress window, and does not bring them forward, so behind
+/// TwinFM's window a job waits on a dialog nobody sees (P7-M3's console check: an encrypted zip's
+/// "Password needed").
+pub fn hidden_dialogs() -> Vec<(isize, String)> {
+    use windows_sys::Win32::Foundation::LPARAM;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible};
+    unsafe extern "system" fn each(h: HWND, l: LPARAM) -> BOOL {
+        // SAFETY: `l` is the Vec passed below, alive for EnumWindows; plain queries on `h`.
+        unsafe {
+            let out = &mut *(l as *mut Vec<(isize, String)>);
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, &mut pid);
+            if pid != GetCurrentProcessId() || IsWindowVisible(h) == 0 || h == GetForegroundWindow() {
+                return 1;
+            }
+            let mut class = [0u16; 16];
+            let n = GetClassNameW(h, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
+            if String::from_utf16_lossy(&class[..n]) == "#32770" {
+                let mut title = [0u16; 128];
+                let n = GetWindowTextW(h, title.as_mut_ptr(), title.len() as i32).max(0) as usize;
+                out.push((h as isize, String::from_utf16_lossy(&title[..n])));
+            }
+            1
+        }
+    }
+    let mut out: Vec<(isize, String)> = Vec::new();
+    // SAFETY: the callback only reads windows and pushes to `out`, which outlives the call.
+    unsafe { EnumWindows(Some(each), &mut out as *mut _ as LPARAM) };
+    out
+}
+
 /// Handle to the worker. Dropping it ends the worker's message loop.
 pub struct Worker {
     tid: u32,

@@ -362,7 +362,10 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   error; a refused drop notes `drop: <why>` in the pane under the pointer. A zip with an encrypted
   (password-protected) entry is never written (the crate's raw copy drops the encryption flag):
   `[archive] job id=N "<kind>" on <zip>: refused (this zip is password-protected: TwinFM does not
-  write into it)`; fixture `C:\traces\password-twinfm.zip` (password `twinfm`). `fs::archive::within`
+  write into it)`; fixture `C:\traces\password-twinfm.zip` (password `twinfm`). While file jobs run,
+  the shell's dialogs (`#32770`) hidden behind TwinFM's window come to the front when TwinFM is the
+  foreground program: `[fileops] dialog "<title>" was behind the window: brought to the front
+  (ok|refused)`, or `... is open while another program is in front: left there` (once each). `fs::archive::within`
   (an item below an archive's root) is the question for items, `inside` (the archive file itself
   too) for folders to open. Windows fills the Send to submenu in the background (about 450 ms
   cold), so the verb worker asks again for up to 3 s: `[menu] "<label>" found after T ms (a submenu

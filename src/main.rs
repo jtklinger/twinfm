@@ -2361,6 +2361,46 @@ fn sources(st: &mut State, app: &App, pane: usize) -> Option<(Vec<PathBuf>, Vec<
     Some((targets.iter().map(|e| folder.join(e.name.as_str())).collect(), targets.into_iter().map(|e| e.name).collect()))
 }
 
+thread_local! {
+    /// While file jobs are in flight: twice a second, the shell's dialogs hidden behind our window
+    /// come to the front (`raise_job_dialogs`).
+    static DIALOG_TIMER: slint::Timer = slint::Timer::default();
+    /// Dialogs already logged as left behind while another program was in front (once each).
+    static DIALOGS_LEFT: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
+}
+
+/// The shell's dialogs of a running job (a password prompt, a conflict) come to the front when
+/// TwinFM is the foreground program: the shell makes them on threads of its own and leaves them
+/// behind our window (P7-M3's console check). Stops itself when no job is in flight.
+fn raise_job_dialogs() {
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow};
+    if with_state(|st| st.jobs.is_empty()) {
+        DIALOG_TIMER.with(|t| t.stop());
+        DIALOGS_LEFT.with(|d| d.borrow_mut().clear());
+        return;
+    }
+    // SAFETY: plain queries; only our own windows are raised, and only while one of ours is in front.
+    let ours = unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
+        pid == GetCurrentProcessId()
+    };
+    if !ours {
+        for (h, title) in fileops::hidden_dialogs() {
+            if DIALOGS_LEFT.with(|d| d.borrow_mut().insert(h)) {
+                eprintln!("[fileops] dialog \"{title}\" is open while another program is in front: left there");
+            }
+        }
+        return;
+    }
+    for (h, title) in fileops::hidden_dialogs() {
+        // SAFETY: a window of this process that EnumWindows just reported.
+        let ok = unsafe { SetForegroundWindow(h as _) };
+        eprintln!("[fileops] dialog \"{title}\" was behind the window: brought to the front ({})", if ok != 0 { "ok" } else { "refused" });
+    }
+}
+
 /// Queue a job on the worker; the source pane's active tab shows its progress note. Returns the
 /// job id.
 fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
@@ -2389,6 +2429,11 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
     }
     let tab = st.tab(pane).id;
     st.jobs.insert(id, JobInfo { pane, tab, fallback: None, replay: None, running: running.clone() });
+    DIALOG_TIMER.with(|t| {
+        if !t.running() {
+            t.start(slint::TimerMode::Repeated, Duration::from_millis(500), raise_job_dialogs);
+        }
+    });
     note(st, app, pane, running);
     if st.jobs.len() > 1 {
         eprintln!("[fileops] {} operation(s) queued", st.jobs.len() - 1);

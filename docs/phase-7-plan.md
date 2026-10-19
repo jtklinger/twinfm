@@ -890,6 +890,20 @@ and `sub\inner.txt`), then checked by script on a copy, which found damage:
   for byte copy of the entries of our own would let TwinFM write into such zips; not done (a
   candidate if it is ever missed).
 
+Jeremy's third console check on d0f74eb: copy out of the password zip and copy into it both
+"failed" with no message and no password prompt. Reproduced by script: the copy out's job stood at
+0% with the shell's "Password needed" dialog open **behind TwinFM's window** (class `#32770`, on a
+thread of the shell's own, owned by its unowned `OperationStatusWindow`, neither brought forward),
+and the copy in waited queued behind it, so neither ever ended. Older than P7-M3 in kind (any
+dialog the copy engine raises on its own threads could stay behind). Fix: while file jobs are in
+flight a 500 ms timer on the UI thread (`raise_job_dialogs`, stopped when none is) looks for this
+process's visible `#32770` windows that are not in front (`fileops::hidden_dialogs`) and, when one
+of TwinFM's windows is the foreground window, brings them to the front (`SetForegroundWindow`,
+allowed to the foreground process); with another program in front they are left and logged once
+(`[fileops] dialog "<title>" is open while another program is in front: left there`). Scripted with
+TwinFM in front: `[fileops] dialog "Password needed" was behind the window: brought to the front
+(ok)`.
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.
