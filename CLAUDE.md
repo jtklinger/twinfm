@@ -21,12 +21,14 @@ polish bundle; four milestones, opened 2026-10-18; its first section quotes Jere
 decisions and § Calls made lists the lead's). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (210 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (219 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
   the search walker's test, the size walker's test, the two archive tests and two virtual-drop
-  tests write to scratch folders, see below)
+  tests write to scratch folders, and since P7-M3 five more (the zip writer's, the 7z and TAR
+  writers', the ArchiveFolder listing's, and two file operation worker tests) write archives into
+  scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -315,8 +317,7 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   The `[enum] ... done:` line of an archive level reads `done: N entries (archive level, central
   directory C entries, read in R ms, cached|fresh), worker ...`. `[archive]` lines: `open <zip>: C
   entries, central directory R ms`, `cache evicted <zip>` (8 archives are cached), `refused: <what>
-  (<why>)` (paste, copy or move into, drops into: "writing into"; rename, delete, permanent delete,
-  move out, cut, new folder: "editing a zip archive is not supported"; folder sizes), `parse "<path>" -> item ok|failed 0x...` (a shell item or PIDL for a path inside
+  (<why>)` (folder sizes; since P7-M3 every write into a read-only format, below), `parse "<path>" -> item ok|failed 0x...` (a shell item or PIDL for a path inside
   an archive). `[dnd]` adds `DragEnter: N virtual item(s) (FileGroupDescriptorW, no CF_HDROP)`,
   `virtual drop: N file(s), M bytes, sync|async`, `virtual drop wrote <path> (K of N)`, `virtual
   drop done in T ms: Ok((files, bytes))`, `virtual drop refused: <why>` (a sync source over 256 MB),
@@ -325,6 +326,43 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   inside an archive: no IContextMenu2/3 routing`. Fixtures Jeremy keeps for this:
   `C:\traces\bigdir.zip` (the 40,000 files of `C:\traces\bigdir`, made with
   `[System.IO.Compression.ZipFile]::CreateFromDirectory`; not in the repo).
+  Since P7-M3, archives beyond zip, and zips written: a file whose extension Windows' `ArchiveFolder`
+  owns on this machine (`.7z`, `.bz2`, `.cpio`, `.gz` (so `.tar.gz`), `.mtree`, `.nupkg`, `.rar`,
+  `.tar`, `.tbz2`, `.tgz`, `.txz`, `.tzst`, `.uu`, `.xar`, `.xz`, `.zst`, each kept only while its
+  `HKCR\.ext` names `ArchiveFolder`: an archive another program owns opens in it) opens as a folder
+  as a zip does (`nav`, `key Return`, middle-click); `fs::archive::split` asks the file system only
+  about components with one of those extensions or `.zip`. Their levels are listed by the shell
+  (`BHID_EnumItems`) on the `archive` STA thread (`src/fs/archivefolder.rs`), one level at a time,
+  cached with the zips (8 archives). They are **read-only** (Windows' handler refuses every write,
+  Jeremy 2026-10-19): copy out works, any write is refused before a job (`fileops::archive::classify`,
+  also run on the worker). **Zips are written by TwinFM itself** (`src/fs/archivewrite.rs`, the `zip`
+  crate): paste, drops, copy and move into a zip, new folder and new file, rename, delete (permanent:
+  a zip has no Recycle Bin; asks first unless `TWINFM_SOAK`), cut and move out of it (the shell
+  extracts, then TwinFM removes the items); every write rewrites the zip into `<name>.~twinfm<pid>.tmp`
+  beside it and swaps it in with `ReplaceFileW`, existing entries copied raw. Files that would
+  replace files in the zip are asked about once per job (a message box: Yes replace, No skip, Cancel;
+  replace under `TWINFM_SOAK`). A move into a zip recycles the originals afterwards. No write into a
+  zip is undone (Ctrl+Z: "Cannot undo: changes to a zip archive cannot be undone"); nothing goes from
+  one archive into another (`BETWEEN_ARCHIVES`). A drop of another program's drag out of a zip or 7z
+  view goes to the extraction job (the data object's Shell IDList Array names the items' paths). The
+  Windows 11 menu's Compress to has "7z file" and "TAR file" besides ZIP: a `Job::Compress` on the
+  file operation worker (TwinFM's own writers, the `sevenz-rust2` and `tar` crates; any name, a pax
+  `path` record for a non-ASCII TAR name), the archive beside the first item and named after it
+  (`a.7z`, `a (2).7z`), undone by recycling it; `menupick 7z file` and `menupick TAR file` run
+  in a script. The `[enum] ... done:` line of a level of another format reads `done: N entries
+  (archive level, ArchiveFolder, listed in R ms, cached|fresh)`. `[archive]` adds `ArchiveFolder takes
+  K of 16 extensions (<exts>), read in T ms` (once), `worker CoInitializeEx(APARTMENTTHREADED) =
+  0x...`, `open <archive> level "<inner>": N entries through ArchiveFolder in R ms`, `cache dropped
+  <archive>` (after TwinFM wrote it), `refused: <what> (Windows' archive handler cannot write into
+  .<ext> archives)` and `(copying from one archive into another is not supported; ...)`, `refused
+  on the worker: <why>`, `job id=N "copy in|move in|new folder|new file|rename|delete|move out" on
+  <zip>: Done | Cancelled | Error("<why>") in T ms`, `move into <zip>: originals recycled: <outcome>
+  (N item(s))`, `N file(s) already in <zip>: replace|skip|cancelled`, `compress N item(s) to <archive>:
+  Ok(files) | Err("<why>") in T ms`. `[fileops] done` reads `Failed: <why>` for an archive job's
+  error. Fixtures Jeremy keeps beside `bigdir.zip`: `C:\traces\bigdir.7z` and
+  `C:\traces\bigdir.tar.gz` (made with `C:\Windows\System32\tar.exe`, bsdtar 3.8.9; Git Bash's `tar`
+  is GNU tar and writes no 7z; not in the repo). Windows' `tar.exe` crashes on names outside the
+  system code page (P7-M3), which is why TwinFM writes 7z and TAR itself.
   Since P3-M5, thumbnails: `settings set thumbnails true|false` then `settings ok` (or
   `TWINFM_CONFIG=<a read-only file with thumbnails = true>`) switches both panes to the 32 px lists
   and lists them again; no new driver step. `[settings] dialog: thumbnails <old> -> <new>`; `[icons]
@@ -548,7 +586,13 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   cycle runs a menu cycle in `dst` (Delete and its undo, Cut and Escape, Compress to > ZIP file,
   New folder from the background, Open with's submenu, then Shift+Delete of all); it reports menus
   shown and rebuilt, picks run, ZIPs made, new folders, submenus, classic menus from Show more
-  options, and menupicks refused (must be 0).
+  options, and menupicks refused (must be 0). Since P7-M3 each cycle also runs an archive cycle in
+  `%TEMP%\twinfm-m5\arch` (a.7z, a.tar.gz and a.zip made by the setup with Windows' `tar.exe`, and
+  c.txt): browse the tar.gz and the 7z, copy out of the 7z into `dst`, a refused copy back into it,
+  then in the zip copy in, new folder, rename, delete, move out and a dropped move back in, and
+  Compress to > 7z file and TAR file on c.txt, each undone; it reports levels listed by
+  ArchiveFolder, zip jobs done by kind, zip jobs not done (must be 0), refusals, archives compressed
+  and undone (three more Recycle Bin entries per cycle).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
@@ -606,7 +650,15 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   `dnd::tests::zip_folder_data_object_offers_virtual_files` asks the zip folder for its data object
   and extracts from it in `%TEMP%\twinfm-p3m4-dnd-<pid>\`; `virtual_files_round_trip` and
   `async_virtual_drop_on_a_worker` write virtual drops into `%TEMP%\twinfm-p3m4-virtual-<pid>\` and
-  `%TEMP%\twinfm-p3m4-async-<pid>\`. All remove their folders.
+  `%TEMP%\twinfm-p3m4-async-<pid>\`. Since P7-M3: `fs::archivewrite::tests::zip_edits_read_back`
+  edits zips (one made by `C:\Windows\System32\tar.exe` when it exists) in
+  `%TEMP%\twinfm-p7m3-zipw-<pid>\`, `compress_seven_z_and_tar` makes a 7z and a TAR of a tree with
+  non-ASCII names in `%TEMP%\twinfm-p7m3-pack-<pid>\` and lists them through `ArchiveFolder`,
+  `fs::archive::tests::shell_levels_are_listed_and_cached` lists a 7z it makes in
+  `%TEMP%\twinfm-p7m3-shell-<pid>\`, `fileops::archive::tests::jobs_are_classified` writes zip- and
+  7z-named files in `%TEMP%\twinfm-p7m3-classify-<pid>\`, and `zip_jobs_on_the_worker` runs zip jobs
+  and a Compress through the real worker in `%TEMP%\twinfm-p7m3-jobs-<pid>\` (no Recycle Bin). All
+  remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

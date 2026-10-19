@@ -15,9 +15,12 @@ pub enum Place {
     Search,
     /// This PC lists drives, which are neither copied, renamed nor deleted, and hold nothing new.
     ThisPc,
-    /// A level of a zip archive: nothing is written there (P3-M4), and a path inside one is no
-    /// file the clipboard can carry.
+    /// A level of an archive TwinFM does not write (every format but zip, P7-M3): nothing is
+    /// made, pasted, cut, renamed or deleted there, and a path inside one is no file the
+    /// clipboard can carry to another program.
     Archive,
+    /// A level of a zip archive, which TwinFM writes itself (P7-M3): every command applies.
+    Zip,
 }
 
 /// Which buttons apply: the New buttons and Paste where something can be made (Paste only with
@@ -25,7 +28,7 @@ pub enum Place {
 /// selected.
 pub fn state(place: Place, selected: usize, clipboard_files: bool) -> ToolState {
     let (make, take) = match place {
-        Place::Folder => (true, true),
+        Place::Folder | Place::Zip => (true, true),
         Place::Search => (false, true),
         Place::ThisPc | Place::Archive => (false, false),
     };
@@ -85,6 +88,7 @@ mod tests {
         // This PC and an archive level: nothing.
         assert_eq!(on(state(Place::ThisPc, 1, true)), [false; 6]);
         assert_eq!(on(state(Place::Archive, 2, true)), [false; 6]);
+        assert_eq!(on(state(Place::Zip, 1, true)), [true; 6], "a zip is written as a folder is");
     }
 
     #[test]

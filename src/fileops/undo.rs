@@ -13,6 +13,9 @@
 //!   the sink reported); a recycle that reported none records a note that undoes nothing. A
 //!   permanent delete records nothing.
 //! - Restore: recycle the restored items again.
+//! - Compress (P7-M3): recycle the archive it made.
+//! - A write into a zip archive, or an edit inside one (P7-M3): a record that undoes nothing and
+//!   says so (Jeremy, 2026-10-19: a zip has no Recycle Bin, and Explorer cannot undo them either).
 //!
 //! An undo job's own record is the redo: the app keeps a second stack (capped by `push` too), and
 //! when an undo job completes `Done` it pushes `record_for(&undo_job, ..)` there; a redo job's
@@ -38,14 +41,19 @@ pub struct Undo {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
-    /// None: the job cannot be undone (a recycle the bin reported no items for); Ctrl+Z says so.
+    /// None: the job cannot be undone (a recycle the bin reported no items for, a zip's write);
+    /// Ctrl+Z says so with `cannot`.
     pub undo: Option<Undo>,
     /// The job's status text, for "Undid: <text>".
     pub text: String,
+    /// The note Ctrl+Z shows when `undo` is None.
+    pub cannot: &'static str,
 }
 
 /// The note Ctrl+Z shows for a recycle whose items the bin did not report.
 pub const CANNOT_UNDO_DELETE: &str = "Cannot undo: the Recycle Bin reported no items";
+/// The note Ctrl+Z shows for a write into a zip archive or an edit inside one (P7-M3).
+pub const CANNOT_UNDO_ARCHIVE: &str = "Cannot undo: changes to a zip archive cannot be undone";
 
 /// The reverse of `job` from the items the sink reported, or None when nothing can be undone.
 pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
@@ -98,21 +106,29 @@ pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
             let (_, file) = made.into_iter().next()?;
             Some(Undo { job: Job::Delete { sources: vec![file.clone()], permanent: false }, expect: vec![file], must_be_empty: false })
         }
+        // To the Recycle Bin, as a new file.
+        Job::Compress { .. } => {
+            let (_, archive) = made.into_iter().next()?;
+            Some(Undo { job: Job::Delete { sources: vec![archive.clone()], permanent: false }, expect: vec![archive], must_be_empty: false })
+        }
         Job::Delete { permanent: true, .. } => None,
     }
 }
 
 /// What a finished job leaves on the undo stack (or, for an undo job, on the redo stack): only
-/// successful jobs leave anything; a recycle the bin reported no items for leaves a record that
-/// undoes nothing, a permanent delete none.
+/// successful jobs leave anything; a recycle the bin reported no items for, and a zip's write,
+/// leave a record that undoes nothing; a permanent delete none.
 pub fn record_for(job: &Job, outcome: &Outcome, results: &[ItemResult], text: &str) -> Option<Record> {
     if *outcome != Outcome::Done {
         return None;
     }
+    if matches!(super::archive::classify(job), Ok(Some(_))) {
+        return Some(Record { undo: None, text: text.into(), cannot: CANNOT_UNDO_ARCHIVE });
+    }
     match job {
         Job::Delete { permanent: true, .. } => None,
-        Job::Delete { permanent: false, .. } => Some(Record { undo: undo_for(job, results), text: text.into() }),
-        _ => Some(Record { undo: Some(undo_for(job, results)?), text: text.into() }),
+        Job::Delete { permanent: false, .. } => Some(Record { undo: undo_for(job, results), text: text.into(), cannot: CANNOT_UNDO_DELETE }),
+        _ => Some(Record { undo: Some(undo_for(job, results)?), text: text.into(), cannot: CANNOT_UNDO_DELETE }),
     }
 }
 
@@ -248,7 +264,7 @@ mod tests {
 
         let mut stack = Vec::new();
         for i in 0..CAP + 5 {
-            push(&mut stack, Record { undo: None, text: format!("{i}") });
+            push(&mut stack, Record { undo: None, text: format!("{i}"), cannot: CANNOT_UNDO_DELETE });
         }
         assert_eq!(stack.len(), CAP);
         assert_eq!(stack[0].text, "5", "the oldest went first");

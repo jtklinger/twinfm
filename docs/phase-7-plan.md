@@ -652,14 +652,189 @@ Medians 18.5 (reference) and 18.8 (candidate): no gap counts (the reference's 19
 candidate runs, and the medians are 0.3 apart), every candidate run under 20%. One session state
 throughout (render p50 2.29 to 2.33 ms in every run). The scenario opens no menu, as expected flat.
 
+## P7-M3: archives beyond zip, browse and write
+
+Branch `feat/p7-m3-archives`, from 193be73.
+
+### Settled first (2026-10-19, before any code)
+
+Checked against the machine first, with throwaway probes (an ignored test that drove the file
+operation worker, the shell folders' interfaces and `Shell.Application` on small archives of every
+format made by `C:\Windows\System32\tar.exe`, bsdtar 3.8.9; Git Bash's own `tar` is GNU tar and
+writes no 7z):
+
+- **Which formats `ArchiveFolder` takes.** Its registration names `.7z`, `.bz2`, `.cpio`, `.gz`,
+  `.mtree`, `.nupkg`, `.rar`, `.tar`, `.tbz2`, `.tgz`, `.txz`, `.tzst`, `.uu`, `.xar`, `.xz` and
+  `.zst` (a `.tar.gz` is a `.gz`); `.zip` is `CompressedFolder`'s and `.cab` `CABFolder`'s (not in
+  scope). Every format lists through `IShellFolder::EnumObjects` (`BindToHandler(BHID_EnumItems)`
+  on the archive's shell item, 6 to 23 ms for a two-entry archive), a lone `.gz`, `.xz` or `.bz2`
+  as one file named without the extension, and extracts through an `IFileOperation` copy of its
+  items (each copied item reports twice to the progress sink, first with a success code
+  0x00270011 and no destination, then with it).
+- **`ArchiveFolder` refuses every write**, for every format: a copy or move into it fails with
+  0x8007010B (`ERROR_DIRECTORY`, "The directory name is invalid"), new folder, rename and delete
+  inside with 0x80004001 (`E_NOTIMPL`); its folder has no drop target (`CreateViewObject
+  (IDropTarget)` 0x80004002) and no `IStorage`, and `SetNameOf` returns `E_NOTIMPL`. Its items'
+  verbs are Open and Copy only.
+- **The zip folder writes only through its drop target.** `IFileOperation` fails a copy or move
+  into a zip (0x8007010B), a new folder (0x80004005) and a rename (0x80070011) inside it, and a
+  copy within one zip (0x80070002); a delete inside works. Its drop target (`CreateViewObject
+  (IDropTarget)`) copies and moves into the zip's root and its folders: `Drop` returns at once and
+  the zip folder writes on a thread of its own (a temporary `x.zip~RF....TMP` beside the zip, then
+  replaced), holding the process reference (`SHSetInstanceExplorer`) from the drop to the end of
+  the write (100 MB in 4.5 s here); it never calls `IDataObjectAsyncCapability::EndOperation`, and
+  a move leaves the source on disk. `SetNameOf` and `IStorage::CreateStorage` fail (0x80004001,
+  0x80004005); its items' verbs are Open, Cut, Copy, Delete and Properties, no Rename. A move out
+  of a zip (`IFileOperation`) extracts files and folders but leaves the folders inside the zip.
+- **Undo**: the zip folder's drop reports nothing about what it wrote, and a zip has no Recycle Bin.
+- **Compress to > 7z / TAR**: Explorer's own "Compress to" is not reachable (P7-M2). Windows'
+  `tar.exe` writes both, but crashes (0xC0000005, an empty output file) on any name outside the
+  system code page (1252 here: "café.txt" works, "日本語.txt" crashes), in every format it writes.
+- **The foreign synchronous zip drop.** A shell folder's data object carries the items' PIDLs
+  (`Shell IDList Array`) beside the virtual files; read in `Drop`, they name the items by their
+  paths inside the archive, which the extraction job takes on the file operation worker.
+
+Then put to Jeremy with a recommendation, his answers:
+
+- **The formats other than zip**: recommended read-only, as Windows' handler allows (browse, copy
+  out; every write refused with a note saying Windows cannot write into that format); the
+  alternative was TwinFM unpacking and repacking the whole archive with `tar.exe` on every write.
+  Jeremy: "Read-only".
+- **How zips are written**: recommended through Windows' zip folder (copy and move in through its
+  drop target, delete through the job; rename, new folder and move out refused as the zip folder
+  refuses them). Jeremy chose the other option, **TwinFM's own zip writer** (the `zip` crate that
+  already reads the listings), so rename, new folder and move out work too, with TwinFM's own
+  percentage.
+- **Undo of a write into a zip**: recommended "cannot be undone" (as the kickoff planned; Explorer
+  cannot either). Jeremy: "Cannot be undone".
+- **Compress to > 7z / TAR**: recommended `tar.exe`, refusing names it would crash on. Jeremy chose
+  the other option, **TwinFM's own writers** (two new libraries, one for TAR and one for 7z), so
+  every name works.
+
+### What landed
+
+- **Other formats open as folders** (`src/fs/archive.rs`, `src/fs/archivefolder.rs`): a file whose
+  extension `ArchiveFolder` owns on this machine opens as a zip does. The extensions are the sixteen
+  its registration names, each kept only while `HKCR\.ext` still names `ArchiveFolder` (read once,
+  1.1 ms), so an archive another program owns (7-Zip's `.7z`) keeps opening in that program. `split`
+  asks the file system only about components carrying one of those extensions or `.zip`
+  (`split_with`, tested by counting the queries). Their levels are listed by the shell on the
+  `archive` STA thread (the shell item, `BindToHandler(BHID_EnumItems)`, each item's name,
+  attributes, size and date through `IShellItem2`; every COM object made and released there), one
+  level at a time as it is asked for, and cached beside the zips (eight archives, keyed by path, size
+  and modified time); the `[enum]` line names the handler. The crumb dropdown and the recursive
+  search inside them go through the same levels. Zip keeps its own central-directory listing.
+- **Read-only formats are refused once** (`fileops::archive::classify`, unit-tested): a job's
+  archive is decided from the job itself, before it is queued (`submit`, with the note "Windows'
+  archive handler cannot write into .7z archives") and again on the worker; the keys, the toolbar,
+  paste and drops into such a level refuse early with the same words. Nothing goes from one archive
+  into another (copy them out first). A copy out of any format is an ordinary extraction job.
+- **TwinFM writes zips** (`src/fs/archivewrite.rs`, Jeremy's choice): copy and move into a zip
+  (paste, drops, the other pane), new folder and new file, rename (a folder with everything below
+  it), delete (permanent, asked first: a zip has no Recycle Bin), and cut or move out of it (the shell
+  extracts, then TwinFM removes what came out). Each write rewrites the archive into a temporary file
+  beside it (existing entries copied raw, so encrypted entries and other zippers' extra fields stay as
+  they were; new files deflated) and swaps it in with `ReplaceFileW`; a failure removes the temporary
+  file and leaves the zip as it was (tested). Files that would replace files in the zip are asked
+  about once per job (Yes replace, No skip, Cancel). The jobs run on the file operation worker with
+  the status bar's percentage, drop the archive's cached levels, and the panes are listed again. A
+  zip level's toolbar and Windows 11 menu offer what a folder's do, without Open with, the terminal,
+  Properties or the packaged apps' commands.
+- **No write into a zip is undone** (Jeremy): its record says "Cannot undo: changes to a zip
+  archive cannot be undone".
+- **Compress to > 7z file and TAR file** (Jeremy's choice of TwinFM's own writers): a
+  `Job::Compress` on the file operation worker, the archive beside the first item and named after it
+  as Explorer names it (`report.7z`, `photos (2).tar`), through a temporary file; 7z by
+  `sevenz-rust2` (LZMA2), TAR by `tar` with a pax `path` record for a non-ASCII name, so Windows'
+  own reader shows Japanese and accented names right (tested through `ArchiveFolder`). Undone by
+  recycling the archive.
+- **The foreign zip drop moved into the extraction job**: a drag out of a zip or 7z view in
+  Explorer carries the items' PIDLs beside the virtual files, and `target_offer` now takes those
+  first, so the drop is the extraction job on the file operation worker (the shell's progress, an
+  undo record) instead of the synchronous reader inside `Drop`.
+- **Dependencies**: `tar` 0.4.46 and `sevenz-rust2` 0.24.1 (pure Rust, no compression feature
+  beyond LZMA2), and the `zip` crate's `deflate-flate2-zlib-rs` and `unreserved` features.
+- **Tests**: 210 to 219 (the split with the new extensions, the handlers by extension, a 7z listed
+  through `ArchiveFolder` with its cache, search and crumb folders, the zip writer's edits read back
+  (a zip `tar.exe` made among them), the 7z and TAR writers, new archive names, the job
+  classification, zip jobs and a Compress through the real worker, FILETIME conversion), and the
+  existing drop test now asserts the zip folder's data object becomes the extraction job.
+
+### Decisions
+
+- **The original of a move into a zip goes to the Recycle Bin**, not deleted outright (Explorer's
+  zip folder leaves it for the source to delete; the bin keeps it recoverable while the zip write
+  cannot be undone).
+- **A zip edit always rewrites the whole archive** (into a temporary file swapped in), as
+  Explorer's zip folder does; appending in place would be faster for a large zip, at the price of a
+  damaged archive if the write stopped half-way.
+- **Rename and delete inside a zip ignore case** and act on a folder's whole subtree, including
+  folders a zip only implies by its paths.
+- **Refused, recorded**: copying from one archive into another (or within one zip), drops of
+  virtual files into a zip, spring-loaded folders inside a zip, an archive inside an archive opened
+  as a folder (it is a file there; Return opens it through the shell, which extracts it first).
+- **The zip crate's `unreserved` feature**: without it a raw copy refuses entries carrying extra
+  fields the crate knows of but does not use (Info-ZIP's Unix 0x7875, which Windows' `tar.exe`
+  writes, as Linux and macOS zippers do); found by the scripted check, test added (fails without
+  it).
+
+### Scripted checks
+
+`%TEMP%\twinfm-m5\p7m3` (a.zip, a.7z, a.tar.gz made by `tar.exe` from a.txt and d\c.txt), the
+release build of this branch, `TWINFM_SOAK=1`:
+
+```
+[archive] ArchiveFolder takes 16 of 16 extensions (.7z .bz2 .cpio .gz .mtree .nupkg .rar .tar .tbz2 .tgz .txz .tzst .uu .xar .xz .zst), read in 1.1 ms
+[enum] pane=1 done: 2 entries (archive level, ArchiveFolder, listed in 21.5 ms, fresh), worker 27.0 ms, request-to-done 30.8 ms
+[enum] pane=1 done: 2 entries (archive level, ArchiveFolder, listed in 19.2 ms, cached), worker 4.9 ms, request-to-done 8.9 ms
+[fileops] done id=1 pane=1 tab=2 Done: Copied 2 items
+[archive] refused: copy into ...\p7m3\t.7z (Windows' archive handler cannot write into .7z archives)
+[archive] job id=2 "copy in" on ...\p7m3\t.zip: Done in 15 ms
+[archive] job id=3 "new folder" on ...\p7m3\t.zip: Done in 14 ms
+[archive] job id=4 "rename" on ...\p7m3\t.zip: Done in 14 ms
+[archive] job id=5 "move in" on ...\p7m3\t.zip: Done in 87 ms
+[archive] job id=6 "delete" on ...\p7m3\t.zip: Done in 13 ms
+[archive] job id=7 "move out" on ...\p7m3\t.zip: Done in 109 ms
+[winmenu] pane=1 seq=2 shown after 0 ms (no query): [] New folder | New file | Copy path | --- | Show more options
+[winmenu] pane=1 seq=3 shown after 0 ms (no query): [Cut Copy Rename Delete] Open | Open in other pane | --- | Copy path | --- | Show more options
+[winmenu] submenu "Compress to" at (714, 442): [] ZIP file | 7z file | TAR file
+[fileops] done id=8 pane=0 tab=1 Done: Compressed 1 item to d.7z
+[fileops] done id=9 pane=0 tab=1 Done: Compressed 1 item to d.tar
+[fileops] done id=10 pane=0 tab=1 Done: Undid: Compressed 1 item to d.tar
+```
+
+The first run of this script found every zip write failing on the zip `tar.exe` made (`Extra data
+header ID 030837 (0x7875) requires crate feature "unreserved"`; each failure left the zip as it was
+and no temporary file); the feature fixed it, above.
+
+Listing times of the fixtures (40,000 files in `bigdir`; the same session, unelevated):
+
+| Archive | Size | Root level | `bigdir` level, fresh | `bigdir` level, cached |
+|---|---|---|---|---|
+| `bigdir.zip` (own reader) | 4.26 MB | central directory 75.4 ms (all levels) | worker 103 ms | worker 30 ms |
+| `bigdir.7z` (ArchiveFolder) | 105 KB | 85.4 ms | 312.8 ms (worker 340 ms) | worker 40 ms |
+| `bigdir.tar.gz` (ArchiveFolder) | 431 KB | 215.7 ms | 295.0 ms (worker 322 ms) | worker 25 ms |
+
+`bigdir.7z` and `bigdir.tar.gz` were made with `C:\Windows\System32\tar.exe` (9 s and 5 s). The list
+kept rendering while the levels were listed (on the archive worker).
+
+`tools/soak-p5m3.ps1 -Minutes 6` (with the archive cycle): exit code 0, no panics, 4 cycles started,
+210 jobs done (0 failed, 0 cancelled, 0 soak refusals, 0 waitops timeouts); archives: 12 levels
+listed by ArchiveFolder, zip jobs done 3 of each kind (copy in, new folder, rename, delete, move out,
+move in; the fourth cycle stopped at the time limit before its archive steps), 0 not done, 4 writes
+into the 7z refused, 6 archives compressed and 6 undone; every earlier count as in P7-M2's soak
+(menupicks refused 0, toolbar presses refused 0, drags dropped 0, spring-loaded tabs 0); working set
+122.3 MB at 5 s, 229.6 at most, 225.1 at 360 s (P7-M2's 8-minute soak: 209.6 at most).
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.
 
 - **How the packaged apps' context menu items are found** (P7-M2): the first thing the milestone
   settles.
-- **Which archive formats Windows' handler writes into** (P7-M3): the first thing the milestone
-  settles; Jeremy asked for all, as far as Windows allows.
+- **Which archive formats Windows' handler writes into** (P7-M3): settled 2026-10-19, none
+  (`ArchiveFolder` refuses every write; the zip folder writes only through its drop target); TwinFM
+  writes zips itself and the other formats stay read-only (§ P7-M3 Settled first).
 - **Carried from Phase 6**: Google Drive's volume found by its name; a sync-root scratch folder for
   the soak (a console check only, Jeremy's call); the Slint whole-row snap patch and upstreaming
   (Jeremy's); the dead share console check owed from P5-M1.

@@ -1339,12 +1339,17 @@ thread_local! {
     static OWN_ARCHIVE_SOURCES: RefCell<Option<Vec<PathBuf>>> = const { RefCell::new(None) };
 }
 
-/// What the drop target makes of a data object: `offer`, except that our own drag out of an
-/// archive is its in-archive paths, for the extraction job (the shell's progress dialog, off the
-/// UI thread, with an undo record) instead of the synchronous virtual-file reader.
+/// What the drop target makes of a data object: `offer`, except that a drag out of an archive is
+/// its in-archive paths, for the extraction job (the shell's progress dialog, off the UI thread,
+/// with an undo record) instead of the synchronous virtual-file reader: our own drag (its paths
+/// recorded), or another program's whose data object carries the items' PIDLs beside the virtual
+/// files, as a shell folder's own does (P7-M3: Explorer's zip and 7z views).
 fn target_offer(data: *mut c_void) -> Offer {
     match offer(data) {
-        Offer::Virtual(v) => OWN_ARCHIVE_SOURCES.with(|s| s.borrow().clone()).map_or(Offer::Virtual(v), Offer::Archive),
+        Offer::Virtual(v) => match OWN_ARCHIVE_SOURCES.with(|s| s.borrow().clone()) {
+            Some(own) => Offer::Archive(own),
+            None => read_archive_idlist(data).map_or(Offer::Virtual(v), Offer::Archive),
+        },
         o => o,
     }
 }
@@ -1777,9 +1782,13 @@ impl DropTarget {
     fn evaluate(&self, keys: u32, pt: POINTL, allowed: u32) -> (Option<DropSpot>, u32) {
         let p = self.client(pt);
         let spot = crate::drop_spot(p.x, p.y);
+        // Into a zip (the only archive a spot can be in, P7-M3): files are copied unless Shift
+        // asks for a move, as onto another volume; virtual files and items of another archive
+        // are refused.
+        let into_archive = spot.as_ref().is_some_and(|s| crate::fs::archive::inside(&s.dest));
         let effect = match (&*self.offered.borrow(), &spot) {
-            (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed, self.same_volume(&spot.dest)),
-            (Offer::Virtual(_) | Offer::Archive(_), Some(_)) => virtual_effect(allowed),
+            (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed, !into_archive && self.same_volume(&spot.dest)),
+            (Offer::Virtual(_) | Offer::Archive(_), Some(_)) if !into_archive => virtual_effect(allowed),
             _ => NONE,
         };
         (spot, effect)
@@ -3834,6 +3843,16 @@ mod tests {
                 "{listed:?}"
             );
             assert!(data.query(&IID_IDATAOBJECTASYNCCAPABILITY).is_some(), "the zip folder supports async drops");
+            // Its items' PIDLs ride along: a drop of it (from Explorer's zip view too) goes to the
+            // extraction job (P7-M3), not the synchronous reader.
+            match target_offer(data.0) {
+                Offer::Archive(mut p) => {
+                    p.sort();
+                    let want = [zip.join("sub").join("a.txt"), zip.join("sub").join("inner")];
+                    assert!(p.len() == 2 && p.iter().zip(&want).all(|(a, b)| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())), "{p:?}");
+                }
+                other => panic!("the zip folder's data object as a drop: {other:?}"),
+            }
             // A shell data object over the same items offers only a Shell IDList Array: their
             // in-archive paths, for the extraction job.
             let (fp, _folder, children) = shellmenu::parse_items(std::ptr::null_mut(), &zip.join("sub"), &["a.txt".to_string()]).unwrap();

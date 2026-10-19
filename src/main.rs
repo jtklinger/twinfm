@@ -3,6 +3,8 @@ slint::include_modules!();
 
 mod fs {
     pub mod archive;
+    pub mod archivefolder;
+    pub mod archivewrite;
     pub mod enumerate;
     pub mod sizes;
     pub mod watch;
@@ -709,7 +711,7 @@ fn tool_place(st: &State, pane: usize) -> toolbar::Place {
     } else if st.is_search(pane) {
         toolbar::Place::Search
     } else if in_archive(st, pane) {
-        toolbar::Place::Archive
+        if in_readonly_archive(st, pane) { toolbar::Place::Archive } else { toolbar::Place::Zip }
     } else {
         toolbar::Place::Folder
     }
@@ -1047,14 +1049,7 @@ fn drain() {
                                     reparse.junction, reparse.symlink, reparse.cloud, reparse.alias, reparse.other
                                 )
                             };
-                            let level = archive.map_or(String::new(), |a| {
-                                format!(
-                                    " (archive level, central directory {} entries, read in {:.1} ms, {})",
-                                    a.count,
-                                    a.read_ms,
-                                    if a.cached { "cached" } else { "fresh" }
-                                )
-                            });
+                            let level = archive.map_or(String::new(), |a| format!(" ({})", a.describe()));
                             eprintln!(
                                 "[enum] pane={pane} done: {total} entries{level}, worker {:.1} ms, request-to-done {wall:.1} ms{split}",
                                 elapsed.as_secs_f64() * 1e3
@@ -2322,18 +2317,24 @@ fn note(st: &mut State, app: &App, pane: usize, text: String) {
     update_status(st, app, pane);
 }
 
-/// The pane's active tab shows a level of a zip archive.
+/// The pane's active tab shows a level of an archive.
 fn in_archive(st: &State, pane: usize) -> bool {
     fs::archive::inside(&st.tab(pane).path)
 }
 
-/// Why an operation on an archive is refused (P3-M4).
-const INTO_ARCHIVE: &str = "writing into a zip archive is not supported";
-/// The shell's zip folder hangs on these through IFileOperation (0x80004005 in its own dialog).
-const EDIT_ARCHIVE: &str = "editing a zip archive is not supported";
+/// The pane's active tab shows a level of an archive TwinFM does not write (P7-M3: every format
+/// but zip, which Windows' handler refuses to write).
+fn in_readonly_archive(st: &State, pane: usize) -> bool {
+    fs::archive::split(&st.tab(pane).path).is_some_and(|(a, _)| fs::archive::handler_of(&a) != fs::archive::Handler::Zip)
+}
 
-/// Nothing is written into or changed inside an archive yet (P3-M4): say so in the pane and the
-/// log, before any shell call.
+/// Why a write into the pane's read-only archive is refused.
+fn read_only_why(st: &State, pane: usize) -> String {
+    fs::archive::split(&st.tab(pane).path).map_or_else(String::new, |(a, _)| fileops::archive::read_only_why(&a))
+}
+
+/// A write into, or an edit inside, an archive that is refused: say so in the pane and the log,
+/// before any shell call.
 fn refuse_archive(st: &mut State, app: &App, pane: usize, what: &str, why: &str) {
     eprintln!("[archive] refused: {what} ({why})");
     note(st, app, pane, format!("{what}: {why}"));
@@ -2370,6 +2371,12 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
             note(st, app, pane, text);
             return None;
         }
+    }
+    // Writes into archives (P7-M3): a zip's go to TwinFM's writer, the rest are refused here.
+    if let Err(why) = fileops::archive::classify(&job) {
+        let what = fileops::running_text(&job);
+        refuse_archive(st, app, pane, what.trim_end_matches("..."), &why);
+        return None;
     }
     st.next_job += 1;
     let id = st.next_job;
@@ -2412,10 +2419,11 @@ fn submit_removing(st: &mut State, app: &App, pane: usize, job: Job, fallback: O
 fn command(pane: usize, cmd: &str) {
     match cmd {
         // A cut out of an archive would paste as a move out of it.
-        "cx" if with_state(|st| in_archive(st, pane)) => {
+        "cx" if with_state(|st| in_readonly_archive(st, pane)) => {
             return with_state(|st| {
                 if let Some(app) = st.app.upgrade() {
-                    refuse_archive(st, &app, pane, "cut", EDIT_ARCHIVE);
+                    let why = read_only_why(st, pane);
+                    refuse_archive(st, &app, pane, "cut", &why);
                 }
             });
         }
@@ -2447,19 +2455,25 @@ fn command(pane: usize, cmd: &str) {
             "newfolder" | "newfile" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
             "newfolder" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a folder in it".into()),
             "newfile" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a file in it".into()),
-            "newfolder" if in_archive(st, pane) => refuse_archive(st, &app, pane, "new folder", EDIT_ARCHIVE),
-            "newfile" if in_archive(st, pane) => refuse_archive(st, &app, pane, "new file", EDIT_ARCHIVE),
+            "newfolder" | "newfile" if in_readonly_archive(st, pane) => {
+                let why = read_only_why(st, pane);
+                refuse_archive(st, &app, pane, if cmd == "newfolder" { "new folder" } else { "new file" }, &why);
+            }
             "newfolder" => return Some((app, 2, SharedString::from("New folder"))),
             // Explorer's name for a new empty file (P6-M3); the shell numbers it on a collision.
             "newfile" => return Some((app, 3, SharedString::from(fileops::NEW_FILE_NAME))),
-            "rename" | "delete" | "sdelete" if in_archive(st, pane) => {
+            "rename" | "delete" | "sdelete" if in_readonly_archive(st, pane) => {
                 let what = match cmd {
                     "sdelete" => "permanent delete",
                     c => c,
                 };
-                refuse_archive(st, &app, pane, what, EDIT_ARCHIVE);
+                let why = read_only_why(st, pane);
+                refuse_archive(st, &app, pane, what, &why);
             }
-            "move" if in_archive(st, pane) => refuse_archive(st, &app, pane, "move out of an archive", EDIT_ARCHIVE),
+            "move" if in_readonly_archive(st, pane) => {
+                let why = read_only_why(st, pane);
+                refuse_archive(st, &app, pane, "move out of an archive", &why);
+            }
             "rename" => match usize::try_from(current_row(&app, pane)).ok().and_then(|r| st.model(pane).entry(r)) {
                 None => note(st, &app, pane, "nothing to rename".into()),
                 Some(e) if e.kind == Kind::Drive => note(st, &app, pane, "drives cannot be renamed here".into()),
@@ -2479,8 +2493,9 @@ fn command(pane: usize, cmd: &str) {
                     note(st, &app, pane, "the other pane lists drives; open a folder there first".into());
                     return None;
                 }
-                if in_archive(st, 1 - pane) {
-                    refuse_archive(st, &app, pane, &format!("{cmd} into {}", dest.display()), INTO_ARCHIVE);
+                if in_readonly_archive(st, 1 - pane) {
+                    let why = read_only_why(st, 1 - pane);
+                    refuse_archive(st, &app, pane, &format!("{cmd} into {}", dest.display()), &why);
                     return None;
                 }
                 if cmd == "move" && same_dir(&folder, &dest) {
@@ -2561,7 +2576,7 @@ fn undo(pane: usize) {
         };
         let Some(u) = rec.undo else {
             eprintln!("[undo] \"{}\" cannot be undone", rec.text);
-            return note(st, &app, pane, fileops::undo::CANNOT_UNDO_DELETE.into());
+            return note(st, &app, pane, rec.cannot.into());
         };
         if let Err(why) = fileops::undo::check(&u) {
             eprintln!("[undo] \"{}\" refused: {why}", rec.text);
@@ -2569,7 +2584,7 @@ fn undo(pane: usize) {
         }
         eprintln!("[undo] \"{}\" with {:?}", rec.text, u.job);
         let job = u.job.clone();
-        submit_replay(st, &app, pane, job, (Replay::Undo, fileops::undo::Record { undo: Some(u), text: rec.text }));
+        submit_replay(st, &app, pane, job, (Replay::Undo, fileops::undo::Record { undo: Some(u), text: rec.text, cannot: rec.cannot }));
     });
 }
 
@@ -2598,7 +2613,7 @@ fn redo(pane: usize) {
         }
         eprintln!("[undo] redo \"{}\" with {:?}", rec.text, u.job);
         let job = u.job.clone();
-        submit_replay(st, &app, pane, job, (Replay::Redo, fileops::undo::Record { undo: Some(u), text: rec.text }));
+        submit_replay(st, &app, pane, job, (Replay::Redo, fileops::undo::Record { undo: Some(u), text: rec.text, cannot: rec.cannot }));
     });
 }
 
@@ -2829,8 +2844,9 @@ fn clipboard_paste(pane: usize) {
             note(st, &app, pane, "search results: paste into a folder".into());
             return None;
         }
-        if in_archive(st, pane) {
-            refuse_archive(st, &app, pane, "paste", INTO_ARCHIVE);
+        if in_readonly_archive(st, pane) {
+            let why = read_only_why(st, pane);
+            refuse_archive(st, &app, pane, "paste", &why);
             return None;
         }
         Some(main_hwnd(st, &app))
@@ -3278,7 +3294,7 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
         let seq = st.winmenu_seq;
         // Nothing to ask inside an archive (its paths are no files to an app) or on This PC's own
         // background.
-        let ask = place != toolbar::Place::Archive && !(place == toolbar::Place::ThisPc && entries.is_empty());
+        let ask = !matches!(place, toolbar::Place::Archive | toolbar::Place::Zip) && !(place == toolbar::Place::ThisPc && entries.is_empty());
         let waiting = ask && {
             let q = explorercmd::Query {
                 seq,
@@ -3613,6 +3629,18 @@ fn winmenu_picked(id: i32) {
     slint::Timer::single_shot(Duration::ZERO, move || run_winmenu_pick(m, cmd));
 }
 
+/// Compress to > 7z file / TAR file (P7-M3): a file job that makes the archive beside the items
+/// (a search result's own folder), named after the first item.
+fn compress(pane: usize, folder: &Path, names: &[String], format: fs::archivewrite::Format) {
+    let sources: Vec<PathBuf> = names.iter().map(|n| folder.join(n)).collect();
+    let Some(dest_dir) = sources.first().and_then(|s| s.parent()).map(Path::to_path_buf) else { return };
+    with_state(|st| {
+        if let Some(app) = st.app.upgrade() {
+            submit(st, &app, pane, Job::Compress { sources, dest_dir, format });
+        }
+    });
+}
+
 /// Run a picked item, after its menu closed.
 fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
     use winmenu::Cmd;
@@ -3635,6 +3663,10 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
         Cmd::CopyPath => own_item(pane, shellmenu::OwnItem::CopyPath, m.ctx),
         Cmd::Share => queue_verb(pane, verb_request(&m.req, "", "Share", true), None),
         Cmd::Zip => queue_verb(pane, verb_request(&m.req, "", ZIP_LABEL, true), None),
+        Cmd::SevenZ | Cmd::Tar => {
+            let format = if cmd == Cmd::SevenZ { fs::archivewrite::Format::SevenZ } else { fs::archivewrite::Format::Tar };
+            compress(pane, &m.req.folder, &m.req.names, format);
+        }
         Cmd::ChooseApp => queue_verb(pane, verb_request(&m.req, "openas", "Choose another app", false), None),
         Cmd::More => {
             // After a frame, so the window is drawn without the menu before the classic one's
@@ -3787,8 +3819,8 @@ fn open_row(pane: usize, row: i32) {
         // The file's own folder (a search result's may lie below the tab's).
         let dir = path.parent().map_or(folder, Path::to_path_buf);
         let archive = in_archive(st, pane);
-        // A zip in a folder opens as a folder; one inside an archive is a file the shell opens.
-        let enter = e.is_dir() || (!archive && fs::archive::is_zip_name(&e.name));
+        // An archive in a folder opens as a folder; one inside an archive is a file the shell opens.
+        let enter = e.is_dir() || (!archive && fs::archive::is_archive_name(&e.name));
         Some((enter, path, dir, hwnd, archive))
     });
     match target {
@@ -3881,8 +3913,8 @@ fn history_button(pane: usize, forward: bool) {
 fn middle_click_row(pane: usize, row: usize) {
     let target = with_state(|st| {
         let e = st.model(pane).entry(row)?;
-        let zip = !in_archive(st, pane) && fs::archive::is_zip_name(&e.name);
-        Some((e.is_dir() || zip, st.tab(pane).path.join(e.name.as_str())))
+        let archive = !in_archive(st, pane) && fs::archive::is_archive_name(&e.name);
+        Some((e.is_dir() || archive, st.tab(pane).path.join(e.name.as_str())))
     });
     match target {
         Some((true, path)) => {
@@ -4183,12 +4215,19 @@ thread_local! {
     static ARCHIVE_REFUSED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
-/// No drop into an archive (P3-M4 writes nothing into archives): no spot, logged once per hover.
+/// No drop into an archive TwinFM does not write (P7-M3: every format but zip): no spot, logged
+/// once per hover.
 fn refuse_archive_drop(dest: &Path) -> Option<dnd::DropSpot> {
     if ARCHIVE_REFUSED.with(|c| c.borrow_mut().replace(dest.to_path_buf())).as_deref() != Some(dest) {
-        eprintln!("[archive] refused: drop into {} (writing into a zip archive is not supported)", dest.display());
+        let why = fs::archive::split(dest).map_or_else(String::new, |(a, _)| fileops::archive::read_only_why(&a));
+        eprintln!("[archive] refused: drop into {} ({why})", dest.display());
     }
     None
+}
+
+/// `dest` lies inside an archive TwinFM does not write.
+fn read_only_dest(dest: &Path) -> bool {
+    fs::archive::inside(dest) && !fs::archive::writable(dest)
 }
 
 /// A drop on a search tab (its list, or its tab in the strip) goes nowhere: its folder is the
@@ -4221,7 +4260,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             // A sidebar row's folder (a drive's root, a place, a bookmark), noted in the active pane.
             dnd::Spot::Side(i) => {
                 let dest = st.side.get(i)?.path.clone()?;
-                if fs::archive::inside(&dest) {
+                if read_only_dest(&dest) {
                     return refuse_archive_drop(&dest);
                 }
                 return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest, springs: false });
@@ -4238,7 +4277,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 if dest.as_os_str().is_empty() || is_this_pc(&dest.to_string_lossy()) {
                     return None;
                 }
-                if fs::archive::inside(&dest) {
+                if read_only_dest(&dest) {
                     return refuse_archive_drop(&dest);
                 }
                 let springs = st.panes[p].active_index() != i;
@@ -4257,7 +4296,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 if is_this_pc(&c.target.to_string_lossy()) {
                     return None;
                 }
-                if fs::archive::inside(&c.target) {
+                if read_only_dest(&c.target) {
                     return refuse_archive_drop(&c.target);
                 }
                 return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Crumb(i), dest: c.target, springs: false });
@@ -4267,7 +4306,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             refuse_search_drop(pane, st.tab(pane).id);
             return None;
         }
-        if in_archive(st, pane) {
+        if in_readonly_archive(st, pane) {
             return refuse_archive_drop(&st.tab(pane).path);
         }
         let folder = &st.tab(pane).path;
@@ -4275,8 +4314,9 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
         let this_pc = is_this_pc(&folder.to_string_lossy());
         let (dest, on_row) = dnd::drop_folder(folder, this_pc, entry.as_ref().map(|e| (e.name.as_str(), e.is_dir())))?;
         let row = if on_row { row.map_or(-1, |r| r as i32) } else { -1 };
-        // A folder row or tile (a drive row on This PC too) opens when the drag is held over it.
-        Some(dnd::DropSpot { pane, mark: dnd::Mark::Row(row), dest, springs: row >= 0 })
+        // A folder row or tile (a drive row on This PC too) opens when the drag is held over it;
+        // never inside an archive (a zip's levels take drops since P7-M3).
+        Some(dnd::DropSpot { pane, mark: dnd::Mark::Row(row), dest, springs: row >= 0 && !in_archive(st, pane) })
     })
 }
 
@@ -6091,7 +6131,7 @@ mod tests {
     #[test]
     fn after_job_feeds_the_two_stacks() {
         use fileops::undo::Record;
-        let rec = |t: &str| Some(Record { undo: None, text: t.into() });
+        let rec = |t: &str| Some(Record { undo: None, text: t.into(), cannot: "" });
         let texts = |v: &[Record]| v.iter().map(|r| r.text.clone()).collect::<Vec<_>>();
         let (mut undo, mut redo) = (Vec::new(), Vec::new());
         assert_eq!(after_job(None, true, rec("a"), &mut undo, &mut redo), 0);
@@ -6108,8 +6148,8 @@ mod tests {
         // stack, record or not (a failed one with some items done, a permanent delete).
         undo.pop();
         assert_eq!(after_job(Some(Replay::Undo), false, None, &mut undo, &mut redo), 0);
-        redo.push(Record { undo: None, text: s("x") });
-        redo.push(Record { undo: None, text: s("y") });
+        redo.push(Record { undo: None, text: s("x"), cannot: "" });
+        redo.push(Record { undo: None, text: s("y"), cannot: "" });
         // A job cancelled while queued, or one whose every item failed, leaves redo alone.
         assert_eq!(after_job(None, false, None, &mut undo, &mut redo), 0);
         assert_eq!(texts(&redo), [s("x"), s("y")]);
