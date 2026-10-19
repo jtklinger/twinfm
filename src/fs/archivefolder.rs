@@ -195,6 +195,24 @@ fn enumerate(path: &Path) -> Result<Vec<Raw>, String> {
     Ok(out)
 }
 
+/// Removes a test's scratch folder after it listed archives in it through `ArchiveFolder`. A
+/// sharing violation (os error 32) on that removal came once in about 1,500 test runs under load
+/// (2026-10-19): something still held a file there for a moment, though every COM object above is
+/// released before `level` returns. So the removal is tried again, 100 ms apart, for up to 2 s.
+#[cfg(test)]
+pub(crate) fn remove_scratch(dir: &Path) {
+    for k in 1.. {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            Err(e) if e.raw_os_error() == Some(32) && k < 20 => {
+                eprintln!("[archive] {} held (try {k}): {e}", dir.display());
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => panic!("cannot remove {}: {e}", dir.display()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
