@@ -1095,6 +1095,21 @@ slot that read one to three points higher whichever binary sat in it (2026-10-15
 swapped-order re-run (ab31, `C:\traces\gate-p7m4-swap.ps1`: the defaults and toolbar pairs with the
 candidate first) is to tell that bias from a cost.
 
+**ab31**, 2026-10-19 (finished 17:48, 15 min), the same binaries, the candidate first in each pair:
+
+| Pair | Candidate runs (WPR %) | Reference runs (WPR %) | Medians (cand / ref) | Render p50 ms (cand / ref) |
+|---|---|---|---|---|
+| defaults | 19.8, 22.5, 20.3 | 19.1, 20.3, 20.9 | 20.3 / 20.3 | 2.23 3.04 2.85 / 2.36 2.88 2.90 |
+| in-pane toolbar | 29.4, 20.6, 20.3 | 27.2, 20.6, 20.5 | 20.6 / 20.6 | 3.72 2.88 2.85 / 3.58 2.90 2.86 |
+
+The session ran mostly in the slower state (render p50 2.85 to 3.04 ms, and round 1 of the toolbar
+pair slower still, 3.6 to 3.7, both builds), so both builds sit about 20%; pair by pair, like for
+like, the candidate reads +0.7, +2.2 and -0.6 on the defaults and +2.2, 0.0 and -0.2 on the toolbar,
+now with the first slot's lead. Equal medians in both pairs: **no gap counts** in either order, and
+ab30's 1.1 points on the toolbar pair were the second slot's. Read together: P7-M4 passes the gate
+(the grids at or below the reference, the defaults and in-pane toolbar level with it; in ab30's
+faster state every defaults and toolbar run of both builds in round 1 under 20%).
+
 ### Console checks (for Jeremy, unelevated, after the gate)
 
 1. **The drag cursor**: drag a file from one pane over a folder in the other: the "Move to ..." label
