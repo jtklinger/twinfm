@@ -474,6 +474,10 @@ mod tests {
     use std::io::Write;
     use zip::write::SimpleFileOptions;
 
+    /// Held by the tests that read the cache back: `central_directory_levels` fills it past
+    /// `CACHE_MAX`, which would evict another test's archive between two of its listings.
+    static CACHE_TESTS: Mutex<()> = Mutex::new(());
+
     fn names(entries: &[Entry]) -> Vec<(String, Kind, u64)> {
         let mut v: Vec<(String, Kind, u64)> = entries.iter().map(|e| (e.name.to_string(), e.kind, e.size)).collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
@@ -500,6 +504,7 @@ mod tests {
 
     #[test]
     fn central_directory_levels() {
+        let _cache = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("twinfm-p3m4-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -646,6 +651,7 @@ mod tests {
     /// the cache, the crumb dropdown's folders, the search inside it, and `forget`.
     #[test]
     fn shell_levels_are_listed_and_cached() {
+        let _cache = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("twinfm-p7m3-shell-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let top = dir.join("top");
@@ -685,6 +691,6 @@ mod tests {
         forget(&a);
         let (_, info) = list(&a, "top", &mut TypeNames::default(), &LocalZone::current()).unwrap();
         assert!(!info.cached, "forgotten: listed again");
-        std::fs::remove_dir_all(&dir).unwrap();
+        crate::fs::archivefolder::remove_scratch(&dir);
     }
 }
