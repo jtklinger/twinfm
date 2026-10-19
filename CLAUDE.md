@@ -664,6 +664,10 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   Elements with no `accessible-role` are invisible to it; rows use the StandardListView
   layering (base component holds the single `for`, derived adds the zero-width FocusScope and
   `accessible-delegate-focus`).
+- Screenshots of a scripted run: the femtovg window captures blank (CopyFromScreen and
+  PrintWindow alike). Run with `SLINT_BACKEND=winit-software` and capture with
+  `PrintWindow(hwnd, hdc, 2)` from a script started in the background, finding the window by its
+  title prefix `TwinFM - ` (2026-10-18, P7-M2's menu check).
 
 ## License
 The app is MIT. Slint is used under its Royalty-free 2.0 license, which allows a modified
