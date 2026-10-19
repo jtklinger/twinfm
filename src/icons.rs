@@ -85,20 +85,21 @@ pub struct TileGeom {
 }
 
 impl TileGeom {
-    /// Large icons: the shell's 96 px icon filling the tile's width, a one-line name under it.
-    pub const LARGE: TileGeom = TileGeom { w: 96.0, h: 120.0, icon_px: 96.0, icon_top: 2.0 };
+    /// Large icons: the shell's 96 px icon filling the tile's width, the name under it on up to two
+    /// lines (P7-M4; one line and 120 px before): 2 + 96 + 38 px tall.
+    pub const LARGE: TileGeom = TileGeom { w: 96.0, h: 136.0, icon_px: 96.0, icon_top: 2.0 };
     /// Medium icons: the shell's 48 px icon (SHIL_EXTRALARGE, a thumbnail cache size), so nothing
     /// is scaled. Explorer's medium tile at 100% is 74 px wide on an 82 x 99 pitch with names on up
-    /// to three lines (measured with UI Automation, 2026-10-17); ours keeps the large tile's
-    /// one-line name: 2 + 48 + 1 + 19 + 2 px tall, 80 px wide (a 76 px name).
-    pub const MEDIUM: TileGeom = TileGeom { w: 80.0, h: 72.0, icon_px: 48.0, icon_top: 2.0 };
+    /// to three lines (measured with UI Automation, 2026-10-17); ours has the large tile's two-line
+    /// name (P7-M4; one line and 72 px before): 2 + 48 + 38 px tall, 80 px wide (a 76 px name).
+    pub const MEDIUM: TileGeom = TileGeom { w: 80.0, h: 88.0, icon_px: 48.0, icon_top: 2.0 };
 
     pub fn of(medium: bool) -> TileGeom {
         if medium { TileGeom::MEDIUM } else { TileGeom::LARGE }
     }
 }
 
-/// Grid rows composed into the strip above and below the visible ones: one 120 px row, about the
+/// Grid rows composed into the strip above and below the visible ones: one 136 px row, about the
 /// details strip's 88 px (4 rows of 22) of scroll before a recompose, at a fraction of the size.
 pub const GRID_MARGIN_ROWS: usize = 1;
 
@@ -2123,12 +2124,12 @@ mod tests {
         let m = GRID_MARGIN_ROWS;
         assert_eq!(grid_strip_range((10, 18), 1000), (10 - m, 18 + m));
         assert_eq!(grid_strip_range((0, 3), 4), (0, 3));
-        assert_eq!(visible_range(-120.0, 600.0, 1000, TileGeom::LARGE.h), Some((1, 6)));
-        assert_eq!(visible_range(-144.0, 600.0, 1000, TileGeom::MEDIUM.h), Some((2, 11)));
+        assert_eq!(visible_range(-136.0, 600.0, 1000, TileGeom::LARGE.h), Some((1, 6)));
+        assert_eq!(visible_range(-176.0, 600.0, 1000, TileGeom::MEDIUM.h), Some((2, 9)));
         assert_eq!(GridGeom::new(1.0, 0, TileGeom::LARGE).cols, 1, "no width yet reads as one column");
         // The medium tile: a 48 px icon centred in an 80 px tile, 2 px from its top.
         let m = GridGeom::new(1.0, 4, TileGeom::MEDIUM);
-        assert_eq!((m.icon_px, m.icon_pos(0), m.icon_pos(5), m.width(), m.height(2)), (48, (16, 2), (96, 74), 320, 144));
+        assert_eq!((m.icon_px, m.icon_pos(0), m.icon_pos(5), m.width(), m.height(2)), (48, (16, 2), (96, 90), 320, 176));
         assert_eq!(TileGeom::of(true), TileGeom::MEDIUM);
         assert_eq!(TileGeom::of(false), TileGeom::LARGE);
     }

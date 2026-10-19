@@ -48,6 +48,12 @@
 //!   backclick <pane> path|edit       the Back button over the path bar's middle (with `pathmode
 //!                                    <pane> entry`, the text entry) or over row 0's name cell (with F2,
 //!                                    the rename editor): ignored there (P6-M3)
+//!   backclick <pane> tool            the Back button over the toolbar's first button (P7-M4): the bar
+//!                                    across the window (the active pane goes back) or, with
+//!                                    `toolbar = "pane"`, the pane's own bar; `forwardclick` the same
+//!   hover <x> <y>                    move the pointer to (x, y), logical px of the window, through
+//!                                    Slint's pointer path (a toolbar button's tooltip shows after
+//!                                    500 ms: `[toolbar] top|pane=N tooltip "<name> (<key>)"`)
 //!   history <back|forward>           Alt+Left / Alt+Right through the Slint key path, on the active pane
 //!   view <details|icons>             Ctrl+Shift+1 / Ctrl+Shift+2 (key names CtrlShift1, CtrlShift2): the
 //!                                    active pane's view, the details list or the large-icon grid
@@ -285,6 +291,7 @@ enum Step {
     /// the middle of the pane's list area.
     /// `at`: None the list's middle; "path" the path bar's middle; "edit" row 0's name cell.
     XButton { pane: usize, forward: bool, at: Option<String> },
+    Hover { x: f32, y: f32 },
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
     WaitOps(u64),
@@ -372,6 +379,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "shiftclick" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: Some(Key::Shift) },
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
+                "hover" => Step::Hover { x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0), y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0) },
                 "backclick" => Step::XButton { pane: num(1) as usize, forward: false, at: a.get(2).map(|s| s.to_string()) },
                 "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true, at: a.get(2).map(|s| s.to_string()) },
                 "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
@@ -609,7 +617,7 @@ fn thumb(app: &App, pane: usize) -> LogicalPosition {
 /// Centre of a visible row: rows start under the 3 px padding, the tab strip when there is one,
 /// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing; 22 px each (32 px with thumbnails on).
 /// In the icon grid, the centre of visible entry `row`'s tile (`row / cols` grid rows down,
-/// `row % cols` tiles across, 96 x 120 px each, 80 x 72 px medium).
+/// `row % cols` tiles across, 96 x 136 px each, 80 x 88 px medium (P7-M4)).
 fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
     let (_, _, mid) = geometry(app, pane);
     let l = crate::window_layout(app);
@@ -1103,6 +1111,10 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     pos.x = left + crate::dnd::PANE_PAD + l.row_px + 60.0;
                     pos.y = list_top(&app, pane) + l.row_px / 2.0;
                 }
+                // Over the toolbar's first button (P7-M4): the bar across the window when there is
+                // one (its Back goes to the active pane), else the pane's own bar.
+                Some("tool") if l.top > 0.0 => pos = slint::LogicalPosition::new(20.0, l.top / 2.0),
+                Some("tool") => pos = slint::LogicalPosition::new(left + crate::dnd::PANE_PAD + 16.0, l.top + crate::dnd::PANE_PAD + 16.0),
                 _ => {}
             }
             let s = app.window().scale_factor();
@@ -1120,6 +1132,14 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             eprintln!("[auto] {name} pane={pane}: posted at ({:.0}, {:.0}) logical, ({x}, {y}) physical", pos.x, pos.y);
             // The posted messages are handled when this timer callback returns.
             schedule(runner, 150);
+        }
+        Step::Hover { x, y } => {
+            // Through Slint's pointer path: winit drops a posted WM_MOUSEMOVE while the real cursor
+            // is outside the window.
+            let pos = slint::LogicalPosition::new(x, y);
+            app.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerMoved { position: pos }).ok();
+            eprintln!("[auto] hover at ({x:.0}, {y:.0})");
+            schedule(runner, 50);
         }
         Step::Crumb { pane, index } => {
             app.invoke_crumb_clicked(pane as i32, index);

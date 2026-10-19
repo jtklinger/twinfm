@@ -21,7 +21,7 @@ polish bundle; four milestones, opened 2026-10-18; its first section quotes Jere
 decisions and § Calls made lists the lead's). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (219 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (223 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -391,7 +391,7 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   `view_right`, so a gate run with the grid on takes `TWINFM_CONFIG=C:\traces\grid.toml`, read-only,
   both panes `"icons"`). In the grid every step that takes a row (`click`, `ctrlclick`, `shiftclick`,
   `dblclick`, `midclick`, `rclick`, `dropfiles <pane> <row>`) aims at the tile of visible entry
-  `<row>` (`row / cols` grid rows down, `row % cols` tiles across, 96 x 120 px each); `rclickempty`
+  `<row>` (`row / cols` grid rows down, `row % cols` tiles across, 96 x 136 px each since P7-M4); `rclickempty`
   and `dropfiles <pane> -1` work as before. Key names `Up`, `Down`, `Left`, `Right`, `PageUp`,
   `PageDown`, `Home`, `End`, `ShiftLeft`, `ShiftRight` move the cursor in the focused list (in the
   grid: Left/Right one entry, Up/Down one grid row, PageUp/PageDown a viewport of grid rows; the
@@ -400,7 +400,7 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   scroll A -> B (entry E first)` (and back), `pane=N already <view>`; `[grid] pane=N K tiles to a
   row, R grid rows` when the pane's width changes the count (split, resize, the first layout) while
   it shows the grid. With the grid on, the once-a-second `[icons]` line's `compose N strips` counts
-  grid ROWS composed (one 96 x cols by 120 px image per grid row, in a ring of slots; a scroll of one
+  grid ROWS composed (one 96 x cols by 136 px image per grid row, in a ring of slots; a scroll of one
   grid row composes one), not whole strips. Hit testing (`dnd::hit`), the drop highlight, the rename
   editor, the keyboard menu point (`shellmenu::tile_menu_point`) and the driver read the pane's
   view and tile count from the window (`window_layout`: `Layout::grid`).
@@ -453,8 +453,9 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   `overlays N` counts every icon drawn with a mark or an overlay, so a refresh of a cloud folder
   whose keys are known shows `cloud N` lookups and `overlays 0`.
   Since P6-M2, the views finished: `view medium` presses Ctrl+Shift+3 on the active pane (key name
-  `CtrlShift3`): the grid at medium tiles, 80 x 72 px with the shell's 48 px icon (`icons::TileGeom`,
-  `MEDIUM`; `LARGE` is P4-M1's 96 x 120 with 96 px), chosen per pane and saved as `tile_left` /
+  `CtrlShift3`): the grid at medium tiles, 80 x 88 px (72 until P7-M4) with the shell's 48 px icon
+  (`icons::TileGeom`, `MEDIUM`; `LARGE` is P4-M1's 96 x 136 with 96 px, 120 until P7-M4), chosen per
+  pane and saved as `tile_left` /
   `tile_right`; a gate run with it takes `TWINFM_CONFIG=C:\traces\grid-medium.toml` (read-only: both
   panes `"icons"` at `"medium"`), whose stderr shows `[view] pane=0 starts as medium icons`. The
   medium tile is its own component (`FileGridMedium`, a copy of `FileGrid` with its constants), picked
@@ -515,6 +516,33 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   dropped`), and an unwatched one drops them all (`[size] cache cleared pane=N (not watched in the
   background | watch lost)`). Restored tabs: `[tab] pane=N tab=T restored: cursor Some(R), scroll Y
   (now Y)` when a restored tab's first pass lands.
+  Since P7-M4, the polish bundle: the toolbar's buttons carry Slint's built-in `Tooltip` (500 ms
+  under the pointer: the name and the key, "Cut (Ctrl+X)", disabled buttons too, both placements);
+  driver `hover <x> <y>` moves the pointer to (x, y), logical px of the window, through Slint's
+  pointer path (a posted `WM_MOUSEMOVE` is dropped by winit while the real cursor is outside the
+  window), and `[toolbar] top|pane=N tooltip "<name> (<key>)"` logs each tooltip shown (on the bar
+  across the window at 100%, New file is near x 55, Copy 300, Delete 545, y 18). The mouse's Back and
+  Forward over the toolbar (buttons, disabled ones and the gaps) go back and forward in the active
+  pane (the bar across the window) or that pane (its own bar): `backclick <pane> tool` and
+  `forwardclick <pane> tool` post them over the bar's first button. The sidebar, once it has the
+  keys (`sidebar click <row>`), takes `key Up`, `Down`, `Home`, `End` (past the headers,
+  `sidebar::step`, the row scrolled into view) and `Return` (opens the row in the active pane):
+  `[sidebar] key <Up|Down|Home|End>: row R (<label>)`, `[sidebar] Return on row R`. PageDown and
+  PageUp in the details list are Explorer's (`model::page_target`, through the `Paging` global): to
+  the last (first) row wholly on screen, then a screenful less one row; the grid's are as before.
+  Search results sort by the file's own name, `sub\dir` breaking a tie (`model::cmp_names`). A
+  subtree watch (a tab with folder sizes) also gathers the records in the folder itself, and a
+  window with any becomes row edits as a plain watch's do (`take_window`, under the 500-change cap),
+  for an active or a background tab: `[watch] pane=N tab=T subtree records R in the folder, changes
+  C | over the cap, window W ms`, then `applied: ...` or `fallback: <reason> ...`; past 1,000 records
+  in the folder itself `[watch] ... N records in the folder itself: refresh`, and the fallback's
+  `subtree watch` reason is left for an overflow and that case. Tile names wrap to two lines (word-wrap, a
+  long word anywhere, elided on the second line; `max-lines: 2`), and the cursor tile's whole name,
+  when two lines do not hold it, shows over the tiles below (one overlay per pane in the grid's
+  clip, never in the tiles). Our drag source's `GiveFeedback` sets the plain arrow and returns S_OK
+  while a drop description shows (`IsShowingLayered` and a `DropDescription` other than
+  `DROPIMAGE_INVALID`, `dnd::own_cursor`), else OLE's default cursors: `[dnd] cursor: the arrow
+  (drop description type K)` and `[dnd] cursor: OLE's default cursors` on each change.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

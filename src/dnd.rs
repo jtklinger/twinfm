@@ -2800,6 +2800,9 @@ struct DropSource {
     right: bool,
     /// A scripted drag, fixed when the drag was asked for (`DragRequest::scripted`).
     scripted: bool,
+    /// The drag's data object, not owned: `drag` holds it for the whole of `DoDragDrop`, the only
+    /// time `GiveFeedback` is called.
+    data: *mut c_void,
 }
 
 static DROP_SOURCE_VTBL: DropSourceVtbl = DropSourceVtbl {
@@ -2851,8 +2854,45 @@ unsafe extern "system" fn ds_query_continue_drag(this: *mut c_void, escape: BOOL
     hr
 }
 
-unsafe extern "system" fn ds_give_feedback(_: *mut c_void, _: u32) -> HRESULT {
-    DRAGDROP_S_USEDEFAULTCURSORS
+/// While the drag image shows a target's drop description, the source sets the cursor itself to
+/// the plain arrow, as Explorer's sources do (P7-M4): OLE's default cursors would add their own
+/// arrow-and-box glyph beside the description's icon (Jeremy's console check, 2026-10-19). A
+/// description shows when the drag-drop helper draws a layered image (`IsShowingLayered`) and the
+/// target has set a `DropDescription` other than `DROPIMAGE_INVALID`.
+pub fn own_cursor(description: Option<i32>, layered: bool) -> bool {
+    layered && description.is_some_and(|k| k != DROPIMAGE_INVALID)
+}
+
+/// The `DropDescription` type on a data object (its first four bytes), if it carries one.
+fn description_kind(data: *mut c_void) -> Option<i32> {
+    let b = read_hglobal(data, registered_format(CFSTR_DROPDESCRIPTION))?;
+    Some(i32::from_le_bytes(b.get(..4)?.try_into().ok()?))
+}
+
+/// The cursor `GiveFeedback` chose last (0 none yet, 1 the default cursors, 2 our arrow), so the
+/// `[dnd] cursor` line is logged on a change only.
+static CURSOR_MODE: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "system" fn ds_give_feedback(this: *mut c_void, _: u32) -> HRESULT {
+    // SAFETY: `this` is our DropSource, alive for the drag.
+    let data = unsafe { (*(this as *const DropSource)).data };
+    let kind = description_kind(data);
+    let own = own_cursor(kind, read_dword(data, windows_sys::core::w!("IsShowingLayered")).is_some_and(|v| v != 0));
+    let mode = if own { 2 } else { 1 };
+    if CURSOR_MODE.swap(mode, Ordering::Relaxed) != mode {
+        if own {
+            eprintln!("[dnd] cursor: the arrow (drop description type {})", kind.unwrap_or(DROPIMAGE_INVALID));
+        } else {
+            eprintln!("[dnd] cursor: OLE's default cursors");
+        }
+    }
+    if !own {
+        return DRAGDROP_S_USEDEFAULTCURSORS;
+    }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDC_ARROW, LoadCursorW, SetCursor};
+    // SAFETY: a shared system cursor; SetCursor takes any cursor handle.
+    unsafe { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW)) };
+    S_OK
 }
 
 /// The driver's scripted drag is running (the real left button is up).
@@ -2920,7 +2960,9 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
         header: Header { vtbl: &DROP_SOURCE_VTBL as *const DropSourceVtbl as *const c_void, refs: AtomicU32::new(1) },
         right: req.right,
         scripted: req.scripted,
+        data: data.0,
     })) as *mut c_void);
+    CURSOR_MODE.store(0, Ordering::Relaxed);
     let mut effect = NONE;
     DRAGS.with(|d| d.set(d.get() + 1));
     FIRST_QCD_SEEN.with(|c| c.set(false));
@@ -3085,6 +3127,16 @@ mod tests {
     }
 
     #[test]
+    fn our_arrow_only_while_a_description_shows() {
+        assert!(own_cursor(Some(DROPIMAGE_MOVE), true));
+        assert!(own_cursor(Some(DROPIMAGE_COPY), true));
+        assert!(own_cursor(Some(DROPIMAGE_NONE), true), "the description's own no-drop image");
+        assert!(!own_cursor(Some(DROPIMAGE_INVALID), true), "cleared: OLE's cursors again");
+        assert!(!own_cursor(None, true), "no target has set one");
+        assert!(!own_cursor(Some(DROPIMAGE_MOVE), false), "no layered drag image: nothing shows it");
+    }
+
+    #[test]
     fn drop_descriptions() {
         assert_eq!(
             description(MOVE, Some(&p(r"C:\Users\me\Documents"))),
@@ -3180,32 +3232,33 @@ mod tests {
         assert_eq!(hit(&tall, 500.0, 94.9, none, [10, 0]), Spot::Row(0, 0));
         assert_eq!(hit(&tall, 500.0, 95.0, none, [10, 0]), Spot::Row(0, 1));
         assert_eq!(hit(&tall, 500.0, 70.0 + 32.0 * 3.0, [-3200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
-        // The large-icon grid, 5 tiles of 96 x 120 px to a grid row (the list is 994 px wide, so
-        // 10 would fit; the count is the pane's, read from Slint): tiles start at x 3, y 63.
+        // The large-icon grid, 5 tiles of 96 x 136 px to a grid row (120 px before P7-M4; the list
+        // is 994 px wide, so 10 would fit; the count is the pane's, read from Slint): tiles start
+        // at x 3, y 63.
         let grid = Layout { grid: [Some(5), None], ..one };
-        assert_eq!(grid.row_px_of(0), 120.0);
+        assert_eq!(grid.row_px_of(0), 136.0);
         assert_eq!(grid.row_px_of(1), 22.0);
         assert_eq!(hit(&grid, 3.0, 63.0, none, [12, 0]), Spot::Row(0, 0));
-        assert_eq!(hit(&grid, 98.9, 182.9, none, [12, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(hit(&grid, 98.9, 198.9, none, [12, 0]), Spot::Row(0, 0), "the tile's far corner");
         assert_eq!(hit(&grid, 99.0, 100.0, none, [12, 0]), Spot::Row(0, 1));
         assert_eq!(hit(&grid, 3.0 + 4.0 * 96.0 + 10.0, 100.0, none, [12, 0]), Spot::Row(0, 4), "the last column");
         assert_eq!(hit(&grid, 3.0 + 5.0 * 96.0 + 10.0, 100.0, none, [12, 0]), Spot::Pane(0), "right of the tiles");
-        assert_eq!(hit(&grid, 50.0, 183.0, none, [12, 0]), Spot::Row(0, 5), "the second grid row");
-        assert_eq!(hit(&grid, 3.0 + 96.0 + 10.0, 183.0 + 120.0, none, [12, 0]), Spot::Row(0, 11), "the last entry");
-        assert_eq!(hit(&grid, 3.0 + 2.0 * 96.0 + 10.0, 183.0 + 120.0, none, [12, 0]), Spot::Pane(0), "past the last entry");
+        assert_eq!(hit(&grid, 50.0, 199.0, none, [12, 0]), Spot::Row(0, 5), "the second grid row");
+        assert_eq!(hit(&grid, 3.0 + 96.0 + 10.0, 199.0 + 136.0, none, [12, 0]), Spot::Row(0, 11), "the last entry");
+        assert_eq!(hit(&grid, 3.0 + 2.0 * 96.0 + 10.0, 199.0 + 136.0, none, [12, 0]), Spot::Pane(0), "past the last entry");
         assert_eq!(hit(&grid, 50.0, 50.0, none, [12, 0]), Spot::Pane(0), "the header");
         // Scrolled by ten grid rows: the first visible tile is entry 50.
-        assert_eq!(hit(&grid, 50.0, 70.0, [-1200.0, 0.0], [1000, 0]), Spot::Row(0, 50));
-        assert_eq!(hit(&grid, 3.0 + 3.0 * 96.0 + 1.0, 70.0 + 120.0 * 2.0, [-1200.0, 0.0], [1000, 0]), Spot::Row(0, 63));
-        // Medium tiles (P6-M2), 12 of 80 x 72 px to a grid row: the column and line from the tile.
+        assert_eq!(hit(&grid, 50.0, 70.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 50));
+        assert_eq!(hit(&grid, 3.0 + 3.0 * 96.0 + 1.0, 70.0 + 136.0 * 2.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 63));
+        // Medium tiles (P6-M2), 12 of 80 x 88 px to a grid row: the column and line from the tile.
         let medium = Layout { grid: [Some(12), None], tile: [crate::icons::TileGeom::MEDIUM, crate::icons::TileGeom::LARGE], ..one };
-        assert_eq!(medium.row_px_of(0), 72.0);
-        assert_eq!(hit(&medium, 3.0 + 80.0, 63.0 + 72.0, none, [100, 0]), Spot::Row(0, 13));
-        assert_eq!(hit(&medium, 3.0 + 79.9, 63.0 + 71.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(medium.row_px_of(0), 88.0);
+        assert_eq!(hit(&medium, 3.0 + 80.0, 63.0 + 88.0, none, [100, 0]), Spot::Row(0, 13));
+        assert_eq!(hit(&medium, 3.0 + 79.9, 63.0 + 87.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
         assert_eq!(hit(&medium, 3.0 + 12.0 * 80.0 + 1.0, 70.0, none, [100, 0]), Spot::Pane(0), "right of the tiles");
         // With the split, each pane has its own view: the right pane stays a 22 px list.
         let both = Layout { split: true, grid: [Some(5), None], ..one };
-        assert_eq!(hit(&both, 50.0, 183.0, none, [12, 7]), Spot::Row(0, 5));
+        assert_eq!(hit(&both, 50.0, 199.0, none, [12, 7]), Spot::Row(0, 5));
         assert_eq!(hit(&both, 700.0, 70.0 + 22.0 * 6.0, none, [12, 7]), Spot::Row(1, 6));
         // Split at 0.5: left pane to x 497, splitter 497..503, right pane from 503.
         assert_eq!(hit(&two, 100.0, 70.0, none, [5, 7]), Spot::Row(0, 0));

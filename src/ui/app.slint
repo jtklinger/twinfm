@@ -1,6 +1,6 @@
-import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar } from "pane.slint";
+import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
 import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
-export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState }
+export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
 // the bookmark's index in the bookmark list.
@@ -241,6 +241,8 @@ export component App inherits Window {
     in property <ToolState> left-tools;
     in property <ToolState> right-tools;
     callback toolbar-clicked(int, string);
+    // toolbar-tip(pane, text): a toolbar button's tooltip showed (pane -1: the bar across the window).
+    callback toolbar-tip(int, string);
     private property <length> top-h: root.toolbar == 1 ? 36px : 0px;
     // For the About dialog (CARGO_PKG_VERSION).
     in property <string> version;
@@ -346,6 +348,11 @@ export component App inherits Window {
     callback crumb-geometry(int, int, length, length);
     // side-clicked(row, middle): a sidebar row; the middle button opens it in a new tab.
     callback side-clicked(int, bool);
+    // side-step(row, key): the sidebar's Up, Down, Home, End or Return with `row` current (-1:
+    // none); the row current after it (sidebar.rs `step`; Return opens the row and keeps it).
+    // side-row-top(row): the row's top in the sidebar list's content.
+    callback side-step(int, string) -> int;
+    pure callback side-row-top(int) -> length;
     // bookmark-add(): Ctrl+D. bookmark-remove(index): the bookmark menu's "Remove bookmark".
     // bookmark-rename(index, title): the row's editor, opened by "Rename bookmark" (an empty
     // title goes back to the folder's name). bookmark-move(index, up): "Move up" / "Move down".
@@ -625,11 +632,22 @@ export component App inherits Window {
         if root.toolbar == 1: Rectangle {
             x: 0; y: 0; width: parent.width; height: root.top-h;
             background: Palette.alternate-background;
+            // The mouse's Back and Forward buttons over the bar's gaps go to the active pane, as
+            // over its buttons (P7-M4).
+            TouchArea {
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.pane-back(root.split && root.active-pane == 1 ? 1 : 0); }
+                    if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.pane-forward(root.split && root.active-pane == 1 ? 1 : 0); }
+                }
+            }
             Toolbar {
                 x: 4px; y: 2px; height: parent.height - 4px;
                 tools: root.split && root.active-pane == 1 ? root.right-tools : root.left-tools;
                 labelled: true;
                 tool(c) => { root.toolbar-clicked(root.split && root.active-pane == 1 ? 1 : 0, c); }
+                tip(t) => { root.toolbar-tip(-1, t); }
+                back => { root.pane-back(root.split && root.active-pane == 1 ? 1 : 0); }
+                forward => { root.pane-forward(root.split && root.active-pane == 1 ? 1 : 0); }
             }
             Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
         }
@@ -652,6 +670,19 @@ export component App inherits Window {
                     }
                     if (e.text == Key.Escape || e.text == Key.Tab) {
                         root.focus-pane(root.active-pane);
+                        return accept;
+                    }
+                    // Up, Down, Home and End move along the rows, past the headers; Return opens
+                    // the row's folder in the active pane (P7-M4). The moved-to row is scrolled
+                    // into view.
+                    let k = e.text == Key.UpArrow ? "Up" : e.text == Key.DownArrow ? "Down" : e.text == Key.Home ? "Home" : e.text == Key.End ? "End" : e.text == Key.Return ? "Return" : "";
+                    if (k != "" && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.shift) {
+                        root.side-current = root.side-step(root.side-current, k);
+                        if (root.side-current >= 0) {
+                            let top = root.side-row-top(root.side-current);
+                            if (top + side-list.content-y < 0px) { side-list.content-y = -top; }
+                            if (top + 24px + side-list.content-y > side-list.visible-height) { side-list.content-y = side-list.visible-height - top - 24px; }
+                        }
                         return accept;
                     }
                     return reject;
@@ -822,6 +853,7 @@ export component App inherits Window {
                 toolbar: root.toolbar == 2;
                 tools: root.left-tools;
                 tool(c) => { root.toolbar-clicked(0, c); }
+                tool-tip(t) => { root.toolbar-tip(0, t); }
             }
             right := Pane {
                 visible: split;
@@ -876,6 +908,7 @@ export component App inherits Window {
                 toolbar: root.toolbar == 2;
                 tools: root.right-tools;
                 tool(c) => { root.toolbar-clicked(1, c); }
+                tool-tip(t) => { root.toolbar-tip(1, t); }
             }
             splitter := Rectangle {
                 visible: split;

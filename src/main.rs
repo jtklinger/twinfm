@@ -943,6 +943,24 @@ fn side_clicked(i: usize, middle: bool) {
     if middle { open_tab(pane, Some(path)) } else { navigate(pane, path) }
 }
 
+/// A key in the sidebar once it has the keys (P7-M4): Up, Down, Home and End move the current row
+/// (`sidebar::step`), Return opens the current row's folder in the active pane as a click does.
+/// Returns the row current after it.
+fn side_step(current: i32, key: &str) -> i32 {
+    if key == "Return" {
+        if let Ok(i) = usize::try_from(current) {
+            eprintln!("[sidebar] Return on row {i}");
+            side_clicked(i, false);
+        }
+        return current;
+    }
+    let kinds: Vec<_> = with_state(|st| st.side.iter().map(|r| r.kind).collect());
+    let Some(to) = sidebar::step(&kinds, current, key) else { return current };
+    let label = with_state(|st| st.side.get(to).map(|r| r.label.clone())).unwrap_or_default();
+    eprintln!("[sidebar] key {key}: row {to} ({label})");
+    to as i32
+}
+
 /// Ctrl+D: bookmark the active tab's folder.
 fn bookmark_add() {
     with_state(|st| {
@@ -1366,43 +1384,10 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
             if !active && t.stale {
                 return;
             }
-            let reason = if overflow {
-                "overflow".to_string()
-            } else if changes.is_empty() {
-                eprintln!("[watch] pane={pane} tab={tab_id} {records} records netted to nothing");
-                return;
-            } else {
-                match window_refusal(t, active, &changes) {
-                    Some(why) if why.is_empty() => {
-                        eprintln!("[watch] pane={pane} tab={tab_id} {records} records explained by the operation: no refresh");
-                        return;
-                    }
-                    Some(why) => why,
-                    None => {
-                        let job = StatJob {
-                            pane,
-                            tab: tab_id,
-                            path: t.path.clone(),
-                            changes,
-                            records,
-                            generation: t.model.generation.get(),
-                            pass: t.model.pass.get(),
-                            young: young_listing(t),
-                            thumbnails: st.config.thumbnails,
-                            cloud: icons::Cloud::None,
-                        };
-                        let cloud = st.cloud.of(&job.path);
-                        let job = StatJob { cloud, ..job };
-                        let _ = st.stat_tx.send(job);
-                        return;
-                    }
-                }
-            };
-            let outcome = fall_back(st, pane, tab_id, again);
-            eprintln!("[watch] pane={pane} tab={tab_id} fallback: {reason} ({records} records): {outcome}");
+            take_window(st, pane, tab_id, active, (!overflow).then_some(changes), records, again);
             return;
         }
-        Event::Subtree { top, changes, overflow, .. } => {
+        Event::Subtree { top, changes, overflow, edits, records, .. } => {
             if overflow {
                 t.sizes.overflows += 1;
                 let names: Vec<String> = t.sizes.cache.keys().cloned().collect();
@@ -1454,16 +1439,64 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
                 }
                 return;
             }
+            // A change in the folder itself: its own records become row edits as a plain watch's
+            // do (P7-M4), unless there were too many to keep.
+            if let (false, Some(edits)) = (overflow, edits) {
+                take_window(st, pane, tab_id, active, Some(edits), records, again);
+                return;
+            }
             changes.len()
         }
     };
-    // A subtree watch's change in the folder itself: its records are not carried to row edits
-    // (the count is of the children it named).
+    // An overflow, or more records in the folder itself than a window keeps: the whole-folder
+    // refresh (the count is of the children it named).
     let outcome = fall_back(st, pane, tab_id, again);
     eprintln!("[watch] pane={pane} tab={tab_id} fallback: subtree watch ({records} records): {outcome}");
     if resize {
         resize_after_change(st, pane);
     }
+}
+
+/// A window of a tab's folder: its net `changes` from `records` raw records (None: an overflow)
+/// become row edits, statted on the edit worker, when `window_refusal` allows; else the
+/// whole-folder refresh with its reason. A plain watch's `Changed` and, since P7-M4, a subtree
+/// watch's records in the folder itself come here.
+fn take_window(st: &mut State, pane: usize, tab_id: u64, active: bool, changes: Option<Vec<fs::watch::Change>>, records: usize, again: &mut Vec<usize>) {
+    let Some(t) = st.find(pane, tab_id) else { return };
+    let reason = match changes {
+        None => "overflow".to_string(),
+        Some(changes) if changes.is_empty() => {
+            eprintln!("[watch] pane={pane} tab={tab_id} {records} records netted to nothing");
+            return;
+        }
+        Some(changes) => match window_refusal(t, active, &changes) {
+            Some(why) if why.is_empty() => {
+                eprintln!("[watch] pane={pane} tab={tab_id} {records} records explained by the operation: no refresh");
+                return;
+            }
+            Some(why) => why,
+            None => {
+                let job = StatJob {
+                    pane,
+                    tab: tab_id,
+                    path: t.path.clone(),
+                    changes,
+                    records,
+                    generation: t.model.generation.get(),
+                    pass: t.model.pass.get(),
+                    young: young_listing(t),
+                    thumbnails: st.config.thumbnails,
+                    cloud: icons::Cloud::None,
+                };
+                let cloud = st.cloud.of(&job.path);
+                let job = StatJob { cloud, ..job };
+                let _ = st.stat_tx.send(job);
+                return;
+            }
+        },
+    };
+    let outcome = fall_back(st, pane, tab_id, again);
+    eprintln!("[watch] pane={pane} tab={tab_id} fallback: {reason} ({records} records): {outcome}");
 }
 
 /// Why a window of changes for tab `t` cannot be applied as row edits (the fallback's reason); ""
@@ -5956,6 +5989,14 @@ fn main() -> Result<(), slint::PlatformError> {
             side_clicked(i, middle);
         }
     });
+    app.on_side_step(|current, key| side_step(current, key.as_str()));
+    app.on_side_row_top(|i| {
+        with_state(|st| {
+            let app = st.app.upgrade()?;
+            Some(sidebar::row_top(&side_rows(st, &app).iter().map(|r| r.0).collect::<Vec<_>>(), usize::try_from(i).ok()?))
+        })
+        .unwrap_or(0.0)
+    });
     app.on_bookmark_add(bookmark_add);
     app.on_bookmark_remove(|i| {
         if let Ok(i) = usize::try_from(i) {
@@ -5999,6 +6040,13 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
     app.on_strip_resized(|pane| strip_resized(pane as usize));
     app.on_toolbar_clicked(|pane, button| toolbar_clicked(pane as usize, button.as_str()));
+    app.global::<Paging>().on_target(|cursor, content_y, visible_h, row_h, len, down| {
+        model::page_target(cursor, content_y, visible_h, row_h, len, down)
+    });
+    app.on_toolbar_tip(|pane, text| {
+        let place = if pane < 0 { "top".to_string() } else { format!("pane={pane}") };
+        eprintln!("[toolbar] {place} tooltip \"{text}\"");
+    });
     app.on_edit_commit(|pane, mode, original, typed| edit_commit(pane as usize, mode, original.as_str(), typed.as_str()));
     app.on_tab_select(|pane, i| {
         if let Ok(i) = usize::try_from(i) {

@@ -166,10 +166,10 @@ mod tests {
         assert_eq!(cursor((10.0, 10.0), (300.0, 900.0), 5, 12, L), Some(11), "below the rows");
         assert_eq!(cursor((200.0, 130.0), (-40.0, -40.0), 5, 12, L), Some(0), "above and left of the content");
         assert_eq!(cursor((50.0, 10.0), (50.0, 300.0), 5, 12, L), None, "a zero-width band touches nothing");
-        // Medium tiles: 80 x 72.
+        // Medium tiles: 80 x 88.
         let m = TileGeom::MEDIUM;
-        assert_eq!(cursor((5.0, 5.0), (170.0, 80.0), 5, 12, m), Some(7));
-        assert_eq!(touched((5.0, 5.0), (170.0, 80.0), 5, 12, m), set(&[0, 1, 2, 5, 6, 7]));
+        assert_eq!(cursor((5.0, 5.0), (170.0, 100.0), 5, 12, m), Some(7));
+        assert_eq!(touched((5.0, 5.0), (170.0, 100.0), 5, 12, m), set(&[0, 1, 2, 5, 6, 7]));
     }
 
     #[test]
@@ -177,14 +177,14 @@ mod tests {
         // Five tiles to a grid row, twelve entries: rows 0 and 1 full, row 2 holds 10 and 11.
         assert_eq!(touched((10.0, 10.0), (20.0, 20.0), 5, 12, L), set(&[0]), "inside one tile");
         assert_eq!(touched((90.0, 10.0), (200.0, 20.0), 5, 12, L), set(&[0, 1, 2]), "across three tiles");
-        assert_eq!(touched((0.0, 100.0), (100.0, 130.0), 5, 12, L), set(&[0, 1, 5, 6]), "two rows, two columns");
-        assert_eq!(touched((100.0, 130.0), (0.0, 100.0), 5, 12, L), set(&[0, 1, 5, 6]), "corners in any order");
+        assert_eq!(touched((0.0, 120.0), (100.0, 150.0), 5, 12, L), set(&[0, 1, 5, 6]), "two rows, two columns");
+        assert_eq!(touched((100.0, 150.0), (0.0, 120.0), 5, 12, L), set(&[0, 1, 5, 6]), "corners in any order");
         assert_eq!(touched((480.0, 0.0), (600.0, 240.0), 5, 12, L), set(&[]), "right of the last column");
-        assert_eq!(touched((0.0, 240.0), (480.0, 360.0), 5, 12, L), set(&[10, 11]), "the partial last row");
-        assert_eq!(touched((0.0, 400.0), (480.0, 500.0), 5, 12, L), set(&[]), "below the last row");
+        assert_eq!(touched((0.0, 280.0), (480.0, 400.0), 5, 12, L), set(&[10, 11]), "the partial last row");
+        assert_eq!(touched((0.0, 420.0), (480.0, 500.0), 5, 12, L), set(&[]), "below the last row");
         assert_eq!(touched((-50.0, -50.0), (10.0, 10.0), 5, 12, L), set(&[0]), "above and left of the content");
         assert_eq!(touched((96.0, 0.0), (100.0, 10.0), 5, 12, L), set(&[1]), "a tile's left edge belongs to it");
-        assert_eq!(touched((50.0, 120.0), (60.0, 130.0), 5, 12, L), set(&[5]), "a grid row's top edge belongs to it");
+        assert_eq!(touched((50.0, 136.0), (60.0, 146.0), 5, 12, L), set(&[5]), "a grid row's top edge belongs to it");
         assert_eq!(touched((50.0, 10.0), (50.0, 300.0), 5, 12, L), set(&[]), "zero width touches nothing");
         assert_eq!(touched((0.0, 50.0), (480.0, 50.0), 5, 12, L), set(&[]), "zero height touches nothing");
         assert_eq!(touched((0.0, 0.0), (480.0, 360.0), 0, 12, L), set(&[]), "no columns, nothing");
