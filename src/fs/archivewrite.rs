@@ -710,6 +710,6 @@ mod tests {
             assert_eq!(shown, vec![("empty.txt".to_string(), false, 0), ("sub".into(), true, 0), ("日本語.txt".into(), false, 7)], "{fmt:?} through ArchiveFolder");
         }
         assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")));
-        std::fs::remove_dir_all(&dir).unwrap();
+        crate::fs::archivefolder::remove_scratch(&dir);
     }
 }
