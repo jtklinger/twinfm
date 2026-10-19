@@ -2889,9 +2889,16 @@ unsafe extern "system" fn ds_give_feedback(this: *mut c_void, _: u32) -> HRESULT
     if !own {
         return DRAGDROP_S_USEDEFAULTCURSORS;
     }
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDC_ARROW, LoadCursorW, SetCursor};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDC_ARROW, LoadCursorW, PostMessageW, SetCursor, WM_USER};
     // SAFETY: a shared system cursor; SetCursor takes any cursor handle.
     unsafe { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW)) };
+    // With the cursors ours, OLE no longer tells the drag image's window to repaint, so the
+    // description never shows (Jeremy's console check, 2026-10-19): ask it, as a source that sets
+    // its own cursor must (`DDWM_UPDATEWINDOW`, WM_USER + 3, to the helper's "DragWindow").
+    if let Some(w) = read_dword(data, windows_sys::core::w!("DragWindow")).filter(|&w| w != 0) {
+        // SAFETY: a posted message with no pointers; a stale handle only fails the post.
+        unsafe { PostMessageW(w as usize as HWND, WM_USER + 3, 0, 0) };
+    }
     S_OK
 }
 

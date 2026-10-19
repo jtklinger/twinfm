@@ -542,7 +542,8 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   when two lines do not hold it, shows over the tiles below (one overlay per pane in the grid's
   clip, never in the tiles). Our drag source's `GiveFeedback` sets the plain arrow and returns S_OK
   while a drop description shows (`IsShowingLayered` and a `DropDescription` other than
-  `DROPIMAGE_INVALID`, `dnd::own_cursor`), else OLE's default cursors: `[dnd] cursor: the arrow
+  `DROPIMAGE_INVALID`, `dnd::own_cursor`; it then posts `DDWM_UPDATEWINDOW`, WM_USER + 3, to the
+  helper's `DragWindow`, or the description is never drawn), else OLE's default cursors: `[dnd] cursor: the arrow
   (drop description type K)` and `[dnd] cursor: OLE's default cursors` on each change.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,

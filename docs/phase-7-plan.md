@@ -1110,6 +1110,30 @@ ab30's 1.1 points on the toolbar pair were the second slot's. Read together: P7-
 (the grids at or below the reference, the defaults and in-pane toolbar level with it; in ab30's
 faster state every defaults and toolbar run of both builds in round 1 under 20%).
 
+### After the console check
+
+Jeremy, unelevated, `target-p7m4` (c796139), 2026-10-19: tooltips, Back and Forward over the toolbar,
+the sidebar's keys, PageDown and PageUp, tile names and the sized tab's edits as expected; two
+findings:
+
+- **The drop description no longer showed** on our own drags ("Move to ..." gone; the move itself
+  worked). Cause: once `GiveFeedback` returns S_OK, OLE stops telling the drag image's window to
+  repaint, so the description the target sets is never drawn; a source that sets its own cursor has
+  to post `DDWM_UPDATEWINDOW` (WM_USER + 3) to the helper's window (the `DragWindow` format on the data
+  object) itself, as shell-style sources do. Fix: posted on every `GiveFeedback` that sets the
+  arrow. Not reachable by script (a scripted drag follows the real cursor and is only cancelled):
+  for Jeremy's second check.
+- **Leftover icons under a filtered grid** (his item 7: the name filter in large icons, `files` in
+  `C:\traces`, 7 of 994 shown, empty folder icons in the rows below). Older than P7-M4: `target-p7m3`
+  shows it the same way (captured). Cause: `compose_grid_rows` resets its ring of slots on a filter
+  pass or a new listing but kept the images it had handed to the pane, so slots no visible row
+  filled again went on drawing the old rows' icons under the shorter grid. Fix: after a reset, the
+  slots left unfilled are hidden (only then, so a scroll pays nothing). Captured again: the seven
+  tiles alone.
+
+Neither fix is on the gate scenario's path (the scenario drags nothing, and its grid runs reset the
+ring only when a listing lands, never while scrolling), so ab30 and ab31 stand.
+
 ### Console checks (for Jeremy, unelevated, after the gate)
 
 1. **The drag cursor**: drag a file from one pane over a folder in the other: the "Move to ..." label

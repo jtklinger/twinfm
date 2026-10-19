@@ -2089,7 +2089,8 @@ fn compose_grid_rows(st: &mut State, pane: usize, visible: (usize, usize), visib
     let model = st.panes[pane].active().model.clone();
     let (first, last) = icons::grid_strip_range(visible, model.grid_len());
     let slots = (visible_h.max(0.0) / geom.tile.h).ceil() as usize + 1 + 2 * icons::GRID_MARGIN_ROWS;
-    if st.grid_slots[pane].len() != slots || st.strip_dirty[pane] {
+    let reset = st.grid_slots[pane].len() != slots || st.strip_dirty[pane];
+    if reset {
         st.grid_slots[pane] = vec![None; slots];
         if st.strip_rows[pane].row_count() != slots {
             st.strip_rows[pane].set_vec(vec![StripRow::default(); slots]);
@@ -2118,6 +2119,16 @@ fn compose_grid_rows(st: &mut State, pane: usize, visible: (usize, usize), visib
             StripRow { img: Image::from_rgba8_premultiplied(row), top: g as f32 * geom.tile.h, w, h, shown: true },
         );
         st.grid_slots[pane][k] = Some(want);
+    }
+    // After a reset (a filter pass, a new listing), a slot the rows above did not fill again still
+    // holds its old image: hide it, or a grid that got shorter shows its old rows' icons under its
+    // tiles (P7-M4 console check). Only after a reset, so a scroll pays nothing for it.
+    if reset {
+        for k in 0..slots {
+            if st.grid_slots[pane][k].is_none() && st.strip_rows[pane].row_data(k).is_some_and(|r| r.shown) {
+                st.strip_rows[pane].set_row_data(k, StripRow::default());
+            }
+        }
     }
 }
 
