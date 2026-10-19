@@ -359,7 +359,11 @@ decisions and § Calls made lists the lead's). Read them before changing the lis
   <zip>: Done | Cancelled | Error("<why>") in T ms`, `move into <zip>: originals recycled: <outcome>
   (N item(s))`, `N file(s) already in <zip>: replace|skip|cancelled`, `compress N item(s) to <archive>:
   Ok(files) | Err("<why>") in T ms`. `[fileops] done` reads `Failed: <why>` for an archive job's
-  error. Fixtures Jeremy keeps beside `bigdir.zip`: `C:\traces\bigdir.7z` and
+  error; a refused drop notes `drop: <why>` in the pane under the pointer. `fs::archive::within`
+  (an item below an archive's root) is the question for items, `inside` (the archive file itself
+  too) for folders to open. Windows fills the Send to submenu in the background (about 450 ms
+  cold), so the verb worker asks again for up to 3 s: `[menu] "<label>" found after T ms (a submenu
+  filled late)` or `not in the menu after T ms`. Fixtures Jeremy keeps beside `bigdir.zip`: `C:\traces\bigdir.7z` and
   `C:\traces\bigdir.tar.gz` (made with `C:\Windows\System32\tar.exe`, bsdtar 3.8.9; Git Bash's `tar`
   is GNU tar and writes no 7z; not in the repo). Windows' `tar.exe` crashes on names outside the
   system code page (P7-M3), which is why TwinFM writes 7z and TAR itself.

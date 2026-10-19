@@ -47,9 +47,10 @@ pub fn read_only_why(archive: &Path) -> String {
 
 pub const BETWEEN_ARCHIVES: &str = "copying from one archive into another is not supported; copy the items out first";
 
-/// The archive each path lies in (None for a path on disk), and the path below its root.
+/// The archive each item is stored in (None for an item on disk, an archive file included), and
+/// its path below the archive's root.
 fn splits(paths: &[PathBuf]) -> Vec<Option<(PathBuf, String)>> {
-    paths.iter().map(|p| archive::split(p)).collect()
+    paths.iter().map(|p| archive::split(p).filter(|(_, inner)| !inner.is_empty())).collect()
 }
 
 fn same(a: &Path, b: &Path) -> bool {
@@ -118,7 +119,7 @@ pub fn classify(job: &Job) -> Result<Option<Plan>, String> {
             }
         },
         Job::Delete { sources, .. } => {
-            let inside: Vec<(PathBuf, String)> = splits(sources).into_iter().flatten().filter(|(_, i)| !i.is_empty()).collect();
+            let inside: Vec<(PathBuf, String)> = splits(sources).into_iter().flatten().collect();
             if inside.is_empty() {
                 return Ok(None);
             }
@@ -130,7 +131,7 @@ pub fn classify(job: &Job) -> Result<Option<Plan>, String> {
         }
         // Undo jobs and Compress never name a path inside an archive: refuse one that does.
         Job::MoveAs { .. } | Job::Restore { .. } | Job::Compress { .. } => {
-            if job.paths().iter().any(|p| archive::inside(p)) { Err("not inside an archive".into()) } else { Ok(None) }
+            if job.paths().iter().any(|p| archive::within(p)) { Err("not inside an archive".into()) } else { Ok(None) }
         }
     }
 }
@@ -338,6 +339,15 @@ mod tests {
         );
         assert!(matches!(classify(&mv(vec![disk.clone()], a.clone())), Ok(Some(Plan::Add { mv: true, .. }))));
         assert_eq!(classify(&copy(vec![a.join("x.txt")], dir.clone())), Ok(None), "an extraction is an ordinary copy");
+        // An archive file on disk is a file, not an item inside an archive (Jeremy's console check:
+        // a 7z copied into a zip was refused as "from one archive into another").
+        assert!(matches!(classify(&copy(vec![c.clone(), b.clone()], a.clone())), Ok(Some(Plan::Add { .. }))), "archives into a zip");
+        assert_eq!(classify(&mv(vec![a.clone()], dir.join("folder.zip"))), Ok(None), "a zip moved on disk");
+        assert_eq!(
+            classify(&Job::Compress { sources: vec![a.clone(), c.clone()], dest_dir: dir.clone(), format: crate::fs::archivewrite::Format::Tar }),
+            Ok(None),
+            "archives compressed"
+        );
         assert_eq!(classify(&copy(vec![c.join("x.txt")], dir.clone())), Ok(None), "from any format");
         assert!(matches!(classify(&mv(vec![a.join("x.txt")], dir.clone())), Ok(Some(Plan::MoveOut { .. }))));
         if archive::is_archive_name("c.7z") {

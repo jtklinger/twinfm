@@ -219,7 +219,7 @@ pub fn status_text(job: &Job, outcome: &Outcome, results: &[ItemResult]) -> Stri
             Job::Move { .. } | Job::MoveAs { .. } => format!("Moved {}", items(job.count())),
             Job::Restore { .. } => format!("Restored {} from the Recycle Bin", items(job.count())),
             // Inside a zip nothing goes to the Recycle Bin (P7-M3): its results name no bin item.
-            Job::Delete { sources, .. } if sources.first().is_some_and(|s| crate::fs::archive::inside(s)) => {
+            Job::Delete { sources, .. } if sources.first().is_some_and(|s| crate::fs::archive::within(s)) => {
                 format!("Deleted {} from the archive", items(job.count()))
             }
             Job::Delete { permanent: false, .. } => format!("Deleted {} to the Recycle Bin", items(job.count())),

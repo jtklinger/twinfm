@@ -1303,7 +1303,7 @@ fn read_archive_idlist(data: *mut c_void) -> Option<Vec<PathBuf>> {
             windows_sys::Win32::System::Com::CoTaskMemFree(s as *const c_void);
             p
         };
-        if !crate::fs::archive::inside(&path) {
+        if !crate::fs::archive::within(&path) {
             return None;
         }
         paths.push(path);

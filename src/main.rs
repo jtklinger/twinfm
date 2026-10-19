@@ -4216,11 +4216,14 @@ thread_local! {
 }
 
 /// No drop into an archive TwinFM does not write (P7-M3: every format but zip): no spot, logged
-/// once per hover.
-fn refuse_archive_drop(dest: &Path) -> Option<dnd::DropSpot> {
+/// and noted in `pane` once per hover (the note through the event loop: this runs inside DragOver
+/// with the app state borrowed).
+fn refuse_archive_drop(pane: usize, dest: &Path) -> Option<dnd::DropSpot> {
     if ARCHIVE_REFUSED.with(|c| c.borrow_mut().replace(dest.to_path_buf())).as_deref() != Some(dest) {
         let why = fs::archive::split(dest).map_or_else(String::new, |(a, _)| fileops::archive::read_only_why(&a));
         eprintln!("[archive] refused: drop into {} ({why})", dest.display());
+        let text = format!("drop: {why}");
+        let _ = slint::invoke_from_event_loop(move || drop_note(pane, text));
     }
     None
 }
@@ -4261,7 +4264,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             dnd::Spot::Side(i) => {
                 let dest = st.side.get(i)?.path.clone()?;
                 if read_only_dest(&dest) {
-                    return refuse_archive_drop(&dest);
+                    return refuse_archive_drop(active_pane(&app), &dest);
                 }
                 return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest, springs: false });
             }
@@ -4278,7 +4281,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                     return None;
                 }
                 if read_only_dest(&dest) {
-                    return refuse_archive_drop(&dest);
+                    return refuse_archive_drop(p, &dest);
                 }
                 let springs = st.panes[p].active_index() != i;
                 return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Tab(i), dest, springs });
@@ -4297,7 +4300,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                     return None;
                 }
                 if read_only_dest(&c.target) {
-                    return refuse_archive_drop(&c.target);
+                    return refuse_archive_drop(p, &c.target);
                 }
                 return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Crumb(i), dest: c.target, springs: false });
             }
@@ -4307,7 +4310,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             return None;
         }
         if in_readonly_archive(st, pane) {
-            return refuse_archive_drop(&st.tab(pane).path);
+            return refuse_archive_drop(pane, &st.tab(pane).path);
         }
         let folder = &st.tab(pane).path;
         let entry = row.and_then(|r| st.model(pane).entry(r));

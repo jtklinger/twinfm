@@ -845,6 +845,32 @@ candidate's median is the lower), every candidate run under 20% by WPR. One sess
 throughout (render p50 2.18 to 2.32 ms in every run). `split` now knows the ArchiveFolder
 extensions and runs on every path the scenario lists; as expected, flat.
 
+### After the console check
+
+Jeremy, unelevated, `target-p7m3` (2026-10-19), four findings:
+
+- **A 7z copied into a zip was refused** as "copying from one archive into another". Cause: an
+  archive file on disk is the root of its own archive to `split`, so `classify` took it for an item
+  inside one; the same mistake would have named a deleted zip file "deleted from the archive" and
+  refused Compress of an archive file. Fix: `fs::archive::within` (an item stored below an
+  archive's root) where items are asked about; `jobs_are_classified` extended first, failing.
+  An archive inside an archive is then a file in the zip; Return opens it through the shell, which
+  extracts it first (no folder level, as recorded above).
+- **"Compress to > ZIP file" refused** ("no "Send to>Compressed (zipped) folder" in the menu").
+  Older than P7-M3 (P7-M2's path). Windows fills the Send to submenu in the background, about 450 ms
+  after it is first asked (a probe on the verb worker's steps: a lone placeholder, then "Bluetooth
+  device" at 303 ms, "Compressed (zipped) folder" at 454 ms); P7-M2's soak found it filled only
+  because the menu was warm. Fix: `shellmenu::fill_until` pumps the verb worker's messages and asks
+  again every 50 ms, up to 3 s (`SUBMENU_WAIT_MS`), for both the find by label and a Send to target
+  picked in the classic menu; `[menu] "<label>" found after T ms (a submenu filled late)` or `not in
+  the menu after T ms`. Scripted, a fresh process: found after 82 ms, the ZIP made.
+- **No note for a refused write**: a drag into a 7z showed the no-drop cursor and logged the reason
+  only. The pane under the pointer now notes it once per hover (`drop: Windows' archive handler
+  cannot write into .7z archives`).
+- **No Paste in a zip item's menu**: as in a folder, Paste is on the background menu's icon row
+  (shown in a zip with files on the clipboard, scripted: `[Paste] New folder | New file | ...`), on
+  the toolbar and on Ctrl+V; Explorer's item menu has none either.
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.

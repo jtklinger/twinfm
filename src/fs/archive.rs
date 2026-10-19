@@ -120,6 +120,12 @@ pub fn inside(path: &Path) -> bool {
     split(path).is_some()
 }
 
+/// The item at `path` is stored inside an archive: below its root, not the archive file itself
+/// (`inside` says yes for both, as a folder to open; an item named by its path asks this).
+pub fn within(path: &Path) -> bool {
+    split(path).is_some_and(|(_, inner)| !inner.is_empty())
+}
+
 /// `path` lies inside an archive TwinFM writes (a zip).
 pub fn writable(path: &Path) -> bool {
     split(path).is_some_and(|(a, _)| handler_of(&a) == Handler::Zip)
