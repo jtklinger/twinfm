@@ -51,6 +51,16 @@ export component Preview inherits Rectangle {
                 changed visible-width => { root.resized(self.visible-width - 16px); }
                 changed content-y => { root.scrolled(-self.content-y, self.visible-height); }
                 changed visible-height => { root.scrolled(-self.content-y, self.visible-height); }
+                // Behind the pages. With Shift held the Flickable turns the wheel sideways, finds no
+                // room there and passes the event on: here it scrolls up and down as the plain
+                // wheel does (Jeremy's console check). Anything else goes back as before.
+                TouchArea {
+                    scroll-event(e) => {
+                        if (!e.modifiers.shift || body.content-width > body.visible-width) { return reject; }
+                        body.content-y = clamp(body.content-y + e.delta-y, min(0px, body.visible-height - body.content-height), 0px);
+                        return accept;
+                    }
+                }
                 for p in root.pages: Rectangle {
                     x: 8px;
                     y: p.y;

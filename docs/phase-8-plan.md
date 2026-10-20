@@ -304,6 +304,20 @@ One session state throughout (render p50 1.99 to 2.31 ms). Defaults: medians 18.
 reference ignores the `preview` key, so its preview runs are its defaults; the pair measures the
 column's cost, the narrower panes included.)
 
+### After the console check
+
+Jeremy, 2026-10-20: in the preview column, the wheel with Shift held did not scroll; it did again once
+Shift was released. Cause: Slint's Flickable turns the wheel sideways while Shift is held
+(`FlickableData::scroll_delta`), and the column has no sideways room, so the event went unused. Fix,
+in the column only (not the lists, not the fork): a TouchArea behind the pages in `preview.slint`
+takes the wheel the Flickable passes on and, with Shift held and no sideways room, moves the scroll by
+its vertical delta, clamped; anything else it rejects, so the plain wheel, the scrollbar and
+`scrolled` run as before. New driver step `wheelat <x> <y> <dy> [shift]`; over a 20-page PDF, Shift
+and -600 px scrolled 0 -> 600 -> 1200 with `pages in view 2..3`, `3..4` and pages 4 and 5 rendered,
+the plain wheel 1200 -> 1800, Shift and +900 back to 900, and the two ends clamped (9534, 0). No new
+triplet: the gate scenario never turns the wheel with Shift held, and the handler does nothing per
+frame.
+
 ## Open questions
 
 Written 2026-10-20 at the kickoff.

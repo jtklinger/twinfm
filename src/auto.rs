@@ -215,6 +215,10 @@
 //!   preview width <ratio>            set the column's share of the space right of the sidebar (0.2
 //!                                    to 0.6, clamped), as its handle's drag does
 //!   previewscroll <px>               scroll the column to <px> from its top
+//!   wheelat <x> <y> <dy> [shift]     turn the wheel by <dy> logical px (-60 is one notch down) at
+//!                                    (x, y), logical px of the window, through Slint's pointer
+//!                                    path, with Shift held (a Shift key event either side) given
+//!                                    `shift`; logs the preview's scroll top before and 300 ms after
 //!   waitpreview <ms>                 wait until the cursor file's preview has settled (no settle or
 //!                                    width timer runs, and a message shows or every page kept holds
 //!                                    its image at the current width), at most <ms>, then 100 ms
@@ -299,6 +303,7 @@ enum Step {
     /// `at`: None the list's middle; "path" the path bar's middle; "edit" row 0's name cell.
     XButton { pane: usize, forward: bool, at: Option<String> },
     Hover { x: f32, y: f32 },
+    WheelAt { x: f32, y: f32, dy: f32, shift: bool },
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
     WaitOps(u64),
@@ -393,6 +398,12 @@ fn parse(script: &str) -> Vec<Step> {
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
                 "hover" => Step::Hover { x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0), y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0) },
+                "wheelat" => Step::WheelAt {
+                    x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    dy: a.get(3).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    shift: a.get(4) == Some(&"shift"),
+                },
                 "backclick" => Step::XButton { pane: num(1) as usize, forward: false, at: a.get(2).map(|s| s.to_string()) },
                 "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true, at: a.get(2).map(|s| s.to_string()) },
                 "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
@@ -1158,6 +1169,32 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             app.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerMoved { position: pos }).ok();
             eprintln!("[auto] hover at ({x:.0}, {y:.0})");
             schedule(runner, 50);
+        }
+        Step::WheelAt { x, y, dy, shift } => {
+            // Slint keeps the modifiers from key events, so Shift is pressed and released around it.
+            let pos = slint::LogicalPosition::new(x, y);
+            let win = app.window();
+            let before = app.invoke_preview_scroll_top();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            if shift {
+                win.dispatch_event_with_result(WindowEvent::KeyPressed { text: Key::Shift.into() }).ok();
+            }
+            win.dispatch_event_with_result(WindowEvent::PointerScrolled { position: pos, delta_x: 0.0, delta_y: dy }).ok();
+            if shift {
+                win.dispatch_event_with_result(WindowEvent::KeyReleased { text: Key::Shift.into() }).ok();
+            }
+            let r2 = runner.clone();
+            let weak = app.as_weak();
+            runner.borrow().sub.start(TimerMode::SingleShot, Duration::from_millis(300), move || {
+                if let Some(app) = weak.upgrade() {
+                    eprintln!(
+                        "[auto] wheelat ({x:.0}, {y:.0}) dy {dy}{}: preview scroll {before:.0} -> {:.0}",
+                        if shift { " shift" } else { "" },
+                        app.invoke_preview_scroll_top()
+                    );
+                }
+                schedule(r2.clone(), 1);
+            });
         }
         Step::Crumb { pane, index } => {
             app.invoke_crumb_clicked(pane as i32, index);

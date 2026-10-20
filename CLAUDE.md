@@ -567,6 +567,11 @@ Read them before changing the list.
   those images, and after a width change re-renders them once it has rested 200 ms
   (`WIDTH_SETTLE_MS`). Driver: `preview toggle` (Alt+P through the key path), `preview width <ratio>`
   (as the handle's drag; clamped), `previewscroll <px>` (the column's scroll from its top),
+  `wheelat <x> <y> <dy> [shift]` (the wheel turned by `<dy>` logical px, -60 a notch down, at (x, y) of
+  the window through Slint's pointer path, with a Shift key event either side given `shift`, as Slint
+  keeps the modifiers from key events; logs `[auto] wheelat (x, y) dy D[ shift]: preview scroll A -> B`
+  300 ms later; the column at the default 1200 px window and ratio 0.35 is near x 1100; Shift+wheel
+  scrolls the column up and down since the console check, preview.slint's TouchArea behind the pages),
   `waitpreview <ms>` (until no settle or width timer runs and the file has its answer: a message, or
   every page kept holding its image at the current width; then 100 ms), `settings set preview
   true|false`. `[preview]` lines (pages counted from 1): `shown at W px (ratio R)` (when the column
