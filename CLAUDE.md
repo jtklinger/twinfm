@@ -21,11 +21,12 @@ polish bundle with the drag cursor; four milestones, closed 2026-10-20; its firs
 Jeremy's kickoff decisions, § Calls made lists the lead's, and § Phase 7 close holds what is
 deferred, the phase's lessons and the Phase 8 candidates, daily use recommended),
 `docs/phase-8-plan.md` the Phase 8 record (the preview pane: P8-M1 the column with PDF through
-hayro, P8-M2 Markdown; opened 2026-10-20, its first section quotes Jeremy's kickoff decisions).
+hayro, P8-M2 Markdown; opened 2026-10-20, its first section quotes Jeremy's kickoff decisions;
+§ Phase 7 leftovers is the parallel stream's record, P8-L1 to P8-L3, settled with Jeremy 2026-10-20).
 Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (241 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (244 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -459,7 +460,7 @@ Read them before changing the list.
   `overlays N` counts every icon drawn with a mark or an overlay, so a refresh of a cloud folder
   whose keys are known shows `cloud N` lookups and `overlays 0`.
   Since P6-M2, the views finished: `view medium` presses Ctrl+Shift+3 on the active pane (key name
-  `CtrlShift3`): the grid at medium tiles, 80 x 88 px (72 until P7-M4) with the shell's 48 px icon
+  `CtrlShift3`): the grid at medium tiles, 80 x 107 px (72 until P7-M4, 88 until P8-L1) with the shell's 48 px icon
   (`icons::TileGeom`, `MEDIUM`; `LARGE` is P4-M1's 96 x 136 with 96 px, 120 until P7-M4), chosen per
   pane and saved as `tile_left` /
   `tile_right`; a gate run with it takes `TWINFM_CONFIG=C:\traces\grid-medium.toml` (read-only: both
@@ -628,6 +629,25 @@ Read them before changing the list.
   plain`), `link "<dest>": browser | anchor -> block K | open <path> | show <path> | refused: <why>`
   (` (scripted: not launched)` after browser and document opens in a scripted run), `gen=G scrolled
   to block K: top Y of H px`.
+  Since P8-L1, the first of the Phase 7 leftovers: Return, a double-click and the Windows 11 menu's
+  Open open **every selected item** when the row is in a selection of several (`model::open_set`;
+  the menu's Open takes the selection as every menu item does): folders, drives and archives each
+  in a new tab of the pane (placed after the active tab, in order, the last one shown), files with
+  the shell's default command for all of them at once on the verb worker
+  (`VerbRequest::default_item`, `GetMenuDefaultItem`, one job per folder for a search tab's files),
+  files inside an archive each through its PIDL; above 15 items (`model::OPEN_ASK_ABOVE`) a message
+  box asks first (none under `TWINFM_SOAK`). `[open] pane=N K items: D folder(s) to tabs, F
+  file(s)`, `[open] pane=N K items: not opened (the question was declined)`, and `[menu] verb ""
+  ("Open") queued on the verb worker (the default command), id N`. A script never opens several
+  files (they would start their apps on the desktop); several folders are safe. The menu shows Open
+  for any selection and Open with for several files of one extension too (`winmenu::same_type`;
+  Explorer offers none for several, Jeremy chose to), its submenu then the type's apps alone (no
+  "Choose another app": Windows' chooser takes one file) or a disabled "No apps for this type"; the
+  picked app gets every file at once. PageDown and PageUp in the grid are the details list's rule by
+  grid rows, the cursor keeping its column (`model::grid_page_target`, the `Paging` global's
+  `grid-target`). Medium tiles are 80 x 107 with names on up to three lines (`max-lines: 3`, the
+  name box 57 px, `name-h` on the list host), and the cursor tile's whole name shows over the tiles
+  below when three lines do not hold it.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -841,7 +861,7 @@ Read them before changing the list.
   3.2 ms against 2.2 to 2.3 ms in ab23) before reading the medians, and read such a session like for
   like; the gap rule is about a cost, so a candidate's median below the reference's is not a gap.
   The reference binary is the last merged milestone's
-  gate build (`target-p7m4`, 67160ac, after P7-M4); the previous one is deleted once the new one
+  gate build (`target-p8l1`, d5216db, after P8-L1); the previous one is deleted once the new one
   has served as a reference. Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running

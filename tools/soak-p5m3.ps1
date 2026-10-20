@@ -88,6 +88,12 @@
 # Reported besides: Markdown previews (two per cycle), pictures shown and alt texts (from the
 # `pictures done` lines; g-big.md repeats the one picture thousands of times), styled-text
 # fall-backs, cuts at 2 MB (one per cycle).
+#
+# P8-L1, after the preview cycle: the left pane on src\tree (ten folders) goes to medium tiles,
+# PageDown and PageUp move its cursor by grid rows (Explorer's), it goes back to details, two
+# folders are selected and Return opens both as new tabs (placed after the active tab 0), Ctrl+2
+# and Ctrl+W twice close them, and Ctrl+1 makes the pane's first tab active again. Reported:
+# several-item opens (one per cycle) and the tabs they opened (two per cycle).
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -294,7 +300,11 @@ $cycle = @(
     # P8-M2: e-dot.png, f-readme.md (its anchor), g-big.md (scrolled).
     'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'previewlink #usage', 'waitpreview 5000',
     'key Down', 'waitpreview 10000', 'previewscroll 20000', 'sleep 300',
-    'preview width 0.5', 'waitpreview 5000', 'preview width 0.35', 'waitpreview 5000', 'preview toggle', 'sleep 200'
+    'preview width 0.5', 'waitpreview 5000', 'preview width 0.35', 'waitpreview 5000', 'preview toggle', 'sleep 200',
+    # P8-L1: the grid's PageDown and Return on two folders (see the header).
+    "nav 0 $src\tree", 'sleep 500', 'click 0 0', 'view medium', 'sleep 300', 'key PageDown', 'sleep 100', 'key PageUp', 'sleep 100',
+    'view details', 'sleep 300', 'click 0 0', 'shiftclick 0 1', 'key Return', 'sleep 800', 'tab 2', 'sleep 200', 'tab close', 'sleep 300', 'tab 2', 'sleep 200', 'tab close', 'sleep 300',
+    'tab 1', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -395,6 +405,9 @@ $toolBack = @($log | Select-String -SimpleMatch '[nav] pane=1 Back button').Coun
 $toolForward = @($log | Select-String -SimpleMatch '[nav] pane=1 Forward button').Count
 $sideKeys = @($log | Select-String -SimpleMatch '[sidebar] key ').Count
 $sideReturns = @($log | Select-String -SimpleMatch '[sidebar] Return on row 1').Count
+# P8-L1 counts.
+$openMany = @($log | Select-String -SimpleMatch '[open] pane=0 2 items: 2 folder(s) to tabs').Count
+$openTabs = @($log | Select-String -SimpleMatch '[tab] pane=0 opened tab' | Select-String -SimpleMatch 'twinfm-m5\src\tree\d0').Count
 # P7-M1 counts.
 $verbJobs = @($log | Select-String -SimpleMatch '[menu] verb "' | Select-String -SimpleMatch 'queued on the verb worker').Count
 $verbSlept = @($log | Select-String -SimpleMatch 'slept in').Count
@@ -457,6 +470,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
 "toolbar: presses $toolPresses (eight per cycle), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
 "toolbar tooltips shown $tooltips (three per cycle); Back over the toolbar $toolBack, Forward $toolForward (one each per cycle); sidebar keys $sideKeys (five per cycle), Return $sideReturns (one per cycle)"
+"several-item opens $openMany (one per cycle), tabs they opened $openTabs (two per cycle)"
 "verbs: jobs queued $verbJobs (three per cycle: two of P7-M1's, P7-M2's ZIP), slept $verbSlept, link by verb with S_OK $verbOk; routed deletes $routedDeletes, restored $restores; cuts cancelled by Escape $cutsCancelled"
 "Windows 11 menu: shown $wmShown (seven per cycle, and each rebuild again), rebuilt with the worker's answer $wmRebuilt, picks run $wmPicks (four per cycle), ZIPs made $wmZips, new folders $wmFolders (two per cycle: the menu's and the toolbar's), submenus $wmSubs (two per cycle), classic menus from Show more options $wmMore, menupicks refused $wmRefused (must be 0)"
 "spring: armed $springArmed, spring-loaded rows $springRows (navigations into spring\inner: $springInner), tabs $springTabs (must be 0), disarmed $springDisarmed; crumb drops: $dropCrumb; auto-scroll lines: sidebar $sideScrolls, tab strip $stripScrolls"

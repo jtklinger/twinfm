@@ -43,7 +43,7 @@ use windows_sys::Win32::UI::Shell::{
     DefSubclassProc, GCS_VERBW, RemoveWindowSubclass, SHBindToObject, SHParseDisplayName, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemInfoW, GetMenuStringW, GetSubMenu, HMENU, InsertMenuW,
+    CreatePopupMenu, DestroyMenu, GetMenuDefaultItem, GetMenuItemCount, GetMenuItemInfoW, GetMenuStringW, GetSubMenu, HMENU, InsertMenuW,
     MENUITEMINFOW, MF_BYCOMMAND, MF_BYPOSITION, MF_SEPARATOR, MF_STRING, MFT_SEPARATOR, MIIM_FTYPE, MIIM_ID, MIIM_SUBMENU, SW_SHOWNORMAL,
     TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, WM_DRAWITEM, WM_INITMENUPOPUP,
     WM_MEASUREITEM, WM_MENUCHAR,
@@ -844,6 +844,9 @@ pub struct VerbRequest {
     /// the command in the menu it builds, by `verb` when given, else by `label` as a path of item
     /// labels joined by `>` ("Send to>Compressed (zipped) folder"); `offset` is unused.
     pub find: bool,
+    /// Invoke the menu's default command (`GetMenuDefaultItem`), what a double-click in Explorer
+    /// runs: Open for several files (P8-L1); `verb` and `offset` are unused.
+    pub default_item: bool,
 }
 
 /// How the verb worker invoked a command (`choose`).
@@ -1020,7 +1023,15 @@ pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
         let l = command_label(menu.0, cmd);
         (!l.is_empty()).then_some(l)
     };
-    let (how, offset) = if req.find {
+    let (how, offset) = if req.default_item {
+        // SAFETY: a live menu filled by QueryContextMenu.
+        let id = unsafe { GetMenuDefaultItem(menu.0, 0, 0) };
+        if id == u32::MAX || id < SHELL_FIRST {
+            (Invoke::Refuse("the items have no default command".into()), 0)
+        } else {
+            (Invoke::Offset, id - SHELL_FIRST)
+        }
+    } else if req.find {
         if !crate::fs::archive::inside(&req.folder) {
             fill_until(&cm, menu.0, &req.label, || find_command(&command_tree(&cm, menu.0), &req.verb, &req.label).is_some());
         }
@@ -1215,9 +1226,9 @@ mod tests {
         assert_eq!(tile_menu_point(10.0, 63.0, -1360.0, 600.0, 0, 5, L).1, 63.0);
         assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 500, 5, L).1, 663.0);
         assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 3, 1, L), (12.0, 63.0 + 4.0 * 136.0));
-        // Medium tiles, 80 x 88 px (P6-M2, 72 before P7-M4): entry 7 of five to a row is grid row 1, column 2.
+        // Medium tiles, 80 x 107 px (P6-M2; 72 before P7-M4, 88 before P8-L1): entry 7 of five to a row is grid row 1, column 2.
         let m = crate::icons::TileGeom::MEDIUM;
-        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 7, 5, m), (10.0 + 2.0 * 80.0 + 2.0, 63.0 + 176.0));
+        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 7, 5, m), (10.0 + 2.0 * 80.0 + 2.0, 63.0 + 214.0));
     }
 }
 

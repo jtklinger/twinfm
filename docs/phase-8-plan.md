@@ -528,3 +528,173 @@ Written 2026-10-20 at the kickoff.
   console check is the measure. If it falls short, PDFium is the recorded alternative (Jeremy's call).
 - **Carried from Phase 7**: Google Drive's volume found by its name; a sync-root scratch folder for
   the soak; the Slint whole-row snap patch and upstreaming; the dead share console check (P5-M1).
+
+## Phase 7 leftovers
+
+Written 2026-10-20 by the leftovers session, which runs beside the preview pane's (this section is
+its own; the sections above are the preview's). The items are the Phase 7 close's Deferred list
+(`phase-7-plan.md` § Phase 7 close) less what stays out: writing into 7z, rar, tar and the other
+`ArchiveFolder` formats (read-only, Jeremy 2026-10-19) and Explorer's own "Compress to" (not
+reachable for a host). The milestones are named **P8-L1 to P8-L3** (L for leftovers, so the preview's
+P8-M numbers stay its own; a name proposed by the session, open to Jeremy's change).
+
+### Settled first (2026-10-20, before any code)
+
+Checked against the code:
+
+- **Writing into a password-protected zip.** The `zip` crate's raw copy (`raw_copy_file_rename`,
+  9.0.3) does not copy an entry's records: it starts a new entry from the old one's options and
+  copies only the compressed bytes, so the general-purpose flags (encrypted, bit 0; data descriptor,
+  bit 3) and fields it does not model (Info-ZIP's 0x5455 timestamp) are lost. A copy of the local
+  record and the central directory record as bytes (names and offsets patched) keeps everything, and
+  the same copier serves a copy from one zip into another and within one zip, with no
+  recompression. The crate writes ZipCrypto (`with_deprecated_encryption`) and, with its
+  `aes-crypto` feature, AES; it reads with a password (`by_index_decrypt`), which can check one.
+- **An archive inside an archive** is a file inside the outer one today (`fs::archive::split` stops at
+  the first archive component that is a file on disk); Return opens it through the shell, which
+  extracts it first.
+- **Between archives**: `fileops::archive::classify` refuses any job whose sources lie inside an
+  archive and whose destination is a zip (`BETWEEN_ARCHIVES`), the same zip included.
+- **Open and Open with for several items**: `winmenu::items` shows Open for one item and Open with for
+  one file; Return opens the cursor row. The verb worker already runs a canonical verb for several
+  items; Open with's apps are invoked with the items' data object (`explorercmd::run`).
+- **The grid's PageDown** moves a viewport of grid rows; `model::page_target` is the details list's
+  Explorer rule (P7-M4).
+- **Medium tiles**: `icons::TileGeom::MEDIUM` is 80 x 88 with a two-line name (`max-lines: 2` in
+  `FileGridMedium`); Explorer's medium tile is 82 x 99 with up to three lines (measured with UI
+  Automation, 2026-10-17).
+
+Put to Jeremy with a recommendation, his answers:
+
+- **The milestones**: recommended three, in this order: **P8-L1** the small bundle (Open and Open
+  with for several items, the grid's PageDown, three-line medium names), **P8-L2** a zip writer that
+  copies existing entries byte for byte (password zips, zip to zip, within one zip), **P8-L3**
+  extraction to a temporary folder (an archive inside an archive, copies from 7z, tar and the rest
+  into a zip). Jeremy: as recommended.
+- **New files in a password zip**: recommended added unprotected with a note (Explorer's zip folder
+  does so). Jeremy chose **protected, the password asked**. Then, recommended: **the zip's own
+  method** (a ZipCrypto zip gets ZipCrypto entries, which Windows' zip folder still opens; an AES zip
+  AES-256), the password asked once per job and **checked against an existing entry** before anything
+  is written. Jeremy: as recommended. Rename, delete and move out need no password (the entries are
+  copied as they are).
+- **An archive inside an archive**: recommended **browsed read-only** in place (`C:\a.zip\inner.7z\sub`),
+  the inner archive extracted to a temporary cache cleared at exit, any depth, copy out working and
+  writes refused with a note. Jeremy: as recommended.
+- **Between archives**: recommended **every copy into a zip**: from another zip (entries copied as
+  bytes, passwords kept), from a 7z, tar, rar and the rest (extracted to a temporary folder first),
+  within the same zip; a move the same, then the originals removed (from a zip, deleted from it; from
+  a read-only format the move is refused). Nothing goes into the read-only formats. Jeremy: as
+  recommended.
+- **Open for several items**: recommended Explorer's: **the menu's Open and Return both open every
+  selected item**, files with their apps, folders as new tabs in that pane, a question first above
+  15 items. Jeremy: as recommended.
+- **Medium names on three lines**: recommended **a taller tile, 80 x 107** (three lines at today's
+  font; about 18% fewer medium rows on a screen; his P7-M4 choice for two lines). Jeremy: as
+  recommended.
+
+Checked on the machine after those answers, before P8-L1's code (an ignored probe test building the
+classic menu for several files, removed again): **Explorer offers no Open with for several items**,
+neither for two `.txt` files nor for a `.txt` and a `.png`; its default command (Open, verb `open`)
+covers several. Put back to Jeremy: recommended **Open with for several files of one type anyway**
+(the type's apps, the picked app given every file at once, no "Choose another app" since Windows'
+chooser takes one file); the alternative was Explorer's one-file rule. Jeremy: as recommended.
+
+## P8-L1: Open for several items, the grid's PageDown, three-line medium names
+
+### What landed
+
+- **Open for several items.** Return, a double-click and the Windows 11 menu's Open open every
+  selected item when the row is in a selection of several (`model::open_set`; Explorer's): folders,
+  drives and archives each in a new tab of the pane, files with the shell's default command for all
+  of them at once on the verb worker (`VerbRequest::default_item`: `GetMenuDefaultItem` on the menu
+  the worker builds, invoked by its offset; one job per folder, since a search tab's files can lie
+  in several and one menu takes one folder's items), files inside an archive each through its PIDL.
+  Above 15 items (`model::OPEN_ASK_ABOVE`, Explorer's `MultipleInvokePromptMinimum`) a message box
+  asks "Open N items at once?" first; none under `TWINFM_SOAK`. The menu shows Open for any
+  selection.
+- **Open with for several files of one type** (`winmenu::same_type`: one file, or several whose
+  extensions match ignoring case, none empty): the worker asks for that extension's apps as for one
+  file, the submenu lists them alone (or a disabled "No apps for this type"), and the picked app is
+  invoked with the data object of every selected file (`explorercmd::run`, unchanged).
+- **The grid's PageDown and PageUp** are the details list's rule by grid rows, the cursor keeping its
+  column (`model::grid_page_target`, the `Paging` global's `grid-target`); a target past a short
+  last grid row is the last entry.
+- **Medium tiles 80 x 107** (`icons::TileGeom::MEDIUM`; 88 before) with names on up to three lines
+  (`max-lines: 3`, a 57 px name box); the cursor tile's whole-name overlay reads the list host's
+  `name-h` (38 px large, 57 px medium), so it shows when three lines do not hold the name.
+- Tests 224 to 227 (231 to 234 with P8-M1 merged in): `grid_paging_keeps_the_column`, `open_takes_the_selection_with_its_row`,
+  `open_with_takes_files_of_one_type`; the menu's layouts, the submenu's rows and every medium
+  geometry test updated.
+- `tools/soak-p5m3.ps1`: after the sidebar walk, the left pane on `src\tree` goes to medium tiles,
+  PageDown and PageUp, back to details, Return on two selected folders, Ctrl+2 and Ctrl+W twice
+  (new tabs are placed after the active one, so plain Ctrl+W twice would close a tab the soak set
+  up: found by running the steps alone), Ctrl+1; reported: several-item opens and their tabs.
+
+### Calls made
+
+- Folders open as tabs in the pane, after the active tab and in their order, the last one shown
+  (Explorer opens a window each).
+- Return with the cursor on a row outside the selection opens that row alone (Explorer's focused
+  item is always in its selection; TwinFM's cursor can leave it).
+- The question above 15 items is TwinFM's own message box; files open on the verb worker, folders
+  at once.
+
+### Scripted checks
+
+The release build of this branch, scratch folders under `%TEMP%\twinfm-p8l1\`:
+
+```
+[open] pane=0 3 items: 3 folder(s) to tabs, 0 file(s)          (CtrlA on a, b, c; key Return)
+[tab] pane=0 opened tab 2 of 2 (id 3) on ...\dirs\a
+[tab] pane=0 opened tab 3 of 3 (id 4) on ...\dirs\b
+[tab] pane=0 opened tab 4 of 4 (id 5) on ...\dirs\c
+[auto] scrollpos pane=0 content-y 0.0 current-row 1             (C:\traces\bigdir, large tiles, ten to a grid row)
+[auto] scrollpos pane=0 content-y 0.0 current-row 31            PageDown: the last grid row on screen, same column
+[auto] scrollpos pane=0 content-y -302.0 current-row 61         PageDown: a screenful less one grid row
+[auto] scrollpos pane=0 content-y -302.0 current-row 31         PageUp: the first grid row on screen
+[auto] scrollpos pane=0 content-y 0.0 current-row 1             PageUp
+[winmenu] ... shown ...: [Cut Copy Share Delete] Open | Open with > | Open in terminal | ...   (a.txt and b.txt)
+[winmenu] submenu "Open with" ...: [] Notepad | The main calibre program | ... | Zed           (no Choose another app)
+[winmenu] ... shown ...: [Cut Copy Share Delete] Open | Open in terminal | ...                  (a.txt and c.png)
+[winmenu] submenu "Open with" ...: [] Notepad | ... | Zed | --- | Choose another app            (a.txt alone)
+```
+
+Medium tiles captured with the software renderer over names of one, two and three lines, a
+92-character name and a 45-character name without spaces: three lines, the third elided, and with
+the cursor on the long name its whole name over the tiles below. Opening several files was not
+scripted (it starts their apps on the desktop): a console check.
+
+### Gate
+
+ab33 (Jeremy, console, 2026-10-20 15:39, 28 min): `target-p8l1` (d5216db) against `target-p8m1`
+(47fc959, P8-M1's gate build: P8-M1 merged first, so main was merged into this branch and the gate
+build made again), three pairs interleaved, the candidate second in every pair:
+
+| Setting | p8m1 (WPR) | p8l1 (WPR) | Render p50 (ms), ref / cand | Medians |
+|---|---|---|---|---|
+| defaults | 18.2, 27.3, 26.9 | 18.3, 29.0, 27.2 | 2.21, 3.79, 3.45 / 2.25, 4.07, 3.84 | 26.9 / 27.2 |
+| large grid | 10.3, 14.2, 14.3 | 10.7, 14.4, 14.4 | 1.10, 1.65, 1.68 / 1.11, 1.68, 1.71 | 14.2 / 14.4 |
+| medium grid | 19.0, 19.4, 17.4 | 16.2, 16.8, 16.6 | 2.27, 2.27, 2.31 / 2.04, 1.99, 2.04 | 19.0 / 16.6 |
+
+**The session changed state after the first round** (ab23's note): the defaults' and the large grid's
+render p50 rose by about half for both binaries from round 2 on, so the defaults' medians sit over the
+20% bar for the reference as for the candidate. Read like for like: round 1 (the normal state) 18.2 /
+18.3 and 10.3 / 10.7; rounds 2 and 3 (the slow state) 27.3 / 29.0 and 26.9 / 27.2, and 14.2 / 14.4 and
+14.3 / 14.4, each pair with the candidate in the second slot (about a point high in ab30). No gap
+counts by the rule (medians 0.3 and 0.2 apart; not every reference run below every candidate run).
+The medium grid sits 2.4 points lower: its taller tiles hold fewer grid rows to compose and draw.
+Jeremy accepted ab33 read like for like (2026-10-20). His console checks below, on `target-p8l1`
+unelevated: all six as expected (2026-10-20).
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+1. Select three text files and press Return: each opens (in one editor window if the editor takes
+   several). Then the same through the right-click menu's Open.
+2. Select two `.txt` files, right-click: Open with lists the apps; pick one: both files open in it.
+   A `.txt` and a `.png` together: no Open with.
+3. Select two folders and press Return: two new tabs after the current one, the second shown.
+4. Select 20 files and press Return: TwinFM asks "Open 20 items at once?"; No opens nothing.
+5. The large and the medium grid on a big folder: PageDown and PageUp move by screenfuls and keep
+   the column, as in Explorer's icon views.
+6. Medium tiles in a folder with long names: three lines, then "..."; the cursor tile shows the whole
+   name below it.

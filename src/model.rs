@@ -1518,6 +1518,32 @@ pub fn page_target(cursor: i32, content_y: f32, visible_h: f32, row_h: f32, len:
     to.clamp(0, len - 1)
 }
 
+/// The cursor's entry after PageDown (`down`) or PageUp in the grid (P8-L1): `page_target`'s rule
+/// over grid rows of `cols` tiles `tile_h` high, the cursor keeping its column; a target past the
+/// last entry (in a short last grid row) is the last entry.
+pub fn grid_page_target(cursor: i32, cols: i32, content_y: f32, visible_h: f32, tile_h: f32, len: i32, down: bool) -> i32 {
+    if len <= 0 {
+        return -1;
+    }
+    if cursor < 0 {
+        return 0;
+    }
+    let cols = cols.max(1);
+    let lines = (len + cols - 1) / cols;
+    let line = page_target(cursor / cols, content_y, visible_h, tile_h, lines, down);
+    (line * cols + cursor % cols).min(len - 1)
+}
+
+/// The rows Return, a double-click or the menu's Open opens for `row` (P8-L1, Explorer's): the
+/// whole selection when `row` is in it and it holds more than one row, else `row` alone.
+pub fn open_set(selected: &BTreeSet<usize>, row: usize) -> Vec<usize> {
+    if selected.len() > 1 && selected.contains(&row) { selected.iter().copied().collect() } else { vec![row] }
+}
+
+/// Opening more items than this at once asks first, as Explorer does (its default
+/// `MultipleInvokePromptMinimum`).
+pub const OPEN_ASK_ABOVE: usize = 15;
+
 /// Sort in place: directories first, then by the chosen column. Runs on a worker.
 pub fn sort_entries(entries: &mut [Entry], col: SortCol, asc: bool) {
     entries.sort_unstable_by(|a, b| cmp_entries(a, b, col, asc));
@@ -2490,6 +2516,31 @@ mod tests {
                 assert!(a.windows(2).all(|w| cmp_entries(&w[0], &w[1], col, asc) != std::cmp::Ordering::Greater));
             }
         }
+    }
+
+    #[test]
+    fn grid_paging_keeps_the_column() {
+        // Five tiles to a grid row, 136 px high, a 450 px viewport: grid rows 0..=2 wholly on
+        // screen at the top (3 * 136 = 408), 23 entries (a last grid row of three).
+        let (h, t) = (450.0, 136.0);
+        assert_eq!(grid_page_target(1, 5, 0.0, h, t, 23, true), 11, "the last grid row on screen, same column");
+        assert_eq!(grid_page_target(11, 5, 0.0, h, t, 23, true), 21, "then a screenful less one grid row");
+        assert_eq!(grid_page_target(14, 5, 0.0, h, t, 23, true), 22, "past a short last grid row: the last entry");
+        assert_eq!(grid_page_target(21, 5, -272.0, h, t, 23, false), 11, "upwards: the first grid row on screen");
+        assert_eq!(grid_page_target(11, 5, -272.0, h, t, 23, false), 1);
+        assert_eq!(grid_page_target(3, 5, 0.0, h, t, 23, false), 3, "already on the first grid row");
+        assert_eq!(grid_page_target(-1, 5, 0.0, h, t, 23, true), 0, "no cursor");
+        assert_eq!(grid_page_target(0, 5, 0.0, h, t, 0, true), -1, "nothing listed");
+        assert_eq!(grid_page_target(2, 0, 0.0, h, t, 23, true), 4, "a zero tile count counts as one");
+    }
+
+    #[test]
+    fn open_takes_the_selection_with_its_row() {
+        let set = |v: &[usize]| v.iter().copied().collect::<BTreeSet<usize>>();
+        assert_eq!(open_set(&set(&[2, 5, 9]), 5), [2, 5, 9], "a row in a selection of several");
+        assert_eq!(open_set(&set(&[2, 5, 9]), 4), [4], "a row outside it opens alone");
+        assert_eq!(open_set(&set(&[5]), 5), [5]);
+        assert_eq!(open_set(&set(&[]), 7), [7], "nothing selected");
     }
 
     #[test]
