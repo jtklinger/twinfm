@@ -285,7 +285,24 @@ superseded 0, waitpreview timeouts 0, worker panics 0.
 
 ### Gate
 
-To be run.
+Run by Jeremy on 2026-10-20 at 14:01 (tag ab32, `C:\traces\gate-p8m1.ps1`, 16 min): `target-p8m1`
+(47fc959, built `--locked` from a detached checkout) against `target-p7m4` (67160ac), three rounds of
+reference, candidate, reference with `C:\traces\preview.toml`, candidate with it. Every run's stderr
+passed the wrapper's checks (`[settings] file C:\traces\preview.toml (read)` in the preview runs,
+`[preview] shown at 353 px (ratio 0.35)` in the candidate's).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p7m4-1 / 2 / 3 | 18.7 / 18.3 / 18.5 | 16.4 / 18.9 / 19.2 | 2.19 / 2.20 / 2.22 |
+| p8m1-1 / 2 / 3 | 18.3 / 19.2 / 18.8 | 18.0 / 19.2 / 18.4 | 2.17 / 2.31 / 2.19 |
+| p7m4-preview-1 / 2 / 3 | 18.6 / 18.7 / 18.9 | 18.7 / 19.7 / 18.6 | 2.22 / 2.18 / 2.26 |
+| p8m1-preview-1 / 2 / 3 | 18.4 / 18.4 / 18.5 | 21.1 / 20.8 / 19.5 | 1.99 / 2.10 / 2.04 |
+
+One session state throughout (render p50 1.99 to 2.31 ms). Defaults: medians 18.5 (reference) / 18.8
+(candidate), no gap that counts. Preview: 18.7 / 18.4, the candidate below. Every candidate run under
+20% on WPR. Passed; P8-M1 adds no cost with the column hidden or shown while the lists scroll. (The
+reference ignores the `preview` key, so its preview runs are its defaults; the pair measures the
+column's cost, the narrower panes included.)
 
 ## Open questions
 
