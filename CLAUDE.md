@@ -344,11 +344,18 @@ Read them before changing the list.
   crate): paste, drops, copy and move into a zip, new folder and new file, rename, delete (permanent:
   a zip has no Recycle Bin; asks first unless `TWINFM_SOAK`), cut and move out of it (the shell
   extracts, then TwinFM removes the items); every write rewrites the zip into `<name>.~twinfm<pid>.tmp`
-  beside it and swaps it in with `ReplaceFileW`, existing entries copied raw. Files that would
+  beside it and swaps it in with `ReplaceFileW`, existing entries copied as bytes (`fs::zipraw` since
+  P8-L2: the local record, data and descriptor and the central record kept whole, only the name and
+  offset patched). Files that would
   replace files in the zip are asked about once per job (a message box: Yes replace, No skip, Cancel;
   replace under `TWINFM_SOAK`). A move into a zip recycles the originals afterwards. No write into a
-  zip is undone (Ctrl+Z: "Cannot undo: changes to a zip archive cannot be undone"); nothing goes from
-  one archive into another (`BETWEEN_ARCHIVES`). A drop of another program's drag out of a zip or 7z
+  zip is undone (Ctrl+Z: "Cannot undo: changes to a zip archive cannot be undone"). Since P8-L2 items
+  go from one zip into another or within one (`Plan::FromZip`, `archivewrite::copy_from_zip`: entries
+  copied as bytes, an encrypted one keeping its own password, a plain file into a password zip
+  encrypted on the way; a copy into its own folder named "a - Copy.txt"; a move within one zip a
+  rename of the paths, refused onto a file there or into itself; a move from another zip removes the
+  items from it after the copy); from the other formats into a zip is still refused
+  (`between_why`). A drop of another program's drag out of a zip or 7z
   view goes to the extraction job (the data object's Shell IDList Array names the items' paths). The
   Windows 11 menu's Compress to has "7z file" and "TAR file" besides ZIP: a `Job::Compress` on the
   file operation worker (TwinFM's own writers, the `sevenz-rust2` and `tar` crates; any name, a pax
@@ -359,15 +366,25 @@ Read them before changing the list.
   K of 16 extensions (<exts>), read in T ms` (once), `worker CoInitializeEx(APARTMENTTHREADED) =
   0x...`, `open <archive> level "<inner>": N entries through ArchiveFolder in R ms`, `cache dropped
   <archive>` (after TwinFM wrote it), `refused: <what> (Windows' archive handler cannot write into
-  .<ext> archives)` and `(copying from one archive into another is not supported; ...)`, `refused
-  on the worker: <why>`, `job id=N "copy in|move in|new folder|new file|rename|delete|move out" on
+  .<ext> archives)` and `(copying from .<ext> archives into a zip is not supported yet; ...)`, `refused
+  on the worker: <why>`, `job id=N "copy in|move in|new folder|new file|rename|delete|move out|copy
+  from a zip|move from a zip" on
   <zip>: Done | Cancelled | Error("<why>") in T ms`, `move into <zip>: originals recycled: <outcome>
   (N item(s))`, `N file(s) already in <zip>: replace|skip|cancelled`, `compress N item(s) to <archive>:
   Ok(files) | Err("<why>") in T ms`. `[fileops] done` reads `Failed: <why>` for an archive job's
-  error; a refused drop notes `drop: <why>` in the pane under the pointer. A zip with an encrypted
-  (password-protected) entry is never written (the crate's raw copy drops the encryption flag):
-  `[archive] job id=N "<kind>" on <zip>: refused (this zip is password-protected: TwinFM does not
-  write into it)`; fixture `C:\traces\password-twinfm.zip` (password `twinfm`). While file jobs run,
+  error; a refused drop notes `drop: <why>` in the pane under the pointer. A password-protected zip
+  is written since P8-L2 (refused in P7-M3): a job that adds files, a new file, or plain files from
+  another zip asks for the password (a dialog of TwinFM's own on the file operation worker,
+  `ask_password`, masked; or the driver's `zippassword <text>`, the answer to the next question; a
+  scripted job without one, or with a wrong one, is refused, never shown the dialog), checks it by
+  reading the zip's smallest encrypted file whole (`archivewrite::check_password`), asks again while
+  it is wrong, and encrypts the new files with the zip's own method (`Protection`: ZipCrypto, or
+  AES-256 for a zip of WinZip AES entries; the crate's `aes-crypto` feature); rename, delete and move
+  out ask nothing. PKWARE's strong encryption is refused. `[archive] password for <zip> (ZipCrypto|
+  AES-256): asked | asked again | from the script`, `password for <zip>: right | wrong | cancelled`,
+  `job id=N "<kind>" on <zip>: Cancelled at the password | refused (<why>)`, `move from <zip> into
+  <zip>: removed from the source: <result>`; `[auto] zippassword: ...`. Fixture
+  `C:\traces\password-twinfm.zip` (password `twinfm`). While file jobs run,
   the shell's dialogs (`#32770`) hidden behind TwinFM's window come to the front when TwinFM is the
   foreground program: `[fileops] dialog "<title>" was behind the window: brought to the front
   (ok|refused)`, or `... is open while another program is in front: left there` (once each). `fs::archive::within`

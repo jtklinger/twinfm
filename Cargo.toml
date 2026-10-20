@@ -13,7 +13,7 @@ crossbeam-channel = "0.5"
 # Reads zip central directories for archive listings (P3-M4) and writes zips (P7-M3: entries
 # copied raw, new ones deflated with zlib-rs, pure Rust; `unreserved` lets a raw copy keep the
 # extra fields other zippers write, such as Info-ZIP's Unix 0x7875); MIT. The shell extracts.
-zip = { version = "=9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs", "unreserved"] }
+zip = { version = "=9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs", "unreserved", "aes-crypto"] }
 # Compress to > TAR file (P7-M3); MIT/Apache-2.0, no xattr.
 tar = { version = "=0.4.46", default-features = false }
 # Compress to > 7z file (P7-M3): LZMA2 in pure Rust; Apache-2.0; no encryption, bzip2 or ppmd.

@@ -8,6 +8,7 @@ mod fs {
     pub mod enumerate;
     pub mod sizes;
     pub mod watch;
+    pub mod zipraw;
 }
 mod auto;
 mod band;
