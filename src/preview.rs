@@ -20,7 +20,7 @@ use crate::{App, MdBlock, MdCell, MdRow, PreviewPage};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, StyledText, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -60,6 +60,8 @@ pub const PIXEL_BUDGET: u64 = 64 << 20;
 const SVG_MAX_BYTES: u64 = 16 << 20;
 /// Of the blocks whose styled text fell back to plain, this many are logged one by one.
 const FALLBACK_LINES: usize = 20;
+/// Of a file's pictures, this many are logged one by one (a summary line follows).
+const PICTURE_LINES: usize = 50;
 /// The anchor's second move waits this long for the ListView to have laid out the first.
 const ANCHOR_MS: u64 = 60;
 
@@ -558,6 +560,9 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
     reply(Reply::Markdown { seq, blocks: shown, anchors, pictures });
     let mut budget = PIXEL_BUDGET;
     let mut left = pictures;
+    // A file shown more than once (an icon repeated down a page) is decoded and counted once.
+    let mut done: HashMap<PathBuf, Result<SharedPixelBuffer<Rgba8Pixel>, String>> = HashMap::new();
+    let (mut shown_n, mut alt_n, t_all) = (0, 0, Instant::now());
     for (k, b) in blocks.iter().enumerate().filter(|(_, b)| b.kind == Kind::Image) {
         if keep.lock().unwrap_or_else(|e| e.into_inner()).seq != seq {
             eprintln!("[preview] gen={seq} superseded: {left} picture(s) not decoded");
@@ -566,21 +571,41 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
         left -= 1;
         let t = Instant::now();
         let got = match markdown::image_path(&b.src, &base) {
-            Some(p) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| picture(&p, &mut budget))).unwrap_or_else(|p| Err(format!("failed: panicked: {}", panic_text(&*p)))),
+            Some(p) => done
+                .entry(p)
+                .or_insert_with_key(|p| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| picture(p, &mut budget)))
+                        .unwrap_or_else(|p| Err(format!("failed: panicked: {}", panic_text(&*p))))
+                        .map(|img| SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(img.as_raw(), img.width(), img.height()))
+                })
+                .clone(),
             None => Err("remote".into()),
         };
+        let log = shown_n + alt_n < PICTURE_LINES;
         match got {
-            Ok(img) => {
-                let (w, h) = img.dimensions();
-                eprintln!("[preview] gen={seq} image {k} {}: {w}x{h} px in {:.0} ms", b.src, crate::perf::elapsed_ms(t));
-                let buf = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(img.as_raw(), w, h);
+            Ok(buf) => {
+                shown_n += 1;
+                if log {
+                    eprintln!("[preview] gen={seq} image {k} {}: {}x{} px in {:.0} ms", b.src, buf.width(), buf.height(), crate::perf::elapsed_ms(t));
+                }
                 reply(Reply::Picture { seq, block: k, pic: Some(buf) });
             }
             Err(why) => {
-                eprintln!("[preview] gen={seq} image {k} {}: alt text ({why})", b.src);
+                alt_n += 1;
+                if log {
+                    eprintln!("[preview] gen={seq} image {k} {}: alt text ({why})", b.src);
+                }
                 reply(Reply::Picture { seq, block: k, pic: None });
             }
         }
+    }
+    if pictures > 0 {
+        eprintln!(
+            "[preview] gen={seq} pictures done: {shown_n} shown, {alt_n} alt text, {} file(s) decoded, {} MB of the budget, in {:.0} ms",
+            done.values().filter(|r| r.is_ok()).count(),
+            (PIXEL_BUDGET - budget) >> 20,
+            crate::perf::elapsed_ms(t_all)
+        );
     }
 }
 
