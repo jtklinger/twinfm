@@ -85,7 +85,8 @@
 # P8-M2: the setup adds e-dot.png (a picture, no preview), f-readme.md (headings, a list, a table,
 # a code block, the local picture and links) and g-big.md (over 2 MB); after d-notes.txt the cursor
 # goes on through the three, f-readme.md's anchor link is followed and g-big.md is scrolled.
-# Reported besides: Markdown previews (two per cycle), pictures shown (one per cycle), styled-text
+# Reported besides: Markdown previews (two per cycle), pictures shown and alt texts (from the
+# `pictures done` lines; g-big.md repeats the one picture thousands of times), styled-text
 # fall-backs, cuts at 2 MB (one per cycle).
 param(
     [double]$Minutes = 30,
@@ -433,7 +434,8 @@ $pvPages = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String 
 $pvDamaged = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': damaged: ').Count
 $pvOther = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': no preview for this type').Count
 $pvMd = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': markdown, ').Count
-$pvPics = @($log | Select-String -Pattern '\[preview\] gen=\d+ image \d+ .*: \d+x\d+ px in ').Count
+$pvPics = 0; $pvAlt = 0
+foreach ($m in ($log | Select-String -Pattern 'pictures done: (\d+) shown, (\d+) alt text')) { $pvPics += [int]$m.Matches[0].Groups[1].Value; $pvAlt += [int]$m.Matches[0].Groups[2].Value }
 $pvFell = @($log | Select-String -SimpleMatch 'styled text fell back to plain').Count
 $pvCut = @($log | Select-String -SimpleMatch ', cut at 2 MB').Count
 $pvSuperseded = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String -SimpleMatch ' superseded: ').Count
@@ -463,5 +465,5 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "memory samples: $csv"
 "stderr: $stderr"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
-"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (two per cycle), markdown $pvMd (two per cycle), pictures shown $pvPics (one per cycle), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
+"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (two per cycle), markdown $pvMd (two per cycle), pictures shown $pvPics (f-readme.md's one and g-big.md's repeats, the file decoded once), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
