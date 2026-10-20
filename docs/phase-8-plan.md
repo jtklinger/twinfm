@@ -613,7 +613,8 @@ spinning thread's core. Where the scheduler puts the main thread decides each ru
 "state change" that the reference and the candidate share. Not TwinFM: both binaries moved alike,
 and ab32, before the spin, has no such runs. **Before a gate, the Claude app must be idle or
 restarted** (a thread spinning there takes a core from the scenario); a wrapper check for a process
-holding a core is a candidate for the next gate's wrapper.
+holding a core is a candidate for the next gate's wrapper. Jeremy accepted ab34 read like for like
+(2026-10-20).
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
