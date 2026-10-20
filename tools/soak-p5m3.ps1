@@ -82,6 +82,11 @@
 # column's width is changed and set back, and Alt+P hides it. Reported: PDFs opened (two per
 # cycle), pages rendered, damaged messages (one per cycle), not-a-PDF lines (one per cycle),
 # superseded lines, waitpreview timeouts and worker panics (both must be 0). No file is written.
+# P8-M2: the setup adds e-dot.png (a picture, no preview), f-readme.md (headings, a list, a table,
+# a code block, the local picture and links) and g-big.md (over 2 MB); after d-notes.txt the cursor
+# goes on through the three, f-readme.md's anchor link is followed and g-big.md is scrolled.
+# Reported besides: Markdown previews (two per cycle), pictures shown (one per cycle), styled-text
+# fall-backs, cuts at 2 MB (one per cycle).
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -169,6 +174,16 @@ Write-Pdf (Join-Path $prev 'a-pages.pdf') 4
 Write-Pdf (Join-Path $prev 'b-one.pdf') 1
 [System.IO.File]::WriteAllText((Join-Path $prev 'c-damaged.pdf'), "%PDF-1.4`ncut short: no PDF`n")
 [System.IO.File]::WriteAllText((Join-Path $prev 'd-notes.txt'), "plain text`r`n")
+Add-Type -AssemblyName System.Drawing
+$bmp = New-Object System.Drawing.Bitmap 200, 60
+$g = [System.Drawing.Graphics]::FromImage($bmp); $g.Clear([System.Drawing.Color]::SeaGreen); $g.Dispose()
+$bmp.Save((Join-Path $prev 'e-dot.png'), [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
+$readme = "# Soak README`n`nSome **bold**, *italic*, ``code`` and a [link](#usage).`n`n- one`n- two`n  - [x] done`n`n" +
+    "| Name | Size |`n|:--|--:|`n| a | 1 |`n| b | 2 |`n`n" + '```' + "`nfn main() {}`n" + '```' + "`n`n![dot](e-dot.png)`n`n## Usage`n`nThe end.`n"
+[System.IO.File]::WriteAllText((Join-Path $prev 'f-readme.md'), $readme)
+$sb = New-Object System.Text.StringBuilder
+for ($i = 0; $sb.Length -lt 2300000; $i++) { [void]$sb.Append("## Section $i`n`n" + $readme) }
+[System.IO.File]::WriteAllText((Join-Path $prev 'g-big.md'), $sb.ToString())
 
 $scroll = @($ScrollFolders | Where-Object { Test-Path $_ })
 $wait = 'waitops 60000'
@@ -275,6 +290,9 @@ $cycle = @(
     # P8-M1: the preview cycle (see the header). Rows: a-pages.pdf, b-one.pdf, c-damaged.pdf, d-notes.txt.
     "nav 0 $prev", 'sleep 500', 'preview toggle', 'click 0 0', 'waitpreview 5000', 'previewscroll 600', 'waitpreview 5000',
     'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000',
+    # P8-M2: e-dot.png, f-readme.md (its anchor), g-big.md (scrolled).
+    'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'previewlink #usage', 'waitpreview 5000',
+    'key Down', 'waitpreview 10000', 'previewscroll 20000', 'sleep 300',
     'preview width 0.5', 'waitpreview 5000', 'preview width 0.35', 'waitpreview 5000', 'preview toggle', 'sleep 200'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
@@ -413,7 +431,11 @@ $arUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -S
 $pvOpened = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': pdf, ').Count
 $pvPages = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String -SimpleMatch ' rendered ').Count
 $pvDamaged = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': damaged: ').Count
-$pvOther = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': not a pdf').Count
+$pvOther = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': no preview for this type').Count
+$pvMd = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': markdown, ').Count
+$pvPics = @($log | Select-String -Pattern '\[preview\] gen=\d+ image \d+ .*: \d+x\d+ px in ').Count
+$pvFell = @($log | Select-String -SimpleMatch 'styled text fell back to plain').Count
+$pvCut = @($log | Select-String -SimpleMatch ', cut at 2 MB').Count
 $pvSuperseded = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String -SimpleMatch ' superseded: ').Count
 $pvTimeouts = @($log | Select-String -SimpleMatch 'waitpreview: not settled').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
@@ -441,5 +463,5 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "memory samples: $csv"
 "stderr: $stderr"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
-"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), not a PDF $pvOther (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
+"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (two per cycle), markdown $pvMd (two per cycle), pictures shown $pvPics (one per cycle), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
