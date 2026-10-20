@@ -339,6 +339,9 @@ pub struct Layout {
     /// The toolbar at the top of each pane, above its tab strip and path bar, and its spacing
     /// (`PANE_BAR`), or 0.
     pub bar: f32,
+    /// The width the preview column and its 6 px handle take from the window's right edge
+    /// (P8-M1: its share of the space right of `left`, plus 3 px), or 0 while it is hidden.
+    pub preview: f32,
 }
 
 impl Layout {
@@ -484,14 +487,22 @@ pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len:
 
 /// The pane's x range: the left pane is the whole panes area without the split, else up to 3 px
 /// left of the split line; the right pane starts 3 px right of it (the splitter is the 6 px
-/// between). The ratio applies to the panes area, right of `left`.
+/// between). The ratio applies to the panes area, right of `left` and left of the preview column.
 pub fn pane_x(l: &Layout, pane: usize) -> (f32, f32) {
-    let line = l.left + (l.width - l.left) * l.ratio;
+    let right = l.width - l.preview;
+    let line = l.left + (right - l.left) * l.ratio;
     match (l.split, pane) {
-        (false, _) => (l.left, l.width),
+        (false, _) => (l.left, right),
         (true, 0) => (l.left, line - 3.0),
-        (true, _) => (line + 3.0, l.width),
+        (true, _) => (line + 3.0, right),
     }
+}
+
+/// The width the preview column takes from the window's right edge (`Layout::preview`) at share
+/// `ratio` of the space right of `left` (app.slint: the panes narrow to that space times 1 - ratio,
+/// less 3 px; the handle's 6 px and the column take the rest).
+pub fn preview_w(width: f32, left: f32, ratio: f32) -> f32 {
+    (width - left) * ratio + 3.0
 }
 
 /// Hit-test a window point (logical px) against the panes and their rows. `content_y` is each
@@ -3217,7 +3228,7 @@ mod tests {
 
     #[test]
     fn hit_testing_and_drop_folder() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
         // Rows start at y 63, 22 px each; the list ends 23 px above the bottom (y 577).
@@ -3257,11 +3268,11 @@ mod tests {
         // Scrolled by ten grid rows: the first visible tile is entry 50.
         assert_eq!(hit(&grid, 50.0, 70.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 50));
         assert_eq!(hit(&grid, 3.0 + 3.0 * 96.0 + 1.0, 70.0 + 136.0 * 2.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 63));
-        // Medium tiles (P6-M2), 12 of 80 x 88 px to a grid row: the column and line from the tile.
+        // Medium tiles (P6-M2), 12 of 80 x 107 px to a grid row: the column and line from the tile.
         let medium = Layout { grid: [Some(12), None], tile: [crate::icons::TileGeom::MEDIUM, crate::icons::TileGeom::LARGE], ..one };
-        assert_eq!(medium.row_px_of(0), 88.0);
-        assert_eq!(hit(&medium, 3.0 + 80.0, 63.0 + 88.0, none, [100, 0]), Spot::Row(0, 13));
-        assert_eq!(hit(&medium, 3.0 + 79.9, 63.0 + 87.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(medium.row_px_of(0), 107.0);
+        assert_eq!(hit(&medium, 3.0 + 80.0, 63.0 + 107.0, none, [100, 0]), Spot::Row(0, 13));
+        assert_eq!(hit(&medium, 3.0 + 79.9, 63.0 + 106.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
         assert_eq!(hit(&medium, 3.0 + 12.0 * 80.0 + 1.0, 70.0, none, [100, 0]), Spot::Pane(0), "right of the tiles");
         // With the split, each pane has its own view: the right pane stays a 22 px list.
         let both = Layout { split: true, grid: [Some(5), None], ..one };
@@ -3308,6 +3319,15 @@ mod tests {
         assert_eq!(hit(&side, 600.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
         let single = Layout { left: 12.0, ..one };
         assert_eq!(pane_x(&single, 0), (12.0, 1000.0), "a collapsed sidebar leaves a 12 px strip");
+        // The preview column (P8-M1) at 0.35 of the 816 px right of the sidebar: 288.6 px with its
+        // handle's left half; the split's ratio applies to what is left.
+        let shown = Layout { preview: preview_w(1000.0, 184.0, 0.35), ..side };
+        assert!((shown.preview - 288.6).abs() < 1e-3, "{}", shown.preview);
+        let (right, line) = (1000.0 - shown.preview, 184.0 + (1000.0 - shown.preview - 184.0) * 0.5);
+        assert_eq!(pane_x(&shown, 0), (184.0, line - 3.0));
+        assert_eq!(pane_x(&shown, 1), (line + 3.0, right));
+        assert_eq!(hit(&shown, 720.0, 70.0, none, [5, 7]), Spot::Outside, "the column");
+        assert_eq!(hit(&shown, 700.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
 
         // Drop folders.
         let f = p(r"C:\work");
@@ -3322,7 +3342,7 @@ mod tests {
     #[test]
     fn hit_sidebar_rows_and_tabs() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000.
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
         // Header 26, two drives 24, header 26, a place 24, header 26, a bookmark being renamed 30.
         let rows = [(26.0, false), (24.0, true), (24.0, true), (26.0, false), (24.0, true), (26.0, false), (30.0, true)];
         let s = Strips {
@@ -3377,7 +3397,7 @@ mod tests {
 
     #[test]
     fn auto_scroll_near_the_list_edges() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
         // The list runs from y 63 to 577; the edge zones are 24 px inside it.
         assert_eq!(edge_scroll(&one, 500.0, 63.0), Some((0, -1)), "the top edge scrolls up");
         assert_eq!(edge_scroll(&one, 500.0, 86.9), Some((0, -1)));
@@ -3411,7 +3431,7 @@ mod tests {
     fn auto_scroll_sidebar_and_tab_strip() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000;
         // the right pane shows a strip of 6 tabs of 120 px in its 399 px (720 px of tabs).
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
         let rows = [(26.0, false), (24.0, true)];
         let s = Strips {
             side_w: 180.0,
@@ -3463,7 +3483,7 @@ mod tests {
     fn hit_breadcrumb_crumbs() {
         // One pane from x 0 (no sidebar), 600 px tall; the bar's crumb row reported at offset 0,
         // 900 px of it shown; crumbs "This PC", "C:", "Users" at 0, 70 and 110 in the row.
-        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0 };
+        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
         let crumbs = [(0.0, 54.0), (70.0, 24.0), (110.0, 60.0)];
         let s = Strips { side_w: 0.0, side_scroll: 0.0, side_rows: &[], tabs: [(1, 160.0, 0.0); 2], crumb_row: [(0.0, 900.0), (0.0, 0.0)], crumbs: [&crumbs, &[]] };
         let none = [0.0, 0.0];

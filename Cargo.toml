@@ -25,6 +25,9 @@ windows-sys = { version = "0.60", features = ["Win32_System_Threading", "Win32_S
 # Reads the packaged apps' AppxManifest.xml for their context menu commands (P7-M2); MIT/Apache-2.0,
 # no dependencies of its own.
 roxmltree = { version = "=0.21.1", default-features = false, features = ["std"] }
+# Renders PDF pages for the preview pane (P8-M1), pure Rust; MIT OR Apache-2.0. Its default
+# features keep the substitute fonts for the 14 standard PDF fonts and the CMaps.
+hayro = "=0.8.0"
 
 [features]
 # Default build matches slint's defaults. `cargo build --release --no-default-features` builds the

@@ -1,6 +1,7 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
 import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
-export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging }
+import { Preview, PreviewPage } from "preview.slint";
+export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
 // the bookmark's index in the bookmark list.
@@ -259,6 +260,28 @@ export component App inherits Window {
     in-out property <float> split-ratio: 0.5;
     in-out property <int> left-current-row: -1;
     in-out property <int> right-current-row: -1;
+    // The preview column at the window's right edge (P8-M1, settings `preview`): its width as a
+    // share of the space right of the sidebar (`preview_width`, 0.2 to 0.6, its handle's drag sets
+    // it), and what preview.rs puts in it. toggle-preview(): Alt+P (the toolbar's button goes
+    // through Rust). preview-cursor(): a pane's cursor row or the active pane changed while the
+    // column shows (preview.rs restarts its settle timer; nothing else). preview-scrolled(top,
+    // visible height) and preview-resized(page width): the column's scroll and width.
+    in-out property <bool> preview: false;
+    in-out property <float> preview-width: 0.35;
+    in property <string> preview-title;
+    in property <string> preview-message;
+    in property <[PreviewPage]> preview-pages;
+    in property <length> preview-content-h;
+    callback toggle-preview();
+    callback preview-cursor();
+    callback preview-scrolled(length, length);
+    callback preview-resized(length);
+    changed left-current-row => { if (root.preview) { root.preview-cursor(); } }
+    changed right-current-row => { if (root.preview) { root.preview-cursor(); } }
+    changed active-pane => { if (root.preview) { root.preview-cursor(); } }
+    public function preview-set-scroll(y: length) { preview-col.set-scroll(y); }
+    public function preview-scroll-top() -> length { return preview-col.scroll-top(); }
+    public function preview-visible-h() -> length { return preview-col.visible-h(); }
     // A drag over the window would drop into pane `drop-pane` (-1: none), on row `drop-row` (-1:
     // the pane's folder). Set by the drop target (dnd.rs).
     in-out property <int> drop-pane: -1;
@@ -428,6 +451,7 @@ export component App inherits Window {
     in-out property <bool> dlg-crumbs;
     // The toolbar's place in the dialog: 0 none, 1 top, 2 in each pane (ComboBox index).
     in-out property <int> dlg-toolbar;
+    in-out property <bool> dlg-preview;
     // "Saved to <file>", or that a scripted run saves nothing.
     in property <string> settings-note;
     private property <bool> settings-shown: false;
@@ -449,7 +473,7 @@ export component App inherits Window {
     // What each control calls when the user changes it (and the driver's `settings set`): field
     // start_left, start_right (a path), hidden_left, hidden_right, protected_left, protected_right,
     // type_column, thumbnails, sidebar ("true" or "false"), path_bar ("entry" or "crumb"), view_left,
-    // view_right ("details", "large" or "medium"), toolbar ("top", "pane" or "none").
+    // view_right ("details", "large" or "medium"), toolbar ("top", "pane" or "none"), preview (P8-M1, "true" or "false").
     public function settings-stage(field: string, value: string) {
         if (field == "start_left") { dlg-start-left = value; }
         if (field == "start_right") { dlg-start-right = value; }
@@ -464,6 +488,7 @@ export component App inherits Window {
         if (field == "view_left") { dlg-view-left = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "view_right") { dlg-view-right = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "toolbar") { dlg-toolbar = value == "none" ? 0 : value == "pane" ? 2 : 1; }
+        if (field == "preview") { dlg-preview = value == "true"; }
     }
 
     // The breadcrumb dropdown's contents and place, set from Rust before show-crumb-menu.
@@ -624,6 +649,8 @@ export component App inherits Window {
                 return accept;
             }
             if (e.text == Key.F9) { root.toggle-sidebar(); return accept; }
+            // Alt+P: the preview column, as in Explorer (P8-M1).
+            if (e.modifiers.alt && !e.modifiers.control && !e.modifiers.shift && (e.text == "p" || e.text == "P")) { root.toggle-preview(); return accept; }
             if (e.text == Key.F1) { root.show-about(); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "d" || e.text == "D")) { root.bookmark-add(); return accept; }
             return reject;
@@ -644,6 +671,7 @@ export component App inherits Window {
                 x: 4px; y: 2px; height: parent.height - 4px;
                 tools: root.split && root.active-pane == 1 ? root.right-tools : root.left-tools;
                 labelled: true;
+                preview-on: root.preview;
                 tool(c) => { root.toolbar-clicked(root.split && root.active-pane == 1 ? 1 : 0, c); }
                 tip(t) => { root.toolbar-tip(-1, t); }
                 back => { root.pane-back(root.split && root.active-pane == 1 ? 1 : 0); }
@@ -797,10 +825,13 @@ export component App inherits Window {
             Text { y: 6px; text: "\u{00bb}"; horizontal-alignment: center; }
             show-ta := TouchArea { clicked => { root.toggle-sidebar(); } }
         }
-        // The two panes and the split line, right of the sidebar (dnd.rs Layout.left).
+        // The two panes and the split line, right of the sidebar (dnd.rs Layout.left), narrowed by
+        // the preview column when it shows (dnd.rs Layout.preview: its share of the space right of
+        // the sidebar, plus 3 px, half its handle).
         panes := Rectangle {
             x: sidebar-visible ? sidebar-width + 4px : 12px; y: root.top-h;
-            width: parent.width - self.x; height: parent.height - root.top-h;
+            width: root.preview ? (parent.width - self.x) * (1 - root.preview-width) - 3px : parent.width - self.x;
+            height: parent.height - root.top-h;
             left := Pane {
                 x: 0; y: 0; height: parent.height;
                 width: split ? parent.width * split-ratio - 3px : parent.width;
@@ -852,6 +883,7 @@ export component App inherits Window {
                 filter-clear => { root.filter-clear(0); }
                 toolbar: root.toolbar == 2;
                 tools: root.left-tools;
+                preview-on: root.preview;
                 tool(c) => { root.toolbar-clicked(0, c); }
                 tool-tip(t) => { root.toolbar-tip(0, t); }
             }
@@ -907,6 +939,7 @@ export component App inherits Window {
                 filter-clear => { root.filter-clear(1); }
                 toolbar: root.toolbar == 2;
                 tools: root.right-tools;
+                preview-on: root.preview;
                 tool(c) => { root.toolbar-clicked(1, c); }
                 tool-tip(t) => { root.toolbar-tip(1, t); }
             }
@@ -924,6 +957,35 @@ export component App inherits Window {
                     }
                 }
             }
+        }
+        // The preview column's handle, 6 px as the splitter; dragging it sets the column's share of
+        // the space right of the sidebar (0.2 to 0.6, preview.rs `clamp_ratio`).
+        preview-handle := Rectangle {
+            visible: root.preview;
+            x: panes.x + panes.width; y: root.top-h; width: 6px; height: parent.height - root.top-h;
+            background: preview-ta.has-hover || preview-ta.pressed ? Palette.accent-background : Palette.border;
+            preview-ta := TouchArea {
+                mouse-cursor: col-resize;
+                moved => {
+                    if (self.pressed) {
+                        // The handle sits at width - share * area - 3 px (area: right of the sidebar).
+                        root.preview-width = max(0.2, min(0.6, (root.width - preview-handle.x - (self.mouse-x - self.pressed-x) - 3px) / (root.width - panes.x)));
+                        root.settings-changed();
+                    }
+                }
+            }
+        }
+        // Always there (its functions are the driver's and preview.rs's), shown with the setting.
+        preview-col := Preview {
+            visible: root.preview;
+            x: preview-handle.x + 6px; y: root.top-h;
+            width: max(0px, parent.width - self.x); height: parent.height - root.top-h;
+            title: root.preview-title;
+            message: root.preview-message;
+            pages: root.preview-pages;
+            content-h: root.preview-content-h;
+            scrolled(top, h) => { root.preview-scrolled(top, h); }
+            resized(w) => { root.preview-resized(w); }
         }
     }
 
@@ -1167,9 +1229,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 444px) / 2);
+        y: max(10px, (root.height - 480px) / 2);
         width: 480px;
-        height: 444px;
+        height: 480px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Palette.background;
@@ -1299,6 +1361,15 @@ export component App inherits Window {
                                 current-index: root.dlg-toolbar;
                                 accessible-label: "Toolbar";
                                 selected => { root.settings-stage("toolbar", self.current-index == 0 ? "none" : self.current-index == 2 ? "pane" : "top"); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Preview"; vertical-alignment: center; }
+                            CheckBox {
+                                text: "Preview pane (Alt+P)";
+                                checked: root.dlg-preview;
+                                accessible-label: "Show the preview pane";
+                                toggled => { root.settings-stage("preview", self.checked ? "true" : "false"); }
                             }
                         }
                         Row {

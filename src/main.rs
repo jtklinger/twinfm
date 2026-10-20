@@ -21,6 +21,7 @@ mod icons;
 mod model;
 mod pathbar;
 mod perf;
+mod preview;
 mod settings;
 mod shellmenu;
 mod sidebar;
@@ -733,6 +734,11 @@ fn update_tools(st: &State, app: &App, pane: usize) {
 /// buttons that open the name editor, which takes them itself: the list's focus request lands a
 /// moment later (a `changed` handler) and would close the editor again.
 fn toolbar_clicked(pane: usize, button: &str) {
+    // The Preview button (P8-M1) is Alt+P's toggle, for the window, not a pane's command.
+    if button == "preview" {
+        eprintln!("[toolbar] pane={pane} preview -> toggle");
+        return toggle_preview();
+    }
     let Some(cmd) = toolbar::command(button) else {
         return eprintln!("[toolbar] pane={pane} no button {button}");
     };
@@ -744,6 +750,31 @@ fn toolbar_clicked(pane: usize, button: &str) {
         app.invoke_focus_pane(pane as i32);
     }
     command(pane, cmd);
+}
+
+/// Alt+P, the toolbar's Preview button and the dialog (P8-M1): show or hide the preview column,
+/// remembered in the settings.
+fn toggle_preview() {
+    let Some(app) = with_state(|st| {
+        schedule_save(st);
+        st.app.upgrade()
+    }) else {
+        return;
+    };
+    let on = !app.get_preview();
+    app.set_preview(on);
+    preview::set_visible(on);
+}
+
+/// The preview's file (P8-M1): the active pane's cursor entry, from its listing (no file system
+/// call); None when the cursor is on no row.
+pub fn preview_target() -> Option<preview::Target> {
+    with_state(|st| {
+        let app = st.app.upgrade()?;
+        let pane = active_pane(&app);
+        let e = st.model(pane).entry(usize::try_from(current_row(&app, pane)).ok()?)?;
+        Some(preview::Target { pane, path: st.tab(pane).path.join(e.name.as_str()), attrs: e.attrs, is_dir: e.is_dir() })
+    })
 }
 
 /// The running job's percentage for a tab's status bar: only on the pane and tab that submitted
@@ -879,6 +910,8 @@ fn save_now() {
         c.sidebar_visible = app.get_sidebar_visible();
         c.sidebar_width = app.get_sidebar_width();
         c.path_bar = if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into();
+        c.preview = app.get_preview();
+        c.preview_width = app.get_preview_width();
         let w = app.window();
         // Maximised: the Win32 placement's normal rectangle, so un-maximising after a restart
         // gives the right size. Otherwise the window as it is; minimised: left as last saved.
@@ -3207,6 +3240,7 @@ fn menu_picked(pane: usize, picked: shellmenu::Picked, req: &shellmenu::Request,
                 y: req.y,
                 extended: req.extended,
                 find: false,
+                default_item: false,
             };
             queue_verb(pane, request, sleep_ms);
         }
@@ -3222,7 +3256,13 @@ fn queue_verb(pane: usize, request: shellmenu::VerbRequest, sleep_ms: Option<u64
             "[menu] verb \"{}\" (\"{}\") queued on the verb worker{}, id {id}",
             request.verb,
             request.label,
-            if request.find { " (found there by its label)" } else { "" }
+            if request.find {
+                " (found there by its label)"
+            } else if request.default_item {
+                " (the default command)"
+            } else {
+                ""
+            }
         );
         let work = match sleep_ms {
             Some(ms) => verbs::Work::Sleep(request, ms),
@@ -3257,6 +3297,7 @@ fn verb_request(req: &shellmenu::Request, verb: &str, label: &str, find: bool) -
         y: req.y,
         extended: false,
         find,
+        default_item: false,
     }
 }
 
@@ -3376,8 +3417,10 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
                 drives: count(|t| matches!(t, explorercmd::Target::Drive)),
             }
         };
-        let open_with = match targets.as_slice() {
-            [explorercmd::Target::File(ext)] if !ext.is_empty() && matches!(place, toolbar::Place::Folder | toolbar::Place::Search) => Some(ext.clone()),
+        let exts: Vec<Option<&str>> = targets.iter().map(|t| if let explorercmd::Target::File(x) = t { Some(x.as_str()) } else { None }).collect();
+        let same_type = !entries.is_empty() && winmenu::same_type(&exts);
+        let open_with = match exts.first() {
+            Some(Some(ext)) if same_type && !ext.is_empty() && matches!(place, toolbar::Place::Folder | toolbar::Place::Search) => Some(ext.to_string()),
             _ => None,
         };
         st.winmenu_seq += 1;
@@ -3404,7 +3447,7 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
             req.folder.display(),
             if waiting { "query queued on the verb worker" } else { "no query" }
         );
-        let wctx = winmenu::Ctx { place, what, clipboard_files: st.clip_files };
+        let wctx = winmenu::Ctx { place, what, clipboard_files: st.clip_files, same_type };
         let placed = winmenu::Placed { x, y, h: 0.0, scrolls: false, left: false, up: false };
         st.winmenu = Some(WinMenu {
             seq,
@@ -3567,7 +3610,8 @@ fn winmenu_open_sub(cmd: winmenu::Cmd, keys: bool) {
             return;
         }
         let Some(i) = m.items.iter().position(|e| e.cmd == Some(cmd)) else { return };
-        let items = winmenu::sub_items(cmd, &m.answer.commands, &m.answer.apps);
+        let several = matches!(m.wctx.what, winmenu::What::Items { files, .. } if files > 1);
+        let items = winmenu::sub_items(cmd, &m.answer.commands, &m.answer.apps, several);
         let (ys, _) = winmenu::rows_y(&m.items);
         let list_top = m.placed.y + winmenu::PAD + if m.tools.is_empty() { 0.0 } else { winmenu::TOOLS_H + winmenu::SEP_H };
         let item_y = list_top + ys[i] + app.get_wm_scroll();
@@ -3745,8 +3789,15 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
         }
         c if c.key_command().is_some() => command(pane, c.key_command().unwrap_or_default()),
         Cmd::Open => {
-            let Some(row) = with_state(|st| st.app.upgrade().map(|app| current_row(&app, pane))) else { return };
-            open_row(pane, row);
+            let rows = with_state(|st| {
+                let app = st.app.upgrade()?;
+                let sel = st.model(pane).selected_set();
+                let cursor = usize::try_from(current_row(&app, pane)).ok();
+                Some(if sel.is_empty() { cursor.into_iter().collect() } else { sel.into_iter().collect() })
+            });
+            if let Some(rows) = rows {
+                open_rows(pane, rows);
+            }
         }
         Cmd::OpenOther => own_item(pane, shellmenu::OwnItem::OpenOther, m.ctx),
         Cmd::Terminal => own_item(pane, shellmenu::OwnItem::Terminal, m.ctx),
@@ -3896,10 +3947,102 @@ fn own_item(pane: usize, item: shellmenu::OwnItem, ctx: MenuContext) {
     }
 }
 
-/// Return, or a double-click that was not the tail of a drag: enter the row's directory (also a
-/// reparse directory or a drive) or zip archive, or open the file with its default program (a
-/// file inside an archive through its PIDL: the shell extracts it and opens the copy).
+/// Return, or a double-click that was not the tail of a drag: the row, or the whole selection
+/// when the row is in a selection of several (P8-L1, Explorer's; `model::open_set`).
 fn open_row(pane: usize, row: i32) {
+    let Ok(row) = usize::try_from(row) else { return };
+    let Some(rows) = with_state(|st| Some(model::open_set(&st.model(pane).selected_set(), row))) else { return };
+    open_rows(pane, rows);
+}
+
+/// Open `rows` (P8-L1): one row as `open_one`; several, after a question above
+/// `model::OPEN_ASK_ABOVE` items (none under TWINFM_SOAK): the folders, drives and archives each
+/// in a new tab of the pane, in order, the last one shown; the files with the shell's default
+/// command for all of them at once on the verb worker (what Explorer runs: a type whose app takes
+/// several files at once gets them together), or inside an archive each through its PIDL.
+fn open_rows(pane: usize, rows: Vec<usize>) {
+    if rows.len() <= 1 {
+        if let Some(&row) = rows.first() {
+            open_one(pane, row as i32);
+        }
+        return;
+    }
+    let Some((hwnd, folder, archive, soak, items)) = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let folder = st.tab(pane).path.clone();
+        let archive = in_archive(st, pane);
+        let items: Vec<(bool, String)> = rows
+            .iter()
+            .filter_map(|&r| st.model(pane).entry(r))
+            .map(|e| (e.is_dir() || (!archive && fs::archive::is_archive_name(&e.name)), e.name.to_string()))
+            .collect();
+        Some((main_hwnd(st, &app), folder, archive, st.soak.is_some(), items))
+    }) else {
+        return;
+    };
+    let (dirs, files): (Vec<_>, Vec<_>) = items.into_iter().partition(|(enter, _)| *enter);
+    let n = dirs.len() + files.len();
+    eprintln!("[open] pane={pane} {n} items: {} folder(s) to tabs, {} file(s)", dirs.len(), files.len());
+    // No state borrow across the question: a message box runs a modal loop.
+    if n > model::OPEN_ASK_ABOVE && !soak && !ask_open_many(hwnd, n) {
+        eprintln!("[open] pane={pane} {n} items: not opened (the question was declined)");
+        return;
+    }
+    for (_, name) in &dirs {
+        open_tab(pane, Some(folder.join(name)));
+    }
+    if files.is_empty() {
+        return;
+    }
+    if archive {
+        for (_, name) in &files {
+            let file = folder.join(name);
+            let res = shellmenu::open_in_archive(hwnd, &file);
+            eprintln!("[open] pane={pane} {}: {res:?}", file.display());
+        }
+        return;
+    }
+    // One job per folder: a search tab's files can lie in several, and one menu takes one folder's.
+    let mut by_dir: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    for (_, name) in files {
+        let path = folder.join(&name);
+        let (dir, leaf) = (path.parent().map_or_else(|| folder.clone(), Path::to_path_buf), path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name));
+        match by_dir.iter_mut().find(|(d, _)| *d == dir) {
+            Some((_, names)) => names.push(leaf),
+            None => by_dir.push((dir, vec![leaf])),
+        }
+    }
+    for (dir, names) in by_dir {
+        let request = shellmenu::VerbRequest {
+            folder: dir,
+            names,
+            verb: String::new(),
+            offset: 0,
+            label: "Open".into(),
+            x: 0,
+            y: 0,
+            extended: false,
+            find: false,
+            default_item: true,
+        };
+        queue_verb(pane, request, None);
+    }
+}
+
+/// "Open N items?", as Explorer asks before opening many at once. True to go on.
+fn ask_open_many(hwnd: isize, n: usize) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
+    let t: Vec<u16> = format!("Open {n} items at once?").encode_utf16().chain([0]).collect();
+    let c: Vec<u16> = "TwinFM".encode_utf16().chain([0]).collect();
+    // MODAL LOOP: no app state is borrowed here.
+    // SAFETY: NUL-terminated strings that outlive the call; the owner is the app's window.
+    unsafe { MessageBoxW(hwnd as _, t.as_ptr(), c.as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
+}
+
+/// One row: enter its directory (also a reparse directory or a drive) or zip archive, or open the
+/// file with its default program (a file inside an archive through its PIDL: the shell extracts
+/// it and opens the copy).
+fn open_one(pane: usize, row: i32) {
     let target = with_state(|st| {
         let e = st.model(pane).entry(usize::try_from(row).ok()?)?;
         let app = st.app.upgrade()?;
@@ -4266,13 +4409,15 @@ fn register_dnd() {
 /// the window and its properties, so it needs no app-state borrow.
 pub fn window_layout(app: &App) -> dnd::Layout {
     let size = app.window().size().to_logical(app.window().scale_factor());
+    let left = if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 };
     dnd::Layout {
         width: size.width,
         height: size.height,
         split: app.get_split(),
         ratio: app.get_split_ratio(),
         tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
-        left: if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 },
+        left,
+        preview: if app.get_preview() { dnd::preview_w(size.width, left, app.get_preview_width()) } else { 0.0 },
         row_px: icons::ListGeom::new(app.get_thumbnails()).row_px,
         grid: [
             app.get_left_grid().then(|| app.get_left_grid_cols().max(1) as usize),
@@ -4971,6 +5116,8 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
     update_status(st, app, pane);
     resolve_view(st, app, pane);
     st.watch_active(app, pane);
+    // Another tab under the same cursor row number is another file (P8-M1).
+    preview::kick();
 }
 
 /// A watched background tab coming to the front: its watch says nothing when its folder went
@@ -5539,6 +5686,7 @@ fn settings_open() {
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
             toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
+            preview: app.get_preview(),
         };
         st.dialog = Some(d.clone());
         let note = match &st.config_path {
@@ -5562,6 +5710,7 @@ fn settings_open() {
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
+    app.set_dlg_preview(d.preview);
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
     // Outside the state borrow: showing the popup moves keyboard focus.
@@ -5587,6 +5736,7 @@ fn settings_closed(ok: bool) {
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
         toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
+        preview: app.get_dlg_preview(),
     }
     .normalized();
     let changes = opened.changes(&staged);
@@ -5626,6 +5776,11 @@ fn settings_closed(ok: bool) {
                 let t = settings::Toolbar::from_name(&staged.toolbar);
                 app.set_toolbar(t.index());
                 with_state(|st| st.config.toolbar = t.name().into());
+            }
+            "preview" => {
+                if app.get_preview() != staged.preview {
+                    toggle_preview();
+                }
             }
             _ => {}
         }
@@ -5826,6 +5981,9 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
     app.set_toolbar(settings::Toolbar::from_name(&config.toolbar).index());
+    app.set_preview_width(config.preview_width);
+    app.set_preview(config.preview);
+    preview::init(&app);
     app.set_show_type(config.show_type);
     app.set_thumbnails(config.thumbnails);
     if config.thumbnails {
@@ -6036,6 +6194,10 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     app.on_settings_changed(|| with_state(|st| schedule_save(st)));
+    app.on_toggle_preview(toggle_preview);
+    app.on_preview_cursor(preview::kick);
+    app.on_preview_scrolled(preview::scrolled);
+    app.on_preview_resized(preview::resized);
     // Closing the window writes the settings at once (the window's placement included).
     app.window().on_close_requested(|| {
         save_now();
@@ -6054,6 +6216,9 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_toolbar_clicked(|pane, button| toolbar_clicked(pane as usize, button.as_str()));
     app.global::<Paging>().on_target(|cursor, content_y, visible_h, row_h, len, down| {
         model::page_target(cursor, content_y, visible_h, row_h, len, down)
+    });
+    app.global::<Paging>().on_grid_target(|cursor, cols, content_y, visible_h, tile_h, len, down| {
+        model::grid_page_target(cursor, cols, content_y, visible_h, tile_h, len, down)
     });
     app.on_toolbar_tip(|pane, text| {
         let place = if pane < 0 { "top".to_string() } else { format!("pane={pane}") };
@@ -6137,6 +6302,9 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);
+    if config.preview {
+        preview::set_visible(true);
+    }
     auto::start(&app);
     // The drop target goes on the window once it exists (winit creates it lazily, in `run`).
     with_state(|st| st.dnd_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), register_dnd));

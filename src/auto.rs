@@ -214,6 +214,17 @@
 //!                                    of the listing (at most 500, nearest the cursor first)
 //!   waitsize <ms>                    wait until no folder size is queued or walking and the last
 //!                                    reply has landed (at most <ms>), then 300 ms more
+//!   preview toggle                   Alt+P (key name AltP): show or hide the preview column (P8-M1)
+//!   preview width <ratio>            set the column's share of the space right of the sidebar (0.2
+//!                                    to 0.6, clamped), as its handle's drag does
+//!   previewscroll <px>               scroll the column to <px> from its top
+//!   wheelat <x> <y> <dy> [shift]     turn the wheel by <dy> logical px (-60 is one notch down) at
+//!                                    (x, y), logical px of the window, through Slint's pointer
+//!                                    path, with Shift held (a Shift key event either side) given
+//!                                    `shift`; logs the preview's scroll top before and 300 ms after
+//!   waitpreview <ms>                 wait until the cursor file's preview has settled (no settle or
+//!                                    width timer runs, and a message shows or every page kept holds
+//!                                    its image at the current width), at most <ms>, then 100 ms
 //!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
 //!                                    the close button does (WM_CLOSE: settings saved, app exits)
 //!   quit                             exit the event loop
@@ -295,6 +306,7 @@ enum Step {
     /// `at`: None the list's middle; "path" the path bar's middle; "edit" row 0's name cell.
     XButton { pane: usize, forward: bool, at: Option<String> },
     Hover { x: f32, y: f32 },
+    WheelAt { x: f32, y: f32, dy: f32, shift: bool },
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
     WaitOps(u64),
@@ -356,6 +368,12 @@ enum Step {
     SizeAll(usize),
     /// Wait until no folder size is queued or walking (at most `ms`), then 300 ms.
     WaitSize(u64),
+    /// The preview column's share (`preview width`).
+    PreviewWidth(f32),
+    /// Scroll the preview column to this many px from its top.
+    PreviewScroll(f32),
+    /// Wait until the preview has settled (at most `ms`), then 100 ms.
+    WaitPreview(u64),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
     /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
     Window(String),
@@ -384,6 +402,12 @@ fn parse(script: &str) -> Vec<Step> {
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
                 "hover" => Step::Hover { x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0), y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0) },
+                "wheelat" => Step::WheelAt {
+                    x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    dy: a.get(3).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    shift: a.get(4) == Some(&"shift"),
+                },
                 "backclick" => Step::XButton { pane: num(1) as usize, forward: false, at: a.get(2).map(|s| s.to_string()) },
                 "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true, at: a.get(2).map(|s| s.to_string()) },
                 "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
@@ -536,6 +560,10 @@ fn parse(script: &str) -> Vec<Step> {
                 "waitsearch" => Step::WaitSearch(num(1).max(1) as u64),
                 "sizeall" => Step::SizeAll(num(1) as usize),
                 "waitsize" => Step::WaitSize(num(1).max(1) as u64),
+                "preview" if a.get(1) == Some(&"width") => Step::PreviewWidth(a.get(2).and_then(|v| v.parse().ok()).unwrap_or(crate::preview::RATIO_DEFAULT)),
+                "preview" => Step::Key("AltP".into()),
+                "previewscroll" => Step::PreviewScroll(num(1) as f32),
+                "waitpreview" => Step::WaitPreview(num(1).max(1) as u64),
                 "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
@@ -622,7 +650,7 @@ fn thumb(app: &App, pane: usize) -> LogicalPosition {
 /// Centre of a visible row: rows start under the 3 px padding, the tab strip when there is one,
 /// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing; 22 px each (32 px with thumbnails on).
 /// In the icon grid, the centre of visible entry `row`'s tile (`row / cols` grid rows down,
-/// `row % cols` tiles across, 96 x 136 px each, 80 x 88 px medium (P7-M4)).
+/// `row % cols` tiles across, 96 x 136 px each (P7-M4), 80 x 107 px medium (P8-L1)).
 fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
     let (_, _, mid) = geometry(app, pane);
     let l = crate::window_layout(app);
@@ -938,6 +966,7 @@ fn chord(name: &str) -> Vec<SharedString> {
         "AltLeft" => vec![k(Key::Alt), k(Key::LeftArrow)],
         "AltRight" => vec![k(Key::Alt), k(Key::RightArrow)],
         "AltReturn" => vec![k(Key::Alt), k(Key::Return)],
+        "AltP" => vec![k(Key::Alt), "p".into()],
         "AltShiftReturn" => vec![k(Key::Alt), k(Key::Shift), k(Key::Return)],
         "CtrlComma" => vec![k(Key::Control), ",".into()],
         "CtrlShiftRight" => vec![k(Key::Control), k(Key::Shift), k(Key::RightArrow)],
@@ -1145,6 +1174,32 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             app.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerMoved { position: pos }).ok();
             eprintln!("[auto] hover at ({x:.0}, {y:.0})");
             schedule(runner, 50);
+        }
+        Step::WheelAt { x, y, dy, shift } => {
+            // Slint keeps the modifiers from key events, so Shift is pressed and released around it.
+            let pos = slint::LogicalPosition::new(x, y);
+            let win = app.window();
+            let before = app.invoke_preview_scroll_top();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            if shift {
+                win.dispatch_event_with_result(WindowEvent::KeyPressed { text: Key::Shift.into() }).ok();
+            }
+            win.dispatch_event_with_result(WindowEvent::PointerScrolled { position: pos, delta_x: 0.0, delta_y: dy }).ok();
+            if shift {
+                win.dispatch_event_with_result(WindowEvent::KeyReleased { text: Key::Shift.into() }).ok();
+            }
+            let r2 = runner.clone();
+            let weak = app.as_weak();
+            runner.borrow().sub.start(TimerMode::SingleShot, Duration::from_millis(300), move || {
+                if let Some(app) = weak.upgrade() {
+                    eprintln!(
+                        "[auto] wheelat ({x:.0}, {y:.0}) dy {dy}{}: preview scroll {before:.0} -> {:.0}",
+                        if shift { " shift" } else { "" },
+                        app.invoke_preview_scroll_top()
+                    );
+                }
+                schedule(r2.clone(), 1);
+            });
         }
         Step::Crumb { pane, index } => {
             app.invoke_crumb_clicked(pane as i32, index);
@@ -1377,6 +1432,32 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     }
                     r2.borrow().sub.stop();
                     schedule(r2.clone(), 300);
+                }
+            });
+        }
+        Step::PreviewWidth(r) => {
+            let r = crate::preview::clamp_ratio(r);
+            app.set_preview_width(r);
+            app.invoke_settings_changed();
+            eprintln!("[auto] preview width {r:.2}");
+            schedule(runner, 1);
+        }
+        Step::PreviewScroll(px) => {
+            app.invoke_preview_set_scroll(px);
+            schedule(runner, 1);
+        }
+        Step::WaitPreview(max_ms) => {
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            // The first look after 50 ms, so a cursor move just made has restarted the settle.
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                let busy = !crate::preview::settled();
+                if !busy || std::time::Instant::now() >= deadline {
+                    if busy {
+                        eprintln!("[auto] waitpreview: not settled after {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 100);
                 }
             });
         }

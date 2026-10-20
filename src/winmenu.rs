@@ -139,6 +139,20 @@ pub struct Ctx {
     pub what: What,
     /// The clipboard holds files (Paste applies).
     pub clipboard_files: bool,
+    /// Every item is a file of one type (`same_type`): Open with applies.
+    pub same_type: bool,
+}
+
+/// The items are files of one type, so Open with applies (P8-L1): one file, or several whose
+/// extensions match, ignoring case, none of them empty. `exts` holds each item's extension, None
+/// for a folder or a drive. Explorer offers no Open with for several items; TwinFM does when they
+/// share a type (Jeremy, 2026-10-20).
+pub fn same_type(exts: &[Option<&str>]) -> bool {
+    match exts {
+        [] => false,
+        [one] => one.is_some(),
+        [first, rest @ ..] => first.is_some_and(|f| !f.is_empty() && rest.iter().all(|e| e.is_some_and(|e| e.eq_ignore_ascii_case(f)))),
+    }
 }
 
 /// One icon-row button.
@@ -273,10 +287,9 @@ pub fn items(ctx: &Ctx, commands: &[Command]) -> Vec<Entry> {
             let n = files + dirs + drives;
             let archive = matches!(ctx.place, Place::Archive | Place::Zip);
             let mut open = Vec::new();
-            if n == 1 {
-                open.push(Entry::item(Cmd::Open, "Open", G_OPEN, "Enter"));
-            }
-            if n == 1 && files == 1 && !archive && ctx.place != Place::ThisPc {
+            // Open for any selection, as Return (P8-L1; one item until then).
+            open.push(Entry::item(Cmd::Open, "Open", G_OPEN, "Enter"));
+            if files == n && ctx.same_type && !archive && ctx.place != Place::ThisPc {
                 open.push(Entry::item(Cmd::OpenWith, "Open with", G_OPEN_WITH, ""));
             }
             if n == 1 && files == 0 {
@@ -308,9 +321,11 @@ pub fn items(ctx: &Ctx, commands: &[Command]) -> Vec<Entry> {
     out
 }
 
-/// A submenu's rows: Open with's apps then "Choose another app", Compress to's formats, or a
+/// A submenu's rows: Open with's apps then "Choose another app" (one file only: Windows' chooser
+/// takes one; `several` files get the apps alone, or a disabled row when there are none),
+/// Compress to's formats, or a
 /// packaged command's own commands.
-pub fn sub_items(cmd: Cmd, commands: &[Command], apps: &[crate::explorercmd::App]) -> Vec<Entry> {
+pub fn sub_items(cmd: Cmd, commands: &[Command], apps: &[crate::explorercmd::App], several: bool) -> Vec<Entry> {
     match cmd {
         Cmd::OpenWith => {
             let mut out: Vec<Entry> = apps
@@ -318,6 +333,12 @@ pub fn sub_items(cmd: Cmd, commands: &[Command], apps: &[crate::explorercmd::App
                 .enumerate()
                 .map(|(k, a)| Entry { cmd: Some(Cmd::App(k)), text: a.name.clone(), glyph: "", icon: a.icon.clone(), key: "", sub: false, enabled: true })
                 .collect();
+            if several {
+                if out.is_empty() {
+                    out.push(Entry { enabled: false, ..Entry::item(Cmd::ChooseApp, "No apps for this type", "", "") });
+                }
+                return out;
+            }
             if !out.is_empty() {
                 out.push(Entry::sep());
             }
@@ -448,7 +469,9 @@ mod tests {
     use super::*;
 
     fn ctx(place: Place, what: What) -> Ctx {
-        Ctx { place, what, clipboard_files: false }
+        // One file (Open with's case until P8-L1) is of one type; several are not unless a test says so.
+        let same_type = matches!(what, What::Items { files: 1, dirs: 0, drives: 0 });
+        Ctx { place, what, clipboard_files: false, same_type }
     }
 
     fn files(n: usize) -> What {
@@ -485,6 +508,18 @@ mod tests {
     }
 
     #[test]
+    fn open_with_takes_files_of_one_type() {
+        assert!(same_type(&[Some(".txt")]));
+        assert!(same_type(&[Some("")]), "one file without an extension keeps its Open with");
+        assert!(same_type(&[Some(".txt"), Some(".TXT"), Some(".Txt")]), "case is ignored");
+        assert!(!same_type(&[Some(".txt"), Some(".png")]));
+        assert!(!same_type(&[Some(""), Some("")]), "several without an extension have no type to share");
+        assert!(!same_type(&[Some(".txt"), None]), "a folder among them");
+        assert!(!same_type(&[None]));
+        assert!(!same_type(&[]));
+    }
+
+    #[test]
     fn folders_drives_and_many() {
         let dir = ctx(Place::Folder, What::Items { files: 0, dirs: 1, drives: 0 });
         assert_eq!(tool_texts(&tools(&dir)), ["Cut", "Copy", "Rename", "Delete"], "no Share for a folder");
@@ -494,9 +529,14 @@ mod tests {
         );
         let many = ctx(Place::Folder, What::Items { files: 2, dirs: 1, drives: 0 });
         assert_eq!(tool_texts(&tools(&many)), ["Cut", "Copy", "Delete"], "Rename takes one entry; Share files only");
-        assert_eq!(texts(&items(&many, &[])), ["Open in terminal", "---", "Compress to", "Copy path", "Properties", "---", "Show more options"]);
+        assert_eq!(texts(&items(&many, &[])), ["Open", "Open in terminal", "---", "Compress to", "Copy path", "Properties", "---", "Show more options"], "Open for several (P8-L1)");
         let two_files = ctx(Place::Folder, files(2));
         assert_eq!(tool_texts(&tools(&two_files)), ["Cut", "Copy", "Share", "Delete"]);
+        assert_eq!(texts(&items(&two_files, &[]))[..2], ["Open", "Open in terminal"], "two types: no Open with");
+        let same = Ctx { same_type: true, ..two_files };
+        assert_eq!(texts(&items(&same, &[]))[..3], ["Open", "Open with", "Open in terminal"], "two of one type: Open with");
+        let in_zip = Ctx { place: Place::Zip, ..same };
+        assert_eq!(texts(&items(&in_zip, &[]))[..2], ["Open", "---"], "no Open with inside an archive");
         let drive = ctx(Place::ThisPc, What::Items { files: 0, dirs: 0, drives: 1 });
         assert!(tools(&drive).is_empty(), "drives are neither cut, copied, renamed nor deleted");
         assert_eq!(texts(&items(&drive, &[])), ["Open", "Open in other pane", "Open in terminal", "---", "Copy path", "Properties", "---", "Show more options"]);
@@ -512,7 +552,7 @@ mod tests {
         let found = ctx(Place::Search, files(1));
         assert_eq!(tool_texts(&tools(&found)), ["Cut", "Copy", "Rename", "Share", "Delete"]);
         assert_eq!(texts(&items(&found, &[]))[..2], ["Open", "Open with"]);
-        let bg = Ctx { place: Place::Folder, what: What::Background, clipboard_files: true };
+        let bg = Ctx { place: Place::Folder, what: What::Background, clipboard_files: true, same_type: false };
         assert_eq!(tool_texts(&tools(&bg)), ["Paste"]);
         assert!(tools(&ctx(Place::Folder, What::Background)).is_empty(), "nothing to paste");
         assert_eq!(
@@ -533,15 +573,19 @@ mod tests {
         let p0 = it.iter().find(|e| e.cmd == Some(Cmd::Packaged(0))).unwrap();
         assert!(p0.sub && p0.enabled);
         assert!(!it.iter().find(|e| e.cmd == Some(Cmd::Packaged(1))).unwrap().enabled);
-        let subs = sub_items(Cmd::Packaged(0), &[idle, off], &[]);
+        let subs = sub_items(Cmd::Packaged(0), &[idle, off], &[], false);
         assert_eq!(texts(&subs), ["Edit in IDLE 3.14", "Edit in IDLE 3.13"]);
         assert_eq!((subs[0].cmd, subs[1].enabled), (Some(Cmd::Sub(0, 0)), false));
-        assert!(sub_items(Cmd::Packaged(5), &[], &[]).is_empty());
+        assert!(sub_items(Cmd::Packaged(5), &[], &[], false).is_empty());
         let apps = [crate::explorercmd::App { name: "Notepad".into(), icon: None }, crate::explorercmd::App { name: "Word".into(), icon: None }];
-        assert_eq!(texts(&sub_items(Cmd::OpenWith, &[], &apps)), ["Notepad", "Word", "---", "Choose another app"]);
-        assert_eq!(texts(&sub_items(Cmd::OpenWith, &[], &[])), ["Choose another app"]);
-        assert_eq!(sub_items(Cmd::OpenWith, &[], &apps)[1].cmd, Some(Cmd::App(1)));
-        assert_eq!(texts(&sub_items(Cmd::Compress, &[], &[])), ["ZIP file", "7z file", "TAR file"]);
+        assert_eq!(texts(&sub_items(Cmd::OpenWith, &[], &apps, false)), ["Notepad", "Word", "---", "Choose another app"]);
+        assert_eq!(texts(&sub_items(Cmd::OpenWith, &[], &[], false)), ["Choose another app"]);
+        assert_eq!(sub_items(Cmd::OpenWith, &[], &apps, false)[1].cmd, Some(Cmd::App(1)));
+        // Several files (P8-L1): the apps alone; with none, one disabled row.
+        assert_eq!(texts(&sub_items(Cmd::OpenWith, &[], &apps, true)), ["Notepad", "Word"]);
+        let none = sub_items(Cmd::OpenWith, &[], &[], true);
+        assert_eq!((texts(&none), none[0].enabled), (vec!["No apps for this type".to_string()], false), "disabled, not a separator");
+        assert_eq!(texts(&sub_items(Cmd::Compress, &[], &[], false)), ["ZIP file", "7z file", "TAR file"]);
     }
 
     #[test]
