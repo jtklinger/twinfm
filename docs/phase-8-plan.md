@@ -378,6 +378,148 @@ Lead's calls: footnote references shown as `[n]`, footnotes at the end as GitHub
 2 MB (else the last character boundary) with a note block; text selection is not in P8-M2 (Slint's
 text elements have none at this rev).
 
+### What landed
+
+- **`src/markdown.rs`** (new, pure functions and their tests): `decode` (the 2 MB cut, UTF-16 by its
+  BOM, other invalid UTF-8 replaced), `parse_doc` (pulldown-cmark `=0.13.4` with tables, task lists,
+  strikethrough, footnotes, GFM and YAML front matter skipped, into a flat list of `Block`s: heading,
+  paragraph, code, rule, table, picture, note; list depth, quote depth, a list item's bullet, number or
+  task box on its first block), the inline re-serialization as Settled first describes, the HTML
+  block's text and pictures, footnotes as `[n]` with the notes after a rule at the end, `Slugger`
+  (GitHub's slugs, `-1`, `-2` for repeats), and the link and picture classification.
+- **The worker** (`preview.rs` `serve_md`): `Class::Markdown` (`.md`, `.markdown`, any case; the
+  archive and cloud checks apply as for a PDF; the label for other types is now `no preview for this
+  type`). It reads at most 2 MB + 1 byte, parses, puts the note block first when cut, makes each
+  paragraph's, heading's and cell's `StyledText` (falling back to plain text, logged), answers the
+  blocks with each heading's slug, then decodes the local pictures one at a time under the 8,192 px
+  side cap and a 64 MB budget per file, the generation checked between them. Reading and parsing run
+  under `catch_unwind`, each picture too.
+- **The column**: `preview.slint` has a `mode` (0 pages, 1 Markdown) and a ListView of `MdItem` rows:
+  headings at 24 / 20 / 17 / 15 / 13 / 13 px, bold through `**`; paragraphs; list items with their
+  marker from Rust in a 24 px column per level; task boxes in Segoe Fluent Icons (E739, E73A); code in
+  Consolas 12 px on a tint, wrapped; quotes with a 3 px bar per level; rules; tables as a GridLayout
+  with a nested `for`, the head row tinted and bold, cells aligned; pictures at their size, scaled down
+  to the column's width, the alt text in brackets until then or when they cannot be shown; the note on a
+  tint. Colours from the Palette, links in the accent colour. The Shift+wheel TouchArea sits behind
+  the ListView as it sits behind the pages.
+- **The UI state**: the PDF's fields moved into `Doc::Pdf`; `Doc::Markdown` holds the slugs and the
+  pictures still to come. `waitpreview` waits for the blocks, every picture and the anchor timer.
+- **Links** (`preview::link`): as Settled first and Jeremy's answers say, with
+  `shellmenu::open_url` (ShellExecuteExW, `open`, no IDList mask) for the browser and
+  `main.rs` `show_in_pane` for folders and programs.
+- **Driver**: `previewlink <dest>`; `previewscroll` and `wheelat` work on the Markdown list.
+  `[preview]` lines as listed in `CLAUDE.md` § Measuring.
+- **Dependencies**: `pulldown-cmark =0.13.4`, `image =0.25.10` (png, jpeg, gif, webp) and `resvg
+  =0.48.1`, all of them the copies Slint already builds; Cargo.lock gains only edges (image now
+  depends on the gif, image-webp and color_quant crates resvg already brought), still one
+  pulldown-cmark.
+- **Tests**: 231 to 241: eight in `markdown.rs` (the inline round trip through
+  `StyledText::from_markdown`, headings and slugs, the block list, chunking, remote pictures, the 2 MB
+  cut, link classification, HTML blocks) and two in `preview.rs` (the picture caps, and the worker on
+  a README with a local PNG and a file over 2 MB in `%TEMP%\twinfm-p8m2-test-<pid>\`); the
+  classification test covers Markdown.
+- **Soak**: `tools/soak-p5m3.ps1`'s preview cycle goes on through a picture, a README and a file over
+  2 MB, and reports Markdown previews, pictures shown, fall-backs and cuts.
+
+### Decisions
+
+- **Code blocks and tables are split into chunks of 40 lines or rows**, each its own ListView row
+  drawn without a gap, so a long one is not built and shaped whole (the reason the ListView was
+  chosen). A table's column shares come from Rust (each column's longest cell, 3 to 40 characters,
+  as `horizontal-stretch`), so its chunks line up; the GridLayout then sizes by those shares, not by
+  its cells' preferred widths.
+- **A local picture is its own block, placed after the paragraph it sits in**; a remote one is its
+  alt text where it stands (so a badge inside a link stays a link with its alt text). The serialized
+  text has no place for a picture inside it.
+- **A picture's pixels count as logical px** (as a browser counts them), scaled down to the column;
+  an SVG is drawn at its own size with no fonts loaded (its text is not drawn). Over the budget is
+  judged before decoding, from the size the header gives.
+- **Strong inside a heading or a table's head is not written** (the whole is wrapped in `**`), and a
+  zero-width space goes between a closing and an opening emphasis run (`*a*` then `**b**`), the one
+  place the re-serialization would otherwise read differently.
+- **The anchor scroll takes two moves**: the ListView places the rows it has not built by their
+  average height, and a move near the built rows walks to the nearest row by real heights, which
+  lands off target. A move far from them seeks, putting the row exactly at the top; so the list goes
+  to the far end first and to the target 60 ms later. Checked by screenshot: `#p8-m2-markdown` in a
+  copy of this file puts that heading at the column's top.
+- **In a scripted run** the browser and documents are never launched (logged with `(scripted: not
+  launched)`); anchors, folders and shown programs run, since they only move TwinFM's own views.
+- **The 2 MB note goes first**, where it is seen, not at the end.
+- **The column's scroll position reads oddly in a Markdown file** (`wheelat` logged 477 -> 1420 for a
+  notch): the ListView rescales its estimated coordinates as rows are built. The screenshots show a
+  steady 120 px per notch; the number is the estimate, not the movement.
+- **A picture file used more than once in a document is decoded once** and counted once against the
+  budget (an icon repeated down a page). Found by the soak's first run: g-big.md repeats one picture
+  9,537 times, and decoding each copy spent the 64 MB after about 1,400 of them, logged a line for
+  every one and kept `waitpreview` past 10 s. Since then at most 50 pictures are logged one by one,
+  and one line sums them up.
+- Lines beyond the brief: `gen=G N blocks in the list in T ms (UI thread)`, the cost of making the
+  model on the UI thread, and `gen=G pictures done: S shown, A alt text, F file(s) decoded, M MB of
+  the budget, in T ms`.
+
+### Scripted checks
+
+All on this machine (RDP session), `target\release` of the branch, over `%TEMP%\twinfm-p8m2-check\`
+(written by a scratch script): `a-readme.md` (front matter, headings, inline styles, an HTML block
+with a local SVG, nested and task lists, a long code line, nested quotes, an aligned table, two local
+PNGs, a missing one, a remote badge, links of every kind, a footnote, a repeated heading), copies of
+this repo's `README.md` and of this file, `d-big.md` (this file repeated to 2.3 MB), a one-page PDF and
+a UTF-16 file.
+
+```
+[preview] pane=0 gen=2 ...\a-readme.md: markdown, 27 blocks (5 headings, 1 code, 1 tables, 4 images), parsed in 1 ms
+[preview] gen=2 image https://img.shields.io/badge/x-y-green: alt text (remote)
+[preview] gen=2 image 2 img/logo.svg: 120x60 px in 11 ms
+[preview] gen=2 image 16 img/red.png: 400x120 px in 8 ms
+[preview] gen=2 image 17 img/wide.png: 1600x200 px in 11 ms
+[preview] gen=2 image 19 img/missing.png: alt text (missing)
+[preview] link "#nope": refused: no heading #nope
+[preview] link "https://example.com/a b": browser (scripted: not launched)
+[preview] link "sub/notes.txt": open ...\sub\notes.txt (scripted: not launched)
+[preview] link "javascript:alert(1)": refused: javascript: links are not opened
+[preview] link "img/missing.png": refused: ...\img\missing.png is not there
+[preview] pane=0 gen=3 ...\b-repo-readme.md: markdown, 33 blocks (7 headings, 3 code, 1 tables, 0 images), parsed in 1 ms
+[preview] pane=0 gen=4 ...\c-phase-8-plan.md: markdown, 84 blocks (11 headings, 1 code, 1 tables, 0 images), parsed in 1 ms
+[preview] pane=0 gen=5 ...\d-big.md: markdown, 6196 blocks (875 headings, 73 code, 73 tables, 0 images), parsed in 81 ms, cut at 2 MB
+[preview] pane=0 gen=6 ...\e-page.pdf: pdf, 1 pages, opened in 0 ms
+[preview] gen=6 page 1 rendered 337x505 px in 0 ms
+[preview] link "sub/tool.bat": show ...\sub\tool.bat
+[nav] pane=0 gen=3 path=...\twinfm-p8m2-check\sub
+```
+
+No block fell back to plain text in any of these files. Anchors in the copy of this file: `#p8-m2-markdown`
+-> block 64, `#open-questions` -> block 80, `#what-landed` -> block 30, `#what-landed-1` refused (a
+slug of the copy, which this section postdates); a screenshot shows the P8-M2 heading at the
+column's top. Shift and the wheel over the Markdown list: `wheelat ... dy -240 shift: preview scroll 0
+-> 196`, back up with `dy 120 shift`. Screenshots with the software renderer (`PrintWindow`) of
+`a-readme.md` at ratio 0.45: headings, inline styles, the SVG, the lists with their bullets, numbers
+and task boxes, the wrapped code block, the quote bars, the table with its alignments, and further
+down the two PNGs (the wide one scaled to the column), the alt text of the missing one and the
+footnote.
+
+The 2 MB file (6,196 blocks): parsed in 56 to 83 ms on the worker, 2.7 ms to make the list's model on
+the UI thread. The 5 s `[perf]` window in which it first shows had a render max of 61 and 78 ms in two
+runs (the first frames of the list; the gate scenario's first window with the empty column: 32 ms).
+Scrolling it, 30 wheel notches and eight jumps of `previewscroll` across the file: render max 35 ms in
+the first run (p95 16 ms), 27 and 21 ms in the second (p95 13 and 11 ms); one frame over 30 ms while
+scrolling, a finding for the console check. The soak's g-big.md (104,914 blocks, its 9,537 pictures
+one file): parsed in about 300 ms, 38 ms for the model, pictures done in 60 ms, 20 notches with render
+max 3 ms.
+
+The gate scenario on `C:\traces\bigdir` with `preview = true` (a read-only scratch toml; `[settings]
+file ... (read)`, `[preview] shown at 353 px (ratio 0.35)`; in-app, indicative only): `[busy] 10 s
+after split` 18.1%, render p50 2.03 and 2.26 ms.
+
+Two six-minute runs of `tools/soak-p5m3.ps1` (four cycles started each): exit code 0, no panicked
+line, every other count as before. The first found the repeated-picture cost above (`waitpreview`
+timeouts 4). The second, after the fix: Markdown previews 6, pictures shown 28,614 (one file decoded
+per document), alt text 0, fall-backs 0, cut at 2 MB 3, superseded 0, waitpreview timeouts 0, worker
+panics 0; working set 125 to 224 MB.
+
+### Gate
+
+To be run.
+
 ## Open questions
 
 Written 2026-10-20 at the kickoff.
