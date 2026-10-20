@@ -16,9 +16,11 @@ candidates), `docs/phase-6-plan.md` the Phase 6 record (cloud marks and the icon
 finished, the toolbar and the polish bundle; three milestones, closed 2026-10-18; its first
 section quotes Jeremy's kickoff decisions, § Calls made lists the lead's, § Recorded for Phase 7
 holds the shell verbs item, and § Phase 6 close holds what is deferred and the Phase 7 candidates),
-`docs/phase-7-plan.md` the Phase 7 plan (the context menu finished, archives beyond zip, the
-polish bundle; four milestones, opened 2026-10-18; its first section quotes Jeremy's kickoff
-decisions and § Calls made lists the lead's). Read them before changing the list.
+`docs/phase-7-plan.md` the Phase 7 record (the context menu finished, archives beyond zip, the
+polish bundle with the drag cursor; four milestones, closed 2026-10-20; its first section quotes
+Jeremy's kickoff decisions, § Calls made lists the lead's, and § Phase 7 close holds what is
+deferred, the phase's lessons and the Phase 8 candidates, daily use recommended). Read them before
+changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (224 tests; nine touch the real shell and clipboard, one of them the Recycle

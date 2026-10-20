@@ -1165,3 +1165,78 @@ Written 2026-10-18 at the kickoff.
 - **Carried from Phase 6**: Google Drive's volume found by its name; a sync-root scratch folder for
   the soak (a console check only, Jeremy's call); the Slint whole-row snap patch and upstreaming
   (Jeremy's); the dead share console check owed from P5-M1.
+
+## Phase 7 close
+
+Written 2026-10-20. P7-M1 to P7-M4 are in, each squash-merged on Jeremy's word: P7-M1 shell verbs on
+a verb worker and the menu's Delete, Cut, Copy, Paste and Rename through TwinFM's commands, Escape
+cancelling a cut (#63, a6391c8; gate build `target-p7m1`, 3f8e786), P7-M2 the Windows 11 style
+context menu (#65, 72e348d; `target-p7m2`, f66ce33), P7-M3 archives beyond zip (7z, rar, tar, gz and
+the rest browsed read-only through Windows' `ArchiveFolder`, zips written by TwinFM, Compress to 7z
+and TAR; #68, 334895f; `target-p7m3`, 264770a), P7-M4 the polish bundle and the drag cursor (#70,
+d6e25c0; `target-p7m4`, 67160ac). Between them, the archive tests' cleanup made robust and archive
+levels opened in any case (#71, #72, a side session's).
+
+Every milestone passed the gate against the previous milestone's build:
+
+| Milestone | Tag | Reference | Medians (WPR, reference / candidate) | Note |
+|---|---|---|---|---|
+| P7-M1 | ab25, ab26 | `target-p6m3` (c632e93) | 21.1 / 28.9 (defaults) | a state change mid-triplet; like for like within a point; accepted by Jeremy; ab26 re-ran the grids after the double-click fix |
+| P7-M2 | ab27 | `target-p7m1` (3f8e786) | 18.5 / 18.8 | one session state; flat |
+| P7-M3 | ab28 | `target-p7m2` (f66ce33) | 18.0 / 17.7 | one session state; flat |
+| P7-M4 | ab30, ab31 | `target-p7m3` (264770a) | defaults 18.4 / 19.3 and, swapped, 20.3 / 20.3; large grid 11.5 / 11.4; medium 15.0 / 13.9; in-pane toolbar 20.0 / 21.1 and, swapped, 20.6 / 20.6 | ab29 void (a test loop shared the machine); the toolbar pair's 1.1 points were the second slot's |
+
+Lessons of the phase, each in its milestone's record:
+
+- **Nothing else may run on the machine during a gate** (ab29): a side session's test loop and
+  rebuild during the triplets made every figure unreadable. The P7-M4 wrapper refuses to start while
+  `cargo`, `rustc` or a test binary runs; the lead does not start builds or tests, nor sessions that
+  would, while Jeremy's gate runs.
+- **The second slot's bias shows in the console triplet too** (ab30, ab31): a candidate always run
+  second read about a point higher in two pairs and level once swapped. A gap of about a point in a
+  pair with a fixed order is checked with the order swapped before it is read as a cost.
+- **Console checks keep finding what scripts cannot**: a grid double-click (P7-M1), the Send to
+  submenu filling late (P7-M3), a password dialog behind the window (P7-M3), the missing drop
+  description and the filtered grid's leftover icons (P7-M4; the latter older than Phase 7).
+- **Slint moved under the plan**: the kickoff assumed no tooltips; the pinned Slint had a built-in
+  `Tooltip`, found while settling P7-M4 and used. Settling against the code before any code (the
+  Phase 6 lesson) keeps paying.
+
+Open questions at the close (§ Open questions is above):
+
+- **Google Drive's volume found by its name** (P6-M1): a renamed volume loses its marks; unchanged.
+- **A sync-root scratch folder for the soak** (P6-M1): still a console check only; Jeremy's call.
+- **The Slint whole-row snap patch and upstreaming the two accessibility patches**: still Jeremy's;
+  nothing in Phase 7 touched the fork.
+- **The dead share** (P5-M1): the one console check still owed from Phase 5.
+
+Deferred, pulled together from the four milestones and the console checks. The Phase 6 close's
+list (`phase-6-plan.md` § Phase 6 close) still stands except for what this phase finished (every
+item of its toolbar and bundle list, the views' PageDown and multi-line names, and the drag cursor).
+
+- **Archives** (§ P7-M3 Decisions and After the console check): writing into a password-protected
+  zip (refused; a byte-for-byte copy of its entries would allow it), an archive inside an archive
+  opened as a folder (Return extracts and opens it through the shell), copying from one archive into
+  another or within one zip, writing into the formats other than zip (Windows' handler refuses; Jeremy
+  chose read-only).
+- **The menu** (§ P7-M2 Decisions): Open and Open with for several items at once; Explorer's own
+  "Compress to" (not reachable for a host).
+- **The bundle** (§ P7-M4 Decisions): the grid's PageDown the Explorer way (the details list has it);
+  medium tiles with names on up to three lines (Explorer's; ours stop at two).
+- **Accessibility**, deferred for much later by Jeremy's word (2026-10-15): not a Phase 8 candidate.
+
+Phase 8 candidates, for Jeremy's decision, the lead's recommendation first. Sizes in this project's
+units: a milestone is what P7-M2 or P7-M3 was; a small item is an afternoon.
+
+- **Daily use** (recommended): TwinFM in place of Files for a stretch of days, with what bites written
+  down and turned into the milestones. Phases 6 and 7 found their real bugs at the console, not in
+  the plans, and every list from Phase 2 is now done.
+- **Content search** (P3-M2; out since 2026-10-13): text inside files in the search tab. A milestone
+  at least, with encoding, size limits and binary files to settle first.
+- **Thumbnails beyond the listing** (P3-M5): search tabs, archives, the details list's drag image.
+  Half a milestone.
+- **Cloud polish** (P6-M1 Deferred): OneDrive's sync states beyond tick and cloud, a smaller mark in
+  the tiles, the hydration check. Half a milestone after Jeremy's word on each.
+- **The Slint fork**: the whole-row snap patch with its own triplet, and the upstreaming decision.
+  Jeremy's.
+- **The deferred items above**, as a bundle if daily use asks for them.
