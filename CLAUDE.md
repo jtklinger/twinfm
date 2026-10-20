@@ -19,8 +19,10 @@ holds the shell verbs item, and § Phase 6 close holds what is deferred and the 
 `docs/phase-7-plan.md` the Phase 7 record (the context menu finished, archives beyond zip, the
 polish bundle with the drag cursor; four milestones, closed 2026-10-20; its first section quotes
 Jeremy's kickoff decisions, § Calls made lists the lead's, and § Phase 7 close holds what is
-deferred, the phase's lessons and the Phase 8 candidates, daily use recommended). Read them before
-changing the list.
+deferred, the phase's lessons and the Phase 8 candidates, daily use recommended),
+`docs/phase-8-plan.md` the Phase 8 record (the preview pane: P8-M1 the column with PDF through
+hayro, P8-M2 Markdown; opened 2026-10-20, its first section quotes Jeremy's kickoff decisions).
+Read them before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (224 tests; nine touch the real shell and clipboard, one of them the Recycle
