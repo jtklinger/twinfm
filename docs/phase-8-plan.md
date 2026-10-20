@@ -585,8 +585,20 @@ zips as they started, pw.zip's a.txt extracting with the password.
 
 ### Gate
 
-Pending: `target-p8l2` against `target-p8l1` (d5216db), defaults only (no list, grid or layout
-change), tag ab34.
+ab34 (Jeremy, console, 2026-10-20 17:04, 9 min): `target-p8l2` (278d47f) against `target-p8l1`
+(d5216db), the defaults only (no list, grid or layout change), interleaved, the candidate second:
+
+| Run | p8l1 (WPR) | p8l2 (WPR) | Render p50 (ms), ref / cand |
+|---|---|---|---|
+| 1 | 19.2 | 19.8 | 2.27 / 2.32 |
+| 2 | 28.5 | 27.0 | 3.88 / 3.80 |
+| 3 | 27.0 | 27.0 | 3.82 / 3.80 |
+
+Medians 27.0 / 27.0; no gap counts. As in ab33, the session changed state after the first round
+(render p50 up by about two thirds for both binaries), so both medians sit over the bar; like for
+like the pairs read 19.2 / 19.8 in the normal state and 28.5 / 27.0, 27.0 / 27.0 in the slow one.
+Two gates in a row changed state at the same point (after round 1), which is worth a look before
+the next phase's gates (the machine, not either binary: the reference moves with it).
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
