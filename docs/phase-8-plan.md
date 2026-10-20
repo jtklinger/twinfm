@@ -481,6 +481,7 @@ render p50 rose by about half for both binaries from round 2 on, so the defaults
 14.3 / 14.4, each pair with the candidate in the second slot (about a point high in ab30). No gap
 counts by the rule (medians 0.3 and 0.2 apart; not every reference run below every candidate run).
 The medium grid sits 2.4 points lower: its taller tiles hold fewer grid rows to compose and draw.
+Jeremy accepted ab33 read like for like (2026-10-20).
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
