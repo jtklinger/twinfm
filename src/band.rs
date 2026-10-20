@@ -166,10 +166,11 @@ mod tests {
         assert_eq!(cursor((10.0, 10.0), (300.0, 900.0), 5, 12, L), Some(11), "below the rows");
         assert_eq!(cursor((200.0, 130.0), (-40.0, -40.0), 5, 12, L), Some(0), "above and left of the content");
         assert_eq!(cursor((50.0, 10.0), (50.0, 300.0), 5, 12, L), None, "a zero-width band touches nothing");
-        // Medium tiles: 80 x 88.
+        // Medium tiles: 80 x 107 (P8-L1).
         let m = TileGeom::MEDIUM;
-        assert_eq!(cursor((5.0, 5.0), (170.0, 100.0), 5, 12, m), Some(7));
-        assert_eq!(touched((5.0, 5.0), (170.0, 100.0), 5, 12, m), set(&[0, 1, 2, 5, 6, 7]));
+        assert_eq!(cursor((5.0, 5.0), (170.0, 120.0), 5, 12, m), Some(7));
+        assert_eq!(touched((5.0, 5.0), (170.0, 120.0), 5, 12, m), set(&[0, 1, 2, 5, 6, 7]));
+        assert_eq!(cursor((5.0, 5.0), (170.0, 100.0), 5, 12, m), Some(2), "still in the first grid row");
     }
 
     #[test]

@@ -3257,11 +3257,11 @@ mod tests {
         // Scrolled by ten grid rows: the first visible tile is entry 50.
         assert_eq!(hit(&grid, 50.0, 70.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 50));
         assert_eq!(hit(&grid, 3.0 + 3.0 * 96.0 + 1.0, 70.0 + 136.0 * 2.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 63));
-        // Medium tiles (P6-M2), 12 of 80 x 88 px to a grid row: the column and line from the tile.
+        // Medium tiles (P6-M2), 12 of 80 x 107 px to a grid row: the column and line from the tile.
         let medium = Layout { grid: [Some(12), None], tile: [crate::icons::TileGeom::MEDIUM, crate::icons::TileGeom::LARGE], ..one };
-        assert_eq!(medium.row_px_of(0), 88.0);
-        assert_eq!(hit(&medium, 3.0 + 80.0, 63.0 + 88.0, none, [100, 0]), Spot::Row(0, 13));
-        assert_eq!(hit(&medium, 3.0 + 79.9, 63.0 + 87.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(medium.row_px_of(0), 107.0);
+        assert_eq!(hit(&medium, 3.0 + 80.0, 63.0 + 107.0, none, [100, 0]), Spot::Row(0, 13));
+        assert_eq!(hit(&medium, 3.0 + 79.9, 63.0 + 106.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
         assert_eq!(hit(&medium, 3.0 + 12.0 * 80.0 + 1.0, 70.0, none, [100, 0]), Spot::Pane(0), "right of the tiles");
         // With the split, each pane has its own view: the right pane stays a 22 px list.
         let both = Layout { split: true, grid: [Some(5), None], ..one };

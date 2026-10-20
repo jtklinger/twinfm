@@ -247,6 +247,7 @@ mod tests {
             y: 0,
             extended: false,
             find: false,
+            default_item: false,
         };
         assert!(w.submit(Job { id: 1, pane: 0, work: Work::Sleep(req.clone(), 50) }));
         assert!(w.submit(Job { id: 2, pane: 0, work: Work::Verb(req) }));

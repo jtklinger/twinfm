@@ -58,9 +58,13 @@ export struct StatusInfo {
 }
 
 // PageUp and PageDown in the details list (P7-M4, Explorer's): model.rs `page_target` gives the
-// cursor's new row from (cursor, content-y, visible height, row height, row count, down).
+// cursor's new row from (cursor, content-y, visible height, row height, row count, down); in the
+// grid (P8-L1) the same rule by grid rows, the cursor keeping its column.
 export global Paging {
     pure callback target(int, length, length, length, int, bool) -> int;
+    // The grid's (P8-L1): model.rs `grid_page_target` from (cursor, tiles to a grid row,
+    // content-y, visible height, tile height, entry count, down).
+    pure callback grid-target(int, int, length, length, length, int, bool) -> int;
 }
 
 // Which toolbar buttons apply to a pane (toolbar.rs `state`, set from Rust in update_status's
@@ -586,9 +590,9 @@ component FileGridList inherits FileGrid {
     }
 }
 
-// The medium-icon grid (P6-M2): FileGrid at icons::TileGeom::MEDIUM, 80 x 88 px tiles (72 px
-// until P7-M4) with the strip's 48 px icon at 16..64 x 2..50 and the name under it on up to two
-// lines. A copy with its own constants rather
+// The medium-icon grid (P6-M2): FileGrid at icons::TileGeom::MEDIUM, 80 x 107 px tiles (72 px
+// until P7-M4, 88 until P8-L1) with the strip's 48 px icon at 16..64 x 2..50 and the name under it
+// on up to three lines (Explorer's). A copy with its own constants rather
 // than a tile size bound in the tile (the P3-M1 amendment): the large grid's generated tile stays
 // the reference's, and FileListHost picks one of the two once per pane, outside the `for`.
 component FileGridMedium inherits ListView {
@@ -603,14 +607,14 @@ component FileGridMedium inherits ListView {
     accessible-delegate-focus: max(0, floor(current-row / max(1, cols)));
 
     for grow[r] in grid: Rectangle {
-        height: 88px;
+        height: 107px;
         accessible-role: AccessibleRole.list-item;
         accessible-item-index: r;
         for t[c] in grow.tiles: Rectangle {
             x: c * 80px;
             y: 0px;
             width: 80px;
-            height: 88px;
+            height: 107px;
             background: t.selected ? Palette.selection-background : transparent;
             border-width: t.current ? 1px : 0px;
             border-color: Palette.accent-background;
@@ -618,12 +622,12 @@ component FileGridMedium inherits ListView {
                 x: 2px;
                 y: 50px;
                 width: 76px;
-                height: 38px;
+                height: 57px;
                 text: t.name;
                 horizontal-alignment: center;
                 vertical-alignment: top;
                 wrap: word-wrap;
-                max-lines: 2;
+                max-lines: 3;
                 overflow: elide;
                 color: t.cut ? Palette.foreground.transparentize(55%) : Palette.foreground;
             }
@@ -641,7 +645,7 @@ component FileGridMediumList inherits FileGridMedium {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.grid.length * 88px;
+        root.content-height = root.grid.length * 107px;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -679,7 +683,9 @@ component FileListHost inherits Rectangle {
     // and tile-h are the tile's size (icons::TileGeom) for the host's and the pane's arithmetic.
     in property <bool> medium: false;
     out property <length> tile-w: root.medium ? 80px : 96px;
-    out property <length> tile-h: root.medium ? 88px : 136px;
+    out property <length> tile-h: root.medium ? 107px : 136px;
+    // The tile's name box: two lines of large tiles, three of medium (P8-L1).
+    out property <length> name-h: root.medium ? 57px : 38px;
     out property <int> cols: max(1, floor(self.width / root.tile-w));
     callback grid-cols(int);
     callback grid-cursor(int);
@@ -829,8 +835,8 @@ component FileListHost inherits Rectangle {
         if (e.text == Key.Return && e.modifiers.alt) { root.command(e.modifiers.shift ? "sizeall" : "properties"); return EventResult.accept; }
         if (e.text == Key.Return) { if (root.current-row >= 0) { root.open-row(root.current-row); } return EventResult.accept; }
         // The grid: Left and Right move one entry, Up and Down one grid row (step = cols entries;
-        // Down from the last full grid row lands on the last entry), PageUp and PageDown a
-        // viewport of grid rows. In the details list step is 1 and the rest is unchanged.
+        // Down from the last full grid row lands on the last entry), PageUp and PageDown as the
+        // details list's, by grid rows. In the details list step is 1 and the rest is unchanged.
         if (e.text == Key.LeftArrow && root.grid) {
             if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }
             root.cursor-moved(e.modifiers.shift);
@@ -853,15 +859,14 @@ component FileListHost inherits Rectangle {
             root.cursor-moved(e.modifiers.shift);
             return EventResult.accept;
         }
-        // PageUp and PageDown: a viewport of lines, rows or grid rows of tiles (the details list's
-        // since P6-M2). Ctrl+Shift+PageUp / PageDown move the tab (app.slint), so they pass.
+        // PageUp and PageDown: Explorer's, to the last row (grid row) wholly on screen, then a
+        // screenful less one (P7-M4 the details list, P8-L1 the grid). Ctrl+Shift+PageUp /
+        // PageDown move the tab (app.slint), so they pass.
         if ((e.text == Key.PageUp || e.text == Key.PageDown) && !e.modifiers.control) {
             if (root.rows.length > 0) {
-                let page = max(1, floor(root.visible-height / root.row-h)) * root.step;
                 if (root.current-row < 0) { root.current-row = 0; }
                 else if (!root.grid) { root.current-row = Paging.target(root.current-row, root.content-y, root.visible-height, root.row-h, root.rows.length, e.text == Key.PageDown); }
-                else if (e.text == Key.PageUp) { root.current-row = max(0, root.current-row - page); }
-                else { root.current-row = min(root.rows.length - 1, root.current-row + page); }
+                else { root.current-row = Paging.grid-target(root.current-row, root.step, root.content-y, root.visible-height, root.row-h, root.rows.length, e.text == Key.PageDown); }
                 root.cursor-moved(e.modifiers.shift);
             }
             return EventResult.accept;
@@ -1129,7 +1134,7 @@ export component Pane inherits Rectangle {
     private property <bool> strip-shown: false;
     // The grid's icon strip: one image per grid row, in a ring of slots Rust fills for the grid
     // rows on screen and one each side (main.rs `grid_slots`), so a scroll of one grid row
-    // recomposes and uploads one grid row (136 px, 88 medium), not the whole strip; a slot's image changes only
+    // recomposes and uploads one grid row (136 px, 107 medium), not the whole strip; a slot's image changes only
     // when its row does. Empty with the details list (the `for` makes nothing).
     in property <[StripRow]> strip-rows;
 
@@ -1603,15 +1608,15 @@ export component Pane inherits Rectangle {
             height: list.tile-h;
             pointer-event(ev) => { root.band-ev(ev, self.absolute-position.x, self.absolute-position.y, self.mouse-x, self.mouse-y); }
         }
-        // The cursor tile's whole name when its two lines elide it (P7-M4, Explorer's): one box
+        // The cursor tile's whole name when its lines elide it (P7-M4, Explorer's): one box
         // per pane over the tiles below, under the tile's own name, never a binding in the tiles.
         // It takes no input.
         if list.current-row >= 0 && list.current-row < root.rows.length: Rectangle {
             x: list.col-of(list.current-row) * list.tile-w;
-            y: list.content-y + list.line-of(list.current-row) * list.tile-h + list.tile-h - 38px;
+            y: list.content-y + list.line-of(list.current-row) * list.tile-h + list.tile-h - list.name-h;
             width: list.tile-w;
             height: full-name.preferred-height + 3px;
-            visible: full-name.preferred-height > 38px;
+            visible: full-name.preferred-height > list.name-h;
             background: Palette.background;
             Rectangle {
                 background: root.rows[list.current-row].selected ? Palette.selection-background : transparent;

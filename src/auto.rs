@@ -617,7 +617,7 @@ fn thumb(app: &App, pane: usize) -> LogicalPosition {
 /// Centre of a visible row: rows start under the 3 px padding, the tab strip when there is one,
 /// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing; 22 px each (32 px with thumbnails on).
 /// In the icon grid, the centre of visible entry `row`'s tile (`row / cols` grid rows down,
-/// `row % cols` tiles across, 96 x 136 px each, 80 x 88 px medium (P7-M4)).
+/// `row % cols` tiles across, 96 x 136 px each (P7-M4), 80 x 107 px medium (P8-L1)).
 fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
     let (_, _, mid) = geometry(app, pane);
     let l = crate::window_layout(app);
