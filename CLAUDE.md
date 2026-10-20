@@ -25,7 +25,7 @@ hayro, P8-M2 Markdown; opened 2026-10-20, its first section quotes Jeremy's kick
 Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (224 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (231 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -33,7 +33,7 @@ Read them before changing the list.
   tests write to scratch folders, and since P7-M3 five more (the zip writer's, the 7z and TAR
   writers', the ArchiveFolder listing's, and two file operation worker tests; since 2026-10-19 the
   ArchiveFolder case test too) write archives into
-  scratch folders, see below)
+  scratch folders, and since P8-M1 the preview worker's test writes PDFs into one, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -549,6 +549,43 @@ Read them before changing the list.
   `DROPIMAGE_INVALID`, `dnd::own_cursor`; it then posts `DDWM_UPDATEWINDOW`, WM_USER + 3, to the
   helper's `DragWindow`, or the description is never drawn), else OLE's default cursors: `[dnd] cursor: the arrow
   (drop description type K)` and `[dnd] cursor: OLE's default cursors` on each change.
+  Since P8-M1, the preview pane (`src/preview.rs`, `src/ui/preview.slint`): a column at the window's
+  right edge, right of the panes and a 6 px handle, `preview_width` (0.2 to 0.6, default 0.35) of the
+  space right of the sidebar (`dnd::Layout::preview`, `dnd::preview_w`: the panes narrow, the split's
+  ratio applies to what is left), shown by Alt+P (key name `AltP`, the `outer` scope), the toolbar's
+  Preview button (an eighth button, at the bar's end in both placements, always enabled, drawn as on
+  while the column shows; `toolbar <pane> preview`, `[toolbar] pane=N preview -> toggle`) or the
+  setting `preview`. It previews the active pane's cursor file: app.slint's `changed` handlers on the
+  cursor rows and the active pane (and `show_tab`) call `preview::kick`, one timer restart, only while
+  the column shows; 150 ms after the last (`SETTLE_MS`) the cursor entry (path, attributes, folder or
+  not, from the listing) goes to the `preview` worker thread with a generation. The worker classifies
+  (a folder, a type other than `.pdf`, a PDF inside an archive, a cloud-only PDF by its attributes:
+  a message, nothing read), opens a PDF with hayro (`=0.8.0`), answers its page sizes, and renders
+  the pages the UI asks for at the column's width in physical px (never over 8,192 px on a side,
+  `MAX_SIDE`), each under `catch_unwind`; the UI lays the pages out from their sizes, asks for those in
+  view and one either side as the column scrolls (the worker skips one no longer kept), keeps only
+  those images, and after a width change re-renders them once it has rested 200 ms
+  (`WIDTH_SETTLE_MS`). Driver: `preview toggle` (Alt+P through the key path), `preview width <ratio>`
+  (as the handle's drag; clamped), `previewscroll <px>` (the column's scroll from its top),
+  `wheelat <x> <y> <dy> [shift]` (the wheel turned by `<dy>` logical px, -60 a notch down, at (x, y) of
+  the window through Slint's pointer path, with a Shift key event either side given `shift`, as Slint
+  keeps the modifiers from key events; logs `[auto] wheelat (x, y) dy D[ shift]: preview scroll A -> B`
+  300 ms later; the column at the default 1200 px window and ratio 0.35 is near x 1100; Shift+wheel
+  scrolls the column up and down since the console check, preview.slint's TouchArea behind the pages),
+  `waitpreview <ms>` (until no settle or width timer runs and the file has its answer: a message, or
+  every page kept holding its image at the current width; then 100 ms), `settings set preview
+  true|false`. `[preview]` lines (pages counted from 1): `shown at W px (ratio R)` (when the column
+  reports its width as it appears), `hidden`, `pane=N gen=G <path>: pdf, P pages, opened in T ms |
+  folder | not a pdf | inside an archive | cloud-only | password | damaged: <why>` (why: an I/O
+  error, hayro's `LoadPdfError`, `no pages`, `panicked: <msg>`), `gen=G pages in view A..B, kept K
+  image(s)` (when the kept pages change; K after the drop), `gen=G page K rendered WxH px in T ms`,
+  `gen=G page K capped at 8192 px (was WxH)`, `gen=G page K took T ms: too long` (over 5 s: "Page K
+  took too long" in its place), `gen=G superseded: N queued page(s) dropped` (when a newer file or
+  a close ends the document), `width W px: re-render after settle` (W the page width, logical px),
+  `worker panicked on <path>: <msg>` (the column then reads "This PDF could not be read"). Messages:
+  "No preview", "Password-protected PDF: not previewed", "This PDF could not be read", "Not
+  previewed: the file is in the cloud and not downloaded", "Not previewed inside an archive". The
+  gate scenario's cursor sits on no row, so a run with `preview = true` shows the empty column.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -579,7 +616,9 @@ Read them before changing the list.
   `left_tabs` / `right_tabs` as `[[left_tabs]]` tables (`settings::SavedTab`: `path`, and `sort`,
   `ascending`, `hidden`, `cursor` (the cursor row's name), `scroll`, each optional), so a restored tab
   gets its sort, hidden files, cursor and scroll back; a bare list of paths still loads (the
-  defaults new tabs have), and the next save writes tables. `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  defaults new tabs have), and the next save writes tables; since P8-M1 `preview` (the preview
+  column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
+  0.35, its handle's drag). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -636,7 +675,12 @@ Read them before changing the list.
   then in the zip copy in, new folder, rename, delete, move out and a dropped move back in, and
   Compress to > 7z file and TAR file on c.txt, each undone; it reports levels listed by
   ArchiveFolder, zip jobs done by kind, zip jobs not done (must be 0), refusals, archives compressed
-  and undone (three more Recycle Bin entries per cycle).
+  and undone (three more Recycle Bin entries per cycle). Since P8-M1 each cycle also runs a preview
+  cycle in `%TEMP%\twinfm-m5\preview` (made by the setup: a-pages.pdf, four pages, and b-one.pdf,
+  written by the script with a hand-made cross-reference table, c-damaged.pdf, d-notes.txt): Alt+P,
+  the cursor through the four files with `waitpreview`, a `previewscroll`, the width changed and set
+  back, Alt+P; it reports PDFs opened, pages rendered, damaged and not-a-PDF lines, superseded lines,
+  waitpreview timeouts and worker panics (both must be 0).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
@@ -702,8 +746,10 @@ Read them before changing the list.
   `%TEMP%\twinfm-p7m3-shell-<pid>\`, `shell_levels_take_any_case` another in
   `%TEMP%\twinfm-archive-case-<pid>\`, `fileops::archive::tests::jobs_are_classified` writes zip- and
   7z-named files in `%TEMP%\twinfm-p7m3-classify-<pid>\`, and `zip_jobs_on_the_worker` runs zip jobs
-  and a Compress through the real worker in `%TEMP%\twinfm-p7m3-jobs-<pid>\` (no Recycle Bin). All
-  remove their folders.
+  and a Compress through the real worker in `%TEMP%\twinfm-p7m3-jobs-<pid>\` (no Recycle Bin). Since
+  P8-M1 `preview::tests::the_worker_renders_a_pdf_and_refuses_a_damaged_one` writes a two-page PDF, a
+  damaged one and a text file in `%TEMP%\twinfm-p8m1-test-<pid>\` and runs the preview worker on
+  them. All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

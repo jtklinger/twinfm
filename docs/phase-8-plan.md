@@ -135,6 +135,189 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 - Plain text, images and other types are not previewed in Phase 8's first two milestones ("other
   types later"); they show "No preview".
 
+## P8-M1: the preview pane with PDF
+
+Branch `feat/p8-m1-preview-pdf`, from be759e0 (the kickoff).
+
+### What landed
+
+- **The column** (`src/ui/preview.slint` `Preview`, placed by app.slint): right of the `panes`
+  rectangle and a 6 px handle, at `preview_width` of the space right of the sidebar (default 0.35,
+  0.2 to 0.6, `preview::clamp_ratio`); the panes narrow to the rest less 3 px, and the split's ratio
+  applies to what is left. A header with the file's name, then a `ScrollView` of pages (each a white
+  rectangle placed at the top and height Rust laid out from the page sizes, its image fitted inside
+  once rendered) or a message. The element is always there and hidden with the setting, so its
+  scroll functions are always callable. `dnd::Layout` has a `preview` field (`dnd::preview_w`: the
+  share times the space, plus 3 px), and `pane_x` ends the panes there; everything that mirrors the
+  geometry (hit testing, the band, the menu point, the driver) goes through `pane_x`, so nothing
+  else changed.
+- **The toggle**: Alt+P in the `outer` scope (free: no list scope takes Alt with a letter), a
+  Preview button at the end of the toolbar in both placements (Segoe Fluent Icons E90D, "Preview
+  pane (Alt+P)", always enabled, drawn as on while the column shows; `toolbar_clicked` sends
+  `preview` to the toggle, not to a pane command), the setting `preview` (saved, a "Preview" row in
+  the settings dialog; the dialog is 36 px taller for it). Scripted runs start from the defaults as
+  before.
+- **The pipeline** (`src/preview.rs`): app.slint's `changed` handlers on both cursor rows and the
+  active pane call `preview-cursor` only while the column shows, and `show_tab` calls it too (a tab
+  switch can keep the row number); each restarts one single-shot timer. 150 ms after the last move
+  the cursor entry (path, attributes, folder or not, from the listing; no file system call) goes to
+  the `preview` thread as an `Open` with a new generation. The worker classifies, opens a PDF with
+  hayro, answers the page sizes, and renders the pages asked for at the column's width in physical
+  pixels, each capped at 8,192 px on a side. The UI lays the pages out, asks for those in view and
+  one either side (the in-view ones first), keeps only those images, and on a width change re-lays
+  out and re-renders after 200 ms of rest. A shared `Keep` (generation, kept range, width) is read by
+  the worker before each page: a page of an older generation is dropped, one no longer kept or at an
+  old width is answered `Skipped` (so the UI may ask again). A newer `Open` drops every request
+  queued before it unseen. Answers come back through `invoke_from_event_loop`; the UI thread drops
+  one of an older generation and builds the `Image` from the `SharedPixelBuffer`. Opening and each
+  page render run under `catch_unwind`.
+- **Messages**: "No preview" (a folder, a type other than PDF), "Not previewed inside an archive",
+  "Not previewed: the file is in the cloud and not downloaded", "Password-protected PDF: not
+  previewed" (hayro's `DecryptionError::PasswordProtected`), "This PDF could not be read" (an I/O
+  error, any other load error, no pages, a panic), and "Page N took too long" in a page's place.
+- **hayro `=0.8.0`** (MIT OR Apache-2.0), default features (substitute fonts, CMaps, SIMD). It
+  brings vello_cpu, kurbo, pic-scale and its own decoders (JPEG 2000, JBIG2, CCITT); Cargo.lock
+  grows by about 270 lines.
+- **Driver**: `preview toggle` (key name `AltP`), `preview width <ratio>`, `previewscroll <px>`,
+  `waitpreview <ms>`, `settings set preview true|false`, `toolbar <pane> preview`. `[preview]`
+  lines as listed in `CLAUDE.md` § Measuring.
+- **Tests**: 224 to 231: the settle, the classification, the page layout, the pages kept, the
+  8,192 px rule, the width bounds, and one worker test that writes a hand-made two-page PDF, a
+  damaged one and a text file into `%TEMP%\twinfm-p8m1-test-<pid>\`, renders page 2 at 100 px
+  (red rectangle in the middle, white margin), checks a skipped page and a superseded queue, and
+  removes the folder. The settings tests carry `preview` and `preview_width`, and the hit test the
+  column.
+- **Soak**: `tools/soak-p5m3.ps1` adds the preview cycle (setup in `%TEMP%\twinfm-m5\preview`, the
+  PDFs written by the script itself) and its report line.
+
+### Decisions
+
+- **Type before place in the classification.** A non-PDF shows "No preview" wherever it lies; only a
+  `.pdf` is asked whether it lies inside an archive (`fs::archive::within`, which may cost a file
+  system query) or is cloud-only. The archive and cloud messages appear for PDFs only, and no
+  non-PDF costs a query.
+- **The cloud test uses the listing's attributes** (the entry's `attrs` from the enumeration), sent
+  with the request, so the worker makes no call that could start a download.
+- **The column is a `ScrollView`, not a bare `Flickable`**: the same element with scrollbars. Its
+  `content-y` is what `previewscroll` sets.
+- **The scroll handler compares, nothing more**: every scroll movement calls `preview::scrolled`,
+  which finds the pages in view by a binary search over the slots and returns when the kept range
+  is unchanged. No timer throttle was needed for that.
+- **One page image per page at the column's width**, physical px = logical width times the scale
+  factor; the page is drawn inside a white rectangle with `image-fit: contain`, so during a column
+  drag the old image letterboxes until the re-render lands.
+- **Skipped answers** (a page no longer kept when the worker reaches it) go back to the UI rather
+  than being dropped silently, so a page scrolled away and back before the worker got to it is asked
+  for again.
+- **`shown at W px` is logged once the column's width has rested 200 ms**: at start the window takes
+  its size in steps (the first report was 73 px), so the line reads the settled width. W is the
+  column's width (the page width plus its 8 px margins).
+- **Pages are counted from 1 in the lines and the message**, as a reader counts them.
+- **The Preview button's glyph** is E90D (DockRight in Segoe Fluent Icons: a window with a pane at
+  its right), at the end of the bar after a separator; "at the end" read as after Delete, not pushed
+  to the bar's right edge.
+- **The worker test does not cover a password PDF**: writing an encrypted file by hand needs the
+  RC4 or AES key derivation; the path is one match arm on hayro's error, and the console check's
+  password PDF is the check.
+
+### Scripted checks
+
+All on this machine (RDP session), `target\release` of the branch.
+
+A run over `%TEMP%\twinfm-p8m1-check\` (written by a scratch script: `a-eight-pages.pdf`, eight
+pages of Helvetica text, page 4 A4 landscape; `b-tall.pdf`, one 200 x 6000 pt page; `c-damaged.pdf`,
+46 bytes; `d-notes.txt`): Alt+P, click row 0, `waitpreview`, `previewscroll 2000`, `preview width
+0.5`, Down through the four files, Up three times without waiting then Down twice 20 ms apart, the
+dialog's Preview off, the toolbar's button on, Alt+P off. Every `waitpreview` settled (no timeout):
+
+```
+[preview] shown at 353 px (ratio 0.35)
+[preview] pane=0 gen=2 ...\a-eight-pages.pdf: pdf, 8 pages, opened in 0 ms
+[preview] gen=2 pages in view 1..2, kept 0 image(s)
+[preview] gen=2 page 1 rendered 337x436 px in 0 ms
+[preview] gen=2 page 2 rendered 337x436 px in 0 ms
+[preview] gen=2 page 3 rendered 337x436 px in 0 ms
+[preview] gen=2 pages in view 5..7, kept 0 image(s)
+[preview] gen=2 page 5 rendered 337x436 px in 0 ms
+[preview] gen=2 page 6 rendered 337x436 px in 0 ms
+[preview] gen=2 page 7 rendered 337x436 px in 0 ms
+[preview] gen=2 page 4 rendered 337x238 px in 0 ms
+[preview] gen=2 page 8 rendered 337x436 px in 0 ms
+[preview] width 489 px: re-render after settle
+[preview] gen=2 pages in view 4..5, kept 3 image(s)
+[preview] gen=2 page 4 rendered 489x346 px in 0 ms
+[preview] gen=2 page 5 rendered 489x633 px in 0 ms
+[preview] gen=2 page 3 rendered 489x633 px in 0 ms
+[preview] gen=2 page 6 rendered 489x633 px in 0 ms
+[preview] pane=0 gen=3 ...\b-tall.pdf: pdf, 1 pages, opened in 0 ms
+[preview] gen=3 pages in view 1..1, kept 0 image(s)
+[preview] gen=3 page 1 capped at 8192 px (was 489x14670)
+[preview] gen=3 page 1 rendered 273x8192 px in 3 ms
+[preview] pane=0 gen=4 ...\c-damaged.pdf: damaged: Invalid
+[preview] pane=0 gen=5 ...\d-notes.txt: not a pdf
+[preview] pane=0 gen=6 ...\a-eight-pages.pdf: pdf, 8 pages, opened in 0 ms
+[preview] gen=6 page 1 rendered 489x633 px in 0 ms   (pages 1 to 3)
+[preview] pane=0 gen=7 ...\c-damaged.pdf: damaged: Invalid
+[preview] hidden
+[toolbar] pane=0 preview -> toggle
+[preview] shown at 505 px (ratio 0.50)
+[preview] pane=0 gen=10 ...\c-damaged.pdf: damaged: Invalid
+[preview] hidden
+```
+
+The three Up presses without a wait opened one generation (gen 6, the file the cursor rested on),
+and the two Down presses 20 ms apart one more (gen 7): the settle let nothing through in between.
+No `superseded` line showed here, since these pages render in under 5 ms; the worker test checks
+the drop. A screenshot with the software renderer (`PrintWindow`) shows the column at 0.35 with pages
+1 and 2 of `a-eight-pages.pdf` rendered beside the list.
+
+The gate scenario on `C:\traces\bigdir` (in-app, indicative only: single runs, an RDP session whose
+cadence changed between the pairs, 31 ms then 47 ms frames), the default and `preview = true` (a
+read-only scratch toml; its stderr has `[settings] file ... (read)` and `[preview] shown at 353 px
+(ratio 0.35)`, and no file line, since the cursor sits on no row): `[busy] 10 s after split` 7.5%
+off then 11.4% on; in the swapped order 8.0% on then 10.3% off; a later single run with the column
+9.8%. The render p50 sat between 2.2 and 3.4 ms in all four. Read as noise and run order; the
+console triplet decides.
+
+A six-minute run of `tools/soak-p5m3.ps1` (three cycles completed): exit code 0, no panicked line,
+every other count as before; preview: PDFs opened 6, pages rendered 15, damaged 3, not a PDF 3,
+superseded 0, waitpreview timeouts 0, worker panics 0.
+
+### Gate
+
+Run by Jeremy on 2026-10-20 at 14:01 (tag ab32, `C:\traces\gate-p8m1.ps1`, 16 min): `target-p8m1`
+(47fc959, built `--locked` from a detached checkout) against `target-p7m4` (67160ac), three rounds of
+reference, candidate, reference with `C:\traces\preview.toml`, candidate with it. Every run's stderr
+passed the wrapper's checks (`[settings] file C:\traces\preview.toml (read)` in the preview runs,
+`[preview] shown at 353 px (ratio 0.35)` in the candidate's).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p7m4-1 / 2 / 3 | 18.7 / 18.3 / 18.5 | 16.4 / 18.9 / 19.2 | 2.19 / 2.20 / 2.22 |
+| p8m1-1 / 2 / 3 | 18.3 / 19.2 / 18.8 | 18.0 / 19.2 / 18.4 | 2.17 / 2.31 / 2.19 |
+| p7m4-preview-1 / 2 / 3 | 18.6 / 18.7 / 18.9 | 18.7 / 19.7 / 18.6 | 2.22 / 2.18 / 2.26 |
+| p8m1-preview-1 / 2 / 3 | 18.4 / 18.4 / 18.5 | 21.1 / 20.8 / 19.5 | 1.99 / 2.10 / 2.04 |
+
+One session state throughout (render p50 1.99 to 2.31 ms). Defaults: medians 18.5 (reference) / 18.8
+(candidate), no gap that counts. Preview: 18.7 / 18.4, the candidate below. Every candidate run under
+20% on WPR. Passed; P8-M1 adds no cost with the column hidden or shown while the lists scroll. (The
+reference ignores the `preview` key, so its preview runs are its defaults; the pair measures the
+column's cost, the narrower panes included.)
+
+### After the console check
+
+Jeremy, 2026-10-20: in the preview column, the wheel with Shift held did not scroll; it did again once
+Shift was released. Cause: Slint's Flickable turns the wheel sideways while Shift is held
+(`FlickableData::scroll_delta`), and the column has no sideways room, so the event went unused. Fix,
+in the column only (not the lists, not the fork): a TouchArea behind the pages in `preview.slint`
+takes the wheel the Flickable passes on and, with Shift held and no sideways room, moves the scroll by
+its vertical delta, clamped; anything else it rejects, so the plain wheel, the scrollbar and
+`scrolled` run as before. New driver step `wheelat <x> <y> <dy> [shift]`; over a 20-page PDF, Shift
+and -600 px scrolled 0 -> 600 -> 1200 with `pages in view 2..3`, `3..4` and pages 4 and 5 rendered,
+the plain wheel 1200 -> 1800, Shift and +900 back to 900, and the two ends clamped (9534, 0). No new
+triplet: the gate scenario never turns the wheel with Shift held, and the handler does nothing per
+frame.
+
 ## Open questions
 
 Written 2026-10-20 at the kickoff.
