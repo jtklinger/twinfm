@@ -1134,6 +1134,9 @@ findings:
 Neither fix is on the gate scenario's path (the scenario drags nothing, and its grid runs reset the
 ring only when a listing lands, never while scrolling), so ab30 and ab31 stand.
 
+Jeremy's second check on 67160ac (2026-10-20): "Move to ..." shows with only the arrow beside it, and
+the filtered grid has no leftover icons. As expected.
+
 ### Console checks (for Jeremy, unelevated, after the gate)
 
 1. **The drag cursor**: drag a file from one pane over a folder in the other: the "Move to ..." label
