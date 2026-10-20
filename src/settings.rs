@@ -126,6 +126,11 @@ pub struct Config {
     /// pane), "pane" (icons only, inside each pane above its path bar) or "none". Missing in an
     /// older file: top. Anything else reads as top.
     pub toolbar: String,
+    /// The preview column at the window's right edge (P8-M1; Alt+P, the toolbar's Preview button,
+    /// the dialog), and its share of the space right of the sidebar (0.2 to 0.6, its handle's
+    /// drag). Missing in an older file: off, 0.35.
+    pub preview: bool,
+    pub preview_width: f32,
     /// Restored only when its title bar would be on a monitor.
     pub window: Option<WindowGeom>,
     /// Bookmarked folders in sidebar order, as `[[bookmark]]` tables with `path` and an optional
@@ -235,6 +240,8 @@ impl Default for Config {
             sidebar_width: 180.0,
             path_bar: "breadcrumb".into(),
             toolbar: "top".into(),
+            preview: false,
+            preview_width: crate::preview::RATIO_DEFAULT,
             window: None,
             bookmarks: Vec::new(),
             legacy_bookmarks: Vec::new(),
@@ -423,6 +430,8 @@ pub struct Dialog {
     pub path_bar: String,
     /// "top", "pane" or "none", as in `Config::toolbar`.
     pub toolbar: String,
+    /// The preview column (`Config::preview`).
+    pub preview: bool,
 }
 
 impl Dialog {
@@ -437,7 +446,7 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 13] {
+    fn fields(&self) -> [(&'static str, String); 14] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
@@ -452,6 +461,7 @@ impl Dialog {
             ("sidebar_visible", self.sidebar_visible.to_string()),
             ("path_bar", self.path_bar.clone()),
             ("toolbar", self.toolbar.clone()),
+            ("preview", self.preview.to_string()),
         ]
     }
 
@@ -501,6 +511,7 @@ impl Config {
         self.split_ratio = if self.split_ratio.is_finite() { self.split_ratio.clamp(0.15, 0.85) } else { 0.5 };
         self.sidebar_width =
             if self.sidebar_width.is_finite() { self.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX) } else { 180.0 };
+        self.preview_width = crate::preview::clamp_ratio(self.preview_width);
         self
     }
 
@@ -630,8 +641,9 @@ mod tests {
         assert!(parsed.split);
         assert_eq!(parsed.start_left, d.start_left);
         // Out-of-range values are pulled in.
-        let wild = Config::parse("split_ratio = 9.0\nsidebar_width = 5.0\n").unwrap();
-        assert_eq!((wild.split_ratio, wild.sidebar_width), (0.85, SIDEBAR_MIN));
+        let wild = Config::parse("split_ratio = 9.0\nsidebar_width = 5.0\npreview_width = 0.9\n").unwrap();
+        assert_eq!((wild.split_ratio, wild.sidebar_width, wild.preview_width), (0.85, SIDEBAR_MIN, 0.6));
+        assert_eq!((d.preview, d.preview_width), (false, 0.35), "the preview column is off by default (P8-M1)");
         use crate::model::SortCol;
         for c in [SortCol::Name, SortCol::Size, SortCol::Modified, SortCol::Type] {
             assert_eq!(sort_from_name(sort_name(c)), c);
@@ -780,9 +792,10 @@ show_type = false
             sidebar_visible: true,
             path_bar: "breadcrumb".into(),
             toolbar: "top".into(),
+            preview: false,
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), toolbar: "pane".into(), ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), toolbar: "pane".into(), preview: true, ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
@@ -793,6 +806,7 @@ show_type = false
                 ("thumbnails", "false".into(), "true".into()),
                 ("path_bar", "breadcrumb".into(), "entry".into()),
                 ("toolbar", "top".into(), "pane".into()),
+                ("preview", "false".into(), "true".into()),
             ]
         );
         // Start folders: trimmed; an empty left one is the default, so blanking it changes nothing.

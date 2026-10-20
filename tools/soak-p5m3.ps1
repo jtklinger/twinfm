@@ -75,7 +75,15 @@
 # per cycle), Back and Forward over the toolbar (one each per cycle), sidebar keys (five moves and
 # one Return per cycle).
 #
-# P8-L1, after the sidebar walk: the left pane on src\tree (ten folders) goes to medium tiles,
+# P8-M1: the preview cycle, after the sidebar walk: Alt+P shows the preview column, the left pane
+# goes to preview (made by the setup: a-pages.pdf with four pages, b-one.pdf with one, c-damaged.pdf
+# that is no PDF, d-notes.txt; the PDFs written here with a hand-made cross-reference table), the
+# cursor goes through the four files waiting for each preview, the first PDF is scrolled, the
+# column's width is changed and set back, and Alt+P hides it. Reported: PDFs opened (two per
+# cycle), pages rendered, damaged messages (one per cycle), not-a-PDF lines (one per cycle),
+# superseded lines, waitpreview timeouts and worker panics (both must be 0). No file is written.
+#
+# P8-L1, after the preview cycle: the left pane on src\tree (ten folders) goes to medium tiles,
 # PageDown and PageUp move its cursor by grid rows (Explorer's), it goes back to details, two
 # folders are selected and Return opens both as new tabs (placed after the active tab 0), Ctrl+2
 # and Ctrl+W twice close them, and Ctrl+1 makes the pane's first tab active again. Reported:
@@ -117,7 +125,8 @@ $bm = Join-Path $root 'bm'
 $tabdir = Join-Path $root 'tabdir'
 $spring = Join-Path $root 'spring'
 $arch = Join-Path $root 'arch'
-foreach ($d in $src, $dst, $bm, $tabdir, $spring, $arch) {
+$prev = Join-Path $root 'preview'
+foreach ($d in $src, $dst, $bm, $tabdir, $spring, $arch, $prev) {
     if (Test-Path $d) { Remove-Item -LiteralPath $d -Recurse -Force }
 }
 for ($i = 1; $i -le 10; $i++) {
@@ -139,6 +148,33 @@ $bsdtar = Join-Path $env:SystemRoot 'System32\tar.exe'
 & $bsdtar -cf (Join-Path $arch 'a.7z') --format 7zip -C $archSrc a.txt d
 & $bsdtar -cf (Join-Path $arch 'a.zip') --format zip -C $archSrc a.txt d
 & $bsdtar -czf (Join-Path $arch 'a.tar.gz') -C $archSrc a.txt d
+# P8-M1: the preview folder. A PDF of $n pages of 200 x 300 pt, each a red rectangle on white, with
+# its cross-reference table's offsets counted here (as preview.rs's test writes it).
+function Write-Pdf([string]$path, [int]$n) {
+    $content = '1 0 0 rg 20 20 160 260 re f'
+    $objs = @('<< /Type /Catalog /Pages 2 0 R >>', ('<< /Type /Pages /Kids [{0}] /Count {1} >>' -f ((0..($n - 1) | ForEach-Object { "$(3 + 2 * $_) 0 R" }) -join ' '), $n))
+    for ($i = 0; $i -lt $n; $i++) {
+        $objs += "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Contents $(4 + 2 * $i) 0 R >>"
+        $objs += "<< /Length $($content.Length) >>`nstream`n$content`nendstream"
+    }
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("%PDF-1.4`n")
+    $offs = @()
+    for ($i = 0; $i -lt $objs.Count; $i++) {
+        $offs += $sb.Length
+        [void]$sb.Append("$($i + 1) 0 obj`n$($objs[$i])`nendobj`n")
+    }
+    $xref = $sb.Length
+    [void]$sb.Append("xref`n0 $($objs.Count + 1)`n0000000000 65535 f `n")
+    foreach ($o in $offs) { [void]$sb.Append(("{0:D10} 00000 n `n" -f $o)) }
+    [void]$sb.Append("trailer`n<< /Size $($objs.Count + 1) /Root 1 0 R >>`nstartxref`n$xref`n%%EOF`n")
+    [System.IO.File]::WriteAllText($path, $sb.ToString(), [System.Text.Encoding]::ASCII)
+}
+New-Item -ItemType Directory -Force $prev | Out-Null
+Write-Pdf (Join-Path $prev 'a-pages.pdf') 4
+Write-Pdf (Join-Path $prev 'b-one.pdf') 1
+[System.IO.File]::WriteAllText((Join-Path $prev 'c-damaged.pdf'), "%PDF-1.4`ncut short: no PDF`n")
+[System.IO.File]::WriteAllText((Join-Path $prev 'd-notes.txt'), "plain text`r`n")
 
 $scroll = @($ScrollFolders | Where-Object { Test-Path $_ })
 $wait = 'waitops 60000'
@@ -242,6 +278,10 @@ $cycle = @(
     'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick TAR file', $wait, 'undo', $wait,
     # P7-M4: the sidebar walk (see the header).
     'click 0 0', 'sidebar click 1', 'sleep 500', 'key Down', 'key Down', 'key Up', 'key End', 'key Home', 'key Return', 'sleep 500', 'key Escape', 'sleep 200',
+    # P8-M1: the preview cycle (see the header). Rows: a-pages.pdf, b-one.pdf, c-damaged.pdf, d-notes.txt.
+    "nav 0 $prev", 'sleep 500', 'preview toggle', 'click 0 0', 'waitpreview 5000', 'previewscroll 600', 'waitpreview 5000',
+    'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000',
+    'preview width 0.5', 'waitpreview 5000', 'preview width 0.35', 'waitpreview 5000', 'preview toggle', 'sleep 200',
     # P8-L1: the grid's PageDown and Return on two folders (see the header).
     "nav 0 $src\tree", 'sleep 500', 'click 0 0', 'view medium', 'sleep 300', 'key PageDown', 'sleep 100', 'key PageUp', 'sleep 100',
     'view details', 'sleep 300', 'click 0 0', 'shiftclick 0 1', 'key Return', 'sleep 800', 'tab 2', 'sleep 200', 'tab close', 'sleep 300', 'tab 2', 'sleep 200', 'tab close', 'sleep 300',
@@ -382,6 +422,14 @@ $arFailed = @($arJobs | Select-String -SimpleMatch -NotMatch ': Done in').Count
 $arRefused = @($log | Select-String -SimpleMatch 'cannot write into .7z archives' | Select-String -SimpleMatch '[archive] refused').Count
 $arCompressed = @($log | Select-String -SimpleMatch '[archive] compress' | Select-String -SimpleMatch ': Ok(').Count
 $arUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Compressed').Count
+# P8-M1 counts.
+$pvOpened = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': pdf, ').Count
+$pvPages = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String -SimpleMatch ' rendered ').Count
+$pvDamaged = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': damaged: ').Count
+$pvOther = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': not a pdf').Count
+$pvSuperseded = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String -SimpleMatch ' superseded: ').Count
+$pvTimeouts = @($log | Select-String -SimpleMatch 'waitpreview: not settled').Count
+$pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 $menus = @($log | Select-String -SimpleMatch '[menu] closed').Count
 $ticks = @($log | Select-String -SimpleMatch '[auto] in-menu tick')
 $ticksBusy = @($ticks | Select-String -SimpleMatch 'free=false').Count
@@ -407,4 +455,5 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "memory samples: $csv"
 "stderr: $stderr"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
+"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), not a PDF $pvOther (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

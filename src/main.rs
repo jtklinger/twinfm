@@ -20,6 +20,7 @@ mod icons;
 mod model;
 mod pathbar;
 mod perf;
+mod preview;
 mod settings;
 mod shellmenu;
 mod sidebar;
@@ -732,6 +733,11 @@ fn update_tools(st: &State, app: &App, pane: usize) {
 /// buttons that open the name editor, which takes them itself: the list's focus request lands a
 /// moment later (a `changed` handler) and would close the editor again.
 fn toolbar_clicked(pane: usize, button: &str) {
+    // The Preview button (P8-M1) is Alt+P's toggle, for the window, not a pane's command.
+    if button == "preview" {
+        eprintln!("[toolbar] pane={pane} preview -> toggle");
+        return toggle_preview();
+    }
     let Some(cmd) = toolbar::command(button) else {
         return eprintln!("[toolbar] pane={pane} no button {button}");
     };
@@ -743,6 +749,31 @@ fn toolbar_clicked(pane: usize, button: &str) {
         app.invoke_focus_pane(pane as i32);
     }
     command(pane, cmd);
+}
+
+/// Alt+P, the toolbar's Preview button and the dialog (P8-M1): show or hide the preview column,
+/// remembered in the settings.
+fn toggle_preview() {
+    let Some(app) = with_state(|st| {
+        schedule_save(st);
+        st.app.upgrade()
+    }) else {
+        return;
+    };
+    let on = !app.get_preview();
+    app.set_preview(on);
+    preview::set_visible(on);
+}
+
+/// The preview's file (P8-M1): the active pane's cursor entry, from its listing (no file system
+/// call); None when the cursor is on no row.
+pub fn preview_target() -> Option<preview::Target> {
+    with_state(|st| {
+        let app = st.app.upgrade()?;
+        let pane = active_pane(&app);
+        let e = st.model(pane).entry(usize::try_from(current_row(&app, pane)).ok()?)?;
+        Some(preview::Target { pane, path: st.tab(pane).path.join(e.name.as_str()), attrs: e.attrs, is_dir: e.is_dir() })
+    })
 }
 
 /// The running job's percentage for a tab's status bar: only on the pane and tab that submitted
@@ -878,6 +909,8 @@ fn save_now() {
         c.sidebar_visible = app.get_sidebar_visible();
         c.sidebar_width = app.get_sidebar_width();
         c.path_bar = if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into();
+        c.preview = app.get_preview();
+        c.preview_width = app.get_preview_width();
         let w = app.window();
         // Maximised: the Win32 placement's normal rectangle, so un-maximising after a restart
         // gives the right size. Otherwise the window as it is; minimised: left as last saved.
@@ -4375,13 +4408,15 @@ fn register_dnd() {
 /// the window and its properties, so it needs no app-state borrow.
 pub fn window_layout(app: &App) -> dnd::Layout {
     let size = app.window().size().to_logical(app.window().scale_factor());
+    let left = if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 };
     dnd::Layout {
         width: size.width,
         height: size.height,
         split: app.get_split(),
         ratio: app.get_split_ratio(),
         tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
-        left: if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 },
+        left,
+        preview: if app.get_preview() { dnd::preview_w(size.width, left, app.get_preview_width()) } else { 0.0 },
         row_px: icons::ListGeom::new(app.get_thumbnails()).row_px,
         grid: [
             app.get_left_grid().then(|| app.get_left_grid_cols().max(1) as usize),
@@ -5080,6 +5115,8 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
     update_status(st, app, pane);
     resolve_view(st, app, pane);
     st.watch_active(app, pane);
+    // Another tab under the same cursor row number is another file (P8-M1).
+    preview::kick();
 }
 
 /// A watched background tab coming to the front: its watch says nothing when its folder went
@@ -5648,6 +5685,7 @@ fn settings_open() {
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
             toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
+            preview: app.get_preview(),
         };
         st.dialog = Some(d.clone());
         let note = match &st.config_path {
@@ -5671,6 +5709,7 @@ fn settings_open() {
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
+    app.set_dlg_preview(d.preview);
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
     // Outside the state borrow: showing the popup moves keyboard focus.
@@ -5696,6 +5735,7 @@ fn settings_closed(ok: bool) {
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
         toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
+        preview: app.get_dlg_preview(),
     }
     .normalized();
     let changes = opened.changes(&staged);
@@ -5735,6 +5775,11 @@ fn settings_closed(ok: bool) {
                 let t = settings::Toolbar::from_name(&staged.toolbar);
                 app.set_toolbar(t.index());
                 with_state(|st| st.config.toolbar = t.name().into());
+            }
+            "preview" => {
+                if app.get_preview() != staged.preview {
+                    toggle_preview();
+                }
             }
             _ => {}
         }
@@ -5935,6 +5980,9 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
     app.set_toolbar(settings::Toolbar::from_name(&config.toolbar).index());
+    app.set_preview_width(config.preview_width);
+    app.set_preview(config.preview);
+    preview::init(&app);
     app.set_show_type(config.show_type);
     app.set_thumbnails(config.thumbnails);
     if config.thumbnails {
@@ -6145,6 +6193,10 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     app.on_settings_changed(|| with_state(|st| schedule_save(st)));
+    app.on_toggle_preview(toggle_preview);
+    app.on_preview_cursor(preview::kick);
+    app.on_preview_scrolled(preview::scrolled);
+    app.on_preview_resized(preview::resized);
     // Closing the window writes the settings at once (the window's placement included).
     app.window().on_close_requested(|| {
         save_now();
@@ -6249,6 +6301,9 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);
+    if config.preview {
+        preview::set_visible(true);
+    }
     auto::start(&app);
     // The drop target goes on the window once it exists (winit creates it lazily, in `run`).
     with_state(|st| st.dnd_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), register_dnd));
