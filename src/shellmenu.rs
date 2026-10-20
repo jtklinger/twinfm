@@ -1181,18 +1181,18 @@ mod tests {
     #[test]
     fn tile_menu_point_sits_under_the_tile() {
         const L: crate::icons::TileGeom = crate::icons::TileGeom::LARGE;
-        // Five tiles to a grid row, 96 x 120 px: entry 7 is grid row 1, column 2.
-        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 0, 5, L), (12.0, 183.0));
-        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 7, 5, L), (10.0 + 2.0 * 96.0 + 2.0, 63.0 + 240.0));
+        // Five tiles to a grid row, 96 x 136 px: entry 7 is grid row 1, column 2.
+        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 0, 5, L), (12.0, 199.0));
+        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 7, 5, L), (10.0 + 2.0 * 96.0 + 2.0, 63.0 + 272.0));
         // Scrolled by ten grid rows: entry 52 (grid row 10, column 2) is the first row on screen.
-        assert_eq!(tile_menu_point(10.0, 63.0, -1200.0, 600.0, 52, 5, L), (204.0, 183.0));
+        assert_eq!(tile_menu_point(10.0, 63.0, -1360.0, 600.0, 52, 5, L), (204.0, 199.0));
         // Tiles above or below the viewport clamp to its edges; one column reads every entry as its own row.
-        assert_eq!(tile_menu_point(10.0, 63.0, -1200.0, 600.0, 0, 5, L).1, 63.0);
+        assert_eq!(tile_menu_point(10.0, 63.0, -1360.0, 600.0, 0, 5, L).1, 63.0);
         assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 500, 5, L).1, 663.0);
-        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 3, 1, L), (12.0, 63.0 + 4.0 * 120.0));
-        // Medium tiles, 80 x 72 px (P6-M2): entry 7 of five to a row is grid row 1, column 2.
+        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 3, 1, L), (12.0, 63.0 + 4.0 * 136.0));
+        // Medium tiles, 80 x 88 px (P6-M2, 72 before P7-M4): entry 7 of five to a row is grid row 1, column 2.
         let m = crate::icons::TileGeom::MEDIUM;
-        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 7, 5, m), (10.0 + 2.0 * 80.0 + 2.0, 63.0 + 144.0));
+        assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 7, 5, m), (10.0 + 2.0 * 80.0 + 2.0, 63.0 + 176.0));
     }
 }
 

@@ -909,6 +909,250 @@ copy out of the password zip, and a copy into it is refused with the note: as ex
 (ab28, on 2cde49f) was not run again: none of the console check's fixes is on the scenario's path
 (the scenario runs no file job, opens no menu and drops nothing).
 
+## P7-M4: the polish bundle and the drag cursor check
+
+Branch `feat/p7-m4-polish`, from 589db37.
+
+### Settled first (2026-10-19, before any code)
+
+Each item checked against the code; three clashes and the drag cursor check went to Jeremy with a
+recommendation, his answers:
+
+- **Tooltips.** The kickoff said Slint has none built in; the pinned Slint (c1d3a8d, master a1ce0d8)
+  has one, the `Tooltip` element (a hover area the compiler adds to its parent, shown after 500 ms
+  under the pointer, drawn inside the window). Tried on the toolbar first (a scripted hover through
+  Slint's pointer path, captured with the software renderer): it shows. Recommended Slint's
+  built-in over a popup of our own. Jeremy: "Slint's built-in".
+- **Two-line tile names do not fit today's tiles** (19 px under the icon). Recommended taller tiles,
+  as Explorer's: large 96 x 120 to 96 x 136, medium 80 x 72 to 80 x 88 (a screen holds about 12% and
+  18% fewer grid rows); the alternative was two lines at a smaller font in today's space. Jeremy:
+  "Taller tiles".
+- **The sidebar's arrows.** Explorer's navigation pane opens each folder the selection passes;
+  recommended the kickoff's move-only, Return opens (nothing is listed while moving). Jeremy:
+  "Move only, Return opens".
+- **The drag cursor console check** (Jeremy, his everyday build, a file dragged from one pane over a
+  folder in the other, "Move to ..." showing): **both show**, the description's icon and OLE's arrow
+  with its box. So `GiveFeedback` gets code (below).
+
+Calls made by the lead, told to Jeremy with the questions:
+
+- Back and Forward over the toolbar across the window go to the active pane; over a pane's own
+  toolbar, to that pane; over a disabled button and the gaps between buttons too.
+- Subtree records become row edits for the active tab with folder sizes too, not only a background
+  one: both listed the whole folder again on a change in the folder itself, and the edit path is the
+  same (`window_refusal`, its cap of 500 changes).
+- Search results sort by the file's own name (folders still first), a tie by the `sub\dir` path;
+  the other columns' tie-break is the own name too.
+- PageDown in the details list: to the last row wholly on screen, then by a screenful less one row
+  (the old last row ends at the top), as Explorer; PageUp the same upwards. The grid's paging stays.
+- The full name of the cursor tile, when it does not fit two lines, shows over the tiles below it
+  (Explorer's), drawn by one overlay per pane, never by the tiles.
+
+### What landed
+
+- **Toolbar tooltips** (pane.slint `ToolButton`): Slint's `Tooltip` in each button, its name and
+  key ("New file (Ctrl+Alt+N)", "New folder (Ctrl+Shift+N)", "Cut (Ctrl+X)", "Copy (Ctrl+C)", "Paste
+  (Ctrl+V)", "Rename (F2)", "Delete (Delete)"), in both placements, over disabled buttons too; the
+  tooltip's content reports itself when it is made (`[toolbar] top|pane=N tooltip "..."`). Driver
+  `hover <x> <y>` (Slint's pointer path; winit drops a posted `WM_MOUSEMOVE` while the real cursor is
+  outside the window, found while trying the tooltip).
+- **Back and Forward over the toolbar**: the button's `TouchArea` stays enabled (a disabled button
+  refuses only the click) and reports the side buttons; a `TouchArea` behind the bar across the
+  window takes its gaps; the in-pane bar's gaps were the pane's already. Driver `backclick <pane>
+  tool`, `forwardclick <pane> tool`.
+- **Subtree records as edits** (`fs::watch`, `main.rs` `take_window`): a subtree watch keeps the
+  records in the folder itself beside the children it names (past 1,000 it stops keeping them, as a
+  plain watch does), and its event carries their net changes; `watch_event` sends them through the
+  plain watch's path (`window_refusal`, the edit worker, `land_edits`), for the active and the
+  background tab alike. An overflow is the whole-folder refresh as before. Before, a tab with folder
+  sizes listed its folder again on every change in it, including the lazy "modified" NTFS reports
+  for a subfolder after a walk has opened it (now a `~` edit).
+- **Search results sorted by the file's own name** (`model::cmp_names`, used by `cmp_entries` for
+  every column's name and tie-break; a folder listing's names hold no `\`, so it is `natural_cmp`
+  there, with no extra work).
+- **The sidebar's keys** (`sidebar::step`, `row_top`): Up, Down, Home and End move past the headers
+  and scroll the row into view; Return opens the row in the active pane, as a click does, keeping
+  the keys in the sidebar.
+- **Explorer's PageDown and PageUp in the details list** (`model::page_target`, called from the
+  list's key handler through a pure `Paging` global, so the Slint key path is unchanged): to the last
+  (first) row wholly on screen, then a screenful less one row.
+- **Two-line tile names** (`FileGrid`, `FileGridMedium`): tiles 96 x 136 and 80 x 88 (`TileGeom`),
+  the name under the icon in a 38 px box with `wrap: word-wrap`, `max-lines: 2`, `overflow: elide`,
+  top-aligned; Slint's word wrap breaks a word longer than the line anywhere, as Explorer does. The
+  cursor tile's whole name, when its wrapped height passes the two lines, shows in one overlay per
+  pane over the tiles below (the grid's clip, after the strip, no input). The name editor sits over
+  the name's first line.
+- **The drag cursor** (`dnd.rs` `ds_give_feedback`, `own_cursor`): while the drag image shows a
+  target's drop description (`IsShowingLayered` and a `DropDescription` other than
+  `DROPIMAGE_INVALID` on our data object), `SetCursor(IDC_ARROW)` and `S_OK`; otherwise
+  `DRAGDROP_S_USEDEFAULTCURSORS` as before; `[dnd] cursor: ...` on each change.
+- **Tests**: 219 to 223 (`page_target`, the search sort, the sidebar's step, the cursor rule), the
+  subtree watch's test extended (the folder's own record as an edit), and the tile geometry in five
+  tests moved to the new heights.
+
+### Decisions
+
+- **Every tooltip is the button's name and key**; New file's key is TwinFM's own (Ctrl+Alt+N).
+- **The overlay shows on the cursor tile whether or not the list has the keys** (Explorer shows it
+  on the focused item); it takes no input, so a click on it lands on the tile under it.
+- **The grid keeps its own PageDown** (a viewport of grid rows); Explorer's rule is for the details
+  list, as the kickoff wrote it.
+
+### Scripted checks
+
+The release build of this branch, scratch folders under `%TEMP%\twinfm-p7m4-*`:
+
+```
+[toolbar] top tooltip "Cut (Ctrl+X)"                      (hover 240 18, a disabled button)
+[toolbar] pane=0 tooltip "Copy (Ctrl+C)"                  (toolbar-pane.toml, hover 300 20)
+[auto] scrollpos pane=0 content-y 0.0 current-row 0       (C:\Windows\System32, row 0)
+[auto] scrollpos pane=0 content-y 0.0 current-row 29      PageDown: the last row on screen
+[auto] scrollpos pane=0 content-y -620.0 current-row 58   PageDown: a screenful less one row
+[auto] scrollpos pane=0 content-y -620.0 current-row 29   PageUp: the first row on screen
+[auto] scrollpos pane=0 content-y 0.0 current-row 0       PageUp
+[nav] pane=0 Back button (active pane was 0, now 0)       (backclick 0 tool)
+[nav] pane=0 history back: C:\Windows -> C:\Windows\System32 (1 back, 1 forward left)
+[nav] pane=0 Forward button (active pane was 0, now 0)    (forwardclick 0 tool)
+[sidebar] key Down: row 2 (Google Drive (G:))
+[sidebar] key Down: row 4 (Home)                          past the Places header
+[sidebar] key Up: row 2 (Google Drive (G:))
+[sidebar] key End: row 11 (Videos)
+[sidebar] key Home: row 1 (Local Disk (C:))
+[sidebar] Return on row 2
+[sidebar] row 2 click: G:\
+[watch] pane=0 tab=1 subtree records 2 in the folder, changes 2, window 250 ms   (the sized tab, active: NTFS's lazy "modified" for two subfolders)
+[watch] pane=0 tab=1 applied: +0 -0 ~2 (stat 0.2 ms, apply 0.0 ms)
+[watch] pane=0 tab=4 applied: +1 -0 ~0 (stat 3.3 ms, apply 0.0 ms)                 (touch new.txt: the new tab)
+[watch] pane=0 tab=1 subtree records 2 in the folder, changes 1, window 500 ms   (the sized tab, now in the background)
+[watch] pane=0 tab=1 applied: +1 -0 ~0 (stat 3.2 ms, apply 0.0 ms)
+[watch] pane=0 tab=1 applied: +0 -1 ~0 (stat 0.0 ms, apply 0.0 ms)                 (rmfile new.txt)
+```
+
+Search for `*.txt` over `a\zeta.txt`, `a\alpha.txt`, `b\beta.txt`, `b\alpha.txt` and `gamma.txt`
+lists `alpha.txt (a)`, `alpha.txt (b)`, `beta.txt (b)`, `gamma.txt`, `zeta.txt (a)` (captured with the
+software renderer). Large and medium tiles captured the same way, with names of one line, two lines,
+a 61-character name with spaces and a 42-character name without: two lines, the second elided, the
+spaceless name broken anywhere, and the cursor tile's whole name over the tile below.
+
+**The generated lists against the reference's** (`target-p7m3`, 264770a, and this build's
+`app.rs`, from `InnerFileList_root_` up to `InnerFileListHost_root_`, generated numbers in identifiers
+mapped to their order of first appearance, field lists split into fields, each component compared as
+a multiset of lines): the four details lists identical (6,518 lines, none on one side only); each grid
+list 1,673 lines against 1,716, the reference's 7 lines only its own being the tile's 120 px (three
+places), the name's 19 px height and centred alignment, and one layout-info read; the build's 50 its
+own being 136 px, the name's new properties, and the compiler's height-for-width layout function for
+the grid component (a wrapped text inside makes its height depend on its width), which the grid
+triplets measure.
+
+`tools/soak-p5m3.ps1 -Minutes 6` (a copy of this build): exit code 0, no panics, 4 cycles started (the
+fourth cut short by the time limit before its archive steps and sidebar walk), 205 jobs done (0
+failed, 0 cancelled, 0 soak refusals, 0 waitops timeouts); toolbar tooltips 12 (three per cycle),
+Back and Forward over the toolbar 4 each, sidebar keys 15 and Returns 3; toolbar presses 32, 0
+refused as disabled; drags dropped 0, spring-loaded tabs 0, menupicks refused 0, zip jobs not done 0;
+every other count as in P7-M3's soak; working set 152.8 MB at 5 s, 241.8 at most, 235.1 at 361 s.
+
+`compress_seven_z_and_tar` (P7-M3's) failed once in five full test runs here, at its last line, with
+"used by another process" removing its scratch folder (Windows' archive handler still holding the 7z
+it had listed); recorded, not changed in this milestone.
+
+### Gate
+
+`C:\traces\gate-p7m4.ps1`: `target-p7m3` (264770a) against `target-p7m4`, four pairs interleaved
+(defaults, `grid.toml`, `grid-medium.toml`, `toolbar-pane.toml`, the reference run with the same
+file as the candidate each time).
+
+**ab29 (2026-10-19, 15:54 to 16:28, on 8b9c488) is void**: a side session (the archive test fix,
+PRs #71 and #72) ran its test loop, six test processes at once, and rebuilt `target\release` on the
+same machine throughout the gate. Some runs reached the split 22 s late, so the 10 s window caught an
+idle app (WPR 1.5 to 2.2% beside in-app figures of 20 to 37%), two in-pane toolbar runs could not be
+analysed ("could not find the right-pane enumeration worker"), and render p50 ranged 1.48 to 6.15 ms
+across runs; the wrapper's verdicts were computed from those figures and read nothing. The lesson,
+already in the projects-root rules ("worktrees isolate the repo, not shared targets") and now in the
+wrapper: it refuses to start while `cargo`, `rustc` or a test binary runs. Re-run as ab30 on the
+branch after main's two merges.
+
+**ab30**, 2026-10-19 (finished 17:24, 31 min), on c796139, nothing else running; each pair reference
+then candidate, the four pairs interleaved round by round:
+
+| Pair | Reference runs (WPR %) | Candidate runs (WPR %) | Medians | Render p50 ms (ref / cand) |
+|---|---|---|---|---|
+| defaults | 18.4, 17.2, 20.4 | 19.3, 18.3, 20.5 | 18.4 / 19.3 | 2.16 2.13 2.87 / 2.15 2.31 2.88 |
+| large grid | 11.4, 11.5, 11.5 | 10.2, 11.4, 11.6 | 11.5 / 11.4 | 1.21 1.41 1.42 / 1.12 1.39 1.41 |
+| medium grid | 12.8, 15.0, 15.8 | 12.4, 14.3, 13.9 | 15.0 / 13.9 | 1.58 2.07 2.03 / 1.48 1.84 1.86 |
+| in-pane toolbar | 17.3, 20.5, 20.0 | 18.3, 21.1, 21.2 | 20.0 / 21.1 | 2.17 2.84 2.86 / 2.22 2.94 2.88 |
+
+The session changed state part-way (render p50 about 2.2 against 2.9 ms, a third higher, as in
+ab23): round 3 of the defaults and rounds 2 and 3 of the toolbar pair ran in the slower state, both
+builds alike, so each pair compares like for like. The grids: the candidate at or below the
+reference (the taller tiles show fewer grid rows; the generated height-for-width function costs
+nothing visible). The defaults: 0.9 points, under the rule's one point. The in-pane toolbar: 1.1
+points, a gap by the letter of the rule, with no run under 20% for either build in the slower
+state. The traces show no new work: the toolbar pair's main-thread breakdowns hold the same
+categories in the same shares (render pass 60.6 and 60.6%, text 34.3 and 33.6%, ListView rows 17.4
+and 17.7%, timers 34.4 and 35.0%, round 1), nothing of the tooltip or the new layout function among
+the frames, the extra 100 ms of 2,000 spread evenly. In every pair the candidate ran second, the
+slot that read one to three points higher whichever binary sat in it (2026-10-15, P4-M2); the
+swapped-order re-run (ab31, `C:\traces\gate-p7m4-swap.ps1`: the defaults and toolbar pairs with the
+candidate first) is to tell that bias from a cost.
+
+**ab31**, 2026-10-19 (finished 17:48, 15 min), the same binaries, the candidate first in each pair:
+
+| Pair | Candidate runs (WPR %) | Reference runs (WPR %) | Medians (cand / ref) | Render p50 ms (cand / ref) |
+|---|---|---|---|---|
+| defaults | 19.8, 22.5, 20.3 | 19.1, 20.3, 20.9 | 20.3 / 20.3 | 2.23 3.04 2.85 / 2.36 2.88 2.90 |
+| in-pane toolbar | 29.4, 20.6, 20.3 | 27.2, 20.6, 20.5 | 20.6 / 20.6 | 3.72 2.88 2.85 / 3.58 2.90 2.86 |
+
+The session ran mostly in the slower state (render p50 2.85 to 3.04 ms, and round 1 of the toolbar
+pair slower still, 3.6 to 3.7, both builds), so both builds sit about 20%; pair by pair, like for
+like, the candidate reads +0.7, +2.2 and -0.6 on the defaults and +2.2, 0.0 and -0.2 on the toolbar,
+now with the first slot's lead. Equal medians in both pairs: **no gap counts** in either order, and
+ab30's 1.1 points on the toolbar pair were the second slot's. Read together: P7-M4 passes the gate
+(the grids at or below the reference, the defaults and in-pane toolbar level with it; in ab30's
+faster state every defaults and toolbar run of both builds in round 1 under 20%).
+
+### After the console check
+
+Jeremy, unelevated, `target-p7m4` (c796139), 2026-10-19: tooltips, Back and Forward over the toolbar,
+the sidebar's keys, PageDown and PageUp, tile names and the sized tab's edits as expected; two
+findings:
+
+- **The drop description no longer showed** on our own drags ("Move to ..." gone; the move itself
+  worked). Cause: once `GiveFeedback` returns S_OK, OLE stops telling the drag image's window to
+  repaint, so the description the target sets is never drawn; a source that sets its own cursor has
+  to post `DDWM_UPDATEWINDOW` (WM_USER + 3) to the helper's window (the `DragWindow` format on the data
+  object) itself, as shell-style sources do. Fix: posted on every `GiveFeedback` that sets the
+  arrow. Not reachable by script (a scripted drag follows the real cursor and is only cancelled):
+  for Jeremy's second check.
+- **Leftover icons under a filtered grid** (his item 7: the name filter in large icons, `files` in
+  `C:\traces`, 7 of 994 shown, empty folder icons in the rows below). Older than P7-M4: `target-p7m3`
+  shows it the same way (captured). Cause: `compose_grid_rows` resets its ring of slots on a filter
+  pass or a new listing but kept the images it had handed to the pane, so slots no visible row
+  filled again went on drawing the old rows' icons under the shorter grid. Fix: after a reset, the
+  slots left unfilled are hidden (only then, so a scroll pays nothing). Captured again: the seven
+  tiles alone.
+
+Neither fix is on the gate scenario's path (the scenario drags nothing, and its grid runs reset the
+ring only when a listing lands, never while scrolling), so ab30 and ab31 stand.
+
+Jeremy's second check on 67160ac (2026-10-20): "Move to ..." shows with only the arrow beside it, and
+the filtered grid has no leftover icons. As expected.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+1. **The drag cursor**: drag a file from one pane over a folder in the other: the "Move to ..." label
+   with only the arrow beside it, as when dragging from Explorer; over Explorer's window the same; over
+   a place that refuses the drop, the no-drop image.
+2. **Tooltips**: hover each toolbar button in both placements (Settings > Toolbar): the name and key
+   after half a second, under the pointer, never past the window's edge awkwardly.
+3. **Back and Forward mouse buttons** over a toolbar button, a dimmed one and the gap between groups.
+4. **Sidebar keys**: click a row, then Up, Down, Home, End, Return; Escape gives the keys back.
+5. **PageDown and PageUp** in a long details list beside Explorer's.
+6. **Tile names** in large and medium icons beside Explorer's: long names, names without spaces, the
+   cursor tile's whole name.
+7. **Search results** sorted by name.
+8. **Folder sizes kept**: size a folder's subfolders (Alt+Shift+Enter), open a new tab, create a file
+   in the first folder from Explorer, go back: the file is there without the list being listed again.
+
 ## Open questions
 
 Written 2026-10-18 at the kickoff.

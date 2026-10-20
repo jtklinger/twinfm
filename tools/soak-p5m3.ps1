@@ -66,6 +66,14 @@
 # c.txt, each undone (recycled). Reported: archive levels listed by ArchiveFolder, zip jobs done by
 # kind, refusals of writes into the 7z, archives compressed and undone, archive jobs failed (must be
 # 0). Three more Recycle Bin entries per cycle.
+#
+# P7-M4: the toolbar cycle starts with three hovers over the bar across the window (New file, Copy
+# and Delete, 700 ms each: their tooltips show) and the mouse's Back and Forward over its first
+# button (the active right pane goes back and forward again). After the archive cycle, a sidebar
+# walk: the left pane made active, a click on the sidebar's first drive (C:), then Down, Down, Up,
+# End, Home and Return (C: again), and Escape gives the keys back. Reported: tooltips shown (three
+# per cycle), Back and Forward over the toolbar (one each per cycle), sidebar keys (five moves and
+# one Return per cycle).
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -176,7 +184,9 @@ $cycle = @(
     'band 1 202 40 5 10', 'sleep 200',
     'key ShiftRight', 'sleep 200',
     'view details', 'sdelete', $wait,
-    # P6-M3: the toolbar cycle (see the header).
+    # P6-M3: the toolbar cycle (see the header), after P7-M4's hovers and side buttons over it.
+    'hover 55 18', 'sleep 700', 'hover 300 18', 'sleep 700', 'hover 545 18', 'sleep 700', 'hover 600 400',
+    'backclick 1 tool', 'sleep 800', 'forwardclick 1 tool', 'sleep 800',
     'toolbar 1 newfile', 'sleep 300', 'key Return', $wait,
     'undo', $wait,
     'toolbar 1 newfolder', 'sleep 300', 'key Return', $wait,
@@ -223,7 +233,9 @@ $cycle = @(
     "dropfiles 1 -1 move $dst\a.txt", $wait,
     "nav 0 $arch", 'sleep 500',
     'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick 7z file', $wait, 'undo', $wait,
-    'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick TAR file', $wait, 'undo', $wait
+    'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick TAR file', $wait, 'undo', $wait,
+    # P7-M4: the sidebar walk (see the header).
+    'click 0 0', 'sidebar click 1', 'sleep 500', 'key Down', 'key Down', 'key Up', 'key End', 'key Home', 'key Return', 'sleep 500', 'key Escape', 'sleep 200'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -313,11 +325,17 @@ $mediumImages = @($log | Select-String -SimpleMatch 'drag image 80x80 px, 48 px 
 $bandsCursor = @($log | Select-String -SimpleMatch '[band] pane=1 done: 2 selected, cursor 0').Count
 $shiftFromCursor = @($log | Select-String -SimpleMatch '[select] pane=1 Range row=1 selected=2').Count
 # P6-M3 counts.
-$toolPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=').Count
+$toolPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=' | Select-String -SimpleMatch -NotMatch ' tooltip "').Count
 $toolDisabled = @($log | Select-String -SimpleMatch 'disabled, not pressed').Count
 $newFiles = @($log | Select-String -SimpleMatch 'Done: Created New Text Document.txt').Count
 $newFilesUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Created New Text Document.txt').Count
 $renamedT = @($log | Select-String -SimpleMatch 'Done: Renamed to t').Count
+# P7-M4 counts.
+$tooltips = @($log | Select-String -SimpleMatch '[toolbar] top tooltip "').Count
+$toolBack = @($log | Select-String -SimpleMatch '[nav] pane=1 Back button').Count
+$toolForward = @($log | Select-String -SimpleMatch '[nav] pane=1 Forward button').Count
+$sideKeys = @($log | Select-String -SimpleMatch '[sidebar] key ').Count
+$sideReturns = @($log | Select-String -SimpleMatch '[sidebar] Return on row 1').Count
 # P7-M1 counts.
 $verbJobs = @($log | Select-String -SimpleMatch '[menu] verb "' | Select-String -SimpleMatch 'queued on the verb worker').Count
 $verbSlept = @($log | Select-String -SimpleMatch 'slept in').Count
@@ -366,6 +384,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (two per cycle: large and medium); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
 "medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
 "toolbar: presses $toolPresses (eight per cycle), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
+"toolbar tooltips shown $tooltips (three per cycle); Back over the toolbar $toolBack, Forward $toolForward (one each per cycle); sidebar keys $sideKeys (five per cycle), Return $sideReturns (one per cycle)"
 "verbs: jobs queued $verbJobs (three per cycle: two of P7-M1's, P7-M2's ZIP), slept $verbSlept, link by verb with S_OK $verbOk; routed deletes $routedDeletes, restored $restores; cuts cancelled by Escape $cutsCancelled"
 "Windows 11 menu: shown $wmShown (seven per cycle, and each rebuild again), rebuilt with the worker's answer $wmRebuilt, picks run $wmPicks (four per cycle), ZIPs made $wmZips, new folders $wmFolders (two per cycle: the menu's and the toolbar's), submenus $wmSubs (two per cycle), classic menus from Show more options $wmMore, menupicks refused $wmRefused (must be 0)"
 "spring: armed $springArmed, spring-loaded rows $springRows (navigations into spring\inner: $springInner), tabs $springTabs (must be 0), disarmed $springDisarmed; crumb drops: $dropCrumb; auto-scroll lines: sidebar $sideScrolls, tab strip $stripScrolls"

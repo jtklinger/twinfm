@@ -1489,6 +1489,35 @@ impl Selection {
     }
 }
 
+/// The cursor's row after PageDown (`down`) or PageUp in the details list, as Explorer's (P7-M4):
+/// to the last row wholly on screen (the first, upwards) unless the cursor is already there or
+/// past it, else a screenful less one row on, so the row it left stays in view at the other edge.
+/// `content_y` is the list's scroll (zero or negative), `visible_h` and `row_h` its viewport and
+/// row heights, `len` the row count; a cursor of -1 (none) goes to row 0.
+pub fn page_target(cursor: i32, content_y: f32, visible_h: f32, row_h: f32, len: i32, down: bool) -> i32 {
+    if len <= 0 {
+        return -1;
+    }
+    if cursor < 0 || row_h <= 0.0 {
+        return 0;
+    }
+    let top = -content_y;
+    // A row is wholly on screen when its top is at or below the viewport's top and its bottom at
+    // or above the viewport's bottom; at least one row counts, however short the viewport.
+    let first = ((top / row_h) - 0.001).ceil().max(0.0) as i32;
+    let last = ((((top + visible_h) / row_h) + 0.001).floor() as i32 - 1).max(first);
+    let (first, last) = (first.min(len - 1), last.min(len - 1));
+    let page = (last - first).max(1);
+    let to = if down {
+        if cursor < last { last } else { cursor + page }
+    } else if cursor > first {
+        first
+    } else {
+        cursor - page
+    };
+    to.clamp(0, len - 1)
+}
+
 /// Sort in place: directories first, then by the chosen column. Runs on a worker.
 pub fn sort_entries(entries: &mut [Entry], col: SortCol, asc: bool) {
     entries.sort_unstable_by(|a, b| cmp_entries(a, b, col, asc));
@@ -1502,12 +1531,26 @@ pub fn cmp_entries(a: &Entry, b: &Entry, col: SortCol, asc: bool) -> std::cmp::O
         return dir_order;
     }
     let o = match col {
-        SortCol::Name => natural_cmp(&a.name, &b.name),
-        SortCol::Size => a.size.cmp(&b.size).then_with(|| natural_cmp(&a.name, &b.name)),
-        SortCol::Modified => a.modified.cmp(&b.modified).then_with(|| natural_cmp(&a.name, &b.name)),
-        SortCol::Type => natural_cmp(&a.type_text, &b.type_text).then_with(|| natural_cmp(&a.name, &b.name)),
+        SortCol::Name => cmp_names(&a.name, &b.name),
+        SortCol::Size => a.size.cmp(&b.size).then_with(|| cmp_names(&a.name, &b.name)),
+        SortCol::Modified => a.modified.cmp(&b.modified).then_with(|| cmp_names(&a.name, &b.name)),
+        SortCol::Type => natural_cmp(&a.type_text, &b.type_text).then_with(|| cmp_names(&a.name, &b.name)),
     };
     if asc { o } else { o.reverse() }
+}
+
+/// Names in sort order: by the entry's own name, which for a search result (`sub\dir\file`,
+/// P3-M2) is the part after the last `\`, the whole path breaking a tie (P7-M4). A folder
+/// listing's names hold no `\`, so for them this is `natural_cmp`.
+fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
+    fn own(n: &str) -> &str {
+        n.rfind('\\').map_or(n, |i| &n[i + 1..])
+    }
+    let (oa, ob) = (own(a), own(b));
+    if oa.len() == a.len() && ob.len() == b.len() {
+        return natural_cmp(a, b);
+    }
+    natural_cmp(oa, ob).then_with(|| natural_cmp(a, b))
 }
 
 /// Case-insensitive compare with embedded numbers compared numerically (file_2 < file_10).
@@ -2447,6 +2490,49 @@ mod tests {
                 assert!(a.windows(2).all(|w| cmp_entries(&w[0], &w[1], col, asc) != std::cmp::Ordering::Greater));
             }
         }
+    }
+
+    #[test]
+    fn page_down_goes_to_the_last_row_on_screen_first() {
+        // 22 px rows, a 220 px viewport: ten rows wholly on screen at the top.
+        let (h, r) = (220.0, 22.0);
+        assert_eq!(page_target(0, 0.0, h, r, 100, true), 9, "the last row on screen");
+        assert_eq!(page_target(9, 0.0, h, r, 100, true), 18, "then a screenful less one row");
+        // After that scroll, rows 9..18 are on screen (content-y -198): 18 is the last.
+        assert_eq!(page_target(18, -198.0, h, r, 100, true), 27);
+        assert_eq!(page_target(95, -1980.0, h, r, 100, true), 99, "clamped to the last row");
+        assert_eq!(page_target(99, -1980.0, h, r, 100, true), 99);
+        // Upwards the same: to the first row on screen, then a screenful less one row.
+        assert_eq!(page_target(18, -198.0, h, r, 100, false), 9);
+        assert_eq!(page_target(9, -198.0, h, r, 100, false), 0);
+        assert_eq!(page_target(3, 0.0, h, r, 100, false), 0);
+        // A row cut by the viewport's edge is not wholly on screen.
+        assert_eq!(page_target(0, -11.0, h, r, 100, true), 9, "row 10 is cut at the bottom");
+        assert_eq!(page_target(5, -11.0, h, r, 100, false), 1, "row 0 is cut at the top");
+        // A cursor off screen: below it moves a page on, above it to the last row on screen.
+        assert_eq!(page_target(50, 0.0, h, r, 100, true), 59);
+        assert_eq!(page_target(50, -1980.0, h, r, 100, true), 99);
+        // No cursor, a short list, an empty one, a viewport under one row.
+        assert_eq!(page_target(-1, 0.0, h, r, 100, true), 0);
+        assert_eq!(page_target(0, 0.0, h, r, 4, true), 3);
+        assert_eq!(page_target(0, 0.0, h, r, 0, true), -1);
+        assert_eq!(page_target(2, -44.0, 10.0, r, 100, true), 3, "one row a page at least");
+    }
+
+    #[test]
+    fn search_results_sort_by_their_own_name() {
+        // Search results are named `sub\dir\file` (P3-M2); they sort by the file's own name, the
+        // folder path breaking a tie, folders still first (P7-M4).
+        let f = |name: &str, size: u64| Entry::new(name.into(), size, 0, 0, "Text Document".into());
+        let mut v = vec![f(r"b\a.txt", 1), f(r"a\z.txt", 2), f("m.txt", 3), f(r"a\b.txt", 1), f(r"c\b.txt", 1), e(r"z\dir", 0, true)];
+        let names = |v: &[Entry]| v.iter().map(|x| x.name.to_string()).collect::<Vec<_>>();
+        sort_entries(&mut v, SortCol::Name, true);
+        assert_eq!(names(&v), [r"z\dir", r"b\a.txt", r"a\b.txt", r"c\b.txt", "m.txt", r"a\z.txt"]);
+        sort_entries(&mut v, SortCol::Name, false);
+        assert_eq!(names(&v), [r"z\dir", r"a\z.txt", "m.txt", r"c\b.txt", r"a\b.txt", r"b\a.txt"]);
+        // Equal sizes fall back to the own name.
+        sort_entries(&mut v, SortCol::Size, true);
+        assert_eq!(names(&v), [r"z\dir", r"b\a.txt", r"a\b.txt", r"c\b.txt", r"a\z.txt", "m.txt"]);
     }
 
     #[test]

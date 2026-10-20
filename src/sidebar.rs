@@ -94,6 +94,28 @@ pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], bookm
     out
 }
 
+/// The row current after a key in the sidebar (P7-M4): Up and Down move to the previous or next
+/// row that is not a header (none past the ends: the row stays), Home and End to the first or
+/// last such row; with no row current (-1), Up and Down start at the first. None when the sidebar
+/// has no such row, or for any other key.
+pub fn step(kinds: &[RowKind], current: i32, key: &str) -> Option<usize> {
+    let rows: Vec<usize> = (0..kinds.len()).filter(|&i| kinds[i] != RowKind::Header).collect();
+    let (first, last) = (*rows.first()?, *rows.last()?);
+    let cur = usize::try_from(current).ok().filter(|&c| c < kinds.len());
+    Some(match (key, cur) {
+        ("Home", _) | ("Up" | "Down", None) => first,
+        ("End", _) => last,
+        ("Up", Some(c)) => rows.iter().rev().copied().find(|&i| i < c).unwrap_or(if kinds[c] == RowKind::Header { first } else { c }),
+        ("Down", Some(c)) => rows.iter().copied().find(|&i| i > c).unwrap_or(if kinds[c] == RowKind::Header { last } else { c }),
+        _ => return None,
+    })
+}
+
+/// The top of row `i` in the sidebar list, from each row's height (`main.rs` `side_rows`).
+pub fn row_top(heights: &[f32], i: usize) -> f32 {
+    heights.iter().take(i).sum()
+}
+
 /// Folders compare case-insensitively and without a trailing separator (`C:\` keeps its own).
 fn same_folder(a: &str, b: &str) -> bool {
     let n = |s: &str| {
@@ -141,6 +163,28 @@ pub fn move_bookmark(list: &mut [Bookmark], i: usize, up: bool) -> Option<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrows_move_along_the_rows_past_the_headers() {
+        use RowKind::*;
+        // Drives: C:, G:; Places: Home; Bookmarks: none.
+        let k = [Header, Drive, Drive, Header, Place, Header];
+        assert_eq!(step(&k, 1, "Down"), Some(2));
+        assert_eq!(step(&k, 2, "Down"), Some(4), "past the Places header");
+        assert_eq!(step(&k, 4, "Down"), Some(4), "the last row stays (the Bookmarks header is no row)");
+        assert_eq!(step(&k, 4, "Up"), Some(2));
+        assert_eq!(step(&k, 1, "Up"), Some(1), "the first row stays");
+        assert_eq!(step(&k, -1, "Down"), Some(1), "no row current: the first");
+        assert_eq!(step(&k, -1, "Up"), Some(1));
+        assert_eq!(step(&k, 4, "Home"), Some(1));
+        assert_eq!(step(&k, 1, "End"), Some(4));
+        assert_eq!(step(&k, 3, "Down"), Some(4), "from a header (a stale current row)");
+        assert_eq!(step(&k, 9, "Up"), Some(1), "a current row past the end counts as none");
+        assert_eq!(step(&k, 1, "Return"), None);
+        assert_eq!(step(&[Header, Header], -1, "Down"), None, "nothing but headers");
+        assert_eq!(row_top(&[26.0, 24.0, 24.0, 26.0, 24.0], 4), 100.0);
+        assert_eq!(row_top(&[26.0, 24.0], 0), 0.0);
+    }
 
     #[test]
     fn bookmarks_add_remove_dedupe() {

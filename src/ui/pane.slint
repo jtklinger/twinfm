@@ -57,6 +57,12 @@ export struct StatusInfo {
     right: string,
 }
 
+// PageUp and PageDown in the details list (P7-M4, Explorer's): model.rs `page_target` gives the
+// cursor's new row from (cursor, content-y, visible height, row height, row count, down).
+export global Paging {
+    pure callback target(int, length, length, length, int, bool) -> int;
+}
+
 // Which toolbar buttons apply to a pane (toolbar.rs `state`, set from Rust in update_status's
 // rhythm, on change only).
 export struct ToolState {
@@ -70,13 +76,20 @@ export struct ToolState {
 
 // One toolbar button: a Segoe Fluent Icons glyph (the font of Explorer's own command bar, part of
 // Windows 11), with its label beside it in the toolbar across the window. A disabled button is
-// dimmed and takes no clicks.
+// dimmed and takes no clicks. Its tooltip (P7-M4, Slint's built-in `Tooltip`, after 500 ms under
+// the pointer) gives its name and key, disabled or not; tip(text) when it shows. The mouse's Back
+// and Forward buttons over it go back and forward (back(), forward()), so its TouchArea stays
+// enabled and only the click is refused.
 component ToolButton inherits Rectangle {
     in property <string> glyph;
     in property <string> text;
+    in property <string> key;
     in property <bool> labelled;
     in property <bool> enabled: true;
     callback clicked();
+    callback tip(string);
+    callback back();
+    callback forward();
     accessible-role: button;
     accessible-label: root.text;
     border-radius: 4px;
@@ -99,8 +112,23 @@ component ToolButton inherits Rectangle {
         }
     }
     ta := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.clicked(); }
+        clicked => { if (root.enabled) { root.clicked(); } }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+        }
+    }
+    Tooltip {
+        Rectangle {
+            init => { root.tip(root.text + " (" + root.key + ")"); }
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                Text { text: root.text + " (" + root.key + ")"; }
+            }
+        }
     }
 }
 
@@ -110,23 +138,27 @@ component ToolSeparator inherits Rectangle {
 }
 
 // The toolbar (P6-M3), in its three groups: New file, New folder; Cut, Copy, Paste; Rename, Delete.
-// tool(name) names the button (toolbar.rs `command` maps it to its key's command).
+// tool(name) names the button (toolbar.rs `command` maps it to its key's command); tip(text) a
+// tooltip shown; back() and forward() the mouse's side buttons over a button (P7-M4).
 export component Toolbar inherits HorizontalLayout {
     in property <ToolState> tools;
     in property <bool> labelled;
     callback tool(string);
+    callback tip(string);
+    callback back();
+    callback forward();
     alignment: start;
     padding: 2px;
     spacing: 2px;
-    ToolButton { glyph: "\u{E8A5}"; text: "New file"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfile"); } }
-    ToolButton { glyph: "\u{E8F4}"; text: "New folder"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfolder"); } }
+    ToolButton { glyph: "\u{E8A5}"; text: "New file"; key: "Ctrl+Alt+N"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfile"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    ToolButton { glyph: "\u{E8F4}"; text: "New folder"; key: "Ctrl+Shift+N"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfolder"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
     ToolSeparator { }
-    ToolButton { glyph: "\u{E8C6}"; text: "Cut"; labelled: root.labelled; enabled: root.tools.cut; clicked => { root.tool("cut"); } }
-    ToolButton { glyph: "\u{E8C8}"; text: "Copy"; labelled: root.labelled; enabled: root.tools.copy; clicked => { root.tool("copy"); } }
-    ToolButton { glyph: "\u{E77F}"; text: "Paste"; labelled: root.labelled; enabled: root.tools.paste; clicked => { root.tool("paste"); } }
+    ToolButton { glyph: "\u{E8C6}"; text: "Cut"; key: "Ctrl+X"; labelled: root.labelled; enabled: root.tools.cut; clicked => { root.tool("cut"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    ToolButton { glyph: "\u{E8C8}"; text: "Copy"; key: "Ctrl+C"; labelled: root.labelled; enabled: root.tools.copy; clicked => { root.tool("copy"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    ToolButton { glyph: "\u{E77F}"; text: "Paste"; key: "Ctrl+V"; labelled: root.labelled; enabled: root.tools.paste; clicked => { root.tool("paste"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
     ToolSeparator { }
-    ToolButton { glyph: "\u{E8AC}"; text: "Rename"; labelled: root.labelled; enabled: root.tools.rename; clicked => { root.tool("rename"); } }
-    ToolButton { glyph: "\u{E74D}"; text: "Delete"; labelled: root.labelled; enabled: root.tools.delete; clicked => { root.tool("delete"); } }
+    ToolButton { glyph: "\u{E8AC}"; text: "Rename"; key: "F2"; labelled: root.labelled; enabled: root.tools.rename; clicked => { root.tool("rename"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    ToolButton { glyph: "\u{E74D}"; text: "Delete"; key: "Delete"; labelled: root.labelled; enabled: root.tools.delete; clicked => { root.tool("delete"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
 }
 
 // One tab; the strip places and sizes it. The left press activates it (as browsers do), and
@@ -484,7 +516,7 @@ component FileListNoType32 inherits FileRowsNoType32 {
 }
 
 // The large-icon grid (P4-M1; the P3-M5 trace's variant b): the ListView's single `for` runs over
-// GRID ROWS (120 px), each holding a nested `for` over its tiles (96 px wide). Tiles carry no
+// GRID ROWS (136 px since P7-M4), each holding a nested `for` over its tiles (96 px wide). Tiles carry no
 // image: the pane's strip draws the icons. Accessibility: each grid row is one list-item node (the
 // item count is the grid-row count); the tiles add no role of their own, only their name Text.
 component FileGrid inherits ListView {
@@ -501,26 +533,29 @@ component FileGrid inherits ListView {
     accessible-delegate-focus: max(0, floor(current-row / max(1, cols)));
 
     for grow[r] in grid: Rectangle {
-        height: 120px;
+        height: 136px;
         accessible-role: AccessibleRole.list-item;
         accessible-item-index: r;
         for t[c] in grow.tiles: Rectangle {
             x: c * 96px;
             y: 0px;
             width: 96px;
-            height: 120px;
+            height: 136px;
             background: t.selected ? Palette.selection-background : transparent;
             border-width: t.current ? 1px : 0px;
             border-color: Palette.accent-background;
-            // The icon (the strip's) fills 2..98 px; the name sits under it.
+            // The icon (the strip's) fills 2..98 px; the name sits under it on up to two lines,
+            // wrapped at words (a longer word anywhere) and elided on the second (P7-M4, Explorer's).
             Text {
                 x: 2px;
-                y: 99px;
+                y: 98px;
                 width: 92px;
-                height: 19px;
+                height: 38px;
                 text: t.name;
                 horizontal-alignment: center;
-                vertical-alignment: center;
+                vertical-alignment: top;
+                wrap: word-wrap;
+                max-lines: 2;
                 overflow: elide;
                 color: t.cut ? Palette.foreground.transparentize(55%) : Palette.foreground;
             }
@@ -533,14 +568,14 @@ component FileGrid inherits ListView {
 }
 
 // The grid's focus layer, as FileList is FileRows'. init sets content-height to what the first
-// layout will (120 px grid rows), so the Flickable does not scroll a new grid back to the top.
+// layout will (136 px grid rows), so the Flickable does not scroll a new grid back to the top.
 component FileGridList inherits FileGrid {
     in property <int> focus-request;
     in property <bool> focus-on-init;
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.grid.length * 120px;
+        root.content-height = root.grid.length * 136px;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -551,8 +586,9 @@ component FileGridList inherits FileGrid {
     }
 }
 
-// The medium-icon grid (P6-M2): FileGrid at icons::TileGeom::MEDIUM, 80 x 72 px tiles with the
-// strip's 48 px icon at 16..64 x 2..50 and the name under it. A copy with its own constants rather
+// The medium-icon grid (P6-M2): FileGrid at icons::TileGeom::MEDIUM, 80 x 88 px tiles (72 px
+// until P7-M4) with the strip's 48 px icon at 16..64 x 2..50 and the name under it on up to two
+// lines. A copy with its own constants rather
 // than a tile size bound in the tile (the P3-M1 amendment): the large grid's generated tile stays
 // the reference's, and FileListHost picks one of the two once per pane, outside the `for`.
 component FileGridMedium inherits ListView {
@@ -567,25 +603,27 @@ component FileGridMedium inherits ListView {
     accessible-delegate-focus: max(0, floor(current-row / max(1, cols)));
 
     for grow[r] in grid: Rectangle {
-        height: 72px;
+        height: 88px;
         accessible-role: AccessibleRole.list-item;
         accessible-item-index: r;
         for t[c] in grow.tiles: Rectangle {
             x: c * 80px;
             y: 0px;
             width: 80px;
-            height: 72px;
+            height: 88px;
             background: t.selected ? Palette.selection-background : transparent;
             border-width: t.current ? 1px : 0px;
             border-color: Palette.accent-background;
             Text {
                 x: 2px;
-                y: 51px;
+                y: 50px;
                 width: 76px;
-                height: 19px;
+                height: 38px;
                 text: t.name;
                 horizontal-alignment: center;
-                vertical-alignment: center;
+                vertical-alignment: top;
+                wrap: word-wrap;
+                max-lines: 2;
                 overflow: elide;
                 color: t.cut ? Palette.foreground.transparentize(55%) : Palette.foreground;
             }
@@ -603,7 +641,7 @@ component FileGridMediumList inherits FileGridMedium {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.grid.length * 72px;
+        root.content-height = root.grid.length * 88px;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -641,7 +679,7 @@ component FileListHost inherits Rectangle {
     // and tile-h are the tile's size (icons::TileGeom) for the host's and the pane's arithmetic.
     in property <bool> medium: false;
     out property <length> tile-w: root.medium ? 80px : 96px;
-    out property <length> tile-h: root.medium ? 72px : 120px;
+    out property <length> tile-h: root.medium ? 88px : 136px;
     out property <int> cols: max(1, floor(self.width / root.tile-w));
     callback grid-cols(int);
     callback grid-cursor(int);
@@ -821,6 +859,7 @@ component FileListHost inherits Rectangle {
             if (root.rows.length > 0) {
                 let page = max(1, floor(root.visible-height / root.row-h)) * root.step;
                 if (root.current-row < 0) { root.current-row = 0; }
+                else if (!root.grid) { root.current-row = Paging.target(root.current-row, root.content-y, root.visible-height, root.row-h, root.rows.length, e.text == Key.PageDown); }
                 else if (e.text == Key.PageUp) { root.current-row = max(0, root.current-row - page); }
                 else { root.current-row = min(root.rows.length - 1, root.current-row + page); }
                 root.cursor-moved(e.modifiers.shift);
@@ -974,6 +1013,8 @@ export component Pane inherits Rectangle {
     in property <bool> toolbar: false;
     in property <ToolState> tools;
     callback tool(string);
+    // tool-tip(text): a button of the in-pane toolbar showed its tooltip (P7-M4).
+    callback tool-tip(string);
     callback grid-cols(int);
     callback grid-cursor(int);
     // The rubber band (P4-M3, grid only): band-pointer(kind, window x, window y, ctrl, shift) for
@@ -1088,7 +1129,7 @@ export component Pane inherits Rectangle {
     private property <bool> strip-shown: false;
     // The grid's icon strip: one image per grid row, in a ring of slots Rust fills for the grid
     // rows on screen and one each side (main.rs `grid_slots`), so a scroll of one grid row
-    // recomposes and uploads one 120 px row, not the whole strip; a slot's image changes only
+    // recomposes and uploads one grid row (136 px, 88 medium), not the whole strip; a slot's image changes only
     // when its row does. Empty with the details list (the `for` makes nothing).
     in property <[StripRow]> strip-rows;
 
@@ -1200,6 +1241,9 @@ export component Pane inherits Rectangle {
             tools: root.tools;
             labelled: false;
             tool(c) => { root.tool(c); }
+            tip(t) => { root.tool-tip(t); }
+            back => { root.back-button(); }
+            forward => { root.forward-button(); }
         }
         // Not a Flickable: its drag-to-flick would take the presses a tab drag needs.
         if root.tabs.length > 1: Rectangle {
@@ -1559,6 +1603,31 @@ export component Pane inherits Rectangle {
             height: list.tile-h;
             pointer-event(ev) => { root.band-ev(ev, self.absolute-position.x, self.absolute-position.y, self.mouse-x, self.mouse-y); }
         }
+        // The cursor tile's whole name when its two lines elide it (P7-M4, Explorer's): one box
+        // per pane over the tiles below, under the tile's own name, never a binding in the tiles.
+        // It takes no input.
+        if list.current-row >= 0 && list.current-row < root.rows.length: Rectangle {
+            x: list.col-of(list.current-row) * list.tile-w;
+            y: list.content-y + list.line-of(list.current-row) * list.tile-h + list.tile-h - 38px;
+            width: list.tile-w;
+            height: full-name.preferred-height + 3px;
+            visible: full-name.preferred-height > 38px;
+            background: Palette.background;
+            Rectangle {
+                background: root.rows[list.current-row].selected ? Palette.selection-background : transparent;
+                border-width: 1px;
+                border-color: Palette.accent-background;
+            }
+            full-name := Text {
+                x: 2px;
+                y: 0px;
+                width: parent.width - 4px;
+                text: root.rows[list.current-row].name;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+                color: root.rows[list.current-row].cut ? Palette.foreground.transparentize(55%) : Palette.foreground;
+            }
+        }
         Rectangle {
             visible: root.band-here;
             x: root.band-x;
@@ -1574,13 +1643,13 @@ export component Pane inherits Rectangle {
     // Return commits, Escape cancels, focus loss cancels. Over the name cell: 6 px row padding
     // plus the icon slot (one row high, 22 or 32 px) from the left, the fixed columns (350 px, 230
     // px without Type) from the right, centred on the row. In the grid, over the tile's name (2 px
-    // in, the tile's width less 4 px, centred on the 19 px text that ends 2 px above the tile's
-    // bottom: 95 px down a large tile, 47 px down a medium one).
+    // in, the tile's width less 4 px, centred on the name's first line, which starts 38 px above
+    // the tile's bottom: 94 px down a large tile, 46 px down a medium one, P7-M4).
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
         x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + 2px : list.row-h + 2px + (root.thumbnails ? 4px : 0px));
-        y: list.y + (root.grid ? list.tile-h - 25px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
+        y: list.y + (root.grid ? list.tile-h - 42px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
         width: root.grid ? list.tile-w - 4px : max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - (root.show-type ? 350px : 230px) - 12px);
         height: 28px;
         background: Palette.background;

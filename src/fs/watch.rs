@@ -126,10 +126,12 @@ pub enum Event {
     /// `overflow`: what changed is unknown (`changes` is empty); the listing needs a refresh.
     Changed { pane: usize, tab_id: u64, changes: Vec<Change>, records: usize, overflow: bool },
     /// What a subtree watch saw (coalesced). `top`: something in the folder itself changed (an
-    /// entry added, removed, renamed or modified; the listing needs a refresh). `changes`: each
+    /// entry added, removed, renamed or modified), and `edits` its net changes from `records` raw
+    /// records in the folder itself, as a plain watch's (P7-M4: row edits), or None when past
+    /// `MAX_RECORDS` or on an overflow (the listing needs a refresh). `changes`: each
     /// child of the folder that a record lay below or added, removed or renamed (not one that only
     /// modified the child's own entry), once, with the first such record ("added sub\x.txt"). `overflow`: the buffer overflowed, so what changed is unknown.
-    Subtree { pane: usize, tab_id: u64, top: bool, changes: Vec<(String, String)>, overflow: bool },
+    Subtree { pane: usize, tab_id: u64, top: bool, changes: Vec<(String, String)>, overflow: bool, edits: Option<Vec<Change>>, records: usize },
     /// The watched folder itself was renamed; the watch now follows `to`.
     Moved { pane: usize, tab_id: u64, from: PathBuf, to: PathBuf },
     /// No watch for `path` (sent every time it is asked for; logged once).
@@ -373,9 +375,11 @@ struct Watch {
     top: bool,
     changes: Vec<(String, String)>,
     overflow: bool,
-    /// A plain watch's records of the current window, and how many there were.
+    /// A plain watch's records of the current window, and how many there were (a subtree watch's:
+    /// those in the folder itself). `raw_over`: a subtree watch's went past `MAX_RECORDS`.
     raw: Vec<(u32, String)>,
     records: usize,
+    raw_over: bool,
     /// A main watch's parent watch (null if none) and whether one was asked for.
     parent: *mut Watch,
     wants_parent: bool,
@@ -413,6 +417,7 @@ impl Watch {
             overflow: false,
             raw: Vec::new(),
             records: 0,
+            raw_over: false,
             parent: std::ptr::null_mut(),
             wants_parent: false,
             cut_old: false,
@@ -1055,6 +1060,17 @@ impl<W: Fn()> Dirwatch<W> {
                     let child = crate::fs::sizes::child_of(&name);
                     let top = child.len() == name.len();
                     w.top |= top;
+                    if top {
+                        w.records += 1;
+                        if !w.raw_over {
+                            w.raw.push((action, name.clone()));
+                            if w.raw.len() > MAX_RECORDS {
+                                eprintln!("[watch] pane={} tab={} {} records in the folder itself: refresh", w.pane, w.tab_id, w.raw.len());
+                                w.raw_over = true;
+                                w.raw = Vec::new();
+                            }
+                        }
+                    }
                     // A subfolder's own entry modified (its times, which NTFS also updates lazily
                     // after a walk has opened it) is not a change of its contents.
                     if top && action == FILE_ACTION_MODIFIED {
@@ -1272,7 +1288,18 @@ fn window_event(w: &mut Watch, now: Instant) -> Event {
     w.backoff.delivered(now);
     if w.subtree {
         let (top, changes, overflow) = (std::mem::take(&mut w.top), std::mem::take(&mut w.changes), std::mem::take(&mut w.overflow));
-        return Event::Subtree { pane: w.pane, tab_id: w.tab_id, top, changes, overflow };
+        let (raw, records, raw_over) = (std::mem::take(&mut w.raw), std::mem::take(&mut w.records), std::mem::take(&mut w.raw_over));
+        let edits = (!overflow && !raw_over).then(|| net_changes(raw));
+        if top && !overflow {
+            eprintln!(
+                "[watch] pane={} tab={} subtree records {records} in the folder, changes {}, window {} ms",
+                w.pane,
+                w.tab_id,
+                edits.as_ref().map_or("over the cap".to_string(), |e| e.len().to_string()),
+                w.backoff.window.as_millis()
+            );
+        }
+        return Event::Subtree { pane: w.pane, tab_id: w.tab_id, top, changes, overflow, edits, records };
     }
     let (raw, records, overflow) = (std::mem::take(&mut w.raw), std::mem::take(&mut w.records), std::mem::take(&mut w.overflow));
     let changes = if overflow { Vec::new() } else { net_changes(raw) };
@@ -1851,14 +1878,20 @@ mod tests {
         w.sync();
         std::fs::write(dir.0.join(r"sub\deep\x.txt"), b"x").unwrap();
         let ev = rx.recv_timeout(Duration::from_secs(2)).expect("an event within 2 s");
-        let Event::Subtree { pane: 0, tab_id: 4, top, changes, overflow } = ev else { panic!("expected Subtree, got {ev:?}") };
+        let Event::Subtree { pane: 0, tab_id: 4, top, changes, overflow, edits, .. } = ev else { panic!("expected Subtree, got {ev:?}") };
         assert!(!top && !overflow, "a change two levels down is not in the folder itself: {changes:?}");
+        // NTFS may report "sub" itself modified (lazily): that is the folder's own record.
+        assert!(edits.as_ref().is_some_and(|e| e.iter().all(|c| *c == Change::Modified(s("sub")))), "{edits:?}");
         assert_eq!(changes.first().map(|(c, _)| c.as_str()), Some("sub"));
         assert!(changes.iter().all(|(c, _)| c == "sub"), "{changes:?}");
         assert!(collect(&rx, Duration::from_millis(400)).is_empty());
         std::fs::write(dir.0.join("top.txt"), b"x").unwrap();
         let ev = rx.recv_timeout(Duration::from_secs(2)).expect("an event within 2 s");
         assert!(matches!(ev, Event::Subtree { top: true, .. }), "{ev:?}");
+        // The folder's own records come as the plain watch's net changes (P7-M4: row edits).
+        let Event::Subtree { edits: Some(edits), records, .. } = ev else { panic!("expected edits") };
+        assert!(edits.contains(&Change::Added(s("top.txt"))), "{edits:?}");
+        assert!(records >= 1);
         // Back to shallow: a deep change is no longer seen, a top-level one is a plain Changed.
         w.watch(0, 4, dir.0.clone(), false, false);
         w.sync();
