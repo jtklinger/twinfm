@@ -8,18 +8,27 @@
 //! on the worker (its queued pages are dropped before they are rendered) and on the UI thread (a
 //! late answer is dropped on arrival). The worker owns at most one open document; the UI thread
 //! never reads the file.
+//!
+//! Since P8-M2 a Markdown file (`.md`, `.markdown`) is read on the same worker (its first 2 MB),
+//! parsed into blocks (markdown.rs), each paragraph's, heading's and table cell's inline content
+//! made a `StyledText` there, and answered as one list the UI shows in a ListView; then its local
+//! pictures are decoded one at a time and answered as they come, the generation checked between
+//! them. A link clicked in it is classified here and run on the UI thread (`link`).
 
-use crate::{App, PreviewPage};
+use crate::markdown::{self, Kind};
+use crate::{App, MdBlock, MdCell, MdRow, PreviewPage};
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, StyledText, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
+    GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
 };
 
 /// The cursor rests this long before its file is previewed, so holding Down renders nothing.
@@ -43,6 +52,16 @@ pub const PASSWORD: &str = "Password-protected PDF: not previewed";
 pub const DAMAGED: &str = "This PDF could not be read";
 pub const CLOUD: &str = "Not previewed: the file is in the cloud and not downloaded";
 pub const ARCHIVE: &str = "Not previewed inside an archive";
+pub const UNREADABLE: &str = "This file could not be read";
+/// A Markdown file's pictures share this many bytes of decoded pixels (RGBA); one past it shows
+/// its alt text.
+pub const PIXEL_BUDGET: u64 = 64 << 20;
+/// An SVG file larger than this is not read.
+const SVG_MAX_BYTES: u64 = 16 << 20;
+/// Of the blocks whose styled text fell back to plain, this many are logged one by one.
+const FALLBACK_LINES: usize = 20;
+/// The anchor's second move waits this long for the ListView to have laid out the first.
+const ANCHOR_MS: u64 = 60;
 
 /// The column's share, pulled into its bounds (a hand-edited file, a drag past the end).
 pub fn clamp_ratio(r: f32) -> f32 {
@@ -91,23 +110,24 @@ impl Settle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     Folder,
-    /// Not a PDF: nothing is previewed in P8-M1 but PDFs.
+    /// Neither a PDF nor Markdown: nothing else is previewed in Phase 8's first two milestones.
     Other,
-    /// A PDF stored inside an archive.
+    /// A PDF or Markdown file stored inside an archive.
     Archive,
-    /// A PDF whose data is in the cloud: reading it would start a download.
+    /// A PDF or Markdown file whose data is in the cloud: reading it would start a download.
     CloudOnly,
     Pdf,
+    Markdown,
 }
 
 impl Class {
-    /// The message the column shows instead of pages (None for a PDF).
+    /// The message the column shows instead of the document (None for a PDF or Markdown).
     pub fn message(self) -> Option<&'static str> {
         match self {
             Class::Folder | Class::Other => Some(NO_PREVIEW),
             Class::Archive => Some(ARCHIVE),
             Class::CloudOnly => Some(CLOUD),
-            Class::Pdf => None,
+            Class::Pdf | Class::Markdown => None,
         }
     }
 
@@ -115,30 +135,53 @@ impl Class {
     pub fn label(self) -> &'static str {
         match self {
             Class::Folder => "folder",
-            Class::Other => "not a pdf",
+            Class::Other => "no preview for this type",
             Class::Archive => "inside an archive",
             Class::CloudOnly => "cloud-only",
             Class::Pdf => "pdf",
+            Class::Markdown => "markdown",
         }
     }
 }
 
-/// Classify from the listing's facts: a folder, then the type (only a `.pdf`, any case, is read),
-/// then where it lies. `in_archive` is asked only for a PDF (it may cost a file system query on an
-/// archive-named component); the cloud test is the listing's attributes, so nothing is read.
+/// The listing's attributes say the file's data is not on this machine.
+fn cloud_only(attrs: u32) -> bool {
+    attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE) != 0
+}
+
+/// Classify from the listing's facts: a folder, then the type (only a `.pdf`, `.md` or
+/// `.markdown`, any case, is read), then where it lies. `in_archive` is asked only for those (it
+/// may cost a file system query on an archive-named component); the cloud test is the listing's
+/// attributes, so nothing is read.
 pub fn classify(name: &str, attrs: u32, is_dir: bool, in_archive: impl FnOnce() -> bool) -> Class {
-    let pdf = Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+    let ext = |x: &str| Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case(x));
+    let class = if ext("pdf") {
+        Class::Pdf
+    } else if ext("md") || ext("markdown") {
+        Class::Markdown
+    } else {
+        Class::Other
+    };
     if is_dir {
         Class::Folder
-    } else if !pdf {
+    } else if class == Class::Other {
         Class::Other
     } else if in_archive() {
         Class::Archive
-    } else if attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE) != 0 {
+    } else if cloud_only(attrs) {
         Class::CloudOnly
     } else {
-        Class::Pdf
+        class
     }
+}
+
+/// A file's attributes without opening it (so a cloud placeholder is not recalled); None when it
+/// is not there.
+pub fn file_attrs(path: &Path) -> Option<u32> {
+    let w = crate::shellmenu::wide(path.as_os_str());
+    // SAFETY: a NUL-terminated wide path that outlives the call.
+    let a = unsafe { GetFileAttributesW(w.as_ptr()) };
+    (a != INVALID_FILE_ATTRIBUTES).then_some(a)
 }
 
 /// One page's place in the column's scroll: its top and height (logical px).
@@ -223,10 +266,34 @@ struct Keep {
     width_px: u32,
 }
 
+/// One Markdown block as the worker sends it: plain data and `StyledText` (both `Send`); the UI
+/// thread makes the `MdBlock` and its table models.
+struct Shown {
+    kind: Kind,
+    level: u8,
+    indent: u8,
+    quote: u8,
+    marker: String,
+    task: u8,
+    text: StyledText,
+    /// A code block's lines, the note's text.
+    code: String,
+    /// A table's rows: the head flag and each cell's text, alignment and column share.
+    rows: Vec<(bool, Vec<(StyledText, u8, f32)>)>,
+    alt: String,
+    first: bool,
+    last: bool,
+}
+
 /// From the worker.
 enum Reply {
     Message { seq: u64, text: &'static str },
     Pdf { seq: u64, sizes: Vec<(f32, f32)> },
+    /// A Markdown file's blocks, each heading's slug ("" for other blocks), and how many pictures
+    /// follow (one `Picture` each).
+    Markdown { seq: u64, blocks: Vec<Shown>, anchors: Vec<String>, pictures: usize },
+    /// Block `block`'s picture, or None (its alt text stays).
+    Picture { seq: u64, block: usize, pic: Option<SharedPixelBuffer<Rgba8Pixel>> },
     Page { seq: u64, page: usize, width_px: u32, buf: SharedPixelBuffer<Rgba8Pixel> },
     /// "Page N took too long", in the page's place.
     Note { seq: u64, page: usize, width_px: u32, text: String },
@@ -288,6 +355,10 @@ fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64
     if let Some(text) = class.message() {
         eprintln!("[preview] pane={pane} gen={seq} {}: {}", path.display(), class.label());
         reply(Reply::Message { seq, text });
+        return None;
+    }
+    if class == Class::Markdown {
+        serve_md(keep, reply, seq, pane, path);
         return None;
     }
     use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
@@ -390,6 +461,221 @@ fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64
     next
 }
 
+/// A paragraph's, heading's or cell's inline Markdown as styled text; on Slint's refusal its plain
+/// text, logged (the first `FALLBACK_LINES` one by one).
+fn styled(md: &str, plain: &str, seq: u64, block: usize, fell: &mut usize) -> StyledText {
+    match StyledText::from_markdown(md) {
+        Ok(t) => t,
+        Err(e) => {
+            *fell += 1;
+            if *fell <= FALLBACK_LINES {
+                eprintln!("[preview] gen={seq} block {block}: styled text fell back to plain: {}", e.to_string().replace('\n', "; "));
+            }
+            StyledText::from_plain_text(plain)
+        }
+    }
+}
+
+/// Read, cut and parse a Markdown file, answer its blocks, then decode its local pictures one at a
+/// time, each answered as it is done, until they are all done or the UI has moved to another file.
+fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path) {
+    let t0 = Instant::now();
+    let read = || -> std::io::Result<(Vec<u8>, u64)> {
+        let f = std::fs::File::open(path)?;
+        let size = f.metadata()?.len();
+        let mut bytes = Vec::new();
+        f.take(markdown::MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+        Ok((bytes, size))
+    };
+    let base = path.parent().unwrap_or(Path::new("")).to_path_buf();
+    let parsed = read().map_err(|e| e.to_string()).and_then(|(bytes, size)| {
+        std::panic::catch_unwind(|| {
+            let (text, cut) = markdown::decode(&bytes);
+            (markdown::parse_doc(&text, Some(&base)), cut, size)
+        })
+        .map_err(|p| {
+            let msg = panic_text(&*p);
+            eprintln!("[preview] worker panicked on {}: {msg}", path.display());
+            format!("panicked: {msg}")
+        })
+    });
+    let (doc, cut, size) = match parsed {
+        Ok(p) => p,
+        Err(why) => {
+            eprintln!("[preview] pane={pane} gen={seq} {}: unreadable: {why}", path.display());
+            reply(Reply::Message { seq, text: UNREADABLE });
+            return;
+        }
+    };
+    let mut blocks = doc.blocks;
+    if cut {
+        let mb = size as f64 / (1024.0 * 1024.0);
+        blocks.insert(0, markdown::Block { kind: Kind::Note, plain: format!("Only the first 2 MB of this {mb:.1} MB file is shown."), ..Default::default() });
+    }
+    let mut fell = 0;
+    let mut slugs = markdown::Slugger::default();
+    let mut anchors = Vec::with_capacity(blocks.len());
+    let shown: Vec<Shown> = blocks
+        .iter()
+        .enumerate()
+        .map(|(k, b)| {
+            anchors.push(if b.kind == Kind::Heading { slugs.slug(&b.plain) } else { String::new() });
+            let text = match b.kind {
+                Kind::Para | Kind::Heading => styled(&b.md, &b.plain, seq, k, &mut fell),
+                _ => StyledText::default(),
+            };
+            let rows = b
+                .rows
+                .iter()
+                .map(|r| {
+                    let cells = r.cells.iter().enumerate().map(|(c, cell)| (styled(&cell.md, &cell.plain, seq, k, &mut fell), b.aligns[c], b.weights[c]));
+                    (r.head, cells.collect())
+                })
+                .collect();
+            let code = if matches!(b.kind, Kind::Code | Kind::Note) { b.plain.clone() } else { String::new() };
+            let alt = if b.kind == Kind::Image { b.plain.clone() } else { String::new() };
+            Shown { kind: b.kind, level: b.level, indent: b.indent, quote: b.quote, marker: b.marker.clone(), task: b.task, text, code, rows, alt, first: b.first, last: b.last }
+        })
+        .collect();
+    let count = |k: Kind| blocks.iter().filter(|b| b.kind == k && (b.first || !matches!(k, Kind::Code | Kind::Table))).count();
+    let pictures = count(Kind::Image);
+    eprintln!(
+        "[preview] pane={pane} gen={seq} {}: markdown, {} blocks ({} headings, {} code, {} tables, {pictures} images), parsed in {:.0} ms{}",
+        path.display(),
+        blocks.len(),
+        count(Kind::Heading),
+        count(Kind::Code),
+        count(Kind::Table),
+        crate::perf::elapsed_ms(t0),
+        if cut { ", cut at 2 MB" } else { "" }
+    );
+    if fell > FALLBACK_LINES {
+        eprintln!("[preview] gen={seq} {} more block(s) fell back to plain", fell - FALLBACK_LINES);
+    }
+    for src in &doc.remote {
+        eprintln!("[preview] gen={seq} image {src}: alt text (remote)");
+    }
+    reply(Reply::Markdown { seq, blocks: shown, anchors, pictures });
+    let mut budget = PIXEL_BUDGET;
+    let mut left = pictures;
+    for (k, b) in blocks.iter().enumerate().filter(|(_, b)| b.kind == Kind::Image) {
+        if keep.lock().unwrap_or_else(|e| e.into_inner()).seq != seq {
+            eprintln!("[preview] gen={seq} superseded: {left} picture(s) not decoded");
+            return;
+        }
+        left -= 1;
+        let t = Instant::now();
+        let got = match markdown::image_path(&b.src, &base) {
+            Some(p) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| picture(&p, &mut budget))).unwrap_or_else(|p| Err(format!("failed: panicked: {}", panic_text(&*p)))),
+            None => Err("remote".into()),
+        };
+        match got {
+            Ok(img) => {
+                let (w, h) = img.dimensions();
+                eprintln!("[preview] gen={seq} image {k} {}: {w}x{h} px in {:.0} ms", b.src, crate::perf::elapsed_ms(t));
+                let buf = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(img.as_raw(), w, h);
+                reply(Reply::Picture { seq, block: k, pic: Some(buf) });
+            }
+            Err(why) => {
+                eprintln!("[preview] gen={seq} image {k} {}: alt text ({why})", b.src);
+                reply(Reply::Picture { seq, block: k, pic: None });
+            }
+        }
+    }
+}
+
+/// A local picture decoded to straight RGBA, at most `MAX_SIDE` on a side (scaled down to it),
+/// its decoded size taken from `budget`. Err: why its alt text shows instead (`missing`,
+/// `cloud-only`, `over the budget`, `failed: ...`). The attributes come first, so a cloud-only
+/// file is never opened.
+fn picture(path: &Path, budget: &mut u64) -> Result<image::RgbaImage, String> {
+    match file_attrs(path) {
+        None => return Err("missing".into()),
+        Some(a) if a & FILE_ATTRIBUTE_DIRECTORY != 0 => return Err("failed: a folder".into()),
+        Some(a) if cloud_only(a) => return Err("cloud-only".into()),
+        Some(_) => {}
+    }
+    let fail = |e: &dyn std::fmt::Display| format!("failed: {e}");
+    let svg = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"));
+    let img = if svg {
+        let f = std::fs::File::open(path).map_err(|e| fail(&e))?;
+        if f.metadata().map_err(|e| fail(&e))?.len() > SVG_MAX_BYTES {
+            return Err("failed: an SVG over 16 MB".into());
+        }
+        let mut data = Vec::new();
+        f.take(SVG_MAX_BYTES).read_to_end(&mut data).map_err(|e| fail(&e))?;
+        // No fonts are loaded: text in an SVG is not drawn.
+        let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).map_err(|e| fail(&e))?;
+        let size = tree.size();
+        let (sw, sh) = (size.width(), size.height());
+        let f = (MAX_SIDE as f32 / sw.max(sh)).min(1.0);
+        let (w, h) = ((sw * f).ceil().max(1.0) as u32, (sh * f).ceil().max(1.0) as u32);
+        let bytes = u64::from(w) * u64::from(h) * 4;
+        if bytes > *budget {
+            return Err("over the budget".into());
+        }
+        let mut pm = resvg::tiny_skia::Pixmap::new(w, h).ok_or_else(|| "failed: an empty picture".to_string())?;
+        resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(w as f32 / sw, h as f32 / sh), &mut pm.as_mut());
+        *budget -= bytes;
+        let rgba = pm.pixels().iter().flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        });
+        image::RgbaImage::from_raw(w, h, rgba.collect()).ok_or_else(|| "failed: a bad size".to_string())?
+    } else {
+        let open = || image::ImageReader::open(path).map_err(|e| fail(&e))?.with_guessed_format().map_err(|e| fail(&e));
+        let (w, h) = open()?.into_dimensions().map_err(|e| fail(&e))?;
+        let bytes = u64::from(w) * u64::from(h) * 4;
+        if bytes > *budget {
+            return Err("over the budget".into());
+        }
+        let mut r = open()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(w);
+        limits.max_image_height = Some(h);
+        limits.max_alloc = Some(2 * bytes + (16 << 20));
+        r.limits(limits);
+        let img = r.decode().map_err(|e| fail(&e))?.into_rgba8();
+        *budget -= bytes;
+        img
+    };
+    let (w, h) = img.dimensions();
+    if w.max(h) <= MAX_SIDE {
+        return Ok(img);
+    }
+    let f = f64::from(MAX_SIDE) / f64::from(w.max(h));
+    let (nw, nh) = ((f64::from(w) * f).round().max(1.0) as u32, (f64::from(h) * f).round().max(1.0) as u32);
+    Ok(image::imageops::resize(&img, nw.min(MAX_SIDE), nh.min(MAX_SIDE), image::imageops::FilterType::Triangle))
+}
+
+/// The PDF shown.
+struct PdfDoc {
+    /// The pages' sizes in points.
+    sizes: Vec<(f32, f32)>,
+    slots: Vec<Slot>,
+    /// Per page, the render width of the image (or note) it holds.
+    held: Vec<Option<u32>>,
+    /// Pages asked of the worker and not answered yet.
+    asked: HashSet<usize>,
+    /// The pages kept (in view and one either side).
+    range: Option<(usize, usize)>,
+}
+
+/// The Markdown file shown.
+struct MdDoc {
+    /// Each block's heading slug ("" for other blocks), for `#anchor` links.
+    anchors: Vec<String>,
+    /// Pictures the worker has still to answer.
+    pending: usize,
+}
+
+/// What the column shows: nothing yet (or a message), a PDF's pages, or a Markdown file's blocks.
+enum Doc {
+    None,
+    Pdf(PdfDoc),
+    Markdown(MdDoc),
+}
+
 /// The UI thread's side.
 struct Ui {
     app: slint::Weak<App>,
@@ -403,24 +689,19 @@ struct Ui {
     settle: Settle,
     settle_timer: Timer,
     width_timer: Timer,
+    /// An `#anchor` link's second move (`scroll_to_block`).
+    anchor_timer: Timer,
     seq: u64,
     /// The file the current generation previews.
     shown: Option<PathBuf>,
     /// Waiting for the worker's answer to the open.
     opening: bool,
-    /// The pages' sizes in points (empty: no PDF shown).
-    sizes: Vec<(f32, f32)>,
-    slots: Vec<Slot>,
+    doc: Doc,
     /// The width a page is drawn at (logical px, from the column) and rendered at (physical px).
     page_w: f32,
     width_px: u32,
     pages: Rc<VecModel<PreviewPage>>,
-    /// Per page, the render width of the image (or note) it holds.
-    held: Vec<Option<u32>>,
-    /// Pages asked of the worker and not answered yet.
-    asked: HashSet<usize>,
-    /// The pages kept (in view and one either side).
-    range: Option<(usize, usize)>,
+    blocks: Rc<VecModel<MdBlock>>,
 }
 
 thread_local! {
@@ -453,6 +734,8 @@ pub fn init(app: &App) {
     }
     let pages = Rc::new(VecModel::<PreviewPage>::default());
     app.set_preview_pages(ModelRc::from(pages.clone()));
+    let blocks = Rc::new(VecModel::<MdBlock>::default());
+    app.set_preview_blocks(ModelRc::from(blocks.clone()));
     UI.with(|u| {
         *u.borrow_mut() = Some(Ui {
             app: app.as_weak(),
@@ -464,17 +747,15 @@ pub fn init(app: &App) {
             settle: Settle::default(),
             settle_timer: Timer::default(),
             width_timer: Timer::default(),
+            anchor_timer: Timer::default(),
             seq: 0,
             shown: None,
             opening: false,
-            sizes: Vec::new(),
-            slots: Vec::new(),
+            doc: Doc::None,
             page_w: 0.0,
             width_px: 0,
             pages,
-            held: Vec::new(),
-            asked: HashSet::new(),
-            range: None,
+            blocks,
         })
     });
 }
@@ -493,6 +774,7 @@ pub fn set_visible(on: bool) {
         u.settle = Settle::default();
         u.settle_timer.stop();
         u.width_timer.stop();
+        u.anchor_timer.stop();
         u.show(None);
         if on {
             // On the next turn of the event loop, once the column has its width.
@@ -539,7 +821,7 @@ fn refresh() {
 /// work follows only when they changed.
 pub fn scrolled(top: f32, height: f32) {
     with_ui(|u| {
-        if u.visible && !u.slots.is_empty() {
+        if u.visible {
             u.ask(top, height);
         }
     });
@@ -562,7 +844,8 @@ pub fn resized(page_w: f32) {
                 });
             });
         }
-        if u.visible && !u.sizes.is_empty() {
+        // A Markdown file's blocks wrap at the new width by themselves.
+        if u.visible && matches!(u.doc, Doc::Pdf(_)) {
             u.width_timer.start(TimerMode::SingleShot, Duration::from_millis(WIDTH_SETTLE_MS), width_settled);
         }
     });
@@ -570,31 +853,71 @@ pub fn resized(page_w: f32) {
 
 fn width_settled() {
     with_ui(|u| {
-        eprintln!("[preview] width {:.0} px: re-render after settle", u.page_w);
-        u.relayout();
-        u.range = None;
-        u.asked.clear();
-        u.ask_now();
+        if let Doc::Pdf(p) = &mut u.doc {
+            eprintln!("[preview] width {:.0} px: re-render after settle", u.page_w);
+            p.range = None;
+            p.asked.clear();
+            u.relayout();
+            u.ask_now();
+        }
     });
 }
 
-/// For the driver's `waitpreview`: no settle or width timer runs, and the current file has its
-/// answer (a message, or every page kept holding its image or note at the current width).
+/// For the driver's `waitpreview`: no settle, width or anchor timer runs, and the current file has
+/// its answer (a message; a PDF with every page kept holding its image or note at the current
+/// width; a Markdown file with its blocks and every picture answered).
 pub fn settled() -> bool {
     with_ui(|u| {
         !u.settle.pending()
             && !u.settle_timer.running()
             && !u.width_timer.running()
+            && !u.anchor_timer.running()
             && !u.opening
-            && u.range.is_none_or(|(a, b)| (a..=b).all(|p| u.held.get(p).copied().flatten() == Some(u.width_px)))
+            && match &u.doc {
+                Doc::None => true,
+                Doc::Pdf(p) => p.range.is_none_or(|(a, b)| (a..=b).all(|i| p.held.get(i).copied().flatten() == Some(u.width_px))),
+                Doc::Markdown(m) => m.pending == 0,
+            }
     })
     .unwrap_or(true)
+}
+
+/// A block as the column's model takes it (its table rows as models of their own).
+fn md_block(s: Shown) -> MdBlock {
+    let rows = s.rows.into_iter().map(|(head, cells)| {
+        let cells: Vec<MdCell> = cells.into_iter().map(|(text, align, weight)| MdCell { text, align: i32::from(align), weight }).collect();
+        MdRow { head, cells: ModelRc::new(VecModel::from(cells)) }
+    });
+    let rows: Vec<MdRow> = rows.collect();
+    MdBlock {
+        kind: s.kind as i32,
+        level: i32::from(s.level),
+        indent: i32::from(s.indent),
+        quote: i32::from(s.quote),
+        marker: s.marker.into(),
+        task: i32::from(s.task),
+        text: s.text,
+        code: s.code.into(),
+        rows: if rows.is_empty() { ModelRc::default() } else { ModelRc::new(VecModel::from(rows)) },
+        img: Image::default(),
+        img_w: 0.0,
+        img_h: 0.0,
+        alt: s.alt.into(),
+        first: s.first,
+        last: s.last,
+    }
 }
 
 fn on_reply(r: Reply) {
     with_ui(|u| {
         let seq = match &r {
-            Reply::Message { seq, .. } | Reply::Pdf { seq, .. } | Reply::Page { seq, .. } | Reply::Note { seq, .. } | Reply::Skipped { seq, .. } => *seq,
+            Reply::Message { seq, .. }
+            | Reply::Pdf { seq, .. }
+            | Reply::Markdown { seq, .. }
+            | Reply::Picture { seq, .. }
+            | Reply::Page { seq, .. }
+            | Reply::Note { seq, .. }
+            | Reply::Skipped { seq, .. } => *seq,
         };
         if seq != u.seq {
             return;
@@ -607,20 +930,124 @@ fn on_reply(r: Reply) {
             }
             Reply::Pdf { sizes, .. } => {
                 u.opening = false;
-                u.held = vec![None; sizes.len()];
-                u.sizes = sizes;
+                u.doc = Doc::Pdf(PdfDoc { held: vec![None; sizes.len()], sizes, slots: Vec::new(), asked: HashSet::new(), range: None });
+                app.set_preview_mode(0);
                 u.relayout();
                 u.ask_now();
+            }
+            Reply::Markdown { seq, blocks, anchors, pictures } => {
+                u.opening = false;
+                u.doc = Doc::Markdown(MdDoc { anchors, pending: pictures });
+                let t = Instant::now();
+                let n = blocks.len();
+                app.set_preview_mode(1);
+                u.blocks.set_vec(blocks.into_iter().map(md_block).collect::<Vec<_>>());
+                app.invoke_preview_set_scroll(0.0);
+                eprintln!("[preview] gen={seq} {n} blocks in the list in {:.1} ms (UI thread)", crate::perf::elapsed_ms(t));
+            }
+            Reply::Picture { block, pic, .. } => {
+                if let Doc::Markdown(m) = &mut u.doc {
+                    m.pending = m.pending.saturating_sub(1);
+                }
+                if let (Some(buf), Some(mut row)) = (pic, u.blocks.row_data(block)) {
+                    // A picture's pixels count as logical px, as a browser counts them; the column
+                    // scales a wider one down to its width.
+                    (row.img_w, row.img_h) = (buf.width() as f32, buf.height() as f32);
+                    row.img = Image::from_rgba8(buf);
+                    u.blocks.set_row_data(block, row);
+                }
             }
             Reply::Page { page, width_px, buf, .. } => u.land(page, width_px, Image::from_rgba8(buf), String::new()),
             Reply::Note { page, width_px, text, .. } => u.land(page, width_px, Image::default(), text),
             Reply::Skipped { page, width_px, .. } => {
-                if width_px == u.width_px {
-                    u.asked.remove(&page);
+                if let (Doc::Pdf(p), true) = (&mut u.doc, width_px == u.width_px) {
+                    p.asked.remove(&page);
                     u.ask_now();
                 }
             }
         }
+    });
+}
+
+/// A link clicked in the Markdown preview (StyledText's `link-clicked`, with the destination as
+/// written), or the driver's `previewlink`: a web or mail link opens in the default browser or mail
+/// program, `#anchor` scrolls to its heading, a local folder opens in the active pane, a program or
+/// script is shown there (never run), another file opens as a double-click does. A scripted run
+/// never starts a program: the browser and the document are only logged.
+pub fn link(dest: SharedString) {
+    // No borrow held past here: navigating the pane moves its cursor, which comes back to `kick`.
+    let Some(base) = with_ui(|u| u.shown.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf)).flatten() else { return };
+    let scripted = std::env::var_os("TWINFM_SCRIPT").is_some();
+    let note = if scripted { " (scripted: not launched)" } else { "" };
+    match markdown::classify_link(&dest, &base) {
+        markdown::Link::Url(url) => {
+            eprintln!("[preview] link \"{dest}\": browser{note}");
+            if !scripted {
+                if let Err(e) = crate::shellmenu::open_url(crate::preview_hwnd(), &url) {
+                    eprintln!("[preview] link \"{dest}\": ShellExecuteExW failed, error {e}");
+                }
+            }
+        }
+        markdown::Link::Anchor(slug) => match with_ui(|u| match &u.doc {
+            Doc::Markdown(m) => m.anchors.iter().position(|a| *a == slug),
+            _ => None,
+        }) {
+            Some(Some(k)) => {
+                eprintln!("[preview] link \"{dest}\": anchor -> block {k}");
+                scroll_to_block(k);
+            }
+            _ => eprintln!("[preview] link \"{dest}\": refused: no heading #{slug}"),
+        },
+        markdown::Link::Local(path) => match file_attrs(&path) {
+            None => eprintln!("[preview] link \"{dest}\": refused: {} is not there", path.display()),
+            Some(a) => match markdown::local_kind(&path, a & FILE_ATTRIBUTE_DIRECTORY != 0) {
+                markdown::Local::Folder => {
+                    eprintln!("[preview] link \"{dest}\": open {}", path.display());
+                    crate::show_in_pane(&path, false);
+                }
+                markdown::Local::Program => {
+                    eprintln!("[preview] link \"{dest}\": show {}", path.display());
+                    crate::show_in_pane(&path, true);
+                }
+                markdown::Local::Document => {
+                    eprintln!("[preview] link \"{dest}\": open {}{note}", path.display());
+                    if !scripted {
+                        let dir = path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
+                        let res = crate::shellmenu::open_item(crate::preview_hwnd(), &path, &dir);
+                        eprintln!("[open] preview link {}: {res:?}", path.display());
+                    }
+                }
+            },
+        },
+        markdown::Link::Refused(why) => eprintln!("[preview] link \"{dest}\": refused: {why}"),
+    }
+}
+
+/// Scroll the Markdown list so block `k` is at the top. The ListView knows only the rows it has
+/// built, and places the others by their average height: a move far from those rows is a seek that
+/// puts row k exactly at the top, a move near them a walk that lands near k by the real heights.
+/// So the list goes to the far end from the target first, and to the target 60 ms later, once it
+/// has laid that out.
+fn scroll_to_block(k: usize) {
+    with_ui(|u| {
+        let Some(app) = u.app.upgrade() else { return };
+        let n = u.blocks.row_count().max(1) as f32;
+        let (total, vis) = (app.invoke_preview_total_h(), app.invoke_preview_visible_h());
+        let target = k as f32 * total / n;
+        app.invoke_preview_set_scroll(if target > 2.0 * vis { 0.0 } else { (total - vis).max(0.0) });
+        let seq = u.seq;
+        u.anchor_timer.start(TimerMode::SingleShot, Duration::from_millis(ANCHOR_MS), move || {
+            with_ui(|u| {
+                let Some(app) = u.app.upgrade() else { return };
+                if u.seq != seq {
+                    return;
+                }
+                let n = u.blocks.row_count().max(1) as f32;
+                let (total, vis) = (app.invoke_preview_total_h(), app.invoke_preview_visible_h());
+                app.invoke_preview_set_scroll((k as f32 * total / n).min((total - vis).max(0.0)));
+                eprintln!("[preview] gen={seq} scrolled to block {k}: top {:.0} of {total:.0} px", app.invoke_preview_scroll_top());
+            });
+        });
     });
 }
 
@@ -629,12 +1056,10 @@ impl Ui {
     fn show(&mut self, target: Option<Target>) {
         self.seq += 1;
         self.keep.lock().unwrap_or_else(|e| e.into_inner()).seq = self.seq;
-        self.sizes.clear();
-        self.slots.clear();
-        self.held.clear();
-        self.asked.clear();
-        self.range = None;
+        self.doc = Doc::None;
+        self.anchor_timer.stop();
         self.pages.set_vec(Vec::new());
+        self.blocks.set_vec(Vec::new());
         self.shown = target.as_ref().map(|t| t.path.clone());
         self.opening = target.is_some();
         if let Some(app) = self.app.upgrade() {
@@ -642,6 +1067,7 @@ impl Ui {
             app.set_preview_title(title.into());
             app.set_preview_message("".into());
             app.set_preview_content_h(0.0);
+            app.set_preview_mode(0);
             app.invoke_preview_set_scroll(0.0);
         }
         let _ = self.tx.send(match target {
@@ -650,10 +1076,12 @@ impl Ui {
         });
     }
 
-    /// The slots at the current page width, the model's rows moved to them, and the render width.
+    /// The PDF's slots at the current page width, the model's rows moved to them, and the render
+    /// width.
     fn relayout(&mut self) {
         let Some(app) = self.app.upgrade() else { return };
-        let (slots, total) = layout(&self.sizes, self.page_w.max(1.0));
+        let Doc::Pdf(p) = &mut self.doc else { return };
+        let (slots, total) = layout(&p.sizes, self.page_w.max(1.0));
         self.width_px = (self.page_w.max(1.0) * app.window().scale_factor()).round() as u32;
         if self.pages.row_count() != slots.len() {
             self.pages.set_vec(slots.iter().map(|s| PreviewPage { y: s.y, h: s.h, img: Image::default(), note: "".into() }).collect::<Vec<_>>());
@@ -665,7 +1093,7 @@ impl Ui {
                 }
             }
         }
-        self.slots = slots;
+        p.slots = slots;
         app.set_preview_content_h(total);
         let mut k = self.keep.lock().unwrap_or_else(|e| e.into_inner());
         k.width_px = self.width_px;
@@ -680,23 +1108,24 @@ impl Ui {
     /// The pages kept at this scroll: when they changed, drop the images outside them (logged);
     /// then ask the worker for those not held at the current width, the ones in view first.
     fn ask(&mut self, top: f32, height: f32) {
-        let Some(view) = in_view(&self.slots, top, height) else { return };
-        let range = kept(view, self.slots.len());
-        if Some(range) != self.range {
-            self.range = Some(range);
+        let Doc::Pdf(d) = &mut self.doc else { return };
+        let Some(view) = in_view(&d.slots, top, height) else { return };
+        let range = kept(view, d.slots.len());
+        if Some(range) != d.range {
+            d.range = Some(range);
             {
                 let mut k = self.keep.lock().unwrap_or_else(|e| e.into_inner());
                 (k.first, k.last) = range;
             }
-            for p in (0..self.held.len()).filter(|p| !(range.0..=range.1).contains(p)) {
-                if self.held[p].take().is_some() {
+            for p in (0..d.held.len()).filter(|p| !(range.0..=range.1).contains(p)) {
+                if d.held[p].take().is_some() {
                     if let Some(mut row) = self.pages.row_data(p) {
                         (row.img, row.note) = (Image::default(), "".into());
                         self.pages.set_row_data(p, row);
                     }
                 }
             }
-            let kept_n = self.held.iter().filter(|h| h.is_some()).count();
+            let kept_n = d.held.iter().filter(|h| h.is_some()).count();
             eprintln!("[preview] gen={} pages in view {}..{}, kept {kept_n} image(s)", self.seq, view.0 + 1, view.1 + 1);
         }
         if self.width_px == 0 {
@@ -704,7 +1133,7 @@ impl Ui {
         }
         let order = (view.0..=view.1).chain([range.0, range.1]);
         for p in order {
-            if self.held[p] != Some(self.width_px) && self.asked.insert(p) {
+            if d.held[p] != Some(self.width_px) && d.asked.insert(p) {
                 let _ = self.tx.send(Req::Page { seq: self.seq, page: p, width_px: self.width_px });
             }
         }
@@ -712,17 +1141,18 @@ impl Ui {
 
     /// A page's image (or note) arrived: shown if it is still kept at the current width.
     fn land(&mut self, page: usize, width_px: u32, img: Image, note: String) {
+        let Doc::Pdf(d) = &mut self.doc else { return };
         if width_px != self.width_px {
             return;
         }
-        self.asked.remove(&page);
-        if !self.range.is_some_and(|(a, b)| (a..=b).contains(&page)) || page >= self.held.len() {
+        d.asked.remove(&page);
+        if !d.range.is_some_and(|(a, b)| (a..=b).contains(&page)) || page >= d.held.len() {
             return;
         }
         if let Some(mut row) = self.pages.row_data(page) {
             (row.img, row.note) = (img, note.into());
             self.pages.set_row_data(page, row);
-            self.held[page] = Some(width_px);
+            d.held[page] = Some(width_px);
         }
     }
 }
@@ -772,6 +1202,107 @@ mod tests {
         assert_eq!(Class::Pdf.message(), None);
         assert_eq!(Class::Other.message(), Some(NO_PREVIEW));
         assert_eq!(Class::CloudOnly.message(), Some(CLOUD));
+        // Markdown (P8-M2): the same checks as a PDF.
+        assert_eq!(classify("README.md", 0, false, || false), Class::Markdown);
+        assert_eq!(classify("notes.MARKDOWN", 0, false, || false), Class::Markdown);
+        assert_eq!(classify("a.md", 0, false, || true), Class::Archive);
+        assert_eq!(classify("a.md", RECALL, false, || false), Class::CloudOnly);
+        assert_eq!(classify("a.mdx", 0, false, never), Class::Other);
+        assert_eq!(Class::Markdown.message(), None);
+    }
+
+    /// A PNG of `w` x `h` pixels of one colour, encoded by the image crate.
+    fn png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+        let mut img = image::RgbImage::new(w, h);
+        img.pixels_mut().for_each(|p| p.0 = rgb);
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn pictures_are_capped() {
+        let dir = std::env::temp_dir().join(format!("twinfm-p8m2-pic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (small, wide, svg) = (dir.join("small.png"), dir.join("wide.png"), dir.join("a.svg"));
+        std::fs::write(&small, png(40, 20, [255, 0, 0])).unwrap();
+        std::fs::write(&wide, png(9000, 10, [0, 0, 255])).unwrap();
+        std::fs::write(&svg, r#"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="10"><rect width="30" height="10" fill="lime"/></svg>"#).unwrap();
+        std::fs::write(dir.join("bad.png"), b"not a png").unwrap();
+        let mut budget = PIXEL_BUDGET;
+        let img = picture(&small, &mut budget).unwrap();
+        assert_eq!((img.dimensions(), img.get_pixel(5, 5).0), ((40, 20), [255, 0, 0, 255]));
+        assert_eq!(budget, PIXEL_BUDGET - 40 * 20 * 4, "its decoded size taken from the budget");
+        let img = picture(&wide, &mut budget).unwrap();
+        assert_eq!(img.dimensions(), (MAX_SIDE, 9), "a side over 8,192 px scaled down");
+        let img = picture(&svg, &mut budget).unwrap();
+        assert_eq!((img.dimensions(), img.get_pixel(15, 5).0), ((30, 10), [0, 255, 0, 255]));
+        let mut little = 100;
+        assert_eq!(picture(&small, &mut little), Err("over the budget".into()));
+        assert_eq!(little, 100);
+        assert_eq!(picture(&dir.join("gone.png"), &mut budget), Err("missing".into()));
+        assert!(picture(&dir.join("bad.png"), &mut budget).unwrap_err().starts_with("failed: "));
+        assert!(picture(&dir, &mut budget).unwrap_err().starts_with("failed: "), "a folder");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_worker_previews_markdown_with_a_picture() {
+        let dir = std::env::temp_dir().join(format!("twinfm-p8m2-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("img")).unwrap();
+        std::fs::write(dir.join("img").join("dot.png"), png(8, 4, [0, 128, 0])).unwrap();
+        let md = dir.join("README.md");
+        std::fs::write(&md, "# Title\n\nSome *text* and a [link](#title).\n\n![dot](img/dot.png)\n\n![gone](img/gone.png)\n\n| a | b |\n|---|--:|\n| 1 | 2 |\n").unwrap();
+        let big = dir.join("big.md");
+        std::fs::write(&big, "line\n".repeat(markdown::MAX_BYTES / 5 + 10)).unwrap();
+
+        let (tx, rx) = unbounded();
+        let (rtx, rrx) = std::sync::mpsc::channel::<Reply>();
+        let keep = Arc::new(Mutex::new(Keep { seq: 1, ..Default::default() }));
+        let k2 = keep.clone();
+        let rtx = Mutex::new(rtx);
+        let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
+        let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false };
+
+        tx.send(open(1, &md)).unwrap();
+        match recv() {
+            Reply::Markdown { seq: 1, blocks, anchors, pictures } => {
+                let kinds: Vec<Kind> = blocks.iter().map(|b| b.kind).collect();
+                assert_eq!(kinds, vec![Kind::Heading, Kind::Para, Kind::Image, Kind::Image, Kind::Table]);
+                assert_eq!(anchors[0], "title");
+                assert_eq!(pictures, 2);
+                assert_eq!(blocks[2].alt, "dot");
+                assert_eq!(blocks[4].rows.len(), 2);
+                assert_eq!(blocks[4].rows[1].1[1].1, 2, "the second column right-aligned");
+            }
+            _ => panic!("the blocks"),
+        }
+        match recv() {
+            Reply::Picture { seq: 1, block: 2, pic: Some(buf) } => {
+                assert_eq!((buf.width(), buf.height()), (8, 4));
+                assert_eq!(buf.as_slice()[0], Rgba8Pixel { r: 0, g: 128, b: 0, a: 255 });
+            }
+            _ => panic!("the picture"),
+        }
+        assert!(matches!(recv(), Reply::Picture { seq: 1, block: 3, pic: None }), "a missing picture keeps its alt text");
+
+        // Over 2 MB: the note first, the rest cut.
+        keep.lock().unwrap().seq = 2;
+        tx.send(open(2, &big)).unwrap();
+        match recv() {
+            Reply::Markdown { seq: 2, blocks, pictures: 0, .. } => {
+                assert_eq!(blocks[0].kind, Kind::Note);
+                assert!(blocks[0].code.starts_with("Only the first 2 MB"));
+            }
+            _ => panic!("the cut file"),
+        }
+        tx.send(open(3, &dir.join("gone.md"))).unwrap();
+        assert!(matches!(recv(), Reply::Message { seq: 3, text: UNREADABLE }));
+
+        drop(tx);
+        w.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

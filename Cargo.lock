@@ -2343,6 +2343,9 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "color_quant",
+ "gif",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",
@@ -4718,7 +4721,10 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "hayro",
+ "image",
+ "pulldown-cmark",
  "raw-window-handle",
+ "resvg",
  "roxmltree",
  "serde",
  "sevenz-rust2",

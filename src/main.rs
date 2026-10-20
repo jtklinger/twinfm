@@ -17,6 +17,7 @@ mod dnd;
 mod explorercmd;
 mod fileops;
 mod icons;
+mod markdown;
 mod model;
 mod pathbar;
 mod perf;
@@ -774,6 +775,30 @@ pub fn preview_target() -> Option<preview::Target> {
         let e = st.model(pane).entry(usize::try_from(current_row(&app, pane)).ok()?)?;
         Some(preview::Target { pane, path: st.tab(pane).path.join(e.name.as_str()), attrs: e.attrs, is_dir: e.is_dir() })
     })
+}
+
+/// The main window's handle, for the preview's links (P8-M2), 0 before the window exists.
+pub fn preview_hwnd() -> isize {
+    with_state(|st| st.app.upgrade().map_or(0, |app| main_hwnd(st, &app)))
+}
+
+/// A link in the Markdown preview (P8-M2) to a folder (`cursor` false): the active pane goes there;
+/// to a program or script (`cursor` true): the active pane goes to its folder with the cursor on it.
+pub fn show_in_pane(path: &Path, cursor: bool) {
+    let Some(pane) = with_state(|st| st.app.upgrade().map(|app| active_pane(&app))) else { return };
+    if !cursor {
+        return navigate(pane, path.to_path_buf());
+    }
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return };
+    let name: SharedString = name.to_string_lossy().as_ref().into();
+    navigate(pane, dir.to_path_buf());
+    // The first pass selects it and scrolls it into view; the pass after the listing is complete
+    // puts the cursor on it, however long the folder.
+    with_state(|st| {
+        let t = st.tab_mut(pane);
+        t.focus_name = Some(name.clone());
+        t.restore_cursor = Some(name);
+    });
 }
 
 /// The running job's percentage for a tab's status bar: only on the pane and tab that submitted
@@ -6087,6 +6112,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_preview_cursor(preview::kick);
     app.on_preview_scrolled(preview::scrolled);
     app.on_preview_resized(preview::resized);
+    app.on_preview_link(preview::link);
     // Closing the window writes the settings at once (the window's placement included).
     app.window().on_close_requested(|| {
         save_now();
