@@ -318,6 +318,66 @@ the plain wheel 1200 -> 1800, Shift and +900 back to 900, and the two ends clamp
 triplet: the gate scenario never turns the wheel with Shift held, and the handler does nothing per
 frame.
 
+The P8-M1 merge (#76, a01ad14) was run from the main checkout with `gh pr merge --squash
+--delete-branch`, which also removed the session worktree holding the branch; every commit was pushed,
+so nothing was lost. Later merges leave out `--delete-branch` and delete the branch afterwards.
+
+## P8-M2: Markdown
+
+Branch `feat/p8-m2-markdown`, from a01ad14 (P8-M1 merged).
+
+### Settled first (2026-10-20, before any code)
+
+Checked against the code and the pinned Slint (c1d3a8d):
+
+- Slint's `StyledText` has two constructors, `from_plain_text` and `from_markdown`; no span builder is
+  public. `from_markdown` takes paragraphs, emphasis, strikethrough, inline code, links, lists, `<u>`
+  and `<font color>`, and fails the whole text on anything else (headings, images, quotes, code
+  blocks, tables, task markers, footnote references, rules, other HTML). So each block's inline events
+  from pulldown-cmark are written back as inline Markdown with every ASCII punctuation character in
+  text escaped, emphasis always as `*`, code spans fenced one backtick longer than any run inside,
+  links as `[text](<dest>)`, a soft break as a space, a hard break as a line, U+E541 (Slint's
+  placeholder) removed; on an error the block falls back to `from_plain_text`, logged. `StyledText` is
+  `Send` and works as a field of a model struct. The element always wraps, has no font weight (headings
+  are bold by wrapping their text in `**`), no selection, and `link-clicked` gives the destination as
+  written.
+- pulldown-cmark 0.13.4 is in the lock through Slint (`default-features = false`); TwinFM depends on
+  `=0.13.4` the same way, so no second copy. Tables, task lists, strikethrough, footnotes, GFM and YAML
+  front matter (skipped) are runtime options.
+- The blocks are a flat list (kind, level, indent, quote depth) in a **ListView**, which builds only the
+  rows on screen: a 2 MB file is some 10,000 to 20,000 blocks, which a ScrollView with a `for` would
+  build and shape all at once, and again at every width change. The cost is a scrollbar thumb that
+  drifts with uneven row heights. Code blocks are a plain `Text` in Consolas (the font Slint already
+  maps monospace to) on a tinted rectangle; quotes one 3 px bar per depth; rules 1 px; list markers
+  and numbers drawn from Rust; task boxes Segoe Fluent Icons E739 / E73A; tables a `GridLayout` with a
+  nested `for` (supported at this rev), columns aligned from the table's alignments.
+- Images: `image` 0.25.10 (png, jpeg), `gif`, `image-webp` and `resvg` 0.48.1 are already built for
+  Slint; TwinFM uses them on the worker, under `image::Limits`, at most 8,192 px a side (P8-M1's rule)
+  and 64 MB of pixels per document; an image file that is cloud-only shows its alt text and is never
+  read. Remote images show their alt text.
+- Links reuse `shellmenu::open_item` and the double-click path; URLs (`http`, `https`, `mailto` only)
+  open without the shell's IDList mask; local links resolve against the file's folder after
+  percent-decoding and dropping `?` and `#`. Scripted runs never launch a link (a driver step logs
+  what a link would do).
+- Seams in P8-M1: `Class` gains `Markdown` (`.md`, `.markdown`; the archive and cloud checks apply);
+  the worker gains `serve_md`, answering the blocks, then each image as it is decoded (checking the
+  generation between images); the UI state's PDF fields move into a `Doc` enum. Nothing runs per
+  frame; the gate's cursor sits on no `.md`.
+
+Jeremy's answers (2026-10-20), each the recommendation:
+
+- **Long code lines wrap** inside the code block.
+- **HTML blocks show their text, and local `<img>` pictures**: the tags are stripped (no centring).
+- **A link to a local program or script** (`.exe`, `.bat`, `.cmd`, `.ps1`, `.lnk`, `.vbs`, `.msi` and
+  the like) **shows it in the pane** (its folder, the cursor on it); nothing runs. Documents and folders
+  open as a double-click does, web links in the browser.
+- **`#anchor` links scroll to the heading** (GitHub's heading slugs).
+
+Lead's calls: footnote references shown as `[n]`, footnotes at the end as GitHub does; a UTF-16 file
+(by its BOM) decoded, other invalid UTF-8 decoded lossily; the 2 MB cut at the last newline before
+2 MB (else the last character boundary) with a note block; text selection is not in P8-M2 (Slint's
+text elements have none at this rev).
+
 ## Open questions
 
 Written 2026-10-20 at the kickoff.
