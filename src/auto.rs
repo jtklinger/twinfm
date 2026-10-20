@@ -211,6 +211,13 @@
 //!                                    of the listing (at most 500, nearest the cursor first)
 //!   waitsize <ms>                    wait until no folder size is queued or walking and the last
 //!                                    reply has landed (at most <ms>), then 300 ms more
+//!   preview toggle                   Alt+P (key name AltP): show or hide the preview column (P8-M1)
+//!   preview width <ratio>            set the column's share of the space right of the sidebar (0.2
+//!                                    to 0.6, clamped), as its handle's drag does
+//!   previewscroll <px>               scroll the column to <px> from its top
+//!   waitpreview <ms>                 wait until the cursor file's preview has settled (no settle or
+//!                                    width timer runs, and a message shows or every page kept holds
+//!                                    its image at the current width), at most <ms>, then 100 ms
 //!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
 //!                                    the close button does (WM_CLOSE: settings saved, app exits)
 //!   quit                             exit the event loop
@@ -352,6 +359,12 @@ enum Step {
     SizeAll(usize),
     /// Wait until no folder size is queued or walking (at most `ms`), then 300 ms.
     WaitSize(u64),
+    /// The preview column's share (`preview width`).
+    PreviewWidth(f32),
+    /// Scroll the preview column to this many px from its top.
+    PreviewScroll(f32),
+    /// Wait until the preview has settled (at most `ms`), then 100 ms.
+    WaitPreview(u64),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
     /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
     Window(String),
@@ -531,6 +544,10 @@ fn parse(script: &str) -> Vec<Step> {
                 "waitsearch" => Step::WaitSearch(num(1).max(1) as u64),
                 "sizeall" => Step::SizeAll(num(1) as usize),
                 "waitsize" => Step::WaitSize(num(1).max(1) as u64),
+                "preview" if a.get(1) == Some(&"width") => Step::PreviewWidth(a.get(2).and_then(|v| v.parse().ok()).unwrap_or(crate::preview::RATIO_DEFAULT)),
+                "preview" => Step::Key("AltP".into()),
+                "previewscroll" => Step::PreviewScroll(num(1) as f32),
+                "waitpreview" => Step::WaitPreview(num(1).max(1) as u64),
                 "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
@@ -933,6 +950,7 @@ fn chord(name: &str) -> Vec<SharedString> {
         "AltLeft" => vec![k(Key::Alt), k(Key::LeftArrow)],
         "AltRight" => vec![k(Key::Alt), k(Key::RightArrow)],
         "AltReturn" => vec![k(Key::Alt), k(Key::Return)],
+        "AltP" => vec![k(Key::Alt), "p".into()],
         "AltShiftReturn" => vec![k(Key::Alt), k(Key::Shift), k(Key::Return)],
         "CtrlComma" => vec![k(Key::Control), ",".into()],
         "CtrlShiftRight" => vec![k(Key::Control), k(Key::Shift), k(Key::RightArrow)],
@@ -1367,6 +1385,32 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     }
                     r2.borrow().sub.stop();
                     schedule(r2.clone(), 300);
+                }
+            });
+        }
+        Step::PreviewWidth(r) => {
+            let r = crate::preview::clamp_ratio(r);
+            app.set_preview_width(r);
+            app.invoke_settings_changed();
+            eprintln!("[auto] preview width {r:.2}");
+            schedule(runner, 1);
+        }
+        Step::PreviewScroll(px) => {
+            app.invoke_preview_set_scroll(px);
+            schedule(runner, 1);
+        }
+        Step::WaitPreview(max_ms) => {
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            // The first look after 50 ms, so a cursor move just made has restarted the settle.
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                let busy = !crate::preview::settled();
+                if !busy || std::time::Instant::now() >= deadline {
+                    if busy {
+                        eprintln!("[auto] waitpreview: not settled after {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 100);
                 }
             });
         }

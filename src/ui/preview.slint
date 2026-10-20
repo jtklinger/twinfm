@@ -1,0 +1,88 @@
+import { Palette, ScrollView } from "std-widgets.slint";
+
+// One page of the previewed PDF (preview.rs `layout`): its top and height in the scroll's content,
+// laid out from the page sizes before any page is drawn, its picture once the worker has rendered
+// it (empty until then, and again once it scrolls out of the kept range), and a note shown in its
+// place instead ("Page N took too long").
+export struct PreviewPage {
+    y: length,
+    h: length,
+    img: image,
+    note: string,
+}
+
+// The preview column (P8-M1): the file's name, then its pages in one scroll, or a message ("No
+// preview" and the rest, preview.rs). Rust does the layout and the rendering; this only places what
+// it is given and reports its scroll and its width: scrolled(top, visible height) when the scroll
+// moves (Rust compares the pages in view and does nothing more when they are the same), and
+// resized(width) with the width a page is drawn at, when it changes (Rust re-renders after it has
+// settled).
+export component Preview inherits Rectangle {
+    in property <string> title;
+    in property <string> message;
+    in property <[PreviewPage]> pages;
+    in property <length> content-h;
+    callback scrolled(length, length);
+    callback resized(length);
+    background: Palette.alternate-background;
+    // The driver's `previewscroll`, and a new document back at its top.
+    public function set-scroll(y: length) { body.content-y = -y; }
+    public function scroll-top() -> length { return -body.content-y; }
+    public function visible-h() -> length { return body.visible-height; }
+    VerticalLayout {
+        Rectangle {
+            height: 32px;
+            Text {
+                x: 10px;
+                width: parent.width - 20px;
+                text: root.title;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
+        }
+        Rectangle {
+            body := ScrollView {
+                visible: root.message == "";
+                content-width: self.visible-width;
+                content-height: root.content-h;
+                init => { root.resized(self.visible-width - 16px); }
+                changed visible-width => { root.resized(self.visible-width - 16px); }
+                changed content-y => { root.scrolled(-self.content-y, self.visible-height); }
+                changed visible-height => { root.scrolled(-self.content-y, self.visible-height); }
+                for p in root.pages: Rectangle {
+                    x: 8px;
+                    y: p.y;
+                    width: body.visible-width - 16px;
+                    height: p.h;
+                    background: white;
+                    border-width: 1px;
+                    border-color: Palette.border;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: p.img;
+                        image-fit: contain;
+                    }
+                    if p.note != "": Text {
+                        text: p.note;
+                        color: #444;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            if root.message != "": Text {
+                x: 16px;
+                width: parent.width - 32px;
+                text: root.message;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                color: Palette.foreground.transparentize(30%);
+            }
+        }
+    }
+}

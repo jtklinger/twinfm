@@ -86,6 +86,8 @@ component ToolButton inherits Rectangle {
     in property <string> key;
     in property <bool> labelled;
     in property <bool> enabled: true;
+    // A toggle shown as on (the Preview button while the column shows, P8-M1).
+    in property <bool> checked: false;
     callback clicked();
     callback tip(string);
     callback back();
@@ -93,7 +95,7 @@ component ToolButton inherits Rectangle {
     accessible-role: button;
     accessible-label: root.text;
     border-radius: 4px;
-    background: !root.enabled ? transparent : ta.pressed ? Palette.alternate-background.darker(0.1) : ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+    background: !root.enabled ? transparent : ta.pressed || root.checked ? Palette.alternate-background.darker(0.1) : ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
     HorizontalLayout {
         padding-left: root.labelled ? 8px : 6px;
         padding-right: root.labelled ? 10px : 6px;
@@ -137,12 +139,15 @@ component ToolSeparator inherits Rectangle {
     Rectangle { x: 4px; y: 5px; width: 1px; height: parent.height - 10px; background: Palette.border; }
 }
 
-// The toolbar (P6-M3), in its three groups: New file, New folder; Cut, Copy, Paste; Rename, Delete.
-// tool(name) names the button (toolbar.rs `command` maps it to its key's command); tip(text) a
-// tooltip shown; back() and forward() the mouse's side buttons over a button (P7-M4).
+// The toolbar (P6-M3), in its three groups: New file, New folder; Cut, Copy, Paste; Rename, Delete;
+// and since P8-M1 the Preview toggle at its end, always enabled, drawn as on while the column shows.
+// tool(name) names the button (toolbar.rs `command` maps it to its key's command; "preview" toggles
+// the column); tip(text) a tooltip shown; back() and forward() the mouse's side buttons over a
+// button (P7-M4).
 export component Toolbar inherits HorizontalLayout {
     in property <ToolState> tools;
     in property <bool> labelled;
+    in property <bool> preview-on;
     callback tool(string);
     callback tip(string);
     callback back();
@@ -159,6 +164,8 @@ export component Toolbar inherits HorizontalLayout {
     ToolSeparator { }
     ToolButton { glyph: "\u{E8AC}"; text: "Rename"; key: "F2"; labelled: root.labelled; enabled: root.tools.rename; clicked => { root.tool("rename"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
     ToolButton { glyph: "\u{E74D}"; text: "Delete"; key: "Delete"; labelled: root.labelled; enabled: root.tools.delete; clicked => { root.tool("delete"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    ToolSeparator { }
+    ToolButton { glyph: "\u{E90D}"; text: "Preview pane"; key: "Alt+P"; labelled: root.labelled; checked: root.preview-on; clicked => { root.tool("preview"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
 }
 
 // One tab; the strip places and sizes it. The left press activates it (as browsers do), and
@@ -1012,6 +1019,8 @@ export component Pane inherits Rectangle {
     // list, created only with the setting (dnd.rs PANE_BAR).
     in property <bool> toolbar: false;
     in property <ToolState> tools;
+    // The column shows (the Preview button drawn as on, P8-M1).
+    in property <bool> preview-on;
     callback tool(string);
     // tool-tip(text): a button of the in-pane toolbar showed its tooltip (P7-M4).
     callback tool-tip(string);
@@ -1240,6 +1249,7 @@ export component Pane inherits Rectangle {
             height: 28px;
             tools: root.tools;
             labelled: false;
+            preview-on: root.preview-on;
             tool(c) => { root.tool(c); }
             tip(t) => { root.tool-tip(t); }
             back => { root.back-button(); }
