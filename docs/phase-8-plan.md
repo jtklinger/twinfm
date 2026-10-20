@@ -600,6 +600,21 @@ like the pairs read 19.2 / 19.8 in the normal state and 28.5 / 27.0, 27.0 / 27.0
 Two gates in a row changed state at the same point (after round 1), which is worth a look before
 the next phase's gates (the machine, not either binary: the reference moves with it).
 
+**Why (looked into at Jeremy's request, 2026-10-20)**: the traces' own samples (`xperf -a profile
+-detail` and `-a dumper`, per process, per CPU) show the Claude desktop app (`claude.exe`, the app
+these sessions run in, started 09:23) using 48 to 56 s of CPU in each ab33 and ab34 trace against
+about 12 s in ab32's, almost all of it one thread (39,000 of a 40 s trace's samples: a full core,
+still spinning after the gate, 4.9 s of CPU in 5 s). Every part of TwinFM's main thread grew by the
+same factor in the slow runs (render pass, text, ListView rows, timers, accessibility: no code path),
+which is what losing a core's throughput looks like; the 12 logical CPUs are six cores with two
+threads each, and the spinning thread sat mostly on CPU 2 (its sibling, CPU 3, also loaded). In
+ab34's normal run TwinFM's main thread ran mostly on CPU 8; in its slow run on CPUs 2 and 3, the
+spinning thread's core. Where the scheduler puts the main thread decides each run, so it reads as a
+"state change" that the reference and the candidate share. Not TwinFM: both binaries moved alike,
+and ab32, before the spin, has no such runs. **Before a gate, the Claude app must be idle or
+restarted** (a thread spinning there takes a core from the scenario); a wrapper check for a process
+holding a core is a candidate for the next gate's wrapper.
+
 ### Console checks (for Jeremy, unelevated, after the gate)
 
 1. Copy a file into `C:\traces\password-twinfm.zip` (a copy of it): TwinFM asks for the password;
