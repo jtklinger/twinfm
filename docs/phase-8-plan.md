@@ -464,9 +464,23 @@ scripted (it starts their apps on the desktop): a console check.
 
 ### Gate
 
-Pending: `target-p8l1` against `target-p8m1` (47fc959, P8-M1's gate build: P8-M1 merged first, so
-main was merged into this branch and the gate build made again), defaults, large grid
-(`C:\traces\grid.toml`) and medium grid (`C:\traces\grid-medium.toml`), tag ab33.
+ab33 (Jeremy, console, 2026-10-20 15:39, 28 min): `target-p8l1` (d5216db) against `target-p8m1`
+(47fc959, P8-M1's gate build: P8-M1 merged first, so main was merged into this branch and the gate
+build made again), three pairs interleaved, the candidate second in every pair:
+
+| Setting | p8m1 (WPR) | p8l1 (WPR) | Render p50 (ms), ref / cand | Medians |
+|---|---|---|---|---|
+| defaults | 18.2, 27.3, 26.9 | 18.3, 29.0, 27.2 | 2.21, 3.79, 3.45 / 2.25, 4.07, 3.84 | 26.9 / 27.2 |
+| large grid | 10.3, 14.2, 14.3 | 10.7, 14.4, 14.4 | 1.10, 1.65, 1.68 / 1.11, 1.68, 1.71 | 14.2 / 14.4 |
+| medium grid | 19.0, 19.4, 17.4 | 16.2, 16.8, 16.6 | 2.27, 2.27, 2.31 / 2.04, 1.99, 2.04 | 19.0 / 16.6 |
+
+**The session changed state after the first round** (ab23's note): the defaults' and the large grid's
+render p50 rose by about half for both binaries from round 2 on, so the defaults' medians sit over the
+20% bar for the reference as for the candidate. Read like for like: round 1 (the normal state) 18.2 /
+18.3 and 10.3 / 10.7; rounds 2 and 3 (the slow state) 27.3 / 29.0 and 26.9 / 27.2, and 14.2 / 14.4 and
+14.3 / 14.4, each pair with the candidate in the second slot (about a point high in ab30). No gap
+counts by the rule (medians 0.3 and 0.2 apart; not every reference run below every candidate run).
+The medium grid sits 2.4 points lower: its taller tiles hold fewer grid rows to compose and draw.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
