@@ -579,6 +579,8 @@ elevated) window, the panes set up unequal (the split on, two tabs in one pane o
    are as you left them (in `%APPDATA%\twinfm\config.toml` as `col_type_left` and the rest).
 10. **The fit's rule**: settled by Jeremy on 2026-10-21 (Decisions): kept as built.
 
+Jeremy, 2026-10-21: "console checks were all working as expected. proceed with the merge".
+
 ## Open questions
 
 Written 2026-10-21 at the kickoff.
