@@ -406,8 +406,9 @@ lone picture is not held to "over the budget means alt text": its decode is allo
 pixels (`DECODE_MAX`, `image`'s own default limit; a 48-megapixel photo is 192 MB), and the result is
 scaled down so that neither side passes 8,192 px and its pixels fit the 64 MB budget
 (`fit_px`: the factor is the smaller of 1, 8192 over the longer side and the square root of the
-budget over the area; never above 1, so never scaled up). A 10,000 x 3,000 panorama becomes 8,192 x
-2,458 and still fits; a 48-megapixel photo becomes about 4,730 x 3,550. **Never scaled up in the
+budget over the area; never above 1, so never scaled up). A 10,000 x 1,000 panorama becomes 8,192 x
+819 (the side decides); a 10,000 x 3,000 one 7,478 x 2,243 and a 48-megapixel photo 4,729 x 3,547 (the
+budget decides). **Never scaled up in the
 column** is read in physical pixels: the block's width is the picture's pixels divided by the
 window's scale factor (a 100 px icon at 150% shows 100 screen px, not 150), and wider ones fit the
 column as Markdown's do. (Markdown's and HTML's pictures keep the browser's rule, P8-M2's.) The

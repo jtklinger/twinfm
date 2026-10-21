@@ -558,6 +558,11 @@ fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usiz
         }
     };
     let mut blocks = doc.blocks;
+    if blocks.is_empty() {
+        // An empty file, or a page of nothing but a script: say so rather than show a blank column.
+        let why = if class == Class::Html { "This page has no text to show." } else { "This file is empty." };
+        blocks.push(Block { kind: Kind::Note, plain: why.into(), ..Default::default() });
+    }
     if cut {
         let mb = size as f64 / (1024.0 * 1024.0);
         blocks.insert(0, Block { kind: Kind::Note, plain: format!("Only the first 2 MB of this {mb:.1} MB file is shown."), ..Default::default() });
@@ -1630,6 +1635,16 @@ mod tests {
             _ => panic!("the page"),
         }
         assert!(matches!(recv(), Reply::Picture { seq: 6, block: 2, pic: Some(_), physical: false }));
+        // A page of nothing but a script, and an empty file: a note, not a blank column.
+        let (script, empty) = (dir.join("script.htm"), dir.join("empty.log"));
+        std::fs::write(&script, "<script>alert('<p>x</p>')</script>").unwrap();
+        std::fs::write(&empty, "").unwrap();
+        keep.lock().unwrap().seq = 7;
+        tx.send(open(7, &script)).unwrap();
+        assert!(matches!(recv(), Reply::Blocks { seq: 7, blocks, .. } if blocks.len() == 1 && blocks[0].code == "This page has no text to show."));
+        keep.lock().unwrap().seq = 8;
+        tx.send(open(8, &empty)).unwrap();
+        assert!(matches!(recv(), Reply::Blocks { seq: 8, blocks, .. } if blocks.len() == 1 && blocks[0].code == "This file is empty."));
 
         drop(tx);
         w.join().unwrap();
