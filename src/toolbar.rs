@@ -15,9 +15,10 @@ pub enum Place {
     Search,
     /// This PC lists drives, which are neither copied, renamed nor deleted, and hold nothing new.
     ThisPc,
-    /// A level of an archive TwinFM does not write (every format but zip, P7-M3): nothing is
-    /// made, pasted, cut, renamed or deleted there, and a path inside one is no file the
-    /// clipboard can carry to another program.
+    /// A level of an archive TwinFM does not write (every format but zip, P7-M3; an archive inside
+    /// an archive, P8-L3): nothing is made, pasted, cut, renamed or deleted there. Copy applies
+    /// since P8-L3 (Jeremy's console check): TwinFM pastes it as an extraction, or into a zip; a
+    /// path inside an archive is still no file the clipboard can carry to another program.
     Archive,
     /// A level of a zip archive, which TwinFM writes itself (P7-M3): every command applies.
     Zip,
@@ -30,16 +31,18 @@ pub fn state(place: Place, selected: usize, clipboard_files: bool) -> ToolState 
     let (make, take) = match place {
         Place::Folder | Place::Zip => (true, true),
         Place::Search => (false, true),
-        Place::ThisPc | Place::Archive => (false, false),
+        Place::Archive => (false, true),
+        Place::ThisPc => (false, false),
     };
     let any = take && selected > 0;
+    let writes = place != Place::Archive;
     ToolState {
         new: make,
-        cut: any,
+        cut: any && writes,
         copy: any,
         paste: make && clipboard_files,
-        rename: take && selected == 1,
-        delete: any,
+        rename: take && writes && selected == 1,
+        delete: any && writes,
     }
 }
 
@@ -85,9 +88,11 @@ mod tests {
         // Search results: no New, no Paste; the results themselves can be acted on.
         assert_eq!(on(state(Place::Search, 1, true)), [false, true, true, false, true, true]);
         assert_eq!(on(state(Place::Search, 0, true)), [false; 6]);
-        // This PC and an archive level: nothing.
+        // This PC: nothing. A read-only archive level: Copy alone, with a selection (P8-L3).
         assert_eq!(on(state(Place::ThisPc, 1, true)), [false; 6]);
-        assert_eq!(on(state(Place::Archive, 2, true)), [false; 6]);
+        assert_eq!(on(state(Place::Archive, 2, true)), [false, false, true, false, false, false]);
+        assert_eq!(on(state(Place::Archive, 1, true)), [false, false, true, false, false, false], "no Rename");
+        assert_eq!(on(state(Place::Archive, 0, true)), [false; 6]);
         assert_eq!(on(state(Place::Zip, 1, true)), [true; 6], "a zip is written as a folder is");
     }
 

@@ -84,6 +84,12 @@
 # deleted. Reported: copies from a zip (three per cycle), moves from a zip (one per cycle),
 # passwords from the script and checked right (one each per cycle).
 #
+# P8-L3, after P8-L2's steps: the left pane on n.zip\a.zip (the setup's n.zip holding a copy of
+# a.zip: an archive inside an archive, extracted to TwinFM's copy and browsed read-only), a.txt
+# copied out of it into dst and removed there again, then the left pane on a.7z and a.txt copied
+# into a.zip (the shell extracts it to a temporary folder, TwinFM adds it, replacing). Reported:
+# copies out of an archive inside an archive, copies from an archive into a zip (one each per cycle).
+#
 # P8-M1: the preview cycle, after the sidebar walk: Alt+P shows the preview column, the left pane
 # goes to preview (made by the setup: a-pages.pdf with four pages, b-one.pdf with one, c-damaged.pdf
 # that is no PDF, d-notes.txt; the PDFs written here with a hand-made cross-reference table), the
@@ -165,6 +171,8 @@ $bsdtar = Join-Path $env:SystemRoot 'System32\tar.exe'
 & $bsdtar -czf (Join-Path $arch 'a.tar.gz') -C $archSrc a.txt d
 # P8-L2: a password-protected zip (ZipCrypto, password twinfm) of a.txt.
 & $bsdtar -cf (Join-Path $arch 'pw.zip') --format zip --options zip:encryption=zipcrypt --passphrase twinfm -C $archSrc a.txt
+# P8-L3: n.zip holds a copy of a.zip (an archive inside an archive).
+& $bsdtar -cf (Join-Path $arch 'n.zip') --format zip -C $arch a.zip
 # P8-M1: the preview folder. A PDF of $n pages of 200 x 300 pt, each a red rectangle on white, with
 # its cross-reference table's offsets counted here (as preview.rs's test writes it).
 function Write-Pdf([string]$path, [int]$n) {
@@ -313,6 +321,10 @@ $cycle = @(
     'click 1 0', 'rename a.txt', $wait,
     'click 0 1', 'cc', 'sleep 200', 'cv', $wait,
     'click 0 1', 'sdelete', $wait,
+    # P8-L3: an archive inside an archive, and a 7z item into a zip (see the header). n.zip\a.zip
+    # and a.7z list d, then a.txt.
+    "nav 0 $arch\n.zip\a.zip", "nav 1 $dst", 'sleep 1000', 'click 0 1', 'copy', $wait, 'rmfile 1 a.txt', 'sleep 300',
+    "nav 0 $arch\a.7z", "nav 1 $arch\a.zip", 'sleep 1000', 'click 0 1', 'copy', $wait,
     # P7-M4: the sidebar walk (see the header).
     'click 0 0', 'sidebar click 1', 'sleep 500', 'key Down', 'key Down', 'key Up', 'key End', 'key Home', 'key Return', 'sleep 500', 'key Escape', 'sleep 200',
     # P8-M1: the preview cycle (see the header). Rows: a-pages.pdf, b-one.pdf, c-damaged.pdf, d-notes.txt.
@@ -463,6 +475,9 @@ $fromZip = @($arJobs | Select-String -SimpleMatch '"copy from a zip"' | Select-S
 $fromZipMoves = @($arJobs | Select-String -SimpleMatch '"move from a zip"' | Select-String -SimpleMatch ': Done in').Count
 $pwScript = @($log | Select-String -SimpleMatch '[archive] password for' | Select-String -SimpleMatch 'from the script').Count
 $pwRight = @($log | Select-String -SimpleMatch '[archive] password for' | Select-String -SimpleMatch ': right').Count
+$nestedIds = @($log | Select-String -SimpleMatch '[fileops] submit id=' | Select-String -SimpleMatch 'n.zip\\a.zip\\' | ForEach-Object { [regex]::Match($_.Line, 'id=(\d+)').Groups[1].Value })
+$nestedOut = @($log | Select-String -SimpleMatch '[fileops] done id=' | Where-Object { $nestedIds -contains [regex]::Match($_.Line, 'done id=(\d+)').Groups[1].Value -and $_.Line -match ' Done: ' }).Count
+$fromShell = @($arJobs | Select-String -SimpleMatch '"copy from an archive"' | Select-String -SimpleMatch ': Done in').Count
 $arRefused = @($log | Select-String -SimpleMatch 'cannot write into .7z archives' | Select-String -SimpleMatch '[archive] refused').Count
 $arCompressed = @($log | Select-String -SimpleMatch '[archive] compress' | Select-String -SimpleMatch ': Ok(').Count
 $arUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Compressed').Count
@@ -504,6 +519,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "memory samples: $csv"
 "stderr: $stderr"
 "between zips: copies from a zip $fromZip (three per cycle), moves from a zip $fromZipMoves (one per cycle); passwords from the script $pwScript, right $pwRight (one each per cycle)"
+"archives inside archives: copies out $nestedOut, copies from an archive into a zip $fromShell (one each per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
 "preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (two per cycle), markdown $pvMd (two per cycle), pictures shown $pvPics (f-readme.md's one and g-big.md's repeats, the file decoded once), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

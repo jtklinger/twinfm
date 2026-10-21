@@ -39,12 +39,15 @@ pub enum Plan {
     /// Copy or move the items at `inners` of the zip `from` (`zip` itself, or another) into folder
     /// `inner` of `zip` (P8-L2).
     FromZip { zip: PathBuf, inner: String, from: PathBuf, inners: Vec<String>, mv: bool },
+    /// Copy `sources` (items inside an archive of another format) into folder `inner` of `zip`
+    /// (P8-L3): extracted to a temporary folder by the shell, then added.
+    FromShell { zip: PathBuf, inner: String, sources: Vec<PathBuf> },
 }
 
 impl Plan {
     pub fn zip(&self) -> &Path {
         match self {
-            Plan::Add { zip, .. } | Plan::New { zip, .. } | Plan::Rename { zip, .. } | Plan::Delete { zip, .. } | Plan::MoveOut { zip, .. } | Plan::FromZip { zip, .. } => zip,
+            Plan::Add { zip, .. } | Plan::New { zip, .. } | Plan::Rename { zip, .. } | Plan::Delete { zip, .. } | Plan::MoveOut { zip, .. } | Plan::FromZip { zip, .. } | Plan::FromShell { zip, .. } => zip,
         }
     }
 }
@@ -55,10 +58,11 @@ pub fn read_only_why(archive: &Path) -> String {
     format!("Windows' archive handler cannot write into .{ext} archives")
 }
 
-/// Why a copy from an archive of another format into a zip is refused (P8-L3 lifts it).
-pub fn between_why(from: &Path) -> String {
+/// Why a move from an archive of another format into a zip is refused (a copy works since
+/// P8-L3; the source is read-only, so nothing can leave it).
+pub fn move_from_read_only_why(from: &Path) -> String {
     let ext = from.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    format!("copying from .{ext} archives into a zip is not supported yet; copy the items out first")
+    format!("nothing can be moved out of a .{ext} archive (it is read-only): copy the items instead")
 }
 
 /// The archive each item is stored in (None for an item on disk, an archive file included), and
@@ -86,6 +90,33 @@ fn one_zip(inside: &[(PathBuf, String)]) -> Result<PathBuf, String> {
 /// What `job` does to an archive: Ok(None) when it writes into none (an extraction included),
 /// Ok(Some(plan)) for a zip's write, Err(why) when it is refused.
 pub fn classify(job: &Job) -> Result<Option<Plan>, String> {
+    // An archive inside an archive is read-only (P8-L3): nothing is written into it or taken out
+    // of it; a copy out of it reads its copy (`archive::real`).
+    // Folders (a destination) count from the inner archive's root; items only below it (the inner
+    // archive file itself is an item of the archive holding it).
+    let folder = |p: &PathBuf| archive::nested(p);
+    let item = |p: &PathBuf| archive::nested_item(p);
+    let refused = match job {
+        Job::Copy { dest_dir, .. } => folder(dest_dir),
+        Job::Move { sources, dest_dir } => folder(dest_dir) || sources.iter().any(item),
+        Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => folder(parent),
+        Job::Rename { source, .. } => item(source),
+        Job::Delete { sources, .. } => sources.iter().any(item),
+        Job::MoveAs { .. } | Job::Restore { .. } | Job::Compress { .. } => false,
+    };
+    if refused {
+        return Err(archive::NESTED_READ_ONLY.into());
+    }
+    if let Job::Copy { sources, dest_dir } = job {
+        if sources.iter().any(item) {
+            let sources = sources.iter().map(|s| if item(s) { archive::real(s).unwrap_or_else(|| s.clone()) } else { s.clone() }).collect();
+            return classify_inner(&Job::Copy { sources, dest_dir: dest_dir.clone() });
+        }
+    }
+    classify_inner(job)
+}
+
+fn classify_inner(job: &Job) -> Result<Option<Plan>, String> {
     match job {
         Job::Copy { sources, dest_dir } | Job::Move { sources, dest_dir } => {
             let mv = matches!(job, Job::Move { .. });
@@ -101,11 +132,14 @@ pub fn classify(job: &Job) -> Result<Option<Plan>, String> {
                             return Err("the items are partly inside an archive".into());
                         }
                         let from = inside[0].0.clone();
-                        if archive::handler_of(&from) != Handler::Zip {
-                            return Err(between_why(&from));
-                        }
                         if inside.iter().any(|(z, _)| !same(z, &from)) {
                             return Err("the items are in different archives".into());
+                        }
+                        if archive::handler_of(&from) != Handler::Zip {
+                            if mv {
+                                return Err(move_from_read_only_why(&from));
+                            }
+                            return Ok(Some(Plan::FromShell { zip, inner, sources: sources.clone() }));
                         }
                         let inners = inside.into_iter().map(|(_, i)| i).collect();
                         return Ok(Some(Plan::FromZip { zip, inner, from, inners, mv }));
@@ -340,6 +374,12 @@ pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outco
                 }
             }
         }
+        Plan::FromShell { inner, sources, .. } => {
+            let hwnd = req.hwnd;
+            let no_confirm = req.no_confirm;
+            let mut ask = |clash: &[String]| if no_confirm { Some(Conflict::Replace) } else { ask_conflicts(hwnd, &zip, clash) };
+            from_shell(req, &zip, inner, sources, &key, &mut ask, progress, &mut report)
+        }
     };
     archive::forget(&zip);
     eprintln!("[archive] job id={} {:?} on {}: {outcome:?} in {} ms", req.id, plan_name(&plan), zip.display(), t0.elapsed().as_millis());
@@ -357,7 +397,58 @@ fn plan_name(p: &Plan) -> &'static str {
         Plan::MoveOut { .. } => "move out",
         Plan::FromZip { mv: false, .. } => "copy from a zip",
         Plan::FromZip { mv: true, .. } => "move from a zip",
+        Plan::FromShell { .. } => "copy from an archive",
     }
+}
+
+/// A copy from an archive of another format into a zip (P8-L3): the shell extracts the items
+/// into a temporary folder (its own progress window, and its password question for a protected
+/// 7z), TwinFM adds what came out, and the folder goes.
+#[allow(clippy::too_many_arguments)]
+fn from_shell(
+    req: &Request,
+    zip: &Path,
+    inner: &str,
+    sources: &[PathBuf],
+    key: &Key,
+    ask: &mut dyn FnMut(&[String]) -> Option<Conflict>,
+    progress: &Rc<dyn Fn(Progress)>,
+    report: &mut dyn FnMut(u64, u64),
+) -> (Outcome, Vec<ItemResult>) {
+    let tmp = std::env::temp_dir().join(format!("twinfm-copy-{}-{}", std::process::id(), req.id));
+    let _ = std::fs::remove_dir_all(&tmp);
+    if let Err(e) = std::fs::create_dir_all(&tmp) {
+        return (Outcome::Error(format!("cannot make a temporary folder: {e}")), Vec::new());
+    }
+    let copy = Request { id: req.id, job: Job::Copy { sources: sources.to_vec(), dest_dir: tmp.clone() }, hwnd: req.hwnd, no_confirm: req.no_confirm };
+    let (o, _) = super::perform(&copy, progress);
+    // What came out: the temporary folder's contents (the shell's item reports for these formats
+    // come twice, or not at all for an archive inside one: P8-L3's scripted check).
+    let mut out: Vec<PathBuf> = std::fs::read_dir(&tmp).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    out.sort();
+    eprintln!("[archive] copy from an archive: {} item(s) extracted to {}: {o:?}", out.len(), tmp.display());
+    let res = if out.is_empty() {
+        (if o == Outcome::Done { Outcome::Error("nothing came out of the archive".into()) } else { o }, Vec::new())
+    } else {
+        match archivewrite::add(zip, inner, &out, key, ask, report) {
+            Err(e) if e == "cancelled" => (Outcome::Cancelled, Vec::new()),
+            Err(e) => (Outcome::Error(e), Vec::new()),
+            Ok(tops) => {
+                let results = out
+                    .iter()
+                    .zip(&tops)
+                    .filter_map(|(d, t)| {
+                        let name = d.file_name()?;
+                        let source = sources.iter().find(|s| s.file_name().is_some_and(|n| n.eq_ignore_ascii_case(name)))?;
+                        Some(ItemResult { source: source.clone(), dest: Some(zip.join(t)), hr: 0 })
+                    })
+                    .collect();
+                (o, results)
+            }
+        }
+    };
+    let _ = std::fs::remove_dir_all(&tmp);
+    res
 }
 
 /// The plan writes new data that a password-protected zip encrypts: files added, a new file, or
@@ -367,6 +458,7 @@ fn needs_key(plan: &Plan) -> Result<bool, String> {
         Plan::Add { .. } => Ok(true),
         Plan::New { folder, .. } => Ok(!folder),
         Plan::FromZip { from, inners, .. } => archivewrite::plain_files_among(from, inners),
+        Plan::FromShell { .. } => Ok(true),
         Plan::Rename { .. } | Plan::Delete { .. } | Plan::MoveOut { .. } => Ok(false),
     }
 }
@@ -593,7 +685,9 @@ mod tests {
         assert!(matches!(classify(&mv(vec![a.join("x")], a.join("sub"))), Ok(Some(Plan::FromZip { ref from, ref inner, mv: true, .. })) if *from == a && inner == "sub"), "within one zip");
         assert_eq!(classify(&copy(vec![a.join("x"), disk.clone()], b.clone())).unwrap_err(), "the items are partly inside an archive");
         if archive::is_archive_name("c.7z") {
-            assert_eq!(classify(&copy(vec![c.join("x")], a.clone())).unwrap_err(), between_why(&c));
+            // P8-L3: a copy from another format into a zip is a plan; a move is refused.
+            assert!(matches!(classify(&copy(vec![c.join("x")], a.join("sub"))), Ok(Some(Plan::FromShell { ref inner, .. })) if inner == "sub"));
+            assert_eq!(classify(&mv(vec![c.join("x")], a.clone())).unwrap_err(), move_from_read_only_why(&c));
         }
         assert!(classify(&mv(vec![a.join("x"), b.join("y")], dir.clone())).is_err(), "two archives");
         assert!(classify(&mv(vec![a.join("x"), disk.clone()], dir.clone())).is_err(), "partly inside");
@@ -715,6 +809,20 @@ mod tests {
         assert_eq!(zip_names(&z2), vec!["f2.txt", "sub/", "sub/keep.txt"], "a move within one zip renames");
         let d = run(Job::Move { sources: vec![z2.join("sub")], dest_dir: z2.join("sub") });
         assert_eq!(d.outcome, Outcome::Error("sub cannot go into itself".into()));
+        // From a 7z into a zip (P8-L3): the shell extracts into a temporary folder, TwinFM adds.
+        let seven = dir.join("s.7z");
+        crate::fs::archivewrite::compress(&seven, &[dir.join("src").join("f.txt")], crate::fs::archivewrite::Format::SevenZ, &mut |_, _| {}).unwrap();
+        if archive::is_archive_name("s.7z") {
+            let d = run(Job::Copy { sources: vec![seven.join("f.txt")], dest_dir: z2.join("sub") });
+            assert_eq!((d.outcome.clone(), d.results.iter().map(|r| r.dest.clone()).collect::<Vec<_>>()), (Outcome::Done, vec![Some(z2.join(r"sub\f.txt"))]));
+            assert_eq!(zip_names(&z2), vec!["f2.txt", "sub/", "sub/f.txt", "sub/keep.txt"]);
+            let mut za = zip::ZipArchive::new(std::fs::File::open(&z2).unwrap()).unwrap();
+            let mut v = Vec::new();
+            za.by_name("sub/f.txt").unwrap().read_to_end(&mut v).unwrap();
+            assert_eq!(v, b"file");
+            let leftovers: Vec<_> = std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&format!("twinfm-copy-{}-", std::process::id()))).collect();
+            assert!(leftovers.is_empty(), "the temporary folder goes: {leftovers:?}");
+        }
         // Refused on the worker too (a job queued by another path).
         if archive::is_archive_name("r.7z") {
             let d = run(Job::Copy { sources: vec![dir.join("src").join("f.txt")], dest_dir: dir.join("r.7z") });

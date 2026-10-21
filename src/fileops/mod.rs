@@ -484,9 +484,42 @@ fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain([0]).collect()
 }
 
+/// Copy the item at `source` into `dest_dir` through the shell with no progress window and no
+/// questions (P8-L3: an archive inside an archive of a format the shell lists, extracted to its
+/// copy on the archive worker). On an STA thread; blocks until done.
+pub(crate) fn copy_quietly(source: &Path, dest_dir: &Path) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::{FOF_NOERRORUI, FOF_SILENT};
+    let mut p: *mut c_void = std::ptr::null_mut();
+    // SAFETY: standard in-process COM activation; `p` receives an IFileOperation or stays null.
+    let hr = unsafe { CoCreateInstance(&FileOperation, std::ptr::null_mut(), CLSCTX_ALL, &IID_IFILEOPERATION, &mut p) };
+    if hr < 0 || p.is_null() {
+        return Err(format!("the shell's copy engine is not available (0x{:08X})", hr as u32));
+    }
+    let op = Com(p);
+    // SAFETY: `op` is a live IFileOperation; its vtable matches `FileOperationVtbl`.
+    let v = unsafe { &**(op.0 as *const *const FileOperationVtbl) };
+    let fail = |what: &str, hr: HRESULT| format!("{what} failed (0x{:08X})", hr as u32);
+    let item = shell_item(source).map_err(|hr| fail("opening the archive inside", hr))?;
+    let dest = shell_item(dest_dir).map_err(|hr| fail("opening the copy's folder", hr))?;
+    // SAFETY (each call): live interfaces owned by this frame.
+    let hr = unsafe { (v.set_operation_flags)(op.0, FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_NOCONFIRMMKDIR) };
+    if hr < 0 {
+        return Err(fail("SetOperationFlags", hr));
+    }
+    let hr = unsafe { (v.copy_item)(op.0, item.0, dest.0, std::ptr::null(), std::ptr::null_mut()) };
+    if hr < 0 {
+        return Err(fail("CopyItem", hr));
+    }
+    let hr = unsafe { (v.perform_operations)(op.0) };
+    drop((item, dest));
+    if hr < 0 { Err(fail("extracting the archive inside", hr)) } else { Ok(()) }
+}
+
 /// The shell item for a path. A path inside a zip archive (`C:\dir\x.zip\sub\file.txt`) is parsed
 /// by the shell's zip folder, so a copy out of it is an extraction.
 fn shell_item(path: &Path) -> Result<Com, HRESULT> {
+    // Inside an archive inside an archive: the inner archive's copy (P8-L3).
+    let path = &crate::fs::archive::real(path).unwrap_or_else(|| path.to_path_buf());
     let w = wide(path.as_os_str());
     let mut p: *mut c_void = std::ptr::null_mut();
     // SAFETY: `w` is NUL-terminated and outlives the call; `p` receives an IShellItem or stays null.

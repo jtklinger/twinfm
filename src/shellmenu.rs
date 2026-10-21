@@ -339,6 +339,8 @@ pub fn open_url(hwnd: isize, url: &str) -> Result<(), u32> {
 /// failed parse or the Win32 error code of a failed open.
 pub fn open_in_archive(hwnd: isize, path: &Path) -> Result<(), u32> {
     use windows_sys::Win32::UI::Shell::{SEE_MASK_IDLIST, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
+    // Inside an archive inside an archive: the inner archive's copy (P8-L3).
+    let path = &crate::fs::archive::real(path).unwrap_or_else(|| path.to_path_buf());
     let w = wide(path.as_os_str());
     let mut raw: *mut ITEMIDLIST = std::ptr::null_mut();
     // SAFETY: NUL-terminated name; `raw` receives a PIDL we own or stays null.
@@ -643,6 +645,8 @@ pub(crate) fn parse_items(hwnd: HWND, folder: &Path, names: &[String]) -> Result
     // A search tab's names are paths relative to its root: the items' own folder and their own
     // names, since a child PIDL must be one level deep.
     let (folder, names) = &common_parent(folder, names)?;
+    // Inside an archive inside an archive: the inner archive's copy (P8-L3).
+    let folder = &crate::fs::archive::real(folder).unwrap_or_else(|| folder.clone());
     let folder_name = if crate::fs::enumerate::is_this_pc(&folder.to_string_lossy()) {
         wide(std::ffi::OsStr::new(THIS_PC_PARSING_NAME))
     } else {

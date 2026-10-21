@@ -2428,11 +2428,15 @@ fn in_archive(st: &State, pane: usize) -> bool {
 /// The pane's active tab shows a level of an archive TwinFM does not write (P7-M3: every format
 /// but zip, which Windows' handler refuses to write).
 fn in_readonly_archive(st: &State, pane: usize) -> bool {
-    fs::archive::split(&st.tab(pane).path).is_some_and(|(a, _)| fs::archive::handler_of(&a) != fs::archive::Handler::Zip)
+    let path = &st.tab(pane).path;
+    fs::archive::inside(path) && !fs::archive::writable(path)
 }
 
 /// Why a write into the pane's read-only archive is refused.
 fn read_only_why(st: &State, pane: usize) -> String {
+    if fs::archive::nested(&st.tab(pane).path) {
+        return fs::archive::NESTED_READ_ONLY.into();
+    }
     fs::archive::split(&st.tab(pane).path).map_or_else(String::new, |(a, _)| fileops::archive::read_only_why(&a))
 }
 
@@ -3999,7 +4003,7 @@ fn open_rows(pane: usize, rows: Vec<usize>) {
         let items: Vec<(bool, String)> = rows
             .iter()
             .filter_map(|&r| st.model(pane).entry(r))
-            .map(|e| (e.is_dir() || (!archive && fs::archive::is_archive_name(&e.name)), e.name.to_string()))
+            .map(|e| (e.is_dir() || fs::archive::is_archive_name(&e.name), e.name.to_string()))
             .collect();
         Some((main_hwnd(st, &app), folder, archive, st.soak.is_some(), items))
     }) else {
@@ -4077,8 +4081,8 @@ fn open_one(pane: usize, row: i32) {
         // The file's own folder (a search result's may lie below the tab's).
         let dir = path.parent().map_or(folder, Path::to_path_buf);
         let archive = in_archive(st, pane);
-        // An archive in a folder opens as a folder; one inside an archive is a file the shell opens.
-        let enter = e.is_dir() || (!archive && fs::archive::is_archive_name(&e.name));
+        // An archive opens as a folder, one inside an archive too (P8-L3: read-only, from its copy).
+        let enter = e.is_dir() || fs::archive::is_archive_name(&e.name);
         Some((enter, path, dir, hwnd, archive))
     });
     match target {
@@ -4171,7 +4175,7 @@ fn history_button(pane: usize, forward: bool) {
 fn middle_click_row(pane: usize, row: usize) {
     let target = with_state(|st| {
         let e = st.model(pane).entry(row)?;
-        let archive = !in_archive(st, pane) && fs::archive::is_archive_name(&e.name);
+        let archive = fs::archive::is_archive_name(&e.name);
         Some((e.is_dir() || archive, st.tab(pane).path.join(e.name.as_str())))
     });
     match target {
@@ -6336,6 +6340,8 @@ fn main() -> Result<(), slint::PlatformError> {
     with_state(|st| st.dnd_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), register_dnd));
 
     let res = app.run();
+    // The copies of archives inside archives (P8-L3).
+    fs::archive::clear_nested();
     // A change still waiting for its debounce (a scripted quit, say) is written now.
     if with_state(|st| st.save_timer.running()) {
         save_now();
