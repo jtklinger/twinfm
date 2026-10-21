@@ -1316,6 +1316,46 @@ Each task is one commit on the branch, pushed; the PR is opened after task 1 and
    defaults and `C:\traces\grid-thumbs.toml`; the record's § What landed, § Decisions, § Scripted
    checks, § Gate and § Console checks; CLAUDE.md's reference-build line.
 
+### What landed so far (2026-10-21, tasks 1 to 3; PR #91)
+
+- **Task 1, fcc285b**: `src/ui/theme.slint` with the `Theme` global (every token of § Settled first,
+  plus `input`, an unchecked switch's track), imported by the three UI files; no `Palette` read is
+  left outside it. The window sets `default-font-family: "Segoe UI Variable Text"` and
+  `default-font-size: 13px`. The rows, the pane card and its ring, the tabs, the header cells, the
+  crumbs, the status bar, the sidebar rows, the toolbar band, the splitters, the preview column, the
+  menus and the dialogs take the tokens as § Settled first says. No constant in `dnd.rs`, `main.rs`
+  or `auto.rs` changed; the soaks were not touched.
+- **Task 2, d113789**: 32 Lucide-style SVGs under `src/ui/icons/` (one `d` path each, colorized by
+  `Image.colorize`), drawn in the toolbar's eight buttons (`ToolButton.icon` in place of `glyph`),
+  the sidebar's rows (a drive, a bookmark, and the places by their label: Home, Desktop, Downloads,
+  Pictures, Music, Videos, OneDrive; any other place a folder), the sidebar's hide button, the crumb
+  chevrons, the tab close, the sort arrow, the filter's clear and the path bar's mode glyph. README
+  § License carries the Lucide notice. The Windows 11 menu's icon row and the preview's task boxes
+  keep their Segoe Fluent glyphs.
+- **Task 3, 862bca8**: `Btn` (outline, and `primary: true`) and `Switch` in `theme.slint`; the
+  Settings dialog's nine check boxes are switches, its OK (primary) and Cancel and About's Close
+  are `Btn`s; the rows' spacing is 8 px and the dialog 510 px tall (480 before) so its note still
+  fits. `ComboBox` and `LineEdit` stay fluent (a popup choice of our own is deferred).
+
+**Checks**: `cargo build --release` after each task; `cargo test --release` 270 of 271 after each,
+the one failure `fileops::clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` ("the
+clipboard is in use by another program", twenty tries over a second), which fails the same way from
+the unchanged main checkout at f2fa4eb and passed once earlier in the session, so it is the machine
+(PowerToys Advanced Paste runs; no `twinfm` process was left, no window held the clipboard open at
+the moment asked), not this branch. Screenshots of the scripted window (`SLINT_BACKEND=winit-software`,
+`tools/shot.ps1`; Jeremy's system in dark mode, so every one is the dark board): the details list
+with a selection and the cursor, two tabs with the filter and the preview column, the large-icon
+grid with the settings dialog, both toolbar placements with the path entry and the sidebar hidden,
+and the dialog with the switches. In-app busy pairs after task 1 against `target-p9m3` (eight runs,
+`[busy] 10 s after split`, one session state, render p50 2.5 to 3.4 ms): reference 21.9 / 18.0 /
+18.4 / 20.9 (median 19.7), candidate 20.3 / 23.0 / 19.2 / 19.2 (median 19.8): flat. After task 3 one
+pair read 18.0 / 22.2 and the next four runs presented no frames (render n=6, interval 50 ms: the
+session had changed state), so they decide nothing; tasks 2 and 3 change nothing the gate scenario
+draws per row. The console triplet is still to run.
+
+**Waiting on Jeremy** (§ Open questions): Inter (task 4 downloads three TTFs), the row and bar
+heights (task 5), and the gate (task 6, his elevated console).
+
 ### Open questions
 
 - **Row height**: keep 22 px (32 with thumbnails), Explorer's compact spacing, or go to the
