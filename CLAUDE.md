@@ -30,7 +30,7 @@ bundle; opened 2026-10-21; its first section quotes Jeremy's kickoff decisions, 
 lead's, § Open questions what each milestone's brief settles first). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (255 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (265 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -39,7 +39,8 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   writers', the ArchiveFolder listing's, and two file operation worker tests; since 2026-10-19 the
   ArchiveFolder case test too) write archives into
   scratch folders, and since P8-M1 the preview worker's test writes PDFs into one, and since P8-M2
-  two more write Markdown and pictures into scratch folders, see below)
+  two more write Markdown and pictures into scratch folders, and since P9-M2 two more write text,
+  pictures and a page into scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -672,6 +673,32 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   plain`), `link "<dest>": browser | anchor -> block K | open <path> | show <path> | refused: <why>`
   (` (scripted: not launched)` after browser and document opens in a scripted run), `gen=G scrolled
   to block K: top Y of H px`.
+  Since P9-M2, text, pictures and HTML (`preview.rs` `TEXT_EXTS`, `PICTURE_EXTS`, `HTML_EXTS`, any
+  case; anything else, a file with no extension, HEIC, HEIF and AVIF are "No preview"; the archive and
+  cloud checks apply as for a PDF). **Text** (`.txt`, `.log`, `.json`, `.rs`, `.ps1` and the rest of
+  the list) is read as Markdown is (2 MB, a UTF-8 or UTF-16 BOM, else UTF-8 with invalid bytes
+  replaced, the note first when cut) and shown as code blocks (`markdown::text_blocks`: tabs as four
+  spaces, chunks of at most 40 lines and 8 KB, `TEXT_CHUNK_BYTES`, a longer line split at a character
+  boundary; Consolas, wrapped as Markdown's code is). **A picture** (`.jpg`, `.png`, `.gif` (first
+  frame), `.webp`, `.bmp`, `.tif`, `.ico`, `.svg` and the rest) is decoded on the worker
+  (`decode_picture`: the EXIF orientation applied, as it is now for Markdown's pictures too; up to 512
+  MB of pixels while decoding, `DECODE_MAX`), scaled down by `fit_px` (no side over 8,192 px, the
+  pixels within the 64 MB budget, never up), and shown as a picture block at its own size in screen
+  pixels (the `Picture` reply's `physical`), fitted to the column, with a note `W x H, <size>,
+  <FORMAT>` under it; "This picture could not be read" when the decoder refuses it. **HTML** (`.html`,
+  `.htm`) is read by TwinFM's own scanner (`src/html.rs`, pure; no parser crate) into the Markdown
+  blocks: headings, paragraphs (`p`, `div` and the other block containers), lists, quotes, `pre` as
+  code, rules, tables (`th` rows as heads, `colspan` ignored), local pictures, `a`, `b`/`strong`,
+  `i`/`em`, `code` inline; `script`, `style`, `head`, `nav`, `noscript`, `title`, `template`, `svg`,
+  `iframe` and comments dropped; entities decoded (`markdown::entities`: Latin-1 and the common
+  typographic names, numeric ones); an element's `id` (and `<a name>`) anchors the block it starts,
+  so `previewlink #id` scrolls to it. No new driver step (`waitpreview` covers the three). `[preview]`
+  lines: `pane=N gen=G <path>: text, L lines, B bytes, <UTF-8 | UTF-8 BOM | UTF-16LE | UTF-16BE>[ (invalid
+  bytes replaced)][, cut at 2 MB]`, `pane=N gen=G <path>: picture WxH px, <format>, decoded in T ms[,
+  scaled to WxH]` (W x H upright, before scaling), `pane=N gen=G <path>: picture failed: <why>`
+  (`missing`, `failed: <decoder error>`, `over 512 MB of pixels`, `panicked: <msg>`), `pane=N gen=G
+  <path>: html, B blocks (H headings, C code, T tables, I images), parsed in T ms[, cut at 2 MB]`;
+  a text or HTML file that cannot be read gives `unreadable: <why>` as Markdown does.
   Since P8-L1, the first of the Phase 7 leftovers: Return, a double-click and the Windows 11 menu's
   Open open **every selected item** when the row is in a selection of several (`model::open_set`;
   the menu's Open takes the selection as every menu item does): folders, drives and archives each
@@ -816,7 +843,12 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   g-big.md (over 2 MB), and the cursor goes on through them, f-readme.md's `#usage` link followed and
   g-big.md scrolled; it reports no-preview lines (two per cycle), Markdown previews (two), pictures
   shown and alt texts (summed from the `pictures done` lines; alt text must be 0), styled-text
-  fall-backs and cuts at 2 MB (one). Since P9-M1 each cycle also drags the left pane's Type | Size
+  fall-backs and cuts at 2 MB (one). Since P9-M2 d-notes.txt and e-dot.png are previewed (text, a
+  picture; no "no preview" line is left), and the setup adds h-notes.txt (tabs and a 20,000-character
+  line), i-photo.jpg (System.Drawing) and j-page.html (a head, script and style dropped, ids, a list,
+  a table, a pre, e-dot.png), the cursor going on through them and j-page.html's `#end` followed; it
+  reports text previews (three per cycle), pictures (two), picture failures (must be 0) and HTML
+  previews (one). Since P9-M1 each cycle also drags the left pane's Type | Size
   grip 30 px right in `src\tree`, fits Modified and sets the widths back with `colwidth`; it reports
   drags read back as Size 90 -> 60, fits, and widths lines back at 120, 90, 140.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
@@ -889,7 +921,11 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   damaged one and a text file in `%TEMP%\twinfm-p8m1-test-<pid>\` and runs the preview worker on
   them; since P8-M2 `preview::tests::pictures_are_capped` decodes PNGs, an SVG and a broken file in
   `%TEMP%\twinfm-p8m2-pic-<pid>\`, and `the_worker_previews_markdown_with_a_picture` runs the worker on
-  a README with a local PNG and a file over 2 MB in `%TEMP%\twinfm-p8m2-test-<pid>\`. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
+  a README with a local PNG and a file over 2 MB in `%TEMP%\twinfm-p8m2-test-<pid>\`; since P9-M2
+  `preview::tests::a_phone_photo_shows_upright` decodes JPEGs with an EXIF orientation, a BMP and a
+  broken file in `%TEMP%\twinfm-p9m2-pic-<pid>\`, and `the_worker_previews_text_pictures_and_html`
+  runs the worker on text (UTF-16 and over 2 MB too), a JPEG, a broken PNG and a page in
+  `%TEMP%\twinfm-p9m2-test-<pid>\`. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
   `%TEMP%\twinfm-p8l2-raw-<pid>.zip`, `fs::archivewrite::tests::password_zips_and_copies_between_zips`
   makes ZipCrypto, AES and plain zips in `%TEMP%\twinfm-p8l2-pw-<pid>\`, and `zip_jobs_on_the_worker`
   writes into its tar.exe password zip with the script's password (`zippassword`'s path) and copies

@@ -103,6 +103,13 @@
 # Reported besides: Markdown previews (two per cycle), pictures shown and alt texts (from the
 # `pictures done` lines; g-big.md repeats the one picture thousands of times), styled-text
 # fall-backs, cuts at 2 MB (one per cycle).
+# P9-M2: d-notes.txt is previewed as text and e-dot.png as a picture now (no "no preview" line is
+# left in the cycle), and the setup adds h-notes.txt (60 lines, tabs and one 20,000-character line),
+# i-photo.jpg (1200 x 800, made with System.Drawing) and j-page.html (a head, a script and a style
+# to drop, headings with ids, a list, a table, a pre, e-dot.png, an #anchor link); after g-big.md the
+# cursor goes on through the three and j-page.html's anchor is followed. Reported besides: text
+# previews (three per cycle), pictures (two per cycle), picture failures (must be 0), HTML previews
+# (one per cycle).
 #
 # P8-L1, after the preview cycle: the left pane on src\tree (ten folders) goes to medium tiles,
 # PageDown and PageUp move its cursor by grid rows (Explorer's), it goes back to details, two
@@ -216,6 +223,32 @@ $readme = "# Soak README`n`nSome **bold**, *italic*, ``code`` and a [link](#usag
 $sb = New-Object System.Text.StringBuilder
 for ($i = 0; $sb.Length -lt 2300000; $i++) { [void]$sb.Append("## Section $i`n`n" + $readme) }
 [System.IO.File]::WriteAllText((Join-Path $prev 'g-big.md'), $sb.ToString())
+# P9-M2: text, a photo and a page.
+$sb = New-Object System.Text.StringBuilder
+for ($i = 0; $i -lt 60; $i++) { [void]$sb.Append("`tline $i of the soak's notes`r`n") }
+[void]$sb.Append(('x' * 20000) + "`r`n")
+[System.IO.File]::WriteAllText((Join-Path $prev 'h-notes.txt'), $sb.ToString())
+$bmp = New-Object System.Drawing.Bitmap 1200, 800
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush((New-Object System.Drawing.Point 0, 0), (New-Object System.Drawing.Point 1200, 800), [System.Drawing.Color]::SteelBlue, [System.Drawing.Color]::Orange)
+$g.FillRectangle($brush, 0, 0, 1200, 800); $brush.Dispose(); $g.Dispose()
+$bmp.Save((Join-Path $prev 'i-photo.jpg'), [System.Drawing.Imaging.ImageFormat]::Jpeg); $bmp.Dispose()
+$page = @'
+<!DOCTYPE html>
+<html><head><title>Soak page</title><style>body { font: 12px sans-serif }</style>
+<script>if (1 < 2) { document.write("<p>never shown</p>"); }</script></head>
+<body><h1 id="top">Soak &amp; page</h1>
+<p>Some <b>bold</b>, <i>italic</i>, <code>code</code> and a <a href="#end">link to the end</a>.</p>
+<ul><li>one<li>two<ul><li>nested</li></ul></ul>
+<table><tr><th>Name</th><th>Size</th></tr><tr><td>a</td><td>1</td></tr></table>
+<pre>fn main() {
+	println!("hi");
+}</pre>
+<p><img src="e-dot.png" alt="dot"></p>
+<h2 id="end">The end</h2><p>Done.</p>
+</body></html>
+'@
+[System.IO.File]::WriteAllText((Join-Path $prev 'j-page.html'), $page)
 
 $scroll = @($ScrollFolders | Where-Object { Test-Path $_ })
 $wait = 'waitops 60000'
@@ -339,6 +372,8 @@ $cycle = @(
     # P8-M2: e-dot.png, f-readme.md (its anchor), g-big.md (scrolled).
     'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'previewlink #usage', 'waitpreview 5000',
     'key Down', 'waitpreview 10000', 'previewscroll 20000', 'sleep 300',
+    # P9-M2: h-notes.txt, i-photo.jpg, j-page.html (its anchor).
+    'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'previewlink #end', 'waitpreview 5000',
     'preview width 0.5', 'waitpreview 5000', 'preview width 0.35', 'waitpreview 5000', 'preview toggle', 'sleep 200',
     # P8-L1: the grid's PageDown and Return on two folders (see the header).
     "nav 0 $src\tree", 'sleep 500', 'click 0 0', 'view medium', 'sleep 300', 'key PageDown', 'sleep 100', 'key PageUp', 'sleep 100',
@@ -495,6 +530,10 @@ $pvPages = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String 
 $pvDamaged = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': damaged: ').Count
 $pvOther = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': no preview for this type').Count
 $pvMd = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': markdown, ').Count
+$pvText = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': text, ').Count
+$pvPicture = @($log | Select-String -Pattern '\[preview\] pane=.*: picture \d+x\d+ px, ').Count
+$pvPicFailed = @($log | Select-String -SimpleMatch ': picture failed: ').Count
+$pvHtml = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': html, ').Count
 $pvPics = 0; $pvAlt = 0
 foreach ($m in ($log | Select-String -Pattern 'pictures done: (\d+) shown, (\d+) alt text')) { $pvPics += [int]$m.Matches[0].Groups[1].Value; $pvAlt += [int]$m.Matches[0].Groups[2].Value }
 $pvFell = @($log | Select-String -SimpleMatch 'styled text fell back to plain').Count
@@ -532,6 +571,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "between zips: copies from a zip $fromZip (three per cycle), moves from a zip $fromZipMoves (one per cycle); passwords from the script $pwScript, right $pwRight (one each per cycle)"
 "archives inside archives: copies out $nestedOut, copies from an archive into a zip $fromShell (one each per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
-"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (two per cycle), markdown $pvMd (two per cycle), pictures shown $pvPics (f-readme.md's one and g-big.md's repeats, the file decoded once), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
+"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (three per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, and j-page.html's one), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
 "column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (one per cycle and one at start)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

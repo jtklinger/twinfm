@@ -18,6 +18,7 @@ mod devices;
 mod dnd;
 mod explorercmd;
 mod fileops;
+mod html;
 mod icons;
 mod markdown;
 mod model;

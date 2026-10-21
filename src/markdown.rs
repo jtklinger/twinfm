@@ -16,6 +16,8 @@ pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 /// many table rows, so the ListView builds only what is on screen even for a long one.
 pub const CODE_CHUNK: usize = 40;
 pub const TABLE_CHUNK: usize = 40;
+/// Plain text's code blocks also end before they pass this many bytes (P9-M2).
+pub const TEXT_CHUNK_BYTES: usize = 8192;
 
 /// Slint's placeholder for interpolation in `from_markdown`, which fails on it (removed).
 const PLACEHOLDER: char = '\u{E541}';
@@ -82,6 +84,9 @@ pub struct Block {
     /// A code block's or table's first and last chunk (a chunk between draws no ends).
     pub first: bool,
     pub last: bool,
+    /// HTML (P9-M2): the ids of the elements that start this block, lower case, space separated,
+    /// for `#id` links (a heading's slug is added by the worker).
+    pub anchor: String,
 }
 
 /// The text to parse from the file's first bytes (`MAX_BYTES` + 1 read, so `cut` can tell): a
@@ -267,9 +272,9 @@ pub fn image_path(src: &str, base: &Path) -> Option<PathBuf> {
 /// One block's inline content, written as the inline Markdown `StyledText::from_markdown` takes,
 /// and as plain text beside it.
 #[derive(Default)]
-struct Inline {
-    md: String,
-    plain: String,
+pub(crate) struct Inline {
+    pub(crate) md: String,
+    pub(crate) plain: String,
     /// The last thing written was a closing emphasis run.
     closed: bool,
 }
@@ -277,7 +282,7 @@ struct Inline {
 impl Inline {
     /// Text: every ASCII punctuation character escaped (so nothing in it reads as markup), line
     /// breaks made spaces, Slint's placeholder removed.
-    fn text(&mut self, s: &str) {
+    pub(crate) fn text(&mut self, s: &str) {
         for c in s.chars() {
             match c {
                 PLACEHOLDER => {}
@@ -298,7 +303,7 @@ impl Inline {
     }
 
     /// An emphasis, strong or strikethrough run, opening or closing.
-    fn delim(&mut self, run: &str, open: bool) {
+    pub(crate) fn delim(&mut self, run: &str, open: bool) {
         if open && self.closed {
             self.md.push(ZWSP);
         }
@@ -309,7 +314,7 @@ impl Inline {
     /// A code span, fenced one backtick longer than any run inside, padded with a space either
     /// side when it starts or ends with a backtick or with a space at both ends (which a code span
     /// strips again).
-    fn code(&mut self, s: &str) {
+    pub(crate) fn code(&mut self, s: &str) {
         let s: String = s.chars().filter(|&c| c != PLACEHOLDER).map(|c| if c == '\n' { ' ' } else { c }).collect();
         if s.is_empty() {
             return;
@@ -328,14 +333,14 @@ impl Inline {
         self.closed = false;
     }
 
-    fn link_open(&mut self) {
+    pub(crate) fn link_open(&mut self) {
         self.md.push('[');
         self.closed = false;
     }
 
     /// `](<dest>)`: in angle brackets so spaces and parentheses need nothing; `<`, `>` and `\`
     /// escaped.
-    fn link_close(&mut self, dest: &str) {
+    pub(crate) fn link_close(&mut self, dest: &str) {
         self.md.push_str("](<");
         for c in dest.chars() {
             match c {
@@ -351,7 +356,7 @@ impl Inline {
         self.closed = false;
     }
 
-    fn hard_break(&mut self) {
+    pub(crate) fn hard_break(&mut self) {
         self.md.push_str("\\\n");
         self.plain.push('\n');
         self.closed = false;
@@ -401,8 +406,38 @@ fn attr(tag: &str, name: &str) -> Option<String> {
     None
 }
 
-/// The few entities READMEs use, and numeric ones.
-fn entities(s: &str) -> String {
+/// The named entities of Latin-1, U+00A0 (`nbsp`) to U+00FF (`yuml`), in order.
+const LATIN1: [&str; 96] = [
+    "nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf", "laquo", "not", "shy", "reg", "macr", "deg", "plusmn",
+    "sup2", "sup3", "acute", "micro", "para", "middot", "cedil", "sup1", "ordm", "raquo", "frac14", "frac12", "frac34", "iquest", "Agrave", "Aacute",
+    "Acirc", "Atilde", "Auml", "Aring", "AElig", "Ccedil", "Egrave", "Eacute", "Ecirc", "Euml", "Igrave", "Iacute", "Icirc", "Iuml", "ETH", "Ntilde",
+    "Ograve", "Oacute", "Ocirc", "Otilde", "Ouml", "times", "Oslash", "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute", "THORN", "szlig", "agrave",
+    "aacute", "acirc", "atilde", "auml", "aring", "aelig", "ccedil", "egrave", "eacute", "ecirc", "euml", "igrave", "iacute", "icirc", "iuml", "eth",
+    "ntilde", "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute", "ucirc", "uuml", "yacute", "thorn", "yuml",
+];
+
+/// Named entities beyond Latin-1 that pages use: markup, typography, arrows, a few symbols.
+const NAMED: &[(&str, char)] = &[
+    ("amp", '&'), ("lt", '<'), ("gt", '>'), ("quot", '"'), ("apos", '\''), ("OElig", 'Œ'), ("oelig", 'œ'), ("Scaron", 'Š'), ("scaron", 'š'),
+    ("Yuml", 'Ÿ'), ("fnof", 'ƒ'), ("circ", 'ˆ'), ("tilde", '˜'), ("ensp", '\u{2002}'), ("emsp", '\u{2003}'), ("thinsp", '\u{2009}'),
+    ("zwnj", '\u{200C}'), ("zwj", '\u{200D}'), ("lrm", '\u{200E}'), ("rlm", '\u{200F}'), ("ndash", '–'), ("mdash", '—'), ("lsquo", '‘'),
+    ("rsquo", '’'), ("sbquo", '‚'), ("ldquo", '“'), ("rdquo", '”'), ("bdquo", '„'), ("dagger", '†'), ("Dagger", '‡'), ("bull", '•'),
+    ("hellip", '…'), ("permil", '‰'), ("prime", '′'), ("Prime", '″'), ("lsaquo", '‹'), ("rsaquo", '›'), ("oline", '‾'), ("euro", '€'),
+    ("trade", '™'), ("larr", '←'), ("uarr", '↑'), ("rarr", '→'), ("darr", '↓'), ("harr", '↔'), ("lArr", '⇐'), ("rArr", '⇒'), ("hArr", '⇔'),
+    ("minus", '−'), ("le", '≤'), ("ge", '≥'), ("ne", '≠'), ("infin", '∞'), ("check", '✓'), ("hearts", '♥'), ("spades", '♠'), ("clubs", '♣'),
+    ("diams", '♦'),
+];
+
+/// The character a named entity (`mdash`, without `&` and `;`) stands for.
+fn entity(name: &str) -> Option<char> {
+    if let Some(i) = LATIN1.iter().position(|n| *n == name) {
+        return char::from_u32(0xA0 + i as u32);
+    }
+    NAMED.iter().find(|(n, _)| *n == name).map(|&(_, c)| c)
+}
+
+/// Entities decoded: the named ones above and numeric ones; any other is left as written.
+pub(crate) fn entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(i) = rest.find('&') {
@@ -411,21 +446,13 @@ fn entities(s: &str) -> String {
         let semi = rest.find(';').filter(|&j| j <= 12);
         let decoded = semi.and_then(|j| {
             let name = &rest[1..j];
-            let c = match name {
-                "amp" => Some('&'),
-                "lt" => Some('<'),
-                "gt" => Some('>'),
-                "quot" => Some('"'),
-                "apos" => Some('\''),
-                "nbsp" => Some('\u{a0}'),
-                "copy" => Some('©'),
-                _ => name
-                    .strip_prefix("#x")
+            let c = entity(name).or_else(|| {
+                name.strip_prefix("#x")
                     .or_else(|| name.strip_prefix("#X"))
                     .and_then(|h| u32::from_str_radix(h, 16).ok())
                     .or_else(|| name.strip_prefix('#').and_then(|d| d.parse().ok()))
-                    .and_then(char::from_u32),
-            };
+                    .and_then(char::from_u32)
+            });
             c.map(|c| (c, j + 1))
         });
         match decoded {
@@ -489,6 +516,80 @@ fn html_pieces(html: &str) -> Vec<Piece> {
     flush(&mut text, &mut out);
     out.retain(|p| *p != Piece::Break);
     out
+}
+
+/// A table as blocks of at most `TABLE_CHUNK` rows, every row as wide as the widest, the columns'
+/// shares from their longest cell (3 to 40 characters).
+pub(crate) fn table_chunks(mut rows: Vec<Row>, mut aligns: Vec<u8>) -> Vec<Block> {
+    let cols = rows.iter().map(|r| r.cells.len()).max().unwrap_or(0).max(aligns.len());
+    if cols == 0 {
+        return Vec::new();
+    }
+    for r in &mut rows {
+        r.cells.resize(cols, Cell::default());
+    }
+    let weights: Vec<f32> = (0..cols).map(|c| rows.iter().map(|r| r.cells[c].plain.chars().count()).max().unwrap_or(0).clamp(3, 40) as f32).collect();
+    aligns.resize(cols, 0);
+    let n = rows.len().div_ceil(TABLE_CHUNK);
+    let chunks = rows.chunks(TABLE_CHUNK).enumerate();
+    chunks.map(|(i, chunk)| Block { kind: Kind::Table, rows: chunk.to_vec(), aligns: aligns.clone(), weights: weights.clone(), first: i == 0, last: i + 1 == n, ..Default::default() }).collect()
+}
+
+/// Plain text (P9-M2), and an HTML `pre`: tabs as four spaces, `\r\n` and `\r` as line ends, shown
+/// as code blocks of at most `CODE_CHUNK` lines and `TEXT_CHUNK_BYTES` bytes, a longer line split at
+/// a character boundary into pieces of that size (so one 2 MB line is not one `Text` shaped whole).
+/// Returns the blocks and the number of lines.
+pub fn text_blocks(text: &str) -> (Vec<Block>, usize) {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n").replace('\t', "    ");
+    let body = text.strip_suffix('\n').unwrap_or(&text);
+    if body.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let lines: Vec<&str> = body.split('\n').collect();
+    let mut chunks: Vec<String> = Vec::new();
+    let (mut cur, mut n) = (String::new(), 0);
+    for line in &lines {
+        let mut rest: &str = line;
+        loop {
+            let mut end = rest.len().min(TEXT_CHUNK_BYTES);
+            while !rest.is_char_boundary(end) {
+                end -= 1;
+            }
+            let (piece, more) = rest.split_at(end);
+            if n > 0 && (n == CODE_CHUNK || cur.len() + 1 + piece.len() > TEXT_CHUNK_BYTES) {
+                chunks.push(std::mem::take(&mut cur));
+                n = 0;
+            }
+            if n > 0 {
+                cur.push('\n');
+            }
+            cur.push_str(piece);
+            n += 1;
+            if more.is_empty() {
+                break;
+            }
+            rest = more;
+        }
+    }
+    chunks.push(cur);
+    let k = chunks.len();
+    let blocks = chunks.into_iter().enumerate().map(|(i, plain)| Block { kind: Kind::Code, plain, first: i == 0, last: i + 1 == k, ..Default::default() });
+    (blocks.collect(), lines.len())
+}
+
+/// The encoding `decode` reads a file's first bytes in, for the `[preview]` line.
+pub fn encoding(bytes: &[u8]) -> &'static str {
+    let head = &bytes[..bytes.len().min(MAX_BYTES)];
+    // A character cut by the cap at the end is not an invalid byte.
+    let valid = |b: &[u8]| std::str::from_utf8(b).map_or_else(|e| e.error_len().is_none(), |_| true);
+    match head {
+        [0xFF, 0xFE, ..] => "UTF-16LE",
+        [0xFE, 0xFF, ..] => "UTF-16BE",
+        [0xEF, 0xBB, 0xBF, rest @ ..] if valid(rest) => "UTF-8 BOM",
+        [0xEF, 0xBB, 0xBF, ..] => "UTF-8 BOM (invalid bytes replaced)",
+        _ if valid(head) => "UTF-8",
+        _ => "UTF-8 (invalid bytes replaced)",
+    }
 }
 
 /// What the parse found besides the blocks: the remote pictures shown as their alt text.
@@ -788,23 +889,9 @@ impl Builder {
         }
     }
 
-    /// A table as blocks of at most `TABLE_CHUNK` rows, every row as wide as the head, the columns'
-    /// shares from their longest cell (3 to 40 characters).
     fn table_blocks(&mut self, t: Table) {
-        let cols = t.rows.iter().map(|r| r.cells.len()).max().unwrap_or(0).max(t.aligns.len());
-        if cols == 0 {
-            return;
-        }
-        let mut rows = t.rows;
-        for r in &mut rows {
-            r.cells.resize(cols, Cell::default());
-        }
-        let weights: Vec<f32> = (0..cols).map(|c| rows.iter().map(|r| r.cells[c].plain.chars().count()).max().unwrap_or(0).clamp(3, 40) as f32).collect();
-        let mut aligns = t.aligns;
-        aligns.resize(cols, 0);
-        let n = rows.len().div_ceil(TABLE_CHUNK);
-        for (i, chunk) in rows.chunks(TABLE_CHUNK).enumerate() {
-            self.push(Block { kind: Kind::Table, rows: chunk.to_vec(), aligns: aligns.clone(), weights: weights.clone(), first: i == 0, last: i + 1 == n, ..Default::default() });
+        for b in table_chunks(t.rows, t.aligns) {
+            self.push(b);
         }
     }
 
@@ -1086,5 +1173,59 @@ mod tests {
         assert_eq!(attr(" src=x.png>", "src"), Some("x.png".into()));
         assert_eq!(attr(" data-src=\"y\" src=\"z\"", "src"), Some("z".into()));
         assert_eq!(entities("&#65;&#x42;&bogus;&"), "AB&bogus;&");
+    }
+
+    #[test]
+    fn named_entities() {
+        assert_eq!(entities("&nbsp;&yuml;&Auml;&eacute;&times;"), "\u{a0}ÿÄé×");
+        assert_eq!(entities("a&mdash;b&hellip; &ldquo;q&rdquo; &euro;5 &rarr; &trade;"), "a—b… “q” €5 → ™");
+        assert_eq!(entities("&AMP; &Eacute; &eacute;"), "&AMP; É é", "names are case-sensitive");
+        assert_eq!(entity("copy"), Some('©'));
+        assert_eq!(entity("frac12"), Some('½'));
+    }
+
+    #[test]
+    fn plain_text_is_chunked() {
+        let (b, lines) = text_blocks("one\r\ntwo\rthree\tx\n");
+        assert_eq!(lines, 3);
+        assert_eq!(b.len(), 1);
+        assert_eq!((b[0].kind, b[0].plain.as_str(), b[0].first, b[0].last), (Kind::Code, "one\ntwo\nthree    x", true, true));
+        assert_eq!(text_blocks(""), (vec![], 0));
+        assert_eq!(text_blocks("\n").1, 0, "a lone line end is an empty file");
+        assert_eq!(text_blocks("a\n\nb").0[0].plain, "a\n\nb", "blank lines kept");
+        // 95 lines: chunks of 40, 40 and 15.
+        let src: String = (0..95).map(|i| format!("line {i}\n")).collect();
+        let (b, lines) = text_blocks(&src);
+        assert_eq!(lines, 95);
+        assert_eq!(b.iter().map(|x| x.plain.lines().count()).collect::<Vec<_>>(), vec![40, 40, 15]);
+        assert_eq!(b.iter().map(|x| (x.first, x.last)).collect::<Vec<_>>(), vec![(true, false), (false, false), (false, true)]);
+        // Lines of 3,000 bytes: two to a chunk (three would pass 8 KB).
+        let src = format!("{}\n", "x".repeat(3000)).repeat(5);
+        let b = text_blocks(&src).0;
+        assert_eq!(b.iter().map(|x| x.plain.lines().count()).collect::<Vec<_>>(), vec![2, 2, 1]);
+        assert!(b.iter().all(|x| x.plain.len() <= TEXT_CHUNK_BYTES));
+        // One line of 20,000 bytes (a minified JSON), with a 3-byte character across the cut.
+        let long = format!("{}€{}", "a".repeat(TEXT_CHUNK_BYTES - 1), "b".repeat(20_000 - TEXT_CHUNK_BYTES - 2));
+        let (b, lines) = text_blocks(&long);
+        assert_eq!(lines, 1);
+        assert_eq!(b.len(), 3);
+        assert_eq!(b[0].plain.len(), TEXT_CHUNK_BYTES - 1, "the euro sign not cut");
+        assert!(b[1].plain.starts_with('€'));
+        assert_eq!(b.iter().map(|x| x.plain.as_str()).collect::<String>(), long, "nothing lost");
+    }
+
+    #[test]
+    fn encodings_are_named() {
+        assert_eq!(encoding(b"plain"), "UTF-8");
+        assert_eq!(encoding("é".as_bytes()), "UTF-8");
+        assert_eq!(encoding(b"\xEF\xBB\xBFbom"), "UTF-8 BOM");
+        assert_eq!(encoding(b"bad \xFF"), "UTF-8 (invalid bytes replaced)");
+        assert_eq!(encoding(b"\xEF\xBB\xBFbad \xFF"), "UTF-8 BOM (invalid bytes replaced)");
+        assert_eq!(encoding(b"\xFF\xFEa\0"), "UTF-16LE");
+        assert_eq!(encoding(b"\xFE\xFF\0a"), "UTF-16BE");
+        // A character cut by the 2 MB cap is not invalid.
+        let mut big = "y".repeat(MAX_BYTES - 1).into_bytes();
+        big.extend("€".as_bytes());
+        assert_eq!(encoding(&big), "UTF-8");
     }
 }
