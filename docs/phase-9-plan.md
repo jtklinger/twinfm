@@ -583,3 +583,49 @@ preview cycle): exit code 0, no panicked line, every other count as before; prev
 markdown 4, text 4, pictures 4, picture failures 0, html 2, pictures shown 19,078 (g-big.md's repeats),
 alt text 0, fall-backs 0, cut at 2 MB 2, superseded 0, waitpreview timeouts 0, worker panics 0, no
 preview for the type 0; working set 126 to 220 MB.
+
+### Gate
+
+Run by Jeremy on 2026-10-21 at 11:36 (tag ab37 for both settings, `C:\traces\gate-p9m2.ps1`, the
+same file as `tools/gate-p9m2.ps1`, 17 min): `target-p9m2` (95ace9f, built `--locked` from a detached
+checkout) against `target-p8m2` (db30820), three rounds of reference, candidate, reference with
+`C:\traces\preview.toml`, candidate with it. Every run passed the wrapper's checks (no panic,
+`[settings] file C:\traces\preview.toml (read)` and `[preview] shown at` in the preview runs).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p8m2-1 / 2 / 3 | 17.8 / 17.5 / 17.6 | 18.7 / 17.7 / 19.1 | 2.21 / 2.19 / 2.19 |
+| p9m2-1 / 2 / 3 | 18.0 / 17.6 / 21.7 | 19.4 / 16.1 / 20.2 | 2.19 / 2.18 / 2.90 |
+| p8m2-preview-1 / 2 / 3 | 17.1 / 16.7 / 20.1 | 18.3 / 17.0 / 17.8 | 2.06 / 2.04 / 2.71 |
+| p9m2-preview-1 / 2 / 3 | 16.9 / 17.1 / 20.2 | 17.8 / 15.3 / 21.7 | 2.05 / 2.01 / 2.73 |
+
+The session changed state in round 3, from its second run on (render p50 2.71 to 2.90 ms against
+2.01 to 2.21 in every run before, the ab23 state; p8m2-3, the round's first run, still read 2.19), and
+those three runs read 20 to 22% whichever binary sat in them. Medians as the wrapper reads them:
+defaults 17.6 (reference) / 18.0 (candidate), preview 17.1 / 17.1; no gap that counts in either.
+Read like for like, rounds 1 and 2: defaults 17.8 / 17.5 against 18.0 / 17.6, preview 17.1 / 16.7
+against 16.9 / 17.1, every run under 20%, the pairs within 0.5 of a point in both orders. Passed;
+P9-M2 adds no cost while the lists scroll, with the column hidden or shown.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m2\release\twinfm.exe`, the preview shown (Alt+P),
+each beside the program that normally opens it where there is one:
+
+1. A Rust source file (one of TwinFM's own, `src\preview.rs`): Consolas, long comment lines wrapped,
+   tabs as four spaces, scrolls smoothly.
+2. A log of about 2 MB or more: the note "Only the first 2 MB ..." at the top, scrolling to the end
+   without stalls.
+3. A UTF-16 text file (a `.reg` export from Registry Editor is one): the letters right, no gaps
+   between them.
+4. JPEGs from a phone, some taken upright and some sideways: each shown the way Photos shows it, with
+   its size, file size and JPEG in the note.
+5. A panorama 10,000 px or wider: shown whole across the column, the note giving its full size.
+6. An animated GIF: its first frame, still.
+7. An SVG with text in it: the shapes drawn; the text is not (known, P8-M2's rule).
+8. A web page saved from Edge ("Save as", complete) beside the same page in Edge: headings, lists,
+   tables, links and the saved pictures in the column; scripts, menus and styling gone.
+9. A page of nested lists and tables (a documentation page): the nesting kept, tables readable.
+10. A page of nothing but a script: "This page has no text to show."
+11. A `.heic` photo and a file with no extension: "No preview".
+12. The column's width dragged with a picture and with a long text shown: both follow the width.
