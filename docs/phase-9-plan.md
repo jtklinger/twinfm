@@ -456,7 +456,9 @@ made and never changes while the lists scroll; P3-M1's switch decided what each 
 ### Decisions
 
 - **The grip is named by the column on its right, and a fit fits that column** (Settled first): the
-  kickoff's "fits the column to its left" would leave Modified unfittable. For Jeremy to check.
+  kickoff's "fits the column to its left" would leave Modified unfittable. Jeremy, 2026-10-21: "Keep
+  the fit rule as built: a double-click fits the column on the boundary's right (Type, Size or
+  Modified)."
 - **A fit includes the header label** (bold), so a column of empty cells (folders' sizes) fits to
   "Size" plus 12 px rather than to nothing; a fit never goes under 40 px.
 - **The drag's travel is measured from the press**, not move by move (the sidebar's resize edge adds
@@ -572,9 +574,7 @@ elevated) window, the panes set up unequal (the split on, two tabs in one pane o
 8. **Rename** (F2) after a drag: the edit box ends where the Type column starts.
 9. **A restart**: close TwinFM with the window's close button and start it again; each pane's widths
    are as you left them (in `%APPDATA%\twinfm\config.toml` as `col_type_left` and the rest).
-10. **The fit's rule** (a call for you): a double-click fits the column on the boundary's right
-    (Type, Size or Modified). The kickoff said "the column to its left", which would fit Name and
-    leave Modified unfittable. Keep it, or change it?
+10. **The fit's rule**: settled by Jeremy on 2026-10-21 (Decisions): kept as built.
 
 ## Open questions
 
