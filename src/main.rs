@@ -305,7 +305,7 @@ struct State {
     /// The drag image's icon asked of the icon worker at the last press on a row
     /// (`prefetch_drag_icon`): its path, and its pixels once the reply landed. The newest press
     /// wins; a drag takes it (`run_pending_drag`).
-    drag_icon: Option<(PathBuf, Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>)>,
+    drag_icon: Option<(PathBuf, Option<(slint::SharedPixelBuffer<slint::Rgba8Pixel>, bool)>)>,
     /// The rubber band under way (P4-M3, `band.rs`), its last window point, the timer that
     /// scrolls the list while the pointer sits at its edge, and when `[band]` last logged a count.
     band: Option<band::Band>,
@@ -651,12 +651,20 @@ fn refresh(pane: usize) {
             s.cancel = Arc::new(AtomicU8::new(fs::enumerate::SEARCH_RUNNING));
             let (pattern, cancel, hidden) = (s.pattern.clone(), s.cancel.clone(), t.model.show());
             eprintln!("[search] pane={pane} gen={generation} start \"{}\" in {}", pattern.pattern, path.display());
-            fs::enumerate::spawn_search(path, pattern, hidden, cancel, pane, generation, st.tx.clone(), wake);
+            let thumbs = search_thumbnails(st, &path);
+            fs::enumerate::spawn_search(path, pattern, hidden, thumbs, cancel, pane, generation, st.tx.clone(), wake);
             return;
         }
         let cloud = cloud_of(st, pane, &path);
         fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, cloud, st.tx.clone(), wake);
     });
+}
+
+/// Whether a search from `root` keys its results' thumbnails (P9-M4): with the setting on, and not
+/// in a cloud location, whose files' thumbnails could start downloads (a search tab carries no marks,
+/// so nothing would keep them to the cache).
+fn search_thumbnails(st: &mut State, root: &Path) -> bool {
+    st.config.thumbnails && st.cloud.of(root) == icons::Cloud::None
 }
 
 /// The folder's cloud location (`cloud::Locations::of`), logged when it has one; This PC and
@@ -2329,9 +2337,15 @@ fn drain_icons() {
             while let Ok(r) = st.icon_rx.try_recv() {
                 if icons::is_drag_key(&r.key) {
                     // A drag image's icon: kept for the press that asked for it, never in the table.
-                    if let (Some((path, slot)), icons::Outcome::Pixels(p)) = (&mut st.drag_icon, r.outcome) {
+                    // A thumbnail answers as a picture (P9-M4), an icon as pixels.
+                    let got = match r.outcome {
+                        icons::Outcome::Pixels(p) => Some((p, false)),
+                        icons::Outcome::Picture(p, _) => Some((p, true)),
+                        _ => None,
+                    };
+                    if let (Some((path, slot)), Some(got)) = (&mut st.drag_icon, got) {
                         if r.key == icons::drag_key(path) {
-                            *slot = Some(p);
+                            *slot = Some(got);
                         }
                     }
                     continue;
@@ -4254,7 +4268,11 @@ fn prefetch_drag_icon(st: &mut State, pane: usize, row: usize) {
     let path = st.tab(pane).path.join(e.name.as_str());
     let generation = model.generation.get();
     let key = icons::drag_key(&path);
-    let _ = st.icon_tx.send(icons::Request { generation, pane, key, path: path.clone(), size_px, overlay: false, thumbnail: false, row: 0, wanted: 0, mark: icons::Mark::None });
+    // A row that shows a thumbnail gets one in its drag image too (P9-M4), at the image's icon size
+    // and kept to the cache as the row's own is (its mark); the worker falls back to the icon.
+    let thumbnail = st.config.thumbnails && e.icon_key.starts_with("thumb:");
+    let mark = if thumbnail { icons::key_mark(&e.icon_key) } else { icons::Mark::None };
+    let _ = st.icon_tx.send(icons::Request { generation, pane, key, path: path.clone(), size_px, overlay: false, thumbnail, row: 0, wanted: 0, mark });
     st.drag_icon = Some((path, None));
 }
 
@@ -4300,6 +4318,7 @@ fn drag_start(pane: usize, row: usize, right: bool) {
             tile: st.grid[pane].then_some(st.tile[pane]),
             tile_picture: shown.icon >= icons::PLACEHOLDERS,
             prefetched: None,
+            prefetched_thumbnail: false,
             count: names.len(),
             scale: app.window().scale_factor(),
         };
@@ -4346,9 +4365,10 @@ pub fn run_pending_drag() {
     // still wait in the channel: the posted message can come before the worker's wake-up).
     drain_icons();
     with_state(|st| {
-        if let (Some(img), Some((path, Some(p)))) = (req.image.as_mut(), st.drag_icon.take()) {
+        if let (Some(img), Some((path, Some((p, thumb))))) = (req.image.as_mut(), st.drag_icon.take()) {
             if path == img.path {
                 img.prefetched = Some(p);
+                img.prefetched_thumbnail = thumb;
             }
         }
     });
@@ -5629,7 +5649,8 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
         show_tab(st, &app, pane);
         schedule_save(st);
         eprintln!("[search] pane={pane} gen={generation} start \"{pattern}\" in {}", root.display());
-        fs::enumerate::spawn_search(root, matcher, hidden, cancel, pane, generation, st.tx.clone(), wake);
+        let thumbs = search_thumbnails(st, &root);
+        fs::enumerate::spawn_search(root, matcher, hidden, thumbs, cancel, pane, generation, st.tx.clone(), wake);
         Some(app)
     });
     // The search started from the filter box (Ctrl+Shift+F there, or Return with a search waiting)

@@ -304,11 +304,13 @@ pub struct WalkStats {
 /// hidden-file switch shows or hides them, as in a folder). `cancel` is read before each folder
 /// and after each batch. `emit` returning false (the receiver is gone) ends the walk. Err with
 /// the error text when `root` itself cannot be listed; a folder below it that cannot be listed is
-/// counted as skipped.
+/// counted as skipped. `thumbnails`: a result in `THUMB_EXTS` gets its `thumb:` key, as in a folder
+/// (P9-M4; the caller passes false for a cloud location's root, where a thumbnail could download).
 pub fn walk(
     root: &Path,
     matcher: &crate::model::NameMatch,
     show: crate::model::Show,
+    thumbnails: bool,
     cancel: &std::sync::atomic::AtomicU8,
     mut emit: impl FnMut(Vec<Entry>) -> bool,
 ) -> Result<WalkStats, String> {
@@ -332,7 +334,7 @@ pub fn walk(
             stats.cancelled = Some(code);
             break;
         }
-        let mut icon_keys = crate::icons::IconKeys::new(dir.clone(), false);
+        let mut icon_keys = crate::icons::IconKeys::new(dir.clone(), thumbnails);
         let listed = list_dir(&dir, &mut types, &mut icon_keys, &zone, |mut e| {
             let leaf = e.name.clone();
             let enter = e.kind == Kind::Directory && depth < SEARCH_MAX_DEPTH && crate::model::shows(&e, show);
@@ -391,6 +393,7 @@ pub fn spawn_search(
     root: PathBuf,
     matcher: crate::model::NameMatch,
     show: crate::model::Show,
+    thumbnails: bool,
     cancel: std::sync::Arc<std::sync::atomic::AtomicU8>,
     pane: usize,
     generation: u64,
@@ -406,7 +409,7 @@ pub fn spawn_search(
             let t0 = Instant::now();
             let (mut batches, mut sent) = (0usize, 0usize);
             let mut logged: Option<Instant> = None;
-            let res = walk(&root, &matcher, show, &cancel, |entries| {
+            let res = walk(&root, &matcher, show, thumbnails, &cancel, |entries| {
                 batches += 1;
                 sent += entries.len();
                 if logged.is_none_or(|t| t.elapsed() >= SEARCH_FLUSH) {
@@ -506,7 +509,8 @@ fn entry_of(
         _ => types.for_entry(&name, attrs & FILE_ATTRIBUTE_DIRECTORY != 0),
     };
     let modified = unix_secs(d.ftLastWriteTime);
-    let icon_key = icon_keys.for_entry(&name, attrs, kind, modified, size);
+    let synced = kind != Kind::Cloud || !crate::icons::needs_state_read(crate::icons::placeholder_state(attrs, tag));
+    let icon_key = icon_keys.for_entry_synced(&name, attrs, kind, modified, size, synced);
     Some(Entry::with_zone(name.into(), size, modified, attrs, kind, type_text, icon_key, zone))
 }
 
@@ -866,7 +870,7 @@ mod tests {
             let show_hidden = if show_hidden { crate::model::Show::HIDDEN } else { crate::model::Show::OFF };
             let cancel = AtomicU8::new(SEARCH_RUNNING);
             let mut batches: Vec<Vec<Entry>> = Vec::new();
-            let stats = walk(root, &hit, show_hidden, &cancel, |b| {
+            let stats = walk(root, &hit, show_hidden, false, &cancel, |b| {
                 if cancel_after_first {
                     cancel.store(SEARCH_ESCAPE, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -879,7 +883,24 @@ mod tests {
         let (hidden, hidden_batches) = run(&root, true, false);
         let (cancelled, cancelled_batches) = run(&bulk, false, true);
         let (bulk_all, _) = run(&bulk, false, false);
-        let missing = walk(&dir.join("nope"), &hit, crate::model::Show::OFF, &AtomicU8::new(0), |_| true);
+        let missing = walk(&dir.join("nope"), &hit, crate::model::Show::OFF, false, &AtomicU8::new(0), |_| true);
+        // P9-M4: with thumbnails on a result in THUMB_EXTS is keyed by its full path, as a listing's is.
+        let pics = dir.join("pics");
+        std::fs::create_dir_all(pics.join("sub")).unwrap();
+        std::fs::write(pics.join(r"sub\hit.jpg"), b"x").unwrap();
+        std::fs::write(pics.join("hit.txt"), b"x").unwrap();
+        let mut thumbed: Vec<Entry> = Vec::new();
+        walk(&pics, &hit, crate::model::Show::OFF, true, &AtomicU8::new(SEARCH_RUNNING), |b| {
+            thumbed.extend(b);
+            true
+        })
+        .unwrap();
+        let mut unthumbed: Vec<Entry> = Vec::new();
+        walk(&pics, &hit, crate::model::Show::OFF, false, &AtomicU8::new(SEARCH_RUNNING), |b| {
+            unthumbed.extend(b);
+            true
+        })
+        .unwrap();
         set_attrs(&root.join("secret"), FILE_ATTRIBUTE_DIRECTORY);
         std::fs::remove_dir_all(&dir).unwrap(); // removes the junction, not the tree twice
 
@@ -898,6 +919,11 @@ mod tests {
         assert_eq!(by(r"d1\hit-loop").kind, Kind::Junction);
         assert_eq!(by(r"d1\hit-loop").icon_key.as_str(), root.join(r"d1\hit-loop").to_string_lossy(), "keyed by its real full path");
         assert_eq!(by(r"d1\d2\d3\HIT-deep.txt").icon_key, "ext:.txt");
+        let key = |v: &[Entry], n: &str| v.iter().find(|e| e.name == n).unwrap().icon_key.to_string();
+        let jpg = &thumbed.iter().find(|e| e.name == r"sub\hit.jpg").unwrap();
+        assert_eq!(key(&thumbed, r"sub\hit.jpg"), crate::icons::thumb_key(&pics.join(r"sub\hit.jpg"), jpg.modified, jpg.size));
+        assert_eq!(key(&thumbed, "hit.txt"), "ext:.txt");
+        assert_eq!(key(&unthumbed, r"sub\hit.jpg"), "ext:.jpg", "thumbnails off: the type's key");
         assert!(by(r"d1\hit-dir").is_dir());
         let hidden = hidden.unwrap();
         assert_eq!((hidden.found, hidden.walked), (5, 6), "with hidden files shown the hidden folder is entered");
