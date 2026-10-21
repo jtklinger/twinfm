@@ -90,10 +90,11 @@ Four milestones, in the order Jeremy gave on 2026-10-21 (do not fold them):
    the pointer (Name has no width of its own and takes what the three leave, so dragging the Name |
    Type boundary right shrinks Type and the list reads as Name growing). A column has a floor of 40 px
    and the Name column one of 120 px (a drag past them stops there; no column can be hidden by
-   dragging, that is the Type column's setting). A double-click on a grip fits the column to its left
-   to the widest cell on screen plus padding (the rows in the viewport, never the whole listing, so a
-   40k folder costs nothing more), taking the difference from the column to its right (Name for the
-   first grip). The widths are per pane, logical px, saved as `col_type_left`, `col_size_left`,
+   dragging, that is the Type column's setting). A double-click on a grip fits the column on its
+   right (Type, Size or Modified) to the widest cell on screen plus padding (the rows in the viewport,
+   never the whole listing, so a 40k folder costs nothing more), taking the difference from the
+   column on its left (Name for the first grip) (Jeremy, 2026-10-21, at the console checks; the
+   kickoff read "the column to its left"). The widths are per pane, logical px, saved as `col_type_left`, `col_size_left`,
    `col_modified_left` and the `_right` three in `config.toml` (defaults 120, 90, 140, so a file
    without the keys loads today's layout; out of range values clamped on load), and apply to every
    tab of the pane and to both row heights. They are **requested** widths: a pane narrower than the
@@ -300,7 +301,9 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 
 - The column grips are 6 px wide on the boundaries between header cells and move the boundary under
   them, Explorer's rule (the left column grows by what the right one gives up); a column's floor is
-  40 px, Name's 120 px; a double-click fits to the rows on screen, not the whole listing; the widths
+  40 px, Name's 120 px; a double-click fits the column on the grip's right (Type, Size or
+  Modified), the column on its left (Name for the first grip) taking the difference, to the rows on
+  screen, not the whole listing (Jeremy, 2026-10-21, at the console checks); the widths
   are logical px per pane, applied to every tab of the pane, saved under six keys with today's
   values as the defaults; they are requested widths, clipped on a pane too narrow for them as today's
   fixed columns are, nothing shrinking to fit; no "reset to defaults" item in Phase 9 (the keys can be
@@ -318,8 +321,8 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   Rust decoders do not cover them; the shell's thumbnail cache does, at thumbnail size only).
 - HTML is read into the Markdown block list, scripts and styles dropped, nothing executed; the
   parser crate is chosen by the pin check in the P9-M2 brief, a hand-written scanner the fallback.
-- Office files are read with `zip` and `roxmltree` and no Office crate unless the pin check finds one
-  that adds nothing beyond those two; Excel shows one sheet at a time (500 rows by 50 columns), the
+- Office files are read with `zip` and a streaming XML reader (`quick-xml`, the bullet above) and no
+  Office crate unless the pin check finds one that adds nothing beyond those two; Excel shows one sheet at a time (500 rows by 50 columns), the
   first by default, the others through links at the top; PowerPoint shows one block group per slide
   with a rule between; the binary `.doc`, `.xls`, `.ppt` are not previewed.
 - Thumbnails inside archive levels stay off (the shell cannot see inside an archive without
@@ -329,6 +332,264 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   never for the tick and cloud rows.
 - The Google Drive mark and the link arrow in the tiles take the overlay list by the mark's size,
   with a console check deciding whether it stays.
+
+## P9-M1: adjustable column widths
+
+Branch `claude/p9-m1-column-widths-0ab0c4`, from ab95aaf (the kickoff).
+
+### Settled first (2026-10-21, before any code)
+
+Checked against the code at ab95aaf and the pinned Slint (c1d3a8d):
+
+- **Where the widths are read today.** The four details row components (`FileRows`, `FileRowsNoType`,
+  `FileRows32`, `FileRowsNoType32`) give their Type, Size and Modified `Text`s the constants 120, 90
+  and 140 px; the two details headers (`HeaderCell`s in a `HorizontalLayout`, chosen by `show-type`)
+  the same; the rename editor's width subtracts 350 px (230 without Type). That is all. The kickoff
+  named `dnd::Layout` (the name cell's extent for `hit`, the drop highlight and the band) as a reader
+  too, but none of them reads a column today: `dnd::hit` returns the row for any x inside the list,
+  the drop highlight spans the row, and the band runs in the grid only. So the widths reach Rust
+  through a new pure function, `dnd::name_cell` (the name cell's x range in window px for a pane,
+  from the pane's widths and row height, clamped at zero), which the drag's Name floor and the
+  driver's aims use; `hit` keeps the whole row (a drop on the Type cell still lands on the row, as
+  today and as in Explorer).
+- **Header and rows sit 6 px apart**, as today: the header's cells end at the list's right edge, the
+  rows' at its right edge less their 6 px right padding. The grips follow the header's boundaries.
+- **The grips** are one overlay per pane over the header (like the rename editor and the drop
+  highlight: siblings of the list, never in the rows), a 6 px `TouchArea` centred on each boundary
+  with `mouse-cursor: ew-resize`, three with the Type column on, two with it off, none in the grid.
+  A drag reports the pointer's travel since the press in window px (absolute position, so the grip
+  following the boundary does not feed back into the delta) to Rust, which applies it to the widths
+  at the press, clamps, and sets the pane's three properties; the list follows on the next frame.
+  `double-clicked` is the fit.
+- **A grip is named by the column on its right**: `type` is Name | Type, `size` is Type | Size (Name |
+  Size with the Type column off), `modified` is Size | Modified. Dragging grip `c` by dx makes `c`
+  narrower by dx and its left neighbour wider by dx (Name absorbing it for the first grip): the
+  kickoff's rule, the boundary moves under the pointer. Floors: 40 px for a column, and the Name cell
+  may not shrink below 120 px by a drag (below it already, on a narrow pane, it may not shrink
+  further). `colwidth <pane> <col> <px>` sets column `c` to px through the same function, as a drag's
+  end does. **The fit** of grip `c` fits column `c` itself (Type, Size or Modified) to the widest of
+  its cells on screen plus 12 px (the header label included, so a fit never hides it), moving the
+  same boundary, so the difference comes from the column on the grip's left (Name for `type`). The
+  kickoff's wording, "fits the column to its left", would make Modified unfittable and Name the
+  first grip's target; the driver's vocabulary (`colfit <pane> <type|size|modified>`) and the console
+  check's "fit on a folder of long type names" read as this. A call for Jeremy to check.
+- **Measuring the cells**: Slint has no text measurement in its Rust API, so one hidden `Text` per
+  window takes the cells' strings joined by line breaks, and Rust reads its `preferred-width`, the
+  widest line in the window's own font and scale (one layout of K short lines, K the rows on screen,
+  at a double-click only).
+- **Settings**: six `f32` keys, `col_type_left`, `col_size_left`, `col_modified_left` and the
+  `_right` three, defaults 120, 90, 140; `Config::clamped` pulls each into 40 to 2,000 px (a non-finite
+  value takes its default). Applied to the pane's properties at start; a scripted run reads none,
+  except through `TWINFM_CONFIG`.
+- **The binding shape is settled by the spike below before the rest is written**: shape A, the
+  details list components take `type-w`, `size-w` and `modified-w` as `in` properties from the
+  host (from the pane, from the window's six properties set from Rust), and each row's three `Text`s
+  read `root.type-w` and the rest; shape B, per-pane copies of the list components each reading a
+  `global` of its own pane's widths directly (`ColsLeft`, `ColsRight`), the host choosing the copy once
+  per pane as it chooses by `show-type`, which doubles the details components from eight to sixteen.
+  The spike builds each shape for the gate's variant only (22 px rows with the Type column), widths
+  set from Rust to the defaults, and measures the gate scenario in-app against the unchanged build,
+  in both orders.
+
+Driver steps and lines, as the kickoff names them:
+
+- `colwidth <pane> <type|size|modified> <px>`, `coldrag <pane> <type|size|modified> <dx>` (press on
+  the grip's centre, moves in 8 px steps through Slint's pointer path, release), `colfit <pane>
+  <type|size|modified>` (a double-click on the grip through the same path).
+- `[cols] pane=N <col> W -> W2 px (drag | fit | script | config)` for each column that changed (a
+  drag of the `size` grip changes Type and Size: two lines; logged at the release, not per move;
+  `config` at start for a value other than the default), `[cols] pane=N fit <col>: widest of K rows
+  on screen = W px`, and `[cols] pane=N widths type T size S modified M (name N px)` once after each
+  change and once per pane at start (N the name cell's width in the pane as laid out then).
+
+### The spike (2026-10-21)
+
+Three builds of ab95aaf in the worktree's own `target`, each copied out before the next: the
+unchanged build (base), shape A and shape B, each for the gate's variant only (`FileRows`, 22 px rows
+with the Type column), the widths set from Rust to 120, 90, 140 at start. The gate scenario on
+`C:\traces\bigdir` in-app, twelve runs back to back in the order base, A, B, B, A, base, twice.
+Jeremy's console session was connected (`query session`: console Active) and every run presented at
+60 Hz (interval p50 16.39 to 16.48 ms) with render p50 2.46 to 2.55 ms, so one session state
+throughout. `[busy] 10 s after split`:
+
+| Build | Runs | Median |
+|---|---|---|
+| base | 18.0 / 22.5 / 18.4 / 18.7 | 18.55 |
+| A, the list's properties | 17.7 / 19.1 / 16.9 / 19.8 | 18.4 |
+| B, a global per pane | 17.7 / 18.1 / 16.6 / 21.2 | 17.9 |
+
+No shape costs anything the in-app runs can see (each build's spread is two to five points, its own
+noise). **Shape A is chosen**: the same cost as B, with four details components instead of eight
+(B's per-pane copies would double them again with every future row change), and no global per
+pane. The console triplet decides as usual. Caveat: the runs (10:54 to 10:58) went ahead before the
+coordinator's hold on the preview stream's builds reached it, so that stream may have been compiling
+during some of them; the run script checked for `cargo` and `rustc` processes before each run and
+found none, but a compile starting mid-run would not show there. The spreads are the usual ones, so
+the choice stands. Narrator was not running (checked afterwards, not at the time). Nothing of the spike was kept: shape A was written again
+for all four row variants. Unlike P3-M1's 0.7 of a point, this binding is a value read when a row is
+made and never changes while the lists scroll; P3-M1's switch decided what each row held.
+
+### What landed
+
+- **`src/cols.rs`** (new, pure, four tests): `Col` (type, size, modified; a grip named by the column
+  on its right), `Widths` with `clamped` (40 to 2,000 px, a non-finite value its default) and
+  `shown` (what the columns take from a row, with or without Type), `left_of` (the grip's left
+  neighbour, None for Name), `drag` (the boundary moved from the widths at the press, stopping at a
+  column's 40 px floor, at 2,000 px, and at Name's 120 px, or at Name's own width when it is already
+  below that), `set_width` (a width set through the same boundary: `colwidth` and the fit),
+  `fit_width` (the widest cell plus 12 px), `grip_x` and `grips`.
+- **`dnd::name_cell`** (one test, five layouts): the name cell's x range in window px from the pane,
+  the row height and the columns shown, clamped at zero. The drag's Name floor reads it, and so does
+  the `[cols] ... widths` line's name figure. `hit` is unchanged (a drop on the Type cell lands on
+  the row).
+- **Settings**: `col_type_left`, `col_size_left`, `col_modified_left` and the `_right` three
+  (`Config::cols`, `set_cols`), defaults 120, 90, 140, clamped on load; one round-trip test (the
+  defaults without the keys, a write and read back, out of range values pulled in).
+- **pane.slint**: the four details row components take `type-w`, `size-w` and `modified-w` (the
+  NoType two without `type-w`) from `FileListHost`, which takes them from the pane's `col-type`,
+  `col-size` and `col-modified`; the two details headers' cells and the rename editor's width read
+  the same three. `ColGrip`: a 6 px `TouchArea` with the east-west cursor, reporting the pointer's
+  travel since the press from its absolute position (so the grip moving with the boundary does not
+  feed back), phases 0, 1, 2 for press, move and release, and the double-click; the pane draws three
+  (two without Type) in one overlay over the header, none in the grid.
+- **app.slint**: the six window properties, `col-drag(pane, col, dx, phase)`, `col-fit(pane, col)`,
+  and `measure(text, bold)`: two hidden `Text`s (the lists' font, and the header's bold) whose
+  preferred width Rust reads at once, the widest line of the cells joined by line breaks.
+- **main.rs**: `cols_of`, `set_cols`, `name_px`, `col_drag` (the widths and name cell at the press
+  kept in a thread-local, cleared at the release), `col_set`, `col_fit` (the rows in the viewport from
+  the list's scroll and height, never the listing; the double-click's own press and release are not
+  a drag), `cols_changed` (the lines, the config, `schedule_save`); at start the config's widths
+  applied with their `config` lines, and 400 ms later the widths line for both panes.
+- **Driver** (`src/auto.rs`): `colwidth`, `coldrag`, `colfit` as Settled first names them.
+- **Soak**: `tools/soak-p5m3.ps1` adds the column cycle after P8-L1's (a drag of the `size` grip by
+  30 px, a fit of Modified, the widths set back) and its report line.
+- **`C:\traces\cols.toml`** (read-only, not in the repo): both panes 200, 110, 180.
+- **Tests**: 249 to 255.
+
+### Decisions
+
+- **The grip is named by the column on its right, and a fit fits that column** (Settled first): the
+  kickoff's "fits the column to its left" would leave Modified unfittable. Jeremy, 2026-10-21: "Keep
+  the fit rule as built: a double-click fits the column on the boundary's right (Type, Size or
+  Modified)."
+- **A fit includes the header label** (bold), so a column of empty cells (folders' sizes) fits to
+  "Size" plus 12 px rather than to nothing; a fit never goes under 40 px.
+- **The drag's travel is measured from the press**, not move by move (the sidebar's resize edge adds
+  each move's delta): a pointer that overshoots a floor and comes back meets the boundary where it
+  stopped instead of dragging it early.
+- **A drag is logged at the release only**, each column that changed (two lines for a grip between
+  two columns), so a drag of 200 moves writes three lines.
+- **Widths are kept as the drag leaves them** (fractional at 150% scaling); the lines print whole px.
+- **The start line waits 400 ms** for the window's size: logged straight away, the name cell read
+  0 px, before the first layout. The right pane's figure before a split is its would-be width.
+- **A double-click's own release must not undo the fit**: the second press records the widths, the
+  fit changes them, and the release then put them back (seen in the first scripted run as a `(drag)`
+  line after each `(fit)`); the fit now clears the drag in progress.
+
+### Scripted checks
+
+All on this machine, `target\release` of the branch, Jeremy's console session.
+
+On `C:\Windows\System32` (folders first, so the rows on screen are folders): `colwidth 0 type 200`,
+`size 110`, `modified 180` with the default 1,200 px window, then drags and fits:
+
+```
+[cols] pane=0 widths type 120 size 90 modified 140 (name 626 px)
+[cols] pane=0 type 120 -> 180 px (drag)                        coldrag 0 type -60
+[cols] pane=0 fit type: widest of 31 rows on screen = 53 px     colfit 0 type ("File folder")
+[cols] pane=0 type 180 -> 65 px (fit)
+[cols] pane=0 fit modified: widest of 31 rows on screen = 94 px
+[cols] pane=0 size 90 -> 124 px (fit)
+[cols] pane=0 modified 140 -> 106 px (fit)
+[cols] pane=0 size 114 -> 180 px (drag)                        coldrag 0 modified 500: Modified at 40
+[cols] pane=0 modified 106 -> 40 px (drag)
+[cols] pane=0 size 180 -> 40 px (drag)                         coldrag 0 modified -2000: Size at 40
+[cols] pane=0 modified 40 -> 180 px (drag)
+[cols] pane=1 fit size: widest of 31 rows on screen = 4 px      folders: no sizes; "Size" + 12 = 40
+[cols] pane=1 type 120 -> 40 px (script)                        colwidth 1 type 5: the floor
+```
+
+With the Type column off (the dialog), `coldrag 0 size -30` moved Name | Size (Size 40 -> 70, the
+name cell 245 -> 215 px) and `colwidth 0 type 150` logged `[auto] col pane=0 type: no such grip in
+this pane's header`; with thumbnails on (32 px rows, `[icons] list geometry: 32 px rows`) a drag and
+a fit ran the same, and in the grid (`view icons`) the grips are refused. Screenshots with the
+software renderer (`PrintWindow`, the window found by this build's path, since the preview stream's
+TwinFM was open beside it): after the widths change the header cells and every row's cells stand
+6 px apart as before; in a split the left pane, already narrower than Name's 120 px, kept Type
+from growing; the rename editor (F2) ends at the moved Type boundary; `coldrag 0 type 200` (Name |
+Type right) stopped Type at 40.
+
+The settings triplet's file: `C:\traces\cols.toml` on the gate scenario shows `[settings] file
+C:\traces\cols.toml (read)`, six `(config)` lines and `[cols] pane=0 widths type 200 size 110
+modified 180 (name 486 px)` for both panes, and `could not save ... Access is denied` as every
+read-only test config does.
+
+A six-minute run of `tools/soak-p5m3.ps1` (three cycles started, two completed): exit code 0, no
+panicked line, every earlier count as before (jobs done 147, failed 0; menupicks refused 0; drags
+dropped 0; zip jobs not done 0; waitpreview timeouts 0). Its column cycle navigated to a folder that
+does not exist (a tab character had replaced the path's backslash in the script), so the drag ran
+on an empty listing and the fit saw no rows (`widest of 0 rows on screen = 4 px`); the drag read back
+as Size 90 -> 60 and the widths went back to 120, 90, 140 in both cycles. Path fixed in 797617a.
+
+The re-run, six minutes after P9-M2's gate (three cycles started, two completed): exit code 0, no
+panicked line, jobs done 192 (failed 0, cancelled 0), drags dropped 0, toolbar presses refused 0,
+menupicks refused 0, zip jobs not done 0, waitpreview timeouts 0, worker panics 0; working set 126.5
+to 212.7 MB (233 at most). The column cycle in `src\tree`: `[cols] pane=0 size 90 -> 60 px (drag)`
+in both cycles, `fit modified: widest of 10 rows on screen = 94 px` with Size 60 -> 94 and Modified
+140 -> 106, then the widths back at 120, 90, 140 (two cycles, and the start line).
+
+### Gate
+
+Run by Jeremy on 2026-10-21, finished at 13:28 (tag ab38 for both settings, `C:\traces\gate-p9m1.ps1`,
+the same file as `tools/gate-p9m1.ps1`, 17 min): `target-p9m1` (b9fbd9d, main with P9-M2 merged in,
+built `--locked` from a detached checkout) against `target-p9m2` (95ace9f), three rounds of
+reference, candidate, reference with `C:\traces\cols.toml`, candidate with it. Every run passed the
+wrapper's checks (no panic; `[settings] file C:\traces\cols.toml (read)` in the cols runs; the
+candidate's `[cols] pane=0 widths` line at 120, 90, 140 and at 200, 110, 180).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m2-1 / 2 / 3 | 17.7 / 23.3 / 21.1 | 16.4 / 25.8 / 22.5 | 2.23 / 3.15 / 2.91 |
+| p9m1-1 / 2 / 3 | 18.4 / 21.7 / 21.9 | 16.4 / 20.9 / 21.4 | 2.23 / 2.96 / 2.92 |
+| p9m2-cols-1 / 2 / 3 | 18.5 / 21.4 / 21.2 | 20.2 / 18.6 / 19.2 | 2.25 / 2.92 / 2.93 |
+| p9m1-cols-1 / 2 / 3 | 17.7 / 21.0 / 20.9 | 17.2 / 23.0 / 22.0 | 2.09 / 2.84 / 2.80 |
+
+The session changed state after round 1 (the ab23 state): every run of rounds 2 and 3 had render p50
+2.80 to 3.15 ms against 2.09 to 2.25 in round 1, and read 21 to 23% whichever binary sat in it, the
+reference above 20% too. Medians as the wrapper reads them: defaults 21.1 (reference) / 21.7
+(candidate), cols 21.2 / 20.9; no gap that counts in either. Read like for like: round 1, the normal
+state, defaults 17.7 / 18.4 and cols 18.5 / 17.7, every run under 20%, the two pairs within 0.8 of a
+point in opposite directions; rounds 2 and 3, the slow state, defaults 23.3, 21.1 against 21.7, 21.9
+and cols 21.4, 21.2 against 21.0, 20.9, the candidate below the reference in three of four pairs.
+Passed by the protocol's rule: the per-row width binding adds no cost the gate can see. Only one
+round ran in the normal state, so the evidence there is one pair per setting (as in ab23, which
+Jeremy accepted read this way).
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m1\release\twinfm.exe`, started from a normal (not
+elevated) window, the panes set up unequal (the split on, two tabs in one pane only):
+
+1. **The cursor**: over each boundary in the header (Name | Type, Type | Size, Size | Modified) the
+   pointer turns into the left-right arrows; none at the right edge of the list, none in the grid views.
+2. **A drag in each pane**: drag Type | Size right and left; the list follows the pointer as it moves,
+   the boundary stays under the pointer, and the other pane does not change. Header and rows stay
+   lined up.
+3. **The floors**: drag a boundary as far as it goes each way; no column goes below about 40 px and
+   the Name column stops at about 120 px (it never vanishes).
+4. **The fit**: in a folder of long type names (`C:\Windows\System32` scrolled to its files, or a
+   Downloads folder of mixed files), double-click the Name | Type boundary: Type fits its longest
+   name on screen. Double-click Size | Modified: Modified fits its dates.
+5. **The Type column off** (Settings, Type column unticked): two grips, Name | Size and Size |
+   Modified, and a drag works as before; ticked again, the Type column comes back at its width.
+6. **Thumbnails on** (Settings): the 32 px rows follow a drag the same way.
+7. **150% scaling** (Display settings, Scale 150%, TwinFM restarted): a drag and a fit still line up.
+8. **Rename** (F2) after a drag: the edit box ends where the Type column starts.
+9. **A restart**: close TwinFM with the window's close button and start it again; each pane's widths
+   are as you left them (in `%APPDATA%\twinfm\config.toml` as `col_type_left` and the rest).
+10. **The fit's rule**: settled by Jeremy on 2026-10-21 (Decisions): kept as built.
+
+Jeremy, 2026-10-21: "console checks were all working as expected. proceed with the merge".
 
 ## Open questions
 
@@ -639,3 +900,261 @@ each beside the program that normally opens it where there is one:
 10. A page of nothing but a script: "This page has no text to show."
 11. A `.heic` photo and a file with no extension: "No preview".
 12. The column's width dragged with a picture and with a long text shown: both follow the width.
+
+## P9-M3: Word, Excel and PowerPoint in the preview
+
+Branch `claude/p9-m3-office-preview`, from 192d388 (P9-M2 merged).
+
+### Settled first (2026-10-21, before any code)
+
+**The pin check**: `quick-xml =0.41.0` (MIT), default features off (no `encoding`, no `serde`). It is
+already in `Cargo.lock` at that version (Slint's winit backend builds `wayland-scanner` on Linux, which
+reads its protocol files with it), so TwinFM's dependency adds one edge to the lock and no crate; its
+one dependency, `memchr`, is in already. 0.42.0 exists; pinning 0.41.0 keeps one copy. No Office
+crate: those found (`docx-rs`, `calamine`, the `ooxml` family) each bring their own XML reader or a
+serde tree and read a part whole, which is what the 64 MB cap is there to avoid. The kickoff's § Calls
+made read "`zip` and `roxmltree`" for Office files in one bullet while another and the milestone's own
+text named the streaming reader; that bullet now agrees (2026-10-21, the coordinator's note on #89).
+
+**The reading** (`src/office.rs`, pure but for the zip it is given; the worker opens the file):
+the file opened with `zip` (already in), each part read once through `quick_xml::Reader` from the
+zip's stream with at most `OFFICE_MAX_XML` (64 MB) read from any one part; past it the blocks so far
+and a Note "Only the first part of this document is shown." first. The type by extension:
+`.docx .docm`, `.xlsx .xlsm`, `.pptx .pptm` (`OFFICE_EXTS`, any case; `Class::Office`, the archive and
+cloud checks as for a PDF). `.doc .xls .ppt` stay "No preview". A file that is not a zip, or has no
+main part: "This document could not be read". A password-protected Office file is an OLE compound file,
+not a zip: when its first bytes are the OLE signature (`D0 CF 11 E0 A1 B1 1A E1`) and its first 64 KB
+hold the stream name `EncryptionInfo` (in UTF-16), the column reads "Password-protected document: not
+previewed", else "This document could not be read".
+
+**Word** (`word/document.xml`, with `word/styles.xml`, `word/numbering.xml` and
+`word/_rels/document.xml.rels` read first when present):
+
+- A paragraph (`w:p`) is a block. Its style (`w:pStyle`) is looked up in `styles.xml`: a style named
+  `heading 1` to `heading 6` (Word's built-in names are English whatever the language of the
+  program; the ids are not), or `Title`, or with `w:outlineLvl` 0 to 5, is a heading of that level
+  (`Title` 1); with no `styles.xml` the ids `Heading1` to `Heading6` and `Title` are taken as they
+  are.
+- A paragraph with `w:numPr` is a list item at `w:ilvl` + 1, its marker from `numbering.xml` (the
+  `w:num`'s abstract numbering, that level's `w:numFmt`): `bullet` a bullet by depth as Markdown's,
+  `decimal` `1.`, `lowerLetter` `a.`, `upperLetter` `A.`, `lowerRoman` `i.`, `upperRoman` `I.`, any
+  other `1.`; numbers counted by TwinFM per list and level, starting at the level's `w:start`, a
+  deeper level's count reset when a shallower item comes.
+- Runs: `w:t` text, `w:tab` a space, `w:br` a line break (`w:type="page"` a rule after the
+  paragraph), `w:pageBreakBefore` a rule before it; bold `w:b`, italic `w:i` (unless `w:val` is `0`
+  or `false`), and a run in a monospace font (`w:rFonts` ascii: Consolas, Courier New, Courier, Lucida
+  Console, Cascadia Code, Cascadia Mono) a code span; neighbouring runs with the same formatting
+  written as one. `w:hyperlink` with `r:id` a link to the relationship's target, with `w:anchor` a
+  `#anchor` link; `w:bookmarkStart`'s name anchors the paragraph (so a table of contents' links
+  scroll).
+- Tables (`w:tbl`, `w:tr`, `w:tc`): a table as Markdown's, a cell's paragraphs joined by line breaks,
+  a row with `w:tblHeader` a head row, a table inside a cell flowing its text into the cell.
+- Pictures: `a:blip r:embed` through the relationships to `word/media/...`, decoded from the zip
+  through the P8-M2 picture path and the 64 MB budget (EXIF orientation applied), the alt text from
+  `wp:docPr descr` (else its `name`); EMF and WMF pictures are not decoded (their alt text shows).
+- Dropped: footnote and endnote references and their parts, comments, headers and footers (never
+  read), deleted text (`w:del`), field codes (`w:instrText`; the field's shown result is kept), and
+  `mc:Fallback` (the older copy of what `mc:Choice` holds, so a text box is not read twice). A text
+  box's paragraphs (`w:txbxContent`) come as their own blocks after the paragraph they sit in.
+
+**Excel** (`xl/workbook.xml` and its relationships, `xl/sharedStrings.xml`, `xl/styles.xml`):
+
+- One sheet at a time, the first by default: a level-1 heading naming it, then (with two sheets or
+  more) a paragraph of links `Sheet1 | Sheet2 | ...` (the shown one bold, not a link; each other a
+  `#sheet=N` link, N counted from 1), then the sheet's table. A link `#sheet=N` clicked (or
+  `previewlink #sheet=N`) previews the same file again with that sheet: a new generation, the column
+  at its top. A chart sheet (its target under `chartsheets/`) shows the heading, the links and a Note
+  "Chart sheets are not previewed". A hidden sheet is listed with " (hidden)" after its name.
+- The sheet's cells are read in order and reading stops after 500 rows (`XLSX_MAX_ROWS`) counted from
+  the first row with a value, so a 100,000-row sheet costs its first 500 rows; then
+  `sharedStrings.xml` is read only up to the highest index those rows use. Columns: from the first
+  column with a value, at most 50 (`XLSX_MAX_COLS`). Empty leading rows and columns dropped; empty
+  rows between kept. A Note before the table says what was cut ("Only the first 500 rows and 50
+  columns are shown.", or the one that applies).
+- Values: shared strings (rich text runs joined), inline strings, booleans `TRUE` / `FALSE`, errors
+  as written, formulas by their cached value; a number under a date format (built-in ids 14 to 22 and
+  45 to 47, or a custom format with `d` or `y` outside quotes and brackets) as `yyyy-mm-dd` from the
+  serial (the 1900 system with its 29 February 1900, `date1904` honoured), with ` hh:mm` when the
+  format has `h` and the value a fraction; a time-only format (`h` and no `d` or `y`) as `hh:mm:ss`;
+  any other number as stored, shortest form (`3.1400000000000001` reads `3.14`, `42.0` reads `42`).
+  Merged cells show their top-left value (the others are empty in the file). A column whose values
+  are all numbers is right-aligned. No head row is assumed.
+
+**PowerPoint** (`ppt/presentation.xml` and its relationships for the order, each slide and its
+relationships):
+
+- Each slide: a level-1 heading `Slide N`, then its shapes in `p:spTree` order (groups walked in
+  order): a title placeholder (`p:ph type="title"` or `"ctrTitle"`) a level-2 heading; any other text
+  body's paragraphs as paragraphs, those with `a:buChar` a bullet, `a:buAutoNum` a number (counted),
+  at `lvl` + 1; in a body placeholder (`p:ph` with no type, or `body` or `obj`) a paragraph is a
+  bullet item unless it says `a:buNone` (PowerPoint gives body text bullets from the slide master,
+  which TwinFM does not read; the kickoff's rule took only explicit bullets, which would show most
+  real decks' bullets as plain paragraphs). Runs: bold `b="1"`, italic `i="1"`, a monospace `a:latin`
+  typeface a code span, `a:hlinkClick` a link to its relationship's target; `a:br` a line break.
+  Tables (`a:tbl` in a graphic frame) as tables; pictures (`p:pic`, `a:blip r:embed`) decoded through
+  the budget, the alt text from `p:cNvPr descr`. A rule between slides. Notes pages never read.
+
+**The fixtures** (written by the tests and by the soak's setup, never shipped): a zip of hand-written
+parts per format, each with `[Content_Types].xml`, the root relationships and only the parts the
+reader opens: a `.docx` with styles (a heading by a localized style id, a title), numbering (a bullet
+list of two levels and a numbered list), bold, italic and a Consolas run, a hyperlink and a bookmark
+anchor, a two-row table with a header row, a page break, a deleted run, a field code, a footnote
+reference, an `mc:AlternateContent` text box, and a 1 x 1 PNG; an `.xlsx` of two sheets (shared
+strings, an inline string, a boolean, an error, a formula with a cached value, a date with format id
+14, a custom `yyyy-mm-dd hh:mm` format, a number stored as `0.30000000000000004`, an empty leading
+column and row) and a chart sheet, and a third sheet of 600 rows by 60 columns for the cut; a
+`.pptx` of two slides (a title, a body placeholder with two levels and one `a:buNone` paragraph, a
+text box with `a:buAutoNum`, a group, a table, a picture). Plus a zip with no `word/document.xml`, a
+text file named `.xlsx`, and an OLE header with `EncryptionInfo` named `.docx`.
+
+**Seams**: `Class::Office(Kind)`; the worker's `serve_blocks` gains an Office branch that hands the
+open zip to `office::parse` (which returns the blocks, the log tail and whether a part was cut), the
+pictures decoded from the zip by part name (`decode_pictures` takes where pictures come from: the
+document's folder, or the zip). `Req::Open` gains `sheet` (0 by default); `preview::link` takes
+`#sheet=N` while an `.xlsx` is shown and opens a new generation with it. No new driver step:
+`previewlink #sheet=N` and `waitpreview` cover it.
+
+**The `[preview]` lines** (beside P9-M2's):
+
+- `pane=N gen=G <path>: docx, B blocks (H headings, T tables, I images), parsed in T ms[, cut at 64 MB]`
+- `pane=N gen=G <path>: xlsx, S sheets, sheet "<name>" R x C[ (cut at 500 rows|50 columns|500 rows
+  and 50 columns)], parsed in T ms[, cut at 64 MB]` (R x C the shown table; a chart sheet `chart`
+  in place of `R x C`)
+- `pane=N gen=G <path>: pptx, N slides, B blocks, parsed in T ms[, cut at 64 MB]`
+- `pane=N gen=G <path>: unreadable: <why>` (the column "This document could not be read"), and
+  `pane=N gen=G <path>: password` (the OLE wrapper says so)
+- `link "#sheet=N": sheet N` (or `refused: no sheet N`)
+- The pictures' lines as Markdown's (`gen=G image K <part>: ...`, `pictures done: ...`).
+
+### What landed
+
+- **`src/office.rs`** (new, five tests): `Part` turns quick-xml's events into opens, closes and text
+  (its entity references, which quick-xml 0.41 hands back as separate events, stitched into the text;
+  an empty element as an open and a close), `with_part` reads one zip entry through it with at most
+  `OFFICE_MAX_XML` taken, `rels` resolves a part's relationships, `write_runs` turns formatted runs
+  into Markdown's inline writer (runs with the same formatting merged, spaces kept outside the
+  delimiters), and `docx`, `xlsx`, `pptx` read the three formats as Settled first maps them.
+  `password_protected` tells the OLE wrapper. The tests build their zips in memory from hand-written
+  parts.
+- **`src/preview.rs`**: `Class::Office(OfficeKind)`; `serve_office` (the OLE check on the first 64 KB,
+  the zip opened, `office::parse` under `catch_unwind` with the generation asked between parts, the cut
+  note, the blocks answered, then the pictures); `decode_pictures` takes `Pics::Folder` or `Pics::Zip`
+  (an Office file's pictures read from the zip by part name, decoded from memory: the picture decoder
+  split into `decode_picture` for files and `decode_bytes`, sharing `svg`, `raster` and `doc_fit`);
+  `Req::Open` carries `sheet`; `Ui` keeps the target so `preview::link` can open `#sheet=N` as a new
+  generation of the same file, refused when the sheet heading's anchors do not name it.
+- **`Cargo.toml`**: `quick-xml =0.41.0`, default features off (one edge in `Cargo.lock`, no crate);
+  `main.rs` gains `mod office;`.
+- **Tests**: 259 to 265: five in `office.rs` (a Word file with every mapped element; an Excel file's
+  four sheets, the chart sheet and the 600 x 60 sheet cut to 500 x 50; numbers, dates and references;
+  a PowerPoint file of two slides, and the stop between slides; broken files: no main part, the OLE
+  wrapper, a document cut mid-element) and one in `preview.rs` (the worker on the three fixtures
+  written to `%TEMP%\twinfm-p9m3-test-<pid>\`, a picture from each zip, the sheet asked for, a text
+  file named `.xlsx`, the OLE wrapper); the classification test covers the Office types.
+- **Soak**: `tools/soak-p5m3.ps1`'s setup writes `k-report.docx`, `l-table.xlsx` and `m-deck.pptx`
+  (`Write-Parts`, a zip of hand-written parts through `System.IO.Compression`), and the preview cycle
+  goes on through them, the second sheet followed.
+
+### Decisions
+
+- **Reading stops early where it can**: a sheet's XML is read only to its 500th row and the shared
+  strings only to the highest index those rows use, so a 100,000-row workbook (2.4 MB zipped) was read
+  in 9 ms; a Word file is read whole up to the 64 MB cap (6,200 blocks in 19 ms).
+- **Body placeholders take bullets by default** in PowerPoint (Settled first; the kickoff's rule took
+  only explicit ones). Flagged for Jeremy.
+- **A text box comes before the paragraph holding it**: its paragraphs close first in the stream.
+- **A picture inside a Word table cell is its alt text in brackets** (a cell has no place for a
+  picture block), as HTML's are.
+- **No head row is assumed in a sheet**; Word's head rows are its `tblHeader` rows.
+- **A newer file asked for between parts ends the reading with no answer** (`superseded: the
+  document's reading stopped`): the UI has moved on and drops any late answer anyway.
+- **A slip, recorded**: bcb83cc (the kickoff's Office bullet, docs only) was committed and pushed
+  during P9-M1's gate without a gate run, against the rule that every commit is gated; the full gates
+  were run on it as the first thing once the machine was free, and no commit goes ungated after it.
+- **The sheet count travels in the first heading's anchors** (`sheet=1 sheet=2 ...`), so the UI can
+  refuse a sheet that does not exist without asking the worker.
+
+### Scripted checks
+
+All on this machine (RDP session), `target\release` of the branch, over `%TEMP%\twinfm-p9m3-check\`:
+the soak's three files (made by its setup block, run there in a scratch copy), a text file named
+`.xlsx`, an OLE header with `EncryptionInfo` named `.docx`, a `.doc`, a workbook of 100,000 rows by
+10 columns (2.4 MB) and a Word file of 6,000 paragraphs under 200 headings:
+
+```
+[preview] pane=0 gen=2 ...\k-report.docx: docx, 7 blocks (1 headings, 1 tables, 1 images), parsed in 1 ms
+[preview] gen=2 image 6 word/media/image1.png: 200x60 px in 0 ms
+[preview] pane=0 gen=3 ...\l-table.xlsx: xlsx, 2 sheets, sheet "Totals" 2 x 3, parsed in 1 ms
+[preview] link "#sheet=2": sheet 2
+[preview] pane=0 gen=4 ...\l-table.xlsx: xlsx, 2 sheets, sheet "Detail" 1 x 1, parsed in 0 ms
+[preview] link "#sheet=9": refused: no sheet 9
+[preview] link "#sheet=1": sheet 1
+[preview] pane=0 gen=5 ...\l-table.xlsx: xlsx, 2 sheets, sheet "Totals" 2 x 3, parsed in 0 ms
+[preview] pane=0 gen=6 ...\m-deck.pptx: pptx, 2 slides, 9 blocks, parsed in 1 ms
+[preview] gen=6 image 4 ppt/media/image1.png: 200x60 px in 0 ms
+[preview] pane=0 gen=7 ...\n-not-a-zip.xlsx: unreadable: not a zip: invalid Zip archive: Could not find EOCD
+[preview] pane=0 gen=8 ...\o-locked.docx: password
+[preview] pane=0 gen=9 ...\p-old.doc: no preview for this type
+[preview] pane=0 gen=10 ...\q-big.xlsx: xlsx, 1 sheets, sheet "Big" 500 x 10 (cut at 500 rows), parsed in 9 ms
+[preview] gen=10 15 blocks in the list in 0.2 ms (UI thread)
+[preview] pane=0 gen=11 ...\r-long.docx: docx, 6200 blocks (200 headings, 0 tables, 0 images), parsed in 19 ms
+[preview] gen=11 6200 blocks in the list in 1.3 ms (UI thread)
+[preview] pane=0 gen=12 ...\o-locked.docx: password
+```
+
+Every `waitpreview` settled; exit code 0, no panic; the three Up presses at the end opened one
+generation. Screenshots with the software renderer (`PrintWindow`), the column at 0.45: the Word file
+with its heading, paragraph, the two-level bullets, the table, the link and the picture; the
+workbook's sheet heading, the links row with "Totals" bold and "Detail" a link, the table with the
+number and the date (`2023-10-01`); the deck with `Slide 1`, its title, the two-level bullets, the
+picture, the rule, `Slide 2` and its title and bullet.
+
+A six-minute run of `tools/soak-p5m3.ps1` (three cycles started, two preview cycles completed): exit
+code 0, no panicked line, every other count as before; preview: docx 2, xlsx 4 (each file's first
+sheet and the second), pptx 2, sheet links 2, Office files unreadable 0, pictures shown 19,082 (the
+Word and PowerPoint files' one each beside P9-M2's), alt text 0, waitpreview timeouts 0, worker
+panics 0; working set 126 to 224 MB. The report's text count read "(three per cycle)" since P9-M2,
+for a cycle with two text files (d-notes.txt, h-notes.txt; both soaks counted 4 in two cycles): the
+label now reads two, in the script and in `CLAUDE.md`.
+
+### Gate
+
+Run by Jeremy on 2026-10-21, finished 14:39 (tag ab39 for both settings, `C:\traces\gate-p9m3.ps1`, the
+same file as `tools/gate-p9m3.ps1`, 17 min): `target-p9m3` (111ef17, P9-M3 with main at 85ef7b8 merged
+in, built `--locked` from a detached checkout) against `target-p9m1` (b9fbd9d), three rounds of
+reference, candidate, reference with `C:\traces\preview.toml`, candidate with it. Every run passed the
+wrapper's checks.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m1-1 / 2 / 3 | 19.0 / 18.3 / 18.3 | 18.7 / 19.5 / 18.0 | 2.20 / 2.23 / 2.21 |
+| p9m3-1 / 2 / 3 | 18.4 / 18.5 / 18.2 | 16.7 / 19.4 / 19.2 | 2.20 / 2.21 / 2.23 |
+| p9m1-preview-1 / 2 / 3 | 17.8 / 17.5 / 17.7 | 18.6 / 19.1 / 19.1 | 2.04 / 2.05 / 2.07 |
+| p9m3-preview-1 / 2 / 3 | 18.0 / 17.6 / 17.7 | 16.2 / 16.6 / 19.1 | 2.06 / 2.06 / 2.06 |
+
+One session state throughout (render p50 2.20 to 2.23 ms in the defaults runs, 2.04 to 2.07 with the
+column). Medians: defaults 18.3 (reference) / 18.4 (candidate), preview 17.7 / 17.7; no gap that
+counts in either, every candidate run under 20%. Passed; P9-M3 adds no cost while the lists scroll.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m3\release\twinfm.exe`, the preview shown (Alt+P), each
+beside Word, Excel or PowerPoint (or Edge, which opens all three):
+
+1. Jeremy's own Word documents: headings where Word shows headings (or paragraphs where the file uses
+   direct formatting only: the open question this answers), lists with their bullets and numbers,
+   tables, links, pictures.
+2. A Word file of about 200 pages: it shows at once and scrolls to the end without stalls.
+3. Jeremy's own workbooks: the first sheet, the sheet links at the top (each opens its sheet), dates
+   as dates, money and other number formats (shown as stored numbers, not in their currency format:
+   the record of what formats he uses).
+4. A workbook with ten sheets and 100,000 rows: the note "Only the first 500 rows ..." and the table.
+5. A deck of about 60 slides with pictures: every slide's heading, title, bullets and pictures, the
+   lines between slides.
+6. A password-protected Office file: "Password-protected document: not previewed".
+7. A `.doc`, `.xls` or `.ppt`: "No preview".
+8. A chart sheet (a workbook with a chart moved to its own sheet): "Chart sheets are not previewed."
+9. The column's width dragged with a workbook shown: the table follows.
+
+Jeremy, 2026-10-21, unelevated with `target-p9m3`: "console checks are all nominal". The PowerPoint
+bullets-by-default call stands as recorded (not reversed).

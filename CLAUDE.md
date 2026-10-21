@@ -30,7 +30,7 @@ bundle; opened 2026-10-21; its first section quotes Jeremy's kickoff decisions, 
 lead's, § Open questions what each milestone's brief settles first). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (259 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (271 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -40,7 +40,8 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   ArchiveFolder case test too) write archives into
   scratch folders, and since P8-M1 the preview worker's test writes PDFs into one, and since P8-M2
   two more write Markdown and pictures into scratch folders, and since P9-M2 two more write text,
-  pictures and a page into scratch folders, see below)
+  pictures and a page into scratch folders, and since P9-M3 one more writes Office files into one,
+  see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -699,6 +700,34 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   (`missing`, `failed: <decoder error>`, `over 512 MB of pixels`, `panicked: <msg>`), `pane=N gen=G
   <path>: html, B blocks (H headings, C code, T tables, I images), parsed in T ms[, cut at 2 MB]`;
   a text or HTML file that cannot be read gives `unreadable: <why>` as Markdown does.
+  Since P9-M3, Word, Excel and PowerPoint (`.docx .docm`, `.xlsx .xlsm`, `.pptx .pptm`, any case,
+  `office::OfficeKind`; `.doc .xls .ppt` are "No preview"; the archive and cloud checks apply): the
+  worker opens the file as a zip (`zip`) and `src/office.rs` reads its XML parts as a stream
+  (`quick-xml =0.41.0`), each part at most 64 MB (`OFFICE_MAX_XML`; past it the blocks so far and the
+  note "Only the first part of this document is shown." first), into the Markdown preview's blocks.
+  **Word**: `word/document.xml` paragraphs, headings by the style's name in `styles.xml` (`heading 1`
+  to `6`, `Title`, or `outlineLvl`), list items from `numbering.xml` (bullets by depth, numbers
+  counted by TwinFM), bold, italic, monospace runs as code, hyperlinks and bookmark anchors, tables
+  (`tblHeader` rows as heads), pictures from `word/media` through the budget, page breaks as rules;
+  deleted text, field codes, footnote marks and `mc:Fallback` dropped; headers, footers, footnotes and
+  comments never read. **Excel**: one sheet at a time (the first), a heading naming it and, with two
+  sheets or more, a row of links `#sheet=N`; the sheet read up to 500 rows from its first with a value
+  (`XLSX_MAX_ROWS`) and 50 columns (`XLSX_MAX_COLS`), shared strings read only up to the highest index
+  used, dates by their number format as `yyyy-mm-dd` (1900 or 1904 system), numbers in their shortest
+  form, all-number columns right-aligned; a chart sheet "Chart sheets are not previewed." **PowerPoint**:
+  per slide a heading `Slide N`, its title as a level-2 heading, text bodies as paragraphs and list
+  items (`a:buChar`, `a:buAutoNum`, and every paragraph of a body placeholder unless `a:buNone`),
+  tables, pictures, a rule between slides; notes never read. `previewlink #sheet=N` (the sheet
+  heading's anchors name every sheet) previews the same file again with that sheet, a new generation
+  (`Req::Open`'s `sheet`). Messages: "This document could not be read", "Password-protected document:
+  not previewed" (an OLE file whose first 64 KB name `EncryptionInfo`). `[preview]` lines: `pane=N
+  gen=G <path>: docx, B blocks (H headings, T tables, I images), parsed in T ms[, cut at 64 MB]`,
+  `... xlsx, S sheets, sheet "<name>" R x C[ (cut at 500 rows|50 columns|500 rows and 50 columns)],
+  parsed in T ms` (`chart` in place of `R x C` for a chart sheet), `... pptx, N slides, B blocks,
+  parsed in T ms`, `... unreadable: <why>` (`not a zip: ...`, `no word/document.xml`, ...), `...
+  password`, `link "#sheet=N": sheet N | refused: no sheet N`, `gen=G superseded: the document's
+  reading stopped` (a newer file asked for between parts); the pictures' lines as Markdown's, the part
+  name in place of the source (`gen=G image K word/media/image1.png: ...`).
   Since P8-L1, the first of the Phase 7 leftovers: Return, a double-click and the Windows 11 menu's
   Open open **every selected item** when the row is in a selection of several (`model::open_set`;
   the menu's Open takes the selection as every menu item does): folders, drives and archives each
@@ -718,6 +747,30 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   `grid-target`). Medium tiles are 80 x 107 with names on up to three lines (`max-lines: 3`, the
   name box 57 px, `name-h` on the list host), and the cursor tile's whole name shows over the tiles
   below when three lines do not hold it.
+  Since P9-M1, adjustable column widths (`src/cols.rs` the pure part): the details list's Type, Size
+  and Modified widths are per pane, logical px (`col_type_left`, `col_size_left`,
+  `col_modified_left` and the `_right` three; defaults 120, 90, 140; 40 to 2,000 on load), the
+  window's `left-col-type` and the rest, read by the header, every details row variant (rows read
+  the list's `type-w`, `size-w`, `modified-w`: the spike measured no cost against per-pane copies)
+  and the rename editor. A 6 px grip (pane.slint `ColGrip`, an overlay over the header, never in the
+  rows; the east-west cursor) sits on each boundary, named by the column on its right: `type` is
+  Name | Type, `size` Type | Size (Name | Size with the Type column off), `modified` Size |
+  Modified; none at the list's right edge, none in the grid. Dragging grip `c` moves that boundary
+  from the widths at the press: `c` narrows by what its left neighbour (Name for `type`) grows; a
+  column stops at 40 px, the name cell at 120 px (a pane already narrower keeps what it has:
+  `dnd::name_cell`, the name cell's x range from the widths, clamped at zero). A double-click fits
+  column `c` to the widest of its cells on screen and its bold header label, plus 12 px (one hidden
+  `Text` in app.slint measures them, `measure`), moving the same boundary. Driver: `colwidth <pane>
+  <type|size|modified> <px>` (as a drag's end), `coldrag <pane> <col> <dx>` (press on the grip's
+  centre 14 px above the list's top, moves in 8 px steps, release, through Slint's pointer path),
+  `colfit <pane> <col>` (two clicks at the grip; `[auto] col pane=N <col>: no such grip in this
+  pane's header` for `type` with the Type column off or a pane in the grid). `[cols]` lines: `pane=N
+  <col> W -> W2 px (drag | fit | script | config)` per column changed (a drag logged at the
+  release; `config` at start for a value other than the default), `pane=N fit <col>: widest of K
+  rows on screen = W px`, and `pane=N widths type T size S modified M (name N px)` after each change
+  and for both panes 400 ms after start (N the name cell's width then; the right pane's is its
+  would-be width before the split). A gate run with other widths takes
+  `TWINFM_CONFIG=C:\traces\cols.toml` (read-only: both panes 200, 110, 180).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -750,7 +803,9 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   gets its sort, hidden files, cursor and scroll back; a bare list of paths still loads (the
   defaults new tabs have), and the next save writes tables; since P8-M1 `preview` (the preview
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
-  0.35, its handle's drag). `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  0.35, its handle's drag); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
+  the `_right` three (each pane's column widths, logical px, defaults 120, 90, 140, 40 to 2,000;
+  the header grips set them). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -821,8 +876,13 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   picture; no "no preview" line is left), and the setup adds h-notes.txt (tabs and a 20,000-character
   line), i-photo.jpg (System.Drawing) and j-page.html (a head, script and style dropped, ids, a list,
   a table, a pre, e-dot.png), the cursor going on through them and j-page.html's `#end` followed; it
-  reports text previews (three per cycle), pictures (two), picture failures (must be 0) and HTML
-  previews (one).
+  reports text previews (two per cycle), pictures (two), picture failures (must be 0) and HTML
+  previews (one). Since P9-M3 the setup adds k-report.docx, l-table.xlsx and m-deck.pptx (zips of
+  hand-written parts, `Write-Parts`), the cursor going on through them and l-table.xlsx's
+  `#sheet=2` followed; it reports docx, xlsx (two per cycle) and pptx previews, sheet links (one) and
+  Office files unreadable (must be 0). Since P9-M1 each cycle also drags the left pane's Type | Size
+  grip 30 px right in `src\tree`, fits Modified and sets the widths back with `colwidth`; it reports
+  drags read back as Size 90 -> 60, fits, and widths lines back at 120, 90, 140.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
@@ -897,7 +957,9 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   `preview::tests::a_phone_photo_shows_upright` decodes JPEGs with an EXIF orientation, a BMP and a
   broken file in `%TEMP%\twinfm-p9m2-pic-<pid>\`, and `the_worker_previews_text_pictures_and_html`
   runs the worker on text (UTF-16 and over 2 MB too), a JPEG, a broken PNG and a page in
-  `%TEMP%\twinfm-p9m2-test-<pid>\`. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
+  `%TEMP%\twinfm-p9m2-test-<pid>\`; since P9-M3 `the_worker_previews_office_files` writes the office
+  tests' hand-made docx, xlsx and pptx, a text file named .xlsx and an OLE header named .docx into
+  `%TEMP%\twinfm-p9m3-test-<pid>\` (the `office::tests` build their zips in memory). Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
   `%TEMP%\twinfm-p8l2-raw-<pid>.zip`, `fs::archivewrite::tests::password_zips_and_copies_between_zips`
   makes ZipCrypto, AES and plain zips in `%TEMP%\twinfm-p8l2-pw-<pid>\`, and `zip_jobs_on_the_worker`
   writes into its tar.exe password zip with the script's password (`zippassword`'s path) and copies

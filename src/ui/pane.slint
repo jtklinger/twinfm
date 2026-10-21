@@ -283,6 +283,31 @@ component HeaderCell inherits Rectangle {
     }
 }
 
+// A column grip (P9-M1): 6 px over a boundary between two header cells, named by the column on
+// its right (0 type, 1 size, 2 modified; cols::Col). drag(col, dx, phase) reports the pointer's
+// travel since the press in window px (from the absolute position, so the grip following the
+// boundary does not feed back into it), phase 0 the press, 1 a move, 2 the release; Rust moves
+// the boundary from the widths at the press. A double-click fits the column (fit).
+component ColGrip inherits TouchArea {
+    in property <int> which;
+    callback drag(int, length, int);
+    callback fit(int);
+    private property <length> press-x;
+    width: 6px;
+    mouse-cursor: MouseCursor.ew-resize;
+    pointer-event(ev) => {
+        if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+            root.press-x = self.absolute-position.x + self.mouse-x;
+            root.drag(root.which, 0px, 0);
+        }
+        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+            root.drag(root.which, self.absolute-position.x + self.mouse-x - root.press-x, 2);
+        }
+    }
+    moved => { if (self.pressed) { root.drag(root.which, self.absolute-position.x + self.mouse-x - root.press-x, 1); } }
+    double-clicked => { root.fit(root.which); }
+}
+
 // Same structure as Slint's StandardListView: a component inheriting ListView carries the list
 // role itself, a zero-width FocusScope inside it holds keyboard focus, and
 // accessible-delegate-focus makes assistive clients see focus on the current row.
@@ -296,6 +321,11 @@ component HeaderCell inherits Rectangle {
 component FileRows inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
+    // bindings beyond the row's own data (the P9-M1 spike measured no cost).
+    in property <length> type-w: 120px;
+    in property <length> size-w: 90px;
+    in property <length> modified-w: 140px;
     // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
     // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
@@ -324,9 +354,9 @@ component FileRows inherits ListView {
             padding-left: 28px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -340,6 +370,10 @@ component FileRows inherits ListView {
 component FileRowsNoType inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
+    // bindings beyond the row's own data (the P9-M1 spike measured no cost).
+    in property <length> size-w: 90px;
+    in property <length> modified-w: 140px;
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
 
@@ -362,8 +396,8 @@ component FileRowsNoType inherits ListView {
             padding-left: 28px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -418,6 +452,11 @@ component FileListNoType inherits FileRowsNoType {
 component FileRows32 inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
+    // bindings beyond the row's own data (the P9-M1 spike measured no cost).
+    in property <length> type-w: 120px;
+    in property <length> size-w: 90px;
+    in property <length> modified-w: 140px;
     // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
     // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
@@ -446,9 +485,9 @@ component FileRows32 inherits ListView {
             padding-left: 42px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.type-text; width: 120px; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -460,6 +499,10 @@ component FileRows32 inherits ListView {
 component FileRowsNoType32 inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
+    // bindings beyond the row's own data (the P9-M1 spike measured no cost).
+    in property <length> size-w: 90px;
+    in property <length> modified-w: 140px;
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
 
@@ -482,8 +525,8 @@ component FileRowsNoType32 inherits ListView {
             padding-left: 42px;
             padding-right: 6px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: 90px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: 140px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -674,6 +717,10 @@ component FileListHost inherits Rectangle {
     in property <[Row]> rows;
     in-out property <int> current-row: -1;
     in property <bool> show-type: true;
+    // The details list's column widths (Pane.col-type and the rest, P9-M1).
+    in property <length> type-w: 120px;
+    in property <length> size-w: 90px;
+    in property <length> modified-w: 140px;
     // Thumbnails (settings `thumbnails`): the 32 px lists. row-h is the chosen list's row height
     // (a grid row's with the grid), for the host's and the pane's per-pane arithmetic only; no row
     // or tile reads it.
@@ -914,6 +961,9 @@ component FileListHost inherits Rectangle {
     }
 
     if root.show-type && !root.thumbnails && !root.grid: FileList {
+        type-w: root.type-w;
+        size-w: root.size-w;
+        modified-w: root.modified-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -926,6 +976,8 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
     }
     if !root.show-type && !root.thumbnails && !root.grid: FileListNoType {
+        size-w: root.size-w;
+        modified-w: root.modified-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -938,6 +990,9 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
     }
     if root.show-type && root.thumbnails && !root.grid: FileList32 {
+        type-w: root.type-w;
+        size-w: root.size-w;
+        modified-w: root.modified-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -950,6 +1005,8 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
     }
     if !root.show-type && root.thumbnails && !root.grid: FileListNoType32 {
+        size-w: root.size-w;
+        modified-w: root.modified-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -1007,6 +1064,14 @@ export component Pane inherits Rectangle {
     // The Type column (settings `show_type`). Off, the pane shows a header and a list without the
     // Type cell (FileListHost), and the Name column takes the 120 px.
     in property <bool> show-type: true;
+    // The details list's Type, Size and Modified widths (P9-M1, settings `col_type_left` and the
+    // rest), set from Rust; Name takes what they leave. The header, every row variant (through
+    // FileListHost) and the rename editor read them; the grips over the header change them.
+    in property <length> col-type: 120px;
+    in property <length> col-size: 90px;
+    in property <length> col-modified: 140px;
+    callback col-drag(int, length, int);
+    callback col-fit(int);
     // Thumbnails (settings `thumbnails`): the 32 px lists (FileListHost); the overlays below read
     // the row height from list.row-h.
     in property <bool> thumbnails: false;
@@ -1450,20 +1515,23 @@ export component Pane inherits Rectangle {
         if root.show-type && !root.grid: HorizontalLayout {
             height: 24px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Type"; width: 120px; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Type"; width: root.col-type; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
         if !root.show-type && !root.grid: HorizontalLayout {
             height: 24px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Size"; width: 90px; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Modified"; width: 140px; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
         list := FileListHost {
             rows: root.rows;
             current-row <=> root.current-row;
             show-type: root.show-type;
+            type-w: root.col-type;
+            size-w: root.col-size;
+            modified-w: root.col-modified;
             thumbnails: root.thumbnails;
             grid: root.grid;
             grid-rows: root.grid-rows;
@@ -1655,9 +1723,37 @@ export component Pane inherits Rectangle {
         }
     }
 
+    // The column grips (P9-M1) over the details header, which sits 26 px above the list (24 px and
+    // the layout's 2 px spacing): one at each boundary, the list's right edge pinned. Siblings of
+    // the list, never in the rows.
+    if !root.grid: Rectangle {
+        x: list.x;
+        y: list.y - 26px;
+        width: list.width;
+        height: 24px;
+        if root.show-type: ColGrip {
+            x: parent.width - root.col-modified - root.col-size - root.col-type - 3px;
+            which: 0;
+            drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
+            fit(c) => { root.col-fit(c); }
+        }
+        ColGrip {
+            x: parent.width - root.col-modified - root.col-size - 3px;
+            which: 1;
+            drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
+            fit(c) => { root.col-fit(c); }
+        }
+        ColGrip {
+            x: parent.width - root.col-modified - 3px;
+            which: 2;
+            drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
+            fit(c) => { root.col-fit(c); }
+        }
+    }
+
     // Return commits, Escape cancels, focus loss cancels. Over the name cell: 6 px row padding
-    // plus the icon slot (one row high, 22 or 32 px) from the left, the fixed columns (350 px, 230
-    // px without Type) from the right, centred on the row. In the grid, over the tile's name (2 px
+    // plus the icon slot (one row high, 22 or 32 px) from the left, the columns shown (P9-M1: the
+    // pane's widths) and 12 px from the right, centred on the row. In the grid, over the tile's name (2 px
     // in, the tile's width less 4 px, centred on the name's first line, which starts 38 px above
     // the tile's bottom: 94 px down a large tile, 46 px down a medium one, P7-M4).
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
@@ -1665,7 +1761,7 @@ export component Pane inherits Rectangle {
         visible: root.edit-mode != 0;
         x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + 2px : list.row-h + 2px + (root.thumbnails ? 4px : 0px));
         y: list.y + (root.grid ? list.tile-h - 42px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
-        width: root.grid ? list.tile-w - 4px : max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - (root.show-type ? 350px : 230px) - 12px);
+        width: root.grid ? list.tile-w - 4px : max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - ((root.show-type ? root.col-type : 0px) + root.col-size + root.col-modified) - 12px);
         height: 28px;
         background: Palette.background;
         // As behind the path entry: Back or Forward over the editor is ignored, not taken by the

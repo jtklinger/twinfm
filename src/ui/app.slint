@@ -249,6 +249,17 @@ export component App inherits Window {
     in property <string> version;
     // The Type column in both panes (settings `show_type`; set at start and by the dialog).
     in property <bool> show-type: true;
+    // Each pane's Type, Size and Modified widths in the details list (P9-M1; settings
+    // `col_type_left` and the rest), set from Rust at start and by the grips.
+    in property <length> left-col-type: 120px;
+    in property <length> left-col-size: 90px;
+    in property <length> left-col-modified: 140px;
+    in property <length> right-col-type: 120px;
+    in property <length> right-col-size: 90px;
+    in property <length> right-col-modified: 140px;
+    // col-drag(pane, col, dx, phase) and col-fit(pane, col): a header grip (pane.slint ColGrip).
+    callback col-drag(int, int, length, int);
+    callback col-fit(int, int);
     // Thumbnails and 32 px rows in both panes (settings `thumbnails`; set at start and by the dialog).
     in property <bool> thumbnails: false;
     in property <int> left-sort-col;
@@ -590,6 +601,16 @@ export component App inherits Window {
     public function side-content-height() -> length { return side-list.content-height; }
     public function side-visible-height() -> length { return side-list.visible-height; }
 
+    // The width of the widest line of `s` in the lists' font (bold: the header's), for a column fit
+    // (P9-M1): the hidden Texts below take the text and Rust reads their preferred width at once.
+    private property <string> measure-text;
+    public function measure(s: string, bold: bool) -> length {
+        root.measure-text = s;
+        return bold ? measure-bold.preferred-width : measure-plain.preferred-width;
+    }
+    measure-plain := Text { visible: false; text: root.measure-text; accessible-role: none; }
+    measure-bold := Text { visible: false; text: root.measure-text; font-weight: 600; accessible-role: none; }
+
     public function get-scroll(p: int) -> length {
         return p == 0 ? left.get-scroll() : right.get-scroll();
     }
@@ -880,6 +901,11 @@ export component App inherits Window {
                 forward-button => { root.pane-forward(0); }
                 history(f) => { root.pane-history(0, f); }
                 show-type: root.show-type;
+                col-type: root.left-col-type;
+                col-size: root.left-col-size;
+                col-modified: root.left-col-modified;
+                col-drag(c, dx, ph) => { root.col-drag(0, c, dx, ph); }
+                col-fit(c) => { root.col-fit(0, c); }
                 thumbnails: root.thumbnails;
                 focus-requested => { active-pane = 0; }
                 filter-open <=> root.left-filter-open;
@@ -936,6 +962,11 @@ export component App inherits Window {
                 forward-button => { root.pane-forward(1); }
                 history(f) => { root.pane-history(1, f); }
                 show-type: root.show-type;
+                col-type: root.right-col-type;
+                col-size: root.right-col-size;
+                col-modified: root.right-col-modified;
+                col-drag(c, dx, ph) => { root.col-drag(1, c, dx, ph); }
+                col-fit(c) => { root.col-fit(1, c); }
                 thumbnails: root.thumbnails;
                 focus-requested => { active-pane = 1; }
                 filter-open <=> root.right-filter-open;

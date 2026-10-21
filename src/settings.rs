@@ -131,6 +131,15 @@ pub struct Config {
     /// drag). Missing in an older file: off, 0.35.
     pub preview: bool,
     pub preview_width: f32,
+    /// Each pane's column widths in the details list (P9-M1), logical px: Type, Size and Modified
+    /// (`cols`; a header grip's drag or double-click sets them). Missing in an older file: 120, 90,
+    /// 140. Pulled into 40 to 2,000 px on load.
+    pub col_type_left: f32,
+    pub col_size_left: f32,
+    pub col_modified_left: f32,
+    pub col_type_right: f32,
+    pub col_size_right: f32,
+    pub col_modified_right: f32,
     /// Restored only when its title bar would be on a monitor.
     pub window: Option<WindowGeom>,
     /// Bookmarked folders in sidebar order, as `[[bookmark]]` tables with `path` and an optional
@@ -242,6 +251,12 @@ impl Default for Config {
             toolbar: "top".into(),
             preview: false,
             preview_width: crate::preview::RATIO_DEFAULT,
+            col_type_left: crate::cols::DEFAULT.ty,
+            col_size_left: crate::cols::DEFAULT.size,
+            col_modified_left: crate::cols::DEFAULT.modified,
+            col_type_right: crate::cols::DEFAULT.ty,
+            col_size_right: crate::cols::DEFAULT.size,
+            col_modified_right: crate::cols::DEFAULT.modified,
             window: None,
             bookmarks: Vec::new(),
             legacy_bookmarks: Vec::new(),
@@ -340,6 +355,24 @@ impl Config {
         if v.is_grid() {
             *tile = if v.is_medium() { "medium" } else { "large" }.into();
         }
+    }
+
+    /// Pane `pane`'s column widths.
+    pub fn cols(&self, pane: usize) -> crate::cols::Widths {
+        if pane == 0 {
+            crate::cols::Widths { ty: self.col_type_left, size: self.col_size_left, modified: self.col_modified_left }
+        } else {
+            crate::cols::Widths { ty: self.col_type_right, size: self.col_size_right, modified: self.col_modified_right }
+        }
+    }
+
+    pub fn set_cols(&mut self, pane: usize, w: crate::cols::Widths) {
+        let (t, s, m) = if pane == 0 {
+            (&mut self.col_type_left, &mut self.col_size_left, &mut self.col_modified_left)
+        } else {
+            (&mut self.col_type_right, &mut self.col_size_right, &mut self.col_modified_right)
+        };
+        (*t, *s, *m) = (w.ty, w.size, w.modified);
     }
 }
 
@@ -512,6 +545,9 @@ impl Config {
         self.sidebar_width =
             if self.sidebar_width.is_finite() { self.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX) } else { 180.0 };
         self.preview_width = crate::preview::clamp_ratio(self.preview_width);
+        for pane in 0..2 {
+            self.set_cols(pane, self.cols(pane).clamped());
+        }
         self
     }
 
@@ -618,6 +654,26 @@ pub fn monitors() -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_widths_round_trip_default_and_clamp() {
+        use crate::cols::{Widths, DEFAULT, FLOOR, MAX};
+        let d = Config::default();
+        assert_eq!((d.cols(0), d.cols(1)), (DEFAULT, DEFAULT), "a file without the keys loads today's layout");
+        assert_eq!(Config::parse("split = true
+").unwrap().cols(1), DEFAULT);
+        let mut c = Config::default();
+        c.set_cols(0, Widths { ty: 200.0, size: 110.0, modified: 180.0 });
+        c.set_cols(1, Widths { ty: 64.5, size: 90.0, modified: 300.0 });
+        let text = c.to_toml();
+        assert!(text.contains("col_type_left = 200.0") && text.contains("col_modified_right = 300.0"), "{text}");
+        let back = Config::parse(&text).unwrap();
+        assert_eq!((back.cols(0), back.cols(1)), (c.cols(0), c.cols(1)));
+        let wild = Config::parse("col_type_left = 3.0
+col_size_right = 99999.0
+").unwrap();
+        assert_eq!((wild.cols(0).ty, wild.cols(1).size, wild.cols(1).ty), (FLOOR, MAX, DEFAULT.ty));
+    }
 
     #[test]
     fn config_round_trip_unknown_keys_and_malformed() {
