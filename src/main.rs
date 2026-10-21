@@ -13,6 +13,7 @@ mod fs {
 mod auto;
 mod band;
 mod cloud;
+mod cols;
 mod devices;
 mod dnd;
 mod explorercmd;
@@ -5650,6 +5651,134 @@ pub fn search_running() -> bool {
     })
 }
 
+/// Pane `pane`'s column widths as the window has them (P9-M1).
+fn cols_of(app: &App, pane: usize) -> cols::Widths {
+    if pane == 0 {
+        cols::Widths { ty: app.get_left_col_type(), size: app.get_left_col_size(), modified: app.get_left_col_modified() }
+    } else {
+        cols::Widths { ty: app.get_right_col_type(), size: app.get_right_col_size(), modified: app.get_right_col_modified() }
+    }
+}
+
+fn set_cols(app: &App, pane: usize, w: cols::Widths) {
+    if pane == 0 {
+        app.set_left_col_type(w.ty);
+        app.set_left_col_size(w.size);
+        app.set_left_col_modified(w.modified);
+    } else {
+        app.set_right_col_type(w.ty);
+        app.set_right_col_size(w.size);
+        app.set_right_col_modified(w.modified);
+    }
+}
+
+/// The width of pane `pane`'s name cell with widths `w`, as the window is laid out now.
+fn name_px(app: &App, pane: usize, w: cols::Widths) -> f32 {
+    dnd::name_cell(&window_layout(app), pane, w.shown(app.get_show_type())).1
+}
+
+/// One `[cols]` line per column whose width differs between `old` and `new`.
+fn log_col_changes(pane: usize, old: cols::Widths, new: cols::Widths, why: &str) {
+    for c in [cols::Col::Type, cols::Col::Size, cols::Col::Modified] {
+        if old.get(c) != new.get(c) {
+            eprintln!("[cols] pane={pane} {} {:.0} -> {:.0} px ({why})", c.name(), old.get(c), new.get(c));
+        }
+    }
+}
+
+fn log_widths(app: &App, pane: usize) {
+    let w = cols_of(app, pane);
+    eprintln!(
+        "[cols] pane={pane} widths type {:.0} size {:.0} modified {:.0} (name {:.0} px)",
+        w.ty,
+        w.size,
+        w.modified,
+        name_px(app, pane, w)
+    );
+}
+
+/// Pane `pane`'s widths changed from `old` to `new` (set already): logged, kept for the file.
+fn cols_changed(st: &mut State, app: &App, pane: usize, old: cols::Widths, new: cols::Widths, why: &str) {
+    if old == new {
+        return;
+    }
+    log_col_changes(pane, old, new, why);
+    log_widths(app, pane);
+    st.config.set_cols(pane, new);
+    schedule_save(st);
+}
+
+thread_local! {
+    /// The column grip being dragged: pane, grip, the widths and the name cell's width at the press.
+    static COL_DRAG: std::cell::Cell<Option<(usize, cols::Col, cols::Widths, f32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// A header grip's press (phase 0), move (1) or release (2), `dx` the pointer's travel since the
+/// press: the boundary moves from the widths at the press, so the grip stays under the pointer.
+fn col_drag(pane: usize, col: i32, dx: f32, phase: i32) {
+    let Some(c) = cols::Col::from_index(col) else { return };
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    if phase == 0 {
+        let w = cols_of(&app, pane);
+        COL_DRAG.with(|d| d.set(Some((pane, c, w, name_px(&app, pane, w)))));
+        return;
+    }
+    let Some((p, c0, start, name)) = COL_DRAG.with(|d| d.get()) else { return };
+    if (p, c0) != (pane, c) {
+        return;
+    }
+    let w = cols::drag(start, c, dx, app.get_show_type(), name);
+    set_cols(&app, pane, w);
+    if phase == 2 {
+        COL_DRAG.with(|d| d.set(None));
+        with_state(|st| cols_changed(st, &app, pane, start, w, "drag"));
+    }
+}
+
+/// Column `c` of pane `pane` set to `px` by moving its grip: `colwidth` (why "script") and the fit.
+fn col_set(app: &App, pane: usize, c: cols::Col, px: f32, why: &str) {
+    let start = cols_of(app, pane);
+    let w = cols::set_width(start, c, px, app.get_show_type(), name_px(app, pane, start));
+    set_cols(app, pane, w);
+    with_state(|st| cols_changed(st, app, pane, start, w, why));
+}
+
+/// A double-click on grip `col`: its column fitted to the widest of its cells on screen (and its
+/// header label), never the whole listing.
+fn col_fit(pane: usize, col: i32) {
+    let Some(c) = cols::Col::from_index(col) else { return };
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    // The double-click's own press and release are not a drag (the release would put the widths
+    // back to those at its press).
+    COL_DRAG.with(|d| d.set(None));
+    let rows = if pane == 0 { app.get_left_rows() } else { app.get_right_rows() };
+    let l = window_layout(&app);
+    let top = dnd::list_top(&l, pane);
+    let y = -app.invoke_get_scroll(pane as i32);
+    let h = (l.height - dnd::LIST_BOTTOM_GAP - top).max(0.0);
+    let first = (y / l.row_px).floor().max(0.0) as usize;
+    let end = (((y + h) / l.row_px).ceil().max(0.0) as usize).min(rows.row_count());
+    let cells: Vec<String> = (first..end)
+        .filter_map(|i| rows.row_data(i))
+        .map(|r| match c {
+            cols::Col::Type => r.type_text,
+            cols::Col::Size => r.size,
+            cols::Col::Modified => r.modified,
+        })
+        .map(|t| t.to_string())
+        .collect();
+    let widest = app.invoke_measure(cells.join("
+").into(), false);
+    eprintln!("[cols] pane={pane} fit {}: widest of {} rows on screen = {widest:.0} px", c.name(), cells.len());
+    let label = match c {
+        cols::Col::Type => "Type",
+        cols::Col::Size => "Size",
+        cols::Col::Modified => "Modified",
+    };
+    let label = app.invoke_measure(label.into(), true);
+    col_set(&app, pane, c, cols::fit_width(widest.max(label)), "fit");
+}
+
 /// The Type column on or off in both panes. Off, every tab sorted by Type is sorted by name
 /// instead (a header click can no longer reach Type).
 fn set_show_type(st: &mut State, app: &App, on: bool) {
@@ -6020,6 +6149,10 @@ fn main() -> Result<(), slint::PlatformError> {
     if config.thumbnails {
         log_list_geom(true);
     }
+    for pane in 0..2 {
+        set_cols(&app, pane, config.cols(pane));
+        log_col_changes(pane, cols::DEFAULT, config.cols(pane), "config");
+    }
     app.set_version(env!("CARGO_PKG_VERSION").into());
     if let Some(g) = config.window {
         app.window().set_size(slint::LogicalSize::new(g.width, g.height));
@@ -6029,6 +6162,14 @@ fn main() -> Result<(), slint::PlatformError> {
             eprintln!("[settings] saved window position ({}, {}) is off screen; left to Windows", g.x, g.y);
         }
     }
+    // Once the window has its size (the name cell's width reads the layout).
+    let weak = app.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(400), move || {
+        if let Some(app) = weak.upgrade() {
+            log_widths(&app, 0);
+            log_widths(&app, 1);
+        }
+    });
     let side_model = Rc::new(VecModel::default());
     app.set_side_items(ModelRc::from(side_model.clone()));
     STATE.with(|s| {
@@ -6246,6 +6387,8 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_command(|pane, cmd| command(pane as usize, cmd.as_str()));
     app.on_strip_resized(|pane| strip_resized(pane as usize));
     app.on_toolbar_clicked(|pane, button| toolbar_clicked(pane as usize, button.as_str()));
+    app.on_col_drag(|pane, col, dx, phase| col_drag(pane as usize, col, dx, phase));
+    app.on_col_fit(|pane, col| col_fit(pane as usize, col));
     app.global::<Paging>().on_target(|cursor, content_y, visible_h, row_h, len, down| {
         model::page_target(cursor, content_y, visible_h, row_h, len, down)
     });

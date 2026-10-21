@@ -90,10 +90,11 @@ Four milestones, in the order Jeremy gave on 2026-10-21 (do not fold them):
    the pointer (Name has no width of its own and takes what the three leave, so dragging the Name |
    Type boundary right shrinks Type and the list reads as Name growing). A column has a floor of 40 px
    and the Name column one of 120 px (a drag past them stops there; no column can be hidden by
-   dragging, that is the Type column's setting). A double-click on a grip fits the column to its left
-   to the widest cell on screen plus padding (the rows in the viewport, never the whole listing, so a
-   40k folder costs nothing more), taking the difference from the column to its right (Name for the
-   first grip). The widths are per pane, logical px, saved as `col_type_left`, `col_size_left`,
+   dragging, that is the Type column's setting). A double-click on a grip fits the column on its
+   right (Type, Size or Modified) to the widest cell on screen plus padding (the rows in the viewport,
+   never the whole listing, so a 40k folder costs nothing more), taking the difference from the
+   column on its left (Name for the first grip) (Jeremy, 2026-10-21, at the console checks; the
+   kickoff read "the column to its left"). The widths are per pane, logical px, saved as `col_type_left`, `col_size_left`,
    `col_modified_left` and the `_right` three in `config.toml` (defaults 120, 90, 140, so a file
    without the keys loads today's layout; out of range values clamped on load), and apply to every
    tab of the pane and to both row heights. They are **requested** widths: a pane narrower than the
@@ -290,7 +291,9 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 
 - The column grips are 6 px wide on the boundaries between header cells and move the boundary under
   them, Explorer's rule (the left column grows by what the right one gives up); a column's floor is
-  40 px, Name's 120 px; a double-click fits to the rows on screen, not the whole listing; the widths
+  40 px, Name's 120 px; a double-click fits the column on the grip's right (Type, Size or
+  Modified), the column on its left (Name for the first grip) taking the difference, to the rows on
+  screen, not the whole listing (Jeremy, 2026-10-21, at the console checks); the widths
   are logical px per pane, applied to every tab of the pane, saved under six keys with today's
   values as the defaults; they are requested widths, clipped on a pane too narrow for them as today's
   fixed columns are, nothing shrinking to fit; no "reset to defaults" item in Phase 9 (the keys can be
@@ -319,6 +322,264 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   never for the tick and cloud rows.
 - The Google Drive mark and the link arrow in the tiles take the overlay list by the mark's size,
   with a console check deciding whether it stays.
+
+## P9-M1: adjustable column widths
+
+Branch `claude/p9-m1-column-widths-0ab0c4`, from ab95aaf (the kickoff).
+
+### Settled first (2026-10-21, before any code)
+
+Checked against the code at ab95aaf and the pinned Slint (c1d3a8d):
+
+- **Where the widths are read today.** The four details row components (`FileRows`, `FileRowsNoType`,
+  `FileRows32`, `FileRowsNoType32`) give their Type, Size and Modified `Text`s the constants 120, 90
+  and 140 px; the two details headers (`HeaderCell`s in a `HorizontalLayout`, chosen by `show-type`)
+  the same; the rename editor's width subtracts 350 px (230 without Type). That is all. The kickoff
+  named `dnd::Layout` (the name cell's extent for `hit`, the drop highlight and the band) as a reader
+  too, but none of them reads a column today: `dnd::hit` returns the row for any x inside the list,
+  the drop highlight spans the row, and the band runs in the grid only. So the widths reach Rust
+  through a new pure function, `dnd::name_cell` (the name cell's x range in window px for a pane,
+  from the pane's widths and row height, clamped at zero), which the drag's Name floor and the
+  driver's aims use; `hit` keeps the whole row (a drop on the Type cell still lands on the row, as
+  today and as in Explorer).
+- **Header and rows sit 6 px apart**, as today: the header's cells end at the list's right edge, the
+  rows' at its right edge less their 6 px right padding. The grips follow the header's boundaries.
+- **The grips** are one overlay per pane over the header (like the rename editor and the drop
+  highlight: siblings of the list, never in the rows), a 6 px `TouchArea` centred on each boundary
+  with `mouse-cursor: ew-resize`, three with the Type column on, two with it off, none in the grid.
+  A drag reports the pointer's travel since the press in window px (absolute position, so the grip
+  following the boundary does not feed back into the delta) to Rust, which applies it to the widths
+  at the press, clamps, and sets the pane's three properties; the list follows on the next frame.
+  `double-clicked` is the fit.
+- **A grip is named by the column on its right**: `type` is Name | Type, `size` is Type | Size (Name |
+  Size with the Type column off), `modified` is Size | Modified. Dragging grip `c` by dx makes `c`
+  narrower by dx and its left neighbour wider by dx (Name absorbing it for the first grip): the
+  kickoff's rule, the boundary moves under the pointer. Floors: 40 px for a column, and the Name cell
+  may not shrink below 120 px by a drag (below it already, on a narrow pane, it may not shrink
+  further). `colwidth <pane> <col> <px>` sets column `c` to px through the same function, as a drag's
+  end does. **The fit** of grip `c` fits column `c` itself (Type, Size or Modified) to the widest of
+  its cells on screen plus 12 px (the header label included, so a fit never hides it), moving the
+  same boundary, so the difference comes from the column on the grip's left (Name for `type`). The
+  kickoff's wording, "fits the column to its left", would make Modified unfittable and Name the
+  first grip's target; the driver's vocabulary (`colfit <pane> <type|size|modified>`) and the console
+  check's "fit on a folder of long type names" read as this. A call for Jeremy to check.
+- **Measuring the cells**: Slint has no text measurement in its Rust API, so one hidden `Text` per
+  window takes the cells' strings joined by line breaks, and Rust reads its `preferred-width`, the
+  widest line in the window's own font and scale (one layout of K short lines, K the rows on screen,
+  at a double-click only).
+- **Settings**: six `f32` keys, `col_type_left`, `col_size_left`, `col_modified_left` and the
+  `_right` three, defaults 120, 90, 140; `Config::clamped` pulls each into 40 to 2,000 px (a non-finite
+  value takes its default). Applied to the pane's properties at start; a scripted run reads none,
+  except through `TWINFM_CONFIG`.
+- **The binding shape is settled by the spike below before the rest is written**: shape A, the
+  details list components take `type-w`, `size-w` and `modified-w` as `in` properties from the
+  host (from the pane, from the window's six properties set from Rust), and each row's three `Text`s
+  read `root.type-w` and the rest; shape B, per-pane copies of the list components each reading a
+  `global` of its own pane's widths directly (`ColsLeft`, `ColsRight`), the host choosing the copy once
+  per pane as it chooses by `show-type`, which doubles the details components from eight to sixteen.
+  The spike builds each shape for the gate's variant only (22 px rows with the Type column), widths
+  set from Rust to the defaults, and measures the gate scenario in-app against the unchanged build,
+  in both orders.
+
+Driver steps and lines, as the kickoff names them:
+
+- `colwidth <pane> <type|size|modified> <px>`, `coldrag <pane> <type|size|modified> <dx>` (press on
+  the grip's centre, moves in 8 px steps through Slint's pointer path, release), `colfit <pane>
+  <type|size|modified>` (a double-click on the grip through the same path).
+- `[cols] pane=N <col> W -> W2 px (drag | fit | script | config)` for each column that changed (a
+  drag of the `size` grip changes Type and Size: two lines; logged at the release, not per move;
+  `config` at start for a value other than the default), `[cols] pane=N fit <col>: widest of K rows
+  on screen = W px`, and `[cols] pane=N widths type T size S modified M (name N px)` once after each
+  change and once per pane at start (N the name cell's width in the pane as laid out then).
+
+### The spike (2026-10-21)
+
+Three builds of ab95aaf in the worktree's own `target`, each copied out before the next: the
+unchanged build (base), shape A and shape B, each for the gate's variant only (`FileRows`, 22 px rows
+with the Type column), the widths set from Rust to 120, 90, 140 at start. The gate scenario on
+`C:\traces\bigdir` in-app, twelve runs back to back in the order base, A, B, B, A, base, twice.
+Jeremy's console session was connected (`query session`: console Active) and every run presented at
+60 Hz (interval p50 16.39 to 16.48 ms) with render p50 2.46 to 2.55 ms, so one session state
+throughout. `[busy] 10 s after split`:
+
+| Build | Runs | Median |
+|---|---|---|
+| base | 18.0 / 22.5 / 18.4 / 18.7 | 18.55 |
+| A, the list's properties | 17.7 / 19.1 / 16.9 / 19.8 | 18.4 |
+| B, a global per pane | 17.7 / 18.1 / 16.6 / 21.2 | 17.9 |
+
+No shape costs anything the in-app runs can see (each build's spread is two to five points, its own
+noise). **Shape A is chosen**: the same cost as B, with four details components instead of eight
+(B's per-pane copies would double them again with every future row change), and no global per
+pane. The console triplet decides as usual. Caveat: the runs (10:54 to 10:58) went ahead before the
+coordinator's hold on the preview stream's builds reached it, so that stream may have been compiling
+during some of them; the run script checked for `cargo` and `rustc` processes before each run and
+found none, but a compile starting mid-run would not show there. The spreads are the usual ones, so
+the choice stands. Narrator was not running (checked afterwards, not at the time). Nothing of the spike was kept: shape A was written again
+for all four row variants. Unlike P3-M1's 0.7 of a point, this binding is a value read when a row is
+made and never changes while the lists scroll; P3-M1's switch decided what each row held.
+
+### What landed
+
+- **`src/cols.rs`** (new, pure, four tests): `Col` (type, size, modified; a grip named by the column
+  on its right), `Widths` with `clamped` (40 to 2,000 px, a non-finite value its default) and
+  `shown` (what the columns take from a row, with or without Type), `left_of` (the grip's left
+  neighbour, None for Name), `drag` (the boundary moved from the widths at the press, stopping at a
+  column's 40 px floor, at 2,000 px, and at Name's 120 px, or at Name's own width when it is already
+  below that), `set_width` (a width set through the same boundary: `colwidth` and the fit),
+  `fit_width` (the widest cell plus 12 px), `grip_x` and `grips`.
+- **`dnd::name_cell`** (one test, five layouts): the name cell's x range in window px from the pane,
+  the row height and the columns shown, clamped at zero. The drag's Name floor reads it, and so does
+  the `[cols] ... widths` line's name figure. `hit` is unchanged (a drop on the Type cell lands on
+  the row).
+- **Settings**: `col_type_left`, `col_size_left`, `col_modified_left` and the `_right` three
+  (`Config::cols`, `set_cols`), defaults 120, 90, 140, clamped on load; one round-trip test (the
+  defaults without the keys, a write and read back, out of range values pulled in).
+- **pane.slint**: the four details row components take `type-w`, `size-w` and `modified-w` (the
+  NoType two without `type-w`) from `FileListHost`, which takes them from the pane's `col-type`,
+  `col-size` and `col-modified`; the two details headers' cells and the rename editor's width read
+  the same three. `ColGrip`: a 6 px `TouchArea` with the east-west cursor, reporting the pointer's
+  travel since the press from its absolute position (so the grip moving with the boundary does not
+  feed back), phases 0, 1, 2 for press, move and release, and the double-click; the pane draws three
+  (two without Type) in one overlay over the header, none in the grid.
+- **app.slint**: the six window properties, `col-drag(pane, col, dx, phase)`, `col-fit(pane, col)`,
+  and `measure(text, bold)`: two hidden `Text`s (the lists' font, and the header's bold) whose
+  preferred width Rust reads at once, the widest line of the cells joined by line breaks.
+- **main.rs**: `cols_of`, `set_cols`, `name_px`, `col_drag` (the widths and name cell at the press
+  kept in a thread-local, cleared at the release), `col_set`, `col_fit` (the rows in the viewport from
+  the list's scroll and height, never the listing; the double-click's own press and release are not
+  a drag), `cols_changed` (the lines, the config, `schedule_save`); at start the config's widths
+  applied with their `config` lines, and 400 ms later the widths line for both panes.
+- **Driver** (`src/auto.rs`): `colwidth`, `coldrag`, `colfit` as Settled first names them.
+- **Soak**: `tools/soak-p5m3.ps1` adds the column cycle after P8-L1's (a drag of the `size` grip by
+  30 px, a fit of Modified, the widths set back) and its report line.
+- **`C:\traces\cols.toml`** (read-only, not in the repo): both panes 200, 110, 180.
+- **Tests**: 249 to 255.
+
+### Decisions
+
+- **The grip is named by the column on its right, and a fit fits that column** (Settled first): the
+  kickoff's "fits the column to its left" would leave Modified unfittable. Jeremy, 2026-10-21: "Keep
+  the fit rule as built: a double-click fits the column on the boundary's right (Type, Size or
+  Modified)."
+- **A fit includes the header label** (bold), so a column of empty cells (folders' sizes) fits to
+  "Size" plus 12 px rather than to nothing; a fit never goes under 40 px.
+- **The drag's travel is measured from the press**, not move by move (the sidebar's resize edge adds
+  each move's delta): a pointer that overshoots a floor and comes back meets the boundary where it
+  stopped instead of dragging it early.
+- **A drag is logged at the release only**, each column that changed (two lines for a grip between
+  two columns), so a drag of 200 moves writes three lines.
+- **Widths are kept as the drag leaves them** (fractional at 150% scaling); the lines print whole px.
+- **The start line waits 400 ms** for the window's size: logged straight away, the name cell read
+  0 px, before the first layout. The right pane's figure before a split is its would-be width.
+- **A double-click's own release must not undo the fit**: the second press records the widths, the
+  fit changes them, and the release then put them back (seen in the first scripted run as a `(drag)`
+  line after each `(fit)`); the fit now clears the drag in progress.
+
+### Scripted checks
+
+All on this machine, `target\release` of the branch, Jeremy's console session.
+
+On `C:\Windows\System32` (folders first, so the rows on screen are folders): `colwidth 0 type 200`,
+`size 110`, `modified 180` with the default 1,200 px window, then drags and fits:
+
+```
+[cols] pane=0 widths type 120 size 90 modified 140 (name 626 px)
+[cols] pane=0 type 120 -> 180 px (drag)                        coldrag 0 type -60
+[cols] pane=0 fit type: widest of 31 rows on screen = 53 px     colfit 0 type ("File folder")
+[cols] pane=0 type 180 -> 65 px (fit)
+[cols] pane=0 fit modified: widest of 31 rows on screen = 94 px
+[cols] pane=0 size 90 -> 124 px (fit)
+[cols] pane=0 modified 140 -> 106 px (fit)
+[cols] pane=0 size 114 -> 180 px (drag)                        coldrag 0 modified 500: Modified at 40
+[cols] pane=0 modified 106 -> 40 px (drag)
+[cols] pane=0 size 180 -> 40 px (drag)                         coldrag 0 modified -2000: Size at 40
+[cols] pane=0 modified 40 -> 180 px (drag)
+[cols] pane=1 fit size: widest of 31 rows on screen = 4 px      folders: no sizes; "Size" + 12 = 40
+[cols] pane=1 type 120 -> 40 px (script)                        colwidth 1 type 5: the floor
+```
+
+With the Type column off (the dialog), `coldrag 0 size -30` moved Name | Size (Size 40 -> 70, the
+name cell 245 -> 215 px) and `colwidth 0 type 150` logged `[auto] col pane=0 type: no such grip in
+this pane's header`; with thumbnails on (32 px rows, `[icons] list geometry: 32 px rows`) a drag and
+a fit ran the same, and in the grid (`view icons`) the grips are refused. Screenshots with the
+software renderer (`PrintWindow`, the window found by this build's path, since the preview stream's
+TwinFM was open beside it): after the widths change the header cells and every row's cells stand
+6 px apart as before; in a split the left pane, already narrower than Name's 120 px, kept Type
+from growing; the rename editor (F2) ends at the moved Type boundary; `coldrag 0 type 200` (Name |
+Type right) stopped Type at 40.
+
+The settings triplet's file: `C:\traces\cols.toml` on the gate scenario shows `[settings] file
+C:\traces\cols.toml (read)`, six `(config)` lines and `[cols] pane=0 widths type 200 size 110
+modified 180 (name 486 px)` for both panes, and `could not save ... Access is denied` as every
+read-only test config does.
+
+A six-minute run of `tools/soak-p5m3.ps1` (three cycles started, two completed): exit code 0, no
+panicked line, every earlier count as before (jobs done 147, failed 0; menupicks refused 0; drags
+dropped 0; zip jobs not done 0; waitpreview timeouts 0). Its column cycle navigated to a folder that
+does not exist (a tab character had replaced the path's backslash in the script), so the drag ran
+on an empty listing and the fit saw no rows (`widest of 0 rows on screen = 4 px`); the drag read back
+as Size 90 -> 60 and the widths went back to 120, 90, 140 in both cycles. Path fixed in 797617a.
+
+The re-run, six minutes after P9-M2's gate (three cycles started, two completed): exit code 0, no
+panicked line, jobs done 192 (failed 0, cancelled 0), drags dropped 0, toolbar presses refused 0,
+menupicks refused 0, zip jobs not done 0, waitpreview timeouts 0, worker panics 0; working set 126.5
+to 212.7 MB (233 at most). The column cycle in `src\tree`: `[cols] pane=0 size 90 -> 60 px (drag)`
+in both cycles, `fit modified: widest of 10 rows on screen = 94 px` with Size 60 -> 94 and Modified
+140 -> 106, then the widths back at 120, 90, 140 (two cycles, and the start line).
+
+### Gate
+
+Run by Jeremy on 2026-10-21, finished at 13:28 (tag ab38 for both settings, `C:\traces\gate-p9m1.ps1`,
+the same file as `tools/gate-p9m1.ps1`, 17 min): `target-p9m1` (b9fbd9d, main with P9-M2 merged in,
+built `--locked` from a detached checkout) against `target-p9m2` (95ace9f), three rounds of
+reference, candidate, reference with `C:\traces\cols.toml`, candidate with it. Every run passed the
+wrapper's checks (no panic; `[settings] file C:\traces\cols.toml (read)` in the cols runs; the
+candidate's `[cols] pane=0 widths` line at 120, 90, 140 and at 200, 110, 180).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m2-1 / 2 / 3 | 17.7 / 23.3 / 21.1 | 16.4 / 25.8 / 22.5 | 2.23 / 3.15 / 2.91 |
+| p9m1-1 / 2 / 3 | 18.4 / 21.7 / 21.9 | 16.4 / 20.9 / 21.4 | 2.23 / 2.96 / 2.92 |
+| p9m2-cols-1 / 2 / 3 | 18.5 / 21.4 / 21.2 | 20.2 / 18.6 / 19.2 | 2.25 / 2.92 / 2.93 |
+| p9m1-cols-1 / 2 / 3 | 17.7 / 21.0 / 20.9 | 17.2 / 23.0 / 22.0 | 2.09 / 2.84 / 2.80 |
+
+The session changed state after round 1 (the ab23 state): every run of rounds 2 and 3 had render p50
+2.80 to 3.15 ms against 2.09 to 2.25 in round 1, and read 21 to 23% whichever binary sat in it, the
+reference above 20% too. Medians as the wrapper reads them: defaults 21.1 (reference) / 21.7
+(candidate), cols 21.2 / 20.9; no gap that counts in either. Read like for like: round 1, the normal
+state, defaults 17.7 / 18.4 and cols 18.5 / 17.7, every run under 20%, the two pairs within 0.8 of a
+point in opposite directions; rounds 2 and 3, the slow state, defaults 23.3, 21.1 against 21.7, 21.9
+and cols 21.4, 21.2 against 21.0, 20.9, the candidate below the reference in three of four pairs.
+Passed by the protocol's rule: the per-row width binding adds no cost the gate can see. Only one
+round ran in the normal state, so the evidence there is one pair per setting (as in ab23, which
+Jeremy accepted read this way).
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m1\release\twinfm.exe`, started from a normal (not
+elevated) window, the panes set up unequal (the split on, two tabs in one pane only):
+
+1. **The cursor**: over each boundary in the header (Name | Type, Type | Size, Size | Modified) the
+   pointer turns into the left-right arrows; none at the right edge of the list, none in the grid views.
+2. **A drag in each pane**: drag Type | Size right and left; the list follows the pointer as it moves,
+   the boundary stays under the pointer, and the other pane does not change. Header and rows stay
+   lined up.
+3. **The floors**: drag a boundary as far as it goes each way; no column goes below about 40 px and
+   the Name column stops at about 120 px (it never vanishes).
+4. **The fit**: in a folder of long type names (`C:\Windows\System32` scrolled to its files, or a
+   Downloads folder of mixed files), double-click the Name | Type boundary: Type fits its longest
+   name on screen. Double-click Size | Modified: Modified fits its dates.
+5. **The Type column off** (Settings, Type column unticked): two grips, Name | Size and Size |
+   Modified, and a drag works as before; ticked again, the Type column comes back at its width.
+6. **Thumbnails on** (Settings): the 32 px rows follow a drag the same way.
+7. **150% scaling** (Display settings, Scale 150%, TwinFM restarted): a drag and a fit still line up.
+8. **Rename** (F2) after a drag: the edit box ends where the Type column starts.
+9. **A restart**: close TwinFM with the window's close button and start it again; each pane's widths
+   are as you left them (in `%APPDATA%\twinfm\config.toml` as `col_type_left` and the rest).
+10. **The fit's rule**: settled by Jeremy on 2026-10-21 (Decisions): kept as built.
+
+Jeremy, 2026-10-21: "console checks were all working as expected. proceed with the merge".
 
 ## Open questions
 
@@ -797,6 +1058,9 @@ document's folder, or the zip). `Req::Open` gains `sheet` (0 by default); `previ
 - **No head row is assumed in a sheet**; Word's head rows are its `tblHeader` rows.
 - **A newer file asked for between parts ends the reading with no answer** (`superseded: the
   document's reading stopped`): the UI has moved on and drops any late answer anyway.
+- **A slip, recorded**: bcb83cc (the kickoff's Office bullet, docs only) was committed and pushed
+  during P9-M1's gate without a gate run, against the rule that every commit is gated; the full gates
+  were run on it as the first thing once the machine was free, and no commit goes ungated after it.
 - **The sheet count travels in the first heading's anchors** (`sheet=1 sheet=2 ...`), so the UI can
   refuse a sheet that does not exist without asking the worker.
 
@@ -834,3 +1098,11 @@ with its heading, paragraph, the two-level bullets, the table, the link and the 
 workbook's sheet heading, the links row with "Totals" bold and "Detail" a link, the table with the
 number and the date (`2023-10-01`); the deck with `Slide 1`, its title, the two-level bullets, the
 picture, the rule, `Slide 2` and its title and bullet.
+
+A six-minute run of `tools/soak-p5m3.ps1` (three cycles started, two preview cycles completed): exit
+code 0, no panicked line, every other count as before; preview: docx 2, xlsx 4 (each file's first
+sheet and the second), pptx 2, sheet links 2, Office files unreadable 0, pictures shown 19,082 (the
+Word and PowerPoint files' one each beside P9-M2's), alt text 0, waitpreview timeouts 0, worker
+panics 0; working set 126 to 224 MB. The report's text count read "(three per cycle)" since P9-M2,
+for a cycle with two text files (d-notes.txt, h-notes.txt; both soaks counted 4 in two cycles): the
+label now reads two, in the script and in `CLAUDE.md`.

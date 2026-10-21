@@ -108,7 +108,7 @@
 # i-photo.jpg (1200 x 800, made with System.Drawing) and j-page.html (a head, a script and a style
 # to drop, headings with ids, a list, a table, a pre, e-dot.png, an #anchor link); after g-big.md the
 # cursor goes on through the three and j-page.html's anchor is followed. Reported besides: text
-# previews (three per cycle), pictures (two per cycle), picture failures (must be 0), HTML previews
+# previews (two per cycle: d-notes.txt and h-notes.txt), pictures (two per cycle), picture failures (must be 0), HTML previews
 # (one per cycle).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
@@ -122,6 +122,12 @@
 # folders are selected and Return opens both as new tabs (placed after the active tab 0), Ctrl+2
 # and Ctrl+W twice close them, and Ctrl+1 makes the pane's first tab active again. Reported:
 # several-item opens (one per cycle) and the tabs they opened (two per cycle).
+#
+# P9-M1, after the P8-L1 cycle: in the left pane on src\tree (details, the default widths 120, 90,
+# 140), the Type | Size grip is dragged 30 px right (Type 150, Size 60), the Modified column is
+# fitted by a double-click on its grip (Size takes the difference), then colwidth sets Modified to
+# 140 and Size to 90, which puts every width back. Reported: drags read back as Size 90 -> 60 (one
+# per cycle), fits (one per cycle), and widths lines back at 120, 90, 140 (one per cycle).
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -424,7 +430,9 @@ $cycle = @(
     # P8-L1: the grid's PageDown and Return on two folders (see the header).
     "nav 0 $src\tree", 'sleep 500', 'click 0 0', 'view medium', 'sleep 300', 'key PageDown', 'sleep 100', 'key PageUp', 'sleep 100',
     'view details', 'sleep 300', 'click 0 0', 'shiftclick 0 1', 'key Return', 'sleep 800', 'tab 2', 'sleep 200', 'tab close', 'sleep 300', 'tab 2', 'sleep 200', 'tab close', 'sleep 300',
-    'tab 1', 'sleep 300'
+    'tab 1', 'sleep 300',
+    # P9-M1: a grip drag, a fit, and the widths set back (see the header).
+    "nav 0 $src\tree", 'sleep 500', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -589,6 +597,9 @@ $pvFell = @($log | Select-String -SimpleMatch 'styled text fell back to plain').
 $pvCut = @($log | Select-String -SimpleMatch ', cut at 2 MB').Count
 $pvSuperseded = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String -SimpleMatch ' superseded: ').Count
 $pvTimeouts = @($log | Select-String -SimpleMatch 'waitpreview: not settled').Count
+$colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 60 px (drag)').Count
+$colFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit modified: ').Count
+$colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 $menus = @($log | Select-String -SimpleMatch '[menu] closed').Count
 $ticks = @($log | Select-String -SimpleMatch '[auto] in-menu tick')
@@ -617,5 +628,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "between zips: copies from a zip $fromZip (three per cycle), moves from a zip $fromZipMoves (one per cycle); passwords from the script $pwScript, right $pwRight (one each per cycle)"
 "archives inside archives: copies out $nestedOut, copies from an archive into a zip $fromShell (one each per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
-"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (three per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
+"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (two per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
+"column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (one per cycle and one at start)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
