@@ -315,13 +315,18 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   that adds nothing beyond those two; Excel shows one sheet at a time (500 rows by 50 columns), the
   first by default, the others through links at the top; PowerPoint shows one block group per slide
   with a rule between; the binary `.doc`, `.xls`, `.ppt` are not previewed.
-- Thumbnails inside archive levels stay off (the shell cannot see inside an archive without
-  extracting) unless the P9-M4 pin check finds the zip folder's provider cheap; the record says what
-  was found.
-- The OneDrive state property is read only for files whose attributes say in progress or error,
-  never for the tick and cloud rows.
-- The Google Drive mark and the link arrow in the tiles take the overlay list by the mark's size,
-  with a console check deciding whether it stays.
+- Thumbnails inside archive levels stay off: the pin check found no thumbnail provider inside a zip
+  or a 7z (`WTS_E_FAILEDEXTRACTION`) (P9-M4 Settled first, 2026-10-21).
+- The OneDrive state property is read only for a cloud placeholder that is not in sync, by the
+  Cloud Files API's placeholder state from the listing's attributes and reparse tag (no file opened,
+  no new crate); no attribute combination says in progress or error, so the kickoff's gate had
+  nothing to test (P9-M4 Settled first, 2026-10-21).
+- A search tab gets thumbnails except when it is rooted in a cloud location, where a thumbnail could
+  start a download (P9-M4 Settled first and Decisions, 2026-10-21).
+- The Google Drive mark and the link arrow over an icon larger than 48 physical px are drawn at two
+  thirds of it, at its lower left (Explorer draws them at the icon's size: their glyphs fill about
+  40% and 57% of the image), with a console check beside Explorer deciding whether it stays (P9-M4
+  Settled first and Decisions, 2026-10-21).
 
 ## P9-M1: adjustable column widths
 
@@ -641,6 +646,11 @@ changed):
   32 px icons) keep the full-size overlay, as Explorer's lists do. A pure function gives the mark's
   size and the list for an icon size; a console check beside Explorer decides whether it stays. The
   status glyphs (`s<N>`, OneDrive) are drawn by `glyph_px` already (24 px over 96) and do not change.
+  Measured before the code (a throwaway test, the shell's overlay images at 16 to 144 px): the link
+  arrow's glyph is 8 px over 16, 13 over 32, 20 over 48, 37 x 38 over 96 (about 40%); Google Drive's
+  mark 12 x 9 over 16, 24 x 18 over 32, 28 x 21 over 48, 55 x 40 over 96 (57% of the width). So a
+  "third of the square" from the 32 px list would shrink the arrow to 13 px; the rule as built is in
+  Decisions (two thirds of the icon above 48 physical px).
 - **The hydration check** is a console check for Jeremy (below, after the gate): the watch already
   asks for `FILE_NOTIFY_CHANGE_ATTRIBUTES`, a `Modified` record becomes a stat and an upsert, and the
   stat rebuilds the key with the folder's cloud location (`StatJob`), so a file whose state changes
@@ -722,6 +732,33 @@ All on this machine, `target\release` of the branch.
   64 px over 96 px`, each folder's cloud mark in the tile's lower left at about two fifths of its
   width (the lists unchanged at 16 px).
 - The Start Menu's Programs folder in medium tiles: `overlay index 2 fetched at 48 px` (unchanged).
+
+A six-minute run of `tools/soak-p5m3.ps1` after P9-M3's gate (three cycles started, two completed):
+exit code 0, no panicked line, jobs done 185 (failed 0, cancelled 0), drags dropped 0, toolbar
+presses refused 0, menupicks refused 0, zip jobs not done 0, picture failures 0, waitpreview timeouts
+0, worker panics 0; working set 139.2 to 225.4 MB (312.6 at most). The P9-M4 cycle: `icon from the
+thumbnail` for i-photo.jpg's row and `[search] ... start "photo"` in both cycles, the column cycle's
+counts as before.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe`, thumbnails on (Settings):
+
+1. **A photo dragged out of the details list** onto the desktop or into Explorer: the picture under
+   the pointer is the photo itself, sharp, not a generic picture icon. The same from a search tab.
+2. **A search tab with thumbnails** (Ctrl+F, type part of a name, Ctrl+Shift+F) in a folder of
+   photos: the results show their thumbnails in the 32 px rows and in the tile views.
+3. **Google Drive and shortcuts beside Explorer's large-icon view, at 100% and at 150% scaling**:
+   `G:\My Drive` and a folder of shortcuts (the Start Menu's Programs) in large tiles in TwinFM and in
+   Explorer's large icons. TwinFM's cloud mark and arrow are now smaller than Explorer's (two thirds);
+   say whether to keep them so, match Explorer's size, or go smaller.
+4. **OneDrive's states**: in a OneDrive folder, a new file (copy one in): it shows the syncing or
+   pending mark while it uploads, then the tick, matching Explorer's Status column. A synced folder
+   of many files opens as quickly as before.
+5. **The hydration check**: in a OneDrive folder, right-click a file in Explorer and pick "Free up
+   space", with the same folder open in TwinFM: its mark turns to the cloud without pressing F5. Then
+   "Always keep on this device": it turns to the solid tick. Tell me what you see; the watch's lines
+   show whether Windows reported the change.
 
 ## Open questions
 
