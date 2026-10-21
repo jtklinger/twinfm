@@ -1,7 +1,7 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
 import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
-import { Preview, PreviewPage } from "preview.slint";
-export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage }
+import { Preview, PreviewPage, MdBlock, MdRow, MdCell } from "preview.slint";
+export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
 // the bookmark's index in the bookmark list.
@@ -272,6 +272,11 @@ export component App inherits Window {
     in property <string> preview-message;
     in property <[PreviewPage]> preview-pages;
     in property <length> preview-content-h;
+    // Since P8-M2: 0 a PDF's pages, 1 a Markdown file's blocks; preview-link(destination) a link
+    // clicked in one.
+    in property <int> preview-mode;
+    in property <[MdBlock]> preview-blocks;
+    callback preview-link(string);
     callback toggle-preview();
     callback preview-cursor();
     callback preview-scrolled(length, length);
@@ -282,6 +287,7 @@ export component App inherits Window {
     public function preview-set-scroll(y: length) { preview-col.set-scroll(y); }
     public function preview-scroll-top() -> length { return preview-col.scroll-top(); }
     public function preview-visible-h() -> length { return preview-col.visible-h(); }
+    public function preview-total-h() -> length { return preview-col.total-h(); }
     // A drag over the window would drop into pane `drop-pane` (-1: none), on row `drop-row` (-1:
     // the pane's folder). Set by the drop target (dnd.rs).
     in-out property <int> drop-pane: -1;
@@ -984,6 +990,9 @@ export component App inherits Window {
             message: root.preview-message;
             pages: root.preview-pages;
             content-h: root.preview-content-h;
+            mode: root.preview-mode;
+            blocks: root.preview-blocks;
+            link(u) => { root.preview-link(u); }
             scrolled(top, h) => { root.preview-scrolled(top, h); }
             resized(w) => { root.preview-resized(w); }
         }

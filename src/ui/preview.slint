@@ -1,4 +1,4 @@
-import { Palette, ScrollView } from "std-widgets.slint";
+import { Palette, ScrollView, ListView } from "std-widgets.slint";
 
 // One page of the previewed PDF (preview.rs `layout`): its top and height in the scroll's content,
 // laid out from the page sizes before any page is drawn, its picture once the worker has rendered
@@ -11,24 +11,196 @@ export struct PreviewPage {
     note: string,
 }
 
+// One cell of a Markdown table (P8-M2): its text, its column's alignment (0 left, 1 centre, 2
+// right) and its column's share of the width (the same in every chunk of one table).
+export struct MdCell {
+    text: styled-text,
+    align: int,
+    weight: float,
+}
+
+export struct MdRow {
+    head: bool,
+    cells: [MdCell],
+}
+
+// One block of a previewed Markdown file (markdown.rs `Block`, one ListView row): kind 0 a
+// paragraph, 1 a heading (level 1 to 6), 2 code, 3 a rule, 4 a table, 5 a picture, 6 the 2 MB note.
+// indent is the list depth, quote the quote depth; marker the list item's bullet or number and task
+// its box (1 open, 2 done), on the item's first block. text is a paragraph's or heading's styled
+// text, code a code block's lines (or the note's text), rows a table's. A picture shows img at
+// img-w by img-h (logical px, scaled down to the column) once decoded, its alt text until then and
+// when it cannot be shown. first and last: a code block's or table's first and last chunk.
+export struct MdBlock {
+    kind: int,
+    level: int,
+    indent: int,
+    quote: int,
+    marker: string,
+    task: int,
+    text: styled-text,
+    code: string,
+    rows: [MdRow],
+    img: image,
+    img-w: length,
+    img-h: length,
+    alt: string,
+    first: bool,
+    last: bool,
+}
+
+// One Markdown block as a row of the column's ListView. Rust lays nothing out: the row's height is
+// its layout's, so a paragraph wraps at the column's width and a picture is as tall as its width
+// makes it.
+component MdItem inherits Rectangle {
+    in property <MdBlock> b;
+    callback link(string);
+    // Left of the text: the quote bars and list levels (a list item's marker sits in the last 24 px).
+    property <length> left: 12px + b.quote * 14px + b.indent * 24px;
+    property <length> content-w: max(0px, root.width - root.left - 12px);
+    property <length> gap: b.kind == 1 ? (b.level <= 2 ? 18px : 12px) : (b.kind == 2 || b.kind == 4) && !b.first ? 0px : b.indent > 0 ? 3px : 8px;
+    property <color> tint: Palette.foreground.transparentize(93%);
+    for i in b.quote: Rectangle {
+        x: 12px + i * 14px;
+        width: 3px;
+        background: Palette.border;
+    }
+    if b.marker != "" || b.task != 0: Text {
+        x: root.left - 24px;
+        y: root.gap + (b.task != 0 ? 3px : 0px);
+        width: 20px;
+        text: b.task == 1 ? "\u{E739}" : b.task == 2 ? "\u{E73A}" : b.marker;
+        font-family: b.task != 0 ? "Segoe Fluent Icons" : "";
+        horizontal-alignment: right;
+        color: Palette.foreground;
+    }
+    VerticalLayout {
+        padding-left: root.left;
+        padding-right: 12px;
+        padding-top: root.gap;
+        padding-bottom: b.kind == 2 || b.kind == 4 ? (b.last ? 6px : 0px) : 0px;
+        if b.kind == 0: StyledText {
+            text: b.text;
+            default-color: Palette.foreground;
+            link-color: Palette.accent-background;
+            link-clicked(u) => { root.link(u); }
+        }
+        if b.kind == 1: StyledText {
+            text: b.text;
+            default-color: b.level == 6 ? Palette.foreground.transparentize(30%) : Palette.foreground;
+            default-font-size: b.level == 1 ? 24px : b.level == 2 ? 20px : b.level == 3 ? 17px : b.level == 4 ? 15px : 13px;
+            link-color: Palette.accent-background;
+            link-clicked(u) => { root.link(u); }
+        }
+        // Code: Consolas on a tinted ground, long lines wrapped (Jeremy, 2026-10-20); a long block
+        // comes as chunks drawn as one.
+        if b.kind == 2: Rectangle {
+            background: root.tint;
+            border-top-left-radius: b.first ? 4px : 0px;
+            border-top-right-radius: b.first ? 4px : 0px;
+            border-bottom-left-radius: b.last ? 4px : 0px;
+            border-bottom-right-radius: b.last ? 4px : 0px;
+            VerticalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                padding-top: b.first ? 8px : 0px;
+                padding-bottom: b.last ? 8px : 0px;
+                Text {
+                    text: b.code;
+                    font-family: "Consolas";
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    color: Palette.foreground;
+                }
+            }
+        }
+        if b.kind == 3: Rectangle {
+            height: 9px;
+            Rectangle { y: 4px; height: 1px; background: Palette.border; }
+        }
+        // A table: the columns' shares come from Rust, so its chunks line up.
+        if b.kind == 4: GridLayout {
+            for r in b.rows: Row {
+                for c in r.cells: Rectangle {
+                    horizontal-stretch: c.weight;
+                    min-width: 0px;
+                    preferred-width: 0px;
+                    background: r.head ? root.tint : transparent;
+                    border-width: 1px;
+                    border-color: Palette.border;
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        padding-top: 3px;
+                        padding-bottom: 3px;
+                        StyledText {
+                            text: c.text;
+                            horizontal-alignment: c.align == 1 ? TextHorizontalAlignment.center : c.align == 2 ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
+                            default-color: Palette.foreground;
+                            link-color: Palette.accent-background;
+                            link-clicked(u) => { root.link(u); }
+                        }
+                    }
+                }
+            }
+        }
+        if b.kind == 5 && b.img-w > 0: HorizontalLayout {
+            alignment: start;
+            Image {
+                source: b.img;
+                width: min(b.img-w, root.content-w);
+                height: self.width * b.img-h / b.img-w;
+                image-fit: contain;
+            }
+        }
+        if b.kind == 5 && b.img-w <= 0: Text {
+            text: b.alt == "" ? "[picture]" : "[" + b.alt + "]";
+            wrap: word-wrap;
+            font-italic: true;
+            color: Palette.foreground.transparentize(30%);
+        }
+        if b.kind == 6: Rectangle {
+            background: root.tint;
+            border-radius: 4px;
+            VerticalLayout {
+                padding: 8px;
+                Text {
+                    text: b.code;
+                    wrap: word-wrap;
+                    font-italic: true;
+                    color: Palette.foreground.transparentize(20%);
+                }
+            }
+        }
+    }
+}
+
 // The preview column (P8-M1): the file's name, then its pages in one scroll, or a message ("No
 // preview" and the rest, preview.rs). Rust does the layout and the rendering; this only places what
 // it is given and reports its scroll and its width: scrolled(top, visible height) when the scroll
 // moves (Rust compares the pages in view and does nothing more when they are the same), and
 // resized(width) with the width a page is drawn at, when it changes (Rust re-renders after it has
-// settled).
+// settled). Since P8-M2, mode 1 shows a Markdown file's blocks in a ListView instead (only the rows
+// on screen are built); link(destination) is a link clicked in one.
 export component Preview inherits Rectangle {
     in property <string> title;
     in property <string> message;
     in property <[PreviewPage]> pages;
     in property <length> content-h;
+    in property <int> mode;
+    in property <[MdBlock]> blocks;
     callback scrolled(length, length);
     callback resized(length);
+    callback link(string);
     background: Palette.alternate-background;
     // The driver's `previewscroll`, and a new document back at its top.
-    public function set-scroll(y: length) { body.content-y = -y; }
-    public function scroll-top() -> length { return -body.content-y; }
-    public function visible-h() -> length { return body.visible-height; }
+    public function set-scroll(y: length) {
+        if (root.mode == 1) { md.content-y = -y; } else { body.content-y = -y; }
+    }
+    public function scroll-top() -> length { return root.mode == 1 ? -md.content-y : -body.content-y; }
+    public function visible-h() -> length { return root.mode == 1 ? md.visible-height : body.visible-height; }
+    // The Markdown list's height as the ListView estimates it (its rows' average times their count).
+    public function total-h() -> length { return root.mode == 1 ? md.content-height : root.content-h; }
     VerticalLayout {
         Rectangle {
             height: 32px;
@@ -44,7 +216,7 @@ export component Preview inherits Rectangle {
         }
         Rectangle {
             body := ScrollView {
-                visible: root.message == "";
+                visible: root.message == "" && root.mode == 0;
                 content-width: self.visible-width;
                 content-height: root.content-h;
                 init => { root.resized(self.visible-width - 16px); }
@@ -82,6 +254,21 @@ export component Preview inherits Rectangle {
                         vertical-alignment: center;
                         wrap: word-wrap;
                     }
+                }
+            }
+            // Behind the Markdown list, as behind the pages: Shift and the wheel scroll it up and down.
+            if root.message == "" && root.mode == 1: TouchArea {
+                scroll-event(e) => {
+                    if (!e.modifiers.shift) { return reject; }
+                    md.content-y = clamp(md.content-y + e.delta-y, min(0px, md.visible-height - md.content-height), 0px);
+                    return accept;
+                }
+            }
+            md := ListView {
+                visible: root.message == "" && root.mode == 1;
+                for b in root.blocks: MdItem {
+                    b: b;
+                    link(u) => { root.link(u); }
                 }
             }
             if root.message != "": Text {

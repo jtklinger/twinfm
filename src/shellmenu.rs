@@ -308,6 +308,31 @@ pub fn open_item(hwnd: isize, file: &Path, dir: &Path) -> Result<(), u32> {
     }
 }
 
+/// Open a web or mail link from the Markdown preview (P8-M2) in the default browser or mail
+/// program: `ShellExecuteExW` with the `open` verb and without `SEE_MASK_INVOKEIDLIST`, so the
+/// URL goes to its protocol's handler and no shell item is made of it. The caller passes only
+/// `http`, `https` and `mailto` links. On the UI thread with no app-state borrow held, as
+/// `open_item`. Err is the Win32 error code.
+pub fn open_url(hwnd: isize, url: &str) -> Result<(), u32> {
+    use windows_sys::Win32::UI::Shell::{SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
+    let (verb, url_w) = (wide(std::ffi::OsStr::new("open")), wide(std::ffi::OsStr::new(url)));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOASYNC,
+        hwnd: hwnd as HWND,
+        lpVerb: verb.as_ptr(),
+        lpFile: url_w.as_ptr(),
+        nShow: windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+        ..Default::default()
+    };
+    // SAFETY: as in `open_item`: a zero-initialised SHELLEXECUTEINFOW whose strings outlive the call.
+    if unsafe { ShellExecuteExW(&mut info) } != 0 {
+        return Ok(());
+    }
+    // SAFETY: plain Win32 query.
+    Err(unsafe { windows_sys::Win32::Foundation::GetLastError() })
+}
+
 /// Open an item inside a zip archive as Explorer does: `ShellExecuteExW` with the item's PIDL
 /// (`SEE_MASK_IDLIST`), so the shell's zip folder extracts it to a temporary folder and opens it
 /// there. On the UI thread with no app-state borrow held, as `open_item`. Err is the HRESULT of a

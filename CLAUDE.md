@@ -26,7 +26,7 @@ hayro, P8-M2 Markdown; opened 2026-10-20, its first section quotes Jeremy's kick
 Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (239 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (249 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -34,7 +34,8 @@ Read them before changing the list.
   tests write to scratch folders, and since P7-M3 five more (the zip writer's, the 7z and TAR
   writers', the ArchiveFolder listing's, and two file operation worker tests; since 2026-10-19 the
   ArchiveFolder case test too) write archives into
-  scratch folders, and since P8-M1 the preview worker's test writes PDFs into one, see below)
+  scratch folders, and since P8-M1 the preview worker's test writes PDFs into one, and since P8-M2
+  two more write Markdown and pictures into scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -616,7 +617,7 @@ Read them before changing the list.
   every page kept holding its image at the current width; then 100 ms), `settings set preview
   true|false`. `[preview]` lines (pages counted from 1): `shown at W px (ratio R)` (when the column
   reports its width as it appears), `hidden`, `pane=N gen=G <path>: pdf, P pages, opened in T ms |
-  folder | not a pdf | inside an archive | cloud-only | password | damaged: <why>` (why: an I/O
+  folder | no preview for this type | inside an archive | cloud-only | password | damaged: <why>` (why: an I/O
   error, hayro's `LoadPdfError`, `no pages`, `panicked: <msg>`), `gen=G pages in view A..B, kept K
   image(s)` (when the kept pages change; K after the drop), `gen=G page K rendered WxH px in T ms`,
   `gen=G page K capped at 8192 px (was WxH)`, `gen=G page K took T ms: too long` (over 5 s: "Page K
@@ -626,6 +627,47 @@ Read them before changing the list.
   "No preview", "Password-protected PDF: not previewed", "This PDF could not be read", "Not
   previewed: the file is in the cloud and not downloaded", "Not previewed inside an archive". The
   gate scenario's cursor sits on no row, so a run with `preview = true` shows the empty column.
+  Since P8-M2, Markdown (`.md`, `.markdown`, any case; `src/markdown.rs` the pure part): the archive
+  and cloud checks apply as for a PDF, and the label for any other type reads `no preview for this
+  type` (was `not a pdf`). The worker reads at most 2 MB (`markdown::MAX_BYTES`; over it the text ends
+  at the last line break before 2 MB, else at a character boundary, and a note block comes first; a
+  UTF-16 file by its BOM is decoded, other invalid UTF-8 replaced), parses it with pulldown-cmark
+  (`=0.13.4`, Slint's copy: tables, task lists, strikethrough, footnotes, GFM, YAML front matter
+  skipped) into a flat block list (heading, paragraph, code, rule, table, picture, note; list depth,
+  quote depth, a list item's bullet or number or task box on its first block; a code block or table
+  over 40 lines or rows split into chunks drawn as one, a table's column shares from its longest cells
+  so the chunks line up), writes each paragraph's, heading's (wrapped in `**`) and table cell's inline
+  content back as inline Markdown (ASCII punctuation escaped, emphasis as `*`, a zero-width space
+  between a closing and an opening run, code spans fenced one backtick longer than any run inside,
+  links as `[text](<dest>)`, U+E541 removed) and makes it a `StyledText` there (`from_plain_text` on
+  Slint's refusal, logged), answers the blocks, then decodes the local pictures one at a time
+  (`image` with png, jpeg, gif, webp; `resvg` for SVG, its text not drawn; at most 8,192 px a side,
+  scaled down; 64 MB of decoded pixels per file, `PIXEL_BUDGET`; a cloud-only or missing file by its
+  attributes, never opened), checking the generation between them. Remote pictures show their alt
+  text where they stand; an HTML block shows its text without tags, its local `<img>` as a picture.
+  preview.slint shows the blocks in a ListView (`mode` 1; only the rows on screen are built), the
+  Shift+wheel TouchArea behind it too. Links (`link-clicked`, `preview::link`): `http`, `https`,
+  `mailto` open in the default browser (`shellmenu::open_url`, no IDList mask); `#anchor` scrolls to
+  the heading with that GitHub slug (`markdown::Slugger`; the list goes to its far end, then 60 ms
+  later to the block, so the ListView seeks to it exactly); a local path (against the file's folder,
+  percent-decoded, `?` and `#` dropped): a folder opens in the active pane, a program or script
+  (`.exe .bat .cmd .ps1 .lnk .vbs .msi .com .scr .pif .js .jse .wsf .wsh .hta .cpl .msc`) is shown
+  there (its folder, the cursor on it; `main.rs` `show_in_pane`), another file opens as a double-click
+  does. Under `TWINFM_SCRIPT` the browser and documents are never launched, only logged; anchors,
+  folders and shown programs run. Driver: `previewlink <dest>` (the rest of the step) as a click on
+  that link; `waitpreview` also waits for the blocks, every picture and the anchor timer;
+  `previewscroll` and `wheelat` scroll the Markdown list too. `[preview]` lines: `pane=N gen=G <path>:
+  markdown, B blocks (H headings, C code, T tables, I images), parsed in T ms[, cut at 2 MB]` (code
+  blocks and tables counted once however many chunks), `unreadable: <why>` (the column reads "This
+  file could not be read"), `gen=G N blocks in the list in T ms (UI thread)`, `gen=G image <src>: alt
+  text (remote)`, `gen=G image K <src>: WxH px in T ms | alt text (missing | cloud-only | over the
+  budget | failed: <why>)` (K the block; the first 50 of a file, then only `gen=G pictures done: S shown,
+  A alt text, F file(s) decoded, M MB of the budget, in T ms`; a file repeated in a document is
+  decoded and counted once), `gen=G superseded: N picture(s) not decoded`, `gen=G block
+  K: styled text fell back to plain: <err>` (the first 20, then `N more block(s) fell back to
+  plain`), `link "<dest>": browser | anchor -> block K | open <path> | show <path> | refused: <why>`
+  (` (scripted: not launched)` after browser and document opens in a scripted run), `gen=G scrolled
+  to block K: top Y of H px`.
   Since P8-L1, the first of the Phase 7 leftovers: Return, a double-click and the Windows 11 menu's
   Open open **every selected item** when the row is in a selection of several (`model::open_set`;
   the menu's Open takes the selection as every menu item does): folders, drives and archives each
@@ -739,7 +781,12 @@ Read them before changing the list.
   written by the script with a hand-made cross-reference table, c-damaged.pdf, d-notes.txt): Alt+P,
   the cursor through the four files with `waitpreview`, a `previewscroll`, the width changed and set
   back, Alt+P; it reports PDFs opened, pages rendered, damaged and not-a-PDF lines, superseded lines,
-  waitpreview timeouts and worker panics (both must be 0).
+  waitpreview timeouts and worker panics (both must be 0). Since P8-M2 the setup adds e-dot.png (made
+  with System.Drawing), f-readme.md (headings, lists, a table, code, the picture, an anchor link) and
+  g-big.md (over 2 MB), and the cursor goes on through them, f-readme.md's `#usage` link followed and
+  g-big.md scrolled; it reports no-preview lines (two per cycle), Markdown previews (two), pictures
+  shown and alt texts (summed from the `pictures done` lines; alt text must be 0), styled-text
+  fall-backs and cuts at 2 MB (one).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
@@ -808,7 +855,9 @@ Read them before changing the list.
   and a Compress through the real worker in `%TEMP%\twinfm-p7m3-jobs-<pid>\` (no Recycle Bin). Since
   P8-M1 `preview::tests::the_worker_renders_a_pdf_and_refuses_a_damaged_one` writes a two-page PDF, a
   damaged one and a text file in `%TEMP%\twinfm-p8m1-test-<pid>\` and runs the preview worker on
-  them. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
+  them; since P8-M2 `preview::tests::pictures_are_capped` decodes PNGs, an SVG and a broken file in
+  `%TEMP%\twinfm-p8m2-pic-<pid>\`, and `the_worker_previews_markdown_with_a_picture` runs the worker on
+  a README with a local PNG and a file over 2 MB in `%TEMP%\twinfm-p8m2-test-<pid>\`. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
   `%TEMP%\twinfm-p8l2-raw-<pid>.zip`, `fs::archivewrite::tests::password_zips_and_copies_between_zips`
   makes ZipCrypto, AES and plain zips in `%TEMP%\twinfm-p8l2-pw-<pid>\`, and `zip_jobs_on_the_worker`
   writes into its tar.exe password zip with the script's password (`zippassword`'s path) and copies

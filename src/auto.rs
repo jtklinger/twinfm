@@ -222,9 +222,14 @@
 //!                                    (x, y), logical px of the window, through Slint's pointer
 //!                                    path, with Shift held (a Shift key event either side) given
 //!                                    `shift`; logs the preview's scroll top before and 300 ms after
-//!   waitpreview <ms>                 wait until the cursor file's preview has settled (no settle or
-//!                                    width timer runs, and a message shows or every page kept holds
-//!                                    its image at the current width), at most <ms>, then 100 ms
+//!   waitpreview <ms>                 wait until the cursor file's preview has settled (no settle,
+//!                                    width or anchor timer runs, and a message shows, or every page
+//!                                    kept holds its image at the current width, or a Markdown file's
+//!                                    blocks and every picture have come), at most <ms>, then 100 ms
+//!   previewlink <dest>               the Markdown preview's link to <dest> (the rest of the step), as
+//!                                    a click on it: logged; an anchor, a folder and a program run
+//!                                    (scroll, navigate, show), a browser or document link is never
+//!                                    launched in a scripted run (P8-M2)
 //!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
 //!                                    the close button does (WM_CLOSE: settings saved, app exits)
 //!   quit                             exit the event loop
@@ -374,6 +379,8 @@ enum Step {
     PreviewScroll(f32),
     /// Wait until the preview has settled (at most `ms`), then 100 ms.
     WaitPreview(u64),
+    /// A link in the Markdown preview, as clicked.
+    PreviewLink(String),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
     /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
     Window(String),
@@ -564,6 +571,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "preview" => Step::Key("AltP".into()),
                 "previewscroll" => Step::PreviewScroll(num(1) as f32),
                 "waitpreview" => Step::WaitPreview(num(1).max(1) as u64),
+                "previewlink" => Step::PreviewLink(s.trim_start()["previewlink".len()..].trim().to_string()),
                 "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
@@ -1445,6 +1453,10 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         Step::PreviewScroll(px) => {
             app.invoke_preview_set_scroll(px);
             schedule(runner, 1);
+        }
+        Step::PreviewLink(dest) => {
+            crate::preview::link(dest.into());
+            schedule(runner, 100);
         }
         Step::WaitPreview(max_ms) => {
             let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
