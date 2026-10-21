@@ -471,3 +471,115 @@ blocks and the picture as it does for Markdown.
 - `pane=N gen=G <path>: html, B blocks (H headings, C code, T tables, I images), parsed in T ms[,
   cut at 2 MB]`
 - `unreadable: <why>` as for Markdown, for a text or HTML file that cannot be read.
+
+### What landed
+
+- **`src/html.rs`** (new, pure, four tests): the tokenizer (`tokens`: comments, `<!...>`, `<?...>` and
+  CDATA dropped, quoted attributes with `>` inside, raw text up to `</name` for the raw-text
+  elements, a `<` that starts no tag kept as text), `attr` (quoted, bare and empty values, entities
+  decoded) and the mapping as Settled first lists it, built on Markdown's `Inline` writer (made
+  `pub(crate)`) through an `Ink` that collapses whitespace and writes emphasis and links only around
+  content. Ids go to the block they start (`Block::anchor`).
+- **`src/markdown.rs`**: `text_blocks` (the text chunks), `encoding` (the name for the line),
+  `table_chunks` (Markdown's table chunking as a function, so HTML's tables are chunked the same
+  way), the entity table (`LATIN1`, `NAMED`, `entity`) behind `entities`, and `Block::anchor`.
+- **`src/preview.rs`**: `Class::Text`, `Picture`, `Html` with `TEXT_EXTS`, `PICTURE_EXTS`,
+  `HTML_EXTS`; `serve_md` became `serve_blocks` for the three block types, with `shown_blocks` and
+  `decode_pictures` split out of it; `serve_picture`, `lone_picture`, `fit_px`, `size_text`;
+  `decode_picture` (shared by documents and picture files) applies the EXIF orientation;
+  `Reply::Markdown` is `Reply::Blocks`, `Reply::Picture` carries `physical`; an anchor matches any of
+  a block's space-separated anchors; an empty document gets a note. The UI side changed in one place
+  (the picture's size divided by the scale factor when `physical`); `preview.slint` is unchanged.
+- **`Cargo.toml`**: `image` gains `bmp`, `ico` and `tiff` (`tiff 0.11.3` and `fax 0.2.7` in
+  `Cargo.lock`, both MIT; 21 lines). `main.rs` gains one line, `mod html;`.
+- **Tests**: 249 to 259: four in `html.rs` (the tokenizer; a page with every mapped element, a
+  script, a style, a head, a nav, a noscript and comments; runs and links across blocks; odd pages:
+  script only, no head, a stray `li`, a nested table, an unclosed `pre`, text outside the cells,
+  anchors), three in `markdown.rs` (named entities; the text chunking with a 20,000-byte line and a
+  character across the cut; the encodings), three in `preview.rs` (the fit rule and the size text; a
+  JPEG with EXIF orientation 6 shown upright, a BMP, a broken file; the worker on text, UTF-16, a
+  file over 2 MB, a JPEG, a broken PNG, a page, a script-only page and an empty file), and the
+  classification test covers the three types.
+- **Soak**: `tools/soak-p5m3.ps1`'s preview cycle goes on through `h-notes.txt`, `i-photo.jpg` and
+  `j-page.html` (its `#end` followed) and reports text, picture, picture-failure and HTML counts.
+
+### Decisions
+
+- **No HTML parser crate** (the pin check above): the fallback scanner, which the tests hold to the
+  mapping. What it does not do that a browser does: `<meta charset>` (a page saved in Windows-1252
+  shows its accented letters replaced), the full named-entity table (2,231 names; the ones not on the
+  list stay as written), implied end tags beyond the list, cell and paragraph breaks, `colspan`, CSS.
+- **Plain text chunks also end at 8 KB**, a longer line split (Settled first). A 300 KB minified
+  JSON became 41 blocks and showed at once; its wrapping breaks after commas, as word wrap does.
+- **A picture file is held to the 64 MB budget by scaling, not refused**: a 10,000 x 3,000 PNG decoded
+  in 804 ms and showed at 7,478 x 2,243 (`scaled to` in its line). Only over 512 MB of pixels while
+  decoding is it "This picture could not be read".
+- **A picture file's size counts in screen pixels** (never drawn larger than itself at 150%); a
+  document's pictures keep the browser's logical pixels.
+- **An empty file or a page with no text shows a note** ("This file is empty.", "This page has no
+  text to show.") rather than a blank column. Found by the scripted check's script-only page; the
+  note counts as the one block in the `[preview]` line.
+- **Dropped beyond the plan's list**: `title` (a page without `<head>` would show it), `template`
+  (never rendered), `svg` (an inline icon's `<title>` is no text a reader sees), `iframe`, `noembed`,
+  `noframes` (their content is fallback a browser does not show).
+- **An `li` outside any list is a plain paragraph**; a local picture inside a table cell is its alt
+  text (a cell has no place for a picture block); text between a table's cells goes before the table.
+- **A heading's anchors are its ids and its slug**, so `#id` and Markdown-style `#slug` links both
+  reach it.
+
+### Scripted checks
+
+All on this machine (RDP session), `target\release` of the branch, over `%TEMP%\twinfm-p9m2-check\`
+(written by a scratch script: this branch's `preview.rs`, a 2.3 MB log, a UTF-16 file, a 300 KB
+one-line JSON, a JPEG stored landscape with EXIF orientation 6, a 10,000 x 3,000 PNG, a GIF, an SVG
+with text, a TIFF, a BMP, an icon, a broken JPEG, a page of nested lists and tables with a local and
+a remote picture, a script-only page, a `.dat` and the repo's README), the column at 0.45, the cursor
+through every file with `waitpreview`, links followed in the page, then four Up presses (three
+without a wait, one 20 ms later):
+
+```
+[preview] pane=0 gen=2 ...\a-main.rs: text, 1776 lines, 82541 bytes, UTF-8
+[preview] gen=2 45 blocks in the list in 0.2 ms (UI thread)
+[preview] pane=0 gen=3 ...\b-big.log: text, 27740 lines, 2400066 bytes, UTF-8, cut at 2 MB
+[preview] gen=3 695 blocks in the list in 3.6 ms (UI thread)
+[preview] pane=0 gen=4 ...\c-utf16.txt: text, 3 lines, 138 bytes, UTF-16LE
+[preview] pane=0 gen=5 ...\d-minified.json: text, 1 lines, 327784 bytes, UTF-8
+[preview] gen=5 41 blocks in the list in 0.5 ms (UI thread)
+[preview] pane=0 gen=6 ...\e-phone.jpg: picture 1200x1600 px, JPEG, decoded in 10 ms
+[preview] pane=0 gen=7 ...\f-pano.png: picture 10000x3000 px, PNG, decoded in 804 ms, scaled to 7478x2243
+[preview] pane=0 gen=8 ...\g-anim.gif: picture 120x80 px, GIF, decoded in 1 ms
+[preview] pane=0 gen=9 ...\h-logo.svg: picture 300x120 px, SVG, decoded in 1 ms
+[preview] pane=0 gen=10 ...\i-scan.tif: picture 400x300 px, TIFF, decoded in 2 ms
+[preview] pane=0 gen=11 ...\j-small.bmp: picture 64x48 px, BMP, decoded in 0 ms
+[preview] pane=0 gen=12 ...\k-icon.ico: picture 64x64 px, ICO, decoded in 0 ms
+[preview] pane=0 gen=13 ...\l-broken.jpg: picture failed: failed: Format error decoding Jpeg: I/O errors Not enough bytes, expected 5 but found 1
+[preview] pane=0 gen=14 ...\m-page.html: html, 20 blocks (2 headings, 1 code, 1 tables, 1 images), parsed in 1 ms
+[preview] gen=14 image https://example.com/x.png: alt text (remote)
+[preview] gen=14 image 16 img/dot.png: 200x60 px in 0 ms
+[preview] link "#bottom": anchor -> block 18
+[preview] link "#top": anchor -> block 0
+[preview] link "https://example.com/": browser (scripted: not launched)
+[preview] link "img/dot.png": open ...\img\dot.png (scripted: not launched)
+[preview] link "#nope": refused: no heading #nope
+[preview] pane=0 gen=15 ...\n-script.html: html, 0 blocks (0 headings, 0 code, 0 tables, 0 images), parsed in 0 ms
+[preview] pane=0 gen=16 ...\o-data.dat: no preview for this type
+[preview] pane=0 gen=17 ...\p-readme.md: markdown, 33 blocks (7 headings, 3 code, 1 tables, 0 images), parsed in 11 ms
+[preview] pane=0 gen=18 ...\l-broken.jpg: picture failed: ...
+```
+
+Every `waitpreview` settled; exit code 0, no panic. The four Up presses opened one generation (gen
+18). The script-only page's blank column (gen 15) led to the empty-document note (Decisions); the
+README's blocks are as P8-M2 recorded them. Screenshots with the software renderer (`PrintWindow`),
+the column at 0.45: `preview.rs` in Consolas with its long comment lines wrapped; the JSON wrapped at
+its commas; the photo upright (portrait, the red half on top) with `1200 x 1600, 35 KB, JPEG` under
+it; the page with its heading, inline styles and links, the link spanning two blocks as two linked
+paragraphs, the nested bullets and the numbers from 5, the two quote levels, the caption above the
+table with its bold head row, the cell's two lines and the inner table's text in its cell, the code
+block with its tab as four spaces and `&amp;` decoded, the local picture and the remote one's alt
+text, the rule and the last heading.
+
+A six-minute run of `tools/soak-p5m3.ps1` (three cycles started, the third stopped by the clock before its
+preview cycle): exit code 0, no panicked line, every other count as before; preview: PDFs opened 4,
+markdown 4, text 4, pictures 4, picture failures 0, html 2, pictures shown 19,078 (g-big.md's repeats),
+alt text 0, fall-backs 0, cut at 2 MB 2, superseded 0, waitpreview timeouts 0, worker panics 0, no
+preview for the type 0; working set 126 to 220 MB.
