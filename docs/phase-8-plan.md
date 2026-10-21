@@ -538,6 +538,10 @@ ab32's and no candidate run is under 20%. Read like for like: defaults 22.6 (ref
 (candidate), preview 22.7 / 20.9, the candidate below the reference in every round of both. No gap
 that counts; P8-M2 adds no cost while the lists scroll.
 
+P8-L2 (#79) merged after ab35, so by the rule the reference became `target-p8l2` (278d47f) and main
+was merged into this branch (ef2b3cf, 248 tests). Jeremy, 2026-10-21: ab35 stands for P8-M2, since
+P8-L2 touched only archive writing, no list, grid or render path; no re-gate.
+
 ## Open questions
 
 Written 2026-10-20 at the kickoff.
