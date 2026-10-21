@@ -514,8 +514,14 @@ panicked line, every earlier count as before (jobs done 147, failed 0; menupicks
 dropped 0; zip jobs not done 0; waitpreview timeouts 0). Its column cycle navigated to a folder that
 does not exist (a tab character had replaced the path's backslash in the script), so the drag ran
 on an empty listing and the fit saw no rows (`widest of 0 rows on screen = 4 px`); the drag read back
-as Size 90 -> 60 and the widths went back to 120, 90, 140 in both cycles. Path fixed in 797617a; the
-re-run is below.
+as Size 90 -> 60 and the widths went back to 120, 90, 140 in both cycles. Path fixed in 797617a.
+
+The re-run, six minutes after P9-M2's gate (three cycles started, two completed): exit code 0, no
+panicked line, jobs done 192 (failed 0, cancelled 0), drags dropped 0, toolbar presses refused 0,
+menupicks refused 0, zip jobs not done 0, waitpreview timeouts 0, worker panics 0; working set 126.5
+to 212.7 MB (233 at most). The column cycle in `src\tree`: `[cols] pane=0 size 90 -> 60 px (drag)`
+in both cycles, `fit modified: widest of 10 rows on screen = 94 px` with Size 60 -> 94 and Modified
+140 -> 106, then the widths back at 120, 90, 140 (two cycles, and the start line).
 
 ## Open questions
 
