@@ -1106,3 +1106,42 @@ Word and PowerPoint files' one each beside P9-M2's), alt text 0, waitpreview tim
 panics 0; working set 126 to 224 MB. The report's text count read "(three per cycle)" since P9-M2,
 for a cycle with two text files (d-notes.txt, h-notes.txt; both soaks counted 4 in two cycles): the
 label now reads two, in the script and in `CLAUDE.md`.
+
+### Gate
+
+Run by Jeremy on 2026-10-21, finished 14:39 (tag ab39 for both settings, `C:\traces\gate-p9m3.ps1`, the
+same file as `tools/gate-p9m3.ps1`, 17 min): `target-p9m3` (111ef17, P9-M3 with main at 85ef7b8 merged
+in, built `--locked` from a detached checkout) against `target-p9m1` (b9fbd9d), three rounds of
+reference, candidate, reference with `C:\traces\preview.toml`, candidate with it. Every run passed the
+wrapper's checks.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m1-1 / 2 / 3 | 19.0 / 18.3 / 18.3 | 18.7 / 19.5 / 18.0 | 2.20 / 2.23 / 2.21 |
+| p9m3-1 / 2 / 3 | 18.4 / 18.5 / 18.2 | 16.7 / 19.4 / 19.2 | 2.20 / 2.21 / 2.23 |
+| p9m1-preview-1 / 2 / 3 | 17.8 / 17.5 / 17.7 | 18.6 / 19.1 / 19.1 | 2.04 / 2.05 / 2.07 |
+| p9m3-preview-1 / 2 / 3 | 18.0 / 17.6 / 17.7 | 16.2 / 16.6 / 19.1 | 2.06 / 2.06 / 2.06 |
+
+One session state throughout (render p50 2.20 to 2.23 ms in the defaults runs, 2.04 to 2.07 with the
+column). Medians: defaults 18.3 (reference) / 18.4 (candidate), preview 17.7 / 17.7; no gap that
+counts in either, every candidate run under 20%. Passed; P9-M3 adds no cost while the lists scroll.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m3\release\twinfm.exe`, the preview shown (Alt+P), each
+beside Word, Excel or PowerPoint (or Edge, which opens all three):
+
+1. Jeremy's own Word documents: headings where Word shows headings (or paragraphs where the file uses
+   direct formatting only: the open question this answers), lists with their bullets and numbers,
+   tables, links, pictures.
+2. A Word file of about 200 pages: it shows at once and scrolls to the end without stalls.
+3. Jeremy's own workbooks: the first sheet, the sheet links at the top (each opens its sheet), dates
+   as dates, money and other number formats (shown as stored numbers, not in their currency format:
+   the record of what formats he uses).
+4. A workbook with ten sheets and 100,000 rows: the note "Only the first 500 rows ..." and the table.
+5. A deck of about 60 slides with pictures: every slide's heading, title, bullets and pictures, the
+   lines between slides.
+6. A password-protected Office file: "Password-protected document: not previewed".
+7. A `.doc`, `.xls` or `.ppt`: "No preview".
+8. A chart sheet (a workbook with a chart moved to its own sheet): "Chart sheets are not previewed."
+9. The column's width dragged with a workbook shown: the table follows.
