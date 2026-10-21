@@ -110,7 +110,7 @@
 # and Ctrl+W twice close them, and Ctrl+1 makes the pane's first tab active again. Reported:
 # several-item opens (one per cycle) and the tabs they opened (two per cycle).
 #
-# P9-M1, after the P8-L1 cycle: in the left pane on src	ree (details, the default widths 120, 90,
+# P9-M1, after the P8-L1 cycle: in the left pane on src\tree (details, the default widths 120, 90,
 # 140), the Type | Size grip is dragged 30 px right (Type 150, Size 60), the Modified column is
 # fitted by a double-click on its grip (Size takes the difference), then colwidth sets Modified to
 # 140 and Size to 90, which puts every width back. Reported: drags read back as Size 90 -> 60 (one
@@ -345,7 +345,7 @@ $cycle = @(
     'view details', 'sleep 300', 'click 0 0', 'shiftclick 0 1', 'key Return', 'sleep 800', 'tab 2', 'sleep 200', 'tab close', 'sleep 300', 'tab 2', 'sleep 200', 'tab close', 'sleep 300',
     'tab 1', 'sleep 300',
     # P9-M1: a grip drag, a fit, and the widths set back (see the header).
-    "nav 0 $src	ree", 'sleep 500', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200'
+    "nav 0 $src\tree", 'sleep 500', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }

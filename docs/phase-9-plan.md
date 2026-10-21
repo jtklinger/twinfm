@@ -408,7 +408,11 @@ throughout. `[busy] 10 s after split`:
 No shape costs anything the in-app runs can see (each build's spread is two to five points, its own
 noise). **Shape A is chosen**: the same cost as B, with four details components instead of eight
 (B's per-pane copies would double them again with every future row change), and no global per
-pane. The console triplet decides as usual. Nothing of the spike was kept: shape A was written again
+pane. The console triplet decides as usual. Caveat: the runs (10:54 to 10:58) went ahead before the
+coordinator's hold on the preview stream's builds reached it, so that stream may have been compiling
+during some of them; the run script checked for `cargo` and `rustc` processes before each run and
+found none, but a compile starting mid-run would not show there. The spreads are the usual ones, so
+the choice stands. Narrator was not running (checked afterwards, not at the time). Nothing of the spike was kept: shape A was written again
 for all four row variants. Unlike P3-M1's 0.7 of a point, this binding is a value read when a row is
 made and never changes while the lists scroll; P3-M1's switch decided what each row held.
 
