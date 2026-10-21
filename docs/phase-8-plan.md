@@ -628,3 +628,85 @@ holding a core is a candidate for the next gate's wrapper. Jeremy accepted ab34 
    the same zip.
 5. A 7z item copied into a zip: refused with a note ("not supported yet").
 6. Cancel at the password dialog: nothing written.
+
+## P8-L3: an archive inside an archive as a folder, copies from 7z and the rest into a zip
+
+Built on P8-L2's branch (it changes the same files), so its PR follows P8-L2's merge.
+
+### What landed
+
+- **An archive inside an archive opens as a folder, read-only** (Jeremy's choice): Return, a
+  double-click, a middle-click or a path (`C:\a.zip\x\inner.7z\sub`) enter it. On the workers that
+  list levels (`fs::archive::descend`, under `list`, `subfolders` and `walk`), each component named
+  like an archive that the level above holds as a file is extracted once to
+  `%TEMP%\twinfm-nested-<pid>\` (a zip's entry by the `zip` crate in a millisecond; another format's
+  item by a silent `IFileOperation` copy on the `archive` STA thread, 40 ms for a 500-byte zip in a
+  7z here) and the level is listed from that copy; any depth; the copy is kept while the outer
+  archive is unchanged and removed at exit. `fs::archive::real` maps a path through the copies made
+  so far, and the three places that give the shell an in-archive path use it (opening a file, the
+  menus and drags out, file jobs), so everything that reads works there. Writes are refused before a
+  job: the pane counts as a read-only archive (toolbar and menu as in a 7z; the note "an archive
+  inside an archive is read-only: copy it out to change it"), and `classify` refuses copies, moves,
+  new items, renames and deletes into or of items inside it, while the inner archive file itself
+  stays an item of the archive holding it (it still moves, goes and is renamed there). A
+  password-protected inner zip entry is not extracted (copy it out to open it).
+- **Copies from 7z, tar, rar and the rest into a zip** (`Plan::FromShell`; `between_why` is gone):
+  the shell extracts the items into `%TEMP%\twinfm-copy-<pid>-<job>\` (its own progress window and,
+  for a protected 7z, its own password question), TwinFM adds whatever is in that folder (with the
+  zip's password, P8-L2's, when the zip has one) and removes the folder. A move from those formats is
+  refused ("nothing can be moved out of a .7z archive (it is read-only): copy the items instead").
+- Tests 238 to 239: `archives_inside_archives_list_from_their_copies` (a zip in a zip and a zip in a
+  7z listed, any case, extracted once; `real`, `nested` and `nested_item`; a folder named like an
+  archive staying a folder; the jobs refused, mapped or kept; the copies cleared); `jobs_are_classified`
+  (FromShell, the move refusal) and `zip_jobs_on_the_worker` (a 7z item into a zip through the real
+  worker, its temporary folder gone) changed.
+- `tools/soak-p5m3.ps1`: after P8-L2's steps, a copy out of `n.zip\a.zip` (the setup's zip in a zip)
+  into `dst`, removed again, and a.7z's a.txt copied into a.zip; reported: copies out of the inner
+  archive (counted by job id: the shell reports no items for them) and copies from an archive.
+
+### Calls made
+
+- The copies live under `%TEMP%\twinfm-nested-<pid>\` for the run and go at exit (a crash leaves the
+  folder; it is named by the process id, so a later run never reads it).
+- Extraction of an inner archive of another format is silent (no progress window): the listing
+  waits on it, as it waits on the shell's listing.
+- What goes into the zip from a 7z is what the shell put in the temporary folder, not its item
+  reports: for an archive inside a 7z the shell reported none (found by the scripted check below).
+
+### Scripted checks
+
+The release build of this branch, archives made by `tar.exe` under `%TEMP%\twinfm-p8l3\`
+(`outer.zip` and `outer.7z` each holding `x\inner.zip`, which holds `a\b.txt` and `c.txt`):
+
+```
+[archive] nested ...\outer.zip\x\inner.zip: extracted to ...\twinfm-nested-17008\0-...\inner.zip (488 bytes) in 1 ms
+[fileops] done id=1 ... Done: Copied 1 item                              (c.txt out of the inner zip)
+[archive] refused: paste (an archive inside an archive is read-only: copy it out to change it)
+[archive] nested ...\outer.7z\x\inner.zip: extracted to ...\twinfm-nested-17008\1-...\inner.zip (488 bytes) in 42 ms
+[archive] job id=2 "copy from a zip" on ...\dest.zip: Done in 14 ms        (b.txt from the inner zip of the 7z)
+[archive] job id=3 "copy from a zip" on ...\dest.zip: Done in 12 ms        (c.txt)
+[archive] copy from an archive: 1 item(s) extracted to ...\twinfm-copy-4316-4: Done
+[archive] job id=4 "copy from an archive" on ...\dest.zip: Done in 91 ms   (inner.zip out of the 7z)
+```
+
+`dest.zip` read back by `tar.exe`: d.txt, b.txt, c.txt, inner.zip; the nested and temporary folders
+gone after the run. Two fixes came from this check: the inner archive file itself had counted as
+"inside" it once opened (a move or delete of it in its outer zip would have been refused:
+`nested_item` added, test extended), and the shell's missing item reports for a 7z (above). The
+soak's new steps alone, twice, under `TWINFM_SOAK`: two copies out of the inner zip and two copies
+from the 7z into the zip Done, `dst` empty again, no copies left.
+
+### Gate
+
+Pending: defaults only (no list, grid or layout change), against the reference current when it
+runs.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+1. A zip holding another zip (or a 7z holding a zip): Return on the inner one opens it as a folder;
+   its files open, copy out (Shift+F5, Ctrl+C/Ctrl+V, a drag) and show their right-click menu.
+2. Inside it, paste, Delete, F2, New folder: refused with the note; the toolbar's write buttons off.
+3. In the outer zip, the inner archive file itself still renames, moves out and deletes.
+4. A file from a 7z (or a tar.gz) copied into a zip: the shell's progress, then the file in the zip;
+   a move instead is refused with the note.
+5. Close TwinFM: no `twinfm-nested-*` folder left in `%TEMP%`.
