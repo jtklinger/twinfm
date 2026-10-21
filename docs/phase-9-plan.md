@@ -336,3 +336,296 @@ Written 2026-10-21 at the kickoff.
   folder for the soak; the Slint whole-row snap patch and upstreaming the two accessibility patches;
   the dead share console check owed since P5-M1; the preview's deferred items (zoom, selection,
   password PDFs, the Markdown details).
+
+## P9-M2: text, pictures and HTML in the preview
+
+Branch `claude/p9-m2-preview-text-pictures-html-f01bd4`, from ab95aaf (the kickoff).
+
+### Settled first (2026-10-21, before any code)
+
+**The pin check** (each crate added to a scratch copy of the manifest with default features off,
+`Cargo.lock` compared, then put back):
+
+- **`html5ever =0.40.1`** (MIT OR Apache-2.0): 12 new crates, 125 lines of `Cargo.lock`:
+  `markup5ever`, `web_atoms`, `string_cache` and `string_cache_codegen`, `tendril`, `phf`,
+  `phf_shared`, `phf_generator` and `phf_codegen` at 0.14 (a second `phf` beside the 0.13 Slint
+  builds), `precomputed-hash`, `new_debug_unreachable`; its atom tables are generated at build time,
+  and it has no tree of its own (a `TreeSink` would have to be written). Too much for one preview
+  type.
+- **`tl =0.7.8`** (MIT): one crate, 7 lines. But it has no raw-text state for `<script>` and
+  `<style>` (a `<` inside a script reads as a tag, so script text leaks into the page), decodes no
+  entities, and has had no release since 2023 (its inline vectors are built on `unsafe`). It does
+  not do the two jobs a parser was wanted for.
+- **So the fallback: a hand-written scanner**, `src/html.rs`, pure and tested: a tokenizer (text,
+  start and end tags with quoted or bare attributes, comments, `<!DOCTYPE>` and `<?...>` and
+  `<![CDATA[...]]>` dropped, raw text up to the matching end tag for `script`, `style`, `textarea`,
+  `title`, `xmp`, `iframe`, `noembed`, `noframes`, `noscript`), the named entities of Latin-1
+  (`&nbsp;` to `&yuml;`, 96) plus the common typographic ones (`&mdash;`, `&hellip;`, the quotes,
+  `&euro;`, `&trade;`, arrows and a few more) and every numeric one, then the mapping below straight
+  into `markdown::Block`s. No crate added for HTML. The entity table replaces the seven entities of
+  `markdown::entities`, so Markdown's HTML blocks gain them too.
+- **`image =0.25.10` features**: `bmp` and `ico` add nothing to `Cargo.lock` (`ico` needs `bmp` and
+  `png`, both in); `tiff` adds two crates, `tiff 0.11.3` (MIT) and `fax 0.2.7` (MIT), its `flate2`,
+  `weezl`, `half`, `quick-error` and `zune-jpeg` already being in. All three are taken.
+- **EXIF orientation**: `image` reads it itself (`ImageDecoder::orientation`, from the JPEG's, PNG's,
+  WebP's or TIFF's EXIF chunk by `metadata::Orientation::from_exif_chunk`; no `exif` crate) and
+  `DynamicImage::apply_orientation` turns the pixels. `ImageReader::decode` does not apply it, so the
+  picture path becomes `into_decoder`, `orientation`, `DynamicImage::from_decoder`,
+  `apply_orientation`. It is applied in the one decoding function, so Markdown's and HTML's pictures
+  show upright too (as a browser shows them).
+
+**Checked against Slint (c1d3a8d)**: a `Text` with `wrap: word-wrap` breaks a word longer than the
+line anywhere (`linebreaker.rs` falls back to `break_anywhere`; the parley path sets `OverflowWrap`
+anywhere), so a minified JSON line wraps in the code block as Jeremy chose, with no new element.
+Nothing else new is drawn: text is `Code` blocks, a picture an `Image` block and a `Note` block, HTML
+the blocks Markdown draws.
+
+**The extension lists** (`preview.rs`, any case; anything else is "No preview"):
+
+- `TEXT_EXTS`: the plan's `txt log ini cfg csv json xml yaml yml toml rs py ps1 sh c h cpp cs js ts
+  css slint bat cmd`, and `tsv conf reg inf diff patch psm1 psd1 hpp cc go java sql jsx tsx lock`
+  (40 in all; `.reg` files are UTF-16, the BOM decides). A file with no extension (`Makefile`,
+  `LICENSE`) is "No preview", the kickoff's call.
+- `PICTURE_EXTS`: `jpg jpeg jpe jfif png gif webp bmp tif tiff ico svg svgz` (`.jfif` is the name
+  browsers save JPEGs under; `.svgz` is resvg's gzip). HEIC, HEIF and AVIF are not on it.
+- `HTML_EXTS`: `html htm`.
+
+**Plain text**: read at most 2 MB + 1 byte as Markdown is, `markdown::decode` (UTF-8 or UTF-16 BOM,
+else UTF-8 with invalid bytes replaced, cut at the last line break before 2 MB with the note first),
+tabs as four spaces, `\r\n` and `\r` as line ends, then `Code` blocks of at most 40 lines. **One
+addition**: a chunk also ends before it passes 8 KB (`TEXT_CHUNK_BYTES`), and a single line over 8 KB
+is split at a character boundary into 8 KB pieces, each its own block drawn as one. A minified 2 MB
+JSON is one line, and one `Text` of 2 MB would be shaped whole on the UI thread at every width
+change; the split's only visible trace is one early line break per 8 KB of a line already wrapped.
+The encoding for the line: `UTF-8`, `UTF-8 BOM`, `UTF-16LE`, `UTF-16BE`, and `UTF-8 (invalid bytes
+replaced)` when the shown part is not valid UTF-8.
+
+**Pictures**: the shared decoder (attributes first: missing or cloud-only never opened; the format
+sniffed from the bytes, the extension only choosing the SVG path) with the orientation applied. A
+lone picture is not held to "over the budget means alt text": its decode is allowed up to 512 MB of
+pixels (`DECODE_MAX`, `image`'s own default limit; a 48-megapixel photo is 192 MB), and the result is
+scaled down so that neither side passes 8,192 px and its pixels fit the 64 MB budget
+(`fit_px`: the factor is the smaller of 1, 8192 over the longer side and the square root of the
+budget over the area; never above 1, so never scaled up). A 10,000 x 1,000 panorama becomes 8,192 x
+819 (the side decides); a 10,000 x 3,000 one 7,478 x 2,243 and a 48-megapixel photo 4,729 x 3,547 (the
+budget decides). **Never scaled up in the
+column** is read in physical pixels: the block's width is the picture's pixels divided by the
+window's scale factor (a 100 px icon at 150% shows 100 screen px, not 150), and wider ones fit the
+column as Markdown's do. (Markdown's and HTML's pictures keep the browser's rule, P8-M2's.) The
+`Note` under it: `1920 x 1080, 2.3 MB, JPEG` (the upright size before any scaling; the file size in
+bytes under 1 KB, KB under 1 MB, else MB with one decimal, 1024-based; the format from the bytes:
+JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, SVG). A file the decoder refuses, or over 512 MB of pixels:
+"This picture could not be read". A GIF shows its first frame.
+
+**HTML, the mapping** (the file decoded as text is, the 2 MB cut and note as for Markdown; a
+`<meta charset>` is not read):
+
+- Dropped with everything inside: `script`, `style`, `head`, `nav`, `noscript`, comments (the plan's),
+  and `title`, `template`, `svg` (a page may omit `<head>`, so its `<title>` would read as text; a
+  template is never rendered; an inline SVG's `<title>` and `<text>` are drawn by a browser as a
+  picture, not as words).
+- `h1` to `h6`: a heading of that level (bold through `**`, as Markdown's).
+- Paragraph breaks: `p`, `div` and every other block container (`section`, `article`, `main`,
+  `header`, `footer`, `aside`, `figure`, `figcaption`, `address`, `details`, `summary`, `dl`, `dt`,
+  `dd`, `form`, `fieldset`, `center`, `body`, `caption`) end the paragraph being built at their start
+  and end; text between becomes a paragraph, and one with no text (an empty `div`) none. `br` is a
+  hard break.
+- `ul` and `ol` open a list level (bullets by depth as Markdown's; `ol` numbered from its `start`,
+  default 1); `li` starts an item (its marker on its first block; an `li` before the previous one's
+  `</li>` simply starts the next, as the parser's implied end does). Nested lists keep their depth.
+  An `li` outside any list is a plain paragraph.
+- `blockquote`: one quote level.
+- `pre`: a code block of its text, whitespace kept (a newline right after `<pre>` dropped, `<br>` a
+  newline, tags inside ignored, entities decoded), chunked as Markdown's code is.
+- `hr`: a rule.
+- `table`, `tr`, `th`, `td`: a table, chunked as Markdown's; a row whose cells are all `th` (or one
+  in `thead`) is a head row; a new `td` or `tr` ends the cell or row before it; `colspan`, `rowspan`
+  and alignment are ignored (every column left-aligned); a block element or `br` inside a cell is a
+  line break in the cell; a table inside a cell flows its text into that cell; text outside any cell
+  (a browser's foster parenting) becomes a paragraph before the table; `caption` a paragraph before it.
+- `img`: a local `src` (resolved against the file's folder, as Markdown's) a picture block after the
+  current block; a remote one (a scheme, `data:`, `//host`) its `alt` text where it stands.
+- Inline markup: `a href` a link, `strong` and `b` bold, `em` and `i` italic, `code`, `kbd`, `samp`
+  and `tt` a code span; every other element's text flows into the enclosing block. Emphasis runs keep
+  their spaces outside the delimiters (`<b> x </b>` is ` **x** `, which Markdown reads as bold), an
+  empty run writes nothing, and a run left open when its block ends is closed there.
+- Whitespace collapsed as a browser does (a run of spaces, tabs and newlines one space, none at a
+  block's start); `&nbsp;` kept.
+- Anchors: an element's `id` (and `<a name>`) on the block it starts, so `#id` links scroll to it;
+  a heading with no id gets its Markdown slug as before.
+
+**Seams**: `Class` gains `Text`, `Picture` and `Html` (type before place, as before: only these and
+PDF and Markdown ask the archive and cloud questions). The worker's Markdown path becomes one
+`serve_blocks` for Markdown, text and HTML (read, decode, parse under `catch_unwind`, the note, the
+`StyledText`s, the blocks answered, then the pictures one at a time with the generation checked
+between them); a picture file is answered as two blocks (the picture, the note) and its pixels, the
+`Picture` reply carrying whether its size is physical. No new driver step: `waitpreview` waits for the
+blocks and the picture as it does for Markdown.
+
+**The `[preview]` lines** (beside P8-M2's):
+
+- `pane=N gen=G <path>: text, L lines, B bytes, <encoding>[, cut at 2 MB]` (L the lines shown, B the
+  file's size)
+- `pane=N gen=G <path>: picture WxH px, <format>, decoded in T ms[, scaled to WxH]`
+- `pane=N gen=G <path>: picture failed: <why>` (the column reads "This picture could not be read")
+- `pane=N gen=G <path>: html, B blocks (H headings, C code, T tables, I images), parsed in T ms[,
+  cut at 2 MB]`
+- `unreadable: <why>` as for Markdown, for a text or HTML file that cannot be read.
+
+### What landed
+
+- **`src/html.rs`** (new, pure, four tests): the tokenizer (`tokens`: comments, `<!...>`, `<?...>` and
+  CDATA dropped, quoted attributes with `>` inside, raw text up to `</name` for the raw-text
+  elements, a `<` that starts no tag kept as text), `attr` (quoted, bare and empty values, entities
+  decoded) and the mapping as Settled first lists it, built on Markdown's `Inline` writer (made
+  `pub(crate)`) through an `Ink` that collapses whitespace and writes emphasis and links only around
+  content. Ids go to the block they start (`Block::anchor`).
+- **`src/markdown.rs`**: `text_blocks` (the text chunks), `encoding` (the name for the line),
+  `table_chunks` (Markdown's table chunking as a function, so HTML's tables are chunked the same
+  way), the entity table (`LATIN1`, `NAMED`, `entity`) behind `entities`, and `Block::anchor`.
+- **`src/preview.rs`**: `Class::Text`, `Picture`, `Html` with `TEXT_EXTS`, `PICTURE_EXTS`,
+  `HTML_EXTS`; `serve_md` became `serve_blocks` for the three block types, with `shown_blocks` and
+  `decode_pictures` split out of it; `serve_picture`, `lone_picture`, `fit_px`, `size_text`;
+  `decode_picture` (shared by documents and picture files) applies the EXIF orientation;
+  `Reply::Markdown` is `Reply::Blocks`, `Reply::Picture` carries `physical`; an anchor matches any of
+  a block's space-separated anchors; an empty document gets a note. The UI side changed in one place
+  (the picture's size divided by the scale factor when `physical`); `preview.slint` is unchanged.
+- **`Cargo.toml`**: `image` gains `bmp`, `ico` and `tiff` (`tiff 0.11.3` and `fax 0.2.7` in
+  `Cargo.lock`, both MIT; 21 lines). `main.rs` gains one line, `mod html;`.
+- **Tests**: 249 to 259: four in `html.rs` (the tokenizer; a page with every mapped element, a
+  script, a style, a head, a nav, a noscript and comments; runs and links across blocks; odd pages:
+  script only, no head, a stray `li`, a nested table, an unclosed `pre`, text outside the cells,
+  anchors), three in `markdown.rs` (named entities; the text chunking with a 20,000-byte line and a
+  character across the cut; the encodings), three in `preview.rs` (the fit rule and the size text; a
+  JPEG with EXIF orientation 6 shown upright, a BMP, a broken file; the worker on text, UTF-16, a
+  file over 2 MB, a JPEG, a broken PNG, a page, a script-only page and an empty file), and the
+  classification test covers the three types.
+- **Soak**: `tools/soak-p5m3.ps1`'s preview cycle goes on through `h-notes.txt`, `i-photo.jpg` and
+  `j-page.html` (its `#end` followed) and reports text, picture, picture-failure and HTML counts.
+
+### Decisions
+
+- **No HTML parser crate** (the pin check above): the fallback scanner, which the tests hold to the
+  mapping. What it does not do that a browser does: `<meta charset>` (a page saved in Windows-1252
+  shows its accented letters replaced), the full named-entity table (2,231 names; the ones not on the
+  list stay as written), implied end tags beyond the list, cell and paragraph breaks, `colspan`, CSS.
+- **Plain text chunks also end at 8 KB**, a longer line split (Settled first). A 300 KB minified
+  JSON became 41 blocks and showed at once; its wrapping breaks after commas, as word wrap does.
+- **A picture file is held to the 64 MB budget by scaling, not refused**: a 10,000 x 3,000 PNG decoded
+  in 804 ms and showed at 7,478 x 2,243 (`scaled to` in its line). Only over 512 MB of pixels while
+  decoding is it "This picture could not be read".
+- **A picture file's size counts in screen pixels** (never drawn larger than itself at 150%); a
+  document's pictures keep the browser's logical pixels.
+- **An empty file or a page with no text shows a note** ("This file is empty.", "This page has no
+  text to show.") rather than a blank column. Found by the scripted check's script-only page; the
+  note counts as the one block in the `[preview]` line.
+- **Dropped beyond the plan's list**: `title` (a page without `<head>` would show it), `template`
+  (never rendered), `svg` (an inline icon's `<title>` is no text a reader sees), `iframe`, `noembed`,
+  `noframes` (their content is fallback a browser does not show).
+- **An `li` outside any list is a plain paragraph**; a local picture inside a table cell is its alt
+  text (a cell has no place for a picture block); text between a table's cells goes before the table.
+- **A heading's anchors are its ids and its slug**, so `#id` and Markdown-style `#slug` links both
+  reach it.
+
+### Scripted checks
+
+All on this machine (RDP session), `target\release` of the branch, over `%TEMP%\twinfm-p9m2-check\`
+(written by a scratch script: this branch's `preview.rs`, a 2.3 MB log, a UTF-16 file, a 300 KB
+one-line JSON, a JPEG stored landscape with EXIF orientation 6, a 10,000 x 3,000 PNG, a GIF, an SVG
+with text, a TIFF, a BMP, an icon, a broken JPEG, a page of nested lists and tables with a local and
+a remote picture, a script-only page, a `.dat` and the repo's README), the column at 0.45, the cursor
+through every file with `waitpreview`, links followed in the page, then four Up presses (three
+without a wait, one 20 ms later):
+
+```
+[preview] pane=0 gen=2 ...\a-main.rs: text, 1776 lines, 82541 bytes, UTF-8
+[preview] gen=2 45 blocks in the list in 0.2 ms (UI thread)
+[preview] pane=0 gen=3 ...\b-big.log: text, 27740 lines, 2400066 bytes, UTF-8, cut at 2 MB
+[preview] gen=3 695 blocks in the list in 3.6 ms (UI thread)
+[preview] pane=0 gen=4 ...\c-utf16.txt: text, 3 lines, 138 bytes, UTF-16LE
+[preview] pane=0 gen=5 ...\d-minified.json: text, 1 lines, 327784 bytes, UTF-8
+[preview] gen=5 41 blocks in the list in 0.5 ms (UI thread)
+[preview] pane=0 gen=6 ...\e-phone.jpg: picture 1200x1600 px, JPEG, decoded in 10 ms
+[preview] pane=0 gen=7 ...\f-pano.png: picture 10000x3000 px, PNG, decoded in 804 ms, scaled to 7478x2243
+[preview] pane=0 gen=8 ...\g-anim.gif: picture 120x80 px, GIF, decoded in 1 ms
+[preview] pane=0 gen=9 ...\h-logo.svg: picture 300x120 px, SVG, decoded in 1 ms
+[preview] pane=0 gen=10 ...\i-scan.tif: picture 400x300 px, TIFF, decoded in 2 ms
+[preview] pane=0 gen=11 ...\j-small.bmp: picture 64x48 px, BMP, decoded in 0 ms
+[preview] pane=0 gen=12 ...\k-icon.ico: picture 64x64 px, ICO, decoded in 0 ms
+[preview] pane=0 gen=13 ...\l-broken.jpg: picture failed: failed: Format error decoding Jpeg: I/O errors Not enough bytes, expected 5 but found 1
+[preview] pane=0 gen=14 ...\m-page.html: html, 20 blocks (2 headings, 1 code, 1 tables, 1 images), parsed in 1 ms
+[preview] gen=14 image https://example.com/x.png: alt text (remote)
+[preview] gen=14 image 16 img/dot.png: 200x60 px in 0 ms
+[preview] link "#bottom": anchor -> block 18
+[preview] link "#top": anchor -> block 0
+[preview] link "https://example.com/": browser (scripted: not launched)
+[preview] link "img/dot.png": open ...\img\dot.png (scripted: not launched)
+[preview] link "#nope": refused: no heading #nope
+[preview] pane=0 gen=15 ...\n-script.html: html, 0 blocks (0 headings, 0 code, 0 tables, 0 images), parsed in 0 ms
+[preview] pane=0 gen=16 ...\o-data.dat: no preview for this type
+[preview] pane=0 gen=17 ...\p-readme.md: markdown, 33 blocks (7 headings, 3 code, 1 tables, 0 images), parsed in 11 ms
+[preview] pane=0 gen=18 ...\l-broken.jpg: picture failed: ...
+```
+
+Every `waitpreview` settled; exit code 0, no panic. The four Up presses opened one generation (gen
+18). The script-only page's blank column (gen 15) led to the empty-document note (Decisions); the
+README's blocks are as P8-M2 recorded them. Screenshots with the software renderer (`PrintWindow`),
+the column at 0.45: `preview.rs` in Consolas with its long comment lines wrapped; the JSON wrapped at
+its commas; the photo upright (portrait, the red half on top) with `1200 x 1600, 35 KB, JPEG` under
+it; the page with its heading, inline styles and links, the link spanning two blocks as two linked
+paragraphs, the nested bullets and the numbers from 5, the two quote levels, the caption above the
+table with its bold head row, the cell's two lines and the inner table's text in its cell, the code
+block with its tab as four spaces and `&amp;` decoded, the local picture and the remote one's alt
+text, the rule and the last heading.
+
+A six-minute run of `tools/soak-p5m3.ps1` (three cycles started, the third stopped by the clock before its
+preview cycle): exit code 0, no panicked line, every other count as before; preview: PDFs opened 4,
+markdown 4, text 4, pictures 4, picture failures 0, html 2, pictures shown 19,078 (g-big.md's repeats),
+alt text 0, fall-backs 0, cut at 2 MB 2, superseded 0, waitpreview timeouts 0, worker panics 0, no
+preview for the type 0; working set 126 to 220 MB.
+
+### Gate
+
+Run by Jeremy on 2026-10-21 at 11:36 (tag ab37 for both settings, `C:\traces\gate-p9m2.ps1`, the
+same file as `tools/gate-p9m2.ps1`, 17 min): `target-p9m2` (95ace9f, built `--locked` from a detached
+checkout) against `target-p8m2` (db30820), three rounds of reference, candidate, reference with
+`C:\traces\preview.toml`, candidate with it. Every run passed the wrapper's checks (no panic,
+`[settings] file C:\traces\preview.toml (read)` and `[preview] shown at` in the preview runs).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p8m2-1 / 2 / 3 | 17.8 / 17.5 / 17.6 | 18.7 / 17.7 / 19.1 | 2.21 / 2.19 / 2.19 |
+| p9m2-1 / 2 / 3 | 18.0 / 17.6 / 21.7 | 19.4 / 16.1 / 20.2 | 2.19 / 2.18 / 2.90 |
+| p8m2-preview-1 / 2 / 3 | 17.1 / 16.7 / 20.1 | 18.3 / 17.0 / 17.8 | 2.06 / 2.04 / 2.71 |
+| p9m2-preview-1 / 2 / 3 | 16.9 / 17.1 / 20.2 | 17.8 / 15.3 / 21.7 | 2.05 / 2.01 / 2.73 |
+
+The session changed state in round 3, from its second run on (render p50 2.71 to 2.90 ms against
+2.01 to 2.21 in every run before, the ab23 state; p8m2-3, the round's first run, still read 2.19), and
+those three runs read 20 to 22% whichever binary sat in them. Medians as the wrapper reads them:
+defaults 17.6 (reference) / 18.0 (candidate), preview 17.1 / 17.1; no gap that counts in either.
+Read like for like, rounds 1 and 2: defaults 17.8 / 17.5 against 18.0 / 17.6, preview 17.1 / 16.7
+against 16.9 / 17.1, every run under 20%, the pairs within 0.5 of a point in both orders. Passed;
+P9-M2 adds no cost while the lists scroll, with the column hidden or shown.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m2\release\twinfm.exe`, the preview shown (Alt+P),
+each beside the program that normally opens it where there is one:
+
+1. A Rust source file (one of TwinFM's own, `src\preview.rs`): Consolas, long comment lines wrapped,
+   tabs as four spaces, scrolls smoothly.
+2. A log of about 2 MB or more: the note "Only the first 2 MB ..." at the top, scrolling to the end
+   without stalls.
+3. A UTF-16 text file (a `.reg` export from Registry Editor is one): the letters right, no gaps
+   between them.
+4. JPEGs from a phone, some taken upright and some sideways: each shown the way Photos shows it, with
+   its size, file size and JPEG in the note.
+5. A panorama 10,000 px or wider: shown whole across the column, the note giving its full size.
+6. An animated GIF: its first frame, still.
+7. An SVG with text in it: the shapes drawn; the text is not (known, P8-M2's rule).
+8. A web page saved from Edge ("Save as", complete) beside the same page in Edge: headings, lists,
+   tables, links and the saved pictures in the column; scripts, menus and styling gone.
+9. A page of nested lists and tables (a documentation page): the nesting kept, tables readable.
+10. A page of nothing but a script: "This page has no text to show."
+11. A `.heic` photo and a file with no extension: "No preview".
+12. The column's width dragged with a picture and with a long text shown: both follow the width.
