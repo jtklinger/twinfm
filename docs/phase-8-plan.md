@@ -518,7 +518,25 @@ panics 0; working set 125 to 224 MB.
 
 ### Gate
 
-To be run.
+Run by Jeremy on 2026-10-20 at 22:24 (tag ab35, `C:\traces\gate-p8m2.ps1`, 18 min): `target-p8m2`
+(db30820, built `--locked` from a detached checkout) against `target-p8l1` (d5216db), three rounds of
+reference, candidate, reference with `C:\traces\preview.toml`, candidate with it. Before it, the Claude
+desktop app was restarted: one of its threads had held a full core since the morning (the leftovers
+session traced it slowing ab33 and ab34 from their second round on); after the restart no Claude
+process used more than 0.8 s of CPU in 5 s. Every run passed the wrapper's checks.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p8l1-1 / 2 / 3 | 22.6 / 22.6 / 21.5 | 23.4 / 22.0 / 21.4 | 2.29 / 3.01 / 2.96 |
+| p8m2-1 / 2 / 3 | 21.3 / 21.7 / 20.9 | 23.3 / 22.0 / 20.5 | 2.90 / 2.90 / 2.92 |
+| p8l1-preview-1 / 2 / 3 | 23.5 / 22.7 / 21.6 | 23.0 / 24.2 / 23.7 | 2.76 / 2.94 / 2.87 |
+| p8m2-preview-1 / 2 / 3 | 21.0 / 20.9 / 20.8 | 21.1 / 20.6 / 19.1 | 2.76 / 2.76 / 2.84 |
+
+The session sat in the costlier state throughout (render p50 2.76 to 3.01 ms, against 1.99 to 2.31 in
+ab32; only the first reference run read 2.29), so every binary read two to three points above
+ab32's and no candidate run is under 20%. Read like for like: defaults 22.6 (reference) / 21.3
+(candidate), preview 22.7 / 20.9, the candidate below the reference in every round of both. No gap
+that counts; P8-M2 adds no cost while the lists scroll.
 
 ## Open questions
 
