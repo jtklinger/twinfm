@@ -308,8 +308,8 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   Rust decoders do not cover them; the shell's thumbnail cache does, at thumbnail size only).
 - HTML is read into the Markdown block list, scripts and styles dropped, nothing executed; the
   parser crate is chosen by the pin check in the P9-M2 brief, a hand-written scanner the fallback.
-- Office files are read with `zip` and `roxmltree` and no Office crate unless the pin check finds one
-  that adds nothing beyond those two; Excel shows one sheet at a time (500 rows by 50 columns), the
+- Office files are read with `zip` and a streaming XML reader (`quick-xml`, the bullet above) and no
+  Office crate unless the pin check finds one that adds nothing beyond those two; Excel shows one sheet at a time (500 rows by 50 columns), the
   first by default, the others through links at the top; PowerPoint shows one block group per slide
   with a rule between; the binary `.doc`, `.xls`, `.ppt` are not previewed.
 - Thumbnails inside archive levels stay off (the shell cannot see inside an archive without
@@ -642,8 +642,8 @@ reads its protocol files with it), so TwinFM's dependency adds one edge to the l
 one dependency, `memchr`, is in already. 0.42.0 exists; pinning 0.41.0 keeps one copy. No Office
 crate: those found (`docx-rs`, `calamine`, the `ooxml` family) each bring their own XML reader or a
 serde tree and read a part whole, which is what the 64 MB cap is there to avoid. The kickoff's § Calls
-made still reads "`zip` and `roxmltree`" for Office files; the milestone's own text (quick-xml, a
-streaming reader) is the later call and the one taken.
+made read "`zip` and `roxmltree`" for Office files in one bullet while another and the milestone's own
+text named the streaming reader; that bullet now agrees (2026-10-21, the coordinator's note on #89).
 
 **The reading** (`src/office.rs`, pure but for the zip it is given; the worker opens the file):
 the file opened with `zip` (already in), each part read once through `quick_xml::Reader` from the
