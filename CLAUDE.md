@@ -30,7 +30,7 @@ bundle; opened 2026-10-21; its first section quotes Jeremy's kickoff decisions, 
 lead's, § Open questions what each milestone's brief settles first). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (249 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (255 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -691,6 +691,30 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   `grid-target`). Medium tiles are 80 x 107 with names on up to three lines (`max-lines: 3`, the
   name box 57 px, `name-h` on the list host), and the cursor tile's whole name shows over the tiles
   below when three lines do not hold it.
+  Since P9-M1, adjustable column widths (`src/cols.rs` the pure part): the details list's Type, Size
+  and Modified widths are per pane, logical px (`col_type_left`, `col_size_left`,
+  `col_modified_left` and the `_right` three; defaults 120, 90, 140; 40 to 2,000 on load), the
+  window's `left-col-type` and the rest, read by the header, every details row variant (rows read
+  the list's `type-w`, `size-w`, `modified-w`: the spike measured no cost against per-pane copies)
+  and the rename editor. A 6 px grip (pane.slint `ColGrip`, an overlay over the header, never in the
+  rows; the east-west cursor) sits on each boundary, named by the column on its right: `type` is
+  Name | Type, `size` Type | Size (Name | Size with the Type column off), `modified` Size |
+  Modified; none at the list's right edge, none in the grid. Dragging grip `c` moves that boundary
+  from the widths at the press: `c` narrows by what its left neighbour (Name for `type`) grows; a
+  column stops at 40 px, the name cell at 120 px (a pane already narrower keeps what it has:
+  `dnd::name_cell`, the name cell's x range from the widths, clamped at zero). A double-click fits
+  column `c` to the widest of its cells on screen and its bold header label, plus 12 px (one hidden
+  `Text` in app.slint measures them, `measure`), moving the same boundary. Driver: `colwidth <pane>
+  <type|size|modified> <px>` (as a drag's end), `coldrag <pane> <col> <dx>` (press on the grip's
+  centre 14 px above the list's top, moves in 8 px steps, release, through Slint's pointer path),
+  `colfit <pane> <col>` (two clicks at the grip; `[auto] col pane=N <col>: no such grip in this
+  pane's header` for `type` with the Type column off or a pane in the grid). `[cols]` lines: `pane=N
+  <col> W -> W2 px (drag | fit | script | config)` per column changed (a drag logged at the
+  release; `config` at start for a value other than the default), `pane=N fit <col>: widest of K
+  rows on screen = W px`, and `pane=N widths type T size S modified M (name N px)` after each change
+  and for both panes 400 ms after start (N the name cell's width then; the right pane's is its
+  would-be width before the split). A gate run with other widths takes
+  `TWINFM_CONFIG=C:\traces\cols.toml` (read-only: both panes 200, 110, 180).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -723,7 +747,9 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   gets its sort, hidden files, cursor and scroll back; a bare list of paths still loads (the
   defaults new tabs have), and the next save writes tables; since P8-M1 `preview` (the preview
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
-  0.35, its handle's drag). `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  0.35, its handle's drag); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
+  the `_right` three (each pane's column widths, logical px, defaults 120, 90, 140, 40 to 2,000;
+  the header grips set them). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in
@@ -790,7 +816,9 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   g-big.md (over 2 MB), and the cursor goes on through them, f-readme.md's `#usage` link followed and
   g-big.md scrolled; it reports no-preview lines (two per cycle), Markdown previews (two), pictures
   shown and alt texts (summed from the `pictures done` lines; alt text must be 0), styled-text
-  fall-backs and cuts at 2 MB (one).
+  fall-backs and cuts at 2 MB (one). Since P9-M1 each cycle also drags the left pane's Type | Size
+  grip 30 px right in `src\tree`, fits Modified and sets the widths back with `colwidth`; it reports
+  drags read back as Size 90 -> 60, fits, and widths lines back at 120, 90, 140.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per

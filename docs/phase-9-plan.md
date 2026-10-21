@@ -389,6 +389,84 @@ Driver steps and lines, as the kickoff names them:
   on screen = W px`, and `[cols] pane=N widths type T size S modified M (name N px)` once after each
   change and once per pane at start (N the name cell's width in the pane as laid out then).
 
+### The spike (2026-10-21)
+
+Three builds of ab95aaf in the worktree's own `target`, each copied out before the next: the
+unchanged build (base), shape A and shape B, each for the gate's variant only (`FileRows`, 22 px rows
+with the Type column), the widths set from Rust to 120, 90, 140 at start. The gate scenario on
+`C:\traces\bigdir` in-app, twelve runs back to back in the order base, A, B, B, A, base, twice.
+Jeremy's console session was connected (`query session`: console Active) and every run presented at
+60 Hz (interval p50 16.39 to 16.48 ms) with render p50 2.46 to 2.55 ms, so one session state
+throughout. `[busy] 10 s after split`:
+
+| Build | Runs | Median |
+|---|---|---|
+| base | 18.0 / 22.5 / 18.4 / 18.7 | 18.55 |
+| A, the list's properties | 17.7 / 19.1 / 16.9 / 19.8 | 18.4 |
+| B, a global per pane | 17.7 / 18.1 / 16.6 / 21.2 | 17.9 |
+
+No shape costs anything the in-app runs can see (each build's spread is two to five points, its own
+noise). **Shape A is chosen**: the same cost as B, with four details components instead of eight
+(B's per-pane copies would double them again with every future row change), and no global per
+pane. The console triplet decides as usual. Nothing of the spike was kept: shape A was written again
+for all four row variants. Unlike P3-M1's 0.7 of a point, this binding is a value read when a row is
+made and never changes while the lists scroll; P3-M1's switch decided what each row held.
+
+### What landed
+
+- **`src/cols.rs`** (new, pure, four tests): `Col` (type, size, modified; a grip named by the column
+  on its right), `Widths` with `clamped` (40 to 2,000 px, a non-finite value its default) and
+  `shown` (what the columns take from a row, with or without Type), `left_of` (the grip's left
+  neighbour, None for Name), `drag` (the boundary moved from the widths at the press, stopping at a
+  column's 40 px floor, at 2,000 px, and at Name's 120 px, or at Name's own width when it is already
+  below that), `set_width` (a width set through the same boundary: `colwidth` and the fit),
+  `fit_width` (the widest cell plus 12 px), `grip_x` and `grips`.
+- **`dnd::name_cell`** (one test, five layouts): the name cell's x range in window px from the pane,
+  the row height and the columns shown, clamped at zero. The drag's Name floor reads it, and so does
+  the `[cols] ... widths` line's name figure. `hit` is unchanged (a drop on the Type cell lands on
+  the row).
+- **Settings**: `col_type_left`, `col_size_left`, `col_modified_left` and the `_right` three
+  (`Config::cols`, `set_cols`), defaults 120, 90, 140, clamped on load; one round-trip test (the
+  defaults without the keys, a write and read back, out of range values pulled in).
+- **pane.slint**: the four details row components take `type-w`, `size-w` and `modified-w` (the
+  NoType two without `type-w`) from `FileListHost`, which takes them from the pane's `col-type`,
+  `col-size` and `col-modified`; the two details headers' cells and the rename editor's width read
+  the same three. `ColGrip`: a 6 px `TouchArea` with the east-west cursor, reporting the pointer's
+  travel since the press from its absolute position (so the grip moving with the boundary does not
+  feed back), phases 0, 1, 2 for press, move and release, and the double-click; the pane draws three
+  (two without Type) in one overlay over the header, none in the grid.
+- **app.slint**: the six window properties, `col-drag(pane, col, dx, phase)`, `col-fit(pane, col)`,
+  and `measure(text, bold)`: two hidden `Text`s (the lists' font, and the header's bold) whose
+  preferred width Rust reads at once, the widest line of the cells joined by line breaks.
+- **main.rs**: `cols_of`, `set_cols`, `name_px`, `col_drag` (the widths and name cell at the press
+  kept in a thread-local, cleared at the release), `col_set`, `col_fit` (the rows in the viewport from
+  the list's scroll and height, never the listing; the double-click's own press and release are not
+  a drag), `cols_changed` (the lines, the config, `schedule_save`); at start the config's widths
+  applied with their `config` lines, and 400 ms later the widths line for both panes.
+- **Driver** (`src/auto.rs`): `colwidth`, `coldrag`, `colfit` as Settled first names them.
+- **Soak**: `tools/soak-p5m3.ps1` adds the column cycle after P8-L1's (a drag of the `size` grip by
+  30 px, a fit of Modified, the widths set back) and its report line.
+- **`C:\traces\cols.toml`** (read-only, not in the repo): both panes 200, 110, 180.
+- **Tests**: 249 to 255.
+
+### Decisions
+
+- **The grip is named by the column on its right, and a fit fits that column** (Settled first): the
+  kickoff's "fits the column to its left" would leave Modified unfittable. For Jeremy to check.
+- **A fit includes the header label** (bold), so a column of empty cells (folders' sizes) fits to
+  "Size" plus 12 px rather than to nothing; a fit never goes under 40 px.
+- **The drag's travel is measured from the press**, not move by move (the sidebar's resize edge adds
+  each move's delta): a pointer that overshoots a floor and comes back meets the boundary where it
+  stopped instead of dragging it early.
+- **A drag is logged at the release only**, each column that changed (two lines for a grip between
+  two columns), so a drag of 200 moves writes three lines.
+- **Widths are kept as the drag leaves them** (fractional at 150% scaling); the lines print whole px.
+- **The start line waits 400 ms** for the window's size: logged straight away, the name cell read
+  0 px, before the first layout. The right pane's figure before a split is its would-be width.
+- **A double-click's own release must not undo the fit**: the second press records the widths, the
+  fit changes them, and the release then put them back (seen in the first scripted run as a `(drag)`
+  line after each `(fit)`); the fit now clears the drag in progress.
+
 ## Open questions
 
 Written 2026-10-21 at the kickoff.
