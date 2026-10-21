@@ -754,3 +754,83 @@ document's folder, or the zip). `Req::Open` gains `sheet` (0 by default); `previ
   `pane=N gen=G <path>: password` (the OLE wrapper says so)
 - `link "#sheet=N": sheet N` (or `refused: no sheet N`)
 - The pictures' lines as Markdown's (`gen=G image K <part>: ...`, `pictures done: ...`).
+
+### What landed
+
+- **`src/office.rs`** (new, five tests): `Part` turns quick-xml's events into opens, closes and text
+  (its entity references, which quick-xml 0.41 hands back as separate events, stitched into the text;
+  an empty element as an open and a close), `with_part` reads one zip entry through it with at most
+  `OFFICE_MAX_XML` taken, `rels` resolves a part's relationships, `write_runs` turns formatted runs
+  into Markdown's inline writer (runs with the same formatting merged, spaces kept outside the
+  delimiters), and `docx`, `xlsx`, `pptx` read the three formats as Settled first maps them.
+  `password_protected` tells the OLE wrapper. The tests build their zips in memory from hand-written
+  parts.
+- **`src/preview.rs`**: `Class::Office(OfficeKind)`; `serve_office` (the OLE check on the first 64 KB,
+  the zip opened, `office::parse` under `catch_unwind` with the generation asked between parts, the cut
+  note, the blocks answered, then the pictures); `decode_pictures` takes `Pics::Folder` or `Pics::Zip`
+  (an Office file's pictures read from the zip by part name, decoded from memory: the picture decoder
+  split into `decode_picture` for files and `decode_bytes`, sharing `svg`, `raster` and `doc_fit`);
+  `Req::Open` carries `sheet`; `Ui` keeps the target so `preview::link` can open `#sheet=N` as a new
+  generation of the same file, refused when the sheet heading's anchors do not name it.
+- **`Cargo.toml`**: `quick-xml =0.41.0`, default features off (one edge in `Cargo.lock`, no crate);
+  `main.rs` gains `mod office;`.
+- **Tests**: 259 to 265: five in `office.rs` (a Word file with every mapped element; an Excel file's
+  four sheets, the chart sheet and the 600 x 60 sheet cut to 500 x 50; numbers, dates and references;
+  a PowerPoint file of two slides, and the stop between slides; broken files: no main part, the OLE
+  wrapper, a document cut mid-element) and one in `preview.rs` (the worker on the three fixtures
+  written to `%TEMP%\twinfm-p9m3-test-<pid>\`, a picture from each zip, the sheet asked for, a text
+  file named `.xlsx`, the OLE wrapper); the classification test covers the Office types.
+- **Soak**: `tools/soak-p5m3.ps1`'s setup writes `k-report.docx`, `l-table.xlsx` and `m-deck.pptx`
+  (`Write-Parts`, a zip of hand-written parts through `System.IO.Compression`), and the preview cycle
+  goes on through them, the second sheet followed.
+
+### Decisions
+
+- **Reading stops early where it can**: a sheet's XML is read only to its 500th row and the shared
+  strings only to the highest index those rows use, so a 100,000-row workbook (2.4 MB zipped) was read
+  in 9 ms; a Word file is read whole up to the 64 MB cap (6,200 blocks in 19 ms).
+- **Body placeholders take bullets by default** in PowerPoint (Settled first; the kickoff's rule took
+  only explicit ones). Flagged for Jeremy.
+- **A text box comes before the paragraph holding it**: its paragraphs close first in the stream.
+- **A picture inside a Word table cell is its alt text in brackets** (a cell has no place for a
+  picture block), as HTML's are.
+- **No head row is assumed in a sheet**; Word's head rows are its `tblHeader` rows.
+- **A newer file asked for between parts ends the reading with no answer** (`superseded: the
+  document's reading stopped`): the UI has moved on and drops any late answer anyway.
+- **The sheet count travels in the first heading's anchors** (`sheet=1 sheet=2 ...`), so the UI can
+  refuse a sheet that does not exist without asking the worker.
+
+### Scripted checks
+
+All on this machine (RDP session), `target\release` of the branch, over `%TEMP%\twinfm-p9m3-check\`:
+the soak's three files (made by its setup block, run there in a scratch copy), a text file named
+`.xlsx`, an OLE header with `EncryptionInfo` named `.docx`, a `.doc`, a workbook of 100,000 rows by
+10 columns (2.4 MB) and a Word file of 6,000 paragraphs under 200 headings:
+
+```
+[preview] pane=0 gen=2 ...\k-report.docx: docx, 7 blocks (1 headings, 1 tables, 1 images), parsed in 1 ms
+[preview] gen=2 image 6 word/media/image1.png: 200x60 px in 0 ms
+[preview] pane=0 gen=3 ...\l-table.xlsx: xlsx, 2 sheets, sheet "Totals" 2 x 3, parsed in 1 ms
+[preview] link "#sheet=2": sheet 2
+[preview] pane=0 gen=4 ...\l-table.xlsx: xlsx, 2 sheets, sheet "Detail" 1 x 1, parsed in 0 ms
+[preview] link "#sheet=9": refused: no sheet 9
+[preview] link "#sheet=1": sheet 1
+[preview] pane=0 gen=5 ...\l-table.xlsx: xlsx, 2 sheets, sheet "Totals" 2 x 3, parsed in 0 ms
+[preview] pane=0 gen=6 ...\m-deck.pptx: pptx, 2 slides, 9 blocks, parsed in 1 ms
+[preview] gen=6 image 4 ppt/media/image1.png: 200x60 px in 0 ms
+[preview] pane=0 gen=7 ...\n-not-a-zip.xlsx: unreadable: not a zip: invalid Zip archive: Could not find EOCD
+[preview] pane=0 gen=8 ...\o-locked.docx: password
+[preview] pane=0 gen=9 ...\p-old.doc: no preview for this type
+[preview] pane=0 gen=10 ...\q-big.xlsx: xlsx, 1 sheets, sheet "Big" 500 x 10 (cut at 500 rows), parsed in 9 ms
+[preview] gen=10 15 blocks in the list in 0.2 ms (UI thread)
+[preview] pane=0 gen=11 ...\r-long.docx: docx, 6200 blocks (200 headings, 0 tables, 0 images), parsed in 19 ms
+[preview] gen=11 6200 blocks in the list in 1.3 ms (UI thread)
+[preview] pane=0 gen=12 ...\o-locked.docx: password
+```
+
+Every `waitpreview` settled; exit code 0, no panic; the three Up presses at the end opened one
+generation. Screenshots with the software renderer (`PrintWindow`), the column at 0.45: the Word file
+with its heading, paragraph, the two-level bullets, the table, the link and the picture; the
+workbook's sheet heading, the links row with "Totals" bold and "Detail" a link, the table with the
+number and the date (`2023-10-01`); the deck with `Slide 1`, its title, the two-level bullets, the
+picture, the rule, `Slide 2` and its title and bullet.
