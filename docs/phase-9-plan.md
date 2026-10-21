@@ -90,10 +90,11 @@ Four milestones, in the order Jeremy gave on 2026-10-21 (do not fold them):
    the pointer (Name has no width of its own and takes what the three leave, so dragging the Name |
    Type boundary right shrinks Type and the list reads as Name growing). A column has a floor of 40 px
    and the Name column one of 120 px (a drag past them stops there; no column can be hidden by
-   dragging, that is the Type column's setting). A double-click on a grip fits the column to its left
-   to the widest cell on screen plus padding (the rows in the viewport, never the whole listing, so a
-   40k folder costs nothing more), taking the difference from the column to its right (Name for the
-   first grip). The widths are per pane, logical px, saved as `col_type_left`, `col_size_left`,
+   dragging, that is the Type column's setting). A double-click on a grip fits the column on its
+   right (Type, Size or Modified) to the widest cell on screen plus padding (the rows in the viewport,
+   never the whole listing, so a 40k folder costs nothing more), taking the difference from the
+   column on its left (Name for the first grip) (Jeremy, 2026-10-21, at the console checks; the
+   kickoff read "the column to its left"). The widths are per pane, logical px, saved as `col_type_left`, `col_size_left`,
    `col_modified_left` and the `_right` three in `config.toml` (defaults 120, 90, 140, so a file
    without the keys loads today's layout; out of range values clamped on load), and apply to every
    tab of the pane and to both row heights. They are **requested** widths: a pane narrower than the
@@ -290,7 +291,9 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 
 - The column grips are 6 px wide on the boundaries between header cells and move the boundary under
   them, Explorer's rule (the left column grows by what the right one gives up); a column's floor is
-  40 px, Name's 120 px; a double-click fits to the rows on screen, not the whole listing; the widths
+  40 px, Name's 120 px; a double-click fits the column on the grip's right (Type, Size or
+  Modified), the column on its left (Name for the first grip) taking the difference, to the rows on
+  screen, not the whole listing (Jeremy, 2026-10-21, at the console checks); the widths
   are logical px per pane, applied to every tab of the pane, saved under six keys with today's
   values as the defaults; they are requested widths, clipped on a pane too narrow for them as today's
   fixed columns are, nothing shrinking to fit; no "reset to defaults" item in Phase 9 (the keys can be
