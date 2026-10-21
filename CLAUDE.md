@@ -26,7 +26,7 @@ hayro, P8-M2 Markdown; opened 2026-10-20, its first section quotes Jeremy's kick
 Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (238 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (239 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -355,8 +355,30 @@ Read them before changing the list.
   copied as bytes, an encrypted one keeping its own password, a plain file into a password zip
   encrypted on the way; a copy into its own folder named "a - Copy.txt"; a move within one zip a
   rename of the paths, refused onto a file there or into itself; a move from another zip removes the
-  items from it after the copy); from the other formats into a zip is still refused
-  (`between_why`). A drop of another program's drag out of a zip or 7z
+  items from it after the copy). Since P8-L3 a copy from the other formats into a zip extracts the
+  items through the shell into `%TEMP%\twinfm-copy-<pid>-<job>` (its progress window, and the shell's
+  own password question for a protected 7z), adds what is in that folder (`Plan::FromShell`), and
+  removes the folder; a move from them is refused (`move_from_read_only_why`: nothing can leave a
+  read-only archive). **An archive inside an archive opens as a folder** (Return, a double-click, a
+  middle-click, `nav`): `fs::archive::descend`, on the workers that list levels, finds each
+  component that is an archive stored as a file in the level above, extracts it once to
+  `%TEMP%\twinfm-nested-<pid>\<n>-<time>\<name>` (a zip's entry by the `zip` crate; another format's
+  item by `fileops::copy_quietly`, a silent `IFileOperation` copy on the `archive` STA thread,
+  `archivefolder::extract`), keyed by the outer archive's path and the inner path, and lists the
+  level from that copy (any depth; the copy is kept while the outer archive's size and time are
+  unchanged; all removed at exit, `clear_nested`). `fs::archive::real` maps a path through the copies
+  made so far (cheap: the UI thread may ask), and the three places that hand an in-archive path to
+  the shell use it (`shellmenu::open_in_archive`, `shellmenu::parse_items` for menus and drags,
+  `fileops::shell_item` for jobs), so opening, the menus, drags out and copies out work there.
+  **Read-only** (Jeremy's choice): `nested` (a folder, from the inner archive's root) makes
+  `writable` false and `in_readonly_archive` true (the toolbar and menu as in a 7z, the note "an
+  archive inside an archive is read-only: copy it out to change it", `NESTED_READ_ONLY`), and
+  `classify` refuses a copy, move, new item, rename or delete there; `nested_item` (below the inner
+  archive's root: the inner archive file itself is an item of the archive holding it, so it still
+  moves and goes) refuses a move, rename or delete of the items, and a copy of them reads the copy.
+  A password-protected inner zip entry is not extracted (a note: copy it out to open it).
+  `[archive] nested <outer>\<inner>: extracted to <copy> (B bytes) in T ms`, `copy from an archive: N
+  item(s) extracted to <folder>: <outcome>`. A drop of another program's drag out of a zip or 7z
   view goes to the extraction job (the data object's Shell IDList Array names the items' paths). The
   Windows 11 menu's Compress to has "7z file" and "TAR file" besides ZIP: a `Job::Compress` on the
   file operation worker (TwinFM's own writers, the `sevenz-rust2` and `tar` crates; any name, a pax
@@ -367,9 +389,9 @@ Read them before changing the list.
   K of 16 extensions (<exts>), read in T ms` (once), `worker CoInitializeEx(APARTMENTTHREADED) =
   0x...`, `open <archive> level "<inner>": N entries through ArchiveFolder in R ms`, `cache dropped
   <archive>` (after TwinFM wrote it), `refused: <what> (Windows' archive handler cannot write into
-  .<ext> archives)` and `(copying from .<ext> archives into a zip is not supported yet; ...)`, `refused
+  .<ext> archives)` and `(an archive inside an archive is read-only: ...)`, `refused
   on the worker: <why>`, `job id=N "copy in|move in|new folder|new file|rename|delete|move out|copy
-  from a zip|move from a zip" on
+  from a zip|move from a zip|copy from an archive" on
   <zip>: Done | Cancelled | Error("<why>") in T ms`, `move into <zip>: originals recycled: <outcome>
   (N item(s))`, `N file(s) already in <zip>: replace|skip|cancelled`, `compress N item(s) to <archive>:
   Ok(files) | Err("<why>") in T ms`. `[fileops] done` reads `Failed: <why>` for an archive job's
@@ -508,8 +530,8 @@ Read them before changing the list.
   font of Explorer's command bar, part of Windows 11). Which buttons apply (`toolbar::state`, the
   app's `left-tools` / `right-tools`) is set in `update_status` on change only: New and Paste in a
   folder (Paste with `CF_HDROP` on the clipboard, read at start and on each `WM_CLIPBOARDUPDATE`),
-  Cut, Copy and Delete with a selection, Rename with exactly one, nothing on This PC or in an archive
-  level, no New or Paste in a search tab. A gate run with the in-pane toolbar takes
+  Cut, Copy and Delete with a selection, Rename with exactly one, nothing on This PC, only Copy in a
+  read-only archive level (since P8-L3; nothing before), no New or Paste in a search tab. A gate run with the in-pane toolbar takes
   `TWINFM_CONFIG=C:\traces\toolbar-pane.toml` (read-only, `toolbar = "pane"` only; no `split`).
   Driver: `toolbar <pane> <button>` (`newfile`, `newfolder`, `cut`, `copy`, `paste`, `rename`,
   `delete`) calls the callback a press calls, which makes the pane active (and focuses its list,
@@ -790,7 +812,10 @@ Read them before changing the list.
   `%TEMP%\twinfm-p8l2-raw-<pid>.zip`, `fs::archivewrite::tests::password_zips_and_copies_between_zips`
   makes ZipCrypto, AES and plain zips in `%TEMP%\twinfm-p8l2-pw-<pid>\`, and `zip_jobs_on_the_worker`
   writes into its tar.exe password zip with the script's password (`zippassword`'s path) and copies
-  between two zips. All remove their folders.
+  between two zips. Since P8-L3 `fs::archive::tests::archives_inside_archives_list_from_their_copies`
+  makes a zip holding a zip and a 7z holding it in `%TEMP%\twinfm-p8l3-nested-<pid>\` (copies in
+  `%TEMP%\twinfm-nested-<pid>\`, removed by the test), and `zip_jobs_on_the_worker` copies from a 7z
+  into a zip (a temporary `%TEMP%\twinfm-copy-<pid>-<job>\`). All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

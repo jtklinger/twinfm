@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn archives_search_and_backgrounds() {
         let zip_file = ctx(Place::Archive, files(1));
-        assert!(tools(&zip_file).is_empty(), "nothing is written in an archive");
+        assert_eq!(tool_texts(&tools(&zip_file)), ["Copy"], "nothing is written in a read-only archive; Copy reads (P8-L3)");
         assert_eq!(texts(&items(&zip_file, &[])), ["Open", "---", "Copy path", "---", "Show more options"]);
         let zip_dir = ctx(Place::Archive, What::Items { files: 0, dirs: 1, drives: 0 });
         assert_eq!(texts(&items(&zip_dir, &[])), ["Open", "Open in other pane", "---", "Copy path", "---", "Show more options"]);

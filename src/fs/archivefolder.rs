@@ -27,17 +27,17 @@ pub struct Raw {
     pub modified: Option<i64>,
 }
 
-struct Req {
-    path: PathBuf,
-    reply: Sender<Result<Vec<Raw>, String>>,
+enum Req {
+    Level { path: PathBuf, reply: Sender<Result<Vec<Raw>, String>> },
+    /// Copy the item at `path` into `dest` (P8-L3: an archive inside an archive).
+    Extract { path: PathBuf, dest: PathBuf, reply: Sender<Result<(), String>> },
 }
 
 static TX: OnceLock<Sender<Req>> = OnceLock::new();
 
-/// The items of the level at `path` (an archive, or a folder inside one), and the time the shell
-/// took on the worker. Blocks the calling thread until the worker answers.
-pub fn level(path: &Path) -> Result<(Vec<Raw>, f64), String> {
-    let tx = TX.get_or_init(|| {
+/// The worker, started at the first request.
+fn worker() -> &'static Sender<Req> {
+    TX.get_or_init(|| {
         let (tx, rx) = unbounded::<Req>();
         std::thread::Builder::new()
             .name("archive".into())
@@ -46,15 +46,37 @@ pub fn level(path: &Path) -> Result<(Vec<Raw>, f64), String> {
                 let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
                 eprintln!("[archive] worker CoInitializeEx(APARTMENTTHREADED) = 0x{:08X}", hr as u32);
                 for req in rx {
-                    let _ = req.reply.send(enumerate(&req.path));
+                    match req {
+                        Req::Level { path, reply } => {
+                            let _ = reply.send(enumerate(&path));
+                        }
+                        Req::Extract { path, dest, reply } => {
+                            let _ = reply.send(crate::fileops::copy_quietly(&path, &dest));
+                        }
+                    }
                 }
             })
             .expect("spawn archive thread");
         tx
-    });
+    })
+}
+
+/// Copy the item at `path` (inside an archive the shell lists) into the folder `dest`, quietly,
+/// on the worker. Blocks the calling thread until it is done.
+pub fn extract(path: &Path, dest: &Path) -> Result<(), String> {
+    let (reply, rx) = bounded(1);
+    worker()
+        .send(Req::Extract { path: path.to_path_buf(), dest: dest.to_path_buf(), reply })
+        .map_err(|_| "the archive worker has stopped".to_string())?;
+    rx.recv().map_err(|_| "the archive worker has stopped".to_string())?
+}
+
+/// The items of the level at `path` (an archive, or a folder inside one), and the time the shell
+/// took on the worker. Blocks the calling thread until the worker answers.
+pub fn level(path: &Path) -> Result<(Vec<Raw>, f64), String> {
     let (reply, rx) = bounded(1);
     let t0 = Instant::now();
-    tx.send(Req { path: path.to_path_buf(), reply }).map_err(|_| "the archive worker has stopped".to_string())?;
+    worker().send(Req::Level { path: path.to_path_buf(), reply }).map_err(|_| "the archive worker has stopped".to_string())?;
     let items = rx.recv().map_err(|_| "the archive worker has stopped".to_string())??;
     Ok((items, t0.elapsed().as_secs_f64() * 1e3))
 }

@@ -126,9 +126,9 @@ pub fn within(path: &Path) -> bool {
     split(path).is_some_and(|(_, inner)| !inner.is_empty())
 }
 
-/// `path` lies inside an archive TwinFM writes (a zip).
+/// `path` lies inside an archive TwinFM writes (a zip, not inside an archive inside an archive).
 pub fn writable(path: &Path) -> bool {
-    split(path).is_some_and(|(a, _)| handler_of(&a) == Handler::Zip)
+    split(path).is_some_and(|(a, _)| handler_of(&a) == Handler::Zip) && !nested(path)
 }
 
 /// The handler of an archive `split` found (from its name).
@@ -213,6 +213,151 @@ pub fn forget(archive: &Path) {
     if cache.len() < n {
         eprintln!("[archive] cache dropped {}", archive.display());
     }
+}
+
+/// Why a write into an archive inside an archive is refused (P8-L3, Jeremy's choice: browsed
+/// read-only).
+pub const NESTED_READ_ONLY: &str = "an archive inside an archive is read-only: copy it out to change it";
+
+/// An archive inside an archive (P8-L3), extracted once to `nested_dir()` when a level below it is
+/// first listed: the outer archive's path on disk (itself possibly such a copy), the inner
+/// archive's path below the outer's root, the outer's size and time when it was extracted, and
+/// the copy.
+struct Nested {
+    outer: String,
+    inner: String,
+    stamp: (u64, u64),
+    file: PathBuf,
+}
+
+static NESTED: Mutex<Vec<Nested>> = Mutex::new(Vec::new());
+
+/// Where this process keeps its copies of archives inside archives; removed at exit.
+pub fn nested_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("twinfm-nested-{}", std::process::id()))
+}
+
+/// Remove the copies of archives inside archives (at exit).
+pub fn clear_nested() {
+    NESTED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    let _ = std::fs::remove_dir_all(nested_dir());
+}
+
+fn key_of(p: &Path) -> String {
+    p.to_string_lossy().to_lowercase()
+}
+
+/// The copy of the archive at `inner` below the root of `outer`: the cached one while `outer` is
+/// unchanged, else extracted now (a zip's entry by the `zip` crate, another format's item through
+/// the shell on the archive worker). Workers only.
+fn nested_file(outer: &Path, inner: &str) -> Result<PathBuf, String> {
+    let st = stamp(outer)?;
+    let (ok, ik) = (key_of(outer), inner.to_lowercase());
+    {
+        let list = NESTED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = list.iter().find(|n| n.outer == ok && n.inner == ik && n.stamp == st && n.file.is_file()) {
+            return Ok(n.file.clone());
+        }
+    }
+    let t0 = Instant::now();
+    let name = inner.rsplit('\\').next().unwrap_or(inner).to_string();
+    let dir = {
+        let n = NESTED.lock().unwrap_or_else(|e| e.into_inner()).len();
+        nested_dir().join(format!("{n}-{}", st.1))
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make a copy of the archive inside: {e}"))?;
+    let file = dir.join(&name);
+    match handler_of(outer) {
+        Handler::Zip => {
+            let mut za = zip::ZipArchive::new(std::fs::File::open(outer).map_err(|e| e.to_string())?).map_err(|e| format!("not a readable zip archive: {e}"))?;
+            let want = inner.replace('\\', "/").to_lowercase();
+            let i = (0..za.len())
+                .find(|&i| za.by_index_raw(i).is_ok_and(|e| e.name().is_ok_and(|n| n.trim_end_matches('/').to_lowercase() == want)))
+                .ok_or_else(not_found)?;
+            if za.by_index_raw(i).map_err(|e| e.to_string())?.encrypted() {
+                return Err("the archive inside is password-protected: copy it out to open it".into());
+            }
+            let mut e = za.by_index(i).map_err(|e| e.to_string())?;
+            let mut out = std::fs::File::create(&file).map_err(|e| e.to_string())?;
+            std::io::copy(&mut e, &mut out).map_err(|e| format!("cannot extract the archive inside: {e}"))?;
+        }
+        Handler::Shell => {
+            crate::fs::archivefolder::extract(&outer.join(inner), &dir)?;
+            if !file.is_file() {
+                return Err("the shell did not extract the archive inside".into());
+            }
+        }
+    }
+    let bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+    eprintln!("[archive] nested {}\\{inner}: extracted to {} ({bytes} bytes) in {:.0} ms", outer.display(), file.display(), t0.elapsed().as_secs_f64() * 1e3);
+    let mut list = NESTED.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|n| !(n.outer == ok && n.inner == ik));
+    list.push(Nested { outer: ok, inner: ik, stamp: st, file: file.clone() });
+    Ok(file)
+}
+
+/// `inner` below `archive`'s root, with every archive inside it that the path goes through
+/// replaced by its copy: the archive that holds the level, and the path below its root. Each
+/// component named like an archive costs one level lookup (cached); an item that is a folder of
+/// that name is a folder.
+fn descend(archive: &Path, inner: &str) -> Result<(PathBuf, String), String> {
+    let mut a = archive.to_path_buf();
+    let mut rest = inner.to_string();
+    'outer: loop {
+        let comps: Vec<String> = rest.split('\\').filter(|c| !c.is_empty()).map(str::to_string).collect();
+        for k in 0..comps.len() {
+            if handler_for_name(&comps[k]).is_none() {
+                continue;
+            }
+            let Ok((level, _)) = level_raw(&a, &comps[..k].join("\\")) else { break 'outer };
+            let Some(it) = level.iter().find(|i| i.name.eq_ignore_ascii_case(&comps[k])) else { break 'outer };
+            if it.dir {
+                continue;
+            }
+            a = nested_file(&a, &comps[..=k].join("\\"))?;
+            rest = comps[k + 1..].join("\\");
+            continue 'outer;
+        }
+        break;
+    }
+    Ok((a, rest))
+}
+
+/// `path` through the copies of archives inside archives made so far: the innermost copy, the
+/// rest of the path below its root, and how many copies were gone through (0: none applies).
+fn map_nested(path: &Path) -> Option<(PathBuf, String, usize)> {
+    let (mut a, mut rest) = split(path)?;
+    let mut layers = 0;
+    let list = NESTED.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        let (ak, rk) = (key_of(&a), rest.to_lowercase());
+        let Some(n) = list.iter().filter(|n| n.outer == ak && (rk == n.inner || rk.starts_with(&format!("{}\\", n.inner)))).max_by_key(|n| n.inner.len()) else {
+            break;
+        };
+        rest = rest[n.inner.len()..].trim_start_matches('\\').to_string();
+        a = n.file.clone();
+        layers += 1;
+    }
+    (layers > 0).then_some((a, rest, layers))
+}
+
+/// The path the shell can open for `path` when it lies inside an archive inside an archive (the
+/// copy of the inner archive, and the rest of the path below it), from the copies made so far;
+/// None for any other path. Cheap: one `split` and a lookup, so the UI thread may ask.
+pub fn real(path: &Path) -> Option<PathBuf> {
+    map_nested(path).map(|(a, rest, _)| if rest.is_empty() { a } else { a.join(rest) })
+}
+
+/// The folder at `path` lies inside an archive inside an archive (read-only, P8-L3): the inner
+/// archive's root counts.
+pub fn nested(path: &Path) -> bool {
+    map_nested(path).is_some()
+}
+
+/// The item at `path` is stored inside an archive inside an archive: below an inner archive's
+/// root (the inner archive file itself is an item of the archive holding it).
+pub fn nested_item(path: &Path) -> bool {
+    map_nested(path).is_some_and(|(_, rest, layers)| !rest.is_empty() || layers > 1)
 }
 
 /// The zip's levels, from the cache when its size and modified time are unchanged (true), else
@@ -406,8 +551,15 @@ impl LevelInfo {
     }
 }
 
-/// One level of `archive` (`inner` below its root), whichever handler lists it.
+/// One level of `archive` (`inner` below its root), through any archive inside it the path goes
+/// through (P8-L3).
 fn level_of(archive: &Path, inner: &str) -> Result<(Level, LevelInfo), String> {
+    let (a, i) = descend(archive, inner)?;
+    level_raw(&a, &i)
+}
+
+/// One level of `archive` (`inner` below its root), whichever handler lists it.
+fn level_raw(archive: &Path, inner: &str) -> Result<(Level, LevelInfo), String> {
     match handler_of(archive) {
         Handler::Zip => {
             let (a, cached) = open(archive)?;
@@ -509,6 +661,72 @@ mod tests {
 
     fn level(zip: &Path, inner: &str) -> Result<Vec<Entry>, String> {
         list(zip, inner, &mut TypeNames::default(), &LocalZone::current()).map(|(e, _)| e)
+    }
+
+    /// Archives inside archives (P8-L3): a zip in a zip (extracted by the crate) and a zip in a 7z
+    /// (by the shell on the archive worker) list as folders from their copies, extracted once;
+    /// `real` maps paths through them, they are not writable, and a folder named like an archive
+    /// stays a folder.
+    #[test]
+    fn archives_inside_archives_list_from_their_copies() {
+        let _cache = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("twinfm-p8l3-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("top")).unwrap();
+        let inner = dir.join("top").join("inner.zip");
+        make_zip(&inner, &[("a/", b""), ("a/b.txt", b"bee"), ("c.txt", b"c")], SimpleFileOptions::default());
+        let outer = dir.join("outer.zip");
+        let inner_bytes = std::fs::read(&inner).unwrap();
+        make_zip(&outer, &[("x/", b""), ("x/inner.zip", &inner_bytes), ("folder.zip/", b""), ("folder.zip/f.txt", b"f")], SimpleFileOptions::default());
+
+        let got = level(&outer, r"x\inner.zip\a").unwrap();
+        assert_eq!(names(&got), vec![("b.txt".into(), Kind::File, 3)]);
+        assert_eq!(names(&level(&outer, r"X\INNER.ZIP").unwrap()).len(), 2, "any case");
+        let v = outer.join(r"x\inner.zip\a\b.txt");
+        let r = real(&v).expect("mapped once listed");
+        assert!(r.starts_with(nested_dir()) && r.ends_with(r"inner.zip\a\b.txt"), "{}", r.display());
+        assert!(nested(&v) && nested(&outer.join(r"x\inner.zip")) && !writable(&outer.join(r"x\inner.zip\a")));
+        assert!(!nested(&outer.join(r"x")) && writable(&outer.join("x")), "the outer zip stays writable");
+        // The inner archive's root is inside it as a folder; as an item it is the outer's.
+        assert!(nested(&outer.join(r"x\inner.zip")) && !nested_item(&outer.join(r"x\inner.zip")) && nested_item(&v));
+        // A folder named like an archive is a folder: no copy, still writable.
+        assert_eq!(names(&level(&outer, "folder.zip").unwrap()), vec![("f.txt".into(), Kind::File, 1)]);
+        assert!(!nested(&outer.join(r"folder.zip\f.txt")));
+        // Listed again: the copy is kept (one extraction).
+        let before = NESTED.lock().unwrap().len();
+        level(&outer, r"x\inner.zip").unwrap();
+        assert_eq!(NESTED.lock().unwrap().len(), before);
+
+        // A zip inside a 7z: extracted by the shell.
+        let seven = dir.join("outer.7z");
+        crate::fs::archivewrite::compress(&seven, &[dir.join("top")], crate::fs::archivewrite::Format::SevenZ, &mut |_, _| {}).unwrap();
+        if handler_for_name("outer.7z") == Some(Handler::Shell) {
+            let got = level(&seven, r"top\inner.zip\a").unwrap();
+            assert_eq!(names(&got), vec![("b.txt".into(), Kind::File, 3)]);
+            assert!(nested(&seven.join(r"top\inner.zip\c.txt")));
+        } else {
+            eprintln!("ArchiveFolder does not take .7z here: the shell's extraction not checked");
+        }
+        // The jobs: read from the copy, never written (here, as the nested state is this test's).
+        use crate::fileops::Job;
+        use crate::fileops::archive::{Plan, classify};
+        assert_eq!(classify(&Job::Copy { sources: vec![v.clone()], dest_dir: dir.clone() }), Ok(None), "a copy out is an extraction");
+        assert!(
+            matches!(classify(&Job::Copy { sources: vec![v.clone()], dest_dir: outer.join("x") }), Ok(Some(Plan::FromZip { ref from, .. })) if from.starts_with(nested_dir())),
+            "into the outer zip: from the copy"
+        );
+        let ro = Err(NESTED_READ_ONLY.to_string());
+        assert_eq!(classify(&Job::Copy { sources: vec![dir.join("top")], dest_dir: outer.join(r"x\inner.zip\a") }), ro);
+        assert_eq!(classify(&Job::Move { sources: vec![v.clone()], dest_dir: dir.clone() }), ro);
+        assert_eq!(classify(&Job::Delete { sources: vec![v.clone()], permanent: true }), ro);
+        assert_eq!(classify(&Job::Rename { source: v.clone(), new_name: "z".into() }), ro);
+        assert_eq!(classify(&Job::NewFolder { parent: outer.join(r"x\inner.zip"), name: "n".into() }), ro);
+        // The inner archive file itself moves and goes as an item of the outer zip.
+        assert!(matches!(classify(&Job::Move { sources: vec![outer.join(r"x\inner.zip")], dest_dir: dir.clone() }), Ok(Some(Plan::MoveOut { .. }))));
+        assert!(matches!(classify(&Job::Delete { sources: vec![outer.join(r"x\inner.zip")], permanent: true }), Ok(Some(Plan::Delete { .. }))));
+        clear_nested();
+        assert!(!nested_dir().exists() && real(&v).is_none(), "cleared at exit");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
