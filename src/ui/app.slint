@@ -1,6 +1,6 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
-import { ListView, AboutSlint, Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { ListView, AboutSlint, LineEdit, ComboBox } from "std-widgets.slint";
+import { Theme, Btn, Switch } from "theme.slint";
 import { Preview, PreviewPage, MdBlock, MdRow, MdCell } from "preview.slint";
 export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
 
@@ -1277,9 +1277,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 480px) / 2);
+        y: max(10px, (root.height - 510px) / 2);
         width: 480px;
-        height: 480px;
+        height: 510px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Theme.card;
@@ -1302,7 +1302,7 @@ export component App inherits Window {
                     spacing: 8px;
                     Text { text: "Settings"; font-size: 16px; font-weight: 600; accessible-role: text; }
                     GridLayout {
-                        spacing: 6px;
+                        spacing: 8px;
                         Row {
                             Text { text: "Left start folder"; vertical-alignment: center; }
                             start-left-edit := LineEdit {
@@ -1325,13 +1325,13 @@ export component App inherits Window {
                             Text { text: "Hidden files"; vertical-alignment: center; }
                             HorizontalLayout {
                                 spacing: 12px;
-                                CheckBox {
+                                Switch {
                                     text: "Left pane";
                                     checked: root.dlg-hidden-left;
                                     accessible-label: "Show hidden files in the left pane";
                                     toggled => { root.settings-stage("hidden_left", self.checked ? "true" : "false"); }
                                 }
-                                CheckBox {
+                                Switch {
                                     text: "Right pane";
                                     checked: root.dlg-hidden-right;
                                     accessible-label: "Show hidden files in the right pane";
@@ -1343,13 +1343,13 @@ export component App inherits Window {
                             Text { text: "Protected files"; vertical-alignment: center; }
                             HorizontalLayout {
                                 spacing: 12px;
-                                CheckBox {
+                                Switch {
                                     text: "Left pane";
                                     checked: root.dlg-protected-left;
                                     accessible-label: "Show protected operating system files in the left pane";
                                     toggled => { root.settings-stage("protected_left", self.checked ? "true" : "false"); }
                                 }
-                                CheckBox {
+                                Switch {
                                     text: "Right pane";
                                     checked: root.dlg-protected-right;
                                     accessible-label: "Show protected operating system files in the right pane";
@@ -1377,7 +1377,7 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Columns"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Type column";
                                 checked: root.dlg-type-column;
                                 accessible-label: "Show the Type column";
@@ -1386,7 +1386,7 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Thumbnails"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Thumbnails (32 px rows)";
                                 checked: root.dlg-thumbnails;
                                 accessible-label: "Show thumbnails in 32 px rows";
@@ -1395,7 +1395,7 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Sidebar"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Show the sidebar";
                                 checked: root.dlg-sidebar;
                                 accessible-label: "Show the sidebar";
@@ -1413,7 +1413,7 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Preview"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Preview pane (Alt+P)";
                                 checked: root.dlg-preview;
                                 accessible-label: "Show the preview pane";
@@ -1422,7 +1422,7 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Path bar"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Breadcrumbs (off: a text entry)";
                                 checked: root.dlg-crumbs;
                                 accessible-label: "Breadcrumbs in the path bar";
@@ -1434,15 +1434,14 @@ export component App inherits Window {
                     HorizontalLayout {
                         alignment: end;
                         spacing: 8px;
-                        Button {
-                            text: "OK";
-                            accessible-label: "OK";
-                            clicked => { root.settings-ok(); }
-                        }
-                        Button {
+                        Btn {
                             text: "Cancel";
-                            accessible-label: "Cancel";
                             clicked => { root.settings-cancel(); }
+                        }
+                        Btn {
+                            text: "OK";
+                            primary: true;
+                            clicked => { root.settings-ok(); }
                         }
                     }
                     Text {
@@ -1483,8 +1482,9 @@ export component App inherits Window {
                 AboutSlint { }
                 HorizontalLayout {
                     alignment: end;
-                    Button {
+                    Btn {
                         text: "Close";
+                        primary: true;
                         clicked => { about.close(); }
                     }
                 }

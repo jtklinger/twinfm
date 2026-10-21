@@ -22,6 +22,8 @@ export global Theme {
     out property <brush> fg-faint: dark ? #FAFAFA80 : #0A0A0A80;
     // Lines and rings.
     out property <brush> border: dark ? #FFFFFF1A : #E5E5E5;
+    // An unchecked switch's track (shadcn's input colour).
+    out property <brush> input: dark ? #FFFFFF26 : #E5E5E5;
     out property <brush> ring: dark ? #737373 : #A3A3A3;
     out property <brush> ring-half: dark ? #73737380 : #A3A3A380;
     out property <brush> ring-soft: dark ? #73737340 : #A3A3A340;
@@ -37,4 +39,62 @@ export global Theme {
     out property <length> radius: 6px;
     out property <length> radius-md: 8px;
     out property <length> radius-lg: 10px;
+}
+
+// A button in the look (P9-M5): outline (a hairline, the card colour, the muted fill on hover)
+// or primary (near-black, one per dialog). 32 px high, 13 px text at weight 500, 6 px corners.
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    callback clicked();
+    height: 32px;
+    width: layout.preferred-width;
+    border-radius: Theme.radius;
+    border-width: root.primary ? 0px : 1px;
+    border-color: Theme.border;
+    background: root.primary ? (ta.has-hover ? Theme.primary.transparentize(10%) : Theme.primary) : (ta.has-hover ? Theme.muted : Theme.card);
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    layout := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text { text: root.text; vertical-alignment: center; font-weight: 500; color: root.primary ? Theme.primary-fg : Theme.fg; }
+    }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+// A switch for a boolean setting (P9-M5), in place of a check box: a 36 x 20 track with a 16 px
+// knob, the label beside it. A click flips `checked` and calls toggled(), as the std CheckBox did.
+export component Switch inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> text;
+    callback toggled();
+    height: 24px;
+    width: layout.preferred-width;
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.checked = !root.checked; root.toggled(); }
+    layout := HorizontalLayout {
+        spacing: 8px;
+        Rectangle {
+            width: 36px;
+            y: (parent.height - 20px) / 2;
+            height: 20px;
+            border-radius: 10px;
+            background: root.checked ? Theme.primary : Theme.input;
+            Rectangle {
+                x: root.checked ? 18px : 2px;
+                y: 2px;
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                background: root.checked ? Theme.primary-fg : (Theme.dark ? Theme.fg : Theme.card);
+                animate x { duration: 100ms; }
+            }
+        }
+        Text { text: root.text; vertical-alignment: center; }
+    }
+    ta := TouchArea { clicked => { root.checked = !root.checked; root.toggled(); } }
 }
