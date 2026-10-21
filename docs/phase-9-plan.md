@@ -629,3 +629,128 @@ each beside the program that normally opens it where there is one:
 10. A page of nothing but a script: "This page has no text to show."
 11. A `.heic` photo and a file with no extension: "No preview".
 12. The column's width dragged with a picture and with a long text shown: both follow the width.
+
+## P9-M3: Word, Excel and PowerPoint in the preview
+
+Branch `claude/p9-m3-office-preview`, from 192d388 (P9-M2 merged).
+
+### Settled first (2026-10-21, before any code)
+
+**The pin check**: `quick-xml =0.41.0` (MIT), default features off (no `encoding`, no `serde`). It is
+already in `Cargo.lock` at that version (Slint's winit backend builds `wayland-scanner` on Linux, which
+reads its protocol files with it), so TwinFM's dependency adds one edge to the lock and no crate; its
+one dependency, `memchr`, is in already. 0.42.0 exists; pinning 0.41.0 keeps one copy. No Office
+crate: those found (`docx-rs`, `calamine`, the `ooxml` family) each bring their own XML reader or a
+serde tree and read a part whole, which is what the 64 MB cap is there to avoid. The kickoff's § Calls
+made still reads "`zip` and `roxmltree`" for Office files; the milestone's own text (quick-xml, a
+streaming reader) is the later call and the one taken.
+
+**The reading** (`src/office.rs`, pure but for the zip it is given; the worker opens the file):
+the file opened with `zip` (already in), each part read once through `quick_xml::Reader` from the
+zip's stream with at most `OFFICE_MAX_XML` (64 MB) read from any one part; past it the blocks so far
+and a Note "Only the first part of this document is shown." first. The type by extension:
+`.docx .docm`, `.xlsx .xlsm`, `.pptx .pptm` (`OFFICE_EXTS`, any case; `Class::Office`, the archive and
+cloud checks as for a PDF). `.doc .xls .ppt` stay "No preview". A file that is not a zip, or has no
+main part: "This document could not be read". A password-protected Office file is an OLE compound file,
+not a zip: when its first bytes are the OLE signature (`D0 CF 11 E0 A1 B1 1A E1`) and its first 64 KB
+hold the stream name `EncryptionInfo` (in UTF-16), the column reads "Password-protected document: not
+previewed", else "This document could not be read".
+
+**Word** (`word/document.xml`, with `word/styles.xml`, `word/numbering.xml` and
+`word/_rels/document.xml.rels` read first when present):
+
+- A paragraph (`w:p`) is a block. Its style (`w:pStyle`) is looked up in `styles.xml`: a style named
+  `heading 1` to `heading 6` (Word's built-in names are English whatever the language of the
+  program; the ids are not), or `Title`, or with `w:outlineLvl` 0 to 5, is a heading of that level
+  (`Title` 1); with no `styles.xml` the ids `Heading1` to `Heading6` and `Title` are taken as they
+  are.
+- A paragraph with `w:numPr` is a list item at `w:ilvl` + 1, its marker from `numbering.xml` (the
+  `w:num`'s abstract numbering, that level's `w:numFmt`): `bullet` a bullet by depth as Markdown's,
+  `decimal` `1.`, `lowerLetter` `a.`, `upperLetter` `A.`, `lowerRoman` `i.`, `upperRoman` `I.`, any
+  other `1.`; numbers counted by TwinFM per list and level, starting at the level's `w:start`, a
+  deeper level's count reset when a shallower item comes.
+- Runs: `w:t` text, `w:tab` a space, `w:br` a line break (`w:type="page"` a rule after the
+  paragraph), `w:pageBreakBefore` a rule before it; bold `w:b`, italic `w:i` (unless `w:val` is `0`
+  or `false`), and a run in a monospace font (`w:rFonts` ascii: Consolas, Courier New, Courier, Lucida
+  Console, Cascadia Code, Cascadia Mono) a code span; neighbouring runs with the same formatting
+  written as one. `w:hyperlink` with `r:id` a link to the relationship's target, with `w:anchor` a
+  `#anchor` link; `w:bookmarkStart`'s name anchors the paragraph (so a table of contents' links
+  scroll).
+- Tables (`w:tbl`, `w:tr`, `w:tc`): a table as Markdown's, a cell's paragraphs joined by line breaks,
+  a row with `w:tblHeader` a head row, a table inside a cell flowing its text into the cell.
+- Pictures: `a:blip r:embed` through the relationships to `word/media/...`, decoded from the zip
+  through the P8-M2 picture path and the 64 MB budget (EXIF orientation applied), the alt text from
+  `wp:docPr descr` (else its `name`); EMF and WMF pictures are not decoded (their alt text shows).
+- Dropped: footnote and endnote references and their parts, comments, headers and footers (never
+  read), deleted text (`w:del`), field codes (`w:instrText`; the field's shown result is kept), and
+  `mc:Fallback` (the older copy of what `mc:Choice` holds, so a text box is not read twice). A text
+  box's paragraphs (`w:txbxContent`) come as their own blocks after the paragraph they sit in.
+
+**Excel** (`xl/workbook.xml` and its relationships, `xl/sharedStrings.xml`, `xl/styles.xml`):
+
+- One sheet at a time, the first by default: a level-1 heading naming it, then (with two sheets or
+  more) a paragraph of links `Sheet1 | Sheet2 | ...` (the shown one bold, not a link; each other a
+  `#sheet=N` link, N counted from 1), then the sheet's table. A link `#sheet=N` clicked (or
+  `previewlink #sheet=N`) previews the same file again with that sheet: a new generation, the column
+  at its top. A chart sheet (its target under `chartsheets/`) shows the heading, the links and a Note
+  "Chart sheets are not previewed". A hidden sheet is listed with " (hidden)" after its name.
+- The sheet's cells are read in order and reading stops after 500 rows (`XLSX_MAX_ROWS`) counted from
+  the first row with a value, so a 100,000-row sheet costs its first 500 rows; then
+  `sharedStrings.xml` is read only up to the highest index those rows use. Columns: from the first
+  column with a value, at most 50 (`XLSX_MAX_COLS`). Empty leading rows and columns dropped; empty
+  rows between kept. A Note before the table says what was cut ("Only the first 500 rows and 50
+  columns are shown.", or the one that applies).
+- Values: shared strings (rich text runs joined), inline strings, booleans `TRUE` / `FALSE`, errors
+  as written, formulas by their cached value; a number under a date format (built-in ids 14 to 22 and
+  45 to 47, or a custom format with `d` or `y` outside quotes and brackets) as `yyyy-mm-dd` from the
+  serial (the 1900 system with its 29 February 1900, `date1904` honoured), with ` hh:mm` when the
+  format has `h` and the value a fraction; a time-only format (`h` and no `d` or `y`) as `hh:mm:ss`;
+  any other number as stored, shortest form (`3.1400000000000001` reads `3.14`, `42.0` reads `42`).
+  Merged cells show their top-left value (the others are empty in the file). A column whose values
+  are all numbers is right-aligned. No head row is assumed.
+
+**PowerPoint** (`ppt/presentation.xml` and its relationships for the order, each slide and its
+relationships):
+
+- Each slide: a level-1 heading `Slide N`, then its shapes in `p:spTree` order (groups walked in
+  order): a title placeholder (`p:ph type="title"` or `"ctrTitle"`) a level-2 heading; any other text
+  body's paragraphs as paragraphs, those with `a:buChar` a bullet, `a:buAutoNum` a number (counted),
+  at `lvl` + 1; in a body placeholder (`p:ph` with no type, or `body` or `obj`) a paragraph is a
+  bullet item unless it says `a:buNone` (PowerPoint gives body text bullets from the slide master,
+  which TwinFM does not read; the kickoff's rule took only explicit bullets, which would show most
+  real decks' bullets as plain paragraphs). Runs: bold `b="1"`, italic `i="1"`, a monospace `a:latin`
+  typeface a code span, `a:hlinkClick` a link to its relationship's target; `a:br` a line break.
+  Tables (`a:tbl` in a graphic frame) as tables; pictures (`p:pic`, `a:blip r:embed`) decoded through
+  the budget, the alt text from `p:cNvPr descr`. A rule between slides. Notes pages never read.
+
+**The fixtures** (written by the tests and by the soak's setup, never shipped): a zip of hand-written
+parts per format, each with `[Content_Types].xml`, the root relationships and only the parts the
+reader opens: a `.docx` with styles (a heading by a localized style id, a title), numbering (a bullet
+list of two levels and a numbered list), bold, italic and a Consolas run, a hyperlink and a bookmark
+anchor, a two-row table with a header row, a page break, a deleted run, a field code, a footnote
+reference, an `mc:AlternateContent` text box, and a 1 x 1 PNG; an `.xlsx` of two sheets (shared
+strings, an inline string, a boolean, an error, a formula with a cached value, a date with format id
+14, a custom `yyyy-mm-dd hh:mm` format, a number stored as `0.30000000000000004`, an empty leading
+column and row) and a chart sheet, and a third sheet of 600 rows by 60 columns for the cut; a
+`.pptx` of two slides (a title, a body placeholder with two levels and one `a:buNone` paragraph, a
+text box with `a:buAutoNum`, a group, a table, a picture). Plus a zip with no `word/document.xml`, a
+text file named `.xlsx`, and an OLE header with `EncryptionInfo` named `.docx`.
+
+**Seams**: `Class::Office(Kind)`; the worker's `serve_blocks` gains an Office branch that hands the
+open zip to `office::parse` (which returns the blocks, the log tail and whether a part was cut), the
+pictures decoded from the zip by part name (`decode_pictures` takes where pictures come from: the
+document's folder, or the zip). `Req::Open` gains `sheet` (0 by default); `preview::link` takes
+`#sheet=N` while an `.xlsx` is shown and opens a new generation with it. No new driver step:
+`previewlink #sheet=N` and `waitpreview` cover it.
+
+**The `[preview]` lines** (beside P9-M2's):
+
+- `pane=N gen=G <path>: docx, B blocks (H headings, T tables, I images), parsed in T ms[, cut at 64 MB]`
+- `pane=N gen=G <path>: xlsx, S sheets, sheet "<name>" R x C[ (cut at 500 rows|50 columns|500 rows
+  and 50 columns)], parsed in T ms[, cut at 64 MB]` (R x C the shown table; a chart sheet `chart`
+  in place of `R x C`)
+- `pane=N gen=G <path>: pptx, N slides, B blocks, parsed in T ms[, cut at 64 MB]`
+- `pane=N gen=G <path>: unreadable: <why>` (the column "This document could not be read"), and
+  `pane=N gen=G <path>: password` (the OLE wrapper says so)
+- `link "#sheet=N": sheet N` (or `refused: no sheet N`)
+- The pictures' lines as Markdown's (`gen=G image K <part>: ...`, `pictures done: ...`).
