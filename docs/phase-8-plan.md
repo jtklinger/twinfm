@@ -702,8 +702,19 @@ from the 7z into the zip Done, `dst` empty again, no copies left.
 
 ### Gate
 
-Pending: defaults only (no list, grid or layout change), against the reference current when it
-runs.
+ab36 (Jeremy, console, 2026-10-21 00:53, 8 min): `target-p8l3` (5864f09) against `target-p8l2`
+(278d47f), the defaults only (no list, grid or layout change), interleaved, the candidate second,
+the Claude app idle (restarted after ab34's finding):
+
+| Run | p8l2 (WPR) | p8l3 (WPR) | Render p50 (ms), ref / cand |
+|---|---|---|---|
+| 1 | 17.5 | 17.8 | 2.15 / 2.21 |
+| 2 | 17.3 | 17.7 | 2.22 / 2.16 |
+| 3 | 17.7 | 17.8 | 2.18 / 2.27 |
+
+Medians 17.5 / 17.8; no gap counts (the reference's 17.7 is not below the candidate's 17.7, and the
+medians are 0.3 apart); every run under 20%. One session state throughout (render p50 2.15 to 2.27
+ms): the first clean triplet since ab32, as the ab34 finding predicted.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
