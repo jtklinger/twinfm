@@ -1022,3 +1022,93 @@ Lessons, each in its milestone's record:
   closing a tab it had set up (P8-L1).
 - **The console check finds the UI rules**: the toolbar's Copy left off in a read-only archive since
   P7-M3 (P8-L3).
+
+## Phase 8 close
+
+Written 2026-10-21. Both streams are in, each milestone squash-merged on Jeremy's word. The preview
+pane: the kickoff record (#75, 4f4aba6), P8-M1 the preview column with PDF through hayro (#76,
+a01ad14; gate build `target-p8m1`, 47fc959, since deleted), P8-M2 Markdown (#80, 1e9f13f;
+`target-p8m2`, db30820). The Phase 7 leftovers, in their own close above: P8-L1 (#77), P8-L2 (#79),
+P8-L3 (#81). The reference notes in `CLAUDE.md` followed each merge (#78, #82, #83); the reference
+for the next milestone is `target-p8m2`, the last merged, built before P8-L2 and P8-L3 were merged
+into its branch (their code touches archive writing only, none of the lists, the grid or the
+drawing).
+
+The preview's gates, against the build merged before each:
+
+| Milestone | Tag | Reference | Medians (WPR, reference / candidate) | Note |
+|---|---|---|---|---|
+| P8-M1 | ab32 | `target-p7m4` (67160ac) | defaults 18.5 / 18.8, preview shown 18.7 / 18.4 | one session state; flat |
+| P8-M2 | ab35 | `target-p8l1` (d5216db) | defaults 22.6 / 21.3, preview shown 22.7 / 20.9 | a costlier session state throughout; candidate below in every round; Jeremy let it stand after P8-L2 and P8-L3 merged |
+
+What Phase 8 answered:
+
+- **hayro on real PDFs** (the kickoff's open question): Jeremy's own PDFs, the 128-page coverage
+  document among them, rendered as expected beside Edge; the one finding was Shift+wheel, fixed in the
+  column. PDFium stays the recorded alternative, not needed so far.
+- **Markdown in TwinFM's own layout** held against real files: TwinFM's README beside GitHub's
+  render, this plan, a links-and-pictures file and a 2.3 MB file, all as expected (P8-M2 § Console
+  checks).
+
+Lessons of the phase, each in its milestone's record:
+
+- **Settle against the toolkit before the plan hardens** (again): Slint's `StyledText::from_markdown`
+  refuses a whole text with any heading, code block or table, which turned "Markdown through Slint"
+  into TwinFM's own block list with only the inline text given to Slint (P8-M2 § Settled first); a
+  ScrollView with a `for` would have built and shaped every block of a 2 MB file, so the blocks went
+  into a ListView.
+- **Two streams can share one machine if they say so before every gate**: the leftovers session and
+  this one held each other's builds and tests by message before each of five gates (ab32 to ab36), and
+  merged main into their branches after each other's merges. The one gap was the reference: merged in
+  the order P8-L1, P8-M1, P8-L2, P8-L3, P8-M2, each "last merged" build lacks the other stream's latest
+  code, which the record names each time.
+- **`gh pr merge --delete-branch` removes the worktree holding the branch**, even when run from the
+  main checkout: at the P8-M1 merge it emptied this session's worktree (every commit was pushed, so
+  nothing was lost). Merges since leave the flag out and delete the branch by hand.
+- **A gate before every commit means every test**: one implementer committed with the clipboard test
+  failing because another program held the clipboard; the change touched no clipboard code and CI
+  passed, but the rule is the rule, and later briefs stop and report instead.
+- **Check the machine, not only for builds**: a Claude desktop thread spinning a core slowed ab33 and
+  ab34 (the leftovers' lesson); the P8-M2 gate waited for a full restart of the app, and closing its
+  window was not one (the processes kept their start times).
+- **The soak finds the cases a file never shows**: a picture repeated 9,537 times in one Markdown file
+  spent the pixel budget, flooded the log and timed `waitpreview` out, which led to decoding a
+  repeated file once (P8-M2 § Decisions).
+
+Deferred, from the two preview milestones and their console checks:
+
+- **Password-protected PDFs**: hayro cannot open them; the column says so. PDFium would.
+- **hayro's own gaps**: non-embedded CID fonts (some CJK files), knockout groups, blending and
+  colour-key masks; none met in Jeremy's files so far.
+- **Zoom** in the PDF view, and **text selection and copy** in either view (Slint's text elements have
+  no selection at the pinned rev).
+- **Other types**: plain text and source code, pictures, Office documents ("other types later" at the
+  kickoff).
+- **Markdown details**: HTML layout (a centred logo shows left-aligned), SVG text not drawn (no fonts
+  loaded), table cell borders 2 px where neighbours meet, the scrollbar thumb drifting on a long file
+  (the ListView's estimate), and the first frames of a 2 MB file at 61 to 78 ms.
+- **Paths never hit by a real document**: a PDF page over 5 s and the superseded line for queued pages
+  are covered by the worker test only.
+
+Open questions at the close:
+
+- **Carried from Phase 7**: Google Drive's volume found by its name; a sync-root scratch folder for
+  the soak; the Slint whole-row snap patch and upstreaming the two accessibility patches; the dead
+  share console check owed since P5-M1.
+
+Phase 9 candidates, for Jeremy's decision, the lead's recommendation first. Sizes in this project's
+units: a milestone is what P8-M1 or P8-M2 was; a small item is an afternoon.
+
+- **Daily use** (recommended, as at the Phase 7 close): TwinFM in place of Files for a stretch of days,
+  with what bites written down and turned into the milestones. Jeremy now uses it daily from
+  `target\release`; a short written list of what got in the way is the missing half.
+- **More preview types**: plain text and source code (a milestone with encodings and size limits,
+  syntax colours optional), pictures (half a milestone: the decoders are already in), Office documents
+  (a milestone at least, and a library or format choice to settle first).
+- **The preview's deferred items**: zoom for PDF, the Markdown details above, PDFium beside hayro for
+  password PDFs. Half a milestone as a bundle, after Jeremy's word on each.
+- **Content search** (out since P3-M2): text inside files in the search tab; a milestone at least.
+- **Thumbnails beyond the listing** and **cloud polish**: as at the Phase 7 close, half a milestone
+  each.
+- **The Slint fork**: the whole-row snap patch and the upstreaming decision. Jeremy's.
+- Accessibility stays deferred for much later (Jeremy, 2026-10-15): not a candidate.
