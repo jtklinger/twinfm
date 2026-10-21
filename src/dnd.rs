@@ -505,6 +505,16 @@ pub fn preview_w(width: f32, left: f32, ratio: f32) -> f32 {
     (width - left) * ratio + 3.0
 }
 
+/// The name cell of pane `pane`'s rows (P9-M1): its left edge in window px and its width, the
+/// list's width less the rows' left padding (`ListGeom::name_x`), their 6 px right padding and the
+/// width the columns shown take (`cols::Widths::shown`); zero when the pane is too narrow for them,
+/// as the row clips them. `hit` keeps the whole row: a drop on the Type cell lands on the row.
+pub fn name_cell(l: &Layout, pane: usize, shown: f32) -> (f32, f32) {
+    let (a, b) = pane_x(l, pane);
+    let x = a + PANE_PAD + crate::icons::ListGeom::new(l.row_px > 22.0).name_x();
+    (x, (b - PANE_PAD - 6.0 - shown - x).max(0.0))
+}
+
 /// Hit-test a window point (logical px) against the panes and their rows. `content_y` is each
 /// list's scroll offset (zero or negative), `len` its row count.
 pub fn hit(l: &Layout, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> Spot {
@@ -3224,6 +3234,24 @@ mod tests {
         assert_eq!(reported_effect(MOVE), NONE);
         assert_eq!(reported_effect(COPY), COPY);
         assert_eq!(reported_effect(NONE), NONE);
+    }
+
+    #[test]
+    fn name_cell_follows_the_column_widths() {
+        use crate::cols::{Widths, DEFAULT};
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
+        // 3 px pane padding, 28 px row padding; 1000 - 3 - 6 - 350 = 641 on the right.
+        assert_eq!(name_cell(&one, 0, DEFAULT.shown(true)), (31.0, 610.0));
+        assert_eq!(name_cell(&one, 0, DEFAULT.shown(false)), (31.0, 730.0));
+        let wide = Widths { ty: 200.0, size: 110.0, modified: 180.0 };
+        assert_eq!(name_cell(&one, 0, wide.shown(true)), (31.0, 470.0));
+        // 32 px rows: 42 px of row padding.
+        let tall = Layout { row_px: 32.0, ..one };
+        assert_eq!(name_cell(&tall, 0, DEFAULT.shown(true)), (45.0, 596.0));
+        // The right pane of a split, narrower than its columns: clamped at zero.
+        let two = Layout { split: true, width: 600.0, ..one };
+        let (x, w) = name_cell(&two, 1, wide.shown(true));
+        assert_eq!((x, w), (303.0 + 3.0 + 28.0, 0.0));
     }
 
     #[test]

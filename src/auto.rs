@@ -143,6 +143,16 @@
 //!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
 //!   tabdrag <pane> <index> <dx>      press the left button on tab <index> (0-based), move <dx> px
 //!                                    in 8 px steps, release: a tab drag through Slint's pointer path
+//!   colwidth <pane> <type|size|modified> <px>
+//!                                    set a column's width as a grip drag's end does (P9-M1): the
+//!                                    boundary at the column's left edge moves, its left neighbour
+//!                                    (Name for type) taking the difference
+//!   coldrag <pane> <type|size|modified> <dx>
+//!                                    press on that grip's centre in the header (the boundary at the
+//!                                    column's left edge), move <dx> px in 8 px steps, release,
+//!                                    through Slint's pointer path
+//!   colfit <pane> <type|size|modified>
+//!                                    double-click that grip: the column fitted to its cells on screen
 //!   band <pane> <x0> <y0> <x1> <y1> [ctrl|shift] [hold <ms>]
 //!                                    press the left button at (x0, y0) of the pane's list (px from
 //!                                    its top-left corner; aim at empty grid space), move to (x1, y1)
@@ -344,6 +354,9 @@ enum Step {
     CrumbClose,
     /// Press the left button on tab `index`'s centre, move `dx` px in 8 px steps, release.
     TabDrag { pane: usize, index: usize, dx: f32 },
+    /// `colwidth`, `coldrag` and `colfit` (P9-M1): `what` is the width, the drag's dx, or None for
+    /// the fit's double-click.
+    Col { pane: usize, col: String, what: Option<f32>, drag: bool },
     Band { pane: usize, from: (f32, f32), to: (f32, f32), modifier: Option<Key>, hold_ms: u64 },
     PathMode { pane: usize, entry: bool },
     SideClick(i32),
@@ -515,6 +528,12 @@ fn parse(script: &str) -> Vec<Step> {
                     "moveright" => "CtrlShiftPageDown".into(),
                     n => format!("Ctrl{n}"),
                 }),
+                "colwidth" | "coldrag" | "colfit" => Step::Col {
+                    pane: num(1) as usize,
+                    col: a.get(2).unwrap_or(&"").to_string(),
+                    what: (a[0] != "colfit").then(|| a.get(3).and_then(|v| v.parse().ok()).unwrap_or(0.0)),
+                    drag: a[0] == "coldrag",
+                },
                 "tabdrag" => Step::TabDrag { pane: num(1) as usize, index: num(2) as usize, dx: num(3) as f32 },
                 "band" => Step::Band {
                     pane: num(1) as usize,
@@ -1276,6 +1295,50 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             }
             win.dispatch_event_with_result(WindowEvent::PointerReleased { position: at(x0 + dx), button: PointerEventButton::Left }).ok();
             eprintln!("[auto] tabdrag pane={pane} tab {index} from x {x0:.0} by {dx:.0} (tab width {w:.0})");
+            schedule(runner, 1);
+        }
+        Step::Col { pane, col, what, drag } => {
+            let l = crate::window_layout(&app);
+            match crate::cols::Col::from_name(&col) {
+                None => eprintln!("[auto] col: no column {col:?} (type, size or modified)"),
+                Some(c) if l.grid[pane].is_some() || !crate::cols::grips(app.get_show_type()).contains(&c) => {
+                    eprintln!("[auto] col pane={pane} {col}: no such grip in this pane's header")
+                }
+                Some(c) if !drag && what.is_some() => crate::col_set(&app, pane, c, what.unwrap_or(0.0), "script"),
+                Some(c) => {
+                    // The grip's centre: the header's cells end at the list's right edge, and the
+                    // header is the 24 px above the list's top less the layout's 2 px spacing.
+                    let (_, right) = crate::dnd::pane_x(&l, pane);
+                    let x0 = crate::cols::grip_x(right - crate::dnd::PANE_PAD, crate::cols_of(&app, pane), c);
+                    let y = crate::dnd::list_top(&l, pane) - 14.0;
+                    let at = |x: f32| LogicalPosition::new(x, y);
+                    let win = app.window();
+                    let press = |x: f32| {
+                        win.dispatch_event_with_result(WindowEvent::PointerPressed { position: at(x), button: PointerEventButton::Left }).ok();
+                    };
+                    let release = |x: f32| {
+                        win.dispatch_event_with_result(WindowEvent::PointerReleased { position: at(x), button: PointerEventButton::Left }).ok();
+                    };
+                    win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at(x0) }).ok();
+                    press(x0);
+                    if drag {
+                        let dx = what.unwrap_or(0.0);
+                        let steps = (dx.abs() / 8.0).ceil().max(1.0) as i32;
+                        for k in 1..=steps {
+                            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at(x0 + dx * k as f32 / steps as f32) }).ok();
+                        }
+                        release(x0 + dx);
+                        eprintln!("[auto] coldrag pane={pane} {col} from x {x0:.0} by {dx:.0}");
+                    } else {
+                        release(x0);
+                        press(x0);
+                        release(x0);
+                        eprintln!("[auto] colfit pane={pane} {col}: double-click at x {x0:.0}");
+                    }
+                    // Move away so the next step does not start over the grip.
+                    win.dispatch_event_with_result(WindowEvent::PointerExited).ok();
+                }
+            }
             schedule(runner, 1);
         }
         Step::Band { pane, from, to, modifier, hold_ms } => {

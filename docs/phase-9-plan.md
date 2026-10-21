@@ -320,6 +320,75 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 - The Google Drive mark and the link arrow in the tiles take the overlay list by the mark's size,
   with a console check deciding whether it stays.
 
+## P9-M1: adjustable column widths
+
+Branch `claude/p9-m1-column-widths-0ab0c4`, from ab95aaf (the kickoff).
+
+### Settled first (2026-10-21, before any code)
+
+Checked against the code at ab95aaf and the pinned Slint (c1d3a8d):
+
+- **Where the widths are read today.** The four details row components (`FileRows`, `FileRowsNoType`,
+  `FileRows32`, `FileRowsNoType32`) give their Type, Size and Modified `Text`s the constants 120, 90
+  and 140 px; the two details headers (`HeaderCell`s in a `HorizontalLayout`, chosen by `show-type`)
+  the same; the rename editor's width subtracts 350 px (230 without Type). That is all. The kickoff
+  named `dnd::Layout` (the name cell's extent for `hit`, the drop highlight and the band) as a reader
+  too, but none of them reads a column today: `dnd::hit` returns the row for any x inside the list,
+  the drop highlight spans the row, and the band runs in the grid only. So the widths reach Rust
+  through a new pure function, `dnd::name_cell` (the name cell's x range in window px for a pane,
+  from the pane's widths and row height, clamped at zero), which the drag's Name floor and the
+  driver's aims use; `hit` keeps the whole row (a drop on the Type cell still lands on the row, as
+  today and as in Explorer).
+- **Header and rows sit 6 px apart**, as today: the header's cells end at the list's right edge, the
+  rows' at its right edge less their 6 px right padding. The grips follow the header's boundaries.
+- **The grips** are one overlay per pane over the header (like the rename editor and the drop
+  highlight: siblings of the list, never in the rows), a 6 px `TouchArea` centred on each boundary
+  with `mouse-cursor: ew-resize`, three with the Type column on, two with it off, none in the grid.
+  A drag reports the pointer's travel since the press in window px (absolute position, so the grip
+  following the boundary does not feed back into the delta) to Rust, which applies it to the widths
+  at the press, clamps, and sets the pane's three properties; the list follows on the next frame.
+  `double-clicked` is the fit.
+- **A grip is named by the column on its right**: `type` is Name | Type, `size` is Type | Size (Name |
+  Size with the Type column off), `modified` is Size | Modified. Dragging grip `c` by dx makes `c`
+  narrower by dx and its left neighbour wider by dx (Name absorbing it for the first grip): the
+  kickoff's rule, the boundary moves under the pointer. Floors: 40 px for a column, and the Name cell
+  may not shrink below 120 px by a drag (below it already, on a narrow pane, it may not shrink
+  further). `colwidth <pane> <col> <px>` sets column `c` to px through the same function, as a drag's
+  end does. **The fit** of grip `c` fits column `c` itself (Type, Size or Modified) to the widest of
+  its cells on screen plus 12 px (the header label included, so a fit never hides it), moving the
+  same boundary, so the difference comes from the column on the grip's left (Name for `type`). The
+  kickoff's wording, "fits the column to its left", would make Modified unfittable and Name the
+  first grip's target; the driver's vocabulary (`colfit <pane> <type|size|modified>`) and the console
+  check's "fit on a folder of long type names" read as this. A call for Jeremy to check.
+- **Measuring the cells**: Slint has no text measurement in its Rust API, so one hidden `Text` per
+  window takes the cells' strings joined by line breaks, and Rust reads its `preferred-width`, the
+  widest line in the window's own font and scale (one layout of K short lines, K the rows on screen,
+  at a double-click only).
+- **Settings**: six `f32` keys, `col_type_left`, `col_size_left`, `col_modified_left` and the
+  `_right` three, defaults 120, 90, 140; `Config::clamped` pulls each into 40 to 2,000 px (a non-finite
+  value takes its default). Applied to the pane's properties at start; a scripted run reads none,
+  except through `TWINFM_CONFIG`.
+- **The binding shape is settled by the spike below before the rest is written**: shape A, the
+  details list components take `type-w`, `size-w` and `modified-w` as `in` properties from the
+  host (from the pane, from the window's six properties set from Rust), and each row's three `Text`s
+  read `root.type-w` and the rest; shape B, per-pane copies of the list components each reading a
+  `global` of its own pane's widths directly (`ColsLeft`, `ColsRight`), the host choosing the copy once
+  per pane as it chooses by `show-type`, which doubles the details components from eight to sixteen.
+  The spike builds each shape for the gate's variant only (22 px rows with the Type column), widths
+  set from Rust to the defaults, and measures the gate scenario in-app against the unchanged build,
+  in both orders.
+
+Driver steps and lines, as the kickoff names them:
+
+- `colwidth <pane> <type|size|modified> <px>`, `coldrag <pane> <type|size|modified> <dx>` (press on
+  the grip's centre, moves in 8 px steps through Slint's pointer path, release), `colfit <pane>
+  <type|size|modified>` (a double-click on the grip through the same path).
+- `[cols] pane=N <col> W -> W2 px (drag | fit | script | config)` for each column that changed (a
+  drag of the `size` grip changes Type and Size: two lines; logged at the release, not per move;
+  `config` at start for a value other than the default), `[cols] pane=N fit <col>: widest of K rows
+  on screen = W px`, and `[cols] pane=N widths type T size S modified M (name N px)` once after each
+  change and once per pane at start (N the name cell's width in the pane as laid out then).
+
 ## Open questions
 
 Written 2026-10-21 at the kickoff.
