@@ -581,6 +581,83 @@ elevated) window, the panes set up unequal (the split on, two tabs in one pane o
 
 Jeremy, 2026-10-21: "console checks were all working as expected. proceed with the merge".
 
+## P9-M4: thumbnails beyond the listing and cloud polish
+
+Branch `feat/p9-m4-thumbs-cloud-polish`, from 85ef7b8 (P9-M1 merged).
+
+### Settled first (2026-10-21, before any code)
+
+Checked against the code at 85ef7b8 and on this machine (Jeremy's OneDrive read only, nothing in it
+changed):
+
+- **Thumbnails in search result tabs.** The search walker builds its keys with
+  `IconKeys::new(dir, false)` per folder (`fs::enumerate`), so a result is always `ext:`; its entries
+  carry the modified time and size already (`entry_of`), and every path the UI hands the icon worker
+  is `tab.path.join(e.name)`, which a `sub\dir\file.txt` name joins correctly. The walker takes the
+  `thumbnails` setting as a folder listing does, so a result in `THUMB_EXTS` is keyed `thumb:` and
+  asked at the list's or the grid's size through the same workers and table. One guard: a search
+  tab has no cloud location (it carries no marks), so a result whose attributes say it is not on this
+  disk (`FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` or `OFFLINE`) keeps its `ext:` key: asking such a
+  file's thumbnail with `WTS_EXTRACT` would start a download. The `[icons]` line's `thumbs N` counts
+  them as the listing's.
+- **Thumbnails in archive levels: the pin check says no.** On this machine the shell refuses a
+  thumbnail for a picture inside a zip and inside a 7z (`IShellItemImageFactory::GetImage` with
+  `SIIGBF_THUMBNAILONLY` on `...\p.zip\p.jpg` and `...\p.7z\p.jpg`: `0x8004B200`,
+  `WTS_E_FAILEDEXTRACTION`, in 74 and 23 ms cold, 49 and 10 ms again; `SIIGBF_INCACHEONLY`
+  `0x80030002`), while the same JPEG outside them gives one in 251 ms cold, 9 ms warm. Neither
+  archive folder has a thumbnail provider, so there is nothing cheap to turn on: archive entries keep
+  their `ext:` keys (`fs::archive`'s own `IconKeys`), and so do the entries listed from a nested
+  archive's extracted copy, which come out of the same `archive::list`. No code; this record is the
+  piece.
+- **The details list's drag image with a thumbnail.** `prefetch_drag_icon` sends a `drag:` request
+  at 64 px (96 px image) with `thumbnail: false`; `attach_drag_image` uses it (`icon from the
+  worker`) or asks the shell for the icon (`the shell`). The request now asks for the thumbnail when
+  the pressed row's key is a `thumb:` key (cache-only when its mark says so, as the row's own request
+  is), so a photo's drag carries a sharp 64 px picture; the worker falls back to the icon as it does
+  for rows. A pure function picks the source and its label: `the tile` (the grid, unchanged), `the
+  thumbnail` (a prefetched thumbnail), `the worker` (a prefetched icon), `the shell`, `the pane's
+  cache`, `nowhere`.
+- **OneDrive's sync states beyond the tick and the cloud.** `state_from_attrs` gives only cloud,
+  tick or solid tick: no attribute says syncing, pending or error, so the kickoff's gate ("only for
+  files whose attributes say in progress or error") has nothing to test. Windows has a cheaper
+  signal: the Cloud Files API's placeholder state from the attributes and the reparse tag alone
+  (`CfGetPlaceholderStateFromAttributeTag`, cldapi.dll, no file opened; `windows-sys`'s
+  `Win32_Storage_CloudFilters` feature, no new crate). On Jeremy's OneDrive every placeholder read
+  `CF_PLACEHOLDER_STATE_PLACEHOLDER | IN_SYNC` (`0x9` or `0xD`, tags `0x9000601A` and `0x9000E01A`;
+  37 entries of the OneDrive root, `Documents` and `Pictures`, the exceptions the `desktop.ini` files
+  and one hidden system file in the root, `0x0`, not placeholders), and the call from the attributes and tag
+  agreed with the one from the whole find data on every entry. The gate: a sync
+  root file that is a placeholder and **not in sync** is keyed `look:s:` (the property read on the icon
+  workers, about 23 ms, `System.StorageProviderState`, as folders are today), so its glyph is the
+  provider's own state (syncing, pending, error, warning); every in-sync file keeps its attribute mark
+  and costs nothing more. `[cloud] state read <path>: S in T ms` per read. The kickoff's
+  attribute-combination wording is superseded by this, for Jeremy to check.
+- **Google Drive's mark smaller in the tiles, and the link arrow.** `overlay_pixels` takes the image
+  list whose icons are at least the icon's size (`SHIL_JUMBO` for a 96 px tile, `SHIL_EXTRALARGE` for
+  48 px) and draws its full-square overlay over the square, so a large tile's mark is a quarter of the
+  tile. The rule becomes: in a tile, the mark is a third of the picture square, drawn from the
+  smallest list that holds it (32 px from `SHIL_LARGE` for a 96 px tile, 24 px from `SHIL_LARGE`
+  drawn down for 48 px, at 100%; the scale applies), at the square's lower left; the lists (16 and
+  32 px icons) keep the full-size overlay, as Explorer's lists do. A pure function gives the mark's
+  size and the list for an icon size; a console check beside Explorer decides whether it stays. The
+  status glyphs (`s<N>`, OneDrive) are drawn by `glyph_px` already (24 px over 96) and do not change.
+- **The hydration check** is a console check for Jeremy (below, after the gate): the watch already
+  asks for `FILE_NOTIFY_CHANGE_ATTRIBUTES`, a `Modified` record becomes a stat and an upsert, and the
+  stat rebuilds the key with the folder's cloud location (`StatJob`), so a file whose state changes
+  takes a new key and its new mark, provided a record arrives. Whether Explorer's "Free up space" and
+  "Always keep on this device" produce one is what the check reads (`[watch] ... applied: +0 -0 ~1`).
+  If none arrives, the fix the kickoff names (a stat on an attribute record) does not apply, since
+  there is no record; the record then says so and the fix becomes a candidate for later.
+
+Driver and lines: no new driver step. `dragrow` out of a 32 px row with a thumbnail shows `[dnd] drag
+image 96x96 px, 64 px icon, 1 item(s), icon from the thumbnail`; a `search` with thumbnails on shows
+`thumbs N` in the `[icons]` line; `[cloud] state read <path>: S in T ms` for each not-in-sync
+placeholder (none in the gate's folder).
+
+Tests: the drag image's source choice; the placeholder gate (which states ask); the search walker's
+keys with thumbnails on (a JPEG keyed `thumb:`, a cloud-only one `ext:`, a text file `ext:`); the
+overlay's size and list for 16, 32, 48 and 96 px at 100% and 150%.
+
 ## Open questions
 
 Written 2026-10-21 at the kickoff.
