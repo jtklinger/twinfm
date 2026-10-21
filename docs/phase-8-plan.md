@@ -741,3 +741,49 @@ off (tests changed first, failing: `toolbar`'s states, the menu's icon row in an
 the toolbar's Copy in a 7z puts the file on the clipboard, Cut and Delete are refused as disabled, and
 Paste in a zip runs "copy from an archive", Done. Not re-gated: the toolbar's state is set on change
 only, nothing per frame or per row.
+
+P8-L3 squash-merged on Jeremy's word as #81 (86900c7, 2026-10-21) after CI passed on d308a88;
+`target\release` rebuilt from it. Its gate build `target-p8l3` (5864f09, before the Copy fix, which
+draws nothing per frame) is the next reference for either stream; `target-p8m1` and `target-p8l1`
+were deleted with their gate checkouts (both had served), `target-p8l2` stays until `target-p8l3`
+has served.
+
+## Phase 7 leftovers close
+
+Written 2026-10-21. Every item of the Phase 7 close's Deferred list that was in scope is merged, each
+on Jeremy's word: P8-L1 (#77, 20a140a; Open and Open with for several items, the grid's Explorer
+PageDown, three-line medium names), P8-L2 (#79, 256882e; zips edited byte for byte, password zips
+written with the zip's own encryption, copies between zips and within one), P8-L3 (#81, 86900c7; an
+archive inside an archive as a read-only folder, copies from 7z, tar, rar and the rest into a zip).
+
+| Milestone | Tag | Reference | Medians (WPR, reference / candidate) | Note |
+|---|---|---|---|---|
+| P8-L1 | ab33 | `target-p8m1` (47fc959) | defaults 26.9 / 27.2, large grid 14.2 / 14.4, medium 19.0 / 16.6 | a slowed session from round 2; like for like level; accepted |
+| P8-L2 | ab34 | `target-p8l1` (d5216db) | 27.0 / 27.0 | the same slowdown; like for like level; accepted |
+| P8-L3 | ab36 | `target-p8l2` (278d47f) | 17.5 / 17.8 | one session state; clean |
+
+What stayed out, and why:
+
+- **Writing into 7z, rar, tar and the other `ArchiveFolder` formats**: read-only, Jeremy's choice
+  (2026-10-19); Windows' handler refuses every write, and repacking with `tar.exe` was the alternative
+  he declined. P8-L3 made them sources for zips, never destinations.
+- **Explorer's own "Compress to"**: not reachable for a program other than Explorer (P7-M2).
+- **Writes into an archive inside an archive**: read-only by Jeremy's choice (P8-L3, 2026-10-20);
+  writing back through two archives was the declined alternative.
+- **A move out of 7z and the other read-only formats**: nothing can leave a read-only archive; a copy
+  works.
+
+Lessons, each in its milestone's record:
+
+- **A busy core on the machine reads as a "session state change"** (ab33, ab34): one thread of the
+  Claude desktop app held a full core for hours, and TwinFM's main thread slowed by half whenever
+  Windows scheduled it on that core's two logical CPUs. Traced from the gate traces themselves
+  (`xperf -a profile -detail` per process, `-a dumper` per CPU and thread); a restart of the app
+  cleared it, and ab36 was clean. Check `claude.exe`'s CPU before a gate.
+- **Settle against the machine, not the record**: the plan said Explorer opens several items with
+  Open with; a probe of the classic menu showed it offers none, which went back to Jeremy (P8-L1).
+- **Scripted checks keep finding what tests miss**: the inner archive file wrongly read-only once
+  opened, and the shell reporting no items for a 7z's archive (P8-L3); the soak's own tab steps
+  closing a tab it had set up (P8-L1).
+- **The console check finds the UI rules**: the toolbar's Copy left off in a read-only archive since
+  P7-M3 (P8-L3).
