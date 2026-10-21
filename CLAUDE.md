@@ -23,8 +23,11 @@ deferred, the phase's lessons and the Phase 8 candidates, daily use recommended)
 `docs/phase-8-plan.md` the Phase 8 record (the preview pane: P8-M1 the column with PDF through
 hayro, P8-M2 Markdown; opened 2026-10-20, closed 2026-10-21; its first section quotes Jeremy's kickoff
 decisions, § Phase 8 close holds the gates, lessons, what is deferred and the Phase 9 candidates;
-§ Phase 7 leftovers is the parallel stream's record, P8-L1 to P8-L3, settled with Jeremy 2026-10-20).
-Read them before changing the list.
+§ Phase 7 leftovers is the parallel stream's record, P8-L1 to P8-L3, settled with Jeremy 2026-10-20),
+`docs/phase-9-plan.md` the Phase 9 record (adjustable column widths; text, pictures and HTML in the
+preview; Word, Excel and PowerPoint read into the preview's own blocks; the thumbnails and cloud polish
+bundle; opened 2026-10-21; its first section quotes Jeremy's kickoff decisions, § Calls made lists the
+lead's, § Open questions what each milestone's brief settles first). Read them before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (249 tests; nine touch the real shell and clipboard, one of them the Recycle
