@@ -21,7 +21,8 @@ polish bundle with the drag cursor; four milestones, closed 2026-10-20; its firs
 Jeremy's kickoff decisions, § Calls made lists the lead's, and § Phase 7 close holds what is
 deferred, the phase's lessons and the Phase 8 candidates, daily use recommended),
 `docs/phase-8-plan.md` the Phase 8 record (the preview pane: P8-M1 the column with PDF through
-hayro, P8-M2 Markdown; opened 2026-10-20, its first section quotes Jeremy's kickoff decisions;
+hayro, P8-M2 Markdown; opened 2026-10-20, closed 2026-10-21; its first section quotes Jeremy's kickoff
+decisions, § Phase 8 close holds the gates, lessons, what is deferred and the Phase 9 candidates;
 § Phase 7 leftovers is the parallel stream's record, P8-L1 to P8-L3, settled with Jeremy 2026-10-20).
 Read them before changing the list.
 
