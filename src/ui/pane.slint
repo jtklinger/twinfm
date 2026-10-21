@@ -1,4 +1,5 @@
-import { ListView, LineEdit, Palette } from "std-widgets.slint";
+import { ListView, LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 
 // kind: 0 directory, 1 file, 2 drive, 3 other reparse point, 4 junction, 5 symbolic link,
 // 6 cloud placeholder, 7 app execution alias (model::Kind)
@@ -98,8 +99,8 @@ component ToolButton inherits Rectangle {
     callback forward();
     accessible-role: button;
     accessible-label: root.text;
-    border-radius: 4px;
-    background: !root.enabled ? transparent : ta.pressed || root.checked ? Palette.alternate-background.darker(0.1) : ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+    border-radius: Theme.radius;
+    background: !root.enabled ? transparent : ta.pressed || root.checked ? Theme.muted : ta.has-hover ? Theme.muted : transparent;
     HorizontalLayout {
         padding-left: root.labelled ? 8px : 6px;
         padding-right: root.labelled ? 10px : 6px;
@@ -109,12 +110,13 @@ component ToolButton inherits Rectangle {
             font-family: "Segoe Fluent Icons";
             font-size: 16px;
             vertical-alignment: center;
-            color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(65%);
+            color: root.enabled ? Theme.fg : Theme.fg-faint;
         }
         if root.labelled: Text {
             text: root.text;
             vertical-alignment: center;
-            color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(65%);
+            font-weight: 500;
+            color: root.enabled ? Theme.fg : Theme.fg-faint;
         }
     }
     ta := TouchArea {
@@ -140,7 +142,7 @@ component ToolButton inherits Rectangle {
 
 component ToolSeparator inherits Rectangle {
     width: 9px;
-    Rectangle { x: 4px; y: 5px; width: 1px; height: parent.height - 10px; background: Palette.border; }
+    Rectangle { x: 4px; y: 5px; width: 1px; height: parent.height - 10px; background: Theme.border; }
 }
 
 // The toolbar (P6-M3), in its three groups: New file, New folder; Cut, Copy, Paste; Rename, Delete;
@@ -181,9 +183,10 @@ component TabButton inherits Rectangle {
     callback released();
     callback drag-moved(length);
     callback close();
-    background: active ? Palette.background : (ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background);
-    border-width: 1px;
-    border-color: active ? Palette.accent-background : Palette.border;
+    background: transparent;
+    // The segment, 2 px inside the slot the strip and dnd.rs TAB_H give the tab (P9-M5).
+    Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: Theme.radius; background: root.active ? Theme.tab-active : (ta.has-hover ? Theme.ring-soft : transparent); }
+    if root.active: Rectangle { x: 2px; y: parent.height - 2px; width: parent.width - 4px; height: 1px; background: Theme.shadow; }
     ta := TouchArea {
         pointer-event(ev) => {
             if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) { root.pressed(); }
@@ -198,11 +201,12 @@ component TabButton inherits Rectangle {
         padding-left: 6px;
         padding-right: 2px;
         spacing: 2px;
-        Text { text: root.title; vertical-alignment: center; overflow: elide; font-weight: root.active ? 600 : 400; }
+        Text { text: root.title; vertical-alignment: center; overflow: elide; font-weight: root.active ? 500 : 400; color: root.active ? Theme.fg : Theme.fg-muted; }
         Rectangle {
             width: 18px;
-            background: close-ta.has-hover ? Palette.alternate-background.darker(0.2) : transparent;
-            Text { text: "\u{00d7}"; horizontal-alignment: center; vertical-alignment: center; }
+            border-radius: 4px;
+            background: close-ta.has-hover ? Theme.muted : transparent;
+            Text { text: "\u{00d7}"; horizontal-alignment: center; vertical-alignment: center; color: Theme.fg-muted; }
             close-ta := TouchArea { clicked => { root.close(); } }
         }
     }
@@ -221,6 +225,8 @@ component CrumbButton inherits HorizontalLayout {
     callback forward();
     // A drag over the label would drop into this crumb's folder (P5-M3): lit as a tab is.
     in property <bool> drop-here: false;
+    // The current folder's crumb: full text at weight 500; the others muted links (P9-M5).
+    in property <bool> last: false;
     // geometry(x, width): the crumb's x in the crumb row and its label's width, for the drop
     // target's hit test (main.rs `crumb_geometry`). Reported when the crumb is made and when
     // either changes (`changed` runs once per change, never per frame).
@@ -228,9 +234,10 @@ component CrumbButton inherits HorizontalLayout {
     init => { root.geometry(root.x, label-box.width); }
     changed x => { root.geometry(root.x, label-box.width); }
     label-box := Rectangle {
-        background: root.drop-here ? Palette.accent-background.transparentize(65%) : ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+        border-radius: Theme.radius;
+        background: root.drop-here ? Theme.muted : ta.has-hover ? Theme.muted : transparent;
         border-width: root.drop-here ? 2px : 0px;
-        border-color: Palette.accent-background;
+        border-color: Theme.ring;
         changed width => { root.geometry(root.x, self.width); }
         ta := TouchArea {
             clicked => { root.clicked(); }
@@ -242,13 +249,13 @@ component CrumbButton inherits HorizontalLayout {
         HorizontalLayout {
             padding-left: 4px;
             padding-right: 4px;
-            Text { text: root.label; vertical-alignment: center; }
+            Text { text: root.label; vertical-alignment: center; color: root.last ? Theme.fg : Theme.fg-muted; font-weight: root.last ? 500 : 400; }
         }
     }
     Rectangle {
         width: 16px;
-        background: chevron-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
-        Text { text: "\u{203a}"; horizontal-alignment: center; vertical-alignment: center; color: Palette.foreground.transparentize(40%); }
+        background: chevron-ta.has-hover ? Theme.muted : transparent;
+        Text { text: "\u{203a}"; horizontal-alignment: center; vertical-alignment: center; color: Theme.fg-muted; }
         chevron-ta := TouchArea {
             clicked => { root.menu(self.absolute-position.x, self.absolute-position.y + self.height); }
             pointer-event(ev) => {
@@ -267,12 +274,14 @@ component HeaderCell inherits Rectangle {
     // The mouse's Back or Forward button released over the header cell.
     callback back();
     callback forward();
-    background: ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background;
+    background: ta.has-hover ? Theme.muted : transparent;
+    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
     HorizontalLayout {
         padding-left: 6px;
         padding-right: 6px;
-        Text { text: label; vertical-alignment: center; font-weight: 600; }
-        Text { text: sorted ? (asc ? "\u{25b2}" : "\u{25bc}") : ""; vertical-alignment: center; }
+        spacing: 4px;
+        Text { text: label; vertical-alignment: center; font-weight: 500; font-size: 12px; color: Theme.fg-muted; }
+        Text { text: sorted ? (asc ? "\u{25b2}" : "\u{25bc}") : ""; vertical-alignment: center; font-size: 8px; color: Theme.fg-muted; }
     }
     ta := TouchArea {
         clicked => { root.clicked(); }
@@ -345,18 +354,20 @@ component FileRows inherits ListView {
         accessible-item-selectable: true;
         accessible-item-selected: row.selected;
         accessible-item-index: i;
-        background: row.selected ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
+        background: row.selected ? Theme.muted : transparent;
+        border-radius: Theme.radius;
         // The cursor is an outline, so it stays visible on selected and unselected rows alike.
-        border-width: i == current-row ? 1px : 0px;
-        border-color: Palette.accent-background;
+        border-width: i == current-row ? 2px : 0px;
+        border-color: Theme.ring-half;
+        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip.
             padding-left: 28px;
             padding-right: 6px;
-            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -389,15 +400,17 @@ component FileRowsNoType inherits ListView {
         accessible-item-selectable: true;
         accessible-item-selected: row.selected;
         accessible-item-index: i;
-        background: row.selected ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
-        border-width: i == current-row ? 1px : 0px;
-        border-color: Palette.accent-background;
+        background: row.selected ? Theme.muted : transparent;
+        border-radius: Theme.radius;
+        border-width: i == current-row ? 2px : 0px;
+        border-color: Theme.ring-half;
+        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             padding-left: 28px;
             padding-right: 6px;
-            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -476,18 +489,20 @@ component FileRows32 inherits ListView {
         accessible-item-selectable: true;
         accessible-item-selected: row.selected;
         accessible-item-index: i;
-        background: row.selected ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
+        background: row.selected ? Theme.muted : transparent;
+        border-radius: Theme.radius;
         // The cursor is an outline, so it stays visible on selected and unselected rows alike.
-        border-width: i == current-row ? 1px : 0px;
-        border-color: Palette.accent-background;
+        border-width: i == current-row ? 2px : 0px;
+        border-color: Theme.ring-half;
+        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             // 6 px padding plus the 32 px icon column; the icons are drawn by the pane's strip.
             padding-left: 42px;
             padding-right: 6px;
-            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -518,15 +533,17 @@ component FileRowsNoType32 inherits ListView {
         accessible-item-selectable: true;
         accessible-item-selected: row.selected;
         accessible-item-index: i;
-        background: row.selected ? Palette.selection-background : (mod(i, 2) == 0 ? Palette.background : Palette.alternate-background);
-        border-width: i == current-row ? 1px : 0px;
-        border-color: Palette.accent-background;
+        background: row.selected ? Theme.muted : transparent;
+        border-radius: Theme.radius;
+        border-width: i == current-row ? 2px : 0px;
+        border-color: Theme.ring-half;
+        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             padding-left: 42px;
             padding-right: 6px;
-            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Palette.foreground.transparentize(55%) : Palette.foreground; }
+            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -595,9 +612,10 @@ component FileGrid inherits ListView {
             y: 0px;
             width: 96px;
             height: 136px;
-            background: t.selected ? Palette.selection-background : transparent;
-            border-width: t.current ? 1px : 0px;
-            border-color: Palette.accent-background;
+            background: t.selected ? Theme.muted : transparent;
+            border-radius: Theme.radius;
+            border-width: t.current ? 2px : 0px;
+            border-color: Theme.ring-half;
             // The icon (the strip's) fills 2..98 px; the name sits under it on up to two lines,
             // wrapped at words (a longer word anywhere) and elided on the second (P7-M4, Explorer's).
             Text {
@@ -611,7 +629,7 @@ component FileGrid inherits ListView {
                 wrap: word-wrap;
                 max-lines: 2;
                 overflow: elide;
-                color: t.cut ? Palette.foreground.transparentize(55%) : Palette.foreground;
+                color: t.cut ? Theme.fg-faint : Theme.fg;
             }
             TouchArea {
                 pointer-event(ev) => { root.row-pointer(grow.first + c, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -665,9 +683,10 @@ component FileGridMedium inherits ListView {
             y: 0px;
             width: 80px;
             height: 107px;
-            background: t.selected ? Palette.selection-background : transparent;
-            border-width: t.current ? 1px : 0px;
-            border-color: Palette.accent-background;
+            background: t.selected ? Theme.muted : transparent;
+            border-radius: Theme.radius;
+            border-width: t.current ? 2px : 0px;
+            border-color: Theme.ring-half;
             Text {
                 x: 2px;
                 y: 50px;
@@ -679,7 +698,7 @@ component FileGridMedium inherits ListView {
                 wrap: word-wrap;
                 max-lines: 3;
                 overflow: elide;
-                color: t.cut ? Palette.foreground.transparentize(55%) : Palette.foreground;
+                color: t.cut ? Theme.fg-faint : Theme.fg;
             }
             TouchArea {
                 pointer-event(ev) => { root.row-pointer(grow.first + c, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -1229,9 +1248,13 @@ export component Pane inherits Rectangle {
     callback strip-resized();
     changed tab-strip-w => { if (root.tabs.length > 1) { root.strip-resized(); } }
 
-    border-width: active ? 2px : 1px;
-    border-color: active ? Palette.accent-background : Palette.border;
-    background: Palette.background;
+    border-width: 1px;
+    border-color: active ? Theme.ring : Theme.border;
+    border-radius: Theme.radius-lg;
+    background: Theme.card;
+    // The active pane's 3 px soft ring, outside the card (children are not clipped to it): it
+    // draws in the panes' 3 px margin (dnd.rs PANE_PAD), so no box moves (P9-M5).
+    if active: Rectangle { x: -3px; y: -3px; width: parent.width + 6px; height: parent.height + 6px; border-width: 3px; border-color: Theme.ring-soft; border-radius: Theme.radius-lg + 3px; }
 
     // Scroll the strip just far enough that tab `i` is fully in view; returns the new offset.
     // Called from Rust when the active tab or the tab count changes, never per frame.
@@ -1329,6 +1352,8 @@ export component Pane inherits Rectangle {
         if root.tabs.length > 1: Rectangle {
             height: 26px;
             clip: true;
+            background: Theme.muted;
+            border-radius: Theme.radius-md;
             // Behind the tabs, whose TouchAreas pass wheel events on: the wheel scrolls the strip.
             TouchArea {
                 scroll-event(e) => {
@@ -1371,9 +1396,9 @@ export component Pane inherits Rectangle {
                 y: 0px;
                 width: root.tab-w;
                 height: 26px;
-                background: Palette.accent-background.transparentize(65%);
+                background: Theme.muted;
                 border-width: 2px;
-                border-color: Palette.accent-background;
+                border-color: Theme.ring;
             }
         }
         // Same height whichever mode shows, so the list's top does not move (dnd.rs LIST_TOP).
@@ -1424,6 +1449,7 @@ export component Pane inherits Rectangle {
                     changed x => { root.crumb-geometry(-1, self.x, crumb-clip.width); }
                     for c[i] in root.crumbs: CrumbButton {
                         label: c.label;
+                        last: i == root.crumbs.length - 1;
                         drop-here: i == root.drop-crumb;
                         geometry(x, w) => { root.crumb-geometry(i, x, w); }
                         clicked => { root.crumb-clicked(i); }
@@ -1479,7 +1505,7 @@ export component Pane inherits Rectangle {
                 }
                 Rectangle {
                     width: 20px;
-                    background: clear-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+                    background: clear-ta.has-hover ? Theme.muted : transparent;
                     Text { text: "\u{00d7}"; horizontal-alignment: center; vertical-alignment: center; }
                     clear-ta := TouchArea { clicked => { root.close-filter(); } }
                 }
@@ -1488,7 +1514,7 @@ export component Pane inherits Rectangle {
             Rectangle {
                 x: parent.width - 24px;
                 width: 24px;
-                background: mode-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+                background: mode-ta.has-hover ? Theme.muted : transparent;
                 Text {
                     // "..." edits the path as text; the chevron goes back to the breadcrumb.
                     text: root.entry-sticky ? "\u{203a}" : "...";
@@ -1555,9 +1581,9 @@ export component Pane inherits Rectangle {
         HorizontalLayout {
             height: 18px;
             spacing: 12px;
-            Text { text: root.status.left; font-size: 11px; color: Palette.foreground; overflow: elide; horizontal-stretch: 1; }
-            Text { text: root.status.mid; font-size: 11px; color: Palette.foreground; horizontal-alignment: center; }
-            Text { text: root.status.right; font-size: 11px; color: Palette.foreground; horizontal-alignment: right; }
+            Text { text: root.status.left; font-size: 12px; color: Theme.fg-muted; overflow: elide; horizontal-stretch: 1; }
+            Text { text: root.status.mid; font-size: 12px; color: Theme.fg; horizontal-alignment: center; }
+            Text { text: root.status.right; font-size: 12px; color: Theme.fg-muted; horizontal-alignment: right; }
         }
     }
 
@@ -1618,15 +1644,15 @@ export component Pane inherits Rectangle {
             y: list.content-y + list.line-of(root.drop-row) * list.row-h;
             width: root.grid ? list.tile-w : parent.width;
             height: list.row-h;
-            background: Palette.accent-background.transparentize(65%);
+            background: Theme.muted;
             border-width: 2px;
-            border-color: Palette.accent-background;
+            border-color: Theme.ring;
         }
         Rectangle {
             visible: root.drop-row < 0;
-            background: Palette.accent-background.transparentize(88%);
+            background: Theme.muted-half;
             border-width: 3px;
-            border-color: Palette.accent-background;
+            border-color: Theme.ring;
         }
     }
 
@@ -1695,11 +1721,12 @@ export component Pane inherits Rectangle {
             width: list.tile-w;
             height: full-name.preferred-height + 3px;
             visible: full-name.preferred-height > list.name-h;
-            background: Palette.background;
+            background: Theme.card;
             Rectangle {
-                background: root.rows[list.current-row].selected ? Palette.selection-background : transparent;
-                border-width: 1px;
-                border-color: Palette.accent-background;
+                background: root.rows[list.current-row].selected ? Theme.muted : transparent;
+                border-radius: Theme.radius;
+                border-width: 2px;
+                border-color: Theme.ring-half;
             }
             full-name := Text {
                 x: 2px;
@@ -1708,7 +1735,7 @@ export component Pane inherits Rectangle {
                 text: root.rows[list.current-row].name;
                 horizontal-alignment: center;
                 wrap: word-wrap;
-                color: root.rows[list.current-row].cut ? Palette.foreground.transparentize(55%) : Palette.foreground;
+                color: root.rows[list.current-row].cut ? Theme.fg-faint : Theme.fg;
             }
         }
         Rectangle {
@@ -1717,9 +1744,9 @@ export component Pane inherits Rectangle {
             y: list.content-y + root.band-y;
             width: root.band-w;
             height: root.band-h;
-            background: Palette.accent-background.transparentize(75%);
+            background: Theme.muted-half;
             border-width: 1px;
-            border-color: Palette.accent-background;
+            border-color: Theme.ring;
         }
     }
 
@@ -1763,7 +1790,7 @@ export component Pane inherits Rectangle {
         y: list.y + (root.grid ? list.tile-h - 42px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
         width: root.grid ? list.tile-w - 4px : max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - ((root.show-type ? root.col-type : 0px) + root.col-size + root.col-modified) - 12px);
         height: 28px;
-        background: Palette.background;
+        background: Theme.card;
         // As behind the path entry: Back or Forward over the editor is ignored, not taken by the
         // row under it (P6-M3).
         TouchArea { }
