@@ -540,7 +540,18 @@ that counts; P8-M2 adds no cost while the lists scroll.
 
 P8-L2 (#79) merged after ab35, so by the rule the reference became `target-p8l2` (278d47f) and main
 was merged into this branch (ef2b3cf, 248 tests). Jeremy, 2026-10-21: ab35 stands for P8-M2, since
-P8-L2 touched only archive writing, no list, grid or render path; no re-gate.
+P8-L2 touched only archive writing, no list, grid or render path; no re-gate. P8-L3 (#81) merged
+next and was merged in too (6b3085f, 249 tests); it touches nested archives and the toolbar's Copy
+state in archives, nothing of the preview, so ab35 still stands.
+
+### Console checks
+
+Jeremy, 2026-10-21, unelevated with `target-p8m2`, on fixtures in `%TEMP%\twinfm-p8m2-console`
+(TwinFM's README beside GitHub's render, this plan, a links-and-pictures file, a 2.3 MB file): all as
+expected. A local picture shown, a remote one as its alt text; `#anchor` links to their headings and
+back; a web link in the browser; a folder link opened in the pane; a text file opened in its editor;
+a `.bat` link shown in the pane, never run; the table, wrapped code, quote and task boxes; the big
+file cut at 2 MB with its note and scrolled; the column's width dragged; Shift+wheel.
 
 ## Open questions
 
