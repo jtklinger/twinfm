@@ -22,6 +22,7 @@ mod html;
 mod icons;
 mod markdown;
 mod model;
+mod office;
 mod pathbar;
 mod perf;
 mod preview;
