@@ -31,9 +31,11 @@ hayro = "=0.8.0"
 # Markdown in the preview pane (P8-M2): the parser and the image decoders, all the copies Slint
 # already builds (pulldown-cmark for StyledText, image and resvg for its images), so nothing new is
 # compiled; image gains its gif and webp features (the gif and image-webp crates resvg already
-# brings). pulldown-cmark MIT; image MIT OR Apache-2.0; resvg Apache-2.0 OR MIT.
+# brings). pulldown-cmark MIT; image MIT OR Apache-2.0; resvg Apache-2.0 OR MIT. Pictures in the
+# preview (P9-M2): bmp and ico add no crate; tiff adds tiff 0.11.3 and fax 0.2.7, both MIT. HTML is
+# read by TwinFM's own scanner (src/html.rs), no crate.
 pulldown-cmark = { version = "=0.13.4", default-features = false }
-image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 resvg = { version = "=0.48.1", default-features = false }
 
 [features]

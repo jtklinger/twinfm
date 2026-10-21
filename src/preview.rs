@@ -14,8 +14,11 @@
 //! made a `StyledText` there, and answered as one list the UI shows in a ListView; then its local
 //! pictures are decoded one at a time and answered as they come, the generation checked between
 //! them. A link clicked in it is classified here and run on the UI thread (`link`).
+//!
+//! Since P9-M2 plain text (code blocks), HTML (html.rs, into the same blocks) and pictures (one
+//! picture block and a note with its size and format) take the same path.
 
-use crate::markdown::{self, Kind};
+use crate::markdown::{self, Block, Kind};
 use crate::{App, MdBlock, MdCell, MdRow, PreviewPage};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, StyledText, Timer, TimerMode, VecModel};
@@ -53,9 +56,22 @@ pub const DAMAGED: &str = "This PDF could not be read";
 pub const CLOUD: &str = "Not previewed: the file is in the cloud and not downloaded";
 pub const ARCHIVE: &str = "Not previewed inside an archive";
 pub const UNREADABLE: &str = "This file could not be read";
+pub const PICTURE_UNREADABLE: &str = "This picture could not be read";
 /// A Markdown file's pictures share this many bytes of decoded pixels (RGBA); one past it shows
-/// its alt text.
+/// its alt text. A picture file shown alone is scaled down to fit it (`fit_px`).
 pub const PIXEL_BUDGET: u64 = 64 << 20;
+/// A picture file shown alone may take this many bytes of pixels while it is decoded (`image`'s
+/// own default limit; a 48-megapixel photo is 192 MB), before it is scaled down to the budget.
+const DECODE_MAX: u64 = 512 << 20;
+
+/// Plain text previewed as code blocks (P9-M2), any case. Anything not on a list is "No preview".
+pub const TEXT_EXTS: &[&str] = &[
+    "txt", "log", "ini", "cfg", "csv", "json", "xml", "yaml", "yml", "toml", "rs", "py", "ps1", "sh", "c", "h", "cpp", "cs", "js", "ts", "css",
+    "slint", "bat", "cmd", "tsv", "conf", "reg", "inf", "diff", "patch", "psm1", "psd1", "hpp", "cc", "go", "java", "sql", "jsx", "tsx", "lock",
+];
+/// Pictures, decoded by the `image` crate (resvg for SVG). HEIC, HEIF and AVIF are not on it.
+pub const PICTURE_EXTS: &[&str] = &["jpg", "jpeg", "jpe", "jfif", "png", "gif", "webp", "bmp", "tif", "tiff", "ico", "svg", "svgz"];
+pub const HTML_EXTS: &[&str] = &["html", "htm"];
 /// An SVG file larger than this is not read.
 const SVG_MAX_BYTES: u64 = 16 << 20;
 /// Of the blocks whose styled text fell back to plain, this many are logged one by one.
@@ -112,24 +128,27 @@ impl Settle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     Folder,
-    /// Neither a PDF nor Markdown: nothing else is previewed in Phase 8's first two milestones.
+    /// A type that is not previewed.
     Other,
-    /// A PDF or Markdown file stored inside an archive.
+    /// A file of a previewed type stored inside an archive.
     Archive,
-    /// A PDF or Markdown file whose data is in the cloud: reading it would start a download.
+    /// A file of a previewed type whose data is in the cloud: reading it would start a download.
     CloudOnly,
     Pdf,
     Markdown,
+    Text,
+    Picture,
+    Html,
 }
 
 impl Class {
-    /// The message the column shows instead of the document (None for a PDF or Markdown).
+    /// The message the column shows instead of the document (None for a previewed type).
     pub fn message(self) -> Option<&'static str> {
         match self {
             Class::Folder | Class::Other => Some(NO_PREVIEW),
             Class::Archive => Some(ARCHIVE),
             Class::CloudOnly => Some(CLOUD),
-            Class::Pdf | Class::Markdown => None,
+            Class::Pdf | Class::Markdown | Class::Text | Class::Picture | Class::Html => None,
         }
     }
 
@@ -142,6 +161,9 @@ impl Class {
             Class::CloudOnly => "cloud-only",
             Class::Pdf => "pdf",
             Class::Markdown => "markdown",
+            Class::Text => "text",
+            Class::Picture => "picture",
+            Class::Html => "html",
         }
     }
 }
@@ -151,16 +173,23 @@ fn cloud_only(attrs: u32) -> bool {
     attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE) != 0
 }
 
-/// Classify from the listing's facts: a folder, then the type (only a `.pdf`, `.md` or
-/// `.markdown`, any case, is read), then where it lies. `in_archive` is asked only for those (it
-/// may cost a file system query on an archive-named component); the cloud test is the listing's
-/// attributes, so nothing is read.
+/// Classify from the listing's facts: a folder, then the type (by the extension, any case: PDF,
+/// Markdown, and since P9-M2 the text, picture and HTML lists), then where it lies. `in_archive` is
+/// asked only for a previewed type (it may cost a file system query on an archive-named
+/// component); the cloud test is the listing's attributes, so nothing is read.
 pub fn classify(name: &str, attrs: u32, is_dir: bool, in_archive: impl FnOnce() -> bool) -> Class {
-    let ext = |x: &str| Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case(x));
-    let class = if ext("pdf") {
+    let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("");
+    let on = |list: &[&str]| list.iter().any(|x| x.eq_ignore_ascii_case(ext));
+    let class = if on(&["pdf"]) {
         Class::Pdf
-    } else if ext("md") || ext("markdown") {
+    } else if on(&["md", "markdown"]) {
         Class::Markdown
+    } else if on(TEXT_EXTS) {
+        Class::Text
+    } else if on(PICTURE_EXTS) {
+        Class::Picture
+    } else if on(HTML_EXTS) {
+        Class::Html
     } else {
         Class::Other
     };
@@ -291,11 +320,13 @@ struct Shown {
 enum Reply {
     Message { seq: u64, text: &'static str },
     Pdf { seq: u64, sizes: Vec<(f32, f32)> },
-    /// A Markdown file's blocks, each heading's slug ("" for other blocks), and how many pictures
-    /// follow (one `Picture` each).
-    Markdown { seq: u64, blocks: Vec<Shown>, anchors: Vec<String>, pictures: usize },
-    /// Block `block`'s picture, or None (its alt text stays).
-    Picture { seq: u64, block: usize, pic: Option<SharedPixelBuffer<Rgba8Pixel>> },
+    /// A Markdown, text, HTML or picture file's blocks, each block's anchors (a heading's slug and
+    /// an HTML element's ids, space separated; "" for none), and how many pictures follow (one
+    /// `Picture` each).
+    Blocks { seq: u64, blocks: Vec<Shown>, anchors: Vec<String>, pictures: usize },
+    /// Block `block`'s picture, or None (its alt text stays). `physical`: its pixels are screen
+    /// pixels (a picture file shown alone, never drawn larger than itself), else logical px.
+    Picture { seq: u64, block: usize, pic: Option<SharedPixelBuffer<Rgba8Pixel>>, physical: bool },
     Page { seq: u64, page: usize, width_px: u32, buf: SharedPixelBuffer<Rgba8Pixel> },
     /// "Page N took too long", in the page's place.
     Note { seq: u64, page: usize, width_px: u32, text: String },
@@ -359,9 +390,16 @@ fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64
         reply(Reply::Message { seq, text });
         return None;
     }
-    if class == Class::Markdown {
-        serve_md(keep, reply, seq, pane, path);
-        return None;
+    match class {
+        Class::Markdown | Class::Text | Class::Html => {
+            serve_blocks(keep, reply, seq, pane, path, class);
+            return None;
+        }
+        Class::Picture => {
+            serve_picture(reply, seq, pane, path);
+            return None;
+        }
+        _ => {}
     }
     use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
     let t0 = Instant::now();
@@ -478,9 +516,10 @@ fn styled(md: &str, plain: &str, seq: u64, block: usize, fell: &mut usize) -> St
     }
 }
 
-/// Read, cut and parse a Markdown file, answer its blocks, then decode its local pictures one at a
-/// time, each answered as it is done, until they are all done or the UI has moved to another file.
-fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path) {
+/// Read, cut and parse a Markdown, text or HTML file, answer its blocks, then decode its local
+/// pictures one at a time, each answered as it is done, until they are all done or the UI has
+/// moved to another file.
+fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path, class: Class) {
     let t0 = Instant::now();
     let read = || -> std::io::Result<(Vec<u8>, u64)> {
         let f = std::fs::File::open(path)?;
@@ -490,10 +529,19 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
         Ok((bytes, size))
     };
     let base = path.parent().unwrap_or(Path::new("")).to_path_buf();
+    // The document, whether it was cut, the file's size, and (text) its lines and encoding.
     let parsed = read().map_err(|e| e.to_string()).and_then(|(bytes, size)| {
         std::panic::catch_unwind(|| {
             let (text, cut) = markdown::decode(&bytes);
-            (markdown::parse_doc(&text, Some(&base)), cut, size)
+            let (doc, lines) = match class {
+                Class::Html => (crate::html::parse(&text, Some(&base)), 0),
+                Class::Text => {
+                    let (blocks, lines) = markdown::text_blocks(&text);
+                    (markdown::Doc { blocks, remote: Vec::new() }, lines)
+                }
+                _ => (markdown::parse_doc(&text, Some(&base)), 0),
+            };
+            (doc, cut, size, lines, markdown::encoding(&bytes))
         })
         .map_err(|p| {
             let msg = panic_text(&*p);
@@ -501,7 +549,7 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
             format!("panicked: {msg}")
         })
     });
-    let (doc, cut, size) = match parsed {
+    let (doc, cut, size, lines, encoding) = match parsed {
         Ok(p) => p,
         Err(why) => {
             eprintln!("[preview] pane={pane} gen={seq} {}: unreadable: {why}", path.display());
@@ -512,8 +560,37 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
     let mut blocks = doc.blocks;
     if cut {
         let mb = size as f64 / (1024.0 * 1024.0);
-        blocks.insert(0, markdown::Block { kind: Kind::Note, plain: format!("Only the first 2 MB of this {mb:.1} MB file is shown."), ..Default::default() });
+        blocks.insert(0, Block { kind: Kind::Note, plain: format!("Only the first 2 MB of this {mb:.1} MB file is shown."), ..Default::default() });
     }
+    let (shown, anchors, fell) = shown_blocks(&blocks, seq);
+    let count = |k: Kind| blocks.iter().filter(|b| b.kind == k && (b.first || !matches!(k, Kind::Code | Kind::Table))).count();
+    let pictures = count(Kind::Image);
+    let cut_note = if cut { ", cut at 2 MB" } else { "" };
+    let ms = crate::perf::elapsed_ms(t0);
+    let (headings, code, tables) = (count(Kind::Heading), count(Kind::Code), count(Kind::Table));
+    let n = blocks.len();
+    match class {
+        Class::Text => eprintln!("[preview] pane={pane} gen={seq} {}: text, {lines} lines, {size} bytes, {encoding}{cut_note}", path.display()),
+        _ => eprintln!(
+            "[preview] pane={pane} gen={seq} {}: {}, {n} blocks ({headings} headings, {code} code, {tables} tables, {pictures} images), parsed in {ms:.0} ms{cut_note}",
+            path.display(),
+            class.label()
+        ),
+    }
+    if fell > FALLBACK_LINES {
+        eprintln!("[preview] gen={seq} {} more block(s) fell back to plain", fell - FALLBACK_LINES);
+    }
+    for src in &doc.remote {
+        eprintln!("[preview] gen={seq} image {src}: alt text (remote)");
+    }
+    reply(Reply::Blocks { seq, blocks: shown, anchors, pictures });
+    decode_pictures(keep, reply, seq, &blocks, &base, pictures);
+}
+
+/// The blocks as the worker sends them, each paragraph's, heading's and cell's styled text made,
+/// with each block's anchors (an HTML element's ids, and a heading's slug), and how many fell back
+/// to plain text.
+fn shown_blocks(blocks: &[Block], seq: u64) -> (Vec<Shown>, Vec<String>, usize) {
     let mut fell = 0;
     let mut slugs = markdown::Slugger::default();
     let mut anchors = Vec::with_capacity(blocks.len());
@@ -521,7 +598,11 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
         .iter()
         .enumerate()
         .map(|(k, b)| {
-            anchors.push(if b.kind == Kind::Heading { slugs.slug(&b.plain) } else { String::new() });
+            anchors.push(match (b.kind == Kind::Heading, b.anchor.is_empty()) {
+                (true, true) => slugs.slug(&b.plain),
+                (true, false) => format!("{} {}", b.anchor, slugs.slug(&b.plain)),
+                (false, _) => b.anchor.clone(),
+            });
             let text = match b.kind {
                 Kind::Para | Kind::Heading => styled(&b.md, &b.plain, seq, k, &mut fell),
                 _ => StyledText::default(),
@@ -539,25 +620,12 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
             Shown { kind: b.kind, level: b.level, indent: b.indent, quote: b.quote, marker: b.marker.clone(), task: b.task, text, code, rows, alt, first: b.first, last: b.last }
         })
         .collect();
-    let count = |k: Kind| blocks.iter().filter(|b| b.kind == k && (b.first || !matches!(k, Kind::Code | Kind::Table))).count();
-    let pictures = count(Kind::Image);
-    eprintln!(
-        "[preview] pane={pane} gen={seq} {}: markdown, {} blocks ({} headings, {} code, {} tables, {pictures} images), parsed in {:.0} ms{}",
-        path.display(),
-        blocks.len(),
-        count(Kind::Heading),
-        count(Kind::Code),
-        count(Kind::Table),
-        crate::perf::elapsed_ms(t0),
-        if cut { ", cut at 2 MB" } else { "" }
-    );
-    if fell > FALLBACK_LINES {
-        eprintln!("[preview] gen={seq} {} more block(s) fell back to plain", fell - FALLBACK_LINES);
-    }
-    for src in &doc.remote {
-        eprintln!("[preview] gen={seq} image {src}: alt text (remote)");
-    }
-    reply(Reply::Markdown { seq, blocks: shown, anchors, pictures });
+    (shown, anchors, fell)
+}
+
+/// Decode a document's local pictures one at a time, each answered as it is done, until they are
+/// all done or the UI has moved to another file.
+fn decode_pictures(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, blocks: &[Block], base: &Path, pictures: usize) {
     let mut budget = PIXEL_BUDGET;
     let mut left = pictures;
     // A file shown more than once (an icon repeated down a page) is decoded and counted once.
@@ -570,7 +638,7 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
         }
         left -= 1;
         let t = Instant::now();
-        let got = match markdown::image_path(&b.src, &base) {
+        let got = match markdown::image_path(&b.src, base) {
             Some(p) => done
                 .entry(p)
                 .or_insert_with_key(|p| {
@@ -588,14 +656,14 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
                 if log {
                     eprintln!("[preview] gen={seq} image {k} {}: {}x{} px in {:.0} ms", b.src, buf.width(), buf.height(), crate::perf::elapsed_ms(t));
                 }
-                reply(Reply::Picture { seq, block: k, pic: Some(buf) });
+                reply(Reply::Picture { seq, block: k, pic: Some(buf), physical: false });
             }
             Err(why) => {
                 alt_n += 1;
                 if log {
                     eprintln!("[preview] gen={seq} image {k} {}: alt text ({why})", b.src);
                 }
-                reply(Reply::Picture { seq, block: k, pic: None });
+                reply(Reply::Picture { seq, block: k, pic: None, physical: false });
             }
         }
     }
@@ -609,11 +677,84 @@ fn serve_md(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, p
     }
 }
 
-/// A local picture decoded to straight RGBA, at most `MAX_SIDE` on a side (scaled down to it),
-/// its decoded size taken from `budget`. Err: why its alt text shows instead (`missing`,
-/// `cloud-only`, `over the budget`, `failed: ...`). The attributes come first, so a cloud-only
-/// file is never opened.
+/// A picture file (P9-M2): decoded alone, upright, scaled down to fit (`fit_px`), answered as a
+/// picture block and a note with its size, the file's size and its format.
+fn serve_picture(reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path) {
+    let t0 = Instant::now();
+    let got = std::panic::catch_unwind(|| lone_picture(path)).unwrap_or_else(|p| {
+        let msg = panic_text(&*p);
+        eprintln!("[preview] worker panicked on {}: {msg}", path.display());
+        Err(format!("panicked: {msg}"))
+    });
+    let (img, (w, h), format) = match got {
+        Ok(g) => g,
+        Err(why) => {
+            eprintln!("[preview] pane={pane} gen={seq} {}: picture failed: {why}", path.display());
+            reply(Reply::Message { seq, text: PICTURE_UNREADABLE });
+            return;
+        }
+    };
+    let scaled = if img.dimensions() != (w, h) { format!(", scaled to {}x{}", img.width(), img.height()) } else { String::new() };
+    eprintln!("[preview] pane={pane} gen={seq} {}: picture {w}x{h} px, {format}, decoded in {:.0} ms{scaled}", path.display(), crate::perf::elapsed_ms(t0));
+    let size = std::fs::metadata(path).map_or(0, |m| m.len());
+    let alt = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let blocks = [
+        Block { kind: Kind::Image, plain: alt, ..Default::default() },
+        Block { kind: Kind::Note, plain: format!("{w} x {h}, {}, {format}", size_text(size)), ..Default::default() },
+    ];
+    let (shown, anchors, _) = shown_blocks(&blocks, seq);
+    reply(Reply::Blocks { seq, blocks: shown, anchors, pictures: 1 });
+    let buf = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(img.as_raw(), img.width(), img.height());
+    reply(Reply::Picture { seq, block: 0, pic: Some(buf), physical: true });
+}
+
+/// A file's size for the picture's note: bytes under 1 KB, KB under 1 MB, else MB with one decimal.
+pub fn size_text(bytes: u64) -> String {
+    match bytes {
+        b if b < 1024 => format!("{b} bytes"),
+        b if b < 1024 * 1024 => format!("{} KB", (b as f64 / 1024.0).round() as u64),
+        b => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
+    }
+}
+
+/// The size a picture file is shown at (P9-M2): scaled down so that neither side passes `MAX_SIDE`
+/// and its RGBA pixels fit `PIXEL_BUDGET`; never scaled up.
+pub fn fit_px(w: u32, h: u32) -> (u32, u32) {
+    let (wf, hf) = (f64::from(w.max(1)), f64::from(h.max(1)));
+    let f = (f64::from(MAX_SIDE) / wf.max(hf)).min(((PIXEL_BUDGET / 4) as f64 / (wf * hf)).sqrt());
+    if f >= 1.0 { (w, h) } else { ((wf * f).floor().max(1.0) as u32, (hf * f).floor().max(1.0) as u32) }
+}
+
+/// A picture file shown alone: decoded with up to `DECODE_MAX` of pixels, then scaled to `fit_px`.
+/// Returns the image, its upright size before scaling, and its format's name.
+fn lone_picture(path: &Path) -> Result<(image::RgbaImage, (u32, u32), &'static str), String> {
+    let (img, format) = decode_picture(path, DECODE_MAX).map_err(|e| if e == "over the budget" { format!("over {} MB of pixels", DECODE_MAX >> 20) } else { e })?;
+    let (w, h) = img.dimensions();
+    let (fw, fh) = fit_px(w, h);
+    let img = if (fw, fh) == (w, h) { img } else { image::imageops::resize(&img, fw, fh, image::imageops::FilterType::Triangle) };
+    Ok((img, (w, h), format))
+}
+
+/// A local picture of a document decoded to straight RGBA, at most `MAX_SIDE` on a side (scaled
+/// down to it), its decoded size taken from `budget`. Err: why its alt text shows instead
+/// (`missing`, `cloud-only`, `over the budget`, `failed: ...`).
 fn picture(path: &Path, budget: &mut u64) -> Result<image::RgbaImage, String> {
+    let (img, _) = decode_picture(path, *budget)?;
+    let (w, h) = img.dimensions();
+    *budget -= u64::from(w) * u64::from(h) * 4;
+    if w.max(h) <= MAX_SIDE {
+        return Ok(img);
+    }
+    let f = f64::from(MAX_SIDE) / f64::from(w.max(h));
+    let (nw, nh) = ((f64::from(w) * f).round().max(1.0) as u32, (f64::from(h) * f).round().max(1.0) as u32);
+    Ok(image::imageops::resize(&img, nw.min(MAX_SIDE), nh.min(MAX_SIDE), image::imageops::FilterType::Triangle))
+}
+
+/// A picture file decoded to straight RGBA, upright (a JPEG's EXIF orientation applied, P9-M2), an
+/// SVG drawn at its own size up to `MAX_SIDE`; `over the budget` when its pixels would take more
+/// than `max` bytes. Also its format's name, from its bytes. The attributes come first, so a
+/// cloud-only file is never opened.
+fn decode_picture(path: &Path, max: u64) -> Result<(image::RgbaImage, &'static str), String> {
     match file_attrs(path) {
         None => return Err("missing".into()),
         Some(a) if a & FILE_ATTRIBUTE_DIRECTORY != 0 => return Err("failed: a folder".into()),
@@ -622,7 +763,7 @@ fn picture(path: &Path, budget: &mut u64) -> Result<image::RgbaImage, String> {
     }
     let fail = |e: &dyn std::fmt::Display| format!("failed: {e}");
     let svg = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"));
-    let img = if svg {
+    if svg {
         let f = std::fs::File::open(path).map_err(|e| fail(&e))?;
         if f.metadata().map_err(|e| fail(&e))?.len() > SVG_MAX_BYTES {
             return Err("failed: an SVG over 16 MB".into());
@@ -635,42 +776,45 @@ fn picture(path: &Path, budget: &mut u64) -> Result<image::RgbaImage, String> {
         let (sw, sh) = (size.width(), size.height());
         let f = (MAX_SIDE as f32 / sw.max(sh)).min(1.0);
         let (w, h) = ((sw * f).ceil().max(1.0) as u32, (sh * f).ceil().max(1.0) as u32);
-        let bytes = u64::from(w) * u64::from(h) * 4;
-        if bytes > *budget {
+        if u64::from(w) * u64::from(h) * 4 > max {
             return Err("over the budget".into());
         }
         let mut pm = resvg::tiny_skia::Pixmap::new(w, h).ok_or_else(|| "failed: an empty picture".to_string())?;
         resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(w as f32 / sw, h as f32 / sh), &mut pm.as_mut());
-        *budget -= bytes;
         let rgba = pm.pixels().iter().flat_map(|p| {
             let c = p.demultiply();
             [c.red(), c.green(), c.blue(), c.alpha()]
         });
-        image::RgbaImage::from_raw(w, h, rgba.collect()).ok_or_else(|| "failed: a bad size".to_string())?
-    } else {
-        let open = || image::ImageReader::open(path).map_err(|e| fail(&e))?.with_guessed_format().map_err(|e| fail(&e));
-        let (w, h) = open()?.into_dimensions().map_err(|e| fail(&e))?;
-        let bytes = u64::from(w) * u64::from(h) * 4;
-        if bytes > *budget {
-            return Err("over the budget".into());
-        }
-        let mut r = open()?;
-        let mut limits = image::Limits::default();
-        limits.max_image_width = Some(w);
-        limits.max_image_height = Some(h);
-        limits.max_alloc = Some(2 * bytes + (16 << 20));
-        r.limits(limits);
-        let img = r.decode().map_err(|e| fail(&e))?.into_rgba8();
-        *budget -= bytes;
-        img
-    };
-    let (w, h) = img.dimensions();
-    if w.max(h) <= MAX_SIDE {
-        return Ok(img);
+        return Ok((image::RgbaImage::from_raw(w, h, rgba.collect()).ok_or_else(|| "failed: a bad size".to_string())?, "SVG"));
     }
-    let f = f64::from(MAX_SIDE) / f64::from(w.max(h));
-    let (nw, nh) = ((f64::from(w) * f).round().max(1.0) as u32, (f64::from(h) * f).round().max(1.0) as u32);
-    Ok(image::imageops::resize(&img, nw.min(MAX_SIDE), nh.min(MAX_SIDE), image::imageops::FilterType::Triangle))
+    use image::ImageDecoder;
+    let open = || image::ImageReader::open(path).map_err(|e| fail(&e))?.with_guessed_format().map_err(|e| fail(&e));
+    let (w, h) = open()?.into_dimensions().map_err(|e| fail(&e))?;
+    let bytes = u64::from(w) * u64::from(h) * 4;
+    if bytes > max {
+        return Err("over the budget".into());
+    }
+    let mut r = open()?;
+    let format = match r.format() {
+        Some(image::ImageFormat::Jpeg) => "JPEG",
+        Some(image::ImageFormat::Png) => "PNG",
+        Some(image::ImageFormat::Gif) => "GIF",
+        Some(image::ImageFormat::WebP) => "WebP",
+        Some(image::ImageFormat::Bmp) => "BMP",
+        Some(image::ImageFormat::Tiff) => "TIFF",
+        Some(image::ImageFormat::Ico) => "ICO",
+        _ => "picture",
+    };
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(w);
+    limits.max_image_height = Some(h);
+    limits.max_alloc = Some(2 * bytes + (16 << 20));
+    r.limits(limits);
+    let mut dec = r.into_decoder().map_err(|e| fail(&e))?;
+    let orientation = dec.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(dec).map_err(|e| fail(&e))?;
+    img.apply_orientation(orientation);
+    Ok((img.into_rgba8(), format))
 }
 
 /// The PDF shown.
@@ -938,7 +1082,7 @@ fn on_reply(r: Reply) {
         let seq = match &r {
             Reply::Message { seq, .. }
             | Reply::Pdf { seq, .. }
-            | Reply::Markdown { seq, .. }
+            | Reply::Blocks { seq, .. }
             | Reply::Picture { seq, .. }
             | Reply::Page { seq, .. }
             | Reply::Note { seq, .. }
@@ -960,7 +1104,7 @@ fn on_reply(r: Reply) {
                 u.relayout();
                 u.ask_now();
             }
-            Reply::Markdown { seq, blocks, anchors, pictures } => {
+            Reply::Blocks { seq, blocks, anchors, pictures } => {
                 u.opening = false;
                 u.doc = Doc::Markdown(MdDoc { anchors, pending: pictures });
                 let t = Instant::now();
@@ -970,14 +1114,16 @@ fn on_reply(r: Reply) {
                 app.invoke_preview_set_scroll(0.0);
                 eprintln!("[preview] gen={seq} {n} blocks in the list in {:.1} ms (UI thread)", crate::perf::elapsed_ms(t));
             }
-            Reply::Picture { block, pic, .. } => {
+            Reply::Picture { block, pic, physical, .. } => {
                 if let Doc::Markdown(m) = &mut u.doc {
                     m.pending = m.pending.saturating_sub(1);
                 }
                 if let (Some(buf), Some(mut row)) = (pic, u.blocks.row_data(block)) {
-                    // A picture's pixels count as logical px, as a browser counts them; the column
-                    // scales a wider one down to its width.
-                    (row.img_w, row.img_h) = (buf.width() as f32, buf.height() as f32);
+                    // A document's picture's pixels count as logical px, as a browser counts them;
+                    // a picture file's as screen px, so it is never drawn larger than itself. The
+                    // column scales a wider one down to its width.
+                    let s = if physical { app.window().scale_factor() } else { 1.0 };
+                    (row.img_w, row.img_h) = (buf.width() as f32 / s, buf.height() as f32 / s);
                     row.img = Image::from_rgba8(buf);
                     u.blocks.set_row_data(block, row);
                 }
@@ -1014,7 +1160,7 @@ pub fn link(dest: SharedString) {
             }
         }
         markdown::Link::Anchor(slug) => match with_ui(|u| match &u.doc {
-            Doc::Markdown(m) => m.anchors.iter().position(|a| *a == slug),
+            Doc::Markdown(m) => m.anchors.iter().position(|a| a.split(' ').any(|x| x == slug)),
             _ => None,
         }) {
             Some(Some(k)) => {
@@ -1214,9 +1360,9 @@ mod tests {
         let never = || panic!("asked only for a pdf");
         assert_eq!(classify("docs", 0x10, true, never), Class::Folder);
         assert_eq!(classify("a.pdf", 0x10, true, never), Class::Folder, "a folder named .pdf");
-        assert_eq!(classify("notes.txt", 0, false, never), Class::Other);
+        assert_eq!(classify("data.dat", 0, false, never), Class::Other);
         assert_eq!(classify("pdf", 0, false, never), Class::Other, "no extension");
-        assert_eq!(classify("x.pdf.txt", RECALL, false, never), Class::Other, "type first: no cloud message for a text file");
+        assert_eq!(classify("x.pdf.dat", RECALL, false, never), Class::Other, "type first: no cloud message for a type not previewed");
         assert_eq!(classify("a.pdf", 0, false, || false), Class::Pdf);
         assert_eq!(classify("A.PDF", 0, false, || false), Class::Pdf, "any case");
         assert_eq!(classify("a.Pdf", 0, false, || true), Class::Archive);
@@ -1234,6 +1380,82 @@ mod tests {
         assert_eq!(classify("a.md", RECALL, false, || false), Class::CloudOnly);
         assert_eq!(classify("a.mdx", 0, false, never), Class::Other);
         assert_eq!(Class::Markdown.message(), None);
+        // Text, pictures and HTML (P9-M2): the same checks.
+        assert_eq!(classify("notes.txt", 0, false, || false), Class::Text);
+        assert_eq!(classify("main.RS", 0, false, || false), Class::Text);
+        assert_eq!(classify("Cargo.lock", 0, false, || false), Class::Text);
+        assert_eq!(classify("photo.JPG", 0, false, || false), Class::Picture);
+        assert_eq!(classify("logo.svg", 0, false, || false), Class::Picture);
+        assert_eq!(classify("scan.tiff", 0, false, || false), Class::Picture);
+        assert_eq!(classify("page.htm", 0, false, || false), Class::Html);
+        assert_eq!(classify("a.txt", 0, false, || true), Class::Archive);
+        assert_eq!(classify("a.png", RECALL, false, || false), Class::CloudOnly);
+        assert_eq!(classify("a.html", RECALL, false, || false), Class::CloudOnly);
+        assert_eq!(classify("phone.heic", 0, false, never), Class::Other, "HEIC is not previewed");
+        assert_eq!(classify("Makefile", 0, false, never), Class::Other, "no extension, no guess");
+        for c in [Class::Text, Class::Picture, Class::Html] {
+            assert_eq!(c.message(), None);
+        }
+    }
+
+    #[test]
+    fn a_picture_file_fits_and_is_never_scaled_up() {
+        assert_eq!(fit_px(100, 50), (100, 50), "small: as it is");
+        assert_eq!(fit_px(4032, 3024), (4032, 3024), "a 12-megapixel phone photo fits the budget");
+        assert_eq!(fit_px(10_000, 1_000), (MAX_SIDE, 819), "a 10,000 px side scaled to 8,192");
+        assert_eq!(fit_px(1_000, 10_000), (819, MAX_SIDE));
+        // 48 megapixels: the budget (64 MB of RGBA, 16.7 megapixels) decides, the shape kept.
+        let (w, h) = fit_px(8000, 6000);
+        assert!(u64::from(w) * u64::from(h) * 4 <= PIXEL_BUDGET && (w, h) == (4729, 3547), "{w}x{h}");
+        let (w, h) = fit_px(10_000, 3_000);
+        assert!(w < MAX_SIDE && u64::from(w) * u64::from(h) * 4 <= PIXEL_BUDGET, "a panorama: {w}x{h}");
+        assert_eq!(fit_px(0, 0), (0, 0), "nothing to scale");
+        assert_eq!(size_text(812), "812 bytes");
+        assert_eq!(size_text(340 * 1024 + 100), "340 KB");
+        assert_eq!(size_text(2_411_724), "2.3 MB");
+    }
+
+    /// A JPEG of `w` x `h` (left half red, right half blue) with an EXIF orientation tag.
+    fn jpeg_with_orientation(w: u32, h: u32, orientation: u8) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, _| if x < w / 2 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) });
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Jpeg).unwrap();
+        let jpg = out.into_inner();
+        // APP1 "Exif": a little-endian TIFF header and one IFD entry, 0x0112 SHORT = orientation.
+        let mut app1 = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+        app1.extend([orientation, 0, 0, 0, 0, 0, 0, 0]);
+        let mut with = jpg[..2].to_vec();
+        with.extend([0xFF, 0xE1]);
+        with.extend(((app1.len() + 2) as u16).to_be_bytes());
+        with.extend(app1);
+        with.extend(&jpg[2..]);
+        with
+    }
+
+    #[test]
+    fn a_phone_photo_shows_upright() {
+        let dir = std::env::temp_dir().join(format!("twinfm-p9m2-pic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (rotated, plain, bmp, bad) = (dir.join("phone.jpg"), dir.join("plain.jpg"), dir.join("a.bmp"), dir.join("bad.png"));
+        std::fs::write(&rotated, jpeg_with_orientation(40, 20, 6)).unwrap();
+        std::fs::write(&plain, jpeg_with_orientation(40, 20, 1)).unwrap();
+        image::RgbImage::from_pixel(3, 2, image::Rgb([0, 200, 0])).save(&bmp).unwrap();
+        std::fs::write(&bad, b"not a png").unwrap();
+        // Orientation 6: turned a quarter clockwise to be upright, so the red half is on top.
+        let (img, size, format) = lone_picture(&rotated).unwrap();
+        assert_eq!((img.dimensions(), size, format), ((20, 40), (20, 40), "JPEG"));
+        let top = img.get_pixel(10, 5).0;
+        assert!(top[0] > 200 && top[2] < 60, "red on top: {top:?}");
+        let (img, ..) = lone_picture(&plain).unwrap();
+        assert_eq!(img.dimensions(), (40, 20));
+        let (img, _, format) = lone_picture(&bmp).unwrap();
+        assert_eq!((img.dimensions(), format), ((3, 2), "BMP"));
+        assert!(lone_picture(&bad).unwrap_err().starts_with("failed: "));
+        assert_eq!(lone_picture(&dir.join("gone.png")).unwrap_err(), "missing");
+        // A document's pictures are upright too.
+        let mut budget = PIXEL_BUDGET;
+        assert_eq!(picture(&rotated, &mut budget).unwrap().dimensions(), (20, 40));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A PNG of `w` x `h` pixels of one colour, encoded by the image crate.
@@ -1292,7 +1514,7 @@ mod tests {
 
         tx.send(open(1, &md)).unwrap();
         match recv() {
-            Reply::Markdown { seq: 1, blocks, anchors, pictures } => {
+            Reply::Blocks { seq: 1, blocks, anchors, pictures } => {
                 let kinds: Vec<Kind> = blocks.iter().map(|b| b.kind).collect();
                 assert_eq!(kinds, vec![Kind::Heading, Kind::Para, Kind::Image, Kind::Image, Kind::Table]);
                 assert_eq!(anchors[0], "title");
@@ -1304,19 +1526,19 @@ mod tests {
             _ => panic!("the blocks"),
         }
         match recv() {
-            Reply::Picture { seq: 1, block: 2, pic: Some(buf) } => {
+            Reply::Picture { seq: 1, block: 2, pic: Some(buf), .. } => {
                 assert_eq!((buf.width(), buf.height()), (8, 4));
                 assert_eq!(buf.as_slice()[0], Rgba8Pixel { r: 0, g: 128, b: 0, a: 255 });
             }
             _ => panic!("the picture"),
         }
-        assert!(matches!(recv(), Reply::Picture { seq: 1, block: 3, pic: None }), "a missing picture keeps its alt text");
+        assert!(matches!(recv(), Reply::Picture { seq: 1, block: 3, pic: None, .. }), "a missing picture keeps its alt text");
 
         // Over 2 MB: the note first, the rest cut.
         keep.lock().unwrap().seq = 2;
         tx.send(open(2, &big)).unwrap();
         match recv() {
-            Reply::Markdown { seq: 2, blocks, pictures: 0, .. } => {
+            Reply::Blocks { seq: 2, blocks, pictures: 0, .. } => {
                 assert_eq!(blocks[0].kind, Kind::Note);
                 assert!(blocks[0].code.starts_with("Only the first 2 MB"));
             }
@@ -1324,6 +1546,90 @@ mod tests {
         }
         tx.send(open(3, &dir.join("gone.md"))).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 3, text: UNREADABLE }));
+
+        drop(tx);
+        w.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_worker_previews_text_pictures_and_html() {
+        let dir = std::env::temp_dir().join(format!("twinfm-p9m2-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("img")).unwrap();
+        std::fs::write(dir.join("img").join("dot.png"), png(8, 4, [0, 128, 0])).unwrap();
+        let txt = dir.join("main.rs");
+        std::fs::write(&txt, (0..45).map(|i| format!("\tline {i}\r\n")).collect::<String>()).unwrap();
+        let utf16 = dir.join("wide.txt");
+        std::fs::write(&utf16, [0xFF, 0xFE].into_iter().chain("é\nü\n".encode_utf16().flat_map(u16::to_le_bytes)).collect::<Vec<u8>>()).unwrap();
+        let big = dir.join("big.log");
+        std::fs::write(&big, "log line\n".repeat(markdown::MAX_BYTES / 9 + 10)).unwrap();
+        let pic = dir.join("photo.jpg");
+        std::fs::write(&pic, jpeg_with_orientation(40, 20, 6)).unwrap();
+        let broken = dir.join("broken.png");
+        std::fs::write(&broken, b"\x89PNG not really").unwrap();
+        let page = dir.join("page.html");
+        std::fs::write(&page, "<html><head><title>T</title><script>x()</script></head><body><h1 id=top>Title</h1><p>Text <a href='#top'>up</a></p><img src='img/dot.png' alt=dot><ul><li>one</ul></body></html>").unwrap();
+
+        let (tx, rx) = unbounded();
+        let (rtx, rrx) = std::sync::mpsc::channel::<Reply>();
+        let keep = Arc::new(Mutex::new(Keep { seq: 1, ..Default::default() }));
+        let k2 = keep.clone();
+        let rtx = Mutex::new(rtx);
+        let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
+        let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false };
+
+        // Text: code blocks of 40 lines, tabs as spaces, no pictures.
+        tx.send(open(1, &txt)).unwrap();
+        match recv() {
+            Reply::Blocks { seq: 1, blocks, pictures: 0, .. } => {
+                assert_eq!(blocks.iter().map(|b| b.kind).collect::<Vec<_>>(), vec![Kind::Code, Kind::Code]);
+                assert!(blocks[0].code.starts_with("    line 0\n    line 1\n"));
+                assert_eq!(blocks[1].code.lines().count(), 5);
+            }
+            _ => panic!("the text"),
+        }
+        keep.lock().unwrap().seq = 2;
+        tx.send(open(2, &utf16)).unwrap();
+        assert!(matches!(recv(), Reply::Blocks { seq: 2, blocks, .. } if blocks[0].code == "é\nü"), "UTF-16 by its BOM");
+        keep.lock().unwrap().seq = 3;
+        tx.send(open(3, &big)).unwrap();
+        match recv() {
+            Reply::Blocks { seq: 3, blocks, .. } => {
+                assert_eq!(blocks[0].kind, Kind::Note);
+                assert!(blocks[0].code.starts_with("Only the first 2 MB"));
+                assert_eq!(blocks[1].kind, Kind::Code);
+            }
+            _ => panic!("the cut log"),
+        }
+
+        // A picture: its block and its note, then its pixels, upright and physical.
+        keep.lock().unwrap().seq = 4;
+        tx.send(open(4, &pic)).unwrap();
+        match recv() {
+            Reply::Blocks { seq: 4, blocks, pictures: 1, .. } => {
+                assert_eq!(blocks.iter().map(|b| b.kind).collect::<Vec<_>>(), vec![Kind::Image, Kind::Note]);
+                assert!(blocks[1].code.starts_with("20 x 40, ") && blocks[1].code.ends_with(" bytes, JPEG"), "{}", blocks[1].code);
+            }
+            _ => panic!("the picture's blocks"),
+        }
+        assert!(matches!(recv(), Reply::Picture { seq: 4, block: 0, pic: Some(b), physical: true } if (b.width(), b.height()) == (20, 40)));
+        keep.lock().unwrap().seq = 5;
+        tx.send(open(5, &broken)).unwrap();
+        assert!(matches!(recv(), Reply::Message { seq: 5, text: PICTURE_UNREADABLE }));
+
+        // HTML: the head and script gone, the heading anchored by its id and slug, the local picture.
+        keep.lock().unwrap().seq = 6;
+        tx.send(open(6, &page)).unwrap();
+        match recv() {
+            Reply::Blocks { seq: 6, blocks, anchors, pictures: 1 } => {
+                assert_eq!(blocks.iter().map(|b| b.kind).collect::<Vec<_>>(), vec![Kind::Heading, Kind::Para, Kind::Image, Kind::Para]);
+                assert_eq!(anchors[0], "top title");
+                assert_eq!(blocks[3].marker, "\u{2022}");
+            }
+            _ => panic!("the page"),
+        }
+        assert!(matches!(recv(), Reply::Picture { seq: 6, block: 2, pic: Some(_), physical: false }));
 
         drop(tx);
         w.join().unwrap();
@@ -1417,7 +1723,7 @@ mod tests {
     fn the_worker_renders_a_pdf_and_refuses_a_damaged_one() {
         let dir = std::env::temp_dir().join(format!("twinfm-p8m1-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (pdf, bad, txt) = (dir.join("two.pdf"), dir.join("bad.PDF"), dir.join("a.txt"));
+        let (pdf, bad, txt) = (dir.join("two.pdf"), dir.join("bad.PDF"), dir.join("a.dat"));
         std::fs::write(&pdf, tiny_pdf(2)).unwrap();
         std::fs::write(&bad, b"%PDF-1.4\nthis is not a pdf at all").unwrap();
         std::fs::write(&txt, b"text").unwrap();
