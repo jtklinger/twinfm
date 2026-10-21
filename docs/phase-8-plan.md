@@ -629,9 +629,13 @@ holding a core is a candidate for the next gate's wrapper. Jeremy accepted ab34 
 5. A 7z item copied into a zip: refused with a note ("not supported yet").
 6. Cancel at the password dialog: nothing written.
 
+P8-L2 squash-merged on Jeremy's word as #79 (256882e, 2026-10-20; his console checks above were not
+reported before the word); `target\release` rebuilt from it. Its gate build `target-p8l2` (278d47f) is
+the next reference for either stream.
+
 ## P8-L3: an archive inside an archive as a folder, copies from 7z and the rest into a zip
 
-Built on P8-L2's branch (it changes the same files), so its PR follows P8-L2's merge.
+Built on P8-L2's branch (it changes the same files), so its PR followed P8-L2's merge.
 
 ### What landed
 
