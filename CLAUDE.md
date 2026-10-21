@@ -857,7 +857,7 @@ Read them before changing the list.
   3.2 ms against 2.2 to 2.3 ms in ab23) before reading the medians, and read such a session like for
   like; the gap rule is about a cost, so a candidate's median below the reference's is not a gap.
   The reference binary is the last merged milestone's
-  gate build (`target-p8l1`, d5216db, after P8-L1); the previous one is deleted once the new one
+  gate build (`target-p8l3`, 5864f09, after P8-L3); the previous one is deleted once the new one
   has served as a reference. Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running
