@@ -523,6 +523,59 @@ to 212.7 MB (233 at most). The column cycle in `src\tree`: `[cols] pane=0 size 9
 in both cycles, `fit modified: widest of 10 rows on screen = 94 px` with Size 60 -> 94 and Modified
 140 -> 106, then the widths back at 120, 90, 140 (two cycles, and the start line).
 
+### Gate
+
+Run by Jeremy on 2026-10-21, finished at 13:28 (tag ab38 for both settings, `C:\traces\gate-p9m1.ps1`,
+the same file as `tools/gate-p9m1.ps1`, 17 min): `target-p9m1` (b9fbd9d, main with P9-M2 merged in,
+built `--locked` from a detached checkout) against `target-p9m2` (95ace9f), three rounds of
+reference, candidate, reference with `C:\traces\cols.toml`, candidate with it. Every run passed the
+wrapper's checks (no panic; `[settings] file C:\traces\cols.toml (read)` in the cols runs; the
+candidate's `[cols] pane=0 widths` line at 120, 90, 140 and at 200, 110, 180).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m2-1 / 2 / 3 | 17.7 / 23.3 / 21.1 | 16.4 / 25.8 / 22.5 | 2.23 / 3.15 / 2.91 |
+| p9m1-1 / 2 / 3 | 18.4 / 21.7 / 21.9 | 16.4 / 20.9 / 21.4 | 2.23 / 2.96 / 2.92 |
+| p9m2-cols-1 / 2 / 3 | 18.5 / 21.4 / 21.2 | 20.2 / 18.6 / 19.2 | 2.25 / 2.92 / 2.93 |
+| p9m1-cols-1 / 2 / 3 | 17.7 / 21.0 / 20.9 | 17.2 / 23.0 / 22.0 | 2.09 / 2.84 / 2.80 |
+
+The session changed state after round 1 (the ab23 state): every run of rounds 2 and 3 had render p50
+2.80 to 3.15 ms against 2.09 to 2.25 in round 1, and read 21 to 23% whichever binary sat in it, the
+reference above 20% too. Medians as the wrapper reads them: defaults 21.1 (reference) / 21.7
+(candidate), cols 21.2 / 20.9; no gap that counts in either. Read like for like: round 1, the normal
+state, defaults 17.7 / 18.4 and cols 18.5 / 17.7, every run under 20%, the two pairs within 0.8 of a
+point in opposite directions; rounds 2 and 3, the slow state, defaults 23.3, 21.1 against 21.7, 21.9
+and cols 21.4, 21.2 against 21.0, 20.9, the candidate below the reference in three of four pairs.
+Passed by the protocol's rule: the per-row width binding adds no cost the gate can see. Only one
+round ran in the normal state, so the evidence there is one pair per setting (as in ab23, which
+Jeremy accepted read this way).
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m1\release\twinfm.exe`, started from a normal (not
+elevated) window, the panes set up unequal (the split on, two tabs in one pane only):
+
+1. **The cursor**: over each boundary in the header (Name | Type, Type | Size, Size | Modified) the
+   pointer turns into the left-right arrows; none at the right edge of the list, none in the grid views.
+2. **A drag in each pane**: drag Type | Size right and left; the list follows the pointer as it moves,
+   the boundary stays under the pointer, and the other pane does not change. Header and rows stay
+   lined up.
+3. **The floors**: drag a boundary as far as it goes each way; no column goes below about 40 px and
+   the Name column stops at about 120 px (it never vanishes).
+4. **The fit**: in a folder of long type names (`C:\Windows\System32` scrolled to its files, or a
+   Downloads folder of mixed files), double-click the Name | Type boundary: Type fits its longest
+   name on screen. Double-click Size | Modified: Modified fits its dates.
+5. **The Type column off** (Settings, Type column unticked): two grips, Name | Size and Size |
+   Modified, and a drag works as before; ticked again, the Type column comes back at its width.
+6. **Thumbnails on** (Settings): the 32 px rows follow a drag the same way.
+7. **150% scaling** (Display settings, Scale 150%, TwinFM restarted): a drag and a fit still line up.
+8. **Rename** (F2) after a drag: the edit box ends where the Type column starts.
+9. **A restart**: close TwinFM with the window's close button and start it again; each pane's widths
+   are as you left them (in `%APPDATA%\twinfm\config.toml` as `col_type_left` and the rest).
+10. **The fit's rule** (a call for you): a double-click fits the column on the boundary's right
+    (Type, Size or Modified). The kickoff said "the column to its left", which would fit Name and
+    leave Modified unfittable. Keep it, or change it?
+
 ## Open questions
 
 Written 2026-10-21 at the kickoff.
