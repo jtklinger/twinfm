@@ -1158,3 +1158,173 @@ beside Word, Excel or PowerPoint (or Edge, which opens all three):
 
 Jeremy, 2026-10-21, unelevated with `target-p9m3`: "console checks are all nominal". The PowerPoint
 bullets-by-default call stands as recorded (not reversed).
+
+## P9-M5: the rust-ui look
+
+Branch `claude/display-windows-modernize-1c0866`, from 192d388 (P9-M2 merged) with main at f2fa4eb
+(P9-M1 and P9-M3) merged in on 2026-10-21 before any code.
+
+### The design (2026-10-21)
+
+The canvas: https://claude.ai/artifact/CeGZSFc6YSVEwqSydHqHc4 (private; four boards: the window as
+built, the proposed look light and dark, and a parts sheet of each element before and after).
+rust-ui.com is shadcn/ui ported to Dioxus: Tailwind-styled HTML in a webview. TwinFM draws with Slint
+on femtovg, so **none of its components can be used; what is copied is the design language**, which
+is small:
+
+- **Type**: Inter (rust-ui's font) at 13 px for rows and controls, 14 px for the window title, 12 px
+  for the muted labels (sidebar headers, column headers, the status bar); weight 500 for labels, the
+  active tab, the cursor row's sidebar entry, folder names and the current crumb; nothing bold.
+- **A neutral grey scale, no accent colour**: light ground `#FFFFFF`, card `#FFFFFF`, sidebar
+  `#FAFAFA`, muted fill `#F5F5F5`, text `#0A0A0A`, muted text `#737373`, hairline `#E5E5E5`, ring
+  `#A3A3A3`, primary button `#171717` on `#FAFAFA`; dark ground `#0A0A0A`, card and sidebar
+  `#171717`, muted `#262626`, text `#FAFAFA`, muted text `#A3A3A3`, hairline `#FFFFFF1A`, ring
+  `#737373`, active tab segment `#3F3F3F`, primary `#E5E5E5` on `#171717`. Light or dark follows the
+  system, as the fluent palette does today.
+- **Radii**: 6 px on controls, tabs' segments and rows' hover and selection, 8 px on the tab strip and
+  the toolbar's container, 10 px on the pane cards and dialogs.
+- **Buttons**: ghost (no fill; the muted fill on hover, 50% opacity when disabled), outline (a
+  hairline, a 1 px shadow under it), one primary (near-black) button per dialog.
+- **Tabs**: a muted strip, the active tab a lifted segment (the card colour with a 1 px shadow),
+  the others muted text with no box. **Rows**: a hairline under each, the muted fill for selected
+  rows, a 2 px ring at 50% inset on the cursor row, no zebra, cut rows at 50%. **The active pane**:
+  the card's hairline turns ring-grey and a 3 px ring at 25% sits around it; the inactive pane's
+  selected rows show at half strength. **Breadcrumb**: muted links with chevron icons, the current
+  folder in full text at weight 500, no box. **Filter**: an outline field with a leading search
+  icon. **Status bar**: muted text with the selection as badges (a muted-fill badge for the count, an
+  outline badge for the size). **Dialogs**: 10 px corners, a soft shadow, the title at 16 px weight
+  600, a switch for booleans, outline Cancel and primary Save.
+- **Icons**: Lucide-style 16 px stroke icons (2 px stroke, round caps) for the toolbar, the sidebar's
+  kinds, the chevrons, the close and new-tab buttons, the sort arrow and the filter. **The rows keep
+  the shell's own file type icons and thumbnails** (a file manager without them is unusable; the
+  canvas's monochrome row icons were a stand-in).
+
+### Settled first (2026-10-21, before any code)
+
+- **Where the colours live**: one global `Theme` in a new `src/ui/theme.slint` (imported by
+  `app.slint`, `pane.slint` and `preview.slint`), its `dark` read from `Palette.color-scheme` so the
+  system setting still decides, every token above as an `out property <brush>` named `ground`,
+  `card`, `sidebar`, `muted`, `muted-half` (the muted fill at 50% alpha), `fg`, `fg-muted`,
+  `fg-faint` (`fg` at 50%), `border`, `ring`, `ring-soft` (`ring` at 25%), `ring-half` (`ring` at
+  50%), `tab-active`, `primary`, `primary-fg`, `shadow`, and `radius` 6px, `radius-md` 8px,
+  `radius-lg` 10px as lengths. Every `Palette.` read in the three files becomes a `Theme.` read
+  (60 in `pane.slint`, 38 in `app.slint`, 18 in `preview.slint` at the start). The std widgets still
+  in use (`ListView`, `LineEdit`, `ComboBox`, `AboutSlint`, `ScrollView`) keep their fluent drawing
+  until a task replaces them; `Button` and `CheckBox` are replaced in task 3.
+- **Gate-safe pieces first, Jeremy's rule, read as: no height, width or position changes in tasks 1
+  to 3.** Every height the drop targets, the band, the menu point and the driver read (`dnd.rs`
+  `LIST_TOP`, `TAB_H`, `CRUMB_H`, `TOP_BAR`, `PANE_BAR`, `SIDE_FOOTER`, the 24 px sidebar rows, the
+  22 and 32 px list rows, the 18 px status bar, the 24 px header) stays as it is in those tasks: the
+  look changes inside the same boxes. The canvas draws roomier bars (a 36 px tab strip, a 40 px
+  header, 30 px rows); those are task 5, with the geometry constants, the driver and the soaks
+  changed together, after Jeremy picks the values (§ Open questions below).
+- **The font**: tasks 1 to 3 set the window's `default-font-family` to `"Segoe UI Variable Text"`
+  (on every Windows 11; the fluent default today is Segoe UI through the system), which has Inter's
+  proportions. Inter itself is task 4: three static TTFs (Regular, Medium, SemiBold; SIL Open Font
+  License 1.1, about 300 KB each) from the rsms/inter release, embedded with `import
+  "fonts/Inter-Regular.ttf";` in `app.slint` and `default-font-family: "Inter"`, the licence file
+  beside them and a line in README § License. **A download needs Jeremy's OK first**, so task 4 is
+  asked, not assumed; if he declines, Segoe UI Variable stays and the record says so.
+- **Icons**: Lucide (ISC licence) SVG files under `src/ui/icons/`, each a 24-unit stroke path with
+  `stroke="currentColor"`, drawn by `Image { source: @image-url("icons/<name>.svg"); colorize:
+  Theme.fg; }` at 16 px; `ToolButton`'s `glyph` string becomes an `icon` image. Segoe Fluent Icons
+  stay where they draw Windows' own glyphs (the imageres status glyphs are bitmaps already; the task
+  box in the preview's lists and the crumb chevron move to Lucide). The Lucide notice goes in README
+  § License (it is not a crate, so not in `Cargo.toml`).
+- **The active pane's ring**: no `drop-shadow` on anything that moves with the lists (a blurred
+  layer per frame is the one cost this look could add). The ring is a second `Rectangle` behind the
+  pane card, 3 px larger on each side, `border-width: 3px`, `border-color: Theme.ring-soft`,
+  `border-radius: Theme.radius-lg + 3px`, shown only for the active pane; since the pane's own box
+  must not move (the geometry rule), the ring is drawn inside the pane's `PANE_PAD` (3 px) margin,
+  which is exactly 3 px. The tab segment's and the outline button's 1 px shadow is a 1 px
+  `Rectangle` under them at `Theme.shadow`, not `drop-shadow`. Dialogs keep their `drop-shadow`
+  (they do not scroll).
+- **Rows**: the zebra goes (`mod(i, 2)` in every row variant); the hairline is a 1 px `Rectangle`
+  at each row's bottom at `Theme.border` (one element per visible row, about 40; the gate measures
+  it); selected rows `Theme.muted` (the inactive pane `Theme.muted-half`, read from the host's
+  `active`); the cursor row `border-width: 2px; border-color: Theme.ring-half; border-radius:
+  Theme.radius` in place of today's 1 px accent border; `row.cut` text `Theme.fg-faint`. The Type,
+  Size and Modified cells read `Theme.fg-muted`, Name `Theme.fg`. The rename editor, the drop
+  highlight, the band and the grid's cursor overlay take the same tokens (`Theme.muted` fills,
+  `Theme.ring-half` borders).
+- **What is not changed**: the preview column's block layout (its colours only), the Windows 11
+  context menu popup (`wm-popup` takes the tokens, its rows stay 32 px), the breadcrumb dropdown's
+  rows, the sidebar's drag spots, the grid tiles' geometry (their selection and cursor take the
+  tokens). Nothing in Rust changes in tasks 1 to 3 except `toolbar.rs` if the icon names are passed
+  from Rust (they are not: the buttons are declared in `pane.slint`).
+- **Measuring**: each task ends with `cargo build --release`, `cargo test --release`, a screenshot
+  of the gate scenario's window (`SLINT_BACKEND=winit-software`, `tools/shot.ps1`, the P7-M2 method)
+  against the canvas, and in-app `[busy] 10 s after split` pairs against `target-p9m3` (111ef17, the
+  last merged milestone's gate build, so the reference for this gate), swapped in order as the
+  CLAUDE.md run-order rule says. The console triplet (defaults and `C:\traces\grid-thumbs.toml`, the
+  variant with the most drawing per row) runs once at the end, before the merge.
+
+### Tasks
+
+Each task is one commit on the branch, pushed; the PR is opened after task 1 and grows.
+
+1. **Theme and colours** (`src/ui/theme.slint` new; `app.slint`, `pane.slint`, `preview.slint`).
+   - Write `Theme` with the tokens above; `import { Theme } from "theme.slint";` in the three files.
+   - Replace every `Palette.` read with the token the design names: window and pane ground
+     `Theme.ground`, the toolbar band and the sidebar `Theme.sidebar`, pane cards `Theme.card` with
+     `border-color: Theme.border` (active: `Theme.ring`) and `border-radius: Theme.radius-lg`, the
+     active-pane ring rectangle, tabs (strip `Theme.muted` at `Theme.radius-md`, the active tab
+     `Theme.tab-active` at `Theme.radius` with its 1 px shadow line, inactive titles `Theme.fg-muted`),
+     the crumb bar (no border, no fill; crumbs `Theme.fg-muted`, the last `Theme.fg` at 500), header
+     cells (`Theme.fg-muted` at 500, a `Theme.border` hairline under the row, no cell borders), rows
+     as settled, the status bar (`Theme.fg-muted`), sidebar rows (`Theme.muted` fill at `Theme.radius`
+     for the current row, headers `Theme.fg-muted` at 500), the splitter and preview handle
+     (`Theme.border`, `Theme.ring` on hover), the preview column (ground `Theme.card`, code blocks
+     `Theme.muted`, rules and table lines `Theme.border`), the menu popup and the dialogs
+     (`Theme.card`, `Theme.border`, `Theme.radius-lg`).
+   - `default-font-family: "Segoe UI Variable Text"` on the `Window`; row and control text 13px,
+     muted labels 12px, the dialog titles 16px at 600.
+   - Build, test, screenshot, busy pairs. Commit `ui: P9-M5 theme global and the rust-ui colours`.
+2. **Lucide icons** (`src/ui/icons/*.svg` new: file-plus, folder-plus, scissors, copy,
+   clipboard-paste, pencil, trash, panel-right, monitor, file, download, image, hard-drive, star,
+   folder, chevron-right, chevron-down, x, plus, arrow-up, search, sliders-horizontal, info,
+   arrow-left, arrow-right; `pane.slint` `ToolButton` and `Toolbar`, `app.slint` `SideRow` and the
+   sidebar footer, the crumb chevron, the tab close button, `HeaderCell`'s sort arrow, the filter
+   box's glyphs; README § License).
+   - `ToolButton`: `in property <image> icon;` drawn colorized, in place of `glyph`; the eight
+     buttons' `glyph:` lines become `icon: @image-url(...)`. The sidebar's `SideRow` gets an icon by
+     `item.kind`. The chevron, close, plus, sort and filter glyph `Text`s become colorized `Image`s of
+     the same size in the same slots.
+   - Build, screenshot (the toolbar at both placements, `C:\traces\toolbar-pane.toml`), busy pairs.
+     Commit `ui: P9-M5 Lucide icons for the chrome`.
+3. **Dialog controls** (`theme.slint` gains `GhostButton`, `OutlineButton`, `PrimaryButton`,
+   `Switch`; `app.slint` settings and About dialogs, the bookmark menu).
+   - The std `Button`s become `OutlineButton` (Cancel, About's close) and `PrimaryButton` (OK);
+     `CheckBox` rows become `Switch` (36 x 20, `Theme.primary` knob track when on, `Theme.border`
+     off); labels at 500; 12 px between rows. `ComboBox` stays (writing a popup choice is a task of
+     its own, deferred). Driver steps `settings set`, `settings ok`, `settings close`, `about close`
+     call the same callbacks.
+   - Build, test (the settings dialog's scripted test in the P6 soak: `settings open`, `set`, `ok`),
+     screenshot. Commit `ui: P9-M5 dialog buttons and switches`.
+4. **Inter** (after Jeremy's OK): `src/ui/fonts/Inter-{Regular,Medium,SemiBold}.ttf` and `OFL.txt`,
+   the three `import` lines, `default-font-family: "Inter"`, README § License. Build, screenshot,
+   busy pairs (text shaping is per row: this is the one task in the gate-safe set that touches what
+   every row does). Commit `ui: P9-M5 Inter bundled`.
+5. **The roomier bars** (after Jeremy picks the values): the tab strip, path bar, header, status bar,
+   sidebar rows and footer, and the toolbar band take the canvas's heights, with `dnd.rs`'s constants,
+   `main.rs` `window_layout`, `auto.rs`'s aims and `tools/soak-*.ps1`'s row and tile aims changed in
+   the same commit; the list rows stay 22 and 32 px unless Jeremy chooses otherwise (§ Open
+   questions). Build, test, the P5-M3 soak for 10 minutes, busy pairs. Commit `ui: P9-M5 bar
+   heights`.
+6. **Gate and close**: `target-p9m5` built `--locked` from a detached checkout of the PR head;
+   `tools/gate-p9m5.ps1` on the P9-M3 script's pattern with `target-p9m3` as the reference, the
+   defaults and `C:\traces\grid-thumbs.toml`; the record's § What landed, § Decisions, § Scripted
+   checks, § Gate and § Console checks; CLAUDE.md's reference-build line.
+
+### Open questions
+
+- **Row height**: keep 22 px (32 with thumbnails), Explorer's compact spacing, or go to the
+  canvas's 30 px (36 with thumbnails)? The lead recommends keeping 22 and 32: a 40k folder shows a
+  third more rows, and every row-aimed soak step and `dnd` figure stays as it is. Jeremy's call
+  before task 5.
+- **The bar heights** for task 5 (the canvas: tab strip 36, path bar 36 with 32 px buttons, header
+  40, status 40, sidebar rows 32, toolbar band 52). The lead recommends a smaller step: tab strip 30,
+  path bar 36, header 32, status 28, sidebar rows 32, toolbar 44.
+- **Inter**: bundle it (task 4, about 900 KB in the exe) or stay on Segoe UI Variable?
+- **Dark mode's accent**: none; the look is grey in both schemes, the canvas's choice. Jeremy may
+  want the Windows accent for the cursor ring; a one-token change.
