@@ -471,6 +471,52 @@ made and never changes while the lists scroll; P3-M1's switch decided what each 
   fit changes them, and the release then put them back (seen in the first scripted run as a `(drag)`
   line after each `(fit)`); the fit now clears the drag in progress.
 
+### Scripted checks
+
+All on this machine, `target\release` of the branch, Jeremy's console session.
+
+On `C:\Windows\System32` (folders first, so the rows on screen are folders): `colwidth 0 type 200`,
+`size 110`, `modified 180` with the default 1,200 px window, then drags and fits:
+
+```
+[cols] pane=0 widths type 120 size 90 modified 140 (name 626 px)
+[cols] pane=0 type 120 -> 180 px (drag)                        coldrag 0 type -60
+[cols] pane=0 fit type: widest of 31 rows on screen = 53 px     colfit 0 type ("File folder")
+[cols] pane=0 type 180 -> 65 px (fit)
+[cols] pane=0 fit modified: widest of 31 rows on screen = 94 px
+[cols] pane=0 size 90 -> 124 px (fit)
+[cols] pane=0 modified 140 -> 106 px (fit)
+[cols] pane=0 size 114 -> 180 px (drag)                        coldrag 0 modified 500: Modified at 40
+[cols] pane=0 modified 106 -> 40 px (drag)
+[cols] pane=0 size 180 -> 40 px (drag)                         coldrag 0 modified -2000: Size at 40
+[cols] pane=0 modified 40 -> 180 px (drag)
+[cols] pane=1 fit size: widest of 31 rows on screen = 4 px      folders: no sizes; "Size" + 12 = 40
+[cols] pane=1 type 120 -> 40 px (script)                        colwidth 1 type 5: the floor
+```
+
+With the Type column off (the dialog), `coldrag 0 size -30` moved Name | Size (Size 40 -> 70, the
+name cell 245 -> 215 px) and `colwidth 0 type 150` logged `[auto] col pane=0 type: no such grip in
+this pane's header`; with thumbnails on (32 px rows, `[icons] list geometry: 32 px rows`) a drag and
+a fit ran the same, and in the grid (`view icons`) the grips are refused. Screenshots with the
+software renderer (`PrintWindow`, the window found by this build's path, since the preview stream's
+TwinFM was open beside it): after the widths change the header cells and every row's cells stand
+6 px apart as before; in a split the left pane, already narrower than Name's 120 px, kept Type
+from growing; the rename editor (F2) ends at the moved Type boundary; `coldrag 0 type 200` (Name |
+Type right) stopped Type at 40.
+
+The settings triplet's file: `C:\traces\cols.toml` on the gate scenario shows `[settings] file
+C:\traces\cols.toml (read)`, six `(config)` lines and `[cols] pane=0 widths type 200 size 110
+modified 180 (name 486 px)` for both panes, and `could not save ... Access is denied` as every
+read-only test config does.
+
+A six-minute run of `tools/soak-p5m3.ps1` (three cycles started, two completed): exit code 0, no
+panicked line, every earlier count as before (jobs done 147, failed 0; menupicks refused 0; drags
+dropped 0; zip jobs not done 0; waitpreview timeouts 0). Its column cycle navigated to a folder that
+does not exist (a tab character had replaced the path's backslash in the script), so the drag ran
+on an empty listing and the fit saw no rows (`widest of 0 rows on screen = 4 px`); the drag read back
+as Size 90 -> 60 and the widths went back to 120, 90, 140 in both cycles. Path fixed in 797617a; the
+re-run is below.
+
 ## Open questions
 
 Written 2026-10-21 at the kickoff.
