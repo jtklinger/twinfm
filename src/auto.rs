@@ -164,6 +164,9 @@
 //!                                    verb worker by its verb (`copy` never does: use a handler verb
 //!                                    such as `link`, Create shortcut); `sleep:<ms>` is a test verb that sleeps
 //!                                    on the worker; `waitops` waits for the worker too
+//!   zippassword <text>               the answer to the next password question of a job writing
+//!                                    into a password-protected zip (P8-L2), in place of the
+//!                                    dialog; a scripted job with none is refused, never shown it
 //!   crumbmenu <pane> <index>         the chevron after crumb <index>: its subfolders in a dropdown
 //!                                    (listed on a worker; sleep before crumbpick)
 //!   crumbpick <name>                 pick the dropdown's folder <name> (the pane navigates there)
@@ -335,6 +338,7 @@ enum Step {
     Crumb { pane: usize, index: i32 },
     Toolbar { pane: usize, button: String },
     MenuVerb { pane: usize, verb: String },
+    ZipPassword(String),
     CrumbMenu { pane: usize, index: i32 },
     CrumbPick(String),
     CrumbClose,
@@ -526,6 +530,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "crumb" => Step::Crumb { pane: num(1) as usize, index: num(2) as i32 },
                 "toolbar" => Step::Toolbar { pane: num(1) as usize, button: a.get(2).unwrap_or(&"").to_string() },
                 "menuverb" => Step::MenuVerb { pane: num(1) as usize, verb: a.get(2..).unwrap_or(&[]).join(" ") },
+                "zippassword" => Step::ZipPassword(a.get(1..).unwrap_or(&[]).join(" ")),
                 "crumbmenu" => Step::CrumbMenu { pane: num(1) as usize, index: num(2) as i32 },
                 "crumbpick" => Step::CrumbPick(a[1..].join(" ")),
                 "crumbclose" => Step::CrumbClose,
@@ -1228,6 +1233,11 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::MenuVerb { pane, verb } => {
             crate::script_menu_verb(pane, &verb);
+            schedule(runner, 1);
+        }
+        Step::ZipPassword(password) => {
+            eprintln!("[auto] zippassword: the next password question gets the script's answer");
+            crate::fileops::archive::script_password(&password);
             schedule(runner, 1);
         }
         Step::CrumbMenu { pane, index } => {

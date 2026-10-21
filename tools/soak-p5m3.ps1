@@ -75,6 +75,15 @@
 # per cycle), Back and Forward over the toolbar (one each per cycle), sidebar keys (five moves and
 # one Return per cycle).
 #
+# P8-L2, after the archive cycle: the left pane on a.zip, the right on pw.zip (the setup's, made by
+# tar.exe with ZipCrypto and the password twinfm, holding a.txt). With `zippassword twinfm`, a.txt
+# goes from a.zip into pw.zip (replacing, encrypted on the way: the job asks the script for the
+# password and checks it), is renamed a2.txt there, copied back into a.zip as it is (encrypted, no
+# password asked), moved from a.zip into pw.zip again (replacing; it leaves a.zip), renamed a.txt
+# again; then in a.zip a.txt is copied and pasted into its own folder (a - Copy.txt) and that copy
+# deleted. Reported: copies from a zip (three per cycle), moves from a zip (one per cycle),
+# passwords from the script and checked right (one each per cycle).
+#
 # P8-M1: the preview cycle, after the sidebar walk: Alt+P shows the preview column, the left pane
 # goes to preview (made by the setup: a-pages.pdf with four pages, b-one.pdf with one, c-damaged.pdf
 # that is no PDF, d-notes.txt; the PDFs written here with a hand-made cross-reference table), the
@@ -154,6 +163,8 @@ $bsdtar = Join-Path $env:SystemRoot 'System32\tar.exe'
 & $bsdtar -cf (Join-Path $arch 'a.7z') --format 7zip -C $archSrc a.txt d
 & $bsdtar -cf (Join-Path $arch 'a.zip') --format zip -C $archSrc a.txt d
 & $bsdtar -czf (Join-Path $arch 'a.tar.gz') -C $archSrc a.txt d
+# P8-L2: a password-protected zip (ZipCrypto, password twinfm) of a.txt.
+& $bsdtar -cf (Join-Path $arch 'pw.zip') --format zip --options zip:encryption=zipcrypt --passphrase twinfm -C $archSrc a.txt
 # P8-M1: the preview folder. A PDF of $n pages of 200 x 300 pt, each a red rectangle on white, with
 # its cross-reference table's offsets counted here (as preview.rs's test writes it).
 function Write-Pdf([string]$path, [int]$n) {
@@ -292,6 +303,16 @@ $cycle = @(
     "nav 0 $arch", 'sleep 500',
     'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick 7z file', $wait, 'undo', $wait,
     'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick TAR file', $wait, 'undo', $wait,
+    # P8-L2: between zips and within one, a password zip among them (see the header). a.zip lists
+    # d, then its files; pw.zip its one file.
+    "nav 0 $arch\a.zip", "nav 1 $arch\pw.zip", 'sleep 800',
+    'zippassword twinfm', 'click 0 1', 'copy', $wait,
+    'click 1 0', 'rename a2.txt', $wait,
+    'click 1 0', 'copy', $wait,
+    'click 0 2', 'move', $wait,
+    'click 1 0', 'rename a.txt', $wait,
+    'click 0 1', 'cc', 'sleep 200', 'cv', $wait,
+    'click 0 1', 'sdelete', $wait,
     # P7-M4: the sidebar walk (see the header).
     'click 0 0', 'sidebar click 1', 'sleep 500', 'key Down', 'key Down', 'key Up', 'key End', 'key Home', 'key Return', 'sleep 500', 'key Escape', 'sleep 200',
     # P8-M1: the preview cycle (see the header). Rows: a-pages.pdf, b-one.pdf, c-damaged.pdf, d-notes.txt.
@@ -438,6 +459,10 @@ $arLevels = @($log | Select-String -SimpleMatch '(archive level, ArchiveFolder, 
 $arJobs = @($log | Select-String -SimpleMatch '[archive] job id=')
 $arKinds = ('copy in', 'new folder', 'rename', 'delete', 'move out', 'move in' | ForEach-Object { "$_ " + @($arJobs | Select-String -SimpleMatch "`"$_`"" | Select-String -SimpleMatch ': Done in').Count }) -join ', '
 $arFailed = @($arJobs | Select-String -SimpleMatch -NotMatch ': Done in').Count
+$fromZip = @($arJobs | Select-String -SimpleMatch '"copy from a zip"' | Select-String -SimpleMatch ': Done in').Count
+$fromZipMoves = @($arJobs | Select-String -SimpleMatch '"move from a zip"' | Select-String -SimpleMatch ': Done in').Count
+$pwScript = @($log | Select-String -SimpleMatch '[archive] password for' | Select-String -SimpleMatch 'from the script').Count
+$pwRight = @($log | Select-String -SimpleMatch '[archive] password for' | Select-String -SimpleMatch ': right').Count
 $arRefused = @($log | Select-String -SimpleMatch 'cannot write into .7z archives' | Select-String -SimpleMatch '[archive] refused').Count
 $arCompressed = @($log | Select-String -SimpleMatch '[archive] compress' | Select-String -SimpleMatch ': Ok(').Count
 $arUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Compressed').Count
@@ -478,6 +503,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "min/max working set: {0} / {1} MB" -f ($samples | Measure-Object working_set_mb -Minimum).Minimum, ($samples | Measure-Object working_set_mb -Maximum).Maximum
 "memory samples: $csv"
 "stderr: $stderr"
+"between zips: copies from a zip $fromZip (three per cycle), moves from a zip $fromZipMoves (one per cycle); passwords from the script $pwScript, right $pwRight (one each per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
 "preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (two per cycle), markdown $pvMd (two per cycle), pictures shown $pvPics (f-readme.md's one and g-big.md's repeats, the file decoded once), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

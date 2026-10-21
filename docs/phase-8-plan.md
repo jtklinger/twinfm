@@ -716,3 +716,135 @@ unelevated: all six as expected (2026-10-20).
    the column, as in Explorer's icon views.
 6. Medium tiles in a folder with long names: three lines, then "..."; the cursor tile shows the whole
    name below it.
+
+P8-L1 squash-merged on Jeremy's word as #77 (20a140a); `target\release` rebuilt from it. Its gate build
+`target-p8l1` (d5216db) is the next reference for either stream.
+
+## P8-L2: zips edited byte for byte, password zips written, zip to zip
+
+### What landed
+
+- **`fs::zipraw`**: a zip's central directory read without the `zip` crate's model, and an edit's
+  writer. Each kept entry's local record, data and data descriptor, and its central record, are
+  copied as bytes; only the name (a rename: `\` read as `/`, the UTF-8 flag set for a name that is
+  not ASCII, Info-ZIP's Unicode path field dropped) and the local record's offset change. An offset
+  past 4 GiB goes into the zip64 extra field (rebuilt with the sizes already there); 65,535 entries
+  or more, or an archive past 4 GiB, get the zip64 end records; a self-extractor's leading bytes are
+  read past and not written. New entries are still the crate's: its `ZipWriter` appends after the
+  copied ones (it records offsets from the stream's position), and its central directory is read
+  back, cut off and merged into ours (`Out::adopt`). Every edit of `fs::archivewrite` (add, new
+  item, rename, delete) goes through it; the names are read here too (UTF-8 flag, else the Unicode
+  path field, else code page 437, as the crate and Windows' zip folder read them).
+- **Password-protected zips are written** (P7-M3 refused them). `archivewrite::protection` reads the
+  zip's first encrypted file: ZipCrypto, WinZip AES (its strength), or PKWARE's strong encryption
+  (refused). A job that adds files, a new file, or plain files from another zip asks for the
+  password once: a dialog of TwinFM's own on the file operation worker (`ask_password`, an in-memory
+  dialog template, a masked box, OK and Cancel, owned by the app's window as the conflict question
+  is; it is a `#32770`, so P7-M3's raising of hidden dialogs covers it), or the driver's
+  `zippassword <text>`; `check_password` reads the zip's smallest encrypted file whole (a ZipCrypto
+  entry's one-byte check lets one wrong password in 256 through, its checksum does not; an AES
+  entry's authentication code), and a wrong password asks again ("That password does not open
+  ..."); Cancel cancels the job. New files get the zip's own method: ZipCrypto (`zip::unstable`'s
+  `with_deprecated_encryption`), or AES-256 for an AES zip (the crate's `aes-crypto` feature, new in
+  the build: `aes`, `hmac`, `pbkdf2`, `sha1`, `zeroize`, `constant_time_eq`). Rename, delete and move
+  out ask nothing; a scripted job without the script's password, or with a wrong one, is refused,
+  never shown the dialog.
+- **Between zips and within one** (`Plan::FromZip`, `archivewrite::copy_from_zip`; `BETWEEN_ARCHIVES`
+  is gone): every entry below the items copied as bytes under its new name, an encrypted one keeping
+  its own password; a plain file going into a zip whose new files are encrypted is read and written
+  again with the key; a copy into the items' own folder is named Explorer's way ("a - Copy.txt",
+  "a - Copy (2).txt"); a clash asks the P7-M3 question (Replace, Skip, Cancel). A move from another
+  zip copies, then deletes the items from the source zip; a move within one zip is one rewrite that
+  renames the items' paths, refused into an item itself and onto a file already there (no file by
+  file merge). From the other formats into a zip is still refused (`between_why`: "copying from .7z
+  archives into a zip is not supported yet"; P8-L3). The clipboard, Shift+F5/F6 and drops of archive
+  items already named the in-archive paths, so no new path was needed to reach the job.
+- Tests 234 to 238 (with P8-L1 and P8-M1 merged in): `zipraw`'s extra field rebuilding and its copy
+  of every byte, `password_zips_and_copies_between_zips` (crate-made ZipCrypto and AES zips; the
+  password check right and wrong; adds, a new file, a rename and a delete read back with the
+  password; a plain file encrypted on the way in; an encrypted one keeping its password on the way
+  out; a copy beside itself; Skip on a clash; a move within one zip, and into itself refused),
+  `code_page_437_has_128_characters`; `jobs_are_classified` and `zip_jobs_on_the_worker` (a wrong
+  script password refusing with the zip byte for byte, the right one adding, the tar.exe entries
+  still readable after a rename; copies and moves between two zips and within one) changed.
+- `tools/soak-p5m3.ps1`: after the archive cycle, a.zip and the setup's `pw.zip` (tar.exe, ZipCrypto,
+  password twinfm): a.txt into pw.zip with `zippassword twinfm`, renamed, copied back, moved back,
+  renamed again, and a copy pasted beside itself in a.zip then deleted; reported: copies and moves
+  from a zip, passwords from the script and right.
+
+### Calls made
+
+- A file added to a password zip is encrypted even where the zip also holds plain files (the
+  zip's first encrypted file decides the method).
+- A move within one zip onto a file already there is refused rather than asked about (a rename moves
+  whole items; merging file by file is not done).
+- The password dialog is TwinFM's own on the file operation worker, not Windows' credential dialog.
+
+### Scripted checks
+
+The release build of this branch, a copy of `C:\traces\password-twinfm.zip` and a plain zip made by
+`tar.exe`, under `%TEMP%\twinfm-p8l2\`:
+
+```
+[archive] password for ...\pw.zip (ZipCrypto): from the script        (zippassword nope)
+[archive] password for ...\pw.zip: wrong
+[archive] job id=1 "copy in" on ...\pw.zip: refused (the password does not open this zip)
+[archive] password for ...\pw.zip: right                               (zippassword twinfm)
+[archive] job id=2 "copy in" on ...\pw.zip: Done in 17 ms
+[archive] job id=3 "copy from a zip" on ...\pw.zip: Done in 16 ms      (plain.txt, encrypted on the way)
+[archive] job id=4 "copy from a zip" on ...\plain.zip: Done in 15 ms   (sub\inner.txt, keeps its password)
+[archive] job id=5 "copy from a zip" on ...\plain.zip: Done in 13 ms   (Ctrl+C, Ctrl+V: inner - Copy.txt)
+```
+
+Read back by Windows' `tar.exe --passphrase twinfm`: `secret.txt` and `sub\inner.txt` (the fixture's)
+and `added.txt` and `plain.txt` (TwinFM's) extract with their contents. `plain.zip`: .NET's
+`ZipFile` reads `plain.txt`; `inner.txt` and `inner - Copy.txt` extract with the password through
+`tar.exe` (.NET reads no encrypted entry at all); Windows' zip folder lists all three. The soak's new
+steps alone, twice, under `TWINFM_SOAK` in `%TEMP%\twinfm-m5\p8l2-arch`: fourteen jobs Done, both
+zips as they started, pw.zip's a.txt extracting with the password.
+
+### Gate
+
+ab34 (Jeremy, console, 2026-10-20 17:04, 9 min): `target-p8l2` (278d47f) against `target-p8l1`
+(d5216db), the defaults only (no list, grid or layout change), interleaved, the candidate second:
+
+| Run | p8l1 (WPR) | p8l2 (WPR) | Render p50 (ms), ref / cand |
+|---|---|---|---|
+| 1 | 19.2 | 19.8 | 2.27 / 2.32 |
+| 2 | 28.5 | 27.0 | 3.88 / 3.80 |
+| 3 | 27.0 | 27.0 | 3.82 / 3.80 |
+
+Medians 27.0 / 27.0; no gap counts. As in ab33, the session changed state after the first round
+(render p50 up by about two thirds for both binaries), so both medians sit over the bar; like for
+like the pairs read 19.2 / 19.8 in the normal state and 28.5 / 27.0, 27.0 / 27.0 in the slow one.
+Two gates in a row changed state at the same point (after round 1), which is worth a look before
+the next phase's gates (the machine, not either binary: the reference moves with it).
+
+**Why (looked into at Jeremy's request, 2026-10-20)**: the traces' own samples (`xperf -a profile
+-detail` and `-a dumper`, per process, per CPU) show the Claude desktop app (`claude.exe`, the app
+these sessions run in, started 09:23) using 48 to 56 s of CPU in each ab33 and ab34 trace against
+about 12 s in ab32's, almost all of it one thread (39,000 of a 40 s trace's samples: a full core,
+still spinning after the gate, 4.9 s of CPU in 5 s). Every part of TwinFM's main thread grew by the
+same factor in the slow runs (render pass, text, ListView rows, timers, accessibility: no code path),
+which is what losing a core's throughput looks like; the 12 logical CPUs are six cores with two
+threads each, and the spinning thread sat mostly on CPU 2 (its sibling, CPU 3, also loaded). In
+ab34's normal run TwinFM's main thread ran mostly on CPU 8; in its slow run on CPUs 2 and 3, the
+spinning thread's core. Where the scheduler puts the main thread decides each run, so it reads as a
+"state change" that the reference and the candidate share. Not TwinFM: both binaries moved alike,
+and ab32, before the spin, has no such runs. **Before a gate, the Claude app must be idle or
+restarted** (a thread spinning there takes a core from the scenario); a wrapper check for a process
+holding a core is a candidate for the next gate's wrapper. Jeremy accepted ab34 read like for like
+(2026-10-20).
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+1. Copy a file into `C:\traces\password-twinfm.zip` (a copy of it): TwinFM asks for the password;
+   a wrong one asks again, `twinfm` adds it. Open the zip in Explorer: the new file asks for the
+   password and opens with it; `secret.txt` still opens.
+2. Rename and delete inside that zip: no password asked, the rest still opens.
+3. Copy a file from one zip into another (Shift+F5, Ctrl+C/Ctrl+V, a drag), and move one between
+   two zips: it arrives, and leaves the source on a move.
+4. Ctrl+C and Ctrl+V of a file inside one zip: "x - Copy.ext" beside it. Move a file into a folder of
+   the same zip.
+5. A 7z item copied into a zip: refused with a note ("not supported yet").
+6. Cancel at the password dialog: nothing written.
