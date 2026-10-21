@@ -122,6 +122,12 @@
 # fitted by a double-click on its grip (Size takes the difference), then colwidth sets Modified to
 # 140 and Size to 90, which puts every width back. Reported: drags read back as Size 90 -> 60 (one
 # per cycle), fits (one per cycle), and widths lines back at 120, 90, 140 (one per cycle).
+#
+# P9-M4, after the column cycle: thumbnails on (the dialog), the left pane on preview (its rows in
+# 32 px with thumbnails), a cancelled drag out of i-photo.jpg's row (row 8), a search for "photo"
+# from there (a search tab whose result is keyed for its thumbnail), the search tab closed, the
+# filter cleared and thumbnails off again. Reported: drag images from the thumbnail (one per cycle)
+# and searches for photo (one per cycle).
 param(
     [double]$Minutes = 30,
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
@@ -380,7 +386,11 @@ $cycle = @(
     'view details', 'sleep 300', 'click 0 0', 'shiftclick 0 1', 'key Return', 'sleep 800', 'tab 2', 'sleep 200', 'tab close', 'sleep 300', 'tab 2', 'sleep 200', 'tab close', 'sleep 300',
     'tab 1', 'sleep 300',
     # P9-M1: a grip drag, a fit, and the widths set back (see the header).
-    "nav 0 $src\tree", 'sleep 500', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200'
+    "nav 0 $src\tree", 'sleep 500', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200',
+    # P9-M4: a thumbnail drag and a search tab with thumbnails (see the header).
+    'settings open', 'settings set thumbnails true', 'settings ok', 'sleep 300', "nav 0 $prev", 'sleep 1500', 'click 0 8', 'sleep 800',
+    'dragrow 0 8 40 0', 'sleep 400', 'dragcancel', 'sleep 300', 'filter 0 photo', 'sleep 300', 'search 0', 'waitsearch 5000', 'sleep 1500',
+    'tab close', 'sleep 300', 'filter 0', 'sleep 300', 'settings open', 'settings set thumbnails false', 'settings ok', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -540,6 +550,8 @@ $pvFell = @($log | Select-String -SimpleMatch 'styled text fell back to plain').
 $pvCut = @($log | Select-String -SimpleMatch ', cut at 2 MB').Count
 $pvSuperseded = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String -SimpleMatch ' superseded: ').Count
 $pvTimeouts = @($log | Select-String -SimpleMatch 'waitpreview: not settled').Count
+$thumbDrags = @($log | Select-String -SimpleMatch 'icon from the thumbnail').Count
+$thumbSearches = @($log | Select-String -SimpleMatch '[search] pane=0' | Select-String -SimpleMatch 'start "photo"').Count
 $colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 60 px (drag)').Count
 $colFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit modified: ').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
@@ -573,4 +585,5 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
 "preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (three per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, and j-page.html's one), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
 "column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (one per cycle and one at start)"
+"thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

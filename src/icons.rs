@@ -1309,7 +1309,8 @@ fn mark_image(pool: &Pool, mark: Mark, size_px: u32) -> Option<SharedPixelBuffer
         Mark::Overlay(index) => {
             let side = overlay_side(size_px);
             let o = overlay_pixels(index as i32, side).map(|o| if side == size_px { o } else { lower_left(&o, size_px) });
-            eprintln!("[icons] overlay index {index} fetched at {size_px} px{}", none(&o));
+            let over = if side == size_px { String::new() } else { format!(" over {size_px} px") };
+            eprintln!("[icons] overlay index {index} fetched at {side} px{over}{}", none(&o));
             o
         }
         Mark::State(state) => {

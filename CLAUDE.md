@@ -30,7 +30,7 @@ bundle; opened 2026-10-21; its first section quotes Jeremy's kickoff decisions, 
 lead's, § Open questions what each milestone's brief settles first). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (265 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (268 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -742,6 +742,22 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   and for both panes 400 ms after start (N the name cell's width then; the right pane's is its
   would-be width before the split). A gate run with other widths takes
   `TWINFM_CONFIG=C:\traces\cols.toml` (read-only: both panes 200, 110, 180).
+  Since P9-M4, thumbnails beyond the listing and cloud polish: a search tab's results are keyed for
+  their thumbnails as a folder's entries are when `thumbnails` is on (`fs::enumerate::walk`'s
+  `thumbnails`; off for a search rooted in a cloud location, `main.rs` `search_thumbnails`, where a
+  thumbnail could start a download), so the `[icons]` line's `thumbs N` counts them. Archive levels
+  keep their type keys: the shell has no thumbnail provider inside a zip or a 7z
+  (`WTS_E_FAILEDEXTRACTION`, the P9-M4 pin check). The press's drag request (`prefetch_drag_icon`)
+  asks for the thumbnail when the pressed row's key is a `thumb:` key (its mark kept, so a cloud
+  file's stays in the cache; the worker never drops a drag thumbnail as scrolled past), and the
+  drag image line reads `icon from the thumbnail` (`dnd::IconFrom`: the tile, the thumbnail, the
+  worker, the shell). Under a sync root a cloud placeholder file that is not in sync
+  (`icons::placeholder_state`, `CfGetPlaceholderStateFromAttributeTag` from the listing's attributes
+  and reparse tag, no file opened; `needs_state_read`) is keyed `look:s:` as a folder is, so its glyph
+  is the provider's own state; `[cloud] state read <path>: S in T ms` for each such file (folders'
+  reads are not logged). The shell's overlay images (Google Drive's mark, the link arrow) over an icon
+  larger than 48 physical px are drawn at two thirds of it at its lower left (`icons::overlay_side`,
+  `lower_left`); `[icons] overlay index K fetched at S px over P px` then. No new driver step.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -850,7 +866,9 @@ lead's, § Open questions what each milestone's brief settles first). Read them 
   reports text previews (three per cycle), pictures (two), picture failures (must be 0) and HTML
   previews (one). Since P9-M1 each cycle also drags the left pane's Type | Size
   grip 30 px right in `src\tree`, fits Modified and sets the widths back with `colwidth`; it reports
-  drags read back as Size 90 -> 60, fits, and widths lines back at 120, 90, 140.
+  drags read back as Size 90 -> 60, fits, and widths lines back at 120, 90, 140. Since P9-M4 each
+  cycle also turns thumbnails on, drags i-photo.jpg's row in `preview` (cancelled) and searches for
+  photo there, then turns them off; it reports drag images from the thumbnail and the searches.
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per

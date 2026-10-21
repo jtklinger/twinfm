@@ -658,6 +658,71 @@ Tests: the drag image's source choice; the placeholder gate (which states ask); 
 keys with thumbnails on (a JPEG keyed `thumb:`, a cloud-only one `ext:`, a text file `ext:`); the
 overlay's size and list for 16, 32, 48 and 96 px at 100% and 150%.
 
+### What landed
+
+- **Search tabs** (`fs::enumerate::walk`, `spawn_search`): a `thumbnails` switch, passed by
+  `main.rs` `search_thumbnails` (the setting, and off when the search's root is a cloud location).
+  The walker's `IconKeys` take it, so a result in `THUMB_EXTS` gets the folder listing's `thumb:` key
+  for its full path. The search test runs a walk with thumbnails on over a JPEG in a subfolder and a
+  text file, and one with them off.
+- **Archive levels**: no code (the pin check above).
+- **The drag image** (`main.rs` `prefetch_drag_icon`, `drain_icons`, `run_pending_drag`;
+  `dnd::IconFrom`, `DragImage::prefetched_thumbnail`): the press asks for the thumbnail when the row's
+  key is a `thumb:` key, with the row's mark; the reply comes back as a picture (a thumbnail) or
+  pixels (the icon fallback), and the image says which. The icon worker no longer drops a drag
+  request's thumbnail as scrolled past (the request carries no row). One test for the source order.
+- **OneDrive's states** (`icons::placeholder_state`, `needs_state_read`, `IconKeys::for_entry_synced`;
+  `windows-sys`'s `Win32_Storage_CloudFilters` feature): the listing (and the watch's stat, which
+  goes through the same `entry_of`) asks Windows for a cloud placeholder's state from its attributes
+  and tag; out of sync, the file is keyed `look:s:` and the icon worker reads
+  `System.StorageProviderState`, logging `[cloud] state read`. `for_entry` stays for the tests (in
+  sync). One test for the gate and the keys.
+- **The overlays over tiles** (`icons::overlay_side`, `lower_left`, `mark_image`): above 48
+  physical px the shell's overlay image is drawn at two thirds of the icon and placed at its lower
+  left in a transparent square, so the compositing is unchanged. One test for the sizes and the
+  placement.
+- **Soak**: the thumbnail cycle in `tools/soak-p5m3.ps1` and its report line.
+- **Tests**: 265 to 268.
+
+### Decisions
+
+- **The search's cloud guard is the root's location, not each file's attributes** (Settled first
+  said attributes): a OneDrive file is a cloud placeholder (`Kind::Cloud`) and never gets a `thumb:`
+  key anyway (only `Kind::File` does, in folders too), so the case that matters is Google Drive,
+  whose files are plain files on its own volume; a search rooted there gets no thumbnails.
+- **Found while checking, not changed**: OneDrive files never show thumbnails in a folder listing
+  either, for the same reason (`Kind::Cloud`); the P6-M1 `thumb:<mark>:` keys only arise for plain
+  files under a sync root. A candidate for later, recorded here.
+- **The tile overlay rule is two thirds of the icon above 48 physical px**, not "a third of the
+  picture" (Settled first): measured on this machine, the shell's overlay images hold their glyph in
+  about 40% (the link arrow, 37 px over 96) and 57% of the width (Google Drive's mark, 55 x 40 over
+  96) of the image, and Explorer draws them at the icon's size, so TwinFM matched Explorer already.
+  Two thirds makes Google Drive's mark 37 x 27 px and the arrow 25 px on a 96 px tile. The size is
+  read in physical px on the icon worker, which cannot tell a medium tile at 100% (48 px) from a
+  32 px thumbnail row at 150% (48 px): both keep the shell's own overlay, as do all lists. The
+  console check beside Explorer decides whether the rule stays.
+- **A drag image's thumbnail carries the row's mark**, drawn as the row's is (a Google Drive photo's
+  drag shows the small cloud), since the mark is what keeps its thumbnail to the cache.
+- **Folders' state reads are not logged** (`[cloud] state read` is for files), since every sync root
+  folder is looked up at every listing (P6-M1) and the line would fill the log.
+
+### Scripted checks
+
+All on this machine, `target\release` of the branch.
+
+- Thumbnails on, the P3-M5 fixture folder (`%TEMP%\twinfm-p3m5-thumbs`, 200 JPEGs): a drag out of
+  row 2 of the 32 px list, cancelled: `[dnd] drag image 96x96 px, 64 px icon, 1 item(s), icon from
+  the thumbnail`; a search for "photo-01" there, then a drag out of the search tab: `icon from the
+  thumbnail` again (the results' keys are the listing's, so they asked nothing new).
+- Thumbnails on, a search for "photo-00" from `%TEMP%` (25,246 folders, 3.7 s): `thumbs 10` in the
+  `[icons]` line for its 10 results.
+- `C:\Users\jtkli\OneDrive\Documents` (21 entries): `[cloud] ... sync root`, no `[cloud] state read`
+  line (every placeholder in sync).
+- `G:\My Drive` in large tiles (software renderer, screenshot): `[icons] overlay index 12 fetched at
+  64 px over 96 px`, each folder's cloud mark in the tile's lower left at about two fifths of its
+  width (the lists unchanged at 16 px).
+- The Start Menu's Programs folder in medium tiles: `overlay index 2 fetched at 48 px` (unchanged).
+
 ## Open questions
 
 Written 2026-10-21 at the kickoff.
