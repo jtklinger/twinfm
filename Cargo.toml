@@ -37,6 +37,10 @@ hayro = "=0.8.0"
 pulldown-cmark = { version = "=0.13.4", default-features = false }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 resvg = { version = "=0.48.1", default-features = false }
+# Word, Excel and PowerPoint in the preview (P9-M3): their XML parts read as a stream, so reading
+# stops at a cap with what it has. MIT. The copy Slint's winit backend already locks (0.41.0), so the
+# lock gains an edge, no crate.
+quick-xml = { version = "=0.41.0", default-features = false }
 
 [features]
 # Default build matches slint's defaults. `cargo build --release --no-default-features` builds the
