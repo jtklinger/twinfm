@@ -284,6 +284,16 @@ file supersedes the older at every step. Every crate added is pinned by exact ve
 licence noted in `Cargo.toml`, with default features off and only the needed ones on, and a crate is
 not added where `zip`, `roxmltree`, `image` and `resvg` already do the job.
 
+**A fifth milestone, added 2026-10-21 from daily use** (after P9-M2 merged, before P9-M1 started):
+**P9-M5, the rust-ui look**, the window restyled in the idiom of rust-ui.com (shadcn/ui ported to
+Dioxus). Jeremy asked for a review of "the current state of the display windows" and whether they
+could look "more modern"; a canvas of the window as built beside a Windows 11 style refresh was put
+to him, he answered "I'm more interested to know if we can make the UI look more like the components
+found at rust-ui.com", the canvas was redone in that idiom, and he chose it: "Yes, this rust-ui
+direction is right. Write the plan for it as a Phase 9 milestone and start the Slint changes here,
+gate-safe pieces first." Its section is at the end of this record. It runs in parallel with the
+preview milestones and does not change their order.
+
 ## Calls made in this kickoff, for Jeremy to check
 
 Decisions Jeremy did not make and the lead settled, each reversible before its milestone starts:
