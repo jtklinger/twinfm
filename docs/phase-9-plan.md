@@ -1145,3 +1145,6 @@ beside Word, Excel or PowerPoint (or Edge, which opens all three):
 7. A `.doc`, `.xls` or `.ppt`: "No preview".
 8. A chart sheet (a workbook with a chart moved to its own sheet): "Chart sheets are not previewed."
 9. The column's width dragged with a workbook shown: the table follows.
+
+Jeremy, 2026-10-21, unelevated with `target-p9m3`: "console checks are all nominal". The PowerPoint
+bullets-by-default call stands as recorded (not reversed).
