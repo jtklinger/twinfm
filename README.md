@@ -166,4 +166,9 @@ repository; the Slint code around them keeps Slint's own triple license (GPL-3.0
 Royalty-free 2.0, or commercial), and the fork as a standalone copy of Slint is
 redistributed under Slint's GPL-3.0 option, as section 3 of the Royalty-free license directs.
 
+The icons of the toolbar, the sidebar and the panes' chrome (`src/ui/icons/*.svg`, since Phase 9)
+are drawn after [Lucide](https://lucide.dev), used under its ISC license (copyright 2022 Lucide
+Contributors; the earlier Feather icons, copyright 2013-2022 Cole Bemis, MIT); the file type
+icons and thumbnails in the lists are Windows' own.
+
 [![Made with Slint](https://github.com/slint-ui/slint/raw/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
