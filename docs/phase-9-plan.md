@@ -740,6 +740,31 @@ presses refused 0, menupicks refused 0, zip jobs not done 0, picture failures 0,
 thumbnail` for i-photo.jpg's row and `[search] ... start "photo"` in both cycles, the column cycle's
 counts as before.
 
+### Gate
+
+Run by Jeremy on 2026-10-21, finished at 16:35 (tag ab40 for both settings, `C:\traces\gate-p9m4.ps1`,
+the same file as `tools/gate-p9m4.ps1`, 17 min): `target-p9m4` (3374f2b, main with P9-M3 merged in,
+built `--locked` from a detached checkout) against `target-p9m3` (111ef17), three rounds of
+reference, candidate, reference with `C:\traces\thumbs.toml`, candidate with it. Every run passed the
+wrapper's checks (no panic; `[settings] file C:\traces\thumbs.toml (read)` and `[icons] list
+geometry: 32 px rows, 32 px icons` in every thumbs run).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m3-1 / 2 / 3 | 18.3 / 21.4 / 22.8 | 18.7 / 22.8 / 22.7 | 2.35 / 2.92 / 2.96 |
+| p9m4-1 / 2 / 3 | 18.4 / 21.7 / 22.6 | 16.7 / 25.0 / 21.7 | 2.30 / 2.91 / 2.95 |
+| p9m3-thumbs-1 / 2 / 3 | 18.7 / 17.6 / 17.8 | 20.3 / 18.1 / 16.4 | 2.35 / 2.31 / 2.37 |
+| p9m4-thumbs-1 / 2 / 3 | 18.1 / 18.9 / 17.6 | 16.2 / 19.8 / 19.7 | 2.42 / 2.29 / 2.32 |
+
+Medians as the wrapper reads them: defaults 21.4 (reference) / 21.7 (candidate), thumbs 17.8 / 18.1;
+no gap that counts in either. The defaults runs of rounds 2 and 3, both binaries, were in the slow
+state (render p50 2.91 to 2.96 ms against 2.30 to 2.35 in round 1); like for like, round 1 reads
+18.3 against 18.4. Every thumbs run was in the normal state (2.29 to 2.42 ms) and under 20%, the
+pairs within 1.3 points in both directions. Passed: P9-M4 adds no cost the gate can see, with
+thumbnails off or on. For the record, an oddity: the slow state took the defaults runs of rounds 2
+and 3 but none of the thumbs runs that ran between them in the same rounds, so it came and went
+within minutes rather than holding for a stretch as in ab23 and ab38.
+
 ### Console checks (for Jeremy, unelevated, after the gate)
 
 With `C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe`, thumbnails on (Settings):
@@ -757,8 +782,11 @@ With `C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe`, thumbnails
    of many files opens as quickly as before.
 5. **The hydration check**: in a OneDrive folder, right-click a file in Explorer and pick "Free up
    space", with the same folder open in TwinFM: its mark turns to the cloud without pressing F5. Then
-   "Always keep on this device": it turns to the solid tick. Tell me what you see; the watch's lines
-   show whether Windows reported the change.
+   "Always keep on this device": it turns to the solid tick. Start TwinFM for this check from a
+   normal PowerShell window with its log kept, so the watch's lines can be read afterwards:
+   `& C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe "$env:USERPROFILE\OneDrive\Documents" 2> C:\traces\p9m4-hydration.txt`
+   then close TwinFM and tell me what you saw. The file shows whether Windows reported the change
+   (`[watch] ... applied: +0 -0 ~1` for the file) or not (no `[watch]` record at all).
 
 ## Open questions
 
