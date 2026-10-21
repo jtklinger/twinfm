@@ -108,8 +108,14 @@
 # i-photo.jpg (1200 x 800, made with System.Drawing) and j-page.html (a head, a script and a style
 # to drop, headings with ids, a list, a table, a pre, e-dot.png, an #anchor link); after g-big.md the
 # cursor goes on through the three and j-page.html's anchor is followed. Reported besides: text
-# previews (three per cycle), pictures (two per cycle), picture failures (must be 0), HTML previews
+# previews (two per cycle: d-notes.txt and h-notes.txt), pictures (two per cycle), picture failures (must be 0), HTML previews
 # (one per cycle).
+# P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
+# (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
+# numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
+# goes on through the three and l-table.xlsx's second sheet is followed (`previewlink #sheet=2`).
+# Reported besides: docx, xlsx (two per cycle: the first sheet and the second) and pptx previews,
+# sheet links followed (one per cycle), Office files unreadable (must be 0).
 #
 # P8-L1, after the preview cycle: the left pane on src\tree (ten folders) goes to medium tiles,
 # PageDown and PageUp move its cursor by grid rows (Explorer's), it goes back to details, two
@@ -255,6 +261,50 @@ $page = @'
 </body></html>
 '@
 [System.IO.File]::WriteAllText((Join-Path $prev 'j-page.html'), $page)
+# P9-M3: Word, Excel and PowerPoint files as zips of hand-written parts (only those TwinFM reads).
+Add-Type -AssemblyName System.IO.Compression
+function Write-Parts($path, $parts) {
+    $fs = [System.IO.File]::Create($path)
+    $zip = New-Object System.IO.Compression.ZipArchive($fs, [System.IO.Compression.ZipArchiveMode]::Create)
+    foreach ($name in $parts.Keys) {
+        $w = $zip.CreateEntry($name).Open()
+        $data = $parts[$name]
+        if ($data -is [string]) { $data = [System.Text.Encoding]::UTF8.GetBytes($data) }
+        $w.Write($data, 0, $data.Length); $w.Dispose()
+    }
+    $zip.Dispose(); $fs.Dispose()
+}
+$dot = [System.IO.File]::ReadAllBytes((Join-Path $prev 'e-dot.png'))
+$wns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="r" xmlns:wp="wp" xmlns:a="a"'
+$wp = { param($style, $text) "<w:p><w:pPr>$style</w:pPr><w:r><w:t xml:space=`"preserve`">$text</w:t></w:r></w:p>" }
+$doc = "<w:document $wns><w:body>" + (& $wp '<w:pStyle w:val="Heading1"/>' 'Soak report') + (& $wp '' 'A paragraph of the report.') +
+    (& $wp '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>' 'first point') + (& $wp '<w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr>' 'a detail') +
+    '<w:tbl><w:tr><w:tc>' + (& $wp '' 'Name') + '</w:tc><w:tc>' + (& $wp '' 'Size') + '</w:tc></w:tr><w:tr><w:tc>' + (& $wp '' 'a') + '</w:tc><w:tc>' + (& $wp '' '1') + '</w:tc></w:tr></w:tbl>' +
+    '<w:p><w:hyperlink r:id="rId1"><w:r><w:t>a link</w:t></w:r></w:hyperlink></w:p>' +
+    '<w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="dot" descr="A green bar"/><a:graphic><a:graphicData><a:blip r:embed="rId2"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>'
+Write-Parts (Join-Path $prev 'k-report.docx') ([ordered]@{
+    '[Content_Types].xml' = '<Types/>'; 'word/document.xml' = $doc
+    'word/_rels/document.xml.rels' = '<Relationships><Relationship Id="rId1" Target="https://example.com/" TargetMode="External"/><Relationship Id="rId2" Target="media/image1.png"/></Relationships>'
+    'word/media/image1.png' = $dot })
+Write-Parts (Join-Path $prev 'l-table.xlsx') ([ordered]@{
+    '[Content_Types].xml' = '<Types/>'
+    'xl/workbook.xml' = '<workbook xmlns:r="r"><sheets><sheet name="Totals" sheetId="1" r:id="rId1"/><sheet name="Detail" sheetId="2" r:id="rId2"/></sheets></workbook>'
+    'xl/_rels/workbook.xml.rels' = '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>'
+    'xl/styles.xml' = '<styleSheet><cellXfs><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>'
+    'xl/sharedStrings.xml' = '<sst><si><t>Item</t></si><si><t>Amount</t></si><si><t>Date</t></si><si><t>rent</t></si></sst>'
+    'xl/worksheets/sheet1.xml' = '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row><row r="2"><c r="A2" t="s"><v>3</v></c><c r="B2"><v>1250.5</v></c><c r="C2" s="1"><v>45200</v></c></row></sheetData></worksheet>'
+    'xl/worksheets/sheet2.xml' = '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>detail sheet</t></is></c></row></sheetData></worksheet>' })
+$sp = { param($ph, $text) "<p:sp><p:nvSpPr><p:cNvPr id=`"2`" name=`"s`"/><p:nvPr>$ph</p:nvPr></p:nvSpPr><p:txBody>$text</p:txBody></p:sp>" }
+$slide = { param($title, $body, $pic) "<p:sld xmlns:p=`"p`" xmlns:a=`"a`" xmlns:r=`"r`"><p:cSld><p:spTree>" + (& $sp '<p:ph type="title"/>' "<a:p><a:r><a:t>$title</a:t></a:r></a:p>") + (& $sp '<p:ph idx="1"/>' $body) + $pic + '</p:spTree></p:cSld></p:sld>' }
+$pic = '<p:pic><p:nvPicPr><p:cNvPr id="9" name="Picture" descr="A green bar"/></p:nvPicPr><p:blipFill><a:blip r:embed="rId1"/></p:blipFill></p:pic>'
+Write-Parts (Join-Path $prev 'm-deck.pptx') ([ordered]@{
+    '[Content_Types].xml' = '<Types/>'
+    'ppt/presentation.xml' = '<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId3"/></p:sldIdLst></p:presentation>'
+    'ppt/_rels/presentation.xml.rels' = '<Relationships><Relationship Id="rId2" Target="slides/slide1.xml"/><Relationship Id="rId3" Target="slides/slide2.xml"/></Relationships>'
+    'ppt/slides/slide1.xml' = (& $slide 'Soak deck' '<a:p><a:r><a:t>one</a:t></a:r></a:p><a:p><a:pPr lvl="1"/><a:r><a:t>two</a:t></a:r></a:p>' $pic)
+    'ppt/slides/_rels/slide1.xml.rels' = '<Relationships><Relationship Id="rId1" Target="../media/image1.png"/></Relationships>'
+    'ppt/slides/slide2.xml' = (& $slide 'The end' '<a:p><a:r><a:t>done</a:t></a:r></a:p>' '')
+    'ppt/media/image1.png' = $dot })
 
 $scroll = @($ScrollFolders | Where-Object { Test-Path $_ })
 $wait = 'waitops 60000'
@@ -380,6 +430,8 @@ $cycle = @(
     'key Down', 'waitpreview 10000', 'previewscroll 20000', 'sleep 300',
     # P9-M2: h-notes.txt, i-photo.jpg, j-page.html (its anchor).
     'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'previewlink #end', 'waitpreview 5000',
+    # P9-M3: k-report.docx, l-table.xlsx (its second sheet), m-deck.pptx.
+    'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'previewlink #sheet=2', 'waitpreview 5000', 'key Down', 'waitpreview 5000',
     'preview width 0.5', 'waitpreview 5000', 'preview width 0.35', 'waitpreview 5000', 'preview toggle', 'sleep 200',
     # P8-L1: the grid's PageDown and Return on two folders (see the header).
     "nav 0 $src\tree", 'sleep 500', 'click 0 0', 'view medium', 'sleep 300', 'key PageDown', 'sleep 100', 'key PageUp', 'sleep 100',
@@ -544,6 +596,11 @@ $pvText = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String 
 $pvPicture = @($log | Select-String -Pattern '\[preview\] pane=.*: picture \d+x\d+ px, ').Count
 $pvPicFailed = @($log | Select-String -SimpleMatch ': picture failed: ').Count
 $pvHtml = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': html, ').Count
+$pvDocx = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': docx, ').Count
+$pvXlsx = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': xlsx, ').Count
+$pvPptx = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': pptx, ').Count
+$pvSheets = @($log | Select-String -Pattern '\[preview\] link "#sheet=\d+": sheet ').Count
+$pvOfficeBad = @($log | Select-String -Pattern '\[preview\] pane=.*\.(docx|xlsx|pptx): (unreadable|password)').Count
 $pvPics = 0; $pvAlt = 0
 foreach ($m in ($log | Select-String -Pattern 'pictures done: (\d+) shown, (\d+) alt text')) { $pvPics += [int]$m.Matches[0].Groups[1].Value; $pvAlt += [int]$m.Matches[0].Groups[2].Value }
 $pvFell = @($log | Select-String -SimpleMatch 'styled text fell back to plain').Count
@@ -583,7 +640,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "between zips: copies from a zip $fromZip (three per cycle), moves from a zip $fromZipMoves (one per cycle); passwords from the script $pwScript, right $pwRight (one each per cycle)"
 "archives inside archives: copies out $nestedOut, copies from an archive into a zip $fromShell (one each per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
-"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (three per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, and j-page.html's one), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
+"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (two per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
 "column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (one per cycle and one at start)"
 "thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
