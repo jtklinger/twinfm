@@ -6,6 +6,12 @@
 //! zip's jobs here instead of through `IFileOperation`. A copy out of any archive (an extraction)
 //! is an ordinary `IFileOperation` job and is not classified.
 //!
+//! Since P8-L2 items go from one zip into another, or within one, as bytes (`archivewrite::
+//! copy_from_zip`), and a password-protected zip is written: the job asks for the password (a
+//! dialog of TwinFM's own on this worker, or the script's `zippassword`) when it adds files, and
+//! checks it against an existing entry first. Copies from the other formats into a zip are still
+//! refused.
+//!
 //! A move into a zip adds the items, then recycles the originals (an unoptimised move: Explorer's
 //! zip folder leaves them for the source to delete, P7-M3's check); a move out of a zip extracts
 //! through the shell, then deletes the items that came out from the zip. Writes into a zip are not
@@ -13,9 +19,10 @@
 
 use super::{ItemResult, Job, Outcome, Progress, ProgressGate, Request};
 use crate::fs::archive::{self, Handler};
-use crate::fs::archivewrite::{self, Conflict};
+use crate::fs::archivewrite::{self, Conflict, Key, Protection};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Mutex;
 use std::time::Instant;
 
 /// What a job does to a zip.
@@ -29,12 +36,15 @@ pub enum Plan {
     Delete { zip: PathBuf, inners: Vec<String> },
     /// Extract `sources` (paths inside `zip`) into `dest_dir`, then delete them from the zip.
     MoveOut { zip: PathBuf, sources: Vec<PathBuf>, dest_dir: PathBuf },
+    /// Copy or move the items at `inners` of the zip `from` (`zip` itself, or another) into folder
+    /// `inner` of `zip` (P8-L2).
+    FromZip { zip: PathBuf, inner: String, from: PathBuf, inners: Vec<String>, mv: bool },
 }
 
 impl Plan {
     pub fn zip(&self) -> &Path {
         match self {
-            Plan::Add { zip, .. } | Plan::New { zip, .. } | Plan::Rename { zip, .. } | Plan::Delete { zip, .. } | Plan::MoveOut { zip, .. } => zip,
+            Plan::Add { zip, .. } | Plan::New { zip, .. } | Plan::Rename { zip, .. } | Plan::Delete { zip, .. } | Plan::MoveOut { zip, .. } | Plan::FromZip { zip, .. } => zip,
         }
     }
 }
@@ -45,10 +55,11 @@ pub fn read_only_why(archive: &Path) -> String {
     format!("Windows' archive handler cannot write into .{ext} archives")
 }
 
-/// Why a password-protected zip is not written: the `zip` crate's raw copy drops an encrypted
-/// entry's encryption flag, which leaves its bytes unreadable (P7-M3's console check).
-pub const PASSWORD: &str = "this zip is password-protected: TwinFM does not write into it";
-pub const BETWEEN_ARCHIVES: &str = "copying from one archive into another is not supported; copy the items out first";
+/// Why a copy from an archive of another format into a zip is refused (P8-L3 lifts it).
+pub fn between_why(from: &Path) -> String {
+    let ext = from.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    format!("copying from .{ext} archives into a zip is not supported yet; copy the items out first")
+}
 
 /// The archive each item is stored in (None for an item on disk, an archive file included), and
 /// its path below the archive's root.
@@ -86,7 +97,18 @@ pub fn classify(job: &Job) -> Result<Option<Plan>, String> {
                         return Err(read_only_why(&zip));
                     }
                     if !inside.is_empty() {
-                        return Err(BETWEEN_ARCHIVES.into());
+                        if inside.len() != sources.len() {
+                            return Err("the items are partly inside an archive".into());
+                        }
+                        let from = inside[0].0.clone();
+                        if archive::handler_of(&from) != Handler::Zip {
+                            return Err(between_why(&from));
+                        }
+                        if inside.iter().any(|(z, _)| !same(z, &from)) {
+                            return Err("the items are in different archives".into());
+                        }
+                        let inners = inside.into_iter().map(|(_, i)| i).collect();
+                        return Ok(Some(Plan::FromZip { zip, inner, from, inners, mv }));
                     }
                     Ok(Some(Plan::Add { zip, inner, sources: sources.clone(), mv }))
                 }
@@ -204,21 +226,33 @@ pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outco
     let t0 = Instant::now();
     let zip = plan.zip().to_path_buf();
     // Before anything is written or extracted (here, on the worker: the UI thread reads no archive).
-    match archivewrite::encrypted(&zip) {
-        Ok(false) => {}
-        Ok(true) => {
-            eprintln!("[archive] job id={} {:?} on {}: refused ({PASSWORD})", req.id, plan_name(&plan), zip.display());
-            return (Outcome::Error(PASSWORD.into()), Vec::new());
-        }
+    let protection = match archivewrite::protection(&zip) {
+        Ok(p) => p,
         Err(e) => return (Outcome::Error(e), Vec::new()),
-    }
+    };
+    let key = match needs_key(&plan) {
+        Ok(false) => Key::None,
+        Ok(true) if protection == Protection::None => Key::None,
+        Ok(true) => match key_for(req, &zip, &protection) {
+            Ok(Some(k)) => k,
+            Ok(None) => {
+                eprintln!("[archive] job id={} {:?} on {}: Cancelled at the password", req.id, plan_name(&plan), zip.display());
+                return (Outcome::Cancelled, Vec::new());
+            }
+            Err(e) => {
+                eprintln!("[archive] job id={} {:?} on {}: refused ({e})", req.id, plan_name(&plan), zip.display());
+                return (Outcome::Error(e), Vec::new());
+            }
+        },
+        Err(e) => return (Outcome::Error(e), Vec::new()),
+    };
     let mut report = reporter(req.id, progress);
     let (outcome, results) = match &plan {
         Plan::Add { inner, sources, mv, .. } => {
             let hwnd = req.hwnd;
             let no_confirm = req.no_confirm;
             let mut ask = |clash: &[String]| if no_confirm { Some(Conflict::Replace) } else { ask_conflicts(hwnd, &zip, clash) };
-            match archivewrite::add(&zip, inner, sources, &mut ask, &mut report) {
+            match archivewrite::add(&zip, inner, sources, &key, &mut ask, &mut report) {
                 Err(e) if e == "cancelled" => (Outcome::Cancelled, Vec::new()),
                 Err(e) => (Outcome::Error(e), Vec::new()),
                 Ok(tops) => {
@@ -243,7 +277,7 @@ pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outco
                 }
             }
         }
-        Plan::New { inner, name, folder, .. } => match archivewrite::new_item(&zip, inner, name, *folder, &mut report) {
+        Plan::New { inner, name, folder, .. } => match archivewrite::new_item(&zip, inner, name, *folder, &key, &mut report) {
             Ok(got) => {
                 let parent = if inner.is_empty() { zip.clone() } else { zip.join(inner) };
                 (Outcome::Done, vec![ItemResult { source: parent.clone(), dest: Some(parent.join(got)), hr: 0 }])
@@ -282,6 +316,30 @@ pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outco
                 }
             }
         }
+        Plan::FromZip { inner, from, inners, mv, .. } => {
+            let hwnd = req.hwnd;
+            let no_confirm = req.no_confirm;
+            let mut ask = |clash: &[String]| if no_confirm { Some(Conflict::Replace) } else { ask_conflicts(hwnd, &zip, clash) };
+            match archivewrite::copy_from_zip(&zip, inner, from, inners, *mv, &key, &mut ask, &mut report) {
+                Err(e) if e == "cancelled" => (Outcome::Cancelled, Vec::new()),
+                Err(e) => (Outcome::Error(e), Vec::new()),
+                Ok(tops) => {
+                    let results: Vec<ItemResult> = inners.iter().zip(&tops).map(|(i, t)| ItemResult { source: from.join(i), dest: Some(zip.join(t)), hr: 0 }).collect();
+                    // A move from another zip: the items leave it now that this one holds them.
+                    if *mv && !same(from, &zip) {
+                        let res = archivewrite::delete(from, inners, &mut |_, _| {});
+                        archive::forget(from);
+                        eprintln!("[archive] move from {} into {}: removed from the source: {res:?}", from.display(), zip.display());
+                        match res {
+                            Ok(_) => (Outcome::Done, results),
+                            Err(e) => (Outcome::Error(format!("copied, but removing them from {} failed: {e}", from.display())), results),
+                        }
+                    } else {
+                        (Outcome::Done, results)
+                    }
+                }
+            }
+        }
     };
     archive::forget(&zip);
     eprintln!("[archive] job id={} {:?} on {}: {outcome:?} in {} ms", req.id, plan_name(&plan), zip.display(), t0.elapsed().as_millis());
@@ -297,6 +355,165 @@ fn plan_name(p: &Plan) -> &'static str {
         Plan::Rename { .. } => "rename",
         Plan::Delete { .. } => "delete",
         Plan::MoveOut { .. } => "move out",
+        Plan::FromZip { mv: false, .. } => "copy from a zip",
+        Plan::FromZip { mv: true, .. } => "move from a zip",
+    }
+}
+
+/// The plan writes new data that a password-protected zip encrypts: files added, a new file, or
+/// files without encryption copied in from a zip.
+fn needs_key(plan: &Plan) -> Result<bool, String> {
+    match plan {
+        Plan::Add { .. } => Ok(true),
+        Plan::New { folder, .. } => Ok(!folder),
+        Plan::FromZip { from, inners, .. } => archivewrite::plain_files_among(from, inners),
+        Plan::Rename { .. } | Plan::Delete { .. } | Plan::MoveOut { .. } => Ok(false),
+    }
+}
+
+/// The password the script gives (`zippassword <text>`, TWINFM_SCRIPT only): taken by the next
+/// question in place of the dialog.
+static SCRIPT_PASSWORD: Mutex<Option<String>> = Mutex::new(None);
+
+/// The driver's `zippassword <text>`: the answer to the next password question.
+pub fn script_password(password: &str) {
+    *SCRIPT_PASSWORD.lock().unwrap_or_else(|e| e.into_inner()) = Some(password.to_string());
+}
+
+/// The key new files get in the password-protected `zip`: the password asked (the script's, or
+/// the dialog's) and checked against an existing entry, asked again while it is wrong. None: the
+/// question was cancelled. A scripted run without a password of the script's is refused, never
+/// shown a dialog.
+fn key_for(req: &Request, zip: &Path, protection: &Protection) -> Result<Option<Key>, String> {
+    if let Protection::Unsupported(what) = protection {
+        return Err(format!("this zip uses {what}, which TwinFM does not write beside"));
+    }
+    let method = if matches!(protection, Protection::Aes(_)) { "AES-256" } else { "ZipCrypto" };
+    let scripted = std::env::var_os("TWINFM_SCRIPT").is_some();
+    let mut wrong = false;
+    loop {
+        let given = SCRIPT_PASSWORD.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let (password, from_script) = match given {
+            Some(p) => {
+                eprintln!("[archive] password for {} ({method}): from the script", zip.display());
+                (p, true)
+            }
+            None if scripted => return Err("this zip is password-protected and the script gave no password".into()),
+            None => {
+                eprintln!("[archive] password for {} ({method}): asked{}", zip.display(), if wrong { " again" } else { "" });
+                match ask_password(req.hwnd, zip, method, wrong) {
+                    Some(p) => (p, false),
+                    None => {
+                        eprintln!("[archive] password for {}: cancelled", zip.display());
+                        return Ok(None);
+                    }
+                }
+            }
+        };
+        if archivewrite::check_password(zip, &password)? {
+            eprintln!("[archive] password for {}: right", zip.display());
+            return Ok(Some(protection.key(&password)));
+        }
+        eprintln!("[archive] password for {}: wrong", zip.display());
+        if scripted || from_script {
+            return Err("the password does not open this zip".into());
+        }
+        wrong = true;
+    }
+}
+
+/// The edit box's id in the password dialog.
+const PASSWORD_EDIT: i32 = 100;
+
+/// A dialog of TwinFM's own asking for `zip`'s password (a masked box, OK and Cancel), owned by
+/// the app's window and run on this worker as `ask_conflicts`' message box is. None: cancelled.
+fn ask_password(hwnd: isize, zip: &Path, method: &str, wrong: bool) -> Option<String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        BS_DEFPUSHBUTTON, BS_PUSHBUTTON, DLGTEMPLATE, DS_CENTER, DS_MODALFRAME, DS_SETFONT, DialogBoxIndirectParamW, ES_AUTOHSCROLL, ES_PASSWORD, IDCANCEL, IDOK,
+        WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    };
+    let name = zip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let text = if wrong {
+        format!("That password does not open {name}. Type it again:")
+    } else {
+        format!("{name} is password-protected. Its password, to encrypt the files added ({method}):")
+    };
+    // The template, built as 16-bit words: header, then each item DWORD-aligned.
+    let mut t: Vec<u16> = Vec::new();
+    let push32 = |t: &mut Vec<u16>, v: u32| t.extend_from_slice(&[v as u16, (v >> 16) as u16]);
+    let push_str = |t: &mut Vec<u16>, s: &str| t.extend(s.encode_utf16().chain([0]));
+    push32(&mut t, (WS_POPUP | WS_CAPTION | WS_SYSMENU) | (DS_MODALFRAME | DS_CENTER | DS_SETFONT) as u32);
+    push32(&mut t, 0);
+    t.extend_from_slice(&[4, 0, 0, 250, 80, 0, 0]);
+    push_str(&mut t, "TwinFM");
+    t.push(9);
+    push_str(&mut t, "Segoe UI");
+    let items: [(u32, [i16; 4], u16, u16, &str); 4] = [
+        (WS_CHILD | WS_VISIBLE, [7, 7, 236, 24], 0xFFFF, 0x0082, &text),
+        (WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | (ES_PASSWORD | ES_AUTOHSCROLL) as u32, [7, 34, 236, 14], PASSWORD_EDIT as u16, 0x0081, ""),
+        (WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON as u32, [139, 58, 50, 14], IDOK as u16, 0x0080, "OK"),
+        (WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32, [193, 58, 50, 14], IDCANCEL as u16, 0x0080, "Cancel"),
+    ];
+    for (style, [x, y, cx, cy], id, class, title) in items {
+        if t.len() % 2 != 0 {
+            t.push(0);
+        }
+        push32(&mut t, style);
+        push32(&mut t, 0);
+        t.extend_from_slice(&[x as u16, y as u16, cx as u16, cy as u16, id, 0xFFFF, class]);
+        push_str(&mut t, title);
+        t.push(0);
+    }
+    // DWORD-aligned memory for the template.
+    let mut aligned: Vec<u32> = vec![0; t.len().div_ceil(2)];
+    // SAFETY: `aligned` holds at least `t.len()` u16s.
+    unsafe { std::ptr::copy_nonoverlapping(t.as_ptr(), aligned.as_mut_ptr() as *mut u16, t.len()) };
+    let mut out: Option<String> = None;
+    // MODAL LOOP on this worker; no app state lives here.
+    // SAFETY: a well-formed in-memory template that outlives the call; `out` outlives the dialog,
+    // whose procedure is the only reader of the pointer passed as its init parameter.
+    unsafe {
+        DialogBoxIndirectParamW(std::ptr::null_mut(), aligned.as_ptr() as *const DLGTEMPLATE, hwnd as _, Some(password_proc), &mut out as *mut Option<String> as isize);
+    }
+    out
+}
+
+unsafe extern "system" fn password_proc(h: windows_sys::Win32::Foundation::HWND, msg: u32, wp: usize, lp: isize) -> isize {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EndDialog, GWLP_USERDATA, GetDlgItem, GetDlgItemTextW, GetWindowLongPtrW, GetWindowTextLengthW, IDCANCEL, IDOK, SetWindowLongPtrW, WM_COMMAND,
+        WM_INITDIALOG,
+    };
+    // SAFETY (each call): `h` is the dialog this procedure was given; the user data is the
+    // `Option<String>` that `ask_password` keeps alive across DialogBoxIndirectParamW.
+    unsafe {
+        match msg {
+            WM_INITDIALOG => {
+                SetWindowLongPtrW(h, GWLP_USERDATA, lp);
+                SetFocus(GetDlgItem(h, PASSWORD_EDIT));
+                0
+            }
+            WM_COMMAND => match (wp & 0xFFFF) as i32 {
+                IDOK => {
+                    let edit = GetDlgItem(h, PASSWORD_EDIT);
+                    let n = GetWindowTextLengthW(edit).max(0) as usize;
+                    let mut buf = vec![0u16; n + 1];
+                    let got = GetDlgItemTextW(h, PASSWORD_EDIT, buf.as_mut_ptr(), buf.len() as i32) as usize;
+                    let out = GetWindowLongPtrW(h, GWLP_USERDATA) as *mut Option<String>;
+                    if !out.is_null() {
+                        *out = Some(String::from_utf16_lossy(&buf[..got.min(n)]));
+                    }
+                    EndDialog(h, 1);
+                    1
+                }
+                IDCANCEL => {
+                    EndDialog(h, 0);
+                    1
+                }
+                _ => 0,
+            },
+            _ => 0,
+        }
     }
 }
 
@@ -319,7 +536,7 @@ pub fn compress(req: &Request, sources: &[PathBuf], dest_dir: &Path, fmt: archiv
 mod tests {
     use super::*;
     use crate::fileops::{Done, Worker, undo};
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::time::Duration;
 
     fn zip_names(zip: &Path) -> Vec<String> {
@@ -371,8 +588,13 @@ mod tests {
         } else {
             eprintln!("ArchiveFolder does not take .7z here: its refusals not checked");
         }
-        assert_eq!(classify(&copy(vec![b.join("x")], a.clone())).unwrap_err(), BETWEEN_ARCHIVES);
-        assert_eq!(classify(&copy(vec![a.join("x")], a.join("sub"))).unwrap_err(), BETWEEN_ARCHIVES, "within one zip too");
+        // From one zip into another, and within one (P8-L2); from another format, still refused.
+        assert!(matches!(classify(&copy(vec![b.join("x")], a.clone())), Ok(Some(Plan::FromZip { ref from, mv: false, .. })) if *from == b));
+        assert!(matches!(classify(&mv(vec![a.join("x")], a.join("sub"))), Ok(Some(Plan::FromZip { ref from, ref inner, mv: true, .. })) if *from == a && inner == "sub"), "within one zip");
+        assert_eq!(classify(&copy(vec![a.join("x"), disk.clone()], b.clone())).unwrap_err(), "the items are partly inside an archive");
+        if archive::is_archive_name("c.7z") {
+            assert_eq!(classify(&copy(vec![c.join("x")], a.clone())).unwrap_err(), between_why(&c));
+        }
         assert!(classify(&mv(vec![a.join("x"), b.join("y")], dir.clone())).is_err(), "two archives");
         assert!(classify(&mv(vec![a.join("x"), disk.clone()], dir.clone())).is_err(), "partly inside");
         assert!(matches!(classify(&Job::NewFolder { parent: a.join("sub"), name: "n".into() }), Ok(Some(Plan::New { folder: true, .. }))));
@@ -436,8 +658,10 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("out").join("d").join("g.txt")).unwrap(), b"gg");
         assert!(dir.join("out").join("d").join("New folder").is_dir());
         assert_eq!(zip_names(&z), vec!["f2.txt"]);
-        // A password-protected zip is not written (a raw copy would drop its entries' encryption
-        // flag, P7-M3's console check): refused before anything happens, the zip untouched.
+        // A password-protected zip (P8-L2): a wrong password refuses the job with the zip
+        // untouched; the right one adds the file under the zip's own encryption, and the tar.exe
+        // entries stay readable through a rename (P7-M3's console check found a raw copy that
+        // dropped their encryption flag). No move out here: the shell would ask for the password.
         let tar = Path::new(r"C:\Windows\System32\tar.exe");
         if tar.exists() {
             let pw = dir.join("pw.zip");
@@ -451,17 +675,46 @@ mod tests {
                 .unwrap();
             assert!(st.success());
             let before = std::fs::read(&pw).unwrap();
-            for job in [
-                Job::Copy { sources: vec![dir.join("src").join("f.txt")], dest_dir: pw.clone() },
-                Job::Rename { source: pw.join("d"), new_name: "e".into() },
-                Job::Move { sources: vec![pw.join("d")], dest_dir: dir.join("src") },
-            ] {
-                let d = run(job);
-                assert_eq!(d.outcome, Outcome::Error(PASSWORD.into()), "{:?}", d.job);
+            script_password("nope");
+            let d = run(Job::Copy { sources: vec![dir.join("src").join("f.txt")], dest_dir: pw.clone() });
+            assert_eq!(d.outcome, Outcome::Error("the password does not open this zip".into()));
+            assert_eq!(std::fs::read(&pw).unwrap(), before, "a wrong password writes nothing");
+            script_password("x");
+            let d = run(Job::Copy { sources: vec![dir.join("src").join("f.txt")], dest_dir: pw.clone() });
+            assert_eq!(d.outcome, Outcome::Done);
+            let d = run(Job::Rename { source: pw.join("d"), new_name: "e".into() });
+            assert_eq!(d.outcome, Outcome::Done, "a rename needs no password");
+            let mut za = zip::ZipArchive::new(std::fs::File::open(&pw).unwrap()).unwrap();
+            for (name, data) in [("f.txt", &b"file"[..]), ("e/g.txt", &b"gg"[..])] {
+                let mut f = za.by_name_decrypt(name, b"x").unwrap();
+                assert!(f.encrypted(), "{name} is encrypted");
+                let mut v = Vec::new();
+                f.read_to_end(&mut v).unwrap();
+                assert_eq!(v, data, "{name}");
             }
-            assert_eq!(std::fs::read(&pw).unwrap(), before, "the protected zip is untouched");
-            assert!(!dir.join("src").join("d").join("New folder").exists(), "nothing was extracted");
         }
+        // From one zip into another, and within one (P8-L2): entries copied as bytes.
+        let z2 = dir.join("t2.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&z2).unwrap());
+        w.start_file("keep.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        w.write_all(b"keep").unwrap();
+        w.finish().unwrap();
+        let d = run(Job::Copy { sources: vec![z.join("f2.txt")], dest_dir: z2.clone() });
+        assert_eq!((d.outcome.clone(), d.results[0].dest.clone()), (Outcome::Done, Some(z2.join("f2.txt"))));
+        assert_eq!(zip_names(&z2), vec!["f2.txt", "keep.txt"]);
+        assert_eq!(zip_names(&z), vec!["f2.txt"], "a copy leaves the source zip as it was");
+        let d = run(Job::Copy { sources: vec![z2.join("keep.txt")], dest_dir: z2.clone() });
+        assert_eq!(d.results[0].dest, Some(z2.join("keep - Copy.txt")), "a copy into its own folder");
+        let d = run(Job::Move { sources: vec![z2.join("keep - Copy.txt")], dest_dir: z.clone() });
+        assert_eq!(d.outcome, Outcome::Done);
+        assert_eq!((zip_names(&z), zip_names(&z2)), (vec!["f2.txt".to_string(), "keep - Copy.txt".into()], vec!["f2.txt".to_string(), "keep.txt".into()]));
+        let d = run(Job::NewFolder { parent: z2.clone(), name: "sub".into() });
+        assert_eq!(d.outcome, Outcome::Done);
+        let d = run(Job::Move { sources: vec![z2.join("keep.txt")], dest_dir: z2.join("sub") });
+        assert_eq!(d.outcome, Outcome::Done);
+        assert_eq!(zip_names(&z2), vec!["f2.txt", "sub/", "sub/keep.txt"], "a move within one zip renames");
+        let d = run(Job::Move { sources: vec![z2.join("sub")], dest_dir: z2.join("sub") });
+        assert_eq!(d.outcome, Outcome::Error("sub cannot go into itself".into()));
         // Refused on the worker too (a job queued by another path).
         if archive::is_archive_name("r.7z") {
             let d = run(Job::Copy { sources: vec![dir.join("src").join("f.txt")], dest_dir: dir.join("r.7z") });
