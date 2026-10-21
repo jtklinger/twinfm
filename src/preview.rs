@@ -19,6 +19,7 @@
 //! picture block and a note with its size and format) take the same path.
 
 use crate::markdown::{self, Block, Kind};
+use crate::office::{self, OfficeKind};
 use crate::{App, MdBlock, MdCell, MdRow, PreviewPage};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, StyledText, Timer, TimerMode, VecModel};
@@ -57,6 +58,8 @@ pub const CLOUD: &str = "Not previewed: the file is in the cloud and not downloa
 pub const ARCHIVE: &str = "Not previewed inside an archive";
 pub const UNREADABLE: &str = "This file could not be read";
 pub const PICTURE_UNREADABLE: &str = "This picture could not be read";
+pub const OFFICE_UNREADABLE: &str = "This document could not be read";
+pub const OFFICE_PASSWORD: &str = "Password-protected document: not previewed";
 /// A Markdown file's pictures share this many bytes of decoded pixels (RGBA); one past it shows
 /// its alt text. A picture file shown alone is scaled down to fit it (`fit_px`).
 pub const PIXEL_BUDGET: u64 = 64 << 20;
@@ -139,6 +142,8 @@ pub enum Class {
     Text,
     Picture,
     Html,
+    /// Word, Excel or PowerPoint (P9-M3).
+    Office(OfficeKind),
 }
 
 impl Class {
@@ -148,7 +153,7 @@ impl Class {
             Class::Folder | Class::Other => Some(NO_PREVIEW),
             Class::Archive => Some(ARCHIVE),
             Class::CloudOnly => Some(CLOUD),
-            Class::Pdf | Class::Markdown | Class::Text | Class::Picture | Class::Html => None,
+            Class::Pdf | Class::Markdown | Class::Text | Class::Picture | Class::Html | Class::Office(_) => None,
         }
     }
 
@@ -164,6 +169,7 @@ impl Class {
             Class::Text => "text",
             Class::Picture => "picture",
             Class::Html => "html",
+            Class::Office(k) => k.label(),
         }
     }
 }
@@ -174,7 +180,7 @@ fn cloud_only(attrs: u32) -> bool {
 }
 
 /// Classify from the listing's facts: a folder, then the type (by the extension, any case: PDF,
-/// Markdown, and since P9-M2 the text, picture and HTML lists), then where it lies. `in_archive` is
+/// Markdown, since P9-M2 the text, picture and HTML lists, since P9-M3 Office files), then where it lies. `in_archive` is
 /// asked only for a previewed type (it may cost a file system query on an archive-named
 /// component); the cloud test is the listing's attributes, so nothing is read.
 pub fn classify(name: &str, attrs: u32, is_dir: bool, in_archive: impl FnOnce() -> bool) -> Class {
@@ -190,6 +196,8 @@ pub fn classify(name: &str, attrs: u32, is_dir: bool, in_archive: impl FnOnce() 
         Class::Picture
     } else if on(HTML_EXTS) {
         Class::Html
+    } else if let Some(k) = OfficeKind::of(ext) {
+        Class::Office(k)
     } else {
         Class::Other
     };
@@ -280,7 +288,8 @@ pub struct Target {
 /// To the worker.
 #[derive(Debug)]
 enum Req {
-    Open { seq: u64, pane: usize, path: PathBuf, attrs: u32, is_dir: bool },
+    /// `sheet`: the Excel sheet to show (P9-M3; 0, the first, for any other file).
+    Open { seq: u64, pane: usize, path: PathBuf, attrs: u32, is_dir: bool, sheet: usize },
     /// Render page `page` (0-based) at `width_px`.
     Page { seq: u64, page: usize, width_px: u32 },
     /// Close the document (the column was hidden, or the cursor is on no file).
@@ -373,8 +382,8 @@ fn worker(rx: Receiver<Req>, keep: Arc<Mutex<Keep>>, reply: impl Fn(Reply)) {
             },
         };
         // A page or a close with no document open belongs to a generation that is gone.
-        if let Req::Open { seq, pane, path, attrs, is_dir } = req {
-            next = serve(&mut inbox, &keep, &reply, seq, pane, &path, attrs, is_dir);
+        if let Req::Open { seq, pane, path, attrs, is_dir, sheet } = req {
+            next = serve(&mut inbox, &keep, &reply, seq, pane, &path, attrs, is_dir, sheet);
         }
     }
 }
@@ -382,7 +391,7 @@ fn worker(rx: Receiver<Req>, keep: Arc<Mutex<Keep>>, reply: impl Fn(Reply)) {
 /// Classify and open one file, answer, then render its pages until a newer request arrives (that
 /// request is returned) or the document cannot go on.
 #[allow(clippy::too_many_arguments)]
-fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path, attrs: u32, is_dir: bool) -> Option<Req> {
+fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path, attrs: u32, is_dir: bool, sheet: usize) -> Option<Req> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let class = classify(&name, attrs, is_dir, || crate::fs::archive::within(path));
     if let Some(text) = class.message() {
@@ -397,6 +406,10 @@ fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64
         }
         Class::Picture => {
             serve_picture(reply, seq, pane, path);
+            return None;
+        }
+        Class::Office(kind) => {
+            serve_office(keep, reply, seq, pane, path, kind, sheet);
             return None;
         }
         _ => {}
@@ -589,7 +602,7 @@ fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usiz
         eprintln!("[preview] gen={seq} image {src}: alt text (remote)");
     }
     reply(Reply::Blocks { seq, blocks: shown, anchors, pictures });
-    decode_pictures(keep, reply, seq, &blocks, &base, pictures);
+    decode_pictures(keep, reply, seq, &blocks, Pics::Folder(&base), pictures);
 }
 
 /// The blocks as the worker sends them, each paragraph's, heading's and cell's styled text made,
@@ -628,10 +641,80 @@ fn shown_blocks(blocks: &[Block], seq: u64) -> (Vec<Shown>, Vec<String>, usize) 
     (shown, anchors, fell)
 }
 
+/// A Word, Excel or PowerPoint file (P9-M3): opened as a zip, read into blocks by office.rs under
+/// `catch_unwind` (stopping between parts when a newer file is asked for), answered, then its
+/// pictures decoded from the zip. A password-protected file is told from its OLE wrapper.
+fn serve_office(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path, kind: OfficeKind, sheet: usize) {
+    let t0 = Instant::now();
+    let go_on = || keep.lock().unwrap_or_else(|e| e.into_inner()).seq == seq;
+    let parsed = (|| -> Result<office::Parsed, String> {
+        let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut head = Vec::new();
+        (&mut f).take(64 * 1024).read_to_end(&mut head).map_err(|e| e.to_string())?;
+        if office::password_protected(&head) {
+            return Err("password".into());
+        }
+        let mut za = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| format!("not a zip: {e}"))?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| office::parse(&mut za, kind, sheet, &go_on))).unwrap_or_else(|p| {
+            let msg = panic_text(&*p);
+            eprintln!("[preview] worker panicked on {}: {msg}", path.display());
+            Err(format!("panicked: {msg}"))
+        })
+    })();
+    let parsed = match parsed {
+        Ok(p) => p,
+        Err(why) if why == "superseded" => {
+            eprintln!("[preview] gen={seq} superseded: the document's reading stopped");
+            return;
+        }
+        Err(why) if why == "password" => {
+            eprintln!("[preview] pane={pane} gen={seq} {}: password", path.display());
+            reply(Reply::Message { seq, text: OFFICE_PASSWORD });
+            return;
+        }
+        Err(why) => {
+            eprintln!("[preview] pane={pane} gen={seq} {}: unreadable: {why}", path.display());
+            reply(Reply::Message { seq, text: OFFICE_UNREADABLE });
+            return;
+        }
+    };
+    let mut blocks = parsed.blocks;
+    if parsed.cut {
+        blocks.insert(0, Block { kind: Kind::Note, plain: office::CUT_NOTE.into(), ..Default::default() });
+    }
+    if blocks.is_empty() {
+        blocks.push(Block { kind: Kind::Note, plain: "This document has no text to show.".into(), ..Default::default() });
+    }
+    let (shown, anchors, fell) = shown_blocks(&blocks, seq);
+    let pictures = blocks.iter().filter(|b| b.kind == Kind::Image).count();
+    eprintln!(
+        "[preview] pane={pane} gen={seq} {}: {}, parsed in {:.0} ms{}",
+        path.display(),
+        parsed.summary,
+        crate::perf::elapsed_ms(t0),
+        if parsed.cut { ", cut at 64 MB" } else { "" }
+    );
+    if fell > FALLBACK_LINES {
+        eprintln!("[preview] gen={seq} {} more block(s) fell back to plain", fell - FALLBACK_LINES);
+    }
+    reply(Reply::Blocks { seq, blocks: shown, anchors, pictures });
+    decode_pictures(keep, reply, seq, &blocks, Pics::Zip(path), pictures);
+}
+
+/// Where a document's pictures come from: files beside it (Markdown, HTML), or the parts of an Office
+/// file's zip by name (P9-M3).
+#[derive(Clone, Copy)]
+enum Pics<'a> {
+    Folder(&'a Path),
+    Zip(&'a Path),
+}
+
 /// Decode a document's local pictures one at a time, each answered as it is done, until they are
 /// all done or the UI has moved to another file.
-fn decode_pictures(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, blocks: &[Block], base: &Path, pictures: usize) {
+fn decode_pictures(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, blocks: &[Block], from: Pics, pictures: usize) {
     let mut budget = PIXEL_BUDGET;
+    // An Office file's zip, opened at its first picture.
+    let mut zip: Option<Result<zip::ZipArchive<std::io::BufReader<std::fs::File>>, String>> = None;
     let mut left = pictures;
     // A file shown more than once (an icon repeated down a page) is decoded and counted once.
     let mut done: HashMap<PathBuf, Result<SharedPixelBuffer<Rgba8Pixel>, String>> = HashMap::new();
@@ -643,13 +726,29 @@ fn decode_pictures(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, blocks:
         }
         left -= 1;
         let t = Instant::now();
-        let got = match markdown::image_path(&b.src, base) {
+        let key = match from {
+            Pics::Folder(base) => markdown::image_path(&b.src, base),
+            Pics::Zip(_) => Some(PathBuf::from(&b.src)),
+        };
+        let got = match key {
             Some(p) => done
                 .entry(p)
                 .or_insert_with_key(|p| {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| picture(p, &mut budget)))
-                        .unwrap_or_else(|p| Err(format!("failed: panicked: {}", panic_text(&*p))))
-                        .map(|img| SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(img.as_raw(), img.width(), img.height()))
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match from {
+                        Pics::Folder(_) => picture(p, &mut budget),
+                        Pics::Zip(file) => {
+                            if zip.is_none() {
+                                zip = Some(std::fs::File::open(file).map_err(|e| e.to_string()).and_then(|f| zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| e.to_string())));
+                            }
+                            let za = zip.as_mut().expect("opened above").as_mut().map_err(|e| format!("failed: {e}"))?;
+                            let mut entry = za.by_name(&b.src).map_err(|_| "missing".to_string())?;
+                            let mut data = Vec::new();
+                            (&mut entry).take(DECODE_MAX).read_to_end(&mut data).map_err(|e| fail(&e))?;
+                            picture_bytes(&b.src, &data, &mut budget)
+                        }
+                    }))
+                    .unwrap_or_else(|p| Err(format!("failed: panicked: {}", panic_text(&*p))))
+                    .map(|img| SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(img.as_raw(), img.width(), img.height()))
                 })
                 .clone(),
             None => Err("remote".into()),
@@ -745,14 +844,33 @@ fn lone_picture(path: &Path) -> Result<(image::RgbaImage, (u32, u32), &'static s
 /// (`missing`, `cloud-only`, `over the budget`, `failed: ...`).
 fn picture(path: &Path, budget: &mut u64) -> Result<image::RgbaImage, String> {
     let (img, _) = decode_picture(path, *budget)?;
+    Ok(doc_fit(img, budget))
+}
+
+/// A picture stored in an Office file (P9-M3), from its bytes, as `picture` does for a file.
+fn picture_bytes(name: &str, data: &[u8], budget: &mut u64) -> Result<image::RgbaImage, String> {
+    let (img, _) = decode_bytes(name, data, *budget)?;
+    Ok(doc_fit(img, budget))
+}
+
+/// A document's picture's decoded size taken from the budget, then scaled to `MAX_SIDE`.
+fn doc_fit(img: image::RgbaImage, budget: &mut u64) -> image::RgbaImage {
     let (w, h) = img.dimensions();
     *budget -= u64::from(w) * u64::from(h) * 4;
     if w.max(h) <= MAX_SIDE {
-        return Ok(img);
+        return img;
     }
     let f = f64::from(MAX_SIDE) / f64::from(w.max(h));
     let (nw, nh) = ((f64::from(w) * f).round().max(1.0) as u32, (f64::from(h) * f).round().max(1.0) as u32);
-    Ok(image::imageops::resize(&img, nw.min(MAX_SIDE), nh.min(MAX_SIDE), image::imageops::FilterType::Triangle))
+    image::imageops::resize(&img, nw.min(MAX_SIDE), nh.min(MAX_SIDE), image::imageops::FilterType::Triangle)
+}
+
+fn fail(e: &dyn std::fmt::Display) -> String {
+    format!("failed: {e}")
+}
+
+fn is_svg(name: &str) -> bool {
+    Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"))
 }
 
 /// A picture file decoded to straight RGBA, upright (a JPEG's EXIF orientation applied, P9-M2), an
@@ -766,34 +884,49 @@ fn decode_picture(path: &Path, max: u64) -> Result<(image::RgbaImage, &'static s
         Some(a) if cloud_only(a) => return Err("cloud-only".into()),
         Some(_) => {}
     }
-    let fail = |e: &dyn std::fmt::Display| format!("failed: {e}");
-    let svg = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"));
-    if svg {
+    if is_svg(&path.to_string_lossy()) {
         let f = std::fs::File::open(path).map_err(|e| fail(&e))?;
         if f.metadata().map_err(|e| fail(&e))?.len() > SVG_MAX_BYTES {
             return Err("failed: an SVG over 16 MB".into());
         }
         let mut data = Vec::new();
         f.take(SVG_MAX_BYTES).read_to_end(&mut data).map_err(|e| fail(&e))?;
-        // No fonts are loaded: text in an SVG is not drawn.
-        let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).map_err(|e| fail(&e))?;
-        let size = tree.size();
-        let (sw, sh) = (size.width(), size.height());
-        let f = (MAX_SIDE as f32 / sw.max(sh)).min(1.0);
-        let (w, h) = ((sw * f).ceil().max(1.0) as u32, (sh * f).ceil().max(1.0) as u32);
-        if u64::from(w) * u64::from(h) * 4 > max {
-            return Err("over the budget".into());
-        }
-        let mut pm = resvg::tiny_skia::Pixmap::new(w, h).ok_or_else(|| "failed: an empty picture".to_string())?;
-        resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(w as f32 / sw, h as f32 / sh), &mut pm.as_mut());
-        let rgba = pm.pixels().iter().flat_map(|p| {
-            let c = p.demultiply();
-            [c.red(), c.green(), c.blue(), c.alpha()]
-        });
-        return Ok((image::RgbaImage::from_raw(w, h, rgba.collect()).ok_or_else(|| "failed: a bad size".to_string())?, "SVG"));
+        return svg(&data, max);
     }
+    raster(|| image::ImageReader::open(path).map_err(|e| fail(&e))?.with_guessed_format().map_err(|e| fail(&e)), max)
+}
+
+/// `decode_picture` for a picture held in memory, `name` telling an SVG.
+fn decode_bytes(name: &str, data: &[u8], max: u64) -> Result<(image::RgbaImage, &'static str), String> {
+    if is_svg(name) {
+        return svg(data, max);
+    }
+    raster(|| image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().map_err(|e| fail(&e)), max)
+}
+
+/// An SVG drawn at its own size, at most `MAX_SIDE` a side. No fonts are loaded: its text is not drawn.
+fn svg(data: &[u8], max: u64) -> Result<(image::RgbaImage, &'static str), String> {
+    let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).map_err(|e| fail(&e))?;
+    let size = tree.size();
+    let (sw, sh) = (size.width(), size.height());
+    let f = (MAX_SIDE as f32 / sw.max(sh)).min(1.0);
+    let (w, h) = ((sw * f).ceil().max(1.0) as u32, (sh * f).ceil().max(1.0) as u32);
+    if u64::from(w) * u64::from(h) * 4 > max {
+        return Err("over the budget".into());
+    }
+    let mut pm = resvg::tiny_skia::Pixmap::new(w, h).ok_or_else(|| "failed: an empty picture".to_string())?;
+    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(w as f32 / sw, h as f32 / sh), &mut pm.as_mut());
+    let rgba = pm.pixels().iter().flat_map(|p| {
+        let c = p.demultiply();
+        [c.red(), c.green(), c.blue(), c.alpha()]
+    });
+    Ok((image::RgbaImage::from_raw(w, h, rgba.collect()).ok_or_else(|| "failed: a bad size".to_string())?, "SVG"))
+}
+
+/// A raster picture through the `image` crate, its size read first (`over the budget` past `max`),
+/// then decoded under limits and turned upright.
+fn raster<R: std::io::BufRead + std::io::Seek>(open: impl Fn() -> Result<image::ImageReader<R>, String>, max: u64) -> Result<(image::RgbaImage, &'static str), String> {
     use image::ImageDecoder;
-    let open = || image::ImageReader::open(path).map_err(|e| fail(&e))?.with_guessed_format().map_err(|e| fail(&e));
     let (w, h) = open()?.into_dimensions().map_err(|e| fail(&e))?;
     let bytes = u64::from(w) * u64::from(h) * 4;
     if bytes > max {
@@ -868,6 +1001,8 @@ struct Ui {
     seq: u64,
     /// The file the current generation previews.
     shown: Option<PathBuf>,
+    /// What it was asked for with (an Excel sheet link opens the same file again, P9-M3).
+    target: Option<Target>,
     /// Waiting for the worker's answer to the open.
     opening: bool,
     doc: Doc,
@@ -924,6 +1059,7 @@ pub fn init(app: &App) {
             anchor_timer: Timer::default(),
             seq: 0,
             shown: None,
+            target: None,
             opening: false,
             doc: Doc::None,
             page_w: 0.0,
@@ -949,7 +1085,7 @@ pub fn set_visible(on: bool) {
         u.settle_timer.stop();
         u.width_timer.stop();
         u.anchor_timer.stop();
-        u.show(None);
+        u.show(None, 0);
         if on {
             // On the next turn of the event loop, once the column has its width.
             u.settle_timer.start(TimerMode::SingleShot, Duration::from_millis(1), refresh);
@@ -986,7 +1122,7 @@ fn refresh() {
     let target = crate::preview_target();
     with_ui(|u| {
         if target.as_ref().map(|t| &t.path) != u.shown.as_ref() {
-            u.show(target);
+            u.show(target, 0);
         }
     });
 }
@@ -1164,6 +1300,25 @@ pub fn link(dest: SharedString) {
                 }
             }
         }
+        // An Excel file's sheet link (P9-M3): the same file again with that sheet. The sheet
+        // heading's anchors name every sheet there is.
+        markdown::Link::Anchor(slug) if slug.starts_with("sheet=") => {
+            let known = with_ui(|u| match &u.doc {
+                Doc::Markdown(m) => m.anchors.iter().any(|a| a.split(' ').any(|x| x == slug)),
+                _ => false,
+            });
+            let n = slug["sheet=".len()..].parse::<usize>().ok().filter(|n| *n >= 1);
+            match (known, n) {
+                (Some(true), Some(n)) => {
+                    eprintln!("[preview] link \"{dest}\": sheet {n}");
+                    with_ui(|u| {
+                        let target = u.target.clone();
+                        u.show(target, n - 1);
+                    });
+                }
+                _ => eprintln!("[preview] link \"{dest}\": refused: no sheet {}", &slug["sheet=".len()..]),
+            }
+        }
         markdown::Link::Anchor(slug) => match with_ui(|u| match &u.doc {
             Doc::Markdown(m) => m.anchors.iter().position(|a| a.split(' ').any(|x| x == slug)),
             _ => None,
@@ -1228,8 +1383,9 @@ fn scroll_to_block(k: usize) {
 }
 
 impl Ui {
-    /// A new generation for `target` (None: no file), the column emptied for it.
-    fn show(&mut self, target: Option<Target>) {
+    /// A new generation for `target` (None: no file), the column emptied for it; `sheet` the Excel
+    /// sheet to show.
+    fn show(&mut self, target: Option<Target>, sheet: usize) {
         self.seq += 1;
         self.keep.lock().unwrap_or_else(|e| e.into_inner()).seq = self.seq;
         self.doc = Doc::None;
@@ -1237,6 +1393,7 @@ impl Ui {
         self.pages.set_vec(Vec::new());
         self.blocks.set_vec(Vec::new());
         self.shown = target.as_ref().map(|t| t.path.clone());
+        self.target = target.clone();
         self.opening = target.is_some();
         if let Some(app) = self.app.upgrade() {
             let title = target.as_ref().and_then(|t| t.path.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1247,7 +1404,7 @@ impl Ui {
             app.invoke_preview_set_scroll(0.0);
         }
         let _ = self.tx.send(match target {
-            Some(t) => Req::Open { seq: self.seq, pane: t.pane, path: t.path, attrs: t.attrs, is_dir: t.is_dir },
+            Some(t) => Req::Open { seq: self.seq, pane: t.pane, path: t.path, attrs: t.attrs, is_dir: t.is_dir, sheet },
             None => Req::Close,
         });
     }
@@ -1398,7 +1555,13 @@ mod tests {
         assert_eq!(classify("a.html", RECALL, false, || false), Class::CloudOnly);
         assert_eq!(classify("phone.heic", 0, false, never), Class::Other, "HEIC is not previewed");
         assert_eq!(classify("Makefile", 0, false, never), Class::Other, "no extension, no guess");
-        for c in [Class::Text, Class::Picture, Class::Html] {
+        // Office files (P9-M3): the Open XML formats and their macro-enabled forms; not the binary ones.
+        assert_eq!(classify("Report.DOCX", 0, false, || false), Class::Office(OfficeKind::Docx));
+        assert_eq!(classify("book.xlsm", 0, false, || false), Class::Office(OfficeKind::Xlsx));
+        assert_eq!(classify("deck.pptx", RECALL, false, || false), Class::CloudOnly);
+        assert_eq!(classify("old.doc", 0, false, never), Class::Other);
+        assert_eq!(classify("old.xls", 0, false, never), Class::Other);
+        for c in [Class::Text, Class::Picture, Class::Html, Class::Office(OfficeKind::Pptx)] {
             assert_eq!(c.message(), None);
         }
     }
@@ -1515,7 +1678,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0 };
 
         tx.send(open(1, &md)).unwrap();
         match recv() {
@@ -1582,7 +1745,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0 };
 
         // Text: code blocks of 40 lines, tabs as spaces, no pictures.
         tx.send(open(1, &txt)).unwrap();
@@ -1645,6 +1808,70 @@ mod tests {
         keep.lock().unwrap().seq = 8;
         tx.send(open(8, &empty)).unwrap();
         assert!(matches!(recv(), Reply::Blocks { seq: 8, blocks, .. } if blocks.len() == 1 && blocks[0].code == "This file is empty."));
+
+        drop(tx);
+        w.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_worker_previews_office_files() {
+        use crate::office::tests::{docx_fixture, pptx_fixture, xlsx_fixture};
+        let dir = std::env::temp_dir().join(format!("twinfm-p9m3-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (docx, xlsx, pptx) = (dir.join("report.docx"), dir.join("table.XLSX"), dir.join("deck.pptm"));
+        std::fs::write(&docx, docx_fixture()).unwrap();
+        std::fs::write(&xlsx, xlsx_fixture()).unwrap();
+        std::fs::write(&pptx, pptx_fixture()).unwrap();
+        let (not_zip, locked) = (dir.join("plain.xlsx"), dir.join("locked.docx"));
+        std::fs::write(&not_zip, b"just text").unwrap();
+        let mut ole = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+        ole.extend(vec![0u8; 512]);
+        ole.extend("EncryptionInfo".encode_utf16().flat_map(u16::to_le_bytes));
+        std::fs::write(&locked, ole).unwrap();
+
+        let (tx, rx) = unbounded();
+        let (rtx, rrx) = std::sync::mpsc::channel::<Reply>();
+        let keep = Arc::new(Mutex::new(Keep { seq: 1, ..Default::default() }));
+        let k2 = keep.clone();
+        let rtx = Mutex::new(rtx);
+        let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
+        let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
+        let open = |seq, path: &Path, sheet| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet };
+
+        // Word: its blocks, then its picture from the zip.
+        tx.send(open(1, &docx, 0)).unwrap();
+        match recv() {
+            Reply::Blocks { seq: 1, blocks, anchors, pictures: 1 } => {
+                assert_eq!(blocks.len(), 15);
+                assert_eq!(anchors[1], "intro intro--more", "a bookmark and the heading's slug");
+                assert_eq!((blocks[14].kind, blocks[14].alt.as_str()), (Kind::Image, "A red dot"));
+            }
+            _ => panic!("the docx"),
+        }
+        assert!(matches!(recv(), Reply::Picture { seq: 1, block: 14, pic: Some(b), physical: false } if (b.width(), b.height()) == (1, 1)));
+        // Excel: the sheet asked for.
+        keep.lock().unwrap().seq = 2;
+        tx.send(open(2, &xlsx, 1)).unwrap();
+        match recv() {
+            Reply::Blocks { seq: 2, blocks, anchors, .. } => {
+                assert_eq!(blocks[0].text, StyledText::from_markdown("**Second**").unwrap());
+                assert_eq!(anchors[0], "sheet=1 sheet=2 sheet=3 sheet=4 second");
+            }
+            _ => panic!("the xlsx"),
+        }
+        // PowerPoint (a macro-enabled one reads as its plain form), and its picture.
+        keep.lock().unwrap().seq = 3;
+        tx.send(open(3, &pptx, 0)).unwrap();
+        assert!(matches!(recv(), Reply::Blocks { seq: 3, pictures: 1, .. }));
+        assert!(matches!(recv(), Reply::Picture { seq: 3, pic: Some(_), .. }));
+        // Not a zip, and a password-protected file.
+        keep.lock().unwrap().seq = 4;
+        tx.send(open(4, &not_zip, 0)).unwrap();
+        assert!(matches!(recv(), Reply::Message { seq: 4, text: OFFICE_UNREADABLE }));
+        keep.lock().unwrap().seq = 5;
+        tx.send(open(5, &locked, 0)).unwrap();
+        assert!(matches!(recv(), Reply::Message { seq: 5, text: OFFICE_PASSWORD }));
 
         drop(tx);
         w.join().unwrap();
@@ -1750,7 +1977,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0 };
 
         tx.send(open(1, &pdf)).unwrap();
         match recv() {
@@ -1779,7 +2006,7 @@ mod tests {
         assert!(matches!(recv(), Reply::Message { seq: 2, text: DAMAGED }));
         tx.send(open(3, &txt)).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 3, text: NO_PREVIEW }));
-        tx.send(Req::Open { seq: 4, pane: 0, path: dir.clone(), attrs: 0x10, is_dir: true }).unwrap();
+        tx.send(Req::Open { seq: 4, pane: 0, path: dir.clone(), attrs: 0x10, is_dir: true, sheet: 0 }).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 4, text: NO_PREVIEW }));
         tx.send(open(5, &dir.join("missing.pdf"))).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 5, text: DAMAGED }), "a file that cannot be read");

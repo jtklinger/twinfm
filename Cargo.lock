@@ -4892,6 +4892,7 @@ dependencies = [
  "hayro",
  "image",
  "pulldown-cmark",
+ "quick-xml",
  "raw-window-handle",
  "resvg",
  "roxmltree",

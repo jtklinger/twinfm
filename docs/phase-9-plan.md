@@ -311,8 +311,8 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   Rust decoders do not cover them; the shell's thumbnail cache does, at thumbnail size only).
 - HTML is read into the Markdown block list, scripts and styles dropped, nothing executed; the
   parser crate is chosen by the pin check in the P9-M2 brief, a hand-written scanner the fallback.
-- Office files are read with `zip` and `roxmltree` and no Office crate unless the pin check finds one
-  that adds nothing beyond those two; Excel shows one sheet at a time (500 rows by 50 columns), the
+- Office files are read with `zip` and a streaming XML reader (`quick-xml`, the bullet above) and no
+  Office crate unless the pin check finds one that adds nothing beyond those two; Excel shows one sheet at a time (500 rows by 50 columns), the
   first by default, the others through links at the top; PowerPoint shows one block group per slide
   with a rule between; the binary `.doc`, `.xls`, `.ppt` are not previewed.
 - Thumbnails inside archive levels stay off (the shell cannot see inside an archive without
@@ -890,3 +890,261 @@ each beside the program that normally opens it where there is one:
 10. A page of nothing but a script: "This page has no text to show."
 11. A `.heic` photo and a file with no extension: "No preview".
 12. The column's width dragged with a picture and with a long text shown: both follow the width.
+
+## P9-M3: Word, Excel and PowerPoint in the preview
+
+Branch `claude/p9-m3-office-preview`, from 192d388 (P9-M2 merged).
+
+### Settled first (2026-10-21, before any code)
+
+**The pin check**: `quick-xml =0.41.0` (MIT), default features off (no `encoding`, no `serde`). It is
+already in `Cargo.lock` at that version (Slint's winit backend builds `wayland-scanner` on Linux, which
+reads its protocol files with it), so TwinFM's dependency adds one edge to the lock and no crate; its
+one dependency, `memchr`, is in already. 0.42.0 exists; pinning 0.41.0 keeps one copy. No Office
+crate: those found (`docx-rs`, `calamine`, the `ooxml` family) each bring their own XML reader or a
+serde tree and read a part whole, which is what the 64 MB cap is there to avoid. The kickoff's § Calls
+made read "`zip` and `roxmltree`" for Office files in one bullet while another and the milestone's own
+text named the streaming reader; that bullet now agrees (2026-10-21, the coordinator's note on #89).
+
+**The reading** (`src/office.rs`, pure but for the zip it is given; the worker opens the file):
+the file opened with `zip` (already in), each part read once through `quick_xml::Reader` from the
+zip's stream with at most `OFFICE_MAX_XML` (64 MB) read from any one part; past it the blocks so far
+and a Note "Only the first part of this document is shown." first. The type by extension:
+`.docx .docm`, `.xlsx .xlsm`, `.pptx .pptm` (`OFFICE_EXTS`, any case; `Class::Office`, the archive and
+cloud checks as for a PDF). `.doc .xls .ppt` stay "No preview". A file that is not a zip, or has no
+main part: "This document could not be read". A password-protected Office file is an OLE compound file,
+not a zip: when its first bytes are the OLE signature (`D0 CF 11 E0 A1 B1 1A E1`) and its first 64 KB
+hold the stream name `EncryptionInfo` (in UTF-16), the column reads "Password-protected document: not
+previewed", else "This document could not be read".
+
+**Word** (`word/document.xml`, with `word/styles.xml`, `word/numbering.xml` and
+`word/_rels/document.xml.rels` read first when present):
+
+- A paragraph (`w:p`) is a block. Its style (`w:pStyle`) is looked up in `styles.xml`: a style named
+  `heading 1` to `heading 6` (Word's built-in names are English whatever the language of the
+  program; the ids are not), or `Title`, or with `w:outlineLvl` 0 to 5, is a heading of that level
+  (`Title` 1); with no `styles.xml` the ids `Heading1` to `Heading6` and `Title` are taken as they
+  are.
+- A paragraph with `w:numPr` is a list item at `w:ilvl` + 1, its marker from `numbering.xml` (the
+  `w:num`'s abstract numbering, that level's `w:numFmt`): `bullet` a bullet by depth as Markdown's,
+  `decimal` `1.`, `lowerLetter` `a.`, `upperLetter` `A.`, `lowerRoman` `i.`, `upperRoman` `I.`, any
+  other `1.`; numbers counted by TwinFM per list and level, starting at the level's `w:start`, a
+  deeper level's count reset when a shallower item comes.
+- Runs: `w:t` text, `w:tab` a space, `w:br` a line break (`w:type="page"` a rule after the
+  paragraph), `w:pageBreakBefore` a rule before it; bold `w:b`, italic `w:i` (unless `w:val` is `0`
+  or `false`), and a run in a monospace font (`w:rFonts` ascii: Consolas, Courier New, Courier, Lucida
+  Console, Cascadia Code, Cascadia Mono) a code span; neighbouring runs with the same formatting
+  written as one. `w:hyperlink` with `r:id` a link to the relationship's target, with `w:anchor` a
+  `#anchor` link; `w:bookmarkStart`'s name anchors the paragraph (so a table of contents' links
+  scroll).
+- Tables (`w:tbl`, `w:tr`, `w:tc`): a table as Markdown's, a cell's paragraphs joined by line breaks,
+  a row with `w:tblHeader` a head row, a table inside a cell flowing its text into the cell.
+- Pictures: `a:blip r:embed` through the relationships to `word/media/...`, decoded from the zip
+  through the P8-M2 picture path and the 64 MB budget (EXIF orientation applied), the alt text from
+  `wp:docPr descr` (else its `name`); EMF and WMF pictures are not decoded (their alt text shows).
+- Dropped: footnote and endnote references and their parts, comments, headers and footers (never
+  read), deleted text (`w:del`), field codes (`w:instrText`; the field's shown result is kept), and
+  `mc:Fallback` (the older copy of what `mc:Choice` holds, so a text box is not read twice). A text
+  box's paragraphs (`w:txbxContent`) come as their own blocks after the paragraph they sit in.
+
+**Excel** (`xl/workbook.xml` and its relationships, `xl/sharedStrings.xml`, `xl/styles.xml`):
+
+- One sheet at a time, the first by default: a level-1 heading naming it, then (with two sheets or
+  more) a paragraph of links `Sheet1 | Sheet2 | ...` (the shown one bold, not a link; each other a
+  `#sheet=N` link, N counted from 1), then the sheet's table. A link `#sheet=N` clicked (or
+  `previewlink #sheet=N`) previews the same file again with that sheet: a new generation, the column
+  at its top. A chart sheet (its target under `chartsheets/`) shows the heading, the links and a Note
+  "Chart sheets are not previewed". A hidden sheet is listed with " (hidden)" after its name.
+- The sheet's cells are read in order and reading stops after 500 rows (`XLSX_MAX_ROWS`) counted from
+  the first row with a value, so a 100,000-row sheet costs its first 500 rows; then
+  `sharedStrings.xml` is read only up to the highest index those rows use. Columns: from the first
+  column with a value, at most 50 (`XLSX_MAX_COLS`). Empty leading rows and columns dropped; empty
+  rows between kept. A Note before the table says what was cut ("Only the first 500 rows and 50
+  columns are shown.", or the one that applies).
+- Values: shared strings (rich text runs joined), inline strings, booleans `TRUE` / `FALSE`, errors
+  as written, formulas by their cached value; a number under a date format (built-in ids 14 to 22 and
+  45 to 47, or a custom format with `d` or `y` outside quotes and brackets) as `yyyy-mm-dd` from the
+  serial (the 1900 system with its 29 February 1900, `date1904` honoured), with ` hh:mm` when the
+  format has `h` and the value a fraction; a time-only format (`h` and no `d` or `y`) as `hh:mm:ss`;
+  any other number as stored, shortest form (`3.1400000000000001` reads `3.14`, `42.0` reads `42`).
+  Merged cells show their top-left value (the others are empty in the file). A column whose values
+  are all numbers is right-aligned. No head row is assumed.
+
+**PowerPoint** (`ppt/presentation.xml` and its relationships for the order, each slide and its
+relationships):
+
+- Each slide: a level-1 heading `Slide N`, then its shapes in `p:spTree` order (groups walked in
+  order): a title placeholder (`p:ph type="title"` or `"ctrTitle"`) a level-2 heading; any other text
+  body's paragraphs as paragraphs, those with `a:buChar` a bullet, `a:buAutoNum` a number (counted),
+  at `lvl` + 1; in a body placeholder (`p:ph` with no type, or `body` or `obj`) a paragraph is a
+  bullet item unless it says `a:buNone` (PowerPoint gives body text bullets from the slide master,
+  which TwinFM does not read; the kickoff's rule took only explicit bullets, which would show most
+  real decks' bullets as plain paragraphs). Runs: bold `b="1"`, italic `i="1"`, a monospace `a:latin`
+  typeface a code span, `a:hlinkClick` a link to its relationship's target; `a:br` a line break.
+  Tables (`a:tbl` in a graphic frame) as tables; pictures (`p:pic`, `a:blip r:embed`) decoded through
+  the budget, the alt text from `p:cNvPr descr`. A rule between slides. Notes pages never read.
+
+**The fixtures** (written by the tests and by the soak's setup, never shipped): a zip of hand-written
+parts per format, each with `[Content_Types].xml`, the root relationships and only the parts the
+reader opens: a `.docx` with styles (a heading by a localized style id, a title), numbering (a bullet
+list of two levels and a numbered list), bold, italic and a Consolas run, a hyperlink and a bookmark
+anchor, a two-row table with a header row, a page break, a deleted run, a field code, a footnote
+reference, an `mc:AlternateContent` text box, and a 1 x 1 PNG; an `.xlsx` of two sheets (shared
+strings, an inline string, a boolean, an error, a formula with a cached value, a date with format id
+14, a custom `yyyy-mm-dd hh:mm` format, a number stored as `0.30000000000000004`, an empty leading
+column and row) and a chart sheet, and a third sheet of 600 rows by 60 columns for the cut; a
+`.pptx` of two slides (a title, a body placeholder with two levels and one `a:buNone` paragraph, a
+text box with `a:buAutoNum`, a group, a table, a picture). Plus a zip with no `word/document.xml`, a
+text file named `.xlsx`, and an OLE header with `EncryptionInfo` named `.docx`.
+
+**Seams**: `Class::Office(Kind)`; the worker's `serve_blocks` gains an Office branch that hands the
+open zip to `office::parse` (which returns the blocks, the log tail and whether a part was cut), the
+pictures decoded from the zip by part name (`decode_pictures` takes where pictures come from: the
+document's folder, or the zip). `Req::Open` gains `sheet` (0 by default); `preview::link` takes
+`#sheet=N` while an `.xlsx` is shown and opens a new generation with it. No new driver step:
+`previewlink #sheet=N` and `waitpreview` cover it.
+
+**The `[preview]` lines** (beside P9-M2's):
+
+- `pane=N gen=G <path>: docx, B blocks (H headings, T tables, I images), parsed in T ms[, cut at 64 MB]`
+- `pane=N gen=G <path>: xlsx, S sheets, sheet "<name>" R x C[ (cut at 500 rows|50 columns|500 rows
+  and 50 columns)], parsed in T ms[, cut at 64 MB]` (R x C the shown table; a chart sheet `chart`
+  in place of `R x C`)
+- `pane=N gen=G <path>: pptx, N slides, B blocks, parsed in T ms[, cut at 64 MB]`
+- `pane=N gen=G <path>: unreadable: <why>` (the column "This document could not be read"), and
+  `pane=N gen=G <path>: password` (the OLE wrapper says so)
+- `link "#sheet=N": sheet N` (or `refused: no sheet N`)
+- The pictures' lines as Markdown's (`gen=G image K <part>: ...`, `pictures done: ...`).
+
+### What landed
+
+- **`src/office.rs`** (new, five tests): `Part` turns quick-xml's events into opens, closes and text
+  (its entity references, which quick-xml 0.41 hands back as separate events, stitched into the text;
+  an empty element as an open and a close), `with_part` reads one zip entry through it with at most
+  `OFFICE_MAX_XML` taken, `rels` resolves a part's relationships, `write_runs` turns formatted runs
+  into Markdown's inline writer (runs with the same formatting merged, spaces kept outside the
+  delimiters), and `docx`, `xlsx`, `pptx` read the three formats as Settled first maps them.
+  `password_protected` tells the OLE wrapper. The tests build their zips in memory from hand-written
+  parts.
+- **`src/preview.rs`**: `Class::Office(OfficeKind)`; `serve_office` (the OLE check on the first 64 KB,
+  the zip opened, `office::parse` under `catch_unwind` with the generation asked between parts, the cut
+  note, the blocks answered, then the pictures); `decode_pictures` takes `Pics::Folder` or `Pics::Zip`
+  (an Office file's pictures read from the zip by part name, decoded from memory: the picture decoder
+  split into `decode_picture` for files and `decode_bytes`, sharing `svg`, `raster` and `doc_fit`);
+  `Req::Open` carries `sheet`; `Ui` keeps the target so `preview::link` can open `#sheet=N` as a new
+  generation of the same file, refused when the sheet heading's anchors do not name it.
+- **`Cargo.toml`**: `quick-xml =0.41.0`, default features off (one edge in `Cargo.lock`, no crate);
+  `main.rs` gains `mod office;`.
+- **Tests**: 259 to 265: five in `office.rs` (a Word file with every mapped element; an Excel file's
+  four sheets, the chart sheet and the 600 x 60 sheet cut to 500 x 50; numbers, dates and references;
+  a PowerPoint file of two slides, and the stop between slides; broken files: no main part, the OLE
+  wrapper, a document cut mid-element) and one in `preview.rs` (the worker on the three fixtures
+  written to `%TEMP%\twinfm-p9m3-test-<pid>\`, a picture from each zip, the sheet asked for, a text
+  file named `.xlsx`, the OLE wrapper); the classification test covers the Office types.
+- **Soak**: `tools/soak-p5m3.ps1`'s setup writes `k-report.docx`, `l-table.xlsx` and `m-deck.pptx`
+  (`Write-Parts`, a zip of hand-written parts through `System.IO.Compression`), and the preview cycle
+  goes on through them, the second sheet followed.
+
+### Decisions
+
+- **Reading stops early where it can**: a sheet's XML is read only to its 500th row and the shared
+  strings only to the highest index those rows use, so a 100,000-row workbook (2.4 MB zipped) was read
+  in 9 ms; a Word file is read whole up to the 64 MB cap (6,200 blocks in 19 ms).
+- **Body placeholders take bullets by default** in PowerPoint (Settled first; the kickoff's rule took
+  only explicit ones). Flagged for Jeremy.
+- **A text box comes before the paragraph holding it**: its paragraphs close first in the stream.
+- **A picture inside a Word table cell is its alt text in brackets** (a cell has no place for a
+  picture block), as HTML's are.
+- **No head row is assumed in a sheet**; Word's head rows are its `tblHeader` rows.
+- **A newer file asked for between parts ends the reading with no answer** (`superseded: the
+  document's reading stopped`): the UI has moved on and drops any late answer anyway.
+- **A slip, recorded**: bcb83cc (the kickoff's Office bullet, docs only) was committed and pushed
+  during P9-M1's gate without a gate run, against the rule that every commit is gated; the full gates
+  were run on it as the first thing once the machine was free, and no commit goes ungated after it.
+- **The sheet count travels in the first heading's anchors** (`sheet=1 sheet=2 ...`), so the UI can
+  refuse a sheet that does not exist without asking the worker.
+
+### Scripted checks
+
+All on this machine (RDP session), `target\release` of the branch, over `%TEMP%\twinfm-p9m3-check\`:
+the soak's three files (made by its setup block, run there in a scratch copy), a text file named
+`.xlsx`, an OLE header with `EncryptionInfo` named `.docx`, a `.doc`, a workbook of 100,000 rows by
+10 columns (2.4 MB) and a Word file of 6,000 paragraphs under 200 headings:
+
+```
+[preview] pane=0 gen=2 ...\k-report.docx: docx, 7 blocks (1 headings, 1 tables, 1 images), parsed in 1 ms
+[preview] gen=2 image 6 word/media/image1.png: 200x60 px in 0 ms
+[preview] pane=0 gen=3 ...\l-table.xlsx: xlsx, 2 sheets, sheet "Totals" 2 x 3, parsed in 1 ms
+[preview] link "#sheet=2": sheet 2
+[preview] pane=0 gen=4 ...\l-table.xlsx: xlsx, 2 sheets, sheet "Detail" 1 x 1, parsed in 0 ms
+[preview] link "#sheet=9": refused: no sheet 9
+[preview] link "#sheet=1": sheet 1
+[preview] pane=0 gen=5 ...\l-table.xlsx: xlsx, 2 sheets, sheet "Totals" 2 x 3, parsed in 0 ms
+[preview] pane=0 gen=6 ...\m-deck.pptx: pptx, 2 slides, 9 blocks, parsed in 1 ms
+[preview] gen=6 image 4 ppt/media/image1.png: 200x60 px in 0 ms
+[preview] pane=0 gen=7 ...\n-not-a-zip.xlsx: unreadable: not a zip: invalid Zip archive: Could not find EOCD
+[preview] pane=0 gen=8 ...\o-locked.docx: password
+[preview] pane=0 gen=9 ...\p-old.doc: no preview for this type
+[preview] pane=0 gen=10 ...\q-big.xlsx: xlsx, 1 sheets, sheet "Big" 500 x 10 (cut at 500 rows), parsed in 9 ms
+[preview] gen=10 15 blocks in the list in 0.2 ms (UI thread)
+[preview] pane=0 gen=11 ...\r-long.docx: docx, 6200 blocks (200 headings, 0 tables, 0 images), parsed in 19 ms
+[preview] gen=11 6200 blocks in the list in 1.3 ms (UI thread)
+[preview] pane=0 gen=12 ...\o-locked.docx: password
+```
+
+Every `waitpreview` settled; exit code 0, no panic; the three Up presses at the end opened one
+generation. Screenshots with the software renderer (`PrintWindow`), the column at 0.45: the Word file
+with its heading, paragraph, the two-level bullets, the table, the link and the picture; the
+workbook's sheet heading, the links row with "Totals" bold and "Detail" a link, the table with the
+number and the date (`2023-10-01`); the deck with `Slide 1`, its title, the two-level bullets, the
+picture, the rule, `Slide 2` and its title and bullet.
+
+A six-minute run of `tools/soak-p5m3.ps1` (three cycles started, two preview cycles completed): exit
+code 0, no panicked line, every other count as before; preview: docx 2, xlsx 4 (each file's first
+sheet and the second), pptx 2, sheet links 2, Office files unreadable 0, pictures shown 19,082 (the
+Word and PowerPoint files' one each beside P9-M2's), alt text 0, waitpreview timeouts 0, worker
+panics 0; working set 126 to 224 MB. The report's text count read "(three per cycle)" since P9-M2,
+for a cycle with two text files (d-notes.txt, h-notes.txt; both soaks counted 4 in two cycles): the
+label now reads two, in the script and in `CLAUDE.md`.
+
+### Gate
+
+Run by Jeremy on 2026-10-21, finished 14:39 (tag ab39 for both settings, `C:\traces\gate-p9m3.ps1`, the
+same file as `tools/gate-p9m3.ps1`, 17 min): `target-p9m3` (111ef17, P9-M3 with main at 85ef7b8 merged
+in, built `--locked` from a detached checkout) against `target-p9m1` (b9fbd9d), three rounds of
+reference, candidate, reference with `C:\traces\preview.toml`, candidate with it. Every run passed the
+wrapper's checks.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m1-1 / 2 / 3 | 19.0 / 18.3 / 18.3 | 18.7 / 19.5 / 18.0 | 2.20 / 2.23 / 2.21 |
+| p9m3-1 / 2 / 3 | 18.4 / 18.5 / 18.2 | 16.7 / 19.4 / 19.2 | 2.20 / 2.21 / 2.23 |
+| p9m1-preview-1 / 2 / 3 | 17.8 / 17.5 / 17.7 | 18.6 / 19.1 / 19.1 | 2.04 / 2.05 / 2.07 |
+| p9m3-preview-1 / 2 / 3 | 18.0 / 17.6 / 17.7 | 16.2 / 16.6 / 19.1 | 2.06 / 2.06 / 2.06 |
+
+One session state throughout (render p50 2.20 to 2.23 ms in the defaults runs, 2.04 to 2.07 with the
+column). Medians: defaults 18.3 (reference) / 18.4 (candidate), preview 17.7 / 17.7; no gap that
+counts in either, every candidate run under 20%. Passed; P9-M3 adds no cost while the lists scroll.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m3\release\twinfm.exe`, the preview shown (Alt+P), each
+beside Word, Excel or PowerPoint (or Edge, which opens all three):
+
+1. Jeremy's own Word documents: headings where Word shows headings (or paragraphs where the file uses
+   direct formatting only: the open question this answers), lists with their bullets and numbers,
+   tables, links, pictures.
+2. A Word file of about 200 pages: it shows at once and scrolls to the end without stalls.
+3. Jeremy's own workbooks: the first sheet, the sheet links at the top (each opens its sheet), dates
+   as dates, money and other number formats (shown as stored numbers, not in their currency format:
+   the record of what formats he uses).
+4. A workbook with ten sheets and 100,000 rows: the note "Only the first 500 rows ..." and the table.
+5. A deck of about 60 slides with pictures: every slide's heading, title, bullets and pictures, the
+   lines between slides.
+6. A password-protected Office file: "Password-protected document: not previewed".
+7. A `.doc`, `.xls` or `.ppt`: "No preview".
+8. A chart sheet (a workbook with a chart moved to its own sheet): "Chart sheets are not previewed."
+9. The column's width dragged with a workbook shown: the table follows.
+
+Jeremy, 2026-10-21, unelevated with `target-p9m3`: "console checks are all nominal". The PowerPoint
+bullets-by-default call stands as recorded (not reversed).
