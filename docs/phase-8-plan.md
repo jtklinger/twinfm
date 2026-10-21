@@ -725,3 +725,19 @@ ms): the first clean triplet since ab32, as the ab34 finding predicted.
 4. A file from a 7z (or a tar.gz) copied into a zip: the shell's progress, then the file in the zip;
    a move instead is refused with the note.
 5. Close TwinFM: no `twinfm-nested-*` folder left in `%TEMP%`.
+
+### After the console check
+
+Jeremy, unelevated, `target-p8l3` (2026-10-21): checks 1, 2, 3 and 5 as expected (no
+`twinfm-nested-*` or `twinfm-copy-*` folder left in `C:\Users\jtkli\AppData\Local\Temp` after he
+closed TwinFM). Check 4 worked, "but not exactly as expected": the copy into the zip went through
+the classic menu's Copy (Show more options) and Paste, while **the toolbar's Copy was greyed out in
+the 7z** and Ctrl+C seemed not to work. Cause: P7-M3's toolbar rule turned every button off in a
+read-only archive level, and the Windows 11 menu's icon row follows it. Ctrl+C itself was never
+refused: scripted, Ctrl+C on a 7z's file and Ctrl+V in a zip ran "copy from an archive", Done.
+**Fix**: `toolbar::state` offers Copy alone in a read-only archive level (an archive of another
+format, or an archive inside an archive), with a selection; Cut, Rename, Delete, New and Paste stay
+off (tests changed first, failing: `toolbar`'s states, the menu's icon row in an archive). Scripted:
+the toolbar's Copy in a 7z puts the file on the clipboard, Cut and Delete are refused as disabled, and
+Paste in a zip runs "copy from an archive", Done. Not re-gated: the toolbar's state is set on change
+only, nothing per frame or per row.

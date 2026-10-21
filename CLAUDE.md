@@ -530,8 +530,8 @@ Read them before changing the list.
   font of Explorer's command bar, part of Windows 11). Which buttons apply (`toolbar::state`, the
   app's `left-tools` / `right-tools`) is set in `update_status` on change only: New and Paste in a
   folder (Paste with `CF_HDROP` on the clipboard, read at start and on each `WM_CLIPBOARDUPDATE`),
-  Cut, Copy and Delete with a selection, Rename with exactly one, nothing on This PC or in an archive
-  level, no New or Paste in a search tab. A gate run with the in-pane toolbar takes
+  Cut, Copy and Delete with a selection, Rename with exactly one, nothing on This PC, only Copy in a
+  read-only archive level (since P8-L3; nothing before), no New or Paste in a search tab. A gate run with the in-pane toolbar takes
   `TWINFM_CONFIG=C:\traces\toolbar-pane.toml` (read-only, `toolbar = "pane"` only; no `split`).
   Driver: `toolbar <pane> <button>` (`newfile`, `newfolder`, `cut`, `copy`, `paste`, `rename`,
   `delete`) calls the callback a press calls, which makes the pane active (and focuses its list,
