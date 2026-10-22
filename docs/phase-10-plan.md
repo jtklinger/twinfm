@@ -293,6 +293,61 @@ draws per row. The console triplet is still to run.
 **Waiting on Jeremy**: the gate (task 6, his elevated console, handed over by the coordinating session).
 Inter and the bar heights were answered 2026-10-22 (tasks 4 and 5 above).
 
+### Gate
+
+Run by Jeremy on 2026-10-22, finished 09:47 (tag ab41 for both settings, `C:\traces\gate-p10m1.ps1`,
+the same file as `tools/gate-p10m1.ps1`, 18 min): `target-p10m1` (b8b8853, built `--locked` from a
+detached checkout, Inter embedded) against `target-p9m4` (3374f2b, P9-M4's gate build, the last merged
+milestone's), three rounds of reference, candidate, reference with `C:\traces\grid-thumbs.toml`,
+candidate with it. Every run passed the wrapper's checks (no panic, the settings file read, the grid
+line present).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m4-1 / 2 / 3 | 22.3 / 19.6 / 19.9 | 20.6 / 19.8 / 19.8 | 3.00 / 2.38 / 2.42 |
+| p10m1-1 / 2 / 3 | 20.6 / 20.3 / 19.9 | 20.3 / 22.7 / 19.4 | 2.43 / 2.53 / 2.33 |
+| p9m4-grid-thumbs-1 / 2 / 3 | 11.5 / 11.2 / 11.3 | 11.6 / 11.2 / 11.6 | 1.19 / 1.20 / 1.19 |
+| p10m1-grid-thumbs-1 / 2 / 3 | 11.7 / 11.8 / 11.4 | 12.8 / 12.5 / 12.8 | 1.26 / 1.30 / 1.29 |
+
+Medians: defaults 19.9 (reference) / 20.3 (candidate), grid-thumbs 11.3 / 11.7. No gap that counts in
+either setting (no setting has every reference run below every candidate run, and neither median
+differs by more than a point). Read like for like: the first reference run sat in the slower state
+(render p50 3.00 ms against 2.33 to 2.53 for the other five defaults runs), so the defaults compare as
+19.6 / 19.9 against 20.6 / 20.3 / 19.9, the candidate about half a point above; in the grid the
+candidate's render p50 is 1.26 to 1.30 ms against 1.19 to 1.20, about 7% more per frame, and the busy
+figure 0.4 of a point above. Two candidate defaults runs read above 20% (20.6, 20.3); the reference's
+own runs read 19.6 to 22.3 in the same session. **Passed by the gate's rule**; the half point is the
+plausible price of the hairline `Rectangle` in every visible row and of Inter's shaping, and it is
+recorded here for the next reference to carry. Jeremy's word on the merge is the next step.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+The look was only ever seen in dark mode here (this machine's app mode); the light scheme is the
+first thing to look at.
+
+- **Light mode**: Settings > Personalization > Colors > Choose your mode > Light, then TwinFM: the
+  white ground and cards, the `#F5F5F5` muted selection, the `#E5E5E5` hairlines, the near-black
+  primary button in the Settings dialog, the grey ring on the cursor row; then back to dark, with the
+  window open, to see the switch follow (`Palette.color-scheme`).
+- **150% scaling**: the 44 px band, the 30 px tabs with their 2 px inset segment, the 36 px path bar,
+  the 32 px header with the grips, the 28 px status line, the 32 px sidebar rows; the tooltips over
+  the band; nothing clipped in the Settings dialog (510 px).
+- **The layouts unequal** (Phase 6's rule): tabs in one pane only, the filter open in the other, the
+  split on; then the in-pane toolbar (`toolbar = "pane"`), its 28 px row above the strip, the preview
+  column on.
+- **The rows**: a selection of several with the cursor inside and outside it, a cut (Ctrl+X) row at
+  50%, the drop highlight on a row, a tab, a sidebar row and a crumb during a real drag from Explorer,
+  the band in the grid at large and medium tiles, the rename editor (F2) in the list and in a tile.
+- **The chrome's icons**: every toolbar button at both placements with its disabled state (nothing
+  selected, an empty clipboard, This PC), the sidebar's icons for the drives, the places and a
+  bookmark, the crumb chevrons and the dropdown, the sort arrow both ways, the filter's clear, the
+  path bar's ellipsis and chevron.
+- **The dialogs**: Settings (every switch flips and saves, Cancel discards, Escape), About (Close),
+  the Windows 11 menu's icon row (still Segoe glyphs, by the kickoff's call), the password and
+  replace questions (Windows' own, unchanged).
+- **Daily use** from `target\release` for a few days: what the look gets wrong in use goes on the
+  Phase 10 list.
+
 ### Open questions
 
 - **Row height and the bar heights**: answered 2026-10-22, the lead's recommendation taken: rows stay
