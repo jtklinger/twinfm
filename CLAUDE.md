@@ -57,6 +57,8 @@ them before changing the list.
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
+- Run the tests, read the result, then commit, as two steps: never chain a test run and a commit
+  (two Phase 9 commits went in past a failing test that way, `docs/phase-9-plan.md` § Phase 9 close).
 
 ## Build variants
 - The patched Slint lives at https://github.com/jtklinger/slint, branch `rustfm` (a1ce0d8 +
@@ -1054,7 +1056,11 @@ them before changing the list.
   like; the gap rule is about a cost, so a candidate's median below the reference's is not a gap.
   The reference binary is the last merged milestone's
   gate build (`target-p10m3`, 4f07cba, after P10-M3); the previous one is deleted once the new one
-  has served as a reference. Console checks run AFTER the triplet, never before: a recursive
+  has served as a reference. When milestones run as parallel sessions, one coordinating session
+  serializes the machine: every session reports before a gate build, a soak or a hand-over and waits
+  for its reply; one soak at a time (the soaks share `%TEMP%\twinfm-m5` and the fence); nothing
+  builds, soaks or opens a TwinFM window from "gate running" to "machine free" (`docs/phase-9-plan.md`
+  § Phase 9 close). Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running
   TwinFM locks its exe, so a rebuild into `target-<name>` fails with "Access is denied" while
