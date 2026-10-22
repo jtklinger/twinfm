@@ -1122,10 +1122,14 @@ export component Pane inherits Rectangle {
     in property <length> band-w;
     in property <length> band-h;
     function band-ev(ev: PointerEvent, ax: length, ay: length, mx: length, my: length) {
-        if (!root.grid) { return; }
+        // A press on the empty space makes the pane the active one in either view (P9-M4: in the
+        // details list it did not, so the sidebar then opened its folder in the other pane).
         if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
             list.focus-list();
             root.focus-requested();
+        }
+        if (!root.grid) { return; }
+        if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
             root.band-pointer(0, ax + mx, ay + my, ev.modifiers.control, ev.modifiers.shift);
         }
         if (ev.kind == PointerEventKind.move) { root.band-pointer(1, ax + mx, ay + my, false, false); }

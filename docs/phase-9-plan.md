@@ -285,16 +285,6 @@ file supersedes the older at every step. Every crate added is pinned by exact ve
 licence noted in `Cargo.toml`, with default features off and only the needed ones on, and a crate is
 not added where `zip`, `roxmltree`, `image` and `resvg` already do the job.
 
-**A fifth milestone, added 2026-10-21 from daily use** (after P9-M2 merged, before P9-M1 started):
-**P9-M5, the rust-ui look**, the window restyled in the idiom of rust-ui.com (shadcn/ui ported to
-Dioxus). Jeremy asked for a review of "the current state of the display windows" and whether they
-could look "more modern"; a canvas of the window as built beside a Windows 11 style refresh was put
-to him, he answered "I'm more interested to know if we can make the UI look more like the components
-found at rust-ui.com", the canvas was redone in that idiom, and he chose it: "Yes, this rust-ui
-direction is right. Write the plan for it as a Phase 9 milestone and start the Slint changes here,
-gate-safe pieces first." Its section is at the end of this record. It runs in parallel with the
-preview milestones and does not change their order.
-
 ## Calls made in this kickoff, for Jeremy to check
 
 Decisions Jeremy did not make and the lead settled, each reversible before its milestone starts:
@@ -325,13 +315,22 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   Office crate unless the pin check finds one that adds nothing beyond those two; Excel shows one sheet at a time (500 rows by 50 columns), the
   first by default, the others through links at the top; PowerPoint shows one block group per slide
   with a rule between; the binary `.doc`, `.xls`, `.ppt` are not previewed.
-- Thumbnails inside archive levels stay off (the shell cannot see inside an archive without
-  extracting) unless the P9-M4 pin check finds the zip folder's provider cheap; the record says what
-  was found.
-- The OneDrive state property is read only for files whose attributes say in progress or error,
-  never for the tick and cloud rows.
-- The Google Drive mark and the link arrow in the tiles take the overlay list by the mark's size,
-  with a console check deciding whether it stays.
+- Thumbnails inside archive levels stay off: the pin check found no thumbnail provider inside a zip
+  or a 7z (`WTS_E_FAILEDEXTRACTION`) (P9-M4 Settled first, 2026-10-21).
+- The OneDrive state property is read for a file that is being freed (unpinned, its data still
+  here: the provider's state "sync pending"), decided from the listing's attributes alone; no
+  attribute combination says syncing or error, so those files keep their attribute mark (Deferred).
+  The Cloud Files placeholder-state gate first settled here is built but never fires in TwinFM,
+  which Windows does not show placeholders (P9-M4 Settled first and After the console check,
+  2026-10-21).
+- A search result not on this disk (recall on data access, or offline) keeps its type's key, so its
+  thumbnail is never asked, wherever the search started (P9-M4 After the console check, 2026-10-21).
+- A search tab gets thumbnails except when it is rooted in a cloud location, where a thumbnail could
+  start a download (P9-M4 Settled first and Decisions, 2026-10-21).
+- The Google Drive mark and the link arrow over an icon larger than 48 physical px are drawn at two
+  thirds of it, at its lower left (Explorer draws them at the icon's size: their glyphs fill about
+  40% and 57% of the image), with a console check beside Explorer deciding whether it stays (P9-M4
+  Settled first and Decisions, 2026-10-21).
 
 ## P9-M1: adjustable column widths
 
@@ -590,6 +589,290 @@ elevated) window, the panes set up unequal (the split on, two tabs in one pane o
 10. **The fit's rule**: settled by Jeremy on 2026-10-21 (Decisions): kept as built.
 
 Jeremy, 2026-10-21: "console checks were all working as expected. proceed with the merge".
+
+## P9-M4: thumbnails beyond the listing and cloud polish
+
+Branch `feat/p9-m4-thumbs-cloud-polish`, from 85ef7b8 (P9-M1 merged).
+
+### Settled first (2026-10-21, before any code)
+
+Checked against the code at 85ef7b8 and on this machine (Jeremy's OneDrive read only, nothing in it
+changed):
+
+- **Thumbnails in search result tabs.** The search walker builds its keys with
+  `IconKeys::new(dir, false)` per folder (`fs::enumerate`), so a result is always `ext:`; its entries
+  carry the modified time and size already (`entry_of`), and every path the UI hands the icon worker
+  is `tab.path.join(e.name)`, which a `sub\dir\file.txt` name joins correctly. The walker takes the
+  `thumbnails` setting as a folder listing does, so a result in `THUMB_EXTS` is keyed `thumb:` and
+  asked at the list's or the grid's size through the same workers and table. One guard: a search
+  tab has no cloud location (it carries no marks), so a result whose attributes say it is not on this
+  disk (`FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` or `OFFLINE`) keeps its `ext:` key: asking such a
+  file's thumbnail with `WTS_EXTRACT` would start a download. The `[icons]` line's `thumbs N` counts
+  them as the listing's.
+- **Thumbnails in archive levels: the pin check says no.** On this machine the shell refuses a
+  thumbnail for a picture inside a zip and inside a 7z (`IShellItemImageFactory::GetImage` with
+  `SIIGBF_THUMBNAILONLY` on `...\p.zip\p.jpg` and `...\p.7z\p.jpg`: `0x8004B200`,
+  `WTS_E_FAILEDEXTRACTION`, in 74 and 23 ms cold, 49 and 10 ms again; `SIIGBF_INCACHEONLY`
+  `0x80030002`), while the same JPEG outside them gives one in 251 ms cold, 9 ms warm. Neither
+  archive folder has a thumbnail provider, so there is nothing cheap to turn on: archive entries keep
+  their `ext:` keys (`fs::archive`'s own `IconKeys`), and so do the entries listed from a nested
+  archive's extracted copy, which come out of the same `archive::list`. No code; this record is the
+  piece.
+- **The details list's drag image with a thumbnail.** `prefetch_drag_icon` sends a `drag:` request
+  at 64 px (96 px image) with `thumbnail: false`; `attach_drag_image` uses it (`icon from the
+  worker`) or asks the shell for the icon (`the shell`). The request now asks for the thumbnail when
+  the pressed row's key is a `thumb:` key (cache-only when its mark says so, as the row's own request
+  is), so a photo's drag carries a sharp 64 px picture; the worker falls back to the icon as it does
+  for rows. A pure function picks the source and its label: `the tile` (the grid, unchanged), `the
+  thumbnail` (a prefetched thumbnail), `the worker` (a prefetched icon), `the shell`, `the pane's
+  cache`, `nowhere`.
+- **OneDrive's sync states beyond the tick and the cloud.** `state_from_attrs` gives only cloud,
+  tick or solid tick: no attribute says syncing, pending or error, so the kickoff's gate ("only for
+  files whose attributes say in progress or error") has nothing to test. Windows has a cheaper
+  signal: the Cloud Files API's placeholder state from the attributes and the reparse tag alone
+  (`CfGetPlaceholderStateFromAttributeTag`, cldapi.dll, no file opened; `windows-sys`'s
+  `Win32_Storage_CloudFilters` feature, no new crate). On Jeremy's OneDrive every placeholder read
+  `CF_PLACEHOLDER_STATE_PLACEHOLDER | IN_SYNC` (`0x9` or `0xD`, tags `0x9000601A` and `0x9000E01A`;
+  37 entries of the OneDrive root, `Documents` and `Pictures`, the exceptions the `desktop.ini` files
+  and one hidden system file in the root, `0x0`, not placeholders), and the call from the attributes and tag
+  agreed with the one from the whole find data on every entry. The gate: a sync
+  root file that is a placeholder and **not in sync** is keyed `look:s:` (the property read on the icon
+  workers, about 23 ms, `System.StorageProviderState`, as folders are today), so its glyph is the
+  provider's own state (syncing, pending, error, warning); every in-sync file keeps its attribute mark
+  and costs nothing more. `[cloud] state read <path>: S in T ms` per read. The kickoff's
+  attribute-combination wording is superseded by this, for Jeremy to check. **Superseded in turn
+  (2026-10-21, after the console check)**: Windows hides placeholders from TwinFM's own process (a
+  OneDrive file lists there as a plain file, no reparse point, placeholder state 0), so this gate
+  never fires in TwinFM; what is built is an attribute test that does: a file unpinned with its data
+  still here (being freed, the provider's state "sync pending" for minutes) is looked up. Syncing
+  and error files stay on their attribute mark (Deferred below).
+- **Google Drive's mark smaller in the tiles, and the link arrow.** `overlay_pixels` takes the image
+  list whose icons are at least the icon's size (`SHIL_JUMBO` for a 96 px tile, `SHIL_EXTRALARGE` for
+  48 px) and draws its full-square overlay over the square, so a large tile's mark is a quarter of the
+  tile. The rule becomes: in a tile, the mark is a third of the picture square, drawn from the
+  smallest list that holds it (32 px from `SHIL_LARGE` for a 96 px tile, 24 px from `SHIL_LARGE`
+  drawn down for 48 px, at 100%; the scale applies), at the square's lower left; the lists (16 and
+  32 px icons) keep the full-size overlay, as Explorer's lists do. A pure function gives the mark's
+  size and the list for an icon size; a console check beside Explorer decides whether it stays. The
+  status glyphs (`s<N>`, OneDrive) are drawn by `glyph_px` already (24 px over 96) and do not change.
+  Measured before the code (a throwaway test, the shell's overlay images at 16 to 144 px): the link
+  arrow's glyph is 8 px over 16, 13 over 32, 20 over 48, 37 x 38 over 96 (about 40%); Google Drive's
+  mark 12 x 9 over 16, 24 x 18 over 32, 28 x 21 over 48, 55 x 40 over 96 (57% of the width). So a
+  "third of the square" from the 32 px list would shrink the arrow to 13 px; the rule as built is in
+  Decisions (two thirds of the icon above 48 physical px).
+- **The hydration check** is a console check for Jeremy (below, after the gate): the watch already
+  asks for `FILE_NOTIFY_CHANGE_ATTRIBUTES`, a `Modified` record becomes a stat and an upsert, and the
+  stat rebuilds the key with the folder's cloud location (`StatJob`), so a file whose state changes
+  takes a new key and its new mark, provided a record arrives. Whether Explorer's "Free up space" and
+  "Always keep on this device" produce one is what the check reads (`[watch] ... applied: +0 -0 ~1`).
+  If none arrives, the fix the kickoff names (a stat on an attribute record) does not apply, since
+  there is no record; the record then says so and the fix becomes a candidate for later.
+
+Driver and lines: no new driver step. `dragrow` out of a 32 px row with a thumbnail shows `[dnd] drag
+image 96x96 px, 64 px icon, 1 item(s), icon from the thumbnail`; a `search` with thumbnails on shows
+`thumbs N` in the `[icons]` line; `[cloud] state read <path>: S in T ms` for each not-in-sync
+placeholder (none in the gate's folder).
+
+Tests: the drag image's source choice; the placeholder gate (which states ask); the search walker's
+keys with thumbnails on (a JPEG keyed `thumb:`, a cloud-only one `ext:`, a text file `ext:`); the
+overlay's size and list for 16, 32, 48 and 96 px at 100% and 150%.
+
+### What landed
+
+- **Search tabs** (`fs::enumerate::walk`, `spawn_search`): a `thumbnails` switch, passed by
+  `main.rs` `search_thumbnails` (the setting, and off when the search's root is a cloud location).
+  The walker's `IconKeys` take it, so a result in `THUMB_EXTS` gets the folder listing's `thumb:` key
+  for its full path. The search test runs a walk with thumbnails on over a JPEG in a subfolder and a
+  text file, and one with them off.
+- **Archive levels**: no code (the pin check above).
+- **The drag image** (`main.rs` `prefetch_drag_icon`, `drain_icons`, `run_pending_drag`;
+  `dnd::IconFrom`, `DragImage::prefetched_thumbnail`): the press asks for the thumbnail when the row's
+  key is a `thumb:` key, with the row's mark; the reply comes back as a picture (a thumbnail) or
+  pixels (the icon fallback), and the image says which. The icon worker no longer drops a drag
+  request's thumbnail as scrolled past (the request carries no row). One test for the source order.
+- **OneDrive's states** (`icons::placeholder_state`, `needs_state_read`, `IconKeys::for_entry_synced`;
+  `windows-sys`'s `Win32_Storage_CloudFilters` feature): the listing (and the watch's stat, which
+  goes through the same `entry_of`) asks Windows for a cloud placeholder's state from its attributes
+  and tag; out of sync, the file is keyed `look:s:` and the icon worker reads
+  `System.StorageProviderState`, logging `[cloud] state read`. `for_entry` stays for the tests (in
+  sync). One test for the gate and the keys.
+- **The overlays over tiles** (`icons::overlay_side`, `lower_left`, `mark_image`): above 48
+  physical px the shell's overlay image is drawn at two thirds of the icon and placed at its lower
+  left in a transparent square, so the compositing is unchanged. One test for the sizes and the
+  placement.
+- **Soak**: the thumbnail cycle in `tools/soak-p5m3.ps1` and its report line.
+- **Tests**: 265 to 268.
+
+### Decisions
+
+- **The search's cloud guard is both the root's location and each file's attributes**: a search
+  rooted in a cloud location (OneDrive, Google Drive) gets no thumbnails, and since 6908960 a search
+  result not on this disk (`RECALL_ON_DATA_ACCESS` or `OFFLINE`) keeps its type's key wherever the
+  search started. Corrected after the console check: this record first said a OneDrive file is a
+  cloud placeholder (`Kind::Cloud`) that never gets a `thumb:` key. That holds only for a process
+  shown placeholders (PowerShell, where the Settled first probes ran); Windows hides them from
+  TwinFM's process, where a OneDrive file is a plain file (`AMD.pdf` listed as `0x00100020`, no
+  reparse point), so OneDrive files do get thumbnails (the P6-M1 marked keys) and the per-file guard
+  is needed. In practice a search from the home folder does not walk into OneDrive (0 found from
+  `C:\Users\jtkli`, 137,043 folders; 1 found from `OneDrive` itself), so the guard covers other
+  sync locations and offline files.
+- **The placeholder state gate is dead in TwinFM's process** for the same reason (state 0 for every
+  OneDrive file): the attribute test that does work there is the one added after the console check
+  (unpinned, its data still here: a file being freed). A file syncing or in error is still shown by
+  its attributes' mark unless its folder is looked up; noted for later.
+- **The tile overlay rule is two thirds of the icon above 48 physical px**, not "a third of the
+  picture" (Settled first): measured on this machine, the shell's overlay images hold their glyph in
+  about 40% (the link arrow, 37 px over 96) and 57% of the width (Google Drive's mark, 55 x 40 over
+  96) of the image, and Explorer draws them at the icon's size, so TwinFM matched Explorer already.
+  Two thirds makes Google Drive's mark 37 x 27 px and the arrow 25 px on a 96 px tile. The size is
+  read in physical px on the icon worker, which cannot tell a medium tile at 100% (48 px) from a
+  32 px thumbnail row at 150% (48 px): both keep the shell's own overlay, as do all lists. The
+  console check beside Explorer decides whether the rule stays.
+- **A drag image's thumbnail carries the row's mark**, drawn as the row's is (a Google Drive photo's
+  drag shows the small cloud), since the mark is what keeps its thumbnail to the cache.
+- **Folders' state reads are not logged** (`[cloud] state read` is for files), since every sync root
+  folder is looked up at every listing (P6-M1) and the line would fill the log.
+- **A lapse, recorded**: a121e5c (the pane fix below) was committed and pushed by a command that
+  chained the test run and the commit, while the suite reported one failure,
+  `real_clipboard_round_trip_overwrites_clipboard`: Jeremy's screen was locked (LogonUI running;
+  `OpenClipboard` refused with `ERROR_ACCESS_DENIED` even from a bare PowerShell call), so the test
+  could not pass. Not rewritten; the suite is run again once the screen is unlocked (After the
+  console check), and from here the tests are run and read, then the commit made, as two steps.
+
+### Scripted checks
+
+All on this machine, `target\release` of the branch.
+
+- Thumbnails on, the P3-M5 fixture folder (`%TEMP%\twinfm-p3m5-thumbs`, 200 JPEGs): a drag out of
+  row 2 of the 32 px list, cancelled: `[dnd] drag image 96x96 px, 64 px icon, 1 item(s), icon from
+  the thumbnail`; a search for "photo-01" there, then a drag out of the search tab: `icon from the
+  thumbnail` again (the results' keys are the listing's, so they asked nothing new).
+- Thumbnails on, a search for "photo-00" from `%TEMP%` (25,246 folders, 3.7 s): `thumbs 10` in the
+  `[icons]` line for its 10 results.
+- `C:\Users\jtkli\OneDrive\Documents` (21 entries): `[cloud] ... sync root`, no `[cloud] state read`
+  line (every placeholder in sync).
+- `G:\My Drive` in large tiles (software renderer, screenshot): `[icons] overlay index 12 fetched at
+  64 px over 96 px`, each folder's cloud mark in the tile's lower left at about two fifths of its
+  width (the lists unchanged at 16 px).
+- The Start Menu's Programs folder in medium tiles: `overlay index 2 fetched at 48 px` (unchanged).
+
+A six-minute run of `tools/soak-p5m3.ps1` after P9-M3's gate (three cycles started, two completed):
+exit code 0, no panicked line, jobs done 185 (failed 0, cancelled 0), drags dropped 0, toolbar
+presses refused 0, menupicks refused 0, zip jobs not done 0, picture failures 0, waitpreview timeouts
+0, worker panics 0; working set 139.2 to 225.4 MB (312.6 at most). The P9-M4 cycle: `icon from the
+thumbnail` for i-photo.jpg's row and `[search] ... start "photo"` in both cycles, the column cycle's
+counts as before.
+
+### Gate
+
+Run by Jeremy on 2026-10-21, finished at 16:35 (tag ab40 for both settings, `C:\traces\gate-p9m4.ps1`,
+the same file as `tools/gate-p9m4.ps1`, 17 min): `target-p9m4` (3374f2b, main with P9-M3 merged in,
+built `--locked` from a detached checkout) against `target-p9m3` (111ef17), three rounds of
+reference, candidate, reference with `C:\traces\thumbs.toml`, candidate with it. Every run passed the
+wrapper's checks (no panic; `[settings] file C:\traces\thumbs.toml (read)` and `[icons] list
+geometry: 32 px rows, 32 px icons` in every thumbs run).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m3-1 / 2 / 3 | 18.3 / 21.4 / 22.8 | 18.7 / 22.8 / 22.7 | 2.35 / 2.92 / 2.96 |
+| p9m4-1 / 2 / 3 | 18.4 / 21.7 / 22.6 | 16.7 / 25.0 / 21.7 | 2.30 / 2.91 / 2.95 |
+| p9m3-thumbs-1 / 2 / 3 | 18.7 / 17.6 / 17.8 | 20.3 / 18.1 / 16.4 | 2.35 / 2.31 / 2.37 |
+| p9m4-thumbs-1 / 2 / 3 | 18.1 / 18.9 / 17.6 | 16.2 / 19.8 / 19.7 | 2.42 / 2.29 / 2.32 |
+
+Medians as the wrapper reads them: defaults 21.4 (reference) / 21.7 (candidate), thumbs 17.8 / 18.1;
+no gap that counts in either. The defaults runs of rounds 2 and 3, both binaries, were in the slow
+state (render p50 2.91 to 2.96 ms against 2.30 to 2.35 in round 1); like for like, round 1 reads
+18.3 against 18.4. Every thumbs run was in the normal state (2.29 to 2.42 ms) and under 20%, the
+pairs within 1.3 points in both directions. Passed: P9-M4 adds no cost the gate can see, with
+thumbnails off or on. For the record, an oddity: the slow state took the defaults runs of rounds 2
+and 3 but none of the thumbs runs that ran between them in the same rounds, so it came and went
+within minutes rather than holding for a stretch as in ab23 and ab38.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe`, thumbnails on (Settings):
+
+1. **A photo dragged out of the details list** onto the desktop or into Explorer: the picture under
+   the pointer is the photo itself, sharp, not a generic picture icon. The same from a search tab.
+2. **A search tab with thumbnails** (Ctrl+F, type part of a name, Ctrl+Shift+F) in a folder of
+   photos: the results show their thumbnails in the 32 px rows and in the tile views.
+3. **Google Drive and shortcuts beside Explorer's large-icon view, at 100% and at 150% scaling**:
+   `G:\My Drive` and a folder of shortcuts (the Start Menu's Programs) in large tiles in TwinFM and in
+   Explorer's large icons. TwinFM's cloud mark and arrow are now smaller than Explorer's (two thirds);
+   say whether to keep them so, match Explorer's size, or go smaller.
+4. **OneDrive's states**: in a OneDrive folder, a new file (copy one in): it shows the syncing or
+   pending mark while it uploads, then the tick, matching Explorer's Status column. A synced folder
+   of many files opens as quickly as before.
+5. **The hydration check**: in a OneDrive folder, right-click a file in Explorer and pick "Free up
+   space", with the same folder open in TwinFM: its mark turns to the cloud without pressing F5. Then
+   "Always keep on this device": it turns to the solid tick. Start TwinFM for this check from a
+   normal PowerShell window with its log kept, so the watch's lines can be read afterwards:
+   `& C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe "$env:USERPROFILE\OneDrive\Documents" 2> C:\traces\p9m4-hydration.txt`
+   then close TwinFM and tell me what you saw. The file shows whether Windows reported the change
+   (`[watch] ... applied: +0 -0 ~1` for the file) or not (no `[watch]` record at all).
+
+### After the console check
+
+Jeremy, 2026-10-21, on the five checks: 1 works as expected; 2 search results showed no thumbnails
+(in Downloads; open, see below); 3 "Keep them"; 4 the OneDrive marks as expected, and a bug found on
+the way; 5 "Free up space" seemed not to change the mark, "Always keep on this device" did.
+
+- **The bug (fixed, a121e5c, Jeremy's choice to fold it into P9-M4)**: with the right pane active, a
+  click on the left pane's empty space (no file) did not make the left pane active, so a sidebar
+  click opened its folder in the right pane. In the details list `band-ev` returned before asking for
+  the focus (only the grid's band did); now a left press on the empty space calls `focus-list` and
+  `focus-requested` in either view (`src/ui/pane.slint`, one handler, off the scroll path). Scripted:
+  `click 1 0`, then `band 0 100 400 100 400` (a press and release on the left list's empty space),
+  then `sidebar click 1`: `[nav] pane=1 gen=3 path=C:\` on `target-p9m4`, `[nav] pane=0 gen=3
+  path=C:\` with the fix.
+- **The hydration check, answered** (in `OneDrive\Documents\Stack`, which Jeremy gave for testing;
+  `attrib -P +U` and `+P -U` are what Explorer's two commands set): one file, `AMD.pdf`, freed: its
+  attributes went from `0x00000420` (tag `0x9000601A`, state `0x9`) to `0x00501620` (recall on data
+  access, unpinned, offline, sparse; tag `0x9000401A`, state `0x39`: in sync, partial), and with
+  TwinFM open in the folder the row went cloud, solid tick (kept: `0x00080420`, pinned), cloud again,
+  each without F5 (`[watch] ... applied: +0 -0 ~1` per change, the row re-keyed and drawn with the
+  new glyph). The whole folder freed (`attrib -P +U Stack\* /S`): all 35 files went from the tick to
+  the cloud as OneDrive released them, `applied: +0 -0 ~34`, `~32`, `~2` in three windows. The watch
+  delivers the attribute change and the stat's key carries the new mark, so no fix is needed; F5 is
+  not the answer it was feared to be. Jeremy's log shows he freed the folder from Documents (the
+  classic menu on its row); what he watched there is being asked. After the test, `Stack`'s 35 files
+  are online-only and the folder unpinned (as Explorer's "Free up space" leaves them).
+- **a121e5c's gates, run again with the screen unlocked**: `cargo test --release` 274 passed, 0
+  failed (the clipboard test with them). No triplet for the fix (one handler, off the scroll path);
+  two in-app runs of the gate scenario on a121e5c's `target\release`, console session active, no build
+  running, Narrator off: `[busy] 10 s after split` 17.8% and 17.8%, render p50 2.43 and 2.44 ms,
+  frames at 16.5 ms, in the normal range. On 6908960's build (the free-up fix, 02fddb2's head), two
+  more runs the same way: 19.8% and 19.5%, render p50 2.67 and 2.61 ms, frames at 16.4 ms; a point
+  or two above the pair before, with the render time per frame up in the same proportion (the
+  session's state, not the change: the gate's folder has no unpinned or reparse entry, so the new
+  test never calls out there). No triplet, by the coordinator's rule for a change to the listing's
+  keys.
+- **What Jeremy watched for "Free up space"**: the files inside `Stack`, which stayed on the tick
+  even after F5. Measured on `AMD.pdf` (`attrib +P -U`, then `-P +U`, polling every 250 ms): after
+  "free up" the file sat at `0x00100420` (unpinned, its data still here) for over two minutes while
+  the provider's own state read 10, sync pending (what Explorer's Status column shows); TwinFM's
+  attribute rule drew the tick for it. Fixed in 6908960: a file unpinned but not yet released is
+  looked up as an out-of-sync placeholder is (`needs_state_read`'s attribute test), so the row shows
+  the pending glyph until OneDrive releases it, then the cloud through the watch. Scripted: the row
+  that showed the tick now shows the blue arrows, `[cloud] state read ...\AMD.pdf: 10 in 164 ms`,
+  `[icons] status glyph state 10`. Gates: 274 passed (read before the commit). The listing calls
+  cldapi only for an entry that is a reparse point or unpinned, so a plain folder costs nothing more.
+- **The search without thumbnails, answered**: Jeremy's screenshot (`target-p9m4`) shows the right
+  pane in Downloads with "epson" in the **filter box**, not a search tab, in large tiles with type
+  icons, and the left pane in 22 px rows: thumbnails were off in his settings, so neither the tiles
+  nor a search show pictures. Not a bug; with thumbnails on both show them (scripted earlier).
+- **The search without thumbnails** (before the screenshot): not reproduced. In Downloads a search for "jpg" and one for
+  "Klinger" show the JPEGs' thumbnails in the 32 px list and in the large tiles (screenshots), the
+  same as in `%TEMP%`. Jeremy's steps and binary are being asked.
+
+### Deferred (for the phase close)
+
+- **OneDrive files syncing or in error** show their attribute mark (the tick or the cloud), not the
+  provider's syncing or error glyph: Windows hides placeholders from TwinFM's process, so the
+  in-sync test cannot run there, and no attribute says syncing or error. Their folder's mark (looked
+  up) does show it. A way in would be the property read for every file of a sync root on screen
+  (23 ms each), or `RtlSetProcessPlaceholderCompatibilityMode` to see placeholders, which changes
+  how every OneDrive entry lists.
 
 ## Open questions
 
@@ -1159,212 +1442,145 @@ beside Word, Excel or PowerPoint (or Edge, which opens all three):
 Jeremy, 2026-10-21, unelevated with `target-p9m3`: "console checks are all nominal". The PowerPoint
 bullets-by-default call stands as recorded (not reversed).
 
-## P9-M5: the rust-ui look
+## Phase 9 close
 
-Branch `claude/display-windows-modernize-1c0866`, from 192d388 (P9-M2 merged) with main at f2fa4eb
-(P9-M1 and P9-M3) merged in on 2026-10-21 before any code.
+Written 2026-10-21, the day the phase opened. All four milestones are in, each squash-merged on
+Jeremy's word, in the order the gates allowed rather than the kickoff's: the kickoff record (#85,
+ab95aaf), P9-M2 text, pictures and HTML in the preview (#86, 192d388; gate build `target-p9m2`,
+95ace9f), P9-M1 adjustable column widths (#87, 85ef7b8; `target-p9m1`, b9fbd9d), P9-M3 Word, Excel
+and PowerPoint in the preview (#89, f2fa4eb; `target-p9m3`, 111ef17), P9-M4 thumbnails beyond the
+listing and cloud polish (#90, 6d12300; `target-p9m4`, 3374f2b). The reference note in `CLAUDE.md`
+(#88) was opened for `target-p9m2` and brought forward at each merge; the reference for the next
+milestone is `target-p9m4`, the last merged. Phase 9 was the first phase run as **two parallel
+streams** (two Opus sessions, one on the lists, P9-M1 then P9-M4, one on the preview, P9-M2 then
+P9-M3) with a third session coordinating gates, soaks and merges; the whole phase, kickoff to close,
+took one day.
 
-### The design (2026-10-21)
+The gates, against the build merged before each:
 
-The canvas: https://claude.ai/artifact/CeGZSFc6YSVEwqSydHqHc4 (private; four boards: the window as
-built, the proposed look light and dark, and a parts sheet of each element before and after).
-rust-ui.com is shadcn/ui ported to Dioxus: Tailwind-styled HTML in a webview. TwinFM draws with Slint
-on femtovg, so **none of its components can be used; what is copied is the design language**, which
-is small:
+| Milestone | Tag | Reference | Medians (WPR, reference / candidate) | Note |
+|---|---|---|---|---|
+| P9-M2 | ab37 | `target-p8m2` (db30820) | defaults 17.6 / 18.0, preview shown 17.1 / 17.1 | the last three runs in a slower state, both binaries; rounds 1 to 2 like for like, all under 20 |
+| P9-M1 | ab38 | `target-p9m2` (95ace9f) | defaults 17.7 / 18.4, cols 18.5 / 17.7 (round 1); wrapper 21.1 / 21.7, 21.2 / 20.9 | rounds 2 and 3 slow for both binaries; one normal round per setting, read as ab23 was; Jeremy accepted |
+| P9-M3 | ab39 | `target-p9m1` (b9fbd9d) | defaults 18.3 / 18.4, preview shown 17.7 / 17.7 | one session state throughout, every run under 20 |
+| P9-M4 | ab40 | `target-p9m3` (111ef17) | defaults 18.3 / 18.4 (round 1); thumbs 17.8 / 18.1 (all rounds) | the defaults' rounds 2 and 3 slow for both binaries while every thumbs run stayed normal |
 
-- **Type**: Inter (rust-ui's font) at 13 px for rows and controls, 14 px for the window title, 12 px
-  for the muted labels (sidebar headers, column headers, the status bar); weight 500 for labels, the
-  active tab, the cursor row's sidebar entry, folder names and the current crumb; nothing bold.
-- **A neutral grey scale, no accent colour**: light ground `#FFFFFF`, card `#FFFFFF`, sidebar
-  `#FAFAFA`, muted fill `#F5F5F5`, text `#0A0A0A`, muted text `#737373`, hairline `#E5E5E5`, ring
-  `#A3A3A3`, primary button `#171717` on `#FAFAFA`; dark ground `#0A0A0A`, card and sidebar
-  `#171717`, muted `#262626`, text `#FAFAFA`, muted text `#A3A3A3`, hairline `#FFFFFF1A`, ring
-  `#737373`, active tab segment `#3F3F3F`, primary `#E5E5E5` on `#171717`. Light or dark follows the
-  system, as the fluent palette does today.
-- **Radii**: 6 px on controls, tabs' segments and rows' hover and selection, 8 px on the tab strip and
-  the toolbar's container, 10 px on the pane cards and dialogs.
-- **Buttons**: ghost (no fill; the muted fill on hover, 50% opacity when disabled), outline (a
-  hairline, a 1 px shadow under it), one primary (near-black) button per dialog.
-- **Tabs**: a muted strip, the active tab a lifted segment (the card colour with a 1 px shadow),
-  the others muted text with no box. **Rows**: a hairline under each, the muted fill for selected
-  rows, a 2 px ring at 50% inset on the cursor row, no zebra, cut rows at 50%. **The active pane**:
-  the card's hairline turns ring-grey and a 3 px ring at 25% sits around it; the inactive pane's
-  selected rows show at half strength. **Breadcrumb**: muted links with chevron icons, the current
-  folder in full text at weight 500, no box. **Filter**: an outline field with a leading search
-  icon. **Status bar**: muted text with the selection as badges (a muted-fill badge for the count, an
-  outline badge for the size). **Dialogs**: 10 px corners, a soft shadow, the title at 16 px weight
-  600, a switch for booleans, outline Cancel and primary Save.
-- **Icons**: Lucide-style 16 px stroke icons (2 px stroke, round caps) for the toolbar, the sidebar's
-  kinds, the chevrons, the close and new-tab buttons, the sort arrow and the filter. **The rows keep
-  the shell's own file type icons and thumbnails** (a file manager without them is unusable; the
-  canvas's monochrome row icons were a stand-in).
+No gap counted in any of the eight settings. The session-state change (ab23's) appeared in three of
+the four gates; the wrappers now print each run's render p50 beside its busy figure so the reading is
+made from the file, not remembered.
 
-### Settled first (2026-10-21, before any code)
+What Phase 9 answered, against the kickoff's open questions:
 
-- **Where the colours live**: one global `Theme` in a new `src/ui/theme.slint` (imported by
-  `app.slint`, `pane.slint` and `preview.slint`), its `dark` read from `Palette.color-scheme` so the
-  system setting still decides, every token above as an `out property <brush>` named `ground`,
-  `card`, `sidebar`, `muted`, `muted-half` (the muted fill at 50% alpha), `fg`, `fg-muted`,
-  `fg-faint` (`fg` at 50%), `border`, `ring`, `ring-soft` (`ring` at 25%), `ring-half` (`ring` at
-  50%), `tab-active`, `primary`, `primary-fg`, `shadow`, and `radius` 6px, `radius-md` 8px,
-  `radius-lg` 10px as lengths. Every `Palette.` read in the three files becomes a `Theme.` read
-  (60 in `pane.slint`, 38 in `app.slint`, 18 in `preview.slint` at the start). The std widgets still
-  in use (`ListView`, `LineEdit`, `ComboBox`, `AboutSlint`, `ScrollView`) keep their fluent drawing
-  until a task replaces them; `Button` and `CheckBox` are replaced in task 3.
-- **Gate-safe pieces first, Jeremy's rule, read as: no height, width or position changes in tasks 1
-  to 3.** Every height the drop targets, the band, the menu point and the driver read (`dnd.rs`
-  `LIST_TOP`, `TAB_H`, `CRUMB_H`, `TOP_BAR`, `PANE_BAR`, `SIDE_FOOTER`, the 24 px sidebar rows, the
-  22 and 32 px list rows, the 18 px status bar, the 24 px header) stays as it is in those tasks: the
-  look changes inside the same boxes. The canvas draws roomier bars (a 36 px tab strip, a 40 px
-  header, 30 px rows); those are task 5, with the geometry constants, the driver and the soaks
-  changed together, after Jeremy picks the values (§ Open questions below).
-- **The font**: tasks 1 to 3 set the window's `default-font-family` to `"Segoe UI Variable Text"`
-  (on every Windows 11; the fluent default today is Segoe UI through the system), which has Inter's
-  proportions. Inter itself is task 4: three static TTFs (Regular, Medium, SemiBold; SIL Open Font
-  License 1.1, about 300 KB each) from the rsms/inter release, embedded with `import
-  "fonts/Inter-Regular.ttf";` in `app.slint` and `default-font-family: "Inter"`, the licence file
-  beside them and a line in README § License. **A download needs Jeremy's OK first**, so task 4 is
-  asked, not assumed; if he declines, Segoe UI Variable stays and the record says so.
-- **Icons**: Lucide (ISC licence) SVG files under `src/ui/icons/`, each a 24-unit stroke path with
-  `stroke="currentColor"`, drawn by `Image { source: @image-url("icons/<name>.svg"); colorize:
-  Theme.fg; }` at 16 px; `ToolButton`'s `glyph` string becomes an `icon` image. Segoe Fluent Icons
-  stay where they draw Windows' own glyphs (the imageres status glyphs are bitmaps already; the task
-  box in the preview's lists and the crumb chevron move to Lucide). The Lucide notice goes in README
-  § License (it is not a crate, so not in `Cargo.toml`).
-- **The active pane's ring**: no `drop-shadow` on anything that moves with the lists (a blurred
-  layer per frame is the one cost this look could add). The ring is a second `Rectangle` behind the
-  pane card, 3 px larger on each side, `border-width: 3px`, `border-color: Theme.ring-soft`,
-  `border-radius: Theme.radius-lg + 3px`, shown only for the active pane; since the pane's own box
-  must not move (the geometry rule), the ring is drawn inside the pane's `PANE_PAD` (3 px) margin,
-  which is exactly 3 px. The tab segment's and the outline button's 1 px shadow is a 1 px
-  `Rectangle` under them at `Theme.shadow`, not `drop-shadow`. Dialogs keep their `drop-shadow`
-  (they do not scroll).
-- **Rows**: the zebra goes (`mod(i, 2)` in every row variant); the hairline is a 1 px `Rectangle`
-  at each row's bottom at `Theme.border` (one element per visible row, about 40; the gate measures
-  it); selected rows `Theme.muted` (the inactive pane `Theme.muted-half`, read from the host's
-  `active`); the cursor row `border-width: 2px; border-color: Theme.ring-half; border-radius:
-  Theme.radius` in place of today's 1 px accent border; `row.cut` text `Theme.fg-faint`. The Type,
-  Size and Modified cells read `Theme.fg-muted`, Name `Theme.fg`. The rename editor, the drop
-  highlight, the band and the grid's cursor overlay take the same tokens (`Theme.muted` fills,
-  `Theme.ring-half` borders).
-- **What is not changed**: the preview column's block layout (its colours only), the Windows 11
-  context menu popup (`wm-popup` takes the tokens, its rows stay 32 px), the breadcrumb dropdown's
-  rows, the sidebar's drag spots, the grid tiles' geometry (their selection and cursor take the
-  tokens). Nothing in Rust changes in tasks 1 to 3 except `toolbar.rs` if the icon names are passed
-  from Rust (they are not: the buttons are declared in `pane.slint`).
-- **Measuring**: each task ends with `cargo build --release`, `cargo test --release`, a screenshot
-  of the gate scenario's window (`SLINT_BACKEND=winit-software`, `tools/shot.ps1`, the P7-M2 method)
-  against the canvas, and in-app `[busy] 10 s after split` pairs against `target-p9m3` (111ef17, the
-  last merged milestone's gate build, so the reference for this gate), swapped in order as the
-  CLAUDE.md run-order rule says. The console triplet (defaults and `C:\traces\grid-thumbs.toml`, the
-  variant with the most drawing per row) runs once at the end, before the merge.
+- **The cost of a per-row width binding**: none within noise. The spike measured a pane property read
+  by each row's cells against per-pane list variants, twelve in-app runs, and the triplet confirmed it
+  (P9-M1 § The spike, § Gate). The list components stayed at eight rather than sixteen.
+- **Which HTML parser pins cleanly**: neither. `html5ever` brings twelve crates and a build-time code
+  generator; `tl` has no raw-text state for scripts, no entity decoding and no maintenance since 2023.
+  TwinFM's own scanner (`src/html.rs`, pure, tested against the mapping) was the plan's fallback and
+  is what shipped (P9-M2 § Settled first).
+- **Office files Jeremy actually has**: his Word files, workbooks and decks read as expected beside
+  their programs; headings show where the file uses heading styles (P9-M3 § Console checks).
+- **The hydration check**: run at last, and it works live. A file freed or kept in OneDrive changes
+  its mark through the folder watch with no refresh; a whole folder freed turned all 35 marks as
+  OneDrive dehydrated them. One case needed code: for two minutes or more after "Free up space" a file
+  is unpinned but its data still here, which the attribute rule drew as the tick; such a file now gets
+  the state read and shows the pending glyph until the cloud mark arrives (P9-M4 § After the console
+  check).
 
-### Tasks
+Lessons of the phase:
 
-Each task is one commit on the branch, pushed; the PR is opened after task 1 and grows.
+- **Two streams need a coordinator, and the coordinator's messages cross.** "Soak go" and "gate
+  running" reached the lists stream seconds apart and it had to stop a soak in its setup; a hold on
+  commits arrived after the commit it meant to stop. What held: every stream reports before any gate
+  build, soak or hand-over and waits for a reply; the coordinator names the reference with each
+  clearance; one soak at a time on the machine (the soaks share `%TEMP%\twinfm-m5` and the fence);
+  nothing builds, soaks or opens a TwinFM window from "gate running" to "machine free". The sessions
+  found the shared-scratch rule themselves, before it bit.
+- **In-app numbers taken while a sibling compiles or soaks are not numbers.** The P9-M1 spike's
+  pairs ran while the preview stream compiled and soaked; the spread stayed in the usual range and
+  the choice stood, but the record carries the caveat, and later in-app checks waited for a quiet
+  machine.
+- **The gate-before-every-commit rule slipped twice**, both times on a docs-only or test-unrelated
+  change under time pressure: a kickoff bullet committed during a hold without a run, and a chained
+  test-and-commit that committed past a clipboard test failing because the screen was locked
+  (Windows refuses `OpenClipboard` from the lock screen). Neither was rewritten; both were gated
+  after the fact and recorded. The rule now reads: run the tests, read the result, then commit, as
+  two steps, and never chain them.
+- **Settle-first probes must run in TwinFM's own process.** P9-M4's probes of OneDrive's placeholder
+  state ran in PowerShell, where placeholders are visible; Windows hides them from TwinFM (every
+  OneDrive file lists as a plain file, no reparse point, state 0), so the in-sync gate they settled
+  never fires there, and the attribute test that works was found at the console check. The same
+  goes for thumbnails: OneDrive files do get them in TwinFM's process, so the search guard became
+  per file.
+- **The builder check earned its place**: a fresh reviewer reading the kickoff draft caught that a
+  grip "dragging its column's width" cannot work with the list's right edge pinned, that a tree XML
+  parser cannot stop after 500 rows, and that plain text "not wrapped" contradicted the code blocks it
+  reused. All three became the lead's calls before any brief went out; a fourth point went to Jeremy.
+- **The kickoff's calls were superseded in six places by what was built**, each marked with the date
+  where it stands (the fit's column, the tile overlay rule, the search guard, the archive thumbnails,
+  the OneDrive state gate, the streaming reader). A kickoff written in a morning cannot know what the
+  code and the shell will say by afternoon; the rule that each milestone's Settled first may correct
+  the kickoff, in place and dated, kept the record honest without rewriting history.
+- **A fix after the console check does not always need a triplet.** The rule applied: no triplet for
+  a change confined to event handlers, a stat on a watch record or the listing's keys, with one in-app
+  run recorded; a triplet for anything touching the rows, the icon workers' per-row work or the
+  compose path. P9-M4's two post-gate fixes took the first path.
+- **Jeremy gave several decisions to a stream directly** (the fit rule, the P9-M1 and P9-M3 merge
+  go-aheads, the tile overlays, the console results). It worked because the stream quoted his words
+  to the coordinator before acting and the coordinator checked the PR's state before a merge, so a
+  second `gh pr merge` never ran.
 
-1. **Theme and colours** (`src/ui/theme.slint` new; `app.slint`, `pane.slint`, `preview.slint`).
-   - Write `Theme` with the tokens above; `import { Theme } from "theme.slint";` in the three files.
-   - Replace every `Palette.` read with the token the design names: window and pane ground
-     `Theme.ground`, the toolbar band and the sidebar `Theme.sidebar`, pane cards `Theme.card` with
-     `border-color: Theme.border` (active: `Theme.ring`) and `border-radius: Theme.radius-lg`, the
-     active-pane ring rectangle, tabs (strip `Theme.muted` at `Theme.radius-md`, the active tab
-     `Theme.tab-active` at `Theme.radius` with its 1 px shadow line, inactive titles `Theme.fg-muted`),
-     the crumb bar (no border, no fill; crumbs `Theme.fg-muted`, the last `Theme.fg` at 500), header
-     cells (`Theme.fg-muted` at 500, a `Theme.border` hairline under the row, no cell borders), rows
-     as settled, the status bar (`Theme.fg-muted`), sidebar rows (`Theme.muted` fill at `Theme.radius`
-     for the current row, headers `Theme.fg-muted` at 500), the splitter and preview handle
-     (`Theme.border`, `Theme.ring` on hover), the preview column (ground `Theme.card`, code blocks
-     `Theme.muted`, rules and table lines `Theme.border`), the menu popup and the dialogs
-     (`Theme.card`, `Theme.border`, `Theme.radius-lg`).
-   - `default-font-family: "Segoe UI Variable Text"` on the `Window`; row and control text 13px,
-     muted labels 12px, the dialog titles 16px at 600.
-   - Build, test, screenshot, busy pairs. Commit `ui: P9-M5 theme global and the rust-ui colours`.
-2. **Lucide icons** (`src/ui/icons/*.svg` new: file-plus, folder-plus, scissors, copy,
-   clipboard-paste, pencil, trash, panel-right, monitor, file, download, image, hard-drive, star,
-   folder, chevron-right, chevron-down, x, plus, arrow-up, search, sliders-horizontal, info,
-   arrow-left, arrow-right; `pane.slint` `ToolButton` and `Toolbar`, `app.slint` `SideRow` and the
-   sidebar footer, the crumb chevron, the tab close button, `HeaderCell`'s sort arrow, the filter
-   box's glyphs; README § License).
-   - `ToolButton`: `in property <image> icon;` drawn colorized, in place of `glyph`; the eight
-     buttons' `glyph:` lines become `icon: @image-url(...)`. The sidebar's `SideRow` gets an icon by
-     `item.kind`. The chevron, close, plus, sort and filter glyph `Text`s become colorized `Image`s of
-     the same size in the same slots.
-   - Build, screenshot (the toolbar at both placements, `C:\traces\toolbar-pane.toml`), busy pairs.
-     Commit `ui: P9-M5 Lucide icons for the chrome`.
-3. **Dialog controls** (`theme.slint` gains `GhostButton`, `OutlineButton`, `PrimaryButton`,
-   `Switch`; `app.slint` settings and About dialogs, the bookmark menu).
-   - The std `Button`s become `OutlineButton` (Cancel, About's close) and `PrimaryButton` (OK);
-     `CheckBox` rows become `Switch` (36 x 20, `Theme.primary` knob track when on, `Theme.border`
-     off); labels at 500; 12 px between rows. `ComboBox` stays (writing a popup choice is a task of
-     its own, deferred). Driver steps `settings set`, `settings ok`, `settings close`, `about close`
-     call the same callbacks.
-   - Build, test (the settings dialog's scripted test in the P6 soak: `settings open`, `set`, `ok`),
-     screenshot. Commit `ui: P9-M5 dialog buttons and switches`.
-4. **Inter** (after Jeremy's OK): `src/ui/fonts/Inter-{Regular,Medium,SemiBold}.ttf` and `OFL.txt`,
-   the three `import` lines, `default-font-family: "Inter"`, README § License. Build, screenshot,
-   busy pairs (text shaping is per row: this is the one task in the gate-safe set that touches what
-   every row does). Commit `ui: P9-M5 Inter bundled`.
-5. **The roomier bars** (after Jeremy picks the values): the tab strip, path bar, header, status bar,
-   sidebar rows and footer, and the toolbar band take the canvas's heights, with `dnd.rs`'s constants,
-   `main.rs` `window_layout`, `auto.rs`'s aims and `tools/soak-*.ps1`'s row and tile aims changed in
-   the same commit; the list rows stay 22 and 32 px unless Jeremy chooses otherwise (§ Open
-   questions). Build, test, the P5-M3 soak for 10 minutes, busy pairs. Commit `ui: P9-M5 bar
-   heights`.
-6. **Gate and close**: `target-p9m5` built `--locked` from a detached checkout of the PR head;
-   `tools/gate-p9m5.ps1` on the P9-M3 script's pattern with `target-p9m3` as the reference, the
-   defaults and `C:\traces\grid-thumbs.toml`; the record's § What landed, § Decisions, § Scripted
-   checks, § Gate and § Console checks; CLAUDE.md's reference-build line.
+Deferred, from the four milestones and their console checks:
 
-### What landed so far (2026-10-21, tasks 1 to 3; PR #91)
+- **Columns** (P9-M1): no "reset to defaults" (the keys can be deleted from the file); a pane narrower
+  than its widths clips them as before.
+- **Text** (P9-M2): no syntax colours; long lines wrap (Jeremy's choice) and there is no horizontal
+  scroll in the column; `<meta charset>` is not read (a Windows-1252 page shows replaced accents); the
+  named-entity table is the common names, not all 2,231; `colspan`, CSS and implied end tags beyond
+  the list.
+- **Pictures** (P9-M2): HEIC, HEIF and AVIF are "No preview" (no pure Rust decoder); an SVG's text is
+  not drawn (P8-M2's).
+- **Office** (P9-M3): layout, fonts, charts and SmartArt are lost by design; the binary `.doc`,
+  `.xls`, `.ppt` are "No preview"; headers, footers, footnotes, comments and notes pages are never
+  read; a sheet shows at most 500 rows by 50 columns; money and other number formats show as stored.
+- **Cloud** (P9-M4 § Deferred): OneDrive files syncing or in error show their attribute mark, not the
+  provider's glyph, because Windows hides placeholders from TwinFM's process; the ways in are a
+  property read per file on screen (23 ms each) or `RtlSetProcessPlaceholderCompatibilityMode`, which
+  changes how every OneDrive entry lists. Thumbnails inside archive levels stay off: the shell has no
+  thumbnail provider inside a zip or a 7z.
+- **From Phase 8, unchanged**: zoom and text selection in the preview, password PDFs through PDFium,
+  the Markdown details (HTML layout, table borders, the scrollbar's drift on a long file).
 
-- **Task 1, fcc285b**: `src/ui/theme.slint` with the `Theme` global (every token of § Settled first,
-  plus `input`, an unchecked switch's track), imported by the three UI files; no `Palette` read is
-  left outside it. The window sets `default-font-family: "Segoe UI Variable Text"` and
-  `default-font-size: 13px`. The rows, the pane card and its ring, the tabs, the header cells, the
-  crumbs, the status bar, the sidebar rows, the toolbar band, the splitters, the preview column, the
-  menus and the dialogs take the tokens as § Settled first says. No constant in `dnd.rs`, `main.rs`
-  or `auto.rs` changed; the soaks were not touched.
-- **Task 2, d113789**: 32 Lucide-style SVGs under `src/ui/icons/` (one `d` path each, colorized by
-  `Image.colorize`), drawn in the toolbar's eight buttons (`ToolButton.icon` in place of `glyph`),
-  the sidebar's rows (a drive, a bookmark, and the places by their label: Home, Desktop, Downloads,
-  Pictures, Music, Videos, OneDrive; any other place a folder), the sidebar's hide button, the crumb
-  chevrons, the tab close, the sort arrow, the filter's clear and the path bar's mode glyph. README
-  § License carries the Lucide notice. The Windows 11 menu's icon row and the preview's task boxes
-  keep their Segoe Fluent glyphs.
-- **Task 3, 862bca8**: `Btn` (outline, and `primary: true`) and `Switch` in `theme.slint`; the
-  Settings dialog's nine check boxes are switches, its OK (primary) and Cancel and About's Close
-  are `Btn`s; the rows' spacing is 8 px and the dialog 510 px tall (480 before) so its note still
-  fits. `ComboBox` and `LineEdit` stay fluent (a popup choice of our own is deferred).
+Open questions at the close:
 
-**Checks**: `cargo build --release` after each task; `cargo test --release` 270 of 271 after each,
-the one failure `fileops::clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` ("the
-clipboard is in use by another program", twenty tries over a second), which fails the same way from
-the unchanged main checkout at f2fa4eb and passed once earlier in the session, so it is the machine
-(PowerToys Advanced Paste runs; no `twinfm` process was left, no window held the clipboard open at
-the moment asked), not this branch. Screenshots of the scripted window (`SLINT_BACKEND=winit-software`,
-`tools/shot.ps1`; Jeremy's system in dark mode, so every one is the dark board): the details list
-with a selection and the cursor, two tabs with the filter and the preview column, the large-icon
-grid with the settings dialog, both toolbar placements with the path entry and the sidebar hidden,
-and the dialog with the switches. In-app busy pairs after task 1 against `target-p9m3` (eight runs,
-`[busy] 10 s after split`, one session state, render p50 2.5 to 3.4 ms): reference 21.9 / 18.0 /
-18.4 / 20.9 (median 19.7), candidate 20.3 / 23.0 / 19.2 / 19.2 (median 19.8): flat. After task 3 one
-pair read 18.0 / 22.2 and the next four runs presented no frames (render n=6, interval 50 ms: the
-session had changed state), so they decide nothing; tasks 2 and 3 change nothing the gate scenario
-draws per row. The console triplet is still to run.
+- **Carried from Phases 7 and 8**: Google Drive's volume found by its name; a sync-root scratch folder
+  for the soak; the Slint whole-row snap patch and upstreaming the two accessibility patches; the dead
+  share console check owed since P5-M1.
+- **The stale worktrees and gate builds**: eight worktrees and four `target-*` directories from Phases
+  6 to 8 were audited on 2026-10-21 and found clean, but not yet removed (the permission system
+  refused the agent's deletion; Jeremy's call). `target-p9m1`, `target-p9m2` and `target-p9m3` have
+  each served as a reference and can go once `target-p9m4` has served.
 
-**Waiting on Jeremy** (§ Open questions): Inter (task 4 downloads three TTFs), the row and bar
-heights (task 5), and the gate (task 6, his elevated console).
+Phase 10 candidates, for Jeremy's decision, the lead's recommendation first. Sizes in this project's
+units: a milestone is what P9-M1 or P9-M2 was; a small item is an afternoon.
 
-### Open questions
+- **Daily use** (recommended, as at the two closes before): Phase 9 began from one line of daily-use
+  friction, the column widths, and that milestone was the phase's smallest and most used. A fortnight
+  with the P9-M4 build and a written list of what gets in the way is the best kickoff Phase 10 can
+  have.
+- **Content search** (out since P3-M2): text inside files in the search tab; a milestone at least,
+  with encodings, size limits and binary files to settle first. The preview's text reader (P9-M2)
+  already settles the encodings.
+- **OneDrive's syncing and error states** (P9-M4 § Deferred): a small item if the property read per
+  file on screen is accepted at 23 ms each; half a milestone with the placeholder compatibility mode
+  and its listing changes.
+- **The preview's deferred items**: syntax colours for text (a milestone with a grammar set to
+  choose), zoom and selection, PDFium for password PDFs. After Jeremy's word on each.
+- **The Slint fork**: the whole-row snap patch and the upstreaming decision. Jeremy's.
+- **Two streams again**: the parallel shape held for a one-day phase of four milestones; Phase 10 can
+  run the same way if its milestones split by file area as Phase 9's did.
+- Accessibility stays deferred for much later (Jeremy, 2026-10-15): not a candidate.
 
-- **Row height**: keep 22 px (32 with thumbnails), Explorer's compact spacing, or go to the
-  canvas's 30 px (36 with thumbnails)? The lead recommends keeping 22 and 32: a 40k folder shows a
-  third more rows, and every row-aimed soak step and `dnd` figure stays as it is. Jeremy's call
-  before task 5.
-- **The bar heights** for task 5 (the canvas: tab strip 36, path bar 36 with 32 px buttons, header
-  40, status 40, sidebar rows 32, toolbar band 52). The lead recommends a smaller step: tab strip 30,
-  path bar 36, header 32, status 28, sidebar rows 32, toolbar 44.
-- **Inter**: bundle it (task 4, about 900 KB in the exe) or stay on Segoe UI Variable?
-- **Dark mode's accent**: none; the look is grey in both schemes, the canvas's choice. Jeremy may
-  want the Windows accent for the cursor ring; a one-token change.
+The restyle in the rust-ui idiom, written into this record on 2026-10-21 as a fifth milestone
+"P9-M5" while the phase ran, moved to Phase 10 as P10-M1 on 2026-10-22 when Jeremy chose a UI/UX
+polish phase: `docs/phase-10-plan.md`.
