@@ -696,13 +696,21 @@ overlay's size and list for 16, 32, 48 and 96 px at 100% and 150%.
 
 ### Decisions
 
-- **The search's cloud guard is the root's location, not each file's attributes** (Settled first
-  said attributes): a OneDrive file is a cloud placeholder (`Kind::Cloud`) and never gets a `thumb:`
-  key anyway (only `Kind::File` does, in folders too), so the case that matters is Google Drive,
-  whose files are plain files on its own volume; a search rooted there gets no thumbnails.
-- **Found while checking, not changed**: OneDrive files never show thumbnails in a folder listing
-  either, for the same reason (`Kind::Cloud`); the P6-M1 `thumb:<mark>:` keys only arise for plain
-  files under a sync root. A candidate for later, recorded here.
+- **The search's cloud guard is both the root's location and each file's attributes**: a search
+  rooted in a cloud location (OneDrive, Google Drive) gets no thumbnails, and since 6908960 a search
+  result not on this disk (`RECALL_ON_DATA_ACCESS` or `OFFLINE`) keeps its type's key wherever the
+  search started. Corrected after the console check: this record first said a OneDrive file is a
+  cloud placeholder (`Kind::Cloud`) that never gets a `thumb:` key. That holds only for a process
+  shown placeholders (PowerShell, where the Settled first probes ran); Windows hides them from
+  TwinFM's process, where a OneDrive file is a plain file (`AMD.pdf` listed as `0x00100020`, no
+  reparse point), so OneDrive files do get thumbnails (the P6-M1 marked keys) and the per-file guard
+  is needed. In practice a search from the home folder does not walk into OneDrive (0 found from
+  `C:\Users\jtkli`, 137,043 folders; 1 found from `OneDrive` itself), so the guard covers other
+  sync locations and offline files.
+- **The placeholder state gate is dead in TwinFM's process** for the same reason (state 0 for every
+  OneDrive file): the attribute test that does work there is the one added after the console check
+  (unpinned, its data still here: a file being freed). A file syncing or in error is still shown by
+  its attributes' mark unless its folder is looked up; noted for later.
 - **The tile overlay rule is two thirds of the icon above 48 physical px**, not "a third of the
   picture" (Settled first): measured on this machine, the shell's overlay images hold their glyph in
   about 40% (the link arrow, 37 px over 96) and 57% of the width (Google Drive's mark, 55 x 40 over
@@ -825,7 +833,21 @@ the way; 5 "Free up space" seemed not to change the mark, "Always keep on this d
   two in-app runs of the gate scenario on a121e5c's `target\release`, console session active, no build
   running, Narrator off: `[busy] 10 s after split` 17.8% and 17.8%, render p50 2.43 and 2.44 ms,
   frames at 16.5 ms, in the normal range.
-- **The search without thumbnails**: not reproduced. In Downloads a search for "jpg" and one for
+- **What Jeremy watched for "Free up space"**: the files inside `Stack`, which stayed on the tick
+  even after F5. Measured on `AMD.pdf` (`attrib +P -U`, then `-P +U`, polling every 250 ms): after
+  "free up" the file sat at `0x00100420` (unpinned, its data still here) for over two minutes while
+  the provider's own state read 10, sync pending (what Explorer's Status column shows); TwinFM's
+  attribute rule drew the tick for it. Fixed in 6908960: a file unpinned but not yet released is
+  looked up as an out-of-sync placeholder is (`needs_state_read`'s attribute test), so the row shows
+  the pending glyph until OneDrive releases it, then the cloud through the watch. Scripted: the row
+  that showed the tick now shows the blue arrows, `[cloud] state read ...\AMD.pdf: 10 in 164 ms`,
+  `[icons] status glyph state 10`. Gates: 274 passed (read before the commit). The listing calls
+  cldapi only for an entry that is a reparse point or unpinned, so a plain folder costs nothing more.
+- **The search without thumbnails, answered**: Jeremy's screenshot (`target-p9m4`) shows the right
+  pane in Downloads with "epson" in the **filter box**, not a search tab, in large tiles with type
+  icons, and the left pane in 22 px rows: thumbnails were off in his settings, so neither the tiles
+  nor a search show pictures. Not a bug; with thumbnails on both show them (scripted earlier).
+- **The search without thumbnails** (before the screenshot): not reproduced. In Downloads a search for "jpg" and one for
   "Klinger" show the JPEGs' thumbnails in the 32 px list and in the large tiles (screenshots), the
   same as in `%TEMP%`. Jeremy's steps and binary are being asked.
 
