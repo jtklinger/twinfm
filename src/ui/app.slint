@@ -487,6 +487,8 @@ export component App inherits Window {
     in-out property <bool> dlg-crumbs;
     // The toolbar's place in the dialog: 0 none, 1 top, 2 in each pane (ComboBox index).
     in-out property <int> dlg-toolbar;
+    // The colour scheme choice (P10-M1 task 7): 0 system, 1 light, 2 dark.
+    in-out property <int> dlg-theme;
     in-out property <bool> dlg-preview;
     // "Saved to <file>", or that a scripted run saves nothing.
     in property <string> settings-note;
@@ -524,6 +526,7 @@ export component App inherits Window {
         if (field == "view_left") { dlg-view-left = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "view_right") { dlg-view-right = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "toolbar") { dlg-toolbar = value == "none" ? 0 : value == "pane" ? 2 : 1; }
+        if (field == "theme") { dlg-theme = value == "light" ? 1 : value == "dark" ? 2 : 0; }
         if (field == "preview") { dlg-preview = value == "true"; }
     }
 
@@ -1283,9 +1286,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 510px) / 2);
+        y: max(10px, (root.height - 550px) / 2);
         width: 480px;
-        height: 510px;
+        height: 550px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Theme.card;
@@ -1379,6 +1382,15 @@ export component App inherits Window {
                                     accessible-label: "View in the right pane";
                                     selected => { root.settings-stage("view_right", self.current-index == 2 ? "medium" : self.current-index == 1 ? "large" : "details"); }
                                 }
+                            }
+                        }
+                        Row {
+                            Text { text: "Theme"; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["System", "Light", "Dark"];
+                                current-index: root.dlg-theme;
+                                accessible-label: "Theme";
+                                selected => { root.settings-stage("theme", self.current-index == 1 ? "light" : self.current-index == 2 ? "dark" : "system"); }
                             }
                         }
                         Row {

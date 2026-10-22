@@ -258,7 +258,7 @@ what Jeremy picks next). Read them before changing the list.
   `settings set <field> <value>` (stages a value through the function the dialog's control calls:
   `start_left`, `start_right` take a path, `hidden_left`, `hidden_right`, `type_column`,
   `thumbnails`, `sidebar` take `true|false`, `path_bar` takes `entry|crumb`, since P6-M2 `view_left`,
-  `view_right` take `details|large|medium`), `settings ok` and `settings close` (the OK
+  `view_right` take `details|large|medium`, since P10-M1 `theme` takes `system|light|dark`), `settings ok` and `settings close` (the OK
   and Cancel buttons; `key Escape` cancels through the key path); `window max|restore|close` maximises or restores
   the window, or closes it through `WM_CLOSE` (the close button's path, which saves the settings;
   `quit` does not); `[sidebar]` and `[settings]` lines on stderr, the dialog's among them:
@@ -824,7 +824,9 @@ what Jeremy picks next). Read them before changing the list.
   gets its sort, hidden files, cursor and scroll back; a bare list of paths still loads (the
   defaults new tabs have), and the next save writes tables; since P8-M1 `preview` (the preview
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
-  0.35, its handle's drag); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
+  0.35, its handle's drag); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
+  `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
+  `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
   the `_right` three (each pane's column widths, logical px, defaults 120, 90, 140, 40 to 2,000;
   the header grips set them). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
