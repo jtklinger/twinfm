@@ -351,20 +351,20 @@ impl Layout {
     }
 }
 
-/// The list's top inside a pane (pane.slint): 3 px padding, 32 px path entry, 2 px spacing,
-/// 24 px header, 2 px spacing. Its bottom is 23 px above the pane's (2 px spacing, 18 px status
-/// line, 3 px padding), its sides 3 px in.
-pub const LIST_TOP: f32 = 63.0;
-pub const LIST_BOTTOM_GAP: f32 = 23.0;
+/// The list's top inside a pane (pane.slint): 3 px padding, 36 px path entry, 2 px spacing,
+/// 32 px header, 2 px spacing (P10-M1 task 5; 63 px before it). Its bottom is 33 px above the
+/// pane's (2 px spacing, 28 px status line, 3 px padding), its sides 3 px in.
+pub const LIST_TOP: f32 = 75.0;
+pub const LIST_BOTTOM_GAP: f32 = 33.0;
 pub const PANE_PAD: f32 = 3.0;
-/// The tab strip above the path bar (26 px) and the layout spacing under it (2 px), present only
+/// The tab strip above the path bar (30 px) and the layout spacing under it (2 px), present only
 /// when the pane has more than one tab.
-pub const TAB_STRIP: f32 = 28.0;
+pub const TAB_STRIP: f32 = 32.0;
 
-/// The toolbar across the window (app.slint, `toolbar = "top"`): 36 px over the sidebar and the
-/// panes. The toolbar in each pane (`toolbar = "pane"`): 28 px at the pane's top, above the tab
+/// The toolbar across the window (app.slint, `toolbar = "top"`): 44 px over the sidebar and the
+/// panes (36 before P10-M1 task 5). The toolbar in each pane (`toolbar = "pane"`): 28 px at the pane's top, above the tab
 /// strip and the path bar, and the 2 px layout spacing under it (P6-M3).
-pub const TOP_BAR: f32 = 36.0;
+pub const TOP_BAR: f32 = 44.0;
 pub const PANE_BAR: f32 = 30.0;
 
 /// The top of the pane's list, in window px.
@@ -401,17 +401,17 @@ pub enum Spot {
     Crumb(usize, usize),
 }
 
-/// The sidebar's list starts under its 3 px top padding and ends above the 26 px footer (the
-/// "About TwinFM" row); a pane's tab strip is 26 px tall under the pane's 3 px padding.
+/// The sidebar's list starts under its 3 px top padding and ends above the 32 px footer (the
+/// "About TwinFM" row); a pane's tab strip is 30 px tall under the pane's 3 px padding.
 pub const SIDE_TOP: f32 = 3.0;
-pub const SIDE_FOOTER: f32 = 26.0;
+pub const SIDE_FOOTER: f32 = 32.0;
 pub const TAB_TOP: f32 = 3.0;
-pub const TAB_H: f32 = 26.0;
-/// The breadcrumb buttons (pane.slint `crumb-row`): 3 px padding inside the 32 px path bar, which
+pub const TAB_H: f32 = 30.0;
+/// The breadcrumb buttons (pane.slint `crumb-row`): 3 px padding inside the 36 px path bar, which
 /// sits under the pane's 3 px padding and, with two tabs or more, the tab strip (`TAB_STRIP`), so
-/// the buttons are 26 px tall from 6 px (or 34 px) below the pane's top.
+/// the buttons are 30 px tall from 6 px (or 38 px) below the pane's top.
 pub const CRUMB_PAD: f32 = 3.0;
-pub const CRUMB_H: f32 = 26.0;
+pub const CRUMB_H: f32 = 30.0;
 
 /// The top of pane `pane`'s breadcrumb buttons, in window px.
 pub fn crumb_top(l: &Layout, pane: usize) -> f32 {
@@ -3296,92 +3296,92 @@ mod tests {
         let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
-        // Rows start at y 63, 22 px each; the list ends 23 px above the bottom (y 577).
-        assert_eq!(hit(&one, 500.0, 63.0, none, [10, 0]), Spot::Row(0, 0));
-        assert_eq!(hit(&one, 500.0, 84.9, none, [10, 0]), Spot::Row(0, 0));
-        assert_eq!(hit(&one, 500.0, 85.0, none, [10, 0]), Spot::Row(0, 1));
-        assert_eq!(hit(&one, 500.0, 63.0 + 9.5 * 22.0, none, [10, 0]), Spot::Row(0, 9));
-        assert_eq!(hit(&one, 500.0, 63.0 + 10.5 * 22.0, none, [10, 0]), Spot::Pane(0), "below the last row");
+        // Rows start at y 75, 22 px each; the list ends 33 px above the bottom (y 567).
+        assert_eq!(hit(&one, 500.0, 75.0, none, [10, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&one, 500.0, 96.9, none, [10, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&one, 500.0, 97.0, none, [10, 0]), Spot::Row(0, 1));
+        assert_eq!(hit(&one, 500.0, 75.0 + 9.5 * 22.0, none, [10, 0]), Spot::Row(0, 9));
+        assert_eq!(hit(&one, 500.0, 75.0 + 10.5 * 22.0, none, [10, 0]), Spot::Pane(0), "below the last row");
         assert_eq!(hit(&one, 500.0, 50.0, none, [10, 0]), Spot::Pane(0), "the header");
         assert_eq!(hit(&one, 500.0, 590.0, none, [1000, 0]), Spot::Pane(0), "the status line");
         assert_eq!(hit(&one, 1.0, 100.0, none, [10, 0]), Spot::Pane(0), "the pane's padding");
         assert_eq!(hit(&one, 500.0, -1.0, none, [10, 0]), Spot::Outside);
         assert_eq!(hit(&one, 1000.0, 100.0, none, [10, 0]), Spot::Outside);
         // Scrolled by 100 rows: the first visible row is row 100.
-        assert_eq!(hit(&one, 500.0, 70.0, [-2200.0, 0.0], [1000, 0]), Spot::Row(0, 100));
-        assert_eq!(hit(&one, 500.0, 70.0 + 22.0 * 3.0, [-2200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
-        // 32 px rows (thumbnails on): row 0 ends at 95, and 100 rows are 3200 px.
+        assert_eq!(hit(&one, 500.0, 80.0, [-2200.0, 0.0], [1000, 0]), Spot::Row(0, 100));
+        assert_eq!(hit(&one, 500.0, 80.0 + 22.0 * 3.0, [-2200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
+        // 32 px rows (thumbnails on): row 0 ends at 107, and 100 rows are 3200 px.
         let tall = Layout { row_px: 32.0, ..one };
-        assert_eq!(hit(&tall, 500.0, 94.9, none, [10, 0]), Spot::Row(0, 0));
-        assert_eq!(hit(&tall, 500.0, 95.0, none, [10, 0]), Spot::Row(0, 1));
-        assert_eq!(hit(&tall, 500.0, 70.0 + 32.0 * 3.0, [-3200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
+        assert_eq!(hit(&tall, 500.0, 106.9, none, [10, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&tall, 500.0, 107.0, none, [10, 0]), Spot::Row(0, 1));
+        assert_eq!(hit(&tall, 500.0, 80.0 + 32.0 * 3.0, [-3200.0, 0.0], [1000, 0]), Spot::Row(0, 103));
         // The large-icon grid, 5 tiles of 96 x 136 px to a grid row (120 px before P7-M4; the list
         // is 994 px wide, so 10 would fit; the count is the pane's, read from Slint): tiles start
-        // at x 3, y 63.
+        // at x 3, y 75.
         let grid = Layout { grid: [Some(5), None], ..one };
         assert_eq!(grid.row_px_of(0), 136.0);
         assert_eq!(grid.row_px_of(1), 22.0);
-        assert_eq!(hit(&grid, 3.0, 63.0, none, [12, 0]), Spot::Row(0, 0));
-        assert_eq!(hit(&grid, 98.9, 198.9, none, [12, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(hit(&grid, 3.0, 75.0, none, [12, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&grid, 98.9, 210.9, none, [12, 0]), Spot::Row(0, 0), "the tile's far corner");
         assert_eq!(hit(&grid, 99.0, 100.0, none, [12, 0]), Spot::Row(0, 1));
         assert_eq!(hit(&grid, 3.0 + 4.0 * 96.0 + 10.0, 100.0, none, [12, 0]), Spot::Row(0, 4), "the last column");
         assert_eq!(hit(&grid, 3.0 + 5.0 * 96.0 + 10.0, 100.0, none, [12, 0]), Spot::Pane(0), "right of the tiles");
-        assert_eq!(hit(&grid, 50.0, 199.0, none, [12, 0]), Spot::Row(0, 5), "the second grid row");
-        assert_eq!(hit(&grid, 3.0 + 96.0 + 10.0, 199.0 + 136.0, none, [12, 0]), Spot::Row(0, 11), "the last entry");
-        assert_eq!(hit(&grid, 3.0 + 2.0 * 96.0 + 10.0, 199.0 + 136.0, none, [12, 0]), Spot::Pane(0), "past the last entry");
+        assert_eq!(hit(&grid, 50.0, 220.0, none, [12, 0]), Spot::Row(0, 5), "the second grid row");
+        assert_eq!(hit(&grid, 3.0 + 96.0 + 10.0, 220.0 + 136.0, none, [12, 0]), Spot::Row(0, 11), "the last entry");
+        assert_eq!(hit(&grid, 3.0 + 2.0 * 96.0 + 10.0, 220.0 + 136.0, none, [12, 0]), Spot::Pane(0), "past the last entry");
         assert_eq!(hit(&grid, 50.0, 50.0, none, [12, 0]), Spot::Pane(0), "the header");
         // Scrolled by ten grid rows: the first visible tile is entry 50.
-        assert_eq!(hit(&grid, 50.0, 70.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 50));
-        assert_eq!(hit(&grid, 3.0 + 3.0 * 96.0 + 1.0, 70.0 + 136.0 * 2.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 63));
+        assert_eq!(hit(&grid, 50.0, 80.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 50));
+        assert_eq!(hit(&grid, 3.0 + 3.0 * 96.0 + 1.0, 80.0 + 136.0 * 2.0, [-1360.0, 0.0], [1000, 0]), Spot::Row(0, 63));
         // Medium tiles (P6-M2), 12 of 80 x 107 px to a grid row: the column and line from the tile.
         let medium = Layout { grid: [Some(12), None], tile: [crate::icons::TileGeom::MEDIUM, crate::icons::TileGeom::LARGE], ..one };
         assert_eq!(medium.row_px_of(0), 107.0);
-        assert_eq!(hit(&medium, 3.0 + 80.0, 63.0 + 107.0, none, [100, 0]), Spot::Row(0, 13));
-        assert_eq!(hit(&medium, 3.0 + 79.9, 63.0 + 106.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
-        assert_eq!(hit(&medium, 3.0 + 12.0 * 80.0 + 1.0, 70.0, none, [100, 0]), Spot::Pane(0), "right of the tiles");
+        assert_eq!(hit(&medium, 3.0 + 80.0, 75.0 + 107.0, none, [100, 0]), Spot::Row(0, 13));
+        assert_eq!(hit(&medium, 3.0 + 79.9, 75.0 + 106.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(hit(&medium, 3.0 + 12.0 * 80.0 + 1.0, 80.0, none, [100, 0]), Spot::Pane(0), "right of the tiles");
         // With the split, each pane has its own view: the right pane stays a 22 px list.
         let both = Layout { split: true, grid: [Some(5), None], ..one };
-        assert_eq!(hit(&both, 50.0, 199.0, none, [12, 7]), Spot::Row(0, 5));
-        assert_eq!(hit(&both, 700.0, 70.0 + 22.0 * 6.0, none, [12, 7]), Spot::Row(1, 6));
+        assert_eq!(hit(&both, 50.0, 220.0, none, [12, 7]), Spot::Row(0, 5));
+        assert_eq!(hit(&both, 700.0, 80.0 + 22.0 * 6.0, none, [12, 7]), Spot::Row(1, 6));
         // Split at 0.5: left pane to x 497, splitter 497..503, right pane from 503.
-        assert_eq!(hit(&two, 100.0, 70.0, none, [5, 7]), Spot::Row(0, 0));
-        assert_eq!(hit(&two, 496.0, 70.0, none, [5, 7]), Spot::Pane(0), "the left pane's padding");
-        assert_eq!(hit(&two, 497.0, 70.0, none, [5, 7]), Spot::Outside, "the splitter");
-        assert_eq!(hit(&two, 502.9, 70.0, none, [5, 7]), Spot::Outside);
-        assert_eq!(hit(&two, 503.0, 70.0, none, [5, 7]), Spot::Pane(1), "the right pane's padding");
-        assert_eq!(hit(&two, 700.0, 70.0 + 22.0 * 6.0, none, [5, 7]), Spot::Row(1, 6));
-        assert_eq!(hit(&two, 700.0, 70.0 + 22.0 * 7.0, none, [5, 7]), Spot::Pane(1));
-        assert_eq!(hit(&two, 700.0, 70.0, [-44.0, -22.0], [5, 7]), Spot::Row(1, 1), "each pane its own scroll");
+        assert_eq!(hit(&two, 100.0, 80.0, none, [5, 7]), Spot::Row(0, 0));
+        assert_eq!(hit(&two, 496.0, 80.0, none, [5, 7]), Spot::Pane(0), "the left pane's padding");
+        assert_eq!(hit(&two, 497.0, 80.0, none, [5, 7]), Spot::Outside, "the splitter");
+        assert_eq!(hit(&two, 502.9, 80.0, none, [5, 7]), Spot::Outside);
+        assert_eq!(hit(&two, 503.0, 80.0, none, [5, 7]), Spot::Pane(1), "the right pane's padding");
+        assert_eq!(hit(&two, 700.0, 80.0 + 22.0 * 6.0, none, [5, 7]), Spot::Row(1, 6));
+        assert_eq!(hit(&two, 700.0, 80.0 + 22.0 * 7.0, none, [5, 7]), Spot::Pane(1));
+        assert_eq!(hit(&two, 700.0, 80.0, [-44.0, -22.0], [5, 7]), Spot::Row(1, 1), "each pane its own scroll");
         let ratio = Layout { ratio: 0.25, ..two };
         assert_eq!(pane_x(&ratio, 0), (0.0, 247.0));
         assert_eq!(pane_x(&ratio, 1), (253.0, 1000.0));
-        // A tab strip moves that pane's rows down by 28 px; the other pane's stay.
+        // A tab strip moves that pane's rows down by 32 px; the other pane's stay.
         let tabbed = Layout { tabs: [true, false], ..two };
-        assert_eq!(hit(&tabbed, 100.0, 70.0, none, [5, 7]), Spot::Pane(0), "the tab strip pushed row 0 down");
-        assert_eq!(hit(&tabbed, 100.0, 91.0, none, [5, 7]), Spot::Row(0, 0));
-        assert_eq!(hit(&tabbed, 100.0, 113.0, none, [5, 7]), Spot::Row(0, 1));
-        assert_eq!(hit(&tabbed, 700.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
-        assert_eq!((list_top(&tabbed, 0), list_top(&tabbed, 1)), (91.0, 63.0));
-        // The toolbar across the window moves everything down by 36 px and is no target itself;
+        assert_eq!(hit(&tabbed, 100.0, 80.0, none, [5, 7]), Spot::Pane(0), "the tab strip pushed row 0 down");
+        assert_eq!(hit(&tabbed, 100.0, 107.0, none, [5, 7]), Spot::Row(0, 0));
+        assert_eq!(hit(&tabbed, 100.0, 135.0, none, [5, 7]), Spot::Row(0, 1));
+        assert_eq!(hit(&tabbed, 700.0, 80.0, none, [5, 7]), Spot::Row(1, 0));
+        assert_eq!((list_top(&tabbed, 0), list_top(&tabbed, 1)), (107.0, 75.0));
+        // The toolbar across the window moves everything down by 44 px and is no target itself;
         // the one at the top of each pane moves the tab strip, the path bar and the list by 30 px
         // (P6-M3).
         let top = Layout { top: TOP_BAR, ..tabbed };
         assert_eq!(hit(&top, 100.0, 20.0, none, [5, 7]), Spot::Outside, "the toolbar");
-        assert_eq!((list_top(&top, 0), list_top(&top, 1)), (127.0, 99.0));
-        assert_eq!(hit(&top, 700.0, 99.0, none, [5, 7]), Spot::Row(1, 0));
-        assert_eq!((tab_top(&top), side_top(&top), crumb_top(&top, 1)), (39.0, 39.0, 42.0));
+        assert_eq!((list_top(&top, 0), list_top(&top, 1)), (151.0, 119.0));
+        assert_eq!(hit(&top, 700.0, 119.0, none, [5, 7]), Spot::Row(1, 0));
+        assert_eq!((tab_top(&top), side_top(&top), crumb_top(&top, 1)), (47.0, 47.0, 50.0));
         let bar = Layout { bar: PANE_BAR, ..tabbed };
-        assert_eq!((list_top(&bar, 0), list_top(&bar, 1)), (121.0, 93.0));
-        assert_eq!(hit(&bar, 700.0, 92.0, none, [5, 7]), Spot::Pane(1), "the header, under the pane's toolbar");
-        assert_eq!(hit(&bar, 700.0, 93.0, none, [5, 7]), Spot::Row(1, 0));
-        assert_eq!((tab_top(&bar), crumb_top(&bar, 0), crumb_top(&bar, 1)), (33.0, 64.0, 36.0));
+        assert_eq!((list_top(&bar, 0), list_top(&bar, 1)), (137.0, 105.0));
+        assert_eq!(hit(&bar, 700.0, 104.0, none, [5, 7]), Spot::Pane(1), "the header, under the pane's toolbar");
+        assert_eq!(hit(&bar, 700.0, 105.0, none, [5, 7]), Spot::Row(1, 0));
+        assert_eq!((tab_top(&bar), crumb_top(&bar, 0), crumb_top(&bar, 1)), (33.0, 68.0, 36.0));
         // A sidebar 180 px wide (plus its 4 px edge): the panes start at 184 and split their own width.
         let side = Layout { left: 184.0, ..two };
         assert_eq!(pane_x(&side, 0), (184.0, 589.0));
         assert_eq!(pane_x(&side, 1), (595.0, 1000.0));
-        assert_eq!(hit(&side, 100.0, 70.0, none, [5, 7]), Spot::Outside, "the sidebar");
-        assert_eq!(hit(&side, 200.0, 70.0, none, [5, 7]), Spot::Row(0, 0));
-        assert_eq!(hit(&side, 600.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
+        assert_eq!(hit(&side, 100.0, 80.0, none, [5, 7]), Spot::Outside, "the sidebar");
+        assert_eq!(hit(&side, 200.0, 80.0, none, [5, 7]), Spot::Row(0, 0));
+        assert_eq!(hit(&side, 600.0, 80.0, none, [5, 7]), Spot::Row(1, 0));
         let single = Layout { left: 12.0, ..one };
         assert_eq!(pane_x(&single, 0), (12.0, 1000.0), "a collapsed sidebar leaves a 12 px strip");
         // The preview column (P8-M1) at 0.35 of the 816 px right of the sidebar: 288.6 px with its
@@ -3391,8 +3391,8 @@ mod tests {
         let (right, line) = (1000.0 - shown.preview, 184.0 + (1000.0 - shown.preview - 184.0) * 0.5);
         assert_eq!(pane_x(&shown, 0), (184.0, line - 3.0));
         assert_eq!(pane_x(&shown, 1), (line + 3.0, right));
-        assert_eq!(hit(&shown, 720.0, 70.0, none, [5, 7]), Spot::Outside, "the column");
-        assert_eq!(hit(&shown, 700.0, 70.0, none, [5, 7]), Spot::Row(1, 0));
+        assert_eq!(hit(&shown, 720.0, 80.0, none, [5, 7]), Spot::Outside, "the column");
+        assert_eq!(hit(&shown, 700.0, 80.0, none, [5, 7]), Spot::Row(1, 0));
 
         // Drop folders.
         let f = p(r"C:\work");
@@ -3443,41 +3443,41 @@ mod tests {
         let collapsed = Strips { side_w: 0.0, ..s };
         let lc = Layout { left: 12.0, ..l };
         assert_eq!(hit_all(&lc, &collapsed, 5.0, 29.0, none, [5, 7]), Spot::Outside);
-        // Tabs: only the right pane shows a strip (3 tabs of 120 px from x 598, y 3..29).
+        // Tabs: only the right pane shows a strip (3 tabs of 120 px from x 598, y 3..33).
         assert_eq!(hit(600.0, 10.0), Spot::Tab(1, 0));
         assert_eq!(hit(717.9, 10.0), Spot::Tab(1, 0));
         assert_eq!(hit(718.0, 10.0), Spot::Tab(1, 1));
-        assert_eq!(hit(598.0 + 2.5 * 120.0, 28.9), Spot::Tab(1, 2));
+        assert_eq!(hit(598.0 + 2.5 * 120.0, 32.9), Spot::Tab(1, 2));
         assert_eq!(hit(970.0, 10.0), Spot::Pane(1), "past the last tab: the pane");
         assert_eq!(hit(700.0, 2.0), Spot::Pane(1), "above the strip: the pane's padding");
-        assert_eq!(hit(700.0, 29.0), Spot::Pane(1), "below the strip: the path bar");
+        assert_eq!(hit(700.0, 33.0), Spot::Pane(1), "below the strip: the path bar");
         assert_eq!(hit(300.0, 10.0), Spot::Pane(0), "the left pane has no strip: its path bar");
         // A strip scrolled left by 130 px: x 600 is 132 px into the content, tab 1.
         let s2 = Strips { tabs: [(1, 160.0, 0.0), (4, 120.0, -130.0)], ..s };
         assert_eq!(hit_all(&l, &s2, 600.0, 10.0, none, [5, 7]), Spot::Tab(1, 1));
         // The lists still hit as before.
-        assert_eq!(hit(300.0, 70.0), Spot::Row(0, 0));
-        assert_eq!(hit(700.0, 95.0), Spot::Row(1, 0));
+        assert_eq!(hit(300.0, 80.0), Spot::Row(0, 0));
+        assert_eq!(hit(700.0, 110.0), Spot::Row(1, 0));
     }
 
     #[test]
     fn auto_scroll_near_the_list_edges() {
         let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
-        // The list runs from y 63 to 577; the edge zones are 24 px inside it.
-        assert_eq!(edge_scroll(&one, 500.0, 63.0), Some((0, -1)), "the top edge scrolls up");
-        assert_eq!(edge_scroll(&one, 500.0, 86.9), Some((0, -1)));
-        assert_eq!(edge_scroll(&one, 500.0, 87.0), None, "inside the list, away from the edges");
+        // The list runs from y 75 to 567; the edge zones are 24 px inside it.
+        assert_eq!(edge_scroll(&one, 500.0, 75.0), Some((0, -1)), "the top edge scrolls up");
+        assert_eq!(edge_scroll(&one, 500.0, 98.9), Some((0, -1)));
+        assert_eq!(edge_scroll(&one, 500.0, 99.0), None, "inside the list, away from the edges");
         assert_eq!(edge_scroll(&one, 500.0, 300.0), None);
-        assert_eq!(edge_scroll(&one, 500.0, 553.0), Some((0, 1)), "the bottom edge scrolls down");
-        assert_eq!(edge_scroll(&one, 500.0, 576.9), Some((0, 1)));
-        assert_eq!(edge_scroll(&one, 500.0, 577.0), None, "the status line is no edge");
+        assert_eq!(edge_scroll(&one, 500.0, 543.0), Some((0, 1)), "the bottom edge scrolls down");
+        assert_eq!(edge_scroll(&one, 500.0, 566.9), Some((0, 1)));
+        assert_eq!(edge_scroll(&one, 500.0, 567.0), None, "the status line is no edge");
         assert_eq!(edge_scroll(&one, 500.0, 50.0), None, "the header is no edge");
         assert_eq!(edge_scroll(&one, 1.0, 70.0), None, "the pane's padding");
         // Each pane its own edges; a tab strip moves the top edge down.
         let two = Layout { split: true, tabs: [false, true], ..one };
-        assert_eq!(edge_scroll(&two, 100.0, 70.0), Some((0, -1)));
+        assert_eq!(edge_scroll(&two, 100.0, 80.0), Some((0, -1)));
         assert_eq!(edge_scroll(&two, 700.0, 70.0), None, "above the tabbed pane's list");
-        assert_eq!(edge_scroll(&two, 700.0, 95.0), Some((1, -1)));
+        assert_eq!(edge_scroll(&two, 700.0, 110.0), Some((1, -1)));
         assert_eq!(edge_scroll(&two, 700.0, 560.0), Some((1, 1)));
         assert_eq!(edge_scroll(&two, 500.0, 560.0), None, "the splitter");
         // One row per step, kept in range.
@@ -3506,26 +3506,26 @@ mod tests {
             crumb_row: [(0.0, 0.0); 2],
             crumbs: [&[], &[]],
         };
-        // The sidebar list runs from y 3 to 574 (above the 26 px footer).
+        // The sidebar list runs from y 3 to 568 (above the 32 px footer).
         assert_eq!(edge_scroll_all(&l, &s, 90.0, 3.0), Some(Edge::Side(-1)), "the sidebar's top");
         assert_eq!(edge_scroll_all(&l, &s, 90.0, 26.9), Some(Edge::Side(-1)));
         assert_eq!(edge_scroll_all(&l, &s, 90.0, 27.0), None, "inside the sidebar list");
         assert_eq!(edge_scroll_all(&l, &s, 90.0, 550.0), Some(Edge::Side(1)), "the sidebar's bottom");
-        assert_eq!(edge_scroll_all(&l, &s, 90.0, 573.9), Some(Edge::Side(1)));
-        assert_eq!(edge_scroll_all(&l, &s, 90.0, 574.0), None, "the footer");
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 567.9), Some(Edge::Side(1)));
+        assert_eq!(edge_scroll_all(&l, &s, 90.0, 568.0), None, "the footer");
         assert_eq!(edge_scroll_all(&l, &s, 90.0, 2.0), None, "above the list");
-        // The right pane's strip runs from x 598 to 997, y 3 to 29: its ends scroll it.
+        // The right pane's strip runs from x 598 to 997, y 3 to 33: its ends scroll it.
         assert_eq!(edge_scroll_all(&l, &s, 598.0, 10.0), Some(Edge::Strip(1, -1)), "the strip's left end");
-        assert_eq!(edge_scroll_all(&l, &s, 621.9, 28.9), Some(Edge::Strip(1, -1)));
+        assert_eq!(edge_scroll_all(&l, &s, 621.9, 32.9), Some(Edge::Strip(1, -1)));
         assert_eq!(edge_scroll_all(&l, &s, 622.0, 10.0), None, "inside the strip");
         assert_eq!(edge_scroll_all(&l, &s, 973.0, 10.0), Some(Edge::Strip(1, 1)), "the strip's right end");
         assert_eq!(edge_scroll_all(&l, &s, 996.9, 10.0), Some(Edge::Strip(1, 1)));
         assert_eq!(edge_scroll_all(&l, &s, 997.0, 10.0), None, "the pane's padding");
-        assert_eq!(edge_scroll_all(&l, &s, 598.0, 29.0), None, "under the strip: the path bar");
+        assert_eq!(edge_scroll_all(&l, &s, 598.0, 33.0), None, "under the strip: the path bar");
         assert_eq!(edge_scroll_all(&l, &s, 190.0, 10.0), None, "the left pane shows no strip");
-        // The lists' edges as before (the right list starts under the strip, at 91).
-        assert_eq!(edge_scroll_all(&l, &s, 300.0, 70.0), Some(Edge::List(0, -1)));
-        assert_eq!(edge_scroll_all(&l, &s, 700.0, 95.0), Some(Edge::List(1, -1)));
+        // The lists' edges as before (the right list starts under the strip, at 107).
+        assert_eq!(edge_scroll_all(&l, &s, 300.0, 80.0), Some(Edge::List(0, -1)));
+        assert_eq!(edge_scroll_all(&l, &s, 700.0, 110.0), Some(Edge::List(1, -1)));
         assert_eq!(edge_scroll_all(&l, &s, 700.0, 560.0), Some(Edge::List(1, 1)));
         assert_eq!(edge_scroll_all(&Layout { tabs: [false; 2], ..l }, &s, 700.0, 10.0), None, "no strip: the path bar");
         // A collapsed sidebar: nothing to scroll there.
@@ -3556,14 +3556,14 @@ mod tests {
         // The labels run from y 6 to 32, from x 3 (the pane's padding) plus their x in the row.
         assert_eq!(crumb_top(&l, 0), 6.0);
         assert_eq!(hit(&s, 3.0, 6.0), Spot::Crumb(0, 0));
-        assert_eq!(hit(&s, 56.9, 31.9), Spot::Crumb(0, 0));
+        assert_eq!(hit(&s, 56.9, 35.9), Spot::Crumb(0, 0));
         assert_eq!(hit(&s, 57.0, 20.0), Spot::Pane(0), "the chevron after This PC");
         assert_eq!(hit(&s, 73.0, 20.0), Spot::Crumb(0, 1));
         assert_eq!(hit(&s, 113.0 + 59.9, 20.0), Spot::Crumb(0, 2));
         assert_eq!(hit(&s, 400.0, 20.0), Spot::Pane(0), "the bar past the crumbs");
         assert_eq!(hit(&s, 80.0, 5.0), Spot::Pane(0), "above the crumbs: the padding");
-        assert_eq!(hit(&s, 80.0, 32.0), Spot::Pane(0), "below them: the bar's padding");
-        assert_eq!(hit(&s, 80.0, 70.0), Spot::Row(0, 0), "the list as before");
+        assert_eq!(hit(&s, 80.0, 36.0), Spot::Pane(0), "below them: the bar's padding");
+        assert_eq!(hit(&s, 80.0, 80.0), Spot::Row(0, 0), "the list as before");
         // A row right-aligned in a narrow bar (offset -60, 100 px shown): This PC is clipped off,
         // "C:" sits at 13..37 and "Users" (53..113) is cut at the bar's end (x 103).
         let narrow = Strips { crumb_row: [(-60.0, 100.0), (0.0, 0.0)], ..s };
@@ -3573,7 +3573,7 @@ mod tests {
         assert_eq!(hit(&narrow, 103.0, 20.0), Spot::Pane(0), "past the bar: the mode glyph");
         // A tab strip moves the bar down by 28 px.
         let lt = Layout { tabs: [true, false], ..l };
-        assert_eq!(crumb_top(&lt, 0), 34.0);
+        assert_eq!(crumb_top(&lt, 0), 38.0);
         assert_eq!(hit_all(&lt, &s, 80.0, 20.0, none, [5, 0]), Spot::Tab(0, 0), "the strip, not a crumb");
         assert_eq!(hit_all(&lt, &s, 80.0, 40.0, none, [5, 0]), Spot::Crumb(0, 1));
         // No crumbs (the text entry shows): the bar is the pane.

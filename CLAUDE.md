@@ -29,8 +29,10 @@ preview; Word, Excel and PowerPoint read into the preview's own blocks; the thum
 bundle; four milestones run as two parallel streams, opened and closed 2026-10-21; its first section
 quotes Jeremy's kickoff decisions, § Calls made lists the lead's with the six superseded by what was
 built, and § Phase 9 close holds the gates, lessons, what is deferred and the Phase 10 candidates, daily
-use recommended), `docs/phase-10-plan.md` the Phase 10 record (the UI/UX polish, run in its own session;
-P10-M1 the rust-ui look; opened 2026-10-22), `docs/phase-11-plan.md` the Phase 11 record (the deferred
+use recommended), `docs/phase-10-plan.md` the Phase 10 record (UI and UX polish, opened 2026-10-22;
+P10-M1 the rust-ui look: `src/ui/theme.slint`'s tokens, the Lucide icons under `src/ui/icons/`, the dialog
+controls; its first section quotes Jeremy's decision, § Calls made lists the lead's, § Phase 10 candidates
+what Jeremy picks next), `docs/phase-11-plan.md` the Phase 11 record (the deferred
 list swept and the cut features picked up: content search, the cloud and search sweep, the edge-case
 bundle with the owed checks, the preview gaps bundle, syntax colours, password PDFs through hayro; two
 streams, the preview stream after P10-M1 merges; opened 2026-10-22; its first section quotes Jeremy's
@@ -261,7 +263,7 @@ them before changing the list.
   `settings set <field> <value>` (stages a value through the function the dialog's control calls:
   `start_left`, `start_right` take a path, `hidden_left`, `hidden_right`, `type_column`,
   `thumbnails`, `sidebar` take `true|false`, `path_bar` takes `entry|crumb`, since P6-M2 `view_left`,
-  `view_right` take `details|large|medium`), `settings ok` and `settings close` (the OK
+  `view_right` take `details|large|medium`, since P10-M1 `theme` takes `system|light|dark`), `settings ok` and `settings close` (the OK
   and Cancel buttons; `key Escape` cancels through the key path); `window max|restore|close` maximises or restores
   the window, or closes it through `WM_CLOSE` (the close button's path, which saves the settings;
   `quit` does not); `[sidebar]` and `[settings]` lines on stderr, the dialog's among them:
@@ -539,7 +541,7 @@ them before changing the list.
   folder; Cut, Copy, Paste; Rename, Delete), each calling its key's command (`toolbar::command`:
   `newfile`, `newfolder`, `cx`, `cc`, `cv`, `rename`, `delete`), placed by the setting `toolbar`:
   `"top"` (the default, so **every scripted run, the gate's included, has the toolbar across the
-  window: the sidebar and the panes start 36 px down**, `dnd::TOP_BAR`, `Layout::top`), `"pane"` (icons
+  window: the sidebar and the panes start 44 px down**, `dnd::TOP_BAR`, `Layout::top`), `"pane"` (icons
   only, at the top of each pane above its tab strip and path bar, 30 px with the spacing,
   `dnd::PANE_BAR`, `Layout::bar`) or `"none"`; the glyphs are Segoe Fluent Icons characters (the
   font of Explorer's command bar, part of Windows 11). Which buttons apply (`toolbar::state`, the
@@ -581,7 +583,7 @@ them before changing the list.
   driver `hover <x> <y>` moves the pointer to (x, y), logical px of the window, through Slint's
   pointer path (a posted `WM_MOUSEMOVE` is dropped by winit while the real cursor is outside the
   window), and `[toolbar] top|pane=N tooltip "<name> (<key>)"` logs each tooltip shown (on the bar
-  across the window at 100%, New file is near x 55, Copy 300, Delete 545, y 18). The mouse's Back and
+  across the window at 100%, New file is near x 55, Copy 300, Delete 545, y 22). The mouse's Back and
   Forward over the toolbar (buttons, disabled ones and the gaps) go back and forward in the active
   pane (the bar across the window) or that pane (its own bar): `backclick <pane> tool` and
   `forwardclick <pane> tool` post them over the bar's first button. The sidebar, once it has the
@@ -770,7 +772,7 @@ them before changing the list.
   column `c` to the widest of its cells on screen and its bold header label, plus 12 px (one hidden
   `Text` in app.slint measures them, `measure`), moving the same boundary. Driver: `colwidth <pane>
   <type|size|modified> <px>` (as a drag's end), `coldrag <pane> <col> <dx>` (press on the grip's
-  centre 14 px above the list's top, moves in 8 px steps, release, through Slint's pointer path),
+  centre 18 px above the list's top, moves in 8 px steps, release, through Slint's pointer path),
   `colfit <pane> <col>` (two clicks at the grip; `[auto] col pane=N <col>: no such grip in this
   pane's header` for `type` with the Type column off or a pane in the grid). `[cols]` lines: `pane=N
   <col> W -> W2 px (drag | fit | script | config)` per column changed (a drag logged at the
@@ -827,7 +829,9 @@ them before changing the list.
   gets its sort, hidden files, cursor and scroll back; a bare list of paths still loads (the
   defaults new tabs have), and the next save writes tables; since P8-M1 `preview` (the preview
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
-  0.35, its handle's drag); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
+  0.35, its handle's drag); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
+  `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
+  `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
   the `_right` three (each pane's column widths, logical px, defaults 120, 90, 140, 40 to 2,000;
   the header grips set them). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms

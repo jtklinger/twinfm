@@ -662,7 +662,7 @@ fn geometry(app: &App, pane: usize) -> (f32, f32, LogicalPosition) {
     (l.width, l.height, LogicalPosition::new((a + b) * 0.5, l.height * 0.5))
 }
 
-/// The top of the pane's list (63 px, or 91 px under a tab strip).
+/// The top of the pane's list (75 px, or 107 px under a tab strip).
 fn list_top(app: &App, pane: usize) -> f32 {
     crate::dnd::list_top(&crate::window_layout(app), pane)
 }
@@ -694,8 +694,8 @@ fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
 }
 
 /// Where an `rclickempty` lands: halfway down the empty space below the last row (the last grid
-/// row of tiles), or None when the rows fill the list (rows start at `list_top`; the list ends 23
-/// px above the window bottom, over the 18 px status line, 2 px spacing and 3 px padding).
+/// row of tiles), or None when the rows fill the list (rows start at `list_top`; the list ends 33
+/// px above the window bottom, over the 28 px status line, 2 px spacing and 3 px padding).
 fn empty_pos(app: &App, pane: usize) -> Option<LogicalPosition> {
     use slint::Model;
     let (_, h, mid) = geometry(app, pane);
@@ -1262,7 +1262,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         Step::CrumbMenu { pane, index } => {
             // Under the path bar, near the pane's left edge.
             let (left, _) = crate::dnd::pane_x(&crate::window_layout(&app), pane);
-            app.invoke_crumb_menu(pane as i32, index, left + 40.0, list_top(&app, pane) - 26.0);
+            app.invoke_crumb_menu(pane as i32, index, left + 40.0, list_top(&app, pane) - 36.0);
             schedule(runner, 1);
         }
         Step::CrumbPick(name) => {
@@ -1307,10 +1307,10 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 Some(c) if !drag && what.is_some() => crate::col_set(&app, pane, c, what.unwrap_or(0.0), "script"),
                 Some(c) => {
                     // The grip's centre: the header's cells end at the list's right edge, and the
-                    // header is the 24 px above the list's top less the layout's 2 px spacing.
+                    // header is the 32 px above the list's top less the layout's 2 px spacing.
                     let (_, right) = crate::dnd::pane_x(&l, pane);
                     let x0 = crate::cols::grip_x(right - crate::dnd::PANE_PAD, crate::cols_of(&app, pane), c);
-                    let y = crate::dnd::list_top(&l, pane) - 14.0;
+                    let y = crate::dnd::list_top(&l, pane) - 18.0;
                     let at = |x: f32| LogicalPosition::new(x, y);
                     let win = app.window();
                     let press = |x: f32| {

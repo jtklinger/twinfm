@@ -126,6 +126,10 @@ pub struct Config {
     /// pane), "pane" (icons only, inside each pane above its path bar) or "none". Missing in an
     /// older file: top. Anything else reads as top.
     pub toolbar: String,
+    /// The colour scheme (P10-M1 task 7, Jeremy's "Let's make light/dark a selectable switch inside
+    /// twinfm"): "system" (Windows' app mode, followed live), "light" or "dark". Missing in an older
+    /// file: system. Anything else reads as system. `TWINFM_SCHEME` (scripts) takes precedence.
+    pub theme: String,
     /// The preview column at the window's right edge (P8-M1; Alt+P, the toolbar's Preview button,
     /// the dialog), and its share of the space right of the sidebar (0.2 to 0.6, its handle's
     /// drag). Missing in an older file: off, 0.35.
@@ -249,6 +253,7 @@ impl Default for Config {
             sidebar_width: 180.0,
             path_bar: "breadcrumb".into(),
             toolbar: "top".into(),
+            theme: "system".into(),
             preview: false,
             preview_width: crate::preview::RATIO_DEFAULT,
             col_type_left: crate::cols::DEFAULT.ty,
@@ -441,6 +446,50 @@ pub fn sort_from_name(s: &str) -> crate::model::SortCol {
     }
 }
 
+/// The colour scheme (`Config::theme`; the dialog's choice is `index`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeMode {
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeMode {
+    /// "light" and "dark" as written; anything else (a missing key, a typo) the default, system.
+    pub fn from_name(s: &str) -> ThemeMode {
+        match s {
+            "light" => ThemeMode::Light,
+            "dark" => ThemeMode::Dark,
+            _ => ThemeMode::System,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ThemeMode::System => "system",
+            ThemeMode::Light => "light",
+            ThemeMode::Dark => "dark",
+        }
+    }
+
+    /// The dialog's choice: 0 system, 1 light, 2 dark.
+    pub fn index(self) -> i32 {
+        match self {
+            ThemeMode::System => 0,
+            ThemeMode::Light => 1,
+            ThemeMode::Dark => 2,
+        }
+    }
+
+    pub fn from_index(i: i32) -> ThemeMode {
+        match i {
+            1 => ThemeMode::Light,
+            2 => ThemeMode::Dark,
+            _ => ThemeMode::System,
+        }
+    }
+}
+
 /// What the settings dialog shows and stages, one field per control. Opening it takes the live
 /// values; OK applies the fields whose staged value differs (`changes`); Cancel drops them.
 #[derive(Clone, Debug, PartialEq)]
@@ -463,6 +512,8 @@ pub struct Dialog {
     pub path_bar: String,
     /// "top", "pane" or "none", as in `Config::toolbar`.
     pub toolbar: String,
+    /// "system", "light" or "dark", as in `Config::theme` (P10-M1 task 7).
+    pub theme: String,
     /// The preview column (`Config::preview`).
     pub preview: bool,
 }
@@ -479,7 +530,7 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 14] {
+    fn fields(&self) -> [(&'static str, String); 15] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
@@ -494,6 +545,7 @@ impl Dialog {
             ("sidebar_visible", self.sidebar_visible.to_string()),
             ("path_bar", self.path_bar.clone()),
             ("toolbar", self.toolbar.clone()),
+            ("theme", self.theme.clone()),
             ("preview", self.preview.to_string()),
         ]
     }
@@ -848,10 +900,11 @@ show_type = false
             sidebar_visible: true,
             path_bar: "breadcrumb".into(),
             toolbar: "top".into(),
+            theme: "system".into(),
             preview: false,
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), toolbar: "pane".into(), preview: true, ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), toolbar: "pane".into(), theme: "dark".into(), preview: true, ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
@@ -862,6 +915,7 @@ show_type = false
                 ("thumbnails", "false".into(), "true".into()),
                 ("path_bar", "breadcrumb".into(), "entry".into()),
                 ("toolbar", "top".into(), "pane".into()),
+                ("theme", "system".into(), "dark".into()),
                 ("preview", "false".into(), "true".into()),
             ]
         );
@@ -886,6 +940,20 @@ show_type = false
             assert_eq!(Config::parse(&c.to_toml()).unwrap(), c);
         }
         assert_eq!(Toolbar::from_name("left"), Toolbar::Top, "anything else is the default");
+    }
+
+    #[test]
+    fn theme_defaults_to_system_and_round_trips() {
+        assert_eq!(ThemeMode::from_name(&Config::default().theme), ThemeMode::System);
+        // A file from before P10-M1 has no key: system.
+        assert_eq!(Config::parse("split = true\n").unwrap().theme, "system");
+        for t in [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark] {
+            assert_eq!(ThemeMode::from_name(t.name()), t);
+            assert_eq!(ThemeMode::from_index(t.index()), t);
+            let c = Config { theme: t.name().into(), ..Config::default() };
+            assert_eq!(Config::parse(&c.to_toml()).unwrap(), c);
+        }
+        assert_eq!(ThemeMode::from_name("auto"), ThemeMode::System, "anything else is the default");
     }
 
     #[test]

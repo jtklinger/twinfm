@@ -1,7 +1,15 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
-import { Palette, ListView, AboutSlint, Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
+import { ListView, AboutSlint, LineEdit, ComboBox } from "std-widgets.slint";
+import { Theme, Btn, Switch } from "theme.slint";
+// Inter (SIL Open Font License 1.1, src/ui/fonts/OFL.txt), the face of the look (P10-M1 task 4):
+// the three static weights the window uses, embedded in the exe.
+import "fonts/Inter-Regular.ttf";
+import "fonts/Inter-Medium.ttf";
+import "fonts/Inter-SemiBold.ttf";
 import { Preview, PreviewPage, MdBlock, MdRow, MdCell } from "preview.slint";
 export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
+// The fluent Palette, for main.rs's TWINFM_SCHEME override (a scripted screenshot of the other scheme).
+export { Palette } from "std-widgets.slint";
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
 // the bookmark's index in the bookmark list.
@@ -24,21 +32,29 @@ component SideRow inherits Rectangle {
     // renamed(title): Return in the editor. edit-cancelled(refocus): Escape (true) or focus loss.
     callback renamed(string);
     callback edit-cancelled(bool);
-    height: item.kind == 0 ? 26px : (root.editing ? 30px : 24px);
-    background: root.current ? Palette.accent-background.transparentize(60%) : item.kind != 0 && ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+    height: 32px;
+    background: transparent;
     accessible-role: list-item;
     accessible-label: item.label;
+    // The fill, inset 4 px and rounded, inside the row's slot (P10-M1).
+    Rectangle { x: 4px; width: parent.width - 8px; border-radius: Theme.radius; background: root.current ? Theme.selection : item.kind != 0 && ta.has-hover ? Theme.muted-half : transparent; }
     HorizontalLayout {
         visible: !root.editing;
-        padding-left: item.kind == 0 ? 8px : 16px;
+        padding-left: item.kind == 0 ? 8px : 10px;
         padding-right: 6px;
+        spacing: 8px;
+        // The row's icon (P10-M1): drives, bookmarks, and the known places by their label.
+        if item.kind != 0: Rectangle {
+            width: 16px;
+            Image { y: (parent.height - 16px) / 2; width: 16px; height: 16px; colorize: Theme.fg-muted; source: item.kind == 1 ? @image-url("icons/hard-drive.svg") : item.kind == 3 ? @image-url("icons/star.svg") : item.label == "Home" ? @image-url("icons/house.svg") : item.label == "Desktop" ? @image-url("icons/monitor.svg") : item.label == "Downloads" ? @image-url("icons/download.svg") : item.label == "Pictures" ? @image-url("icons/image.svg") : item.label == "Music" ? @image-url("icons/music.svg") : item.label == "Videos" ? @image-url("icons/film.svg") : item.label == "OneDrive" ? @image-url("icons/cloud.svg") : @image-url("icons/folder.svg"); }
+        }
         Text {
             text: item.label;
             vertical-alignment: item.kind == 0 ? bottom : center;
             overflow: elide;
-            font-weight: item.kind == 0 ? 600 : 400;
-            font-size: item.kind == 0 ? 11px : 13px;
-            color: item.kind == 0 ? Palette.foreground.transparentize(35%) : Palette.foreground;
+            font-weight: item.kind == 0 || root.current ? 500 : 400;
+            font-size: item.kind == 0 ? 12px : 13px;
+            color: item.kind == 0 ? Theme.fg-muted : Theme.fg;
         }
     }
     // Exists only while the row is being renamed; takes the focus with the title selected.
@@ -79,14 +95,14 @@ component MenuItem inherits Rectangle {
     in property <bool> enabled: true;
     callback activated();
     height: 26px;
-    background: ta.has-hover && root.enabled ? Palette.alternate-background.brighter(0.2) : transparent;
+    background: ta.has-hover && root.enabled ? Theme.muted : transparent;
     accessible-role: button;
     accessible-label: root.text;
     Text {
         x: 10px;
         text: root.text;
         vertical-alignment: center;
-        color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(55%);
+        color: root.enabled ? Theme.fg : Theme.fg-faint;
     }
     ta := TouchArea {
         enabled: root.enabled;
@@ -125,11 +141,11 @@ component MenuRow inherits Rectangle {
     height: root.entry.sep ? 9px : 30px;
     if root.entry.sep: Rectangle {
         x: 8px; y: 4px; width: parent.width - 16px; height: 1px;
-        background: Palette.border;
+        background: Theme.border;
     }
     if !root.entry.sep: Rectangle {
-        border-radius: 4px;
-        background: (root.hl || ta.has-hover) && root.entry.enabled ? Palette.foreground.transparentize(91%) : transparent;
+        border-radius: Theme.radius;
+        background: (root.hl || ta.has-hover) && root.entry.enabled ? Theme.muted : transparent;
         accessible-role: button;
         accessible-label: root.entry.text;
         if root.entry.has-icon: Image {
@@ -144,14 +160,14 @@ component MenuRow inherits Rectangle {
             font-size: 15px;
             horizontal-alignment: center;
             vertical-alignment: center;
-            color: root.entry.enabled ? Palette.foreground : Palette.foreground.transparentize(55%);
+            color: root.entry.enabled ? Theme.fg : Theme.fg-faint;
         }
         Text {
             x: 40px; width: parent.width - 40px - (root.entry.key != "" || root.entry.sub ? 96px : 12px);
             text: root.entry.text;
             vertical-alignment: center;
             overflow: elide;
-            color: root.entry.enabled ? Palette.foreground : Palette.foreground.transparentize(55%);
+            color: root.entry.enabled ? Theme.fg : Theme.fg-faint;
         }
         Text {
             x: parent.width - 96px; width: 84px;
@@ -160,7 +176,7 @@ component MenuRow inherits Rectangle {
             font-size: root.entry.sub ? 11px : 12px;
             horizontal-alignment: right;
             vertical-alignment: center;
-            color: Palette.foreground.transparentize(40%);
+            color: Theme.fg-muted;
         }
         ta := TouchArea {
             enabled: root.entry.enabled;
@@ -177,8 +193,8 @@ component MenuToolButton inherits Rectangle {
     callback picked();
     width: 44px;
     height: 36px;
-    border-radius: 4px;
-    background: ta.has-hover ? Palette.foreground.transparentize(91%) : transparent;
+    border-radius: Theme.radius;
+    background: ta.has-hover ? Theme.muted : transparent;
     accessible-role: button;
     accessible-label: root.tool.text;
     Text {
@@ -195,6 +211,9 @@ export component App inherits Window {
     // "TwinFM - <folder>" for the active pane's active tab.
     title: "TwinFM - " + (split && active-pane == 1 ? right-title : left-title);
     icon: @image-url("icon.svg");
+    // The look (P10-M1): Inter, embedded above; 13 px for rows and controls.
+    default-font-family: "Inter";
+    default-font-size: 13px;
     preferred-width: 1200px;
     preferred-height: 800px;
     min-width: 400px;
@@ -244,7 +263,7 @@ export component App inherits Window {
     callback toolbar-clicked(int, string);
     // toolbar-tip(pane, text): a toolbar button's tooltip showed (pane -1: the bar across the window).
     callback toolbar-tip(int, string);
-    private property <length> top-h: root.toolbar == 1 ? 36px : 0px;
+    private property <length> top-h: root.toolbar == 1 ? 44px : 0px;
     // For the About dialog (CARGO_PKG_VERSION).
     in property <string> version;
     // The Type column in both panes (settings `show_type`; set at start and by the dialog).
@@ -468,6 +487,8 @@ export component App inherits Window {
     in-out property <bool> dlg-crumbs;
     // The toolbar's place in the dialog: 0 none, 1 top, 2 in each pane (ComboBox index).
     in-out property <int> dlg-toolbar;
+    // The colour scheme choice (P10-M1 task 7): 0 system, 1 light, 2 dark.
+    in-out property <int> dlg-theme;
     in-out property <bool> dlg-preview;
     // "Saved to <file>", or that a scripted run saves nothing.
     in property <string> settings-note;
@@ -505,6 +526,7 @@ export component App inherits Window {
         if (field == "view_left") { dlg-view-left = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "view_right") { dlg-view-right = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "toolbar") { dlg-toolbar = value == "none" ? 0 : value == "pane" ? 2 : 1; }
+        if (field == "theme") { dlg-theme = value == "light" ? 1 : value == "dark" ? 2 : 0; }
         if (field == "preview") { dlg-preview = value == "true"; }
     }
 
@@ -685,7 +707,7 @@ export component App inherits Window {
         // The toolbar across the window, over the sidebar and the panes (dnd.rs TOP_BAR).
         if root.toolbar == 1: Rectangle {
             x: 0; y: 0; width: parent.width; height: root.top-h;
-            background: Palette.alternate-background;
+            background: Theme.ground;
             // The mouse's Back and Forward buttons over the bar's gaps go to the active pane, as
             // over its buttons (P7-M4).
             TouchArea {
@@ -704,12 +726,12 @@ export component App inherits Window {
                 back => { root.pane-back(root.split && root.active-pane == 1 ? 1 : 0); }
                 forward => { root.pane-forward(root.split && root.active-pane == 1 ? 1 : 0); }
             }
-            Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         }
         sidebar := Rectangle {
             visible: sidebar-visible;
             x: 0; y: root.top-h; width: sidebar-width; height: parent.height - root.top-h;
-            background: Palette.alternate-background;
+            background: Theme.sidebar;
             // The renderer draws the whole window every frame; cached as one texture, the sidebar
             // costs a blit while the panes scroll and is redrawn only when its own properties change.
             cache-rendering-hint: true;
@@ -736,7 +758,7 @@ export component App inherits Window {
                         if (root.side-current >= 0) {
                             let top = root.side-row-top(root.side-current);
                             if (top + side-list.content-y < 0px) { side-list.content-y = -top; }
-                            if (top + 24px + side-list.content-y > side-list.visible-height) { side-list.content-y = side-list.visible-height - top - 24px; }
+                            if (top + 32px + side-list.content-y > side-list.visible-height) { side-list.content-y = side-list.visible-height - top - 32px; }
                         }
                         return accept;
                     }
@@ -773,7 +795,7 @@ export component App inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    height: 26px;
+                    height: 32px;
                     padding-left: 8px;
                     padding-right: 4px;
                     spacing: 10px;
@@ -784,7 +806,7 @@ export component App inherits Window {
                             text: "Settings";
                             font-size: 11px;
                             vertical-alignment: center;
-                            color: settings-ta.has-hover ? Palette.accent-background : Palette.foreground;
+                            color: settings-ta.has-hover ? Theme.fg : Theme.fg-muted;
                         }
                     }
                     about-ta := TouchArea {
@@ -793,18 +815,13 @@ export component App inherits Window {
                             text: "About TwinFM";
                             font-size: 11px;
                             vertical-alignment: center;
-                            color: about-ta.has-hover ? Palette.accent-background : Palette.foreground;
+                            color: about-ta.has-hover ? Theme.fg : Theme.fg-muted;
                         }
                     }
                     hide-ta := TouchArea {
                         width: 24px;
                         clicked => { root.toggle-sidebar(); }
-                        Text {
-                            text: "\u{00ab}";
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            color: hide-ta.has-hover ? Palette.accent-background : Palette.foreground;
-                        }
+                        Image { x: 5px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: @image-url("icons/chevrons-left.svg"); colorize: hide-ta.has-hover ? Theme.fg : Theme.fg-muted; }
                     }
                 }
             }
@@ -823,9 +840,9 @@ export component App inherits Window {
                     y: side-list.content-y + root.drop-side-y;
                     width: parent.width;
                     height: root.drop-side-h;
-                    background: Palette.accent-background.transparentize(65%);
+                    background: Theme.selection;
                     border-width: 2px;
-                    border-color: Palette.accent-background;
+                    border-color: Theme.cursor;
                 }
             }
         }
@@ -833,7 +850,7 @@ export component App inherits Window {
         Rectangle {
             visible: sidebar-visible;
             x: sidebar-width; y: root.top-h; width: 4px; height: parent.height - root.top-h;
-            background: side-ta.has-hover || side-ta.pressed ? Palette.accent-background : Palette.border;
+            background: side-ta.has-hover || side-ta.pressed ? Theme.ring : Theme.border;
             side-ta := TouchArea {
                 mouse-cursor: col-resize;
                 moved => {
@@ -848,7 +865,7 @@ export component App inherits Window {
         Rectangle {
             visible: !sidebar-visible;
             x: 0; y: root.top-h; width: 12px; height: parent.height - root.top-h;
-            background: show-ta.has-hover ? Palette.alternate-background.brighter(0.2) : Palette.alternate-background;
+            background: show-ta.has-hover ? Theme.muted : Theme.sidebar;
             Text { y: 6px; text: "\u{00bb}"; horizontal-alignment: center; }
             show-ta := TouchArea { clicked => { root.toggle-sidebar(); } }
         }
@@ -983,7 +1000,7 @@ export component App inherits Window {
             splitter := Rectangle {
                 visible: split;
                 x: parent.width * split-ratio - 3px; y: 0; width: 6px; height: parent.height;
-                background: splitter-ta.has-hover || splitter-ta.pressed ? Palette.accent-background : Palette.border;
+                background: splitter-ta.has-hover || splitter-ta.pressed ? Theme.ring : Theme.border;
                 splitter-ta := TouchArea {
                     mouse-cursor: col-resize;
                     moved => {
@@ -1000,7 +1017,7 @@ export component App inherits Window {
         preview-handle := Rectangle {
             visible: root.preview;
             x: panes.x + panes.width; y: root.top-h; width: 6px; height: parent.height - root.top-h;
-            background: preview-ta.has-hover || preview-ta.pressed ? Palette.accent-background : Palette.border;
+            background: preview-ta.has-hover || preview-ta.pressed ? Theme.ring : Theme.border;
             preview-ta := TouchArea {
                 mouse-cursor: col-resize;
                 moved => {
@@ -1041,9 +1058,9 @@ export component App inherits Window {
         width: 160px;
         height: 4 * 26px + 6px;
         Rectangle {
-            background: Palette.background;
+            background: Theme.card;
             border-width: 1px;
-            border-color: Palette.border;
+            border-color: Theme.border;
             VerticalLayout {
                 padding: 3px;
                 MenuItem {
@@ -1089,9 +1106,9 @@ export component App inherits Window {
         height: max(30px, min(root.height - root.crumb-menu-y - 8px,
             root.crumb-menu-items.length * 22px + (root.crumb-menu-note == "" ? 0px : 22px) + 8px));
         Rectangle {
-            background: Palette.background;
+            background: Theme.card;
             border-width: 1px;
-            border-color: Palette.border;
+            border-color: Theme.border;
             crumb-keys := FocusScope {
                 property <int> focus-token: root.crumb-focus-token;
                 changed focus-token => { self.focus(); }
@@ -1130,7 +1147,7 @@ export component App inherits Window {
                         accessible-role: list-item;
                         accessible-label: name;
                         accessible-item-selected: i == root.crumb-hl;
-                        background: i == root.crumb-hl ? Palette.accent-background.transparentize(60%) : pick-ta.has-hover ? Palette.alternate-background.brighter(0.2) : transparent;
+                        background: i == root.crumb-hl ? Theme.selection : pick-ta.has-hover ? Theme.muted : transparent;
                         Text { x: 8px; width: parent.width - 12px; text: name; vertical-alignment: center; overflow: elide; }
                         pick-ta := TouchArea {
                             clicked => {
@@ -1145,7 +1162,7 @@ export component App inherits Window {
                     x: 8px;
                     text: root.crumb-menu-note;
                     vertical-alignment: center;
-                    color: Palette.foreground.transparentize(35%);
+                    color: Theme.fg-muted;
                 }
             }
         }
@@ -1184,10 +1201,10 @@ export component App inherits Window {
             y: root.wm-y;
             width: 280px;
             height: root.wm-h;
-            background: Palette.background;
-            border-radius: 8px;
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
             border-width: 1px;
-            border-color: Palette.border;
+            border-color: Theme.border;
             drop-shadow-blur: 16px;
             drop-shadow-offset-y: 4px;
             drop-shadow-color: #00000040;
@@ -1210,7 +1227,7 @@ export component App inherits Window {
             }
             if root.wm-tools.length > 0: Rectangle {
                 x: 8px; y: 4px + 44px + 4px; width: parent.width - 16px; height: 1px;
-                background: Palette.border;
+                background: Theme.border;
             }
             Flickable {
                 x: 4px;
@@ -1235,10 +1252,10 @@ export component App inherits Window {
             y: root.wm-sub-y;
             width: 250px;
             height: root.wm-sub-h;
-            background: Palette.background;
-            border-radius: 8px;
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
             border-width: 1px;
-            border-color: Palette.border;
+            border-color: Theme.border;
             drop-shadow-blur: 16px;
             drop-shadow-offset-y: 4px;
             drop-shadow-color: #00000040;
@@ -1269,15 +1286,15 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 480px) / 2);
+        y: max(10px, (root.height - 550px) / 2);
         width: 480px;
-        height: 480px;
+        height: 550px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
-            background: Palette.background;
+            background: Theme.card;
             border-width: 1px;
-            border-color: Palette.border;
-            border-radius: 6px;
+            border-color: Theme.border;
+            border-radius: Theme.radius-lg;
             // Showing a popup takes the focus from the window and gives it to nothing
             // (WindowInner::show_popup), and a focus() in init runs before that. Once the popup is
             // shown, show-settings bumps the token and the first field takes the focus, so typing,
@@ -1292,9 +1309,9 @@ export component App inherits Window {
                 VerticalLayout {
                     padding: 18px;
                     spacing: 8px;
-                    Text { text: "Settings"; font-size: 18px; font-weight: 700; accessible-role: text; }
+                    Text { text: "Settings"; font-size: 16px; font-weight: 600; accessible-role: text; }
                     GridLayout {
-                        spacing: 6px;
+                        spacing: 8px;
                         Row {
                             Text { text: "Left start folder"; vertical-alignment: center; }
                             start-left-edit := LineEdit {
@@ -1317,13 +1334,13 @@ export component App inherits Window {
                             Text { text: "Hidden files"; vertical-alignment: center; }
                             HorizontalLayout {
                                 spacing: 12px;
-                                CheckBox {
+                                Switch {
                                     text: "Left pane";
                                     checked: root.dlg-hidden-left;
                                     accessible-label: "Show hidden files in the left pane";
                                     toggled => { root.settings-stage("hidden_left", self.checked ? "true" : "false"); }
                                 }
-                                CheckBox {
+                                Switch {
                                     text: "Right pane";
                                     checked: root.dlg-hidden-right;
                                     accessible-label: "Show hidden files in the right pane";
@@ -1335,13 +1352,13 @@ export component App inherits Window {
                             Text { text: "Protected files"; vertical-alignment: center; }
                             HorizontalLayout {
                                 spacing: 12px;
-                                CheckBox {
+                                Switch {
                                     text: "Left pane";
                                     checked: root.dlg-protected-left;
                                     accessible-label: "Show protected operating system files in the left pane";
                                     toggled => { root.settings-stage("protected_left", self.checked ? "true" : "false"); }
                                 }
-                                CheckBox {
+                                Switch {
                                     text: "Right pane";
                                     checked: root.dlg-protected-right;
                                     accessible-label: "Show protected operating system files in the right pane";
@@ -1368,8 +1385,17 @@ export component App inherits Window {
                             }
                         }
                         Row {
+                            Text { text: "Theme"; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["System", "Light", "Dark"];
+                                current-index: root.dlg-theme;
+                                accessible-label: "Theme";
+                                selected => { root.settings-stage("theme", self.current-index == 1 ? "light" : self.current-index == 2 ? "dark" : "system"); }
+                            }
+                        }
+                        Row {
                             Text { text: "Columns"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Type column";
                                 checked: root.dlg-type-column;
                                 accessible-label: "Show the Type column";
@@ -1378,7 +1404,7 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Thumbnails"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Thumbnails (32 px rows)";
                                 checked: root.dlg-thumbnails;
                                 accessible-label: "Show thumbnails in 32 px rows";
@@ -1387,7 +1413,7 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Sidebar"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Show the sidebar";
                                 checked: root.dlg-sidebar;
                                 accessible-label: "Show the sidebar";
@@ -1405,7 +1431,7 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Preview"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Preview pane (Alt+P)";
                                 checked: root.dlg-preview;
                                 accessible-label: "Show the preview pane";
@@ -1414,7 +1440,7 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Path bar"; vertical-alignment: center; }
-                            CheckBox {
+                            Switch {
                                 text: "Breadcrumbs (off: a text entry)";
                                 checked: root.dlg-crumbs;
                                 accessible-label: "Breadcrumbs in the path bar";
@@ -1426,22 +1452,21 @@ export component App inherits Window {
                     HorizontalLayout {
                         alignment: end;
                         spacing: 8px;
-                        Button {
-                            text: "OK";
-                            accessible-label: "OK";
-                            clicked => { root.settings-ok(); }
-                        }
-                        Button {
+                        Btn {
                             text: "Cancel";
-                            accessible-label: "Cancel";
                             clicked => { root.settings-cancel(); }
+                        }
+                        Btn {
+                            text: "OK";
+                            primary: true;
+                            clicked => { root.settings-ok(); }
                         }
                     }
                     Text {
                         text: root.settings-note;
                         font-size: 11px;
                         overflow: elide;
-                        color: Palette.foreground.transparentize(35%);
+                        color: Theme.fg-muted;
                     }
                 }
             }
@@ -1456,14 +1481,14 @@ export component App inherits Window {
         width: 460px;
         height: 380px;
         Rectangle {
-            background: Palette.background;
+            background: Theme.card;
             border-width: 1px;
-            border-color: Palette.border;
-            border-radius: 6px;
+            border-color: Theme.border;
+            border-radius: Theme.radius-lg;
             VerticalLayout {
                 padding: 18px;
                 spacing: 6px;
-                Text { text: "TwinFM"; font-size: 22px; font-weight: 700; }
+                Text { text: "TwinFM"; font-size: 20px; font-weight: 600; }
                 Text { text: "Version " + root.version; }
                 Text { text: "A dual-pane file manager for Windows 11."; wrap: word-wrap; }
                 Text { text: "MIT License. Copyright (c) 2026 Jeremy Klinger."; wrap: word-wrap; }
@@ -1475,8 +1500,9 @@ export component App inherits Window {
                 AboutSlint { }
                 HorizontalLayout {
                     alignment: end;
-                    Button {
+                    Btn {
                         text: "Close";
+                        primary: true;
                         clicked => { about.close(); }
                     }
                 }
