@@ -4,3 +4,4 @@ vendor/
 *.etl
 .claude/
 __pycache__/
+dist/
