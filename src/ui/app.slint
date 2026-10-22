@@ -30,7 +30,7 @@ component SideRow inherits Rectangle {
     // renamed(title): Return in the editor. edit-cancelled(refocus): Escape (true) or focus loss.
     callback renamed(string);
     callback edit-cancelled(bool);
-    height: item.kind == 0 ? 26px : (root.editing ? 30px : 24px);
+    height: 32px;
     background: transparent;
     accessible-role: list-item;
     accessible-label: item.label;
@@ -261,7 +261,7 @@ export component App inherits Window {
     callback toolbar-clicked(int, string);
     // toolbar-tip(pane, text): a toolbar button's tooltip showed (pane -1: the bar across the window).
     callback toolbar-tip(int, string);
-    private property <length> top-h: root.toolbar == 1 ? 36px : 0px;
+    private property <length> top-h: root.toolbar == 1 ? 44px : 0px;
     // For the About dialog (CARGO_PKG_VERSION).
     in property <string> version;
     // The Type column in both panes (settings `show_type`; set at start and by the dialog).
@@ -753,7 +753,7 @@ export component App inherits Window {
                         if (root.side-current >= 0) {
                             let top = root.side-row-top(root.side-current);
                             if (top + side-list.content-y < 0px) { side-list.content-y = -top; }
-                            if (top + 24px + side-list.content-y > side-list.visible-height) { side-list.content-y = side-list.visible-height - top - 24px; }
+                            if (top + 32px + side-list.content-y > side-list.visible-height) { side-list.content-y = side-list.visible-height - top - 32px; }
                         }
                         return accept;
                     }
@@ -790,7 +790,7 @@ export component App inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    height: 26px;
+                    height: 32px;
                     padding-left: 8px;
                     padding-right: 4px;
                     spacing: 10px;

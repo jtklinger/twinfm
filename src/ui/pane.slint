@@ -1351,7 +1351,7 @@ export component Pane inherits Rectangle {
         }
         // Not a Flickable: its drag-to-flick would take the presses a tab drag needs.
         if root.tabs.length > 1: Rectangle {
-            height: 26px;
+            height: 30px;
             clip: true;
             background: Theme.muted;
             border-radius: Theme.radius-md;
@@ -1367,7 +1367,7 @@ export component Pane inherits Rectangle {
                 x: root.shown-tab-scroll + i * root.tab-w;
                 y: 0px;
                 width: root.tab-w;
-                height: 26px;
+                height: 30px;
                 title: t.title;
                 active: t.active;
                 pressed => {
@@ -1396,7 +1396,7 @@ export component Pane inherits Rectangle {
                 x: root.shown-tab-scroll + root.drop-tab * root.tab-w;
                 y: 0px;
                 width: root.tab-w;
-                height: 26px;
+                height: 30px;
                 background: Theme.muted;
                 border-width: 2px;
                 border-color: Theme.ring;
@@ -1404,7 +1404,7 @@ export component Pane inherits Rectangle {
         }
         // Same height whichever mode shows, so the list's top does not move (dnd.rs LIST_TOP).
         Rectangle {
-            height: 32px;
+            height: 36px;
             // The text entry and the breadcrumb share the bar; one of the two shows.
             Rectangle {
                 visible: root.path-entry;
@@ -1530,20 +1530,20 @@ export component Pane inherits Rectangle {
         // One header per Type column state, chosen per pane like the list below: on, it is the
         // header as it was before the switch; off, the Type cell does not exist, so a header click
         // cannot sort by it. The grid has no columns: its header keeps only Name (the sort), and
-        // its 24 px keep the list's top where dnd.rs LIST_TOP and the driver (auto.rs) expect it.
+        // its 32 px keep the list's top where dnd.rs LIST_TOP and the driver (auto.rs) expect it.
         if root.grid: HorizontalLayout {
-            height: 24px;
+            height: 32px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
         if root.show-type && !root.grid: HorizontalLayout {
-            height: 24px;
+            height: 32px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Type"; width: root.col-type; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
         if !root.show-type && !root.grid: HorizontalLayout {
-            height: 24px;
+            height: 32px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
@@ -1576,7 +1576,7 @@ export component Pane inherits Rectangle {
             drag-dy: root.drag-dy;
         }
         HorizontalLayout {
-            height: 18px;
+            height: 28px;
             spacing: 12px;
             Text { text: root.status.left; font-size: 12px; color: Theme.fg-muted; overflow: elide; horizontal-stretch: 1; }
             Text { text: root.status.mid; font-size: 12px; color: Theme.fg; horizontal-alignment: center; }
@@ -1747,14 +1747,14 @@ export component Pane inherits Rectangle {
         }
     }
 
-    // The column grips (P9-M1) over the details header, which sits 26 px above the list (24 px and
+    // The column grips (P9-M1) over the details header, which sits 34 px above the list (32 px and
     // the layout's 2 px spacing): one at each boundary, the list's right edge pinned. Siblings of
     // the list, never in the rows.
     if !root.grid: Rectangle {
         x: list.x;
-        y: list.y - 26px;
+        y: list.y - 34px;
         width: list.width;
-        height: 24px;
+        height: 32px;
         if root.show-type: ColGrip {
             x: parent.width - root.col-modified - root.col-size - root.col-type - 3px;
             which: 0;

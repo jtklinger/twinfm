@@ -4619,9 +4619,9 @@ fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
         .iter()
         .enumerate()
         .map(|(i, r)| match r.kind {
-            sidebar::RowKind::Header => (26.0, false),
+            sidebar::RowKind::Header => (32.0, false),
             _ if i as i32 == editing => (30.0, true),
-            _ => (24.0, true),
+            _ => (32.0, true),
         })
         .collect()
 }
@@ -4779,7 +4779,7 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
             // The ListView's own content height (an estimate for rows of mixed heights, a px or
             // two off their sum, which it corrects as it scrolls), so the end is where it stops.
             let from = app.invoke_side_scroll();
-            let to = dnd::scroll_step(from, dir, 24.0, app.invoke_side_content_height(), app.invoke_side_visible_height());
+            let to = dnd::scroll_step(from, dir, 32.0, app.invoke_side_content_height(), app.invoke_side_visible_height());
             if to == from {
                 return false;
             }

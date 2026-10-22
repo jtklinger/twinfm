@@ -536,7 +536,7 @@ what Jeremy picks next). Read them before changing the list.
   folder; Cut, Copy, Paste; Rename, Delete), each calling its key's command (`toolbar::command`:
   `newfile`, `newfolder`, `cx`, `cc`, `cv`, `rename`, `delete`), placed by the setting `toolbar`:
   `"top"` (the default, so **every scripted run, the gate's included, has the toolbar across the
-  window: the sidebar and the panes start 36 px down**, `dnd::TOP_BAR`, `Layout::top`), `"pane"` (icons
+  window: the sidebar and the panes start 44 px down**, `dnd::TOP_BAR`, `Layout::top`), `"pane"` (icons
   only, at the top of each pane above its tab strip and path bar, 30 px with the spacing,
   `dnd::PANE_BAR`, `Layout::bar`) or `"none"`; the glyphs are Segoe Fluent Icons characters (the
   font of Explorer's command bar, part of Windows 11). Which buttons apply (`toolbar::state`, the
@@ -578,7 +578,7 @@ what Jeremy picks next). Read them before changing the list.
   driver `hover <x> <y>` moves the pointer to (x, y), logical px of the window, through Slint's
   pointer path (a posted `WM_MOUSEMOVE` is dropped by winit while the real cursor is outside the
   window), and `[toolbar] top|pane=N tooltip "<name> (<key>)"` logs each tooltip shown (on the bar
-  across the window at 100%, New file is near x 55, Copy 300, Delete 545, y 18). The mouse's Back and
+  across the window at 100%, New file is near x 55, Copy 300, Delete 545, y 22). The mouse's Back and
   Forward over the toolbar (buttons, disabled ones and the gaps) go back and forward in the active
   pane (the bar across the window) or that pane (its own bar): `backclick <pane> tool` and
   `forwardclick <pane> tool` post them over the bar's first button. The sidebar, once it has the
@@ -767,7 +767,7 @@ what Jeremy picks next). Read them before changing the list.
   column `c` to the widest of its cells on screen and its bold header label, plus 12 px (one hidden
   `Text` in app.slint measures them, `measure`), moving the same boundary. Driver: `colwidth <pane>
   <type|size|modified> <px>` (as a drag's end), `coldrag <pane> <col> <dx>` (press on the grip's
-  centre 14 px above the list's top, moves in 8 px steps, release, through Slint's pointer path),
+  centre 18 px above the list's top, moves in 8 px steps, release, through Slint's pointer path),
   `colfit <pane> <col>` (two clicks at the grip; `[auto] col pane=N <col>: no such grip in this
   pane's header` for `type` with the Type column off or a pane in the grid). `[cols]` lines: `pane=N
   <col> W -> W2 px (drag | fit | script | config)` per column changed (a drag logged at the

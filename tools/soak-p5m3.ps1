@@ -357,7 +357,7 @@ $cycle = @(
     'key ShiftRight', 'sleep 200',
     'view details', 'sdelete', $wait,
     # P6-M3: the toolbar cycle (see the header), after P7-M4's hovers and side buttons over it.
-    'hover 55 18', 'sleep 700', 'hover 300 18', 'sleep 700', 'hover 545 18', 'sleep 700', 'hover 600 400',
+    'hover 55 22', 'sleep 700', 'hover 300 22', 'sleep 700', 'hover 545 22', 'sleep 700', 'hover 600 400',
     'backclick 1 tool', 'sleep 800', 'forwardclick 1 tool', 'sleep 800',
     'toolbar 1 newfile', 'sleep 300', 'key Return', $wait,
     'undo', $wait,
