@@ -315,13 +315,22 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   Office crate unless the pin check finds one that adds nothing beyond those two; Excel shows one sheet at a time (500 rows by 50 columns), the
   first by default, the others through links at the top; PowerPoint shows one block group per slide
   with a rule between; the binary `.doc`, `.xls`, `.ppt` are not previewed.
-- Thumbnails inside archive levels stay off (the shell cannot see inside an archive without
-  extracting) unless the P9-M4 pin check finds the zip folder's provider cheap; the record says what
-  was found.
-- The OneDrive state property is read only for files whose attributes say in progress or error,
-  never for the tick and cloud rows.
-- The Google Drive mark and the link arrow in the tiles take the overlay list by the mark's size,
-  with a console check deciding whether it stays.
+- Thumbnails inside archive levels stay off: the pin check found no thumbnail provider inside a zip
+  or a 7z (`WTS_E_FAILEDEXTRACTION`) (P9-M4 Settled first, 2026-10-21).
+- The OneDrive state property is read for a file that is being freed (unpinned, its data still
+  here: the provider's state "sync pending"), decided from the listing's attributes alone; no
+  attribute combination says syncing or error, so those files keep their attribute mark (Deferred).
+  The Cloud Files placeholder-state gate first settled here is built but never fires in TwinFM,
+  which Windows does not show placeholders (P9-M4 Settled first and After the console check,
+  2026-10-21).
+- A search result not on this disk (recall on data access, or offline) keeps its type's key, so its
+  thumbnail is never asked, wherever the search started (P9-M4 After the console check, 2026-10-21).
+- A search tab gets thumbnails except when it is rooted in a cloud location, where a thumbnail could
+  start a download (P9-M4 Settled first and Decisions, 2026-10-21).
+- The Google Drive mark and the link arrow over an icon larger than 48 physical px are drawn at two
+  thirds of it, at its lower left (Explorer draws them at the icon's size: their glyphs fill about
+  40% and 57% of the image), with a console check beside Explorer deciding whether it stays (P9-M4
+  Settled first and Decisions, 2026-10-21).
 
 ## P9-M1: adjustable column widths
 
@@ -580,6 +589,290 @@ elevated) window, the panes set up unequal (the split on, two tabs in one pane o
 10. **The fit's rule**: settled by Jeremy on 2026-10-21 (Decisions): kept as built.
 
 Jeremy, 2026-10-21: "console checks were all working as expected. proceed with the merge".
+
+## P9-M4: thumbnails beyond the listing and cloud polish
+
+Branch `feat/p9-m4-thumbs-cloud-polish`, from 85ef7b8 (P9-M1 merged).
+
+### Settled first (2026-10-21, before any code)
+
+Checked against the code at 85ef7b8 and on this machine (Jeremy's OneDrive read only, nothing in it
+changed):
+
+- **Thumbnails in search result tabs.** The search walker builds its keys with
+  `IconKeys::new(dir, false)` per folder (`fs::enumerate`), so a result is always `ext:`; its entries
+  carry the modified time and size already (`entry_of`), and every path the UI hands the icon worker
+  is `tab.path.join(e.name)`, which a `sub\dir\file.txt` name joins correctly. The walker takes the
+  `thumbnails` setting as a folder listing does, so a result in `THUMB_EXTS` is keyed `thumb:` and
+  asked at the list's or the grid's size through the same workers and table. One guard: a search
+  tab has no cloud location (it carries no marks), so a result whose attributes say it is not on this
+  disk (`FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` or `OFFLINE`) keeps its `ext:` key: asking such a
+  file's thumbnail with `WTS_EXTRACT` would start a download. The `[icons]` line's `thumbs N` counts
+  them as the listing's.
+- **Thumbnails in archive levels: the pin check says no.** On this machine the shell refuses a
+  thumbnail for a picture inside a zip and inside a 7z (`IShellItemImageFactory::GetImage` with
+  `SIIGBF_THUMBNAILONLY` on `...\p.zip\p.jpg` and `...\p.7z\p.jpg`: `0x8004B200`,
+  `WTS_E_FAILEDEXTRACTION`, in 74 and 23 ms cold, 49 and 10 ms again; `SIIGBF_INCACHEONLY`
+  `0x80030002`), while the same JPEG outside them gives one in 251 ms cold, 9 ms warm. Neither
+  archive folder has a thumbnail provider, so there is nothing cheap to turn on: archive entries keep
+  their `ext:` keys (`fs::archive`'s own `IconKeys`), and so do the entries listed from a nested
+  archive's extracted copy, which come out of the same `archive::list`. No code; this record is the
+  piece.
+- **The details list's drag image with a thumbnail.** `prefetch_drag_icon` sends a `drag:` request
+  at 64 px (96 px image) with `thumbnail: false`; `attach_drag_image` uses it (`icon from the
+  worker`) or asks the shell for the icon (`the shell`). The request now asks for the thumbnail when
+  the pressed row's key is a `thumb:` key (cache-only when its mark says so, as the row's own request
+  is), so a photo's drag carries a sharp 64 px picture; the worker falls back to the icon as it does
+  for rows. A pure function picks the source and its label: `the tile` (the grid, unchanged), `the
+  thumbnail` (a prefetched thumbnail), `the worker` (a prefetched icon), `the shell`, `the pane's
+  cache`, `nowhere`.
+- **OneDrive's sync states beyond the tick and the cloud.** `state_from_attrs` gives only cloud,
+  tick or solid tick: no attribute says syncing, pending or error, so the kickoff's gate ("only for
+  files whose attributes say in progress or error") has nothing to test. Windows has a cheaper
+  signal: the Cloud Files API's placeholder state from the attributes and the reparse tag alone
+  (`CfGetPlaceholderStateFromAttributeTag`, cldapi.dll, no file opened; `windows-sys`'s
+  `Win32_Storage_CloudFilters` feature, no new crate). On Jeremy's OneDrive every placeholder read
+  `CF_PLACEHOLDER_STATE_PLACEHOLDER | IN_SYNC` (`0x9` or `0xD`, tags `0x9000601A` and `0x9000E01A`;
+  37 entries of the OneDrive root, `Documents` and `Pictures`, the exceptions the `desktop.ini` files
+  and one hidden system file in the root, `0x0`, not placeholders), and the call from the attributes and tag
+  agreed with the one from the whole find data on every entry. The gate: a sync
+  root file that is a placeholder and **not in sync** is keyed `look:s:` (the property read on the icon
+  workers, about 23 ms, `System.StorageProviderState`, as folders are today), so its glyph is the
+  provider's own state (syncing, pending, error, warning); every in-sync file keeps its attribute mark
+  and costs nothing more. `[cloud] state read <path>: S in T ms` per read. The kickoff's
+  attribute-combination wording is superseded by this, for Jeremy to check. **Superseded in turn
+  (2026-10-21, after the console check)**: Windows hides placeholders from TwinFM's own process (a
+  OneDrive file lists there as a plain file, no reparse point, placeholder state 0), so this gate
+  never fires in TwinFM; what is built is an attribute test that does: a file unpinned with its data
+  still here (being freed, the provider's state "sync pending" for minutes) is looked up. Syncing
+  and error files stay on their attribute mark (Deferred below).
+- **Google Drive's mark smaller in the tiles, and the link arrow.** `overlay_pixels` takes the image
+  list whose icons are at least the icon's size (`SHIL_JUMBO` for a 96 px tile, `SHIL_EXTRALARGE` for
+  48 px) and draws its full-square overlay over the square, so a large tile's mark is a quarter of the
+  tile. The rule becomes: in a tile, the mark is a third of the picture square, drawn from the
+  smallest list that holds it (32 px from `SHIL_LARGE` for a 96 px tile, 24 px from `SHIL_LARGE`
+  drawn down for 48 px, at 100%; the scale applies), at the square's lower left; the lists (16 and
+  32 px icons) keep the full-size overlay, as Explorer's lists do. A pure function gives the mark's
+  size and the list for an icon size; a console check beside Explorer decides whether it stays. The
+  status glyphs (`s<N>`, OneDrive) are drawn by `glyph_px` already (24 px over 96) and do not change.
+  Measured before the code (a throwaway test, the shell's overlay images at 16 to 144 px): the link
+  arrow's glyph is 8 px over 16, 13 over 32, 20 over 48, 37 x 38 over 96 (about 40%); Google Drive's
+  mark 12 x 9 over 16, 24 x 18 over 32, 28 x 21 over 48, 55 x 40 over 96 (57% of the width). So a
+  "third of the square" from the 32 px list would shrink the arrow to 13 px; the rule as built is in
+  Decisions (two thirds of the icon above 48 physical px).
+- **The hydration check** is a console check for Jeremy (below, after the gate): the watch already
+  asks for `FILE_NOTIFY_CHANGE_ATTRIBUTES`, a `Modified` record becomes a stat and an upsert, and the
+  stat rebuilds the key with the folder's cloud location (`StatJob`), so a file whose state changes
+  takes a new key and its new mark, provided a record arrives. Whether Explorer's "Free up space" and
+  "Always keep on this device" produce one is what the check reads (`[watch] ... applied: +0 -0 ~1`).
+  If none arrives, the fix the kickoff names (a stat on an attribute record) does not apply, since
+  there is no record; the record then says so and the fix becomes a candidate for later.
+
+Driver and lines: no new driver step. `dragrow` out of a 32 px row with a thumbnail shows `[dnd] drag
+image 96x96 px, 64 px icon, 1 item(s), icon from the thumbnail`; a `search` with thumbnails on shows
+`thumbs N` in the `[icons]` line; `[cloud] state read <path>: S in T ms` for each not-in-sync
+placeholder (none in the gate's folder).
+
+Tests: the drag image's source choice; the placeholder gate (which states ask); the search walker's
+keys with thumbnails on (a JPEG keyed `thumb:`, a cloud-only one `ext:`, a text file `ext:`); the
+overlay's size and list for 16, 32, 48 and 96 px at 100% and 150%.
+
+### What landed
+
+- **Search tabs** (`fs::enumerate::walk`, `spawn_search`): a `thumbnails` switch, passed by
+  `main.rs` `search_thumbnails` (the setting, and off when the search's root is a cloud location).
+  The walker's `IconKeys` take it, so a result in `THUMB_EXTS` gets the folder listing's `thumb:` key
+  for its full path. The search test runs a walk with thumbnails on over a JPEG in a subfolder and a
+  text file, and one with them off.
+- **Archive levels**: no code (the pin check above).
+- **The drag image** (`main.rs` `prefetch_drag_icon`, `drain_icons`, `run_pending_drag`;
+  `dnd::IconFrom`, `DragImage::prefetched_thumbnail`): the press asks for the thumbnail when the row's
+  key is a `thumb:` key, with the row's mark; the reply comes back as a picture (a thumbnail) or
+  pixels (the icon fallback), and the image says which. The icon worker no longer drops a drag
+  request's thumbnail as scrolled past (the request carries no row). One test for the source order.
+- **OneDrive's states** (`icons::placeholder_state`, `needs_state_read`, `IconKeys::for_entry_synced`;
+  `windows-sys`'s `Win32_Storage_CloudFilters` feature): the listing (and the watch's stat, which
+  goes through the same `entry_of`) asks Windows for a cloud placeholder's state from its attributes
+  and tag; out of sync, the file is keyed `look:s:` and the icon worker reads
+  `System.StorageProviderState`, logging `[cloud] state read`. `for_entry` stays for the tests (in
+  sync). One test for the gate and the keys.
+- **The overlays over tiles** (`icons::overlay_side`, `lower_left`, `mark_image`): above 48
+  physical px the shell's overlay image is drawn at two thirds of the icon and placed at its lower
+  left in a transparent square, so the compositing is unchanged. One test for the sizes and the
+  placement.
+- **Soak**: the thumbnail cycle in `tools/soak-p5m3.ps1` and its report line.
+- **Tests**: 265 to 268.
+
+### Decisions
+
+- **The search's cloud guard is both the root's location and each file's attributes**: a search
+  rooted in a cloud location (OneDrive, Google Drive) gets no thumbnails, and since 6908960 a search
+  result not on this disk (`RECALL_ON_DATA_ACCESS` or `OFFLINE`) keeps its type's key wherever the
+  search started. Corrected after the console check: this record first said a OneDrive file is a
+  cloud placeholder (`Kind::Cloud`) that never gets a `thumb:` key. That holds only for a process
+  shown placeholders (PowerShell, where the Settled first probes ran); Windows hides them from
+  TwinFM's process, where a OneDrive file is a plain file (`AMD.pdf` listed as `0x00100020`, no
+  reparse point), so OneDrive files do get thumbnails (the P6-M1 marked keys) and the per-file guard
+  is needed. In practice a search from the home folder does not walk into OneDrive (0 found from
+  `C:\Users\jtkli`, 137,043 folders; 1 found from `OneDrive` itself), so the guard covers other
+  sync locations and offline files.
+- **The placeholder state gate is dead in TwinFM's process** for the same reason (state 0 for every
+  OneDrive file): the attribute test that does work there is the one added after the console check
+  (unpinned, its data still here: a file being freed). A file syncing or in error is still shown by
+  its attributes' mark unless its folder is looked up; noted for later.
+- **The tile overlay rule is two thirds of the icon above 48 physical px**, not "a third of the
+  picture" (Settled first): measured on this machine, the shell's overlay images hold their glyph in
+  about 40% (the link arrow, 37 px over 96) and 57% of the width (Google Drive's mark, 55 x 40 over
+  96) of the image, and Explorer draws them at the icon's size, so TwinFM matched Explorer already.
+  Two thirds makes Google Drive's mark 37 x 27 px and the arrow 25 px on a 96 px tile. The size is
+  read in physical px on the icon worker, which cannot tell a medium tile at 100% (48 px) from a
+  32 px thumbnail row at 150% (48 px): both keep the shell's own overlay, as do all lists. The
+  console check beside Explorer decides whether the rule stays.
+- **A drag image's thumbnail carries the row's mark**, drawn as the row's is (a Google Drive photo's
+  drag shows the small cloud), since the mark is what keeps its thumbnail to the cache.
+- **Folders' state reads are not logged** (`[cloud] state read` is for files), since every sync root
+  folder is looked up at every listing (P6-M1) and the line would fill the log.
+- **A lapse, recorded**: a121e5c (the pane fix below) was committed and pushed by a command that
+  chained the test run and the commit, while the suite reported one failure,
+  `real_clipboard_round_trip_overwrites_clipboard`: Jeremy's screen was locked (LogonUI running;
+  `OpenClipboard` refused with `ERROR_ACCESS_DENIED` even from a bare PowerShell call), so the test
+  could not pass. Not rewritten; the suite is run again once the screen is unlocked (After the
+  console check), and from here the tests are run and read, then the commit made, as two steps.
+
+### Scripted checks
+
+All on this machine, `target\release` of the branch.
+
+- Thumbnails on, the P3-M5 fixture folder (`%TEMP%\twinfm-p3m5-thumbs`, 200 JPEGs): a drag out of
+  row 2 of the 32 px list, cancelled: `[dnd] drag image 96x96 px, 64 px icon, 1 item(s), icon from
+  the thumbnail`; a search for "photo-01" there, then a drag out of the search tab: `icon from the
+  thumbnail` again (the results' keys are the listing's, so they asked nothing new).
+- Thumbnails on, a search for "photo-00" from `%TEMP%` (25,246 folders, 3.7 s): `thumbs 10` in the
+  `[icons]` line for its 10 results.
+- `C:\Users\jtkli\OneDrive\Documents` (21 entries): `[cloud] ... sync root`, no `[cloud] state read`
+  line (every placeholder in sync).
+- `G:\My Drive` in large tiles (software renderer, screenshot): `[icons] overlay index 12 fetched at
+  64 px over 96 px`, each folder's cloud mark in the tile's lower left at about two fifths of its
+  width (the lists unchanged at 16 px).
+- The Start Menu's Programs folder in medium tiles: `overlay index 2 fetched at 48 px` (unchanged).
+
+A six-minute run of `tools/soak-p5m3.ps1` after P9-M3's gate (three cycles started, two completed):
+exit code 0, no panicked line, jobs done 185 (failed 0, cancelled 0), drags dropped 0, toolbar
+presses refused 0, menupicks refused 0, zip jobs not done 0, picture failures 0, waitpreview timeouts
+0, worker panics 0; working set 139.2 to 225.4 MB (312.6 at most). The P9-M4 cycle: `icon from the
+thumbnail` for i-photo.jpg's row and `[search] ... start "photo"` in both cycles, the column cycle's
+counts as before.
+
+### Gate
+
+Run by Jeremy on 2026-10-21, finished at 16:35 (tag ab40 for both settings, `C:\traces\gate-p9m4.ps1`,
+the same file as `tools/gate-p9m4.ps1`, 17 min): `target-p9m4` (3374f2b, main with P9-M3 merged in,
+built `--locked` from a detached checkout) against `target-p9m3` (111ef17), three rounds of
+reference, candidate, reference with `C:\traces\thumbs.toml`, candidate with it. Every run passed the
+wrapper's checks (no panic; `[settings] file C:\traces\thumbs.toml (read)` and `[icons] list
+geometry: 32 px rows, 32 px icons` in every thumbs run).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p9m3-1 / 2 / 3 | 18.3 / 21.4 / 22.8 | 18.7 / 22.8 / 22.7 | 2.35 / 2.92 / 2.96 |
+| p9m4-1 / 2 / 3 | 18.4 / 21.7 / 22.6 | 16.7 / 25.0 / 21.7 | 2.30 / 2.91 / 2.95 |
+| p9m3-thumbs-1 / 2 / 3 | 18.7 / 17.6 / 17.8 | 20.3 / 18.1 / 16.4 | 2.35 / 2.31 / 2.37 |
+| p9m4-thumbs-1 / 2 / 3 | 18.1 / 18.9 / 17.6 | 16.2 / 19.8 / 19.7 | 2.42 / 2.29 / 2.32 |
+
+Medians as the wrapper reads them: defaults 21.4 (reference) / 21.7 (candidate), thumbs 17.8 / 18.1;
+no gap that counts in either. The defaults runs of rounds 2 and 3, both binaries, were in the slow
+state (render p50 2.91 to 2.96 ms against 2.30 to 2.35 in round 1); like for like, round 1 reads
+18.3 against 18.4. Every thumbs run was in the normal state (2.29 to 2.42 ms) and under 20%, the
+pairs within 1.3 points in both directions. Passed: P9-M4 adds no cost the gate can see, with
+thumbnails off or on. For the record, an oddity: the slow state took the defaults runs of rounds 2
+and 3 but none of the thumbs runs that ran between them in the same rounds, so it came and went
+within minutes rather than holding for a stretch as in ab23 and ab38.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+With `C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe`, thumbnails on (Settings):
+
+1. **A photo dragged out of the details list** onto the desktop or into Explorer: the picture under
+   the pointer is the photo itself, sharp, not a generic picture icon. The same from a search tab.
+2. **A search tab with thumbnails** (Ctrl+F, type part of a name, Ctrl+Shift+F) in a folder of
+   photos: the results show their thumbnails in the 32 px rows and in the tile views.
+3. **Google Drive and shortcuts beside Explorer's large-icon view, at 100% and at 150% scaling**:
+   `G:\My Drive` and a folder of shortcuts (the Start Menu's Programs) in large tiles in TwinFM and in
+   Explorer's large icons. TwinFM's cloud mark and arrow are now smaller than Explorer's (two thirds);
+   say whether to keep them so, match Explorer's size, or go smaller.
+4. **OneDrive's states**: in a OneDrive folder, a new file (copy one in): it shows the syncing or
+   pending mark while it uploads, then the tick, matching Explorer's Status column. A synced folder
+   of many files opens as quickly as before.
+5. **The hydration check**: in a OneDrive folder, right-click a file in Explorer and pick "Free up
+   space", with the same folder open in TwinFM: its mark turns to the cloud without pressing F5. Then
+   "Always keep on this device": it turns to the solid tick. Start TwinFM for this check from a
+   normal PowerShell window with its log kept, so the watch's lines can be read afterwards:
+   `& C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe "$env:USERPROFILE\OneDrive\Documents" 2> C:\traces\p9m4-hydration.txt`
+   then close TwinFM and tell me what you saw. The file shows whether Windows reported the change
+   (`[watch] ... applied: +0 -0 ~1` for the file) or not (no `[watch]` record at all).
+
+### After the console check
+
+Jeremy, 2026-10-21, on the five checks: 1 works as expected; 2 search results showed no thumbnails
+(in Downloads; open, see below); 3 "Keep them"; 4 the OneDrive marks as expected, and a bug found on
+the way; 5 "Free up space" seemed not to change the mark, "Always keep on this device" did.
+
+- **The bug (fixed, a121e5c, Jeremy's choice to fold it into P9-M4)**: with the right pane active, a
+  click on the left pane's empty space (no file) did not make the left pane active, so a sidebar
+  click opened its folder in the right pane. In the details list `band-ev` returned before asking for
+  the focus (only the grid's band did); now a left press on the empty space calls `focus-list` and
+  `focus-requested` in either view (`src/ui/pane.slint`, one handler, off the scroll path). Scripted:
+  `click 1 0`, then `band 0 100 400 100 400` (a press and release on the left list's empty space),
+  then `sidebar click 1`: `[nav] pane=1 gen=3 path=C:\` on `target-p9m4`, `[nav] pane=0 gen=3
+  path=C:\` with the fix.
+- **The hydration check, answered** (in `OneDrive\Documents\Stack`, which Jeremy gave for testing;
+  `attrib -P +U` and `+P -U` are what Explorer's two commands set): one file, `AMD.pdf`, freed: its
+  attributes went from `0x00000420` (tag `0x9000601A`, state `0x9`) to `0x00501620` (recall on data
+  access, unpinned, offline, sparse; tag `0x9000401A`, state `0x39`: in sync, partial), and with
+  TwinFM open in the folder the row went cloud, solid tick (kept: `0x00080420`, pinned), cloud again,
+  each without F5 (`[watch] ... applied: +0 -0 ~1` per change, the row re-keyed and drawn with the
+  new glyph). The whole folder freed (`attrib -P +U Stack\* /S`): all 35 files went from the tick to
+  the cloud as OneDrive released them, `applied: +0 -0 ~34`, `~32`, `~2` in three windows. The watch
+  delivers the attribute change and the stat's key carries the new mark, so no fix is needed; F5 is
+  not the answer it was feared to be. Jeremy's log shows he freed the folder from Documents (the
+  classic menu on its row); what he watched there is being asked. After the test, `Stack`'s 35 files
+  are online-only and the folder unpinned (as Explorer's "Free up space" leaves them).
+- **a121e5c's gates, run again with the screen unlocked**: `cargo test --release` 274 passed, 0
+  failed (the clipboard test with them). No triplet for the fix (one handler, off the scroll path);
+  two in-app runs of the gate scenario on a121e5c's `target\release`, console session active, no build
+  running, Narrator off: `[busy] 10 s after split` 17.8% and 17.8%, render p50 2.43 and 2.44 ms,
+  frames at 16.5 ms, in the normal range. On 6908960's build (the free-up fix, 02fddb2's head), two
+  more runs the same way: 19.8% and 19.5%, render p50 2.67 and 2.61 ms, frames at 16.4 ms; a point
+  or two above the pair before, with the render time per frame up in the same proportion (the
+  session's state, not the change: the gate's folder has no unpinned or reparse entry, so the new
+  test never calls out there). No triplet, by the coordinator's rule for a change to the listing's
+  keys.
+- **What Jeremy watched for "Free up space"**: the files inside `Stack`, which stayed on the tick
+  even after F5. Measured on `AMD.pdf` (`attrib +P -U`, then `-P +U`, polling every 250 ms): after
+  "free up" the file sat at `0x00100420` (unpinned, its data still here) for over two minutes while
+  the provider's own state read 10, sync pending (what Explorer's Status column shows); TwinFM's
+  attribute rule drew the tick for it. Fixed in 6908960: a file unpinned but not yet released is
+  looked up as an out-of-sync placeholder is (`needs_state_read`'s attribute test), so the row shows
+  the pending glyph until OneDrive releases it, then the cloud through the watch. Scripted: the row
+  that showed the tick now shows the blue arrows, `[cloud] state read ...\AMD.pdf: 10 in 164 ms`,
+  `[icons] status glyph state 10`. Gates: 274 passed (read before the commit). The listing calls
+  cldapi only for an entry that is a reparse point or unpinned, so a plain folder costs nothing more.
+- **The search without thumbnails, answered**: Jeremy's screenshot (`target-p9m4`) shows the right
+  pane in Downloads with "epson" in the **filter box**, not a search tab, in large tiles with type
+  icons, and the left pane in 22 px rows: thumbnails were off in his settings, so neither the tiles
+  nor a search show pictures. Not a bug; with thumbnails on both show them (scripted earlier).
+- **The search without thumbnails** (before the screenshot): not reproduced. In Downloads a search for "jpg" and one for
+  "Klinger" show the JPEGs' thumbnails in the 32 px list and in the large tiles (screenshots), the
+  same as in `%TEMP%`. Jeremy's steps and binary are being asked.
+
+### Deferred (for the phase close)
+
+- **OneDrive files syncing or in error** show their attribute mark (the tick or the cloud), not the
+  provider's syncing or error glyph: Windows hides placeholders from TwinFM's process, so the
+  in-sync test cannot run there, and no attribute says syncing or error. Their folder's mark (looked
+  up) does show it. A way in would be the property read for every file of a sync root on screen
+  (23 ms each), or `RtlSetProcessPlaceholderCompatibilityMode` to see placeholders, which changes
+  how every OneDrive entry lists.
 
 ## Open questions
 
