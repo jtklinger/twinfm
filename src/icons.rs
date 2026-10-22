@@ -412,6 +412,27 @@ pub fn key_mark(key: &str) -> Mark {
         .map_or(Mark::None, |(m, _)| m)
 }
 
+/// The Cloud Files placeholder state from a listed entry's attributes and reparse tag
+/// (`CfGetPlaceholderStateFromAttributeTag`: no file is opened, nothing is read from the provider).
+pub fn placeholder_state(attrs: u32, tag: u32) -> u32 {
+    // SAFETY: a pure function of its two arguments in cldapi.dll.
+    unsafe { windows_sys::Win32::Storage::CloudFilters::CfGetPlaceholderStateFromAttributeTag(attrs, tag) }
+}
+
+/// Whether a placeholder state calls for the provider's own state (P9-M4): a placeholder that is
+/// not in sync. On Jeremy's OneDrive every placeholder read in sync (0x9 or 0xD), so the property
+/// read (about 23 ms) stays off the rows of a synced folder. Also a file freed up but not released
+/// yet (unpinned, its data still here: `attrs`): OneDrive can leave it so for minutes, its state
+/// "sync pending", while its attributes alone would read as on this device (the console check).
+/// TwinFM's own process is not shown placeholders (Windows hides them from most programs: no
+/// reparse point, state 0), so the second test is the one that works there.
+pub fn needs_state_read(state: u32, attrs: u32) -> bool {
+    use windows_sys::Win32::Storage::CloudFilters::{CF_PLACEHOLDER_STATE_IN_SYNC, CF_PLACEHOLDER_STATE_PLACEHOLDER};
+    let releasing = attrs & FILE_ATTRIBUTE_UNPINNED != 0
+        && attrs & (FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE) == 0;
+    releasing || (state & CF_PLACEHOLDER_STATE_PLACEHOLDER != 0 && state & CF_PLACEHOLDER_STATE_IN_SYNC == 0)
+}
+
 const LOOK_PREFIX: &str = "look:";
 
 /// The key of an entry whose mark is not known yet: `look:<o|s>:<plain key>|<full path>`. A row
@@ -457,13 +478,22 @@ impl IconKeys {
         self
     }
 
-    /// `modified` (unix seconds) and `size` go into a thumbnail's key only.
+    /// `modified` (unix seconds) and `size` go into a thumbnail's key only. An entry in sync: the
+    /// tests' form of `for_entry_synced`.
+    #[cfg(test)]
     pub fn for_entry(&mut self, name: &str, attrs: u32, kind: Kind, modified: i64, size: u64) -> SharedString {
+        self.for_entry_synced(name, attrs, kind, modified, size, true)
+    }
+
+    /// `for_entry` for a listed entry, `synced` false when it is a cloud placeholder out of sync
+    /// (`needs_state_read`, P9-M4): under a sync root such a file is looked up as a folder is, so
+    /// its mark is the provider's own state (syncing, pending, error) rather than its attributes'.
+    pub fn for_entry_synced(&mut self, name: &str, attrs: u32, kind: Kind, modified: i64, size: u64, synced: bool) -> SharedString {
         let plain = self.plain(name, attrs, kind, modified, size);
         if self.cloud == Cloud::None || kind == Kind::Drive || wants_overlay(kind, attrs, name) {
             return plain;
         }
-        if self.cloud == Cloud::Overlays || attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        if self.cloud == Cloud::Overlays || attrs & FILE_ATTRIBUTE_DIRECTORY != 0 || !synced {
             let kind = if self.cloud == Cloud::Overlays { 'o' } else { 's' };
             return look_key(kind, &plain, &self.folder.join(name)).into();
         }
@@ -475,7 +505,10 @@ impl IconKeys {
     }
 
     fn plain(&mut self, name: &str, attrs: u32, kind: Kind, modified: i64, size: u64) -> SharedString {
-        if self.thumbnails && kind == Kind::File && is_thumbnail(name) {
+        // Out of a cloud location (a search tab walking into OneDrive), a file not on this disk is
+        // never keyed for its thumbnail: nothing would keep the request to the cache (P9-M4).
+        let away = self.cloud == Cloud::None && attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE) != 0;
+        if self.thumbnails && kind == Kind::File && is_thumbnail(name) && !away {
             return thumb_key(&self.folder.join(name), modified, size).into();
         }
         let attrs = key_attrs(attrs, kind);
@@ -1127,7 +1160,8 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
     // row the list has left is dropped).
     while let Some((r, idle)) = next(pool) {
         let stale = generations[r.pane].load(Ordering::Relaxed) != r.generation;
-        let passed = !stale && r.thumbnail && views.passed(r.pane, r.row, r.wanted);
+        // A drag image's thumbnail (P9-M4) is for the pressed row, wherever the list is.
+        let passed = !stale && r.thumbnail && !is_drag_key(&r.key) && views.passed(r.pane, r.row, r.wanted);
         if passed {
             stats.dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -1150,7 +1184,12 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
             let mark = if com < 0 {
                 Mark::None
             } else if r.key[LOOK_PREFIX.len()..].starts_with('s') {
-                storage_state(&r.path).map_or(Mark::None, Mark::State)
+                let state = storage_state(&r.path);
+                // A file out of sync (P9-M4); a plain folder (`dir`) is looked up at every listing.
+                if !r.key[LOOK_PREFIX.len()..].starts_with("s:dir|") {
+                    eprintln!("[cloud] state read {}: {} in {} ms", r.path.display(), state.unwrap_or(0), t0.elapsed().as_millis());
+                }
+                state.map_or(Mark::None, Mark::State)
             } else {
                 overlay_index(&r.path).map_or(Mark::None, |i| Mark::Overlay(i as u8))
             };
@@ -1277,8 +1316,10 @@ fn mark_image(pool: &Pool, mark: Mark, size_px: u32) -> Option<SharedPixelBuffer
     let o = match mark {
         Mark::None => None,
         Mark::Overlay(index) => {
-            let o = overlay_pixels(index as i32, size_px);
-            eprintln!("[icons] overlay index {index} fetched at {size_px} px{}", none(&o));
+            let side = overlay_side(size_px);
+            let o = overlay_pixels(index as i32, side).map(|o| if side == size_px { o } else { lower_left(&o, size_px) });
+            let over = if side == size_px { String::new() } else { format!(" over {size_px} px") };
+            eprintln!("[icons] overlay index {index} fetched at {side} px{over}{}", none(&o));
             o
         }
         Mark::State(state) => {
@@ -1291,6 +1332,27 @@ fn mark_image(pool: &Pool, mark: Mark, size_px: u32) -> Option<SharedPixelBuffer
     };
     cache.insert((mark, size_px), o.clone());
     o
+}
+
+/// The square the shell's overlay image (Google Drive's mark, the link arrow) is drawn at over an
+/// icon of `size_px` (P9-M4): the icon's own size up to 48 px, as Explorer draws it in its lists;
+/// two thirds of it above, so a tile's mark covers less of the picture (Google Drive's glyph fills
+/// 57% of its image's width, the arrow 39%).
+pub fn overlay_side(size_px: u32) -> u32 {
+    if size_px > 48 { size_px * 2 / 3 } else { size_px }
+}
+
+/// `p` at the lower left of a transparent `size` square (an overlay drawn smaller than its icon).
+pub fn lower_left(p: &SharedPixelBuffer<Rgba8Pixel>, size: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    let mut out = SharedPixelBuffer::<Rgba8Pixel>::new(size, size);
+    let (w, h) = (p.width().min(size) as usize, p.height().min(size) as usize);
+    let top = size as usize - h;
+    let dst = out.make_mut_slice();
+    for y in 0..h {
+        let row = (top + y) * size as usize;
+        dst[row..row + w].copy_from_slice(&p.as_slice()[y * p.width() as usize..y * p.width() as usize + w]);
+    }
+    out
 }
 
 /// A status glyph's size over an icon of `size_px`: about half a list icon (9 px over 16, 18 over
@@ -2303,6 +2365,21 @@ mod tests {
     }
 
     #[test]
+    fn overlays_over_tiles_are_two_thirds_at_the_lower_left() {
+        // P9-M4: up to 48 px (the lists, and medium tiles at 100%) the shell's overlay as Explorer
+        // draws it; above, two thirds of the icon (64 over a 96 px tile, 96 over 144 at 150%).
+        assert_eq!((overlay_side(16), overlay_side(32), overlay_side(48)), (16, 32, 48));
+        assert_eq!((overlay_side(72), overlay_side(96), overlay_side(144)), (48, 64, 96));
+        let p = |v| Rgba8Pixel { r: v, g: v, b: v, a: v };
+        let mut small = SharedPixelBuffer::<Rgba8Pixel>::new(2, 2);
+        small.make_mut_slice().copy_from_slice(&[p(1), p(2), p(3), p(4)]);
+        let placed = lower_left(&small, 3);
+        let clear = Rgba8Pixel { r: 0, g: 0, b: 0, a: 0 };
+        assert_eq!((placed.width(), placed.height()), (3, 3));
+        assert_eq!(placed.as_slice(), [clear, clear, clear, p(1), p(2), clear, p(3), p(4), clear]);
+    }
+
+    #[test]
     fn overlay_only_for_links_and_reparse_points() {
         let rdir = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
         assert!(wants_overlay(Kind::File, 0, "Notes.LNK"));
@@ -2643,6 +2720,46 @@ mod tests {
     }
 
     #[test]
+    fn placeholders_out_of_sync_are_looked_up() {
+        // The Cloud Files placeholder state (P9-M4): only a placeholder that is not in sync asks
+        // for the provider's own state; in sync (OneDrive's 0x9 and 0xD) and not a placeholder (0x0,
+        // desktop.ini) keep their attribute mark.
+        let local = FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT;
+        assert!(!needs_state_read(0x9, local) && !needs_state_read(0xD, local) && !needs_state_read(0x0, local));
+        assert!(needs_state_read(0x1, local) && needs_state_read(0x1 | 0x10, local), "a placeholder, partial or not, out of sync");
+        // Freed up but not released yet (Jeremy's console check: 0x00100420, the provider's state
+        // 10, sync pending, for minutes): looked up, so the row shows what Explorer shows.
+        assert!(needs_state_read(0x9, local | FILE_ATTRIBUTE_UNPINNED));
+        // Released (recall on access) or always kept (pinned): the attributes tell it.
+        assert!(!needs_state_read(0x39, local | FILE_ATTRIBUTE_UNPINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE));
+        assert!(!needs_state_read(0x9, local | FILE_ATTRIBUTE_PINNED));
+        // TwinFM's own process does not see placeholders (no reparse point, state 0): the
+        // attributes alone tell a file being freed (AMD.pdf read 0x00100020 there).
+        assert!(needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_UNPINNED));
+        assert!(!needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE));
+        assert!(!needs_state_read(0, FILE_ATTRIBUTE_UNPINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE));
+        let f = Path::new(r"C:\OneDrive\dir");
+        let mut sync = IconKeys::new(f.to_path_buf(), true).with_cloud(Cloud::SyncRoot);
+        let (file, cloud) = (Kind::File, Kind::Cloud);
+        assert_eq!(sync.for_entry_synced("a.txt", 0, cloud, 0, 0, true), "ext:s2:.txt");
+        assert_eq!(sync.for_entry_synced("a.txt", 0, cloud, 0, 0, false), r"look:s:ext:.txt|C:\OneDrive\dir\a.txt");
+        assert_eq!(sync.for_entry_synced("p.jpg", 0, file, 5, 6, false), r"look:s:thumb:C:\OneDrive\dir\p.jpg|5|6|C:\OneDrive\dir\p.jpg");
+        // Out of a sync root the state is never read.
+        let mut plain = IconKeys::new(f.to_path_buf(), false);
+        assert_eq!(plain.for_entry_synced("a.txt", 0, cloud, 0, 0, false), "ext:.txt");
+        // A link keeps its own key and arrow either way.
+        assert_eq!(sync.for_entry_synced("v.lnk", 0, file, 0, 0, false), r"C:\OneDrive\dir\v.lnk");
+        // A search tab carries no cloud location: a file not on this disk keeps its type's key, so
+        // its thumbnail is never asked (it could start a download); one on this disk gets its own.
+        let mut search = IconKeys::new(f.to_path_buf(), true);
+        assert_eq!(search.for_entry("away.jpg", FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, file, 5, 6), "ext:.jpg");
+        assert_eq!(search.for_entry("old.jpg", FILE_ATTRIBUTE_OFFLINE, file, 5, 6), "ext:.jpg");
+        assert_eq!(search.for_entry("here.jpg", FILE_ATTRIBUTE_ARCHIVE, file, 5, 6), r"thumb:C:\OneDrive\dir\here.jpg|5|6");
+        // Under a sync root the mark keeps a cloud-only file's thumbnail to the cache instead.
+        assert_eq!(sync.for_entry_synced("away.jpg", FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, file, 5, 6, true), r"thumb:s1:C:\OneDrive\dir\away.jpg|5|6");
+    }
+
+    #[test]
     fn pool_keeps_cloud_thumbnails_to_the_cache_and_looks_up_every_time() {
         let (req_tx, req_rx) = unbounded();
         let (rep_tx, rep_rx) = unbounded();
@@ -2791,3 +2908,4 @@ mod tests {
         }
     }
 }
+

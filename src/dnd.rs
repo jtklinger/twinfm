@@ -2776,8 +2776,43 @@ pub struct DragImage {
     /// row was pressed (P5-M3), so the drag start need not wait for the shell; None when the reply
     /// had not landed yet (the shell is then asked here, as before).
     pub prefetched: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
+    /// The prefetched picture is the file's thumbnail, asked for a row that shows one (P9-M4).
+    pub prefetched_thumbnail: bool,
     pub count: usize,
     pub scale: f32,
+}
+
+/// Where a drag image's icon is taken from, first that applies: out of the grid the tile's own
+/// picture (`tile_picture`), else what the icon worker answered at the press (`prefetched`: Some, a
+/// thumbnail when true, P9-M4), else the shell, asked at the drag's start (which falls back to the
+/// pane's cache, then nothing).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconFrom {
+    Tile,
+    Thumbnail,
+    Worker,
+    Shell,
+}
+
+impl IconFrom {
+    pub fn pick(tile_picture: bool, prefetched: Option<bool>) -> IconFrom {
+        match (tile_picture, prefetched) {
+            (true, _) => IconFrom::Tile,
+            (false, Some(true)) => IconFrom::Thumbnail,
+            (false, Some(false)) => IconFrom::Worker,
+            (false, None) => IconFrom::Shell,
+        }
+    }
+
+    /// The `[dnd] drag image ... icon from <label>` wording.
+    pub fn label(self) -> &'static str {
+        match self {
+            IconFrom::Tile => "the tile",
+            IconFrom::Thumbnail => "the thumbnail",
+            IconFrom::Worker => "the worker",
+            IconFrom::Shell => "the shell",
+        }
+    }
 }
 
 /// Compose the image and store it on `data` through the source helper; logs the result.
@@ -2787,9 +2822,11 @@ fn attach_drag_image(data: *mut c_void, img: &DragImage) {
         None => ImageGeom::new(img.scale),
     };
     let t0 = std::time::Instant::now();
-    let (icon, from) = match (&img.cached, img.tile.is_some() && img.tile_picture) {
-        (Some(c), true) => (Some(crate::icons::fit(c, g.icon)), "the tile"),
-        _ if img.prefetched.is_some() => (img.prefetched.as_ref().map(|p| crate::icons::fit(p, g.icon)), "the worker"),
+    let tile = img.tile.is_some() && img.tile_picture && img.cached.is_some();
+    let from = IconFrom::pick(tile, img.prefetched.as_ref().map(|_| img.prefetched_thumbnail));
+    let (icon, from) = match (from, &img.cached, &img.prefetched) {
+        (IconFrom::Tile, Some(c), _) => (Some(crate::icons::fit(c, g.icon)), from.label()),
+        (IconFrom::Thumbnail | IconFrom::Worker, _, Some(p)) => (Some(crate::icons::fit(p, g.icon)), from.label()),
         _ => match crate::icons::render(&img.path, g.icon) {
             Some(p) => (Some(crate::icons::fit(&p, g.icon)), "the shell"),
             None => match &img.cached {
@@ -3730,6 +3767,19 @@ mod tests {
         assert_eq!(at(&text, cx as usize, cy as usize), vec![255, 255, 255, 255]);
         // A wrong-sized icon is ignored rather than misread.
         assert_eq!(at(&compose_image(&g, Some(&icon[..10]), 1, None), 8, 8), vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn drag_image_icon_source_order() {
+        // The grid's real picture first; then what the worker answered at the press, a thumbnail
+        // (P9-M4) or an icon; else the shell, asked at the drag's start.
+        assert_eq!(IconFrom::pick(true, Some(true)), IconFrom::Tile);
+        assert_eq!(IconFrom::pick(true, None), IconFrom::Tile);
+        assert_eq!(IconFrom::pick(false, Some(true)), IconFrom::Thumbnail);
+        assert_eq!(IconFrom::pick(false, Some(false)), IconFrom::Worker);
+        assert_eq!(IconFrom::pick(false, None), IconFrom::Shell);
+        assert_eq!(IconFrom::Thumbnail.label(), "the thumbnail");
+        assert_eq!(IconFrom::Worker.label(), "the worker");
     }
 
     #[test]
