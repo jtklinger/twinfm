@@ -222,7 +222,8 @@ a cost), each run's `[perf] ... render[... p50=...]` read first, and a fixed-ord
 a point checked with the order swapped (P7-M4). The reference for the first Phase 11 gate is the last
 merged milestone's build at that time: `target-p9m4` (3374f2b) until P10-M1 merges, then
 `target-p10m1`; after each merge the new milestone's gate build becomes the next reference and the
-previous one is deleted once the new one has served. Tags continue from ab42 (ab41 is P10-M1's).
+previous one is deleted once the new one has served. Tags continue from ab44 (ab41 is P10-M1's;
+ab42 and ab43 were P10-M2's and P10-M3's, `phase-10-plan.md` § Phase 10 close).
 Bar: main thread under 20% busy over the 10 s after the split, judged against the reference's spread
 in the same session. The gate is one PowerShell wrapper file per milestone (`gate-<milestone>.ps1`:
 the checks, the triplet, the analysis, the summary), written on `tools/gate-p9m4.ps1`'s pattern; it
