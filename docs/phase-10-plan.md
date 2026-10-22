@@ -482,9 +482,10 @@ label) are P11-M1's; P10-M2 leaves the button a plain search so that P11-M1 adds
 and never a second box (`docs/phase-11-plan.md` § P11-M1 reads "a second box, or a mode of the
 filter box, settled first against the toolkit and the Phase 10 restyle": this is that settlement).
 
-**Code, tests first.** A pure module `src/searchbox.rs`: `width(pane_w: f32) -> f32` (200, or 150
-under 520), `on_return(text: &str) -> ReturnAction` (`Search(pattern)` for a trimmed non-empty text,
-`FocusList` otherwise), `placeholder()`; tests for the three. `pane.slint`: the always-present box,
+**Code, tests first.** A pure module `src/searchbox.rs`: `on_return(text: &str) -> ReturnAction`
+(`Search(pattern)` for a trimmed non-empty text, `FocusList` otherwise), tested; the width rule (200,
+or 150 under 520) and the placeholder live in the Slint alone (a Rust copy of each was written first
+and dropped as dead code when the gate build warned on it, 2026-10-22). `pane.slint`: the always-present box,
 its icon, its clear glyph and its search button, `accepted` → `filter-return(text)` (new callback),
 Down → `filter-now(text)` (new; the old apply) and the list's focus, the button → `search-pressed()`;
 `app.slint` routes the three to Rust; `main.rs` `filter_return` (search or focus), `filter_now`
