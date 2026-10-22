@@ -284,7 +284,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let heic = dir.join("a.HEIC");
         if !write_heic(&heic, 64, 32) {
+            // No extension (a CI machine): a file no installed decoder takes is "no decoder".
             eprintln!("no HEIF encoder on this machine: the HEIC check is skipped");
+            std::fs::write(&heic, b"not a picture").unwrap();
             assert_eq!(decode(&heic, 512 << 20).map(|_| ()), Err(NO_DECODER.into()));
         } else {
             let (img, format) = decode(&heic, 512 << 20).unwrap();

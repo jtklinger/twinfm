@@ -415,6 +415,17 @@ the column. One thing for the console check: in that capture the rarest symbols 
 (the contour integral, the Fraktur A) drew as small or missing glyphs; the characters are right (the
 test), so it is the renderer's font fallback, to be read with femtovg at the console.
 
+### Soak (2026-10-22, `target-p11m4`, before the gates by the coordinating session's order)
+
+`tools/soak-p5m3.ps1 -Minutes 10`: 10.1 min, exit 0, no panic, 270 jobs done (none failed or
+cancelled), every must-be-0 count at 0. The preview: PDFs opened 8, pages rendered 76, zooms 16 (four
+per cycle), copies 8 (two per cycle), copy failures 0, picture failures 0, waitpreview timeouts 0,
+worker panics 0. Working set 170.8 MB at 5 s, 245.4 MB at 600 s (max 276.6; private 155.6 to 225.2).
+
+CI's first run failed one test: on the runner, with no HEIF extension, the test's fallback checked a
+file it had never written (file not found) where it meant one no decoder takes. Fixed in the test only
+(1 file, `#[cfg(test)]`), after the gate build: the gate binary at 2d3a096 is the program the PR ships.
+
 ### Gate
 
 Pending: the wrapper is `tools/gate-p11m4.ps1`, tag ab45 (the defaults and the preview triplet,
