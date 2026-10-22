@@ -509,7 +509,9 @@ fn entry_of(
         _ => types.for_entry(&name, attrs & FILE_ATTRIBUTE_DIRECTORY != 0),
     };
     let modified = unix_secs(d.ftLastWriteTime);
-    let synced = kind != Kind::Cloud || !crate::icons::needs_state_read(crate::icons::placeholder_state(attrs, tag));
+    // Only an entry that is a reparse point or unpinned can ask (no cldapi call for a plain file).
+    let synced = attrs & (FILE_ATTRIBUTE_REPARSE_POINT | windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_UNPINNED) == 0
+        || !crate::icons::needs_state_read(crate::icons::placeholder_state(attrs, tag), attrs);
     let icon_key = icon_keys.for_entry_synced(&name, attrs, kind, modified, size, synced);
     Some(Entry::with_zone(name.into(), size, modified, attrs, kind, type_text, icon_key, zone))
 }
@@ -1019,3 +1021,4 @@ mod tests {
         }
     }
 }
+

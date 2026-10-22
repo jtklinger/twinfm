@@ -421,10 +421,16 @@ pub fn placeholder_state(attrs: u32, tag: u32) -> u32 {
 
 /// Whether a placeholder state calls for the provider's own state (P9-M4): a placeholder that is
 /// not in sync. On Jeremy's OneDrive every placeholder read in sync (0x9 or 0xD), so the property
-/// read (about 23 ms) stays off the rows of a synced folder.
-pub fn needs_state_read(state: u32) -> bool {
+/// read (about 23 ms) stays off the rows of a synced folder. Also a file freed up but not released
+/// yet (unpinned, its data still here: `attrs`): OneDrive can leave it so for minutes, its state
+/// "sync pending", while its attributes alone would read as on this device (the console check).
+/// TwinFM's own process is not shown placeholders (Windows hides them from most programs: no
+/// reparse point, state 0), so the second test is the one that works there.
+pub fn needs_state_read(state: u32, attrs: u32) -> bool {
     use windows_sys::Win32::Storage::CloudFilters::{CF_PLACEHOLDER_STATE_IN_SYNC, CF_PLACEHOLDER_STATE_PLACEHOLDER};
-    state & CF_PLACEHOLDER_STATE_PLACEHOLDER != 0 && state & CF_PLACEHOLDER_STATE_IN_SYNC == 0
+    let releasing = attrs & FILE_ATTRIBUTE_UNPINNED != 0
+        && attrs & (FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE) == 0;
+    releasing || (state & CF_PLACEHOLDER_STATE_PLACEHOLDER != 0 && state & CF_PLACEHOLDER_STATE_IN_SYNC == 0)
 }
 
 const LOOK_PREFIX: &str = "look:";
@@ -499,7 +505,10 @@ impl IconKeys {
     }
 
     fn plain(&mut self, name: &str, attrs: u32, kind: Kind, modified: i64, size: u64) -> SharedString {
-        if self.thumbnails && kind == Kind::File && is_thumbnail(name) {
+        // Out of a cloud location (a search tab walking into OneDrive), a file not on this disk is
+        // never keyed for its thumbnail: nothing would keep the request to the cache (P9-M4).
+        let away = self.cloud == Cloud::None && attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE) != 0;
+        if self.thumbnails && kind == Kind::File && is_thumbnail(name) && !away {
             return thumb_key(&self.folder.join(name), modified, size).into();
         }
         let attrs = key_attrs(attrs, kind);
@@ -2715,8 +2724,20 @@ mod tests {
         // The Cloud Files placeholder state (P9-M4): only a placeholder that is not in sync asks
         // for the provider's own state; in sync (OneDrive's 0x9 and 0xD) and not a placeholder (0x0,
         // desktop.ini) keep their attribute mark.
-        assert!(!needs_state_read(0x9) && !needs_state_read(0xD) && !needs_state_read(0x0));
-        assert!(needs_state_read(0x1) && needs_state_read(0x1 | 0x10), "a placeholder, partial or not, out of sync");
+        let local = FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT;
+        assert!(!needs_state_read(0x9, local) && !needs_state_read(0xD, local) && !needs_state_read(0x0, local));
+        assert!(needs_state_read(0x1, local) && needs_state_read(0x1 | 0x10, local), "a placeholder, partial or not, out of sync");
+        // Freed up but not released yet (Jeremy's console check: 0x00100420, the provider's state
+        // 10, sync pending, for minutes): looked up, so the row shows what Explorer shows.
+        assert!(needs_state_read(0x9, local | FILE_ATTRIBUTE_UNPINNED));
+        // Released (recall on access) or always kept (pinned): the attributes tell it.
+        assert!(!needs_state_read(0x39, local | FILE_ATTRIBUTE_UNPINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE));
+        assert!(!needs_state_read(0x9, local | FILE_ATTRIBUTE_PINNED));
+        // TwinFM's own process does not see placeholders (no reparse point, state 0): the
+        // attributes alone tell a file being freed (AMD.pdf read 0x00100020 there).
+        assert!(needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_UNPINNED));
+        assert!(!needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE));
+        assert!(!needs_state_read(0, FILE_ATTRIBUTE_UNPINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE));
         let f = Path::new(r"C:\OneDrive\dir");
         let mut sync = IconKeys::new(f.to_path_buf(), true).with_cloud(Cloud::SyncRoot);
         let (file, cloud) = (Kind::File, Kind::Cloud);
@@ -2728,6 +2749,14 @@ mod tests {
         assert_eq!(plain.for_entry_synced("a.txt", 0, cloud, 0, 0, false), "ext:.txt");
         // A link keeps its own key and arrow either way.
         assert_eq!(sync.for_entry_synced("v.lnk", 0, file, 0, 0, false), r"C:\OneDrive\dir\v.lnk");
+        // A search tab carries no cloud location: a file not on this disk keeps its type's key, so
+        // its thumbnail is never asked (it could start a download); one on this disk gets its own.
+        let mut search = IconKeys::new(f.to_path_buf(), true);
+        assert_eq!(search.for_entry("away.jpg", FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, file, 5, 6), "ext:.jpg");
+        assert_eq!(search.for_entry("old.jpg", FILE_ATTRIBUTE_OFFLINE, file, 5, 6), "ext:.jpg");
+        assert_eq!(search.for_entry("here.jpg", FILE_ATTRIBUTE_ARCHIVE, file, 5, 6), r"thumb:C:\OneDrive\dir\here.jpg|5|6");
+        // Under a sync root the mark keeps a cloud-only file's thumbnail to the cache instead.
+        assert_eq!(sync.for_entry_synced("away.jpg", FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, file, 5, 6, true), r"thumb:s1:C:\OneDrive\dir\away.jpg|5|6");
     }
 
     #[test]
