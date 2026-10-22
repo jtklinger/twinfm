@@ -582,6 +582,66 @@ here touches a row).
 3. **The Windows 11 menu's icon row with the Lucide set**: `src/winmenu.rs`'s items unchanged, only
    the glyphs (Cut, Copy, Rename, Share, Delete, Paste) drawn from `src/ui/icons/`.
 
+Go: 2026-10-22 after P10-M2 merged (main ef83a3d), Jeremy's words relayed by the coordinating session:
+"The P10-M2 console checks are fine; merge PR #94 (squash, no --delete-branch), rebuild target\release,
+and start P10-M3." Branch `feat/p10-m3-leftovers` from ef83a3d. Reference `target-p10m2` (aa2ecbf),
+tag ab43, the defaults triplet.
+
+### Settled first (2026-10-22, before any code)
+
+**1. The title bar follows the theme setting.** Windows draws the native title bar from the app mode
+unless the window asks otherwise; `DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &TRUE
+or FALSE)` asks (`windows-sys` gains the `Win32_Graphics_Dwm` feature; no crate). It is set in two
+places: in `main_hwnd` the moment the window's handle is first fetched (the setting's mode from the
+config), and in `apply_theme` on every change through the dialog. Light sets it off, dark on; system
+sets what Windows would (the app mode read from `HKCU\...\Themes\Personalize\AppsUseLightTheme`,
+0 meaning dark), so the bar matches the window at once. **A known limit, for the console check**: a
+system app-mode change while the setting is light or dark may flip the bar back (winit re-applies
+the system theme to the title bar on that event); the bar is right again after the dialog's OK or a
+restart, and system mode follows Windows as today. `TWINFM_SCHEME` sets the bar as it sets the
+scheme. The pure part, tested: `settings::ThemeMode::title_bar_dark(self, system_dark: bool) -> bool`.
+`[settings] title bar: dark|light (mode)` on each set.
+
+**2. The look's choice and text field.** Two components in `theme.slint`, drawn as the search box
+and the look's buttons are (the hairline, 6 px corners, the card colour, the accent ring on focus,
+13 px text, the muted placeholder):
+
+- `Field`: a `TextInput` in an outline `Rectangle`, the surface the five `LineEdit`s use today and
+  nothing more: `text` (in-out), `placeholder-text`, `accessible-label` (forwarded to the input),
+  `accepted(string)`, `edited(string)`, `key-pressed(KeyEvent) -> EventResult`, `has-focus` (out, the
+  input's), `focus()` and `select-all()`. It replaces the Settings dialog's two start-folder fields,
+  the path bar's text entry, the rename editor and the bookmark title editor, each keeping its
+  callbacks and `changed has-focus` handlers word for word. The search box's inline input stays as
+  built in P10-M2 (it is that field already, with its own button row).
+- `Choice`: a button showing the current option's text and a chevron, 32 px, the outline; a click
+  opens a `PopupWindow` under it listing the options as 32 px rows (muted on hover, the accent tint
+  on the current one; the window's own popup, as the fluent `ComboBox` uses, so it works inside the
+  Settings dialog's popup as the `ComboBox` does); `model` (`[string]`), `current-index` (in-out),
+  `selected()` (after the index changed; the dialog's handlers read `self.current-index` as today).
+  It replaces the dialog's four `ComboBox`es (view left, view right, toolbar, theme). The driver's
+  `settings set` goes through `settings-stage` and is untouched; `key Escape` in the dialog as
+  before; a scripted pick of an option is not added (no step picked one before either).
+- What stays fluent after this: `ListView` and `ScrollView` (layout, not look), `AboutSlint` (the
+  licence asks for it), the About dialog's text. CLAUDE.md's "`ComboBox` and `LineEdit` stay fluent"
+  note goes.
+
+**3. The Windows 11 menu's icon row in the Lucide set.** `MenuToolButton` draws the row's button from
+its `text` (Cut, Copy, Rename, Share, Delete, Paste: `src/winmenu.rs`'s `Tool` list, unchanged, its
+`glyph` field left as it is for the record) through a Lucide image per name: scissors, copy, pencil,
+`share.svg` (new, Lucide's share-2), trash, clipboard-paste; 16 px, `Theme.fg`. The menu's item rows
+keep their Segoe glyphs (Open, Open with, the terminal, Copy path, Properties: not in the brief).
+
+**Code order, tests first**: item 1 (the pure rule and its test, the two set points, the line), item
+3 (the image map and `share.svg`), item 2 (`Field`, then its five uses; `Choice`, then its four
+uses), each built and screenshotted (the Settings dialog open in both schemes with a choice popped,
+the path entry, the rename editor, a bookmark being renamed, the icon row of a row's menu). Soak: the
+P5-M3 soak as it is (its cycles rename through the editor, open the icon-row menu and pick from it,
+and run `settings set` through the dialog); no new step. Gate: `target-p10m3` against `target-p10m2`
+(aa2ecbf), tag ab43, the defaults (nothing per row; the dialog, the editors and the menu are not in
+the scenario). Console checks: the title bar in each mode and after a system app-mode change; every
+field typed into and committed; each choice opened, picked by click and by keyboard; the icon row's
+buttons; 150% scaling.
+
 ## Deferred to Phase 12 (roadmap)
 
 Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadmap list."
