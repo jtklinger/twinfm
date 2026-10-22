@@ -406,44 +406,28 @@ fn attr(tag: &str, name: &str) -> Option<String> {
     None
 }
 
-/// The named entities of Latin-1, U+00A0 (`nbsp`) to U+00FF (`yuml`), in order.
-const LATIN1: [&str; 96] = [
-    "nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf", "laquo", "not", "shy", "reg", "macr", "deg", "plusmn",
-    "sup2", "sup3", "acute", "micro", "para", "middot", "cedil", "sup1", "ordm", "raquo", "frac14", "frac12", "frac34", "iquest", "Agrave", "Aacute",
-    "Acirc", "Atilde", "Auml", "Aring", "AElig", "Ccedil", "Egrave", "Eacute", "Ecirc", "Euml", "Igrave", "Iacute", "Icirc", "Iuml", "ETH", "Ntilde",
-    "Ograve", "Oacute", "Ocirc", "Otilde", "Ouml", "times", "Oslash", "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute", "THORN", "szlig", "agrave",
-    "aacute", "acirc", "atilde", "auml", "aring", "aelig", "ccedil", "egrave", "eacute", "ecirc", "euml", "igrave", "iacute", "icirc", "iuml", "eth",
-    "ntilde", "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute", "ucirc", "uuml", "yacute", "thorn", "yuml",
-];
-
-/// Named entities beyond Latin-1 that pages use: markup, typography, arrows, a few symbols.
-const NAMED: &[(&str, char)] = &[
-    ("amp", '&'), ("lt", '<'), ("gt", '>'), ("quot", '"'), ("apos", '\''), ("OElig", 'Œ'), ("oelig", 'œ'), ("Scaron", 'Š'), ("scaron", 'š'),
-    ("Yuml", 'Ÿ'), ("fnof", 'ƒ'), ("circ", 'ˆ'), ("tilde", '˜'), ("ensp", '\u{2002}'), ("emsp", '\u{2003}'), ("thinsp", '\u{2009}'),
-    ("zwnj", '\u{200C}'), ("zwj", '\u{200D}'), ("lrm", '\u{200E}'), ("rlm", '\u{200F}'), ("ndash", '–'), ("mdash", '—'), ("lsquo", '‘'),
-    ("rsquo", '’'), ("sbquo", '‚'), ("ldquo", '“'), ("rdquo", '”'), ("bdquo", '„'), ("dagger", '†'), ("Dagger", '‡'), ("bull", '•'),
-    ("hellip", '…'), ("permil", '‰'), ("prime", '′'), ("Prime", '″'), ("lsaquo", '‹'), ("rsaquo", '›'), ("oline", '‾'), ("euro", '€'),
-    ("trade", '™'), ("larr", '←'), ("uarr", '↑'), ("rarr", '→'), ("darr", '↓'), ("harr", '↔'), ("lArr", '⇐'), ("rArr", '⇒'), ("hArr", '⇔'),
-    ("minus", '−'), ("le", '≤'), ("ge", '≥'), ("ne", '≠'), ("infin", '∞'), ("check", '✓'), ("hearts", '♥'), ("spades", '♠'), ("clubs", '♣'),
-    ("diams", '♦'),
-];
-
-/// The character a named entity (`mdash`, without `&` and `;`) stands for.
-fn entity(name: &str) -> Option<char> {
-    if let Some(i) = LATIN1.iter().position(|n| *n == name) {
-        return char::from_u32(0xA0 + i as u32);
+/// The text a named entity (`mdash`, without `&` and `;`) stands for, from the full HTML5 table
+/// (P11-M4: 2,125 names, a few of them two characters). CommonMark decodes every HTML5 entity, so
+/// the table pulldown-cmark already carries for Markdown is asked: a parse of `&name;` comes back
+/// changed exactly when the name is one. Nothing is added to the program.
+fn entity(name: &str) -> Option<String> {
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
     }
-    NAMED.iter().find(|(n, _)| *n == name).map(|&(_, c)| c)
+    let src = format!("&{name};");
+    let text: String = Parser::new(&src).filter_map(|e| if let Event::Text(t) = e { Some(t.into_string()) } else { None }).collect();
+    (text != src && !text.is_empty()).then_some(text)
 }
 
-/// Entities decoded: the named ones above and numeric ones; any other is left as written.
+/// Entities decoded: the named ones (`entity`) and numeric ones; any other is left as written.
 pub(crate) fn entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let semi = rest.find(';').filter(|&j| j <= 12);
+        // The longest name is 31 characters (`CounterClockwiseContourIntegral`).
+        let semi = rest[1..].find(['&', ';']).map(|j| j + 1).filter(|&j| j <= 33 && rest.as_bytes()[j] == b';');
         let decoded = semi.and_then(|j| {
             let name = &rest[1..j];
             let c = entity(name).or_else(|| {
@@ -452,12 +436,13 @@ pub(crate) fn entities(s: &str) -> String {
                     .and_then(|h| u32::from_str_radix(h, 16).ok())
                     .or_else(|| name.strip_prefix('#').and_then(|d| d.parse().ok()))
                     .and_then(char::from_u32)
+                    .map(String::from)
             });
             c.map(|c| (c, j + 1))
         });
         match decoded {
             Some((c, len)) => {
-                out.push(c);
+                out.push_str(&c);
                 rest = &rest[len..];
             }
             None => {
@@ -1179,9 +1164,14 @@ mod tests {
     fn named_entities() {
         assert_eq!(entities("&nbsp;&yuml;&Auml;&eacute;&times;"), "\u{a0}ÿÄé×");
         assert_eq!(entities("a&mdash;b&hellip; &ldquo;q&rdquo; &euro;5 &rarr; &trade;"), "a—b… “q” €5 → ™");
-        assert_eq!(entities("&AMP; &Eacute; &eacute;"), "&AMP; É é", "names are case-sensitive");
-        assert_eq!(entity("copy"), Some('©'));
-        assert_eq!(entity("frac12"), Some('½'));
+        assert_eq!(entities("&Amp; &Eacute; &eacute;"), "&Amp; É é", "names are case-sensitive");
+        assert_eq!(entity("copy").as_deref(), Some("©"));
+        assert_eq!(entity("frac12").as_deref(), Some("½"));
+        // P11-M4: the full HTML5 table, the longest name, two-character ones, and no Markdown run.
+        assert_eq!(entities("&AMP;&notin;&Afr;&nsubE;&CounterClockwiseContourIntegral;"), "&∉\u{1D504}\u{2AC5}\u{338}∳");
+        assert_eq!(entities("&ThickSpace;"), "\u{205F}\u{200A}");
+        assert_eq!(entities("&a*b; &x; &; &&lt;"), "&a*b; &x; &; &<");
+        assert_eq!(entity("lt").as_deref(), Some("<"));
     }
 
     #[test]
