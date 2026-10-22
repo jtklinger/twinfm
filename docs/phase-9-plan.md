@@ -317,10 +317,14 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   with a rule between; the binary `.doc`, `.xls`, `.ppt` are not previewed.
 - Thumbnails inside archive levels stay off: the pin check found no thumbnail provider inside a zip
   or a 7z (`WTS_E_FAILEDEXTRACTION`) (P9-M4 Settled first, 2026-10-21).
-- The OneDrive state property is read only for a cloud placeholder that is not in sync, by the
-  Cloud Files API's placeholder state from the listing's attributes and reparse tag (no file opened,
-  no new crate); no attribute combination says in progress or error, so the kickoff's gate had
-  nothing to test (P9-M4 Settled first, 2026-10-21).
+- The OneDrive state property is read for a file that is being freed (unpinned, its data still
+  here: the provider's state "sync pending"), decided from the listing's attributes alone; no
+  attribute combination says syncing or error, so those files keep their attribute mark (Deferred).
+  The Cloud Files placeholder-state gate first settled here is built but never fires in TwinFM,
+  which Windows does not show placeholders (P9-M4 Settled first and After the console check,
+  2026-10-21).
+- A search result not on this disk (recall on data access, or offline) keeps its type's key, so its
+  thumbnail is never asked, wherever the search started (P9-M4 After the console check, 2026-10-21).
 - A search tab gets thumbnails except when it is rooted in a cloud location, where a thumbnail could
   start a download (P9-M4 Settled first and Decisions, 2026-10-21).
 - The Google Drive mark and the link arrow over an icon larger than 48 physical px are drawn at two
@@ -636,7 +640,12 @@ changed):
   workers, about 23 ms, `System.StorageProviderState`, as folders are today), so its glyph is the
   provider's own state (syncing, pending, error, warning); every in-sync file keeps its attribute mark
   and costs nothing more. `[cloud] state read <path>: S in T ms` per read. The kickoff's
-  attribute-combination wording is superseded by this, for Jeremy to check.
+  attribute-combination wording is superseded by this, for Jeremy to check. **Superseded in turn
+  (2026-10-21, after the console check)**: Windows hides placeholders from TwinFM's own process (a
+  OneDrive file lists there as a plain file, no reparse point, placeholder state 0), so this gate
+  never fires in TwinFM; what is built is an attribute test that does: a file unpinned with its data
+  still here (being freed, the provider's state "sync pending" for minutes) is looked up. Syncing
+  and error files stay on their attribute mark (Deferred below).
 - **Google Drive's mark smaller in the tiles, and the link arrow.** `overlay_pixels` takes the image
   list whose icons are at least the icon's size (`SHIL_JUMBO` for a 96 px tile, `SHIL_EXTRALARGE` for
   48 px) and draws its full-square overlay over the square, so a large tile's mark is a quarter of the
@@ -832,7 +841,12 @@ the way; 5 "Free up space" seemed not to change the mark, "Always keep on this d
   failed (the clipboard test with them). No triplet for the fix (one handler, off the scroll path);
   two in-app runs of the gate scenario on a121e5c's `target\release`, console session active, no build
   running, Narrator off: `[busy] 10 s after split` 17.8% and 17.8%, render p50 2.43 and 2.44 ms,
-  frames at 16.5 ms, in the normal range.
+  frames at 16.5 ms, in the normal range. On 6908960's build (the free-up fix, 02fddb2's head), two
+  more runs the same way: 19.8% and 19.5%, render p50 2.67 and 2.61 ms, frames at 16.4 ms; a point
+  or two above the pair before, with the render time per frame up in the same proportion (the
+  session's state, not the change: the gate's folder has no unpinned or reparse entry, so the new
+  test never calls out there). No triplet, by the coordinator's rule for a change to the listing's
+  keys.
 - **What Jeremy watched for "Free up space"**: the files inside `Stack`, which stayed on the tick
   even after F5. Measured on `AMD.pdf` (`attrib +P -U`, then `-P +U`, polling every 250 ms): after
   "free up" the file sat at `0x00100420` (unpinned, its data still here) for over two minutes while
@@ -850,6 +864,15 @@ the way; 5 "Free up space" seemed not to change the mark, "Always keep on this d
 - **The search without thumbnails** (before the screenshot): not reproduced. In Downloads a search for "jpg" and one for
   "Klinger" show the JPEGs' thumbnails in the 32 px list and in the large tiles (screenshots), the
   same as in `%TEMP%`. Jeremy's steps and binary are being asked.
+
+### Deferred (for the phase close)
+
+- **OneDrive files syncing or in error** show their attribute mark (the tick or the cloud), not the
+  provider's syncing or error glyph: Windows hides placeholders from TwinFM's process, so the
+  in-sync test cannot run there, and no attribute says syncing or error. Their folder's mark (looked
+  up) does show it. A way in would be the property read for every file of a sync root on screen
+  (23 ms each), or `RtlSetProcessPlaceholderCompatibilityMode` to see placeholders, which changes
+  how every OneDrive entry lists.
 
 ## Open questions
 
