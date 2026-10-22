@@ -4619,9 +4619,9 @@ fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
         .iter()
         .enumerate()
         .map(|(i, r)| match r.kind {
-            sidebar::RowKind::Header => (26.0, false),
+            sidebar::RowKind::Header => (32.0, false),
             _ if i as i32 == editing => (30.0, true),
-            _ => (24.0, true),
+            _ => (32.0, true),
         })
         .collect()
 }
@@ -4779,7 +4779,7 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
             // The ListView's own content height (an estimate for rows of mixed heights, a px or
             // two off their sum, which it corrects as it scrolls), so the end is where it stops.
             let from = app.invoke_side_scroll();
-            let to = dnd::scroll_step(from, dir, 24.0, app.invoke_side_content_height(), app.invoke_side_visible_height());
+            let to = dnd::scroll_step(from, dir, 32.0, app.invoke_side_content_height(), app.invoke_side_visible_height());
             if to == from {
                 return false;
             }
@@ -5867,6 +5867,7 @@ fn settings_open() {
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
             toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
+            theme: st.config.theme.clone(),
             preview: app.get_preview(),
         };
         st.dialog = Some(d.clone());
@@ -5891,6 +5892,7 @@ fn settings_open() {
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
+    app.set_dlg_theme(settings::ThemeMode::from_name(&d.theme).index());
     app.set_dlg_preview(d.preview);
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
@@ -5917,6 +5919,7 @@ fn settings_closed(ok: bool) {
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
         toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
+        theme: settings::ThemeMode::from_index(app.get_dlg_theme()).name().into(),
         preview: app.get_dlg_preview(),
     }
     .normalized();
@@ -5958,6 +5961,11 @@ fn settings_closed(ok: bool) {
                 app.set_toolbar(t.index());
                 with_state(|st| st.config.toolbar = t.name().into());
             }
+            "theme" => {
+                let m = settings::ThemeMode::from_name(&staged.theme);
+                apply_theme(&app, m);
+                with_state(|st| st.config.theme = m.name().into());
+            }
             "preview" => {
                 if app.get_preview() != staged.preview {
                     toggle_preview();
@@ -5970,6 +5978,22 @@ fn settings_closed(ok: bool) {
         with_state(|st| schedule_save(st));
     }
     eprintln!("[settings] dialog closed (ok), {} change(s)", changes.len());
+}
+
+/// The colour scheme from the `theme` setting (P10-M1 task 7), live: light or dark set the fluent
+/// `Palette.color-scheme`; system hands it back to Windows' app mode (unknown, which the style
+/// resolves from the OS and follows again). `TWINFM_SCHEME` (a scripted screenshot) takes
+/// precedence, so a run under it ignores the setting.
+fn apply_theme(app: &App, mode: settings::ThemeMode) {
+    use slint::private_unstable_api::re_exports::ColorScheme;
+    if std::env::var("TWINFM_SCHEME").is_ok() {
+        return;
+    }
+    app.global::<Palette>().set_color_scheme(match mode {
+        settings::ThemeMode::Light => ColorScheme::Light,
+        settings::ThemeMode::Dark => ColorScheme::Dark,
+        settings::ThemeMode::System => ColorScheme::Unknown,
+    });
 }
 
 /// For the scripted driver's `waitsize`: a folder size is still queued or walking.
@@ -6032,6 +6056,14 @@ pub fn script_file(pane: usize, name: &str, remove: bool) {
 
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
+    // TWINFM_SCHEME=light|dark forces the colour scheme (P10-M1: a scripted screenshot of the scheme
+    // this machine is not in); unset, the system's app mode decides as always. The enum lives where the
+    // generated bindings take it from (the builtin ColorScheme is not re-exported at slint::).
+    match std::env::var("TWINFM_SCHEME").as_deref() {
+        Ok("light") => app.global::<Palette>().set_color_scheme(slint::private_unstable_api::re_exports::ColorScheme::Light),
+        Ok("dark") => app.global::<Palette>().set_color_scheme(slint::private_unstable_api::re_exports::ColorScheme::Dark),
+        _ => {}
+    }
     let icons = Rc::new(RefCell::new(IconTable::default()));
     let (tx, rx) = unbounded();
     let (icon_tx, icon_requests) = unbounded();
@@ -6162,6 +6194,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
     app.set_toolbar(settings::Toolbar::from_name(&config.toolbar).index());
+    apply_theme(&app, settings::ThemeMode::from_name(&config.theme));
     app.set_preview_width(config.preview_width);
     app.set_preview(config.preview);
     preview::init(&app);

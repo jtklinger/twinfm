@@ -1580,3 +1580,7 @@ units: a milestone is what P9-M1 or P9-M2 was; a small item is an afternoon.
 - **Two streams again**: the parallel shape held for a one-day phase of four milestones; Phase 10 can
   run the same way if its milestones split by file area as Phase 9's did.
 - Accessibility stays deferred for much later (Jeremy, 2026-10-15): not a candidate.
+
+The restyle in the rust-ui idiom, written into this record on 2026-10-21 as a fifth milestone
+"P9-M5" while the phase ran, moved to Phase 10 as P10-M1 on 2026-10-22 when Jeremy chose a UI/UX
+polish phase: `docs/phase-10-plan.md`.

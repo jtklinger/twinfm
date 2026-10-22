@@ -1,4 +1,5 @@
-import { Palette, ScrollView, ListView } from "std-widgets.slint";
+import { ScrollView, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 
 // One page of the previewed PDF (preview.rs `layout`): its top and height in the scroll's content,
 // laid out from the page sizes before any page is drawn, its picture once the worker has rendered
@@ -59,11 +60,11 @@ component MdItem inherits Rectangle {
     property <length> left: 12px + b.quote * 14px + b.indent * 24px;
     property <length> content-w: max(0px, root.width - root.left - 12px);
     property <length> gap: b.kind == 1 ? (b.level <= 2 ? 18px : 12px) : (b.kind == 2 || b.kind == 4) && !b.first ? 0px : b.indent > 0 ? 3px : 8px;
-    property <color> tint: Palette.foreground.transparentize(93%);
+    property <color> tint: Theme.muted;
     for i in b.quote: Rectangle {
         x: 12px + i * 14px;
         width: 3px;
-        background: Palette.border;
+        background: Theme.border;
     }
     if b.marker != "" || b.task != 0: Text {
         x: root.left - 24px;
@@ -72,7 +73,7 @@ component MdItem inherits Rectangle {
         text: b.task == 1 ? "\u{E739}" : b.task == 2 ? "\u{E73A}" : b.marker;
         font-family: b.task != 0 ? "Segoe Fluent Icons" : "";
         horizontal-alignment: right;
-        color: Palette.foreground;
+        color: Theme.fg;
     }
     VerticalLayout {
         padding-left: root.left;
@@ -81,15 +82,15 @@ component MdItem inherits Rectangle {
         padding-bottom: b.kind == 2 || b.kind == 4 ? (b.last ? 6px : 0px) : 0px;
         if b.kind == 0: StyledText {
             text: b.text;
-            default-color: Palette.foreground;
-            link-color: Palette.accent-background;
+            default-color: Theme.fg;
+            link-color: Theme.link;
             link-clicked(u) => { root.link(u); }
         }
         if b.kind == 1: StyledText {
             text: b.text;
-            default-color: b.level == 6 ? Palette.foreground.transparentize(30%) : Palette.foreground;
+            default-color: b.level == 6 ? Theme.fg-muted : Theme.fg;
             default-font-size: b.level == 1 ? 24px : b.level == 2 ? 20px : b.level == 3 ? 17px : b.level == 4 ? 15px : 13px;
-            link-color: Palette.accent-background;
+            link-color: Theme.link;
             link-clicked(u) => { root.link(u); }
         }
         // Code: Consolas on a tinted ground, long lines wrapped (Jeremy, 2026-10-20); a long block
@@ -110,13 +111,13 @@ component MdItem inherits Rectangle {
                     font-family: "Consolas";
                     font-size: 12px;
                     wrap: word-wrap;
-                    color: Palette.foreground;
+                    color: Theme.fg;
                 }
             }
         }
         if b.kind == 3: Rectangle {
             height: 9px;
-            Rectangle { y: 4px; height: 1px; background: Palette.border; }
+            Rectangle { y: 4px; height: 1px; background: Theme.border; }
         }
         // A table: the columns' shares come from Rust, so its chunks line up.
         if b.kind == 4: GridLayout {
@@ -127,7 +128,7 @@ component MdItem inherits Rectangle {
                     preferred-width: 0px;
                     background: r.head ? root.tint : transparent;
                     border-width: 1px;
-                    border-color: Palette.border;
+                    border-color: Theme.border;
                     HorizontalLayout {
                         padding-left: 6px;
                         padding-right: 6px;
@@ -136,8 +137,8 @@ component MdItem inherits Rectangle {
                         StyledText {
                             text: c.text;
                             horizontal-alignment: c.align == 1 ? TextHorizontalAlignment.center : c.align == 2 ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
-                            default-color: Palette.foreground;
-                            link-color: Palette.accent-background;
+                            default-color: Theme.fg;
+                            link-color: Theme.link;
                             link-clicked(u) => { root.link(u); }
                         }
                     }
@@ -157,7 +158,7 @@ component MdItem inherits Rectangle {
             text: b.alt == "" ? "[picture]" : "[" + b.alt + "]";
             wrap: word-wrap;
             font-italic: true;
-            color: Palette.foreground.transparentize(30%);
+            color: Theme.fg-muted;
         }
         if b.kind == 6: Rectangle {
             background: root.tint;
@@ -168,7 +169,7 @@ component MdItem inherits Rectangle {
                     text: b.code;
                     wrap: word-wrap;
                     font-italic: true;
-                    color: Palette.foreground.transparentize(20%);
+                    color: Theme.fg-muted;
                 }
             }
         }
@@ -192,7 +193,7 @@ export component Preview inherits Rectangle {
     callback scrolled(length, length);
     callback resized(length);
     callback link(string);
-    background: Palette.alternate-background;
+    background: Theme.card;
     // The driver's `previewscroll`, and a new document back at its top.
     public function set-scroll(y: length) {
         if (root.mode == 1) { md.content-y = -y; } else { body.content-y = -y; }
@@ -212,7 +213,7 @@ export component Preview inherits Rectangle {
                 vertical-alignment: center;
                 overflow: elide;
             }
-            Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         }
         Rectangle {
             body := ScrollView {
@@ -238,9 +239,9 @@ export component Preview inherits Rectangle {
                     y: p.y;
                     width: body.visible-width - 16px;
                     height: p.h;
-                    background: white;
+                    background: #FFFFFF;
                     border-width: 1px;
-                    border-color: Palette.border;
+                    border-color: Theme.border;
                     Image {
                         width: parent.width;
                         height: parent.height;
@@ -278,7 +279,7 @@ export component Preview inherits Rectangle {
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 wrap: word-wrap;
-                color: Palette.foreground.transparentize(30%);
+                color: Theme.fg-muted;
             }
         }
     }
