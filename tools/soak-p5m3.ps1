@@ -110,6 +110,10 @@
 # cursor goes on through the three and j-page.html's anchor is followed. Reported besides: text
 # previews (two per cycle: d-notes.txt and h-notes.txt), pictures (two per cycle), picture failures (must be 0), HTML previews
 # (one per cycle).
+# P10-M2: each cycle also uses the search box in the preview folder: `filter 0 notes` then
+# `searchreturn 0` (Return: a search tab, closed), the same with `searchbutton 0` (the button), and
+# `searchreturn 0` with the box blank (the list takes the focus, no tab); the report counts the
+# three (one each per cycle).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -442,7 +446,12 @@ $cycle = @(
     # P9-M4: a thumbnail drag and a search tab with thumbnails (see the header).
     'settings open', 'settings set thumbnails true', 'settings ok', 'sleep 300', "nav 0 $prev", 'sleep 1500', 'click 0 8', 'sleep 800',
     'dragrow 0 8 40 0', 'sleep 400', 'dragcancel', 'sleep 300', 'filter 0 photo', 'sleep 300', 'search 0', 'waitsearch 5000', 'sleep 1500',
-    'tab close', 'sleep 300', 'filter 0', 'sleep 300', 'settings open', 'settings set thumbnails false', 'settings ok', 'sleep 300'
+    'tab close', 'sleep 300', 'filter 0', 'sleep 300', 'settings open', 'settings set thumbnails false', 'settings ok', 'sleep 300',
+    # P10-M2: the search box: Return with text (a search tab), the button with text (another), Return
+    # with the box blank (the list takes the focus, no tab); see the header.
+    'filter 0 notes', 'sleep 300', 'searchreturn 0', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
+    'filter 0 notes', 'sleep 300', 'searchbutton 0', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
+    'filter 0', 'sleep 200', 'searchreturn 0', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -609,6 +618,10 @@ $pvSuperseded = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-St
 $pvTimeouts = @($log | Select-String -SimpleMatch 'waitpreview: not settled').Count
 $thumbDrags = @($log | Select-String -SimpleMatch 'icon from the thumbnail').Count
 $thumbSearches = @($log | Select-String -SimpleMatch '[search] pane=0' | Select-String -SimpleMatch 'start "photo"').Count
+# P10-M2: the search box's Return and button searches, and the blank Return.
+$boxReturns = @($log | Select-String -SimpleMatch '[search] pane=0 box Return: searches "notes"').Count
+$boxButtons = @($log | Select-String -SimpleMatch '[search] pane=0 search button').Count
+$boxEmpty = @($log | Select-String -SimpleMatch '[search] pane=0 box Return: empty, the list takes the focus').Count
 $colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 60 px (drag)').Count
 $colFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit modified: ').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
@@ -643,4 +656,5 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (two per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0)"
 "column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (one per cycle and one at start)"
 "thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
+"search box: Return searches $boxReturns (one per cycle), button searches $boxButtons (one per cycle), blank Returns $boxEmpty (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

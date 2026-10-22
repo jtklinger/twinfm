@@ -26,6 +26,7 @@ mod office;
 mod pathbar;
 mod perf;
 mod preview;
+mod searchbox;
 mod settings;
 mod shellmenu;
 mod sidebar;
@@ -348,8 +349,6 @@ struct State {
     /// Each pane's filter debounce: restarted on every edit in the box, it applies the text 150 ms
     /// after the last one.
     filter_timer: [slint::Timer; 2],
-    /// Ctrl+Shift+F with an empty filter box opened the box: Return there starts the search.
-    search_armed: [bool; 2],
     /// The search tab whose "no watch" line each pane logged last (logged once per tab).
     no_watch_logged: [Option<u64>; 2],
     /// Watch windows applied as row edits (the driver's `waitedit` and `waitwatch` wait on it),
@@ -605,7 +604,6 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
             eprintln!("[filter] pane={pane} cleared");
         }
         st.filter_timer[pane].stop();
-        st.search_armed[pane] = false;
         set_filter_box(&app, pane, "");
         // `model.clear` dropped the tab's cut marks.
         if st.cut_source == Some((pane, id)) {
@@ -5514,18 +5512,14 @@ fn filter_edited(pane: usize, text: SharedString) {
     });
 }
 
-/// Return or Down in the filter box: apply the text at once (an empty one closes the box). With a
-/// search waiting for its pattern (Ctrl+Shift+F on an empty box), start the search instead.
+/// Down in the search box: apply the text at once (an empty one closes the box).
 fn filter_apply(pane: usize, text: SharedString) {
-    let Some((app, id, armed)) = with_state(|st| {
+    let Some((app, id)) = with_state(|st| {
         st.filter_timer[pane].stop();
-        Some((st.app.upgrade()?, st.tab(pane).id, std::mem::take(&mut st.search_armed[pane])))
+        Some((st.app.upgrade()?, st.tab(pane).id))
     }) else {
         return;
     };
-    if armed && !text.trim().is_empty() {
-        return start_search(pane, text.trim(), None);
-    }
     apply_filter(pane, id, &text);
     if text.is_empty() {
         set_filter_box(&app, pane, "");
@@ -5536,10 +5530,32 @@ fn filter_apply(pane: usize, text: SharedString) {
 fn filter_clear(pane: usize) {
     let id = with_state(|st| {
         st.filter_timer[pane].stop();
-        st.search_armed[pane] = false;
         st.tab(pane).id
     });
     apply_filter(pane, id, "");
+}
+
+/// Return in the search box (P10-M2): the recursive name search for its text, in a new tab; with a
+/// blank box the list takes the focus (searchbox.rs `on_return`).
+fn filter_return(pane: usize, text: SharedString) {
+    match searchbox::on_return(&text) {
+        searchbox::ReturnAction::Search(pattern) => {
+            eprintln!("[search] pane={pane} box Return: searches \"{pattern}\"");
+            start_search(pane, &pattern, None);
+        }
+        searchbox::ReturnAction::FocusList => {
+            eprintln!("[search] pane={pane} box Return: empty, the list takes the focus");
+            if let Some(app) = with_state(|st| st.app.upgrade()) {
+                app.invoke_focus_pane(pane as i32);
+            }
+        }
+    }
+}
+
+/// The search box's button (P10-M2): Ctrl+Shift+F's search for the box's text.
+fn search_button(pane: usize) {
+    eprintln!("[search] pane={pane} search button");
+    search_key(pane);
 }
 
 /// Set tab `id`'s name filter and run its pass (the hidden-file switch's pass: the snapshot, the
@@ -5559,14 +5575,14 @@ fn apply_filter(pane: usize, id: u64, text: &str) {
     });
 }
 
-/// Ctrl+Shift+F (and the driver's `search`): search the active tab's folder and everything under
-/// it for the filter box's text. With an empty box, open it: Return there starts the search.
+/// Ctrl+Shift+F, the box's button and the driver's `search`: search the active tab's folder and
+/// everything under it for the search box's text. With a blank box, focus the box: Return there
+/// searches (P10-M2; until then the box was "armed" for that Return, now Return always searches).
 fn search_key(pane: usize) {
     let Some(app) = with_state(|st| st.app.upgrade()) else { return };
     let text = if pane == 0 { app.get_left_filter_text() } else { app.get_right_filter_text() };
     if text.trim().is_empty() {
-        with_state(|st| st.search_armed[pane] = true);
-        eprintln!("[search] pane={pane} no pattern yet: the filter box opens, Return searches");
+        eprintln!("[search] pane={pane} no pattern yet: the search box takes the focus, Return searches");
         return app.invoke_open_filter(pane as i32);
     }
     start_search(pane, text.trim(), None);
@@ -5584,7 +5600,6 @@ fn search_key(pane: usize) {
 fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
     let started = with_state(|st| {
         let app = st.app.upgrade()?;
-        st.search_armed[pane] = false;
         st.filter_timer[pane].stop();
         if is_this_pc(&st.tab(pane).path.to_string_lossy()) {
             note(st, &app, pane, "This PC lists drives; open a folder to search in it".into());
@@ -6294,7 +6309,6 @@ fn main() -> Result<(), slint::PlatformError> {
             crumb_menu: None,
             dialog: None,
             filter_timer: Default::default(),
-            search_armed: [false; 2],
             no_watch_logged: [None; 2],
             watch_edits: 0,
             stat_tx: edit_worker(),
@@ -6493,6 +6507,8 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_filter_apply(|pane, text| filter_apply(pane as usize, text));
     app.on_filter_clear(|pane| filter_clear(pane as usize));
     app.on_search(|pane| search_key(pane as usize));
+    app.on_filter_return(|pane, text| filter_return(pane as usize, text));
+    app.on_search_pressed(|pane| search_button(pane as usize));
     app.on_settings_requested(settings_open);
     app.on_settings_closed(settings_closed);
     app.on_toggle_split({

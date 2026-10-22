@@ -380,6 +380,10 @@ enum Step {
     Filter { pane: usize, text: String },
     /// Ctrl+Shift+F's callback on the pane.
     Search(usize),
+    /// Return in the pane's search box, with the box's text (P10-M2).
+    SearchReturn(usize),
+    /// The pane's search button (P10-M2).
+    SearchButton(usize),
     /// Wait until no search tab is still walking (at most `ms`), then 300 ms for the pass.
     WaitSearch(u64),
     /// Alt+Shift+Return in the pane's list.
@@ -583,6 +587,8 @@ fn parse(script: &str) -> Vec<Step> {
                     text: s.trim().splitn(3, char::is_whitespace).nth(2).unwrap_or("").to_string(),
                 },
                 "search" => Step::Search(num(1) as usize),
+                "searchreturn" => Step::SearchReturn(num(1) as usize),
+                "searchbutton" => Step::SearchButton(num(1) as usize),
                 "waitsearch" => Step::WaitSearch(num(1).max(1) as u64),
                 "sizeall" => Step::SizeAll(num(1) as usize),
                 "waitsize" => Step::WaitSize(num(1).max(1) as u64),
@@ -1471,6 +1477,15 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::Search(pane) => {
             app.invoke_search(pane as i32);
+            schedule(runner, 1);
+        }
+        Step::SearchReturn(pane) => {
+            let text = if pane == 0 { app.get_left_filter_text() } else { app.get_right_filter_text() };
+            app.invoke_filter_return(pane as i32, text);
+            schedule(runner, 1);
+        }
+        Step::SearchButton(pane) => {
+            app.invoke_search_pressed(pane as i32);
             schedule(runner, 1);
         }
         Step::WaitSearch(max_ms) => {

@@ -298,12 +298,20 @@ them before changing the list.
   closed for "Safely remove" and reopened when it failed); `[devices]` lines for volume arrivals
   and removals and `query remove for a watched handle: suspended | no reply within 1 s | the
   watcher has stopped`.
-  Since P3-M2, filter and search: `filter <pane> <text>` puts `<text>` (the rest of the step,
-  trimmed, may be empty) in the pane's filter box, opening it without the focus, and calls the
-  box's `edited` callback as typing does (applied 150 ms later); `search <pane>` calls Ctrl+Shift+F's
-  callback (a recursive name search for the box's text in a new tab; an empty box opens, focused,
-  and Return there searches); `waitsearch <ms>` waits until no search tab is still walking (at
-  most `<ms>`), then 300 ms for the pass. Key names `CtrlF` (the box, focused), `CtrlShiftF`, and
+  Since P3-M2, filter and search (**since P10-M2 the search box**: always at the right end of each
+  pane's path bar, 200 px, 150 in a pane under 520 px, `src/searchbox.rs` the pure rules; typing
+  filters the listing live, **Return runs the recursive name search** for the text in a new tab
+  (blank: the list takes the focus), Down applies the filter at once and gives the list the focus,
+  Escape clears, the box's search button is Ctrl+Shift+F's search, and the button is where P11-M1
+  puts the name-or-content mode): `filter <pane> <text>` puts `<text>` (the rest of the step,
+  trimmed, may be empty) in the pane's search box, without the focus, and calls the box's `edited`
+  callback as typing does (applied 150 ms later); `search <pane>` calls Ctrl+Shift+F's callback (a
+  recursive name search for the box's text in a new tab; a blank box takes the focus, and Return
+  there searches); since P10-M2 `searchreturn <pane>` is Return in the box with its text
+  (`[search] pane=N box Return: searches "<text>"` or `box Return: empty, the list takes the
+  focus`) and `searchbutton <pane>` the box's button (`[search] pane=N search button`, then as
+  `search`); `waitsearch <ms>` waits until no search tab is still walking (at most `<ms>`), then
+  300 ms for the pass. Key names `CtrlF` (the box, focused), `CtrlShiftF`, and
   any single character typed as itself (`key a`, into whatever has the focus). `[filter]` lines:
   `pane=N "<pattern>" (glob|substring): K of M shown, pass P ms` once per pass while a filter is
   on, `pane=N cleared`. `[search]` lines: `pane=N gen=G start "<pattern>" in <root>`, `batch K (N so

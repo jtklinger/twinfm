@@ -1179,22 +1179,29 @@ export component Pane inherits Rectangle {
     // test; never per frame).
     callback crumb-geometry(int, length, length);
 
-    // The name filter (Ctrl+F): a box at the right end of the path bar, created only while
-    // filter-open (an `if` here, never in a row). filter-text is the active tab's filter; main.rs
-    // sets both on a tab switch and a navigation. filter-edited(text) on every edit (main.rs
-    // applies it 150 ms after the last one); filter-apply(text) on Return or Down (at once, the
-    // focus goes to the list); filter-clear() on Escape or the clear glyph (the box closes).
+    // The search box (P10-M2; the name filter's box until then, shown only while open): always at
+    // the right end of the path bar, 200 px (150 in a pane under 520 px, searchbox.rs `width`).
+    // filter-open is the "has text" state Rust and the driver set; filter-text is the active tab's
+    // filter; main.rs sets both on a tab switch and a navigation. filter-edited(text) on every
+    // edit (main.rs applies it 150 ms after the last one); filter-apply(text) on Down (at once,
+    // the focus goes to the list); filter-return(text) on Return (the recursive name search for
+    // the text, or with a blank box the list takes the focus: searchbox.rs `on_return`);
+    // search-pressed() from the box's search button (Ctrl+Shift+F's search); filter-clear() on
+    // Escape or the clear glyph (the text goes, the list takes the focus).
     in-out property <bool> filter-open: false;
     in-out property <string> filter-text;
     callback filter-edited(string);
     callback filter-apply(string);
+    callback filter-return(string);
+    callback search-pressed();
     callback filter-clear();
     // Bumped by open-filter: the box takes the focus (when it already exists; a new one takes it
     // in its init while filter-grab is set). When Rust closes the box (a navigation, a tab switch,
     // a search starting) it gives the active pane's list the focus (main.rs `set_filter_box`).
     private property <int> filter-focus: 0;
     private property <bool> filter-grab: false;
-    private property <length> filter-w: root.filter-open ? 220px : 0px;
+    // searchbox.rs `width`: the Slint copy of the rule (a pane property, never per row).
+    private property <length> filter-w: root.width < 520px ? 150px : 200px;
 
     // Ctrl+F: show the box with the focus in it, its text selected.
     public function open-filter() {
@@ -1460,55 +1467,113 @@ export component Pane inherits Rectangle {
                     }
                 }
             }
-            // The name filter's box and its clear glyph, left of the mode glyph.
-            if root.filter-open: HorizontalLayout {
+            // The search box, its clear glyph and its search button, left of the mode glyph (P10-M2):
+            // an outline field of the look (a TextInput in a Rectangle, not the fluent LineEdit,
+            // whose minimum width overflows the slot and whose unfocused dark face is invisible).
+            HorizontalLayout {
                 x: parent.width - 26px - root.filter-w + 4px;
                 width: root.filter-w - 4px;
-                LineEdit {
-                    accessible-label: "Filter";
-                    placeholder-text: "Filter";
-                    text <=> root.filter-text;
-                    property <int> focus-token: root.filter-focus;
-                    init => {
-                        if (root.filter-grab) {
+                padding-top: 2px;
+                padding-bottom: 2px;
+                spacing: 2px;
+                field := Rectangle {
+                    horizontal-stretch: 1;
+                    min-width: 40px;
+                    border-width: 1px;
+                    border-color: search-input.has-focus ? Theme.cursor : Theme.border;
+                    border-radius: Theme.radius;
+                    background: Theme.card;
+                    clip: true;
+                    // The press lands in the input wherever it falls in the field.
+                    TouchArea { clicked => { search-input.focus(); } }
+                    search-input := TextInput {
+                        x: 8px;
+                        width: parent.width - 12px;
+                        height: parent.height;
+                        single-line: true;
+                        vertical-alignment: center;
+                        font-size: 13px;
+                        color: Theme.fg;
+                        selection-background-color: Theme.selection;
+                        selection-foreground-color: Theme.fg;
+                        accessible-label: "Search";
+                        text <=> root.filter-text;
+                        property <int> focus-token: root.filter-focus;
+                        init => {
+                            if (root.filter-grab) {
+                                root.filter-grab = false;
+                                self.focus();
+                                self.select-all();
+                            }
+                        }
+                        changed focus-token => {
                             root.filter-grab = false;
                             self.focus();
                             self.select-all();
                         }
-                    }
-                    changed focus-token => {
-                        root.filter-grab = false;
-                        self.focus();
-                        self.select-all();
-                    }
-                    edited(t) => { root.filter-edited(t); }
-                    accepted(t) => {
-                        root.filter-apply(t);
-                        list.focus-list();
-                    }
-                    key-pressed(e) => {
-                        if (e.text == Key.Escape) { root.close-filter(); return accept; }
-                        // F7 makes no sense in the box: it does what it does in the list. The
-                        // window's keys (Ctrl+W, Ctrl+T, Ctrl+Tab, F3, F5, F9) pass the box anyway;
-                        // text keys (Ctrl+V, Ctrl+A, Ctrl+C, Ctrl+X, Delete, arrows) stay the box's.
-                        if (e.text == Key.F7) {
-                            list.focus-list();
-                            root.command("newfolder");
-                            return accept;
+                        edited => { root.filter-edited(self.text); }
+                        // Return: the search (Rust gives the list the focus when the box is blank).
+                        accepted => { root.filter-return(self.text); }
+                        key-pressed(e) => {
+                            if (e.text == Key.Escape) { root.close-filter(); return accept; }
+                            // F7 makes no sense in the box: it does what it does in the list. The
+                            // window's keys (Ctrl+W, Ctrl+T, Ctrl+Tab, F3, F5, F9) pass the box anyway;
+                            // text keys (Ctrl+V, Ctrl+A, Ctrl+C, Ctrl+X, Delete, arrows) stay the box's.
+                            if (e.text == Key.F7) {
+                                list.focus-list();
+                                root.command("newfolder");
+                                return accept;
+                            }
+                            if (e.text == Key.DownArrow) {
+                                root.filter-apply(self.text);
+                                list.focus-list();
+                                return accept;
+                            }
+                            return reject;
                         }
-                        if (e.text == Key.DownArrow) {
-                            root.filter-apply(self.text);
-                            list.focus-list();
-                            return accept;
-                        }
-                        return reject;
+                    }
+                    // searchbox.rs `placeholder`, the same words.
+                    if root.filter-text == "": Text {
+                        x: 8px;
+                        width: parent.width - 12px;
+                        height: parent.height;
+                        text: "Filter, Enter to search";
+                        vertical-alignment: center;
+                        overflow: elide;
+                        font-size: 13px;
+                        color: Theme.fg-muted;
                     }
                 }
-                Rectangle {
+                if root.filter-text != "": Rectangle {
                     width: 20px;
+                    border-radius: 4px;
                     background: clear-ta.has-hover ? Theme.muted : transparent;
+                    accessible-role: button;
+                    accessible-label: "Clear";
                     Image { x: 4px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("icons/x.svg"); colorize: Theme.fg-muted; }
                     clear-ta := TouchArea { clicked => { root.close-filter(); } }
+                }
+                // The search button: this folder and everything under it, for the box's text
+                // (Ctrl+Shift+F); P11-M1 puts the name-or-content mode here.
+                Rectangle {
+                    width: 26px;
+                    border-radius: Theme.radius;
+                    background: search-ta.has-hover ? Theme.muted : transparent;
+                    accessible-role: button;
+                    accessible-label: "Search this folder and below";
+                    Image { x: 5px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: @image-url("icons/search.svg"); colorize: Theme.fg; }
+                    search-ta := TouchArea { clicked => { root.search-pressed(); } }
+                    Tooltip {
+                        Rectangle {
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                padding-top: 4px;
+                                padding-bottom: 4px;
+                                Text { text: "Search this folder and below (Ctrl+Shift+F)"; }
+                            }
+                        }
+                    }
                 }
             }
             // Switch the path bar between breadcrumb and text entry for good.
