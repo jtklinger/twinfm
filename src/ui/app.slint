@@ -8,6 +8,8 @@ import "fonts/Inter-Medium.ttf";
 import "fonts/Inter-SemiBold.ttf";
 import { Preview, PreviewPage, MdBlock, MdRow, MdCell } from "preview.slint";
 export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
+// The fluent Palette, for main.rs's TWINFM_SCHEME override (a scripted screenshot of the other scheme).
+export { Palette } from "std-widgets.slint";
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
 // the bookmark's index in the bookmark list.
@@ -35,7 +37,7 @@ component SideRow inherits Rectangle {
     accessible-role: list-item;
     accessible-label: item.label;
     // The fill, inset 4 px and rounded, inside the row's slot (P10-M1).
-    Rectangle { x: 4px; width: parent.width - 8px; border-radius: Theme.radius; background: root.current ? Theme.muted : item.kind != 0 && ta.has-hover ? Theme.muted-half : transparent; }
+    Rectangle { x: 4px; width: parent.width - 8px; border-radius: Theme.radius; background: root.current ? Theme.selection : item.kind != 0 && ta.has-hover ? Theme.muted-half : transparent; }
     HorizontalLayout {
         visible: !root.editing;
         padding-left: item.kind == 0 ? 8px : 10px;
@@ -835,9 +837,9 @@ export component App inherits Window {
                     y: side-list.content-y + root.drop-side-y;
                     width: parent.width;
                     height: root.drop-side-h;
-                    background: Theme.muted;
+                    background: Theme.selection;
                     border-width: 2px;
-                    border-color: Theme.ring;
+                    border-color: Theme.cursor;
                 }
             }
         }
@@ -1142,7 +1144,7 @@ export component App inherits Window {
                         accessible-role: list-item;
                         accessible-label: name;
                         accessible-item-selected: i == root.crumb-hl;
-                        background: i == root.crumb-hl ? Theme.muted : pick-ta.has-hover ? Theme.muted : transparent;
+                        background: i == root.crumb-hl ? Theme.selection : pick-ta.has-hover ? Theme.muted : transparent;
                         Text { x: 8px; width: parent.width - 12px; text: name; vertical-alignment: center; overflow: elide; }
                         pick-ta := TouchArea {
                             clicked => {

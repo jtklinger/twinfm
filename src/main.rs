@@ -6032,6 +6032,14 @@ pub fn script_file(pane: usize, name: &str, remove: bool) {
 
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
+    // TWINFM_SCHEME=light|dark forces the colour scheme (P10-M1: a scripted screenshot of the scheme
+    // this machine is not in); unset, the system's app mode decides as always. The enum lives where the
+    // generated bindings take it from (the builtin ColorScheme is not re-exported at slint::).
+    match std::env::var("TWINFM_SCHEME").as_deref() {
+        Ok("light") => app.global::<Palette>().set_color_scheme(slint::private_unstable_api::re_exports::ColorScheme::Light),
+        Ok("dark") => app.global::<Palette>().set_color_scheme(slint::private_unstable_api::re_exports::ColorScheme::Dark),
+        _ => {}
+    }
     let icons = Rc::new(RefCell::new(IconTable::default()));
     let (tx, rx) = unbounded();
     let (icon_tx, icon_requests) = unbounded();

@@ -36,6 +36,12 @@ export global Theme {
     out property <brush> shadow: dark ? #00000066 : #0000001A;
     // Links in the preview's text (shadcn's prose links; the grey scale has no colour for them).
     out property <brush> link: dark ? #60A5FA : #2563EB;
+    // Jeremy's console check (2026-10-22): the cursor and the selection were hard to see in grey.
+    // The Windows accent (Palette.accent-background, the system's, lightened for dark mode by the
+    // fluent style) draws the cursor ring and tints the selection; hover stays muted.
+    out property <brush> accent: Palette.accent-background;
+    out property <brush> cursor: Palette.accent-background;
+    out property <brush> selection: dark ? Palette.accent-background.transparentize(72%) : Palette.accent-background.transparentize(78%);
     out property <length> radius: 6px;
     out property <length> radius-md: 8px;
     out property <length> radius-lg: 10px;

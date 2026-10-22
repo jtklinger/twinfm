@@ -232,9 +232,9 @@ component CrumbButton inherits HorizontalLayout {
     changed x => { root.geometry(root.x, label-box.width); }
     label-box := Rectangle {
         border-radius: Theme.radius;
-        background: root.drop-here ? Theme.muted : ta.has-hover ? Theme.muted : transparent;
+        background: root.drop-here ? Theme.selection : ta.has-hover ? Theme.muted : transparent;
         border-width: root.drop-here ? 2px : 0px;
-        border-color: Theme.ring;
+        border-color: Theme.cursor;
         changed width => { root.geometry(root.x, self.width); }
         ta := TouchArea {
             clicked => { root.clicked(); }
@@ -351,11 +351,11 @@ component FileRows inherits ListView {
         accessible-item-selectable: true;
         accessible-item-selected: row.selected;
         accessible-item-index: i;
-        background: row.selected ? Theme.muted : transparent;
+        background: row.selected ? Theme.selection : transparent;
         border-radius: Theme.radius;
         // The cursor is an outline, so it stays visible on selected and unselected rows alike.
         border-width: i == current-row ? 2px : 0px;
-        border-color: Theme.ring-half;
+        border-color: Theme.cursor;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip.
@@ -397,10 +397,10 @@ component FileRowsNoType inherits ListView {
         accessible-item-selectable: true;
         accessible-item-selected: row.selected;
         accessible-item-index: i;
-        background: row.selected ? Theme.muted : transparent;
+        background: row.selected ? Theme.selection : transparent;
         border-radius: Theme.radius;
         border-width: i == current-row ? 2px : 0px;
-        border-color: Theme.ring-half;
+        border-color: Theme.cursor;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             padding-left: 28px;
@@ -486,11 +486,11 @@ component FileRows32 inherits ListView {
         accessible-item-selectable: true;
         accessible-item-selected: row.selected;
         accessible-item-index: i;
-        background: row.selected ? Theme.muted : transparent;
+        background: row.selected ? Theme.selection : transparent;
         border-radius: Theme.radius;
         // The cursor is an outline, so it stays visible on selected and unselected rows alike.
         border-width: i == current-row ? 2px : 0px;
-        border-color: Theme.ring-half;
+        border-color: Theme.cursor;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             // 6 px padding plus the 32 px icon column; the icons are drawn by the pane's strip.
@@ -530,10 +530,10 @@ component FileRowsNoType32 inherits ListView {
         accessible-item-selectable: true;
         accessible-item-selected: row.selected;
         accessible-item-index: i;
-        background: row.selected ? Theme.muted : transparent;
+        background: row.selected ? Theme.selection : transparent;
         border-radius: Theme.radius;
         border-width: i == current-row ? 2px : 0px;
-        border-color: Theme.ring-half;
+        border-color: Theme.cursor;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             padding-left: 42px;
@@ -609,10 +609,10 @@ component FileGrid inherits ListView {
             y: 0px;
             width: 96px;
             height: 136px;
-            background: t.selected ? Theme.muted : transparent;
+            background: t.selected ? Theme.selection : transparent;
             border-radius: Theme.radius;
             border-width: t.current ? 2px : 0px;
-            border-color: Theme.ring-half;
+            border-color: Theme.cursor;
             // The icon (the strip's) fills 2..98 px; the name sits under it on up to two lines,
             // wrapped at words (a longer word anywhere) and elided on the second (P7-M4, Explorer's).
             Text {
@@ -680,10 +680,10 @@ component FileGridMedium inherits ListView {
             y: 0px;
             width: 80px;
             height: 107px;
-            background: t.selected ? Theme.muted : transparent;
+            background: t.selected ? Theme.selection : transparent;
             border-radius: Theme.radius;
             border-width: t.current ? 2px : 0px;
-            border-color: Theme.ring-half;
+            border-color: Theme.cursor;
             Text {
                 x: 2px;
                 y: 50px;
@@ -1397,9 +1397,9 @@ export component Pane inherits Rectangle {
                 y: 0px;
                 width: root.tab-w;
                 height: 30px;
-                background: Theme.muted;
+                background: Theme.selection;
                 border-width: 2px;
-                border-color: Theme.ring;
+                border-color: Theme.cursor;
             }
         }
         // Same height whichever mode shows, so the list's top does not move (dnd.rs LIST_TOP).
@@ -1641,15 +1641,15 @@ export component Pane inherits Rectangle {
             y: list.content-y + list.line-of(root.drop-row) * list.row-h;
             width: root.grid ? list.tile-w : parent.width;
             height: list.row-h;
-            background: Theme.muted;
+            background: Theme.selection;
             border-width: 2px;
-            border-color: Theme.ring;
+            border-color: Theme.cursor;
         }
         Rectangle {
             visible: root.drop-row < 0;
-            background: Theme.muted-half;
+            background: Theme.selection;
             border-width: 3px;
-            border-color: Theme.ring;
+            border-color: Theme.cursor;
         }
     }
 
@@ -1720,10 +1720,10 @@ export component Pane inherits Rectangle {
             visible: full-name.preferred-height > list.name-h;
             background: Theme.card;
             Rectangle {
-                background: root.rows[list.current-row].selected ? Theme.muted : transparent;
+                background: root.rows[list.current-row].selected ? Theme.selection : transparent;
                 border-radius: Theme.radius;
                 border-width: 2px;
-                border-color: Theme.ring-half;
+                border-color: Theme.cursor;
             }
             full-name := Text {
                 x: 2px;
@@ -1741,9 +1741,9 @@ export component Pane inherits Rectangle {
             y: list.content-y + root.band-y;
             width: root.band-w;
             height: root.band-h;
-            background: Theme.muted-half;
+            background: Theme.selection;
             border-width: 1px;
-            border-color: Theme.ring;
+            border-color: Theme.cursor;
         }
     }
 
