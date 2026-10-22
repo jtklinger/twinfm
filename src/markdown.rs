@@ -569,6 +569,44 @@ pub fn text_blocks(text: &str) -> (Vec<Block>, usize) {
     (blocks.collect(), lines.len())
 }
 
+/// A block's text for the preview's "Copy text" menu (P11-M4): a paragraph or heading without its
+/// markup (a list item's marker first), a code chunk's lines, a table chunk's rows with a tab
+/// between cells, a picture's alt text; a rule has none.
+pub fn block_text(b: &Block) -> String {
+    match b.kind {
+        Kind::Rule => String::new(),
+        Kind::Table => b.rows.iter().map(|r| r.cells.iter().map(|c| c.plain.replace('\n', " ")).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n"),
+        _ if !b.marker.is_empty() => format!("{} {}", b.marker, b.plain),
+        _ => b.plain.clone(),
+    }
+}
+
+/// The clipboard text from each block's `block_text` and whether it starts its block (a code
+/// block's or table's later chunks do not): block `one` whole (all its chunks), or every block,
+/// blocks a blank line apart, chunks a line apart, with Windows' CRLF line ends.
+pub fn copy_text(blocks: &[(String, bool)], one: Option<usize>) -> String {
+    let range = match one {
+        Some(k) if k < blocks.len() => {
+            let start = (0..=k).rev().find(|&i| blocks[i].1).unwrap_or(0);
+            let end = (k + 1..blocks.len()).find(|&i| blocks[i].1).unwrap_or(blocks.len());
+            start..end
+        }
+        Some(_) => 0..0,
+        None => 0..blocks.len(),
+    };
+    let mut out = String::new();
+    for (text, first) in &blocks[range] {
+        if text.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(if *first { "\n\n" } else { "\n" });
+        }
+        out.push_str(text);
+    }
+    out.replace('\n', "\r\n")
+}
+
 /// The encoding `decode` reads a file's first bytes in, for the `[preview]` line.
 pub fn encoding(bytes: &[u8]) -> &'static str {
     let head = &bytes[..bytes.len().min(MAX_BYTES)];
@@ -1213,6 +1251,23 @@ mod tests {
         assert_eq!(b[0].plain.len(), TEXT_CHUNK_BYTES - 1, "the euro sign not cut");
         assert!(b[1].plain.starts_with('€'));
         assert_eq!(b.iter().map(|x| x.plain.as_str()).collect::<String>(), long, "nothing lost");
+    }
+
+    #[test]
+    fn copy_text_of_the_blocks() {
+        let doc = parse_doc("# Title\n\n- one\n- **two**\n\n```\na\nb\n```\n\n---\n\n| x | y |\n|---|---|\n| 1 | 2 |\n", None);
+        let texts: Vec<(String, bool)> = doc.blocks.iter().map(|b| (block_text(b), b.first || !matches!(b.kind, Kind::Code | Kind::Table))).collect();
+        assert_eq!(copy_text(&texts, None), "Title\r\n\r\n\u{2022} one\r\n\r\n\u{2022} two\r\n\r\na\r\nb\r\n\r\nx\ty\r\n1\t2");
+        assert_eq!(copy_text(&texts, Some(2)), "\u{2022} two");
+        assert_eq!(copy_text(&texts, Some(99)), "");
+        // A long code block comes as chunks: any chunk copies the whole block, and only it.
+        let long = format!("para\n\n```\n{}\n```\n\nafter\n", (0..90).map(|i| i.to_string()).collect::<Vec<_>>().join("\n"));
+        let doc = parse_doc(&long, None);
+        let texts: Vec<(String, bool)> = doc.blocks.iter().map(|b| (block_text(b), b.first || !matches!(b.kind, Kind::Code | Kind::Table))).collect();
+        assert!(texts.len() >= 4, "{texts:?}");
+        let all: Vec<String> = (0..90).map(|i| i.to_string()).collect();
+        assert_eq!(copy_text(&texts, Some(2)), all.join("\r\n"));
+        assert_eq!(copy_text(&texts, Some(texts.len() - 1)), "after");
     }
 
     #[test]

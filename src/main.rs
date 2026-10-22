@@ -950,6 +950,7 @@ fn save_now() {
         c.path_bar = if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into();
         c.preview = app.get_preview();
         c.preview_width = app.get_preview_width();
+        c.preview_zoom = app.get_preview_zoom() as u32;
         let w = app.window();
         // Maximised: the Win32 placement's normal rectangle, so un-maximising after a restart
         // gives the right size. Otherwise the window as it is; minimised: left as last saved.
@@ -6266,6 +6267,7 @@ fn main() -> Result<(), slint::PlatformError> {
         apply_theme(&app, settings::ThemeMode::from_name(&config.theme));
     }
     app.set_preview_width(config.preview_width);
+    app.set_preview_zoom(config.preview_zoom as i32);
     app.set_preview(config.preview);
     preview::init(&app);
     app.set_show_type(config.show_type);
@@ -6494,6 +6496,10 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_preview_scrolled(preview::scrolled);
     app.on_preview_resized(preview::resized);
     app.on_preview_link(preview::link);
+    app.on_preview_zoom_step(preview::zoom);
+    app.on_preview_zoom_key(preview::zoom_key);
+    app.on_preview_menu(preview::menu);
+    app.on_preview_copy(|k| preview::copy(usize::try_from(k).ok()));
     // Closing the window writes the settings at once (the window's placement included).
     app.window().on_close_requested(|| {
         save_now();

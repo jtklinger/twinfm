@@ -87,6 +87,25 @@ const PICTURE_LINES: usize = 50;
 /// The anchor's second move waits this long for the ListView to have laid out the first.
 const ANCHOR_MS: u64 = 60;
 
+/// A PDF's zoom steps, percent (P11-M4: Ctrl+wheel and Ctrl+plus or minus over the column, Ctrl+0
+/// back to 100; settings `preview_zoom`). At 100 a page is as wide as the column.
+pub const ZOOMS: [u32; 13] = [50, 67, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400];
+
+/// The zoom after a step: `step` 1 the next larger, -1 the next smaller (a value between steps
+/// goes to the step on that side), 0 back to 100; the ends hold.
+pub fn zoom_step(z: u32, step: i32) -> u32 {
+    match step.signum() {
+        0 => 100,
+        1 => ZOOMS.iter().copied().find(|&s| s > z).unwrap_or(ZOOMS[ZOOMS.len() - 1]),
+        _ => ZOOMS.iter().rev().copied().find(|&s| s < z).unwrap_or(ZOOMS[0]),
+    }
+}
+
+/// A saved zoom pulled into the steps' range.
+pub fn clamp_zoom(z: u32) -> u32 {
+    z.clamp(ZOOMS[0], ZOOMS[ZOOMS.len() - 1])
+}
+
 /// The column's share, pulled into its bounds (a hand-edited file, a drag past the end).
 pub fn clamp_ratio(r: f32) -> f32 {
     if r.is_finite() { r.clamp(RATIO_MIN, RATIO_MAX) } else { RATIO_DEFAULT }
@@ -327,6 +346,8 @@ struct Shown {
     first: bool,
     last: bool,
     center: bool,
+    /// "Copy text" (P11-M4): `markdown::block_text`.
+    copy: String,
 }
 
 /// From the worker.
@@ -649,7 +670,7 @@ fn shown_blocks(blocks: &[Block], seq: u64) -> (Vec<Shown>, Vec<String>, usize) 
                 .collect();
             let code = if matches!(b.kind, Kind::Code | Kind::Note) { b.plain.clone() } else { String::new() };
             let alt = if b.kind == Kind::Image { b.plain.clone() } else { String::new() };
-            Shown { kind: b.kind, level: b.level, indent: b.indent, quote: b.quote, marker: b.marker.clone(), task: b.task, text, code, rows, alt, first: b.first, last: b.last, center: b.center }
+            Shown { kind: b.kind, level: b.level, indent: b.indent, quote: b.quote, marker: b.marker.clone(), task: b.task, text, code, rows, alt, first: b.first, last: b.last, center: b.center, copy: markdown::block_text(b) }
         })
         .collect();
     (shown, anchors, fell)
@@ -1022,6 +1043,8 @@ struct PdfDoc {
 struct MdDoc {
     /// Each block's heading slug ("" for other blocks), for `#anchor` links.
     anchors: Vec<String>,
+    /// Each block's text and whether it starts its block, for "Copy text" (`markdown::copy_text`).
+    texts: Vec<(String, bool)>,
     /// Pictures the worker has still to answer.
     pending: usize,
 }
@@ -1242,6 +1265,81 @@ pub fn settled() -> bool {
     .unwrap_or(true)
 }
 
+/// Ctrl+wheel over the column's pages (preview.slint), or the driver's `previewzoom`: the PDF one
+/// zoom step larger (1), smaller (-1) or back to 100% (0), laid out again at once with the scroll
+/// kept at the same place in the document, its pages rendered again at the new width. False when
+/// no PDF is shown (nothing changes).
+pub fn zoom(step: i32) -> bool {
+    with_ui(|u| {
+        let Some(app) = u.app.upgrade() else { return false };
+        if !u.visible || !matches!(u.doc, Doc::Pdf(_)) {
+            return false;
+        }
+        let old = clamp_zoom(app.get_preview_zoom() as u32);
+        let z = zoom_step(old, step);
+        if z != old {
+            let (top, total) = (app.invoke_preview_scroll_top(), app.get_preview_content_h().max(1.0));
+            app.set_preview_zoom(z as i32);
+            u.relayout();
+            let new_total = app.get_preview_content_h();
+            app.invoke_preview_set_scroll((top * new_total / total).min((new_total - app.invoke_preview_visible_h()).max(0.0)));
+            if let Doc::Pdf(p) = &mut u.doc {
+                p.range = None;
+                p.asked.clear();
+            }
+            u.ask_now();
+        }
+        eprintln!("[preview] zoom {z}%: pages {:.0} px wide{}", u.page_w * z as f32 / 100.0, if z == old { " (unchanged)" } else { "" });
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// Ctrl+plus, Ctrl+minus or Ctrl+0 (app.slint's outer key handler): a zoom step when the pointer is
+/// over the column and it shows a PDF; false (the key goes on) otherwise.
+pub fn zoom_key(step: i32) -> bool {
+    over_column() && zoom(step)
+}
+
+/// The pointer is over the preview column (its client point against `window_layout`).
+fn over_column() -> bool {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let Some(app) = with_ui(|u| u.app.upgrade()).flatten() else { return false };
+    let mut pt = POINT { x: 0, y: 0 };
+    // SAFETY: a POINT on the stack; the window handle is TwinFM's own (0 fails the conversion).
+    let ok = unsafe { GetCursorPos(&mut pt) != 0 && ScreenToClient(crate::preview_hwnd() as _, &mut pt) != 0 };
+    let l = crate::window_layout(&app);
+    let s = app.window().scale_factor();
+    let (x, y) = (pt.x as f32 / s, pt.y as f32 / s);
+    ok && l.preview > 0.0 && x >= l.width - l.preview && x < l.width && (0.0..l.height).contains(&y)
+}
+
+/// A right-click on block `k` of the column's list (preview.slint), or the driver's `previewmenu`:
+/// logged, the menu itself is app.slint's.
+pub fn menu(k: i32) {
+    eprintln!("[preview] menu on block {k}");
+}
+
+/// The menu's "Copy this block" (`one` its block) or "Copy all" (None), or the driver's
+/// `previewcopy`: the text onto the clipboard (`markdown::copy_text`), CRLF line ends.
+pub fn copy(one: Option<usize>) {
+    let Some(text) = with_ui(|u| match &u.doc {
+        Doc::Markdown(m) => Some(markdown::copy_text(&m.texts, one)),
+        _ => None,
+    })
+    .flatten() else {
+        eprintln!("[preview] copy: no text shown");
+        return;
+    };
+    let what = one.map_or_else(|| "all".to_string(), |k| format!("block {k}"));
+    match crate::fileops::clipboard::write_text(crate::preview_hwnd(), &text) {
+        Ok(()) => eprintln!("[preview] copy {what}: {} characters, {} lines", text.chars().count(), text.lines().count()),
+        Err(e) => eprintln!("[preview] copy {what}: failed: {e}"),
+    }
+}
+
 /// A block as the column's model takes it (its table rows as models of their own).
 fn md_block(s: Shown) -> MdBlock {
     let rows = s.rows.into_iter().map(|(head, cells)| {
@@ -1298,7 +1396,8 @@ fn on_reply(r: Reply) {
             }
             Reply::Blocks { seq, blocks, anchors, pictures } => {
                 u.opening = false;
-                u.doc = Doc::Markdown(MdDoc { anchors, pending: pictures });
+                let texts = blocks.iter().map(|b| (b.copy.clone(), b.first || !matches!(b.kind, Kind::Code | Kind::Table))).collect();
+                u.doc = Doc::Markdown(MdDoc { anchors, texts, pending: pictures });
                 let t = Instant::now();
                 let n = blocks.len();
                 app.set_preview_mode(1);
@@ -1460,13 +1559,14 @@ impl Ui {
         });
     }
 
-    /// The PDF's slots at the current page width, the model's rows moved to them, and the render
-    /// width.
+    /// The PDF's slots at the current page width times the zoom (P11-M4), the model's rows moved to
+    /// them, and the render width.
     fn relayout(&mut self) {
         let Some(app) = self.app.upgrade() else { return };
         let Doc::Pdf(p) = &mut self.doc else { return };
-        let (slots, total) = layout(&p.sizes, self.page_w.max(1.0));
-        self.width_px = (self.page_w.max(1.0) * app.window().scale_factor()).round() as u32;
+        let w = self.page_w.max(1.0) * clamp_zoom(app.get_preview_zoom() as u32) as f32 / 100.0;
+        let (slots, total) = layout(&p.sizes, w);
+        self.width_px = (w * app.window().scale_factor()).round() as u32;
         if self.pages.row_count() != slots.len() {
             self.pages.set_vec(slots.iter().map(|s| PreviewPage { y: s.y, h: s.h, img: Image::default(), note: "".into() }).collect::<Vec<_>>());
         } else {
@@ -1712,6 +1812,23 @@ mod tests {
         assert!(picture(&dir.join("bad.png"), &mut budget).unwrap_err().starts_with("failed: "));
         assert!(picture(&dir, &mut budget).unwrap_err().starts_with("failed: "), "a folder");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn zoom_steps_and_page_sizes() {
+        assert_eq!((zoom_step(100, 1), zoom_step(100, -1), zoom_step(250, 0)), (110, 90, 100));
+        assert_eq!((zoom_step(400, 1), zoom_step(50, -1)), (400, 50), "the ends hold");
+        assert_eq!((zoom_step(105, 1), zoom_step(105, -1)), (110, 100), "between steps");
+        assert_eq!((clamp_zoom(10), clamp_zoom(9999), clamp_zoom(175)), (50, 400, 175));
+        // An A4 page (595 x 842 pt) in a 400 px column: at 200% it is laid out 800 px wide.
+        let a4 = [(595.0, 842.0), (595.0, 842.0)];
+        let (slots, total) = layout(&a4, 400.0 * 2.0);
+        assert!((slots[0].h - 800.0 * 842.0 / 595.0).abs() < 0.01);
+        assert!((total - (3.0 * PAD + 2.0 * slots[0].h)).abs() < 0.01);
+        // Rendered at 1.5x scale: 1,200 px wide; at 400% in a 1,500 px column the 8,192 px cap holds.
+        assert_eq!(page_px(a4[0], 1200), (1200, 1698, false));
+        let (w, h, capped) = page_px(a4[0], (1500.0 * 4.0 * 1.5) as u32);
+        assert!(capped && h == MAX_SIDE && w < MAX_SIDE, "{w} x {h}");
     }
 
     #[test]
