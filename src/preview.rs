@@ -326,6 +326,7 @@ struct Shown {
     alt: String,
     first: bool,
     last: bool,
+    center: bool,
 }
 
 /// From the worker.
@@ -648,7 +649,7 @@ fn shown_blocks(blocks: &[Block], seq: u64) -> (Vec<Shown>, Vec<String>, usize) 
                 .collect();
             let code = if matches!(b.kind, Kind::Code | Kind::Note) { b.plain.clone() } else { String::new() };
             let alt = if b.kind == Kind::Image { b.plain.clone() } else { String::new() };
-            Shown { kind: b.kind, level: b.level, indent: b.indent, quote: b.quote, marker: b.marker.clone(), task: b.task, text, code, rows, alt, first: b.first, last: b.last }
+            Shown { kind: b.kind, level: b.level, indent: b.indent, quote: b.quote, marker: b.marker.clone(), task: b.task, text, code, rows, alt, first: b.first, last: b.last, center: b.center }
         })
         .collect();
     (shown, anchors, fell)
@@ -920,9 +921,42 @@ fn decode_bytes(name: &str, data: &[u8], max: u64) -> Result<(image::RgbaImage, 
     raster(|| image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().map_err(|e| fail(&e)), max)
 }
 
-/// An SVG drawn at its own size, at most `MAX_SIDE` a side. No fonts are loaded: its text is not drawn.
+/// The fonts an SVG's text is drawn with (P11-M4): Windows' own, read once at the first SVG. The
+/// whole Fonts folder takes 0.2 to 5.5 s to read (397 MB here); these seven files take a few ms.
+/// The generic families map to them, and a family not among them falls back to Segoe UI.
+const SVG_FONTS: &[&str] = &["segoeui.ttf", "segoeuib.ttf", "arial.ttf", "arialbd.ttf", "times.ttf", "timesbd.ttf", "consola.ttf"];
+
+fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
+    static FONTS: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> = std::sync::OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let t0 = Instant::now();
+            let dir = std::env::var_os("WINDIR").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from).join("Fonts");
+            let mut db = resvg::usvg::fontdb::Database::new();
+            let mut files = 0;
+            for f in SVG_FONTS {
+                if let Ok(data) = std::fs::read(dir.join(f)) {
+                    db.load_font_data(data);
+                    files += 1;
+                }
+            }
+            db.set_sans_serif_family("Segoe UI");
+            db.set_serif_family("Times New Roman");
+            db.set_monospace_family("Consolas");
+            db.set_cursive_family("Segoe UI");
+            db.set_fantasy_family("Segoe UI");
+            eprintln!("[preview] svg fonts: {} faces from {files} files in {:.0} ms", db.len(), crate::perf::elapsed_ms(t0));
+            std::sync::Arc::new(db)
+        })
+        .clone()
+}
+
+/// An SVG drawn at its own size, at most `MAX_SIDE` a side; its text in `svg_fonts` (P11-M4).
 fn svg(data: &[u8], max: u64) -> Result<(image::RgbaImage, &'static str), String> {
-    let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).map_err(|e| fail(&e))?;
+    let mut opt = resvg::usvg::Options { fontdb: svg_fonts(), ..Default::default() };
+    // A family not loaded (Helvetica, say) is drawn in the default rather than left out.
+    opt.font_family = "Segoe UI".into();
+    let tree = resvg::usvg::Tree::from_data(data, &opt).map_err(|e| fail(&e))?;
     let size = tree.size();
     let (sw, sh) = (size.width(), size.height());
     let f = (MAX_SIDE as f32 / sw.max(sh)).min(1.0);
@@ -1231,6 +1265,7 @@ fn md_block(s: Shown) -> MdBlock {
         alt: s.alt.into(),
         first: s.first,
         last: s.last,
+        center: s.center,
     }
 }
 
@@ -1677,6 +1712,17 @@ mod tests {
         assert!(picture(&dir.join("bad.png"), &mut budget).unwrap_err().starts_with("failed: "));
         assert!(picture(&dir, &mut budget).unwrap_err().starts_with("failed: "), "a folder");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn svg_text_is_drawn() {
+        // P11-M4: text in a loaded family, a generic one, and one not loaded (drawn in Segoe UI).
+        for family in ["Arial", "serif", "Helvetica", "No Such Font"] {
+            let doc = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="30"><text x="4" y="22" font-family="{family}" font-size="18">Hello</text></svg>"#);
+            let (img, _) = svg(doc.as_bytes(), PIXEL_BUDGET).unwrap();
+            let inked = img.pixels().filter(|p| p.0[3] > 128).count();
+            assert!(inked > 50, "{family}: {inked} pixels inked");
+        }
     }
 
     #[test]

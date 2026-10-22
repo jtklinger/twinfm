@@ -87,6 +87,8 @@ pub struct Block {
     /// HTML (P9-M2): the ids of the elements that start this block, lower case, space separated,
     /// for `#id` links (a heading's slug is added by the worker).
     pub anchor: String,
+    /// A picture inside `<p align=center>`, `<div align=center>` or `<center>` (P11-M4).
+    pub center: bool,
 }
 
 /// The text to parse from the file's first bytes (`MAX_BYTES` + 1 read, so `cut` can tell): a
@@ -382,7 +384,7 @@ struct Table {
 enum Piece {
     Text(String),
     Break,
-    Img { src: String, alt: String },
+    Img { src: String, alt: String, center: bool },
 }
 
 /// `name="value"` (or 'value', or unquoted) in a tag's text.
@@ -455,11 +457,13 @@ pub(crate) fn entities(s: &str) -> String {
     out
 }
 
-/// An HTML block's text with its tags stripped (Jeremy, 2026-10-20: no centring), in order with
-/// its pictures; block-level tags and `<br>` break the text. Comments are dropped.
+/// An HTML block's text with its tags stripped (Jeremy, 2026-10-20: no centring of text), in order
+/// with its pictures; block-level tags and `<br>` break the text. Comments are dropped. A picture
+/// inside a centred `p` or `div`, or `<center>`, is marked centred (P11-M4: a README's logo).
 fn html_pieces(html: &str) -> Vec<Piece> {
     let mut out = Vec::new();
     let mut text = String::new();
+    let mut center = false;
     let flush = |text: &mut String, out: &mut Vec<Piece>| {
         let t = entities(&text.split_whitespace().collect::<Vec<_>>().join(" "));
         if !t.trim().is_empty() {
@@ -483,10 +487,13 @@ fn html_pieces(html: &str) -> Vec<Piece> {
         let tag = &rest[1..j];
         rest = &rest[j + 1..];
         let name = tag.trim_start_matches('/').split(|c: char| c.is_ascii_whitespace() || c == '/').next().unwrap_or("").to_ascii_lowercase();
+        if matches!(name.as_str(), "p" | "div" | "center") {
+            center = !tag.starts_with('/') && (name == "center" || attr(tag, "align").is_some_and(|a| a.eq_ignore_ascii_case("center")));
+        }
         match name.as_str() {
             "img" => {
                 flush(&mut text, &mut out);
-                out.push(Piece::Img { src: entities(&attr(tag, "src").unwrap_or_default()), alt: entities(&attr(tag, "alt").unwrap_or_default()) });
+                out.push(Piece::Img { src: entities(&attr(tag, "src").unwrap_or_default()), alt: entities(&attr(tag, "alt").unwrap_or_default()), center });
             }
             "br" | "p" | "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "tr" | "ul" | "ol" | "table" | "details" | "summary" | "hr" => {
                 flush(&mut text, &mut out);
@@ -648,10 +655,10 @@ impl Builder {
 
     /// A picture: a local one becomes its own block after the current one; a remote one is shown
     /// as its alt text where it stands.
-    fn picture(&mut self, src: String, alt: String) {
+    fn picture(&mut self, src: String, alt: String, center: bool) {
         let local = self.base.as_ref().is_some_and(|b| image_path(&src, b).is_some());
         if local {
-            self.later.push(Block { kind: Kind::Image, src, plain: alt, ..Default::default() });
+            self.later.push(Block { kind: Kind::Image, src, plain: alt, center, ..Default::default() });
         } else {
             if !alt.is_empty() {
                 self.inline().text(&alt);
@@ -725,8 +732,8 @@ impl Builder {
                             self.inline().text(&t);
                             self.flush();
                         }
-                        Piece::Img { src, alt } => {
-                            self.picture(src, alt);
+                        Piece::Img { src, alt, center } => {
+                            self.picture(src, alt, center);
                             self.flush();
                         }
                         Piece::Break => {}
@@ -833,7 +840,7 @@ impl Builder {
             Event::Start(Tag::Image { dest_url, .. }) => self.image = Some((dest_url.to_string(), String::new())),
             Event::End(TagEnd::Image) => {
                 if let Some((src, alt)) = self.image.take() {
-                    self.picture(src, alt);
+                    self.picture(src, alt, false);
                 }
             }
             Event::Text(t) | Event::Code(t) if self.image.is_some() => {
@@ -857,8 +864,8 @@ impl Builder {
             Event::InlineHtml(t) => {
                 let lower = t.to_ascii_lowercase();
                 if lower.starts_with("<img") {
-                    if let Some(Piece::Img { src, alt }) = html_pieces(&t).into_iter().next() {
-                        self.picture(src, alt);
+                    if let Some(Piece::Img { src, alt, .. }) = html_pieces(&t).into_iter().next() {
+                        self.picture(src, alt, false);
                     }
                 } else if lower.starts_with("<br") {
                     self.inline().hard_break();
@@ -1154,7 +1161,11 @@ mod tests {
     #[test]
     fn html_blocks_keep_text_and_pictures() {
         let p = html_pieces("<!-- a comment <img src=\"no.png\"> -->\n<div align=center>\n<IMG SRC='a.png' ALT=\"A &amp; B\" width=100/>\n<h1>Name &lt;1&gt;</h1>caption</div>");
-        assert_eq!(p, vec![Piece::Img { src: "a.png".into(), alt: "A & B".into() }, Piece::Text("Name <1>".into()), Piece::Text("caption".into())]);
+        assert_eq!(p, vec![Piece::Img { src: "a.png".into(), alt: "A & B".into(), center: true }, Piece::Text("Name <1>".into()), Piece::Text("caption".into())]);
+        // P11-M4: a centred paragraph or div centres its pictures, and only until it ends.
+        let p = html_pieces("<p align=\"center\"><img src=logo.png></p><img src=b.png><div ALIGN=Center><img src=c.png></div><center><img src=d.png></center>");
+        let centred: Vec<bool> = p.iter().filter_map(|x| if let Piece::Img { center, .. } = x { Some(*center) } else { None }).collect();
+        assert_eq!(centred, vec![true, false, true, true]);
         assert_eq!(attr(" src=x.png>", "src"), Some("x.png".into()));
         assert_eq!(attr(" data-src=\"y\" src=\"z\"", "src"), Some("z".into()));
         assert_eq!(entities("&#65;&#x42;&bogus;&"), "AB&bogus;&");

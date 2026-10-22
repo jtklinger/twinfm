@@ -31,7 +31,8 @@ export struct MdRow {
 // its box (1 open, 2 done), on the item's first block. text is a paragraph's or heading's styled
 // text, code a code block's lines (or the note's text), rows a table's. A picture shows img at
 // img-w by img-h (logical px, scaled down to the column) once decoded, its alt text until then and
-// when it cannot be shown. first and last: a code block's or table's first and last chunk.
+// when it cannot be shown, centred with center (P11-M4). first and last: a code block's or table's
+// first and last chunk.
 export struct MdBlock {
     kind: int,
     level: int,
@@ -48,6 +49,7 @@ export struct MdBlock {
     alt: string,
     first: bool,
     last: bool,
+    center: bool,
 }
 
 // One Markdown block as a row of the column's ListView. Rust lays nothing out: the row's height is
@@ -119,34 +121,40 @@ component MdItem inherits Rectangle {
             height: 9px;
             Rectangle { y: 4px; height: 1px; background: Theme.border; }
         }
-        // A table: the columns' shares come from Rust, so its chunks line up.
-        if b.kind == 4: GridLayout {
-            for r in b.rows: Row {
-                for c in r.cells: Rectangle {
-                    horizontal-stretch: c.weight;
-                    min-width: 0px;
-                    preferred-width: 0px;
-                    background: r.head ? root.tint : transparent;
-                    border-width: 1px;
-                    border-color: Theme.border;
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        padding-top: 3px;
-                        padding-bottom: 3px;
-                        StyledText {
-                            text: c.text;
-                            horizontal-alignment: c.align == 1 ? TextHorizontalAlignment.center : c.align == 2 ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
-                            default-color: Theme.fg;
-                            link-color: Theme.link;
-                            link-clicked(u) => { root.link(u); }
+        // A table: the columns' shares come from Rust, so its chunks line up. Each cell draws its
+        // right and bottom line and the table its left and top (the top on its first chunk), so
+        // where two cells meet the line is 1 px, not two borders side by side (P11-M4).
+        if b.kind == 4: Rectangle {
+            GridLayout {
+                for r in b.rows: Row {
+                    for c in r.cells: Rectangle {
+                        horizontal-stretch: c.weight;
+                        min-width: 0px;
+                        preferred-width: 0px;
+                        background: r.head ? root.tint : transparent;
+                        Rectangle { x: parent.width - 1px; width: 1px; background: Theme.border; }
+                        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            padding-top: 3px;
+                            padding-bottom: 3px;
+                            StyledText {
+                                text: c.text;
+                                horizontal-alignment: c.align == 1 ? TextHorizontalAlignment.center : c.align == 2 ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
+                                default-color: Theme.fg;
+                                link-color: Theme.link;
+                                link-clicked(u) => { root.link(u); }
+                            }
                         }
                     }
                 }
             }
+            Rectangle { x: 0px; width: 1px; background: Theme.border; }
+            if b.first: Rectangle { y: 0px; height: 1px; background: Theme.border; }
         }
         if b.kind == 5 && b.img-w > 0: HorizontalLayout {
-            alignment: start;
+            alignment: b.center ? LayoutAlignment.center : LayoutAlignment.start;
             Image {
                 source: b.img;
                 width: min(b.img-w, root.content-w);
