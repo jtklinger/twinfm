@@ -1,4 +1,7 @@
 // twinfm: Slint bootstrap, wires model <-> UI, owns the two panes and their tabs.
+// A windowed program (0.1.0): no console window; stderr's lines reach a file only when the
+// launcher redirects it, as the gate and soak scripts do.
+#![windows_subsystem = "windows"]
 slint::include_modules!();
 
 mod fs {

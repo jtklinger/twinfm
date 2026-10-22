@@ -77,6 +77,11 @@ them before changing the list.
   is blank on that path. The renderer stays femtovg.
 
 ## Measuring
+- Since 0.1.0 the exe is a windowed program (`#![windows_subsystem = "windows"]`): no console window,
+  and stderr's lines reach a file only through a redirect (`Start-Process -RedirectStandardError`, as
+  every tool here does, or PowerShell's `2>`); run by hand in a terminal it prints nothing there.
+  P11-M7 adds a setting that writes them to a log file. A gate whose reference was built before
+  0.1.0 compares a console build against a windowed one: say so in its record.
 - In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
   `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]`,
   `[filter]`, `[search]`, `[size]`, `[archive]` lines.
