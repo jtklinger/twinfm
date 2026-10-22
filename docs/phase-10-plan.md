@@ -139,7 +139,7 @@ is small:
 - **The font**: tasks 1 to 3 set the window's `default-font-family` to `"Segoe UI Variable Text"`
   (on every Windows 11; the fluent default today is Segoe UI through the system), which has Inter's
   proportions. Inter itself is task 4: three static TTFs (Regular, Medium, SemiBold; SIL Open Font
-  License 1.1, about 300 KB each) from the rsms/inter release, embedded with `import
+  License 1.1, about 410 KB each) from the rsms/inter release, embedded with `import
   "fonts/Inter-Regular.ttf";` in `app.slint` and `default-font-family: "Inter"`, the licence file
   beside them and a line in README § License. **A download needs Jeremy's OK first**, so task 4 is
   asked, not assumed; if he declines, Segoe UI Variable stays and the record says so.
@@ -256,6 +256,11 @@ Each task is one commit on the branch, pushed; the PR is opened after task 1 and
   Settings dialog's nine check boxes are switches, its OK (primary) and Cancel and About's Close
   are `Btn`s; the rows' spacing is 8 px and the dialog 510 px tall (480 before) so its note still
   fits. `ComboBox` and `LineEdit` stay fluent (a popup choice of our own is deferred).
+- **Task 4, 6e76950** (2026-10-22, after Jeremy's "Yes, download Inter and bundle it as task 4"): Inter 4.1's
+  static Regular, Medium and SemiBold (`extras/ttf/` of the rsms/inter release zip, 412, 417 and 420 KB)
+  under `src/ui/fonts/` with the release's licence as `OFL.txt`, three `import "fonts/..."` lines at the
+  top of `app.slint`, `default-font-family: "Inter"` on the window, and the notice in README § License.
+  The `P9-M5` comments in the three Slint files read `P10-M1`.
 
 **Checks**: `cargo build --release` after each task; `cargo test --release` 270 of 271 after each,
 the one failure `fileops::clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` ("the
@@ -273,8 +278,9 @@ pair read 18.0 / 22.2 and the next four runs presented no frames (render n=6, in
 session had changed state), so they decide nothing; tasks 2 and 3 change nothing the gate scenario
 draws per row. The console triplet is still to run.
 
-**Waiting on Jeremy** (§ Open questions): Inter (task 4 downloads three TTFs), the row and bar
-heights (task 5), and the gate (task 6, his elevated console).
+**Waiting on Jeremy** (§ Open questions): the row and bar heights (task 5), and the gate (task 6,
+his elevated console, handed over by the coordinating session once the font decision is in the build).
+Inter was answered 2026-10-22 (task 4 above).
 
 ### Open questions
 
@@ -285,6 +291,6 @@ heights (task 5), and the gate (task 6, his elevated console).
 - **The bar heights** for task 5 (the canvas: tab strip 36, path bar 36 with 32 px buttons, header
   40, status 40, sidebar rows 32, toolbar band 52). The lead recommends a smaller step: tab strip 30,
   path bar 36, header 32, status 28, sidebar rows 32, toolbar 44.
-- **Inter**: bundle it (task 4, about 900 KB in the exe) or stay on Segoe UI Variable?
+- **Inter**: answered 2026-10-22, bundled (task 4; 1.2 MB in the exe).
 - **Dark mode's accent**: none; the look is grey in both schemes, the canvas's choice. Jeremy may
   want the Windows accent for the cursor ring; a one-token change.
