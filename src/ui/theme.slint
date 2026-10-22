@@ -1,10 +1,10 @@
-// The look (P9-M5): the design language of rust-ui.com (shadcn/ui ported to Dioxus), copied as
+// The look (P10-M1): the design language of rust-ui.com (shadcn/ui ported to Dioxus), copied as
 // tokens, since none of its components can run in Slint. A neutral grey scale with no accent
 // colour, hairline borders, 6 px radii on controls and 10 px on cards, light or dark following
 // the system through Palette.color-scheme (the backend sets it from Windows' app mode). Every
 // colour the window draws is read from here; std-widgets still in use (ListView, LineEdit,
 // ComboBox, AboutSlint, ScrollView) keep their fluent drawing until replaced. The values are the
-// design's (docs/phase-9-plan.md § P9-M5 The design).
+// design's (docs/phase-9-plan.md § P10-M1 The design).
 import { Palette } from "std-widgets.slint";
 
 export global Theme {
@@ -41,7 +41,7 @@ export global Theme {
     out property <length> radius-lg: 10px;
 }
 
-// A button in the look (P9-M5): outline (a hairline, the card colour, the muted fill on hover)
+// A button in the look (P10-M1): outline (a hairline, the card colour, the muted fill on hover)
 // or primary (near-black, one per dialog). 32 px high, 13 px text at weight 500, 6 px corners.
 export component Btn inherits Rectangle {
     in property <string> text;
@@ -64,7 +64,7 @@ export component Btn inherits Rectangle {
     ta := TouchArea { clicked => { root.clicked(); } }
 }
 
-// A switch for a boolean setting (P9-M5), in place of a check box: a 36 x 20 track with a 16 px
+// A switch for a boolean setting (P10-M1), in place of a check box: a 36 x 20 track with a 16 px
 // knob, the label beside it. A click flips `checked` and calls toggled(), as the std CheckBox did.
 export component Switch inherits Rectangle {
     in-out property <bool> checked;

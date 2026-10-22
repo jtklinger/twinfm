@@ -1,6 +1,11 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
 import { ListView, AboutSlint, LineEdit, ComboBox } from "std-widgets.slint";
 import { Theme, Btn, Switch } from "theme.slint";
+// Inter (SIL Open Font License 1.1, src/ui/fonts/OFL.txt), the face of the look (P10-M1 task 4):
+// the three static weights the window uses, embedded in the exe.
+import "fonts/Inter-Regular.ttf";
+import "fonts/Inter-Medium.ttf";
+import "fonts/Inter-SemiBold.ttf";
 import { Preview, PreviewPage, MdBlock, MdRow, MdCell } from "preview.slint";
 export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
 
@@ -29,14 +34,14 @@ component SideRow inherits Rectangle {
     background: transparent;
     accessible-role: list-item;
     accessible-label: item.label;
-    // The fill, inset 4 px and rounded, inside the row's slot (P9-M5).
+    // The fill, inset 4 px and rounded, inside the row's slot (P10-M1).
     Rectangle { x: 4px; width: parent.width - 8px; border-radius: Theme.radius; background: root.current ? Theme.muted : item.kind != 0 && ta.has-hover ? Theme.muted-half : transparent; }
     HorizontalLayout {
         visible: !root.editing;
         padding-left: item.kind == 0 ? 8px : 10px;
         padding-right: 6px;
         spacing: 8px;
-        // The row's icon (P9-M5): drives, bookmarks, and the known places by their label.
+        // The row's icon (P10-M1): drives, bookmarks, and the known places by their label.
         if item.kind != 0: Rectangle {
             width: 16px;
             Image { y: (parent.height - 16px) / 2; width: 16px; height: 16px; colorize: Theme.fg-muted; source: item.kind == 1 ? @image-url("icons/hard-drive.svg") : item.kind == 3 ? @image-url("icons/star.svg") : item.label == "Home" ? @image-url("icons/house.svg") : item.label == "Desktop" ? @image-url("icons/monitor.svg") : item.label == "Downloads" ? @image-url("icons/download.svg") : item.label == "Pictures" ? @image-url("icons/image.svg") : item.label == "Music" ? @image-url("icons/music.svg") : item.label == "Videos" ? @image-url("icons/film.svg") : item.label == "OneDrive" ? @image-url("icons/cloud.svg") : @image-url("icons/folder.svg"); }
@@ -204,9 +209,8 @@ export component App inherits Window {
     // "TwinFM - <folder>" for the active pane's active tab.
     title: "TwinFM - " + (split && active-pane == 1 ? right-title : left-title);
     icon: @image-url("icon.svg");
-    // The look (P9-M5): Inter's proportions from the face every Windows 11 has, until Inter is
-    // bundled (task 4); 13 px for rows and controls.
-    default-font-family: "Segoe UI Variable Text";
+    // The look (P10-M1): Inter, embedded above; 13 px for rows and controls.
+    default-font-family: "Inter";
     default-font-size: 13px;
     preferred-width: 1200px;
     preferred-height: 800px;

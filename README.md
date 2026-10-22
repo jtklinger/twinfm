@@ -170,5 +170,8 @@ The icons of the toolbar, the sidebar and the panes' chrome (`src/ui/icons/*.svg
 are drawn after [Lucide](https://lucide.dev), used under its ISC license (copyright 2022 Lucide
 Contributors; the earlier Feather icons, copyright 2013-2022 Cole Bemis, MIT); the file type
 icons and thumbnails in the lists are Windows' own.
+The window's text is set in [Inter](https://rsms.me/inter/) (version 4.1, the Regular, Medium and
+SemiBold weights, embedded from `src/ui/fonts/`), used under the SIL Open Font License 1.1
+(`src/ui/fonts/OFL.txt`).
 
 [![Made with Slint](https://github.com/slint-ui/slint/raw/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
