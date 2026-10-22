@@ -32,7 +32,12 @@ built, and § Phase 9 close holds the gates, lessons, what is deferred and the P
 use recommended), `docs/phase-10-plan.md` the Phase 10 record (UI and UX polish, opened 2026-10-22;
 P10-M1 the rust-ui look: `src/ui/theme.slint`'s tokens, the Lucide icons under `src/ui/icons/`, the dialog
 controls; its first section quotes Jeremy's decision, § Calls made lists the lead's, § Phase 10 candidates
-what Jeremy picks next). Read them before changing the list.
+what Jeremy picks next), `docs/phase-11-plan.md` the Phase 11 record (the deferred
+list swept and the cut features picked up: content search, the cloud and search sweep, the edge-case
+bundle with the owed checks, the preview gaps bundle, syntax colours, password PDFs through hayro; two
+streams, the preview stream after P10-M1 merges; opened 2026-10-22; its first section quotes Jeremy's
+kickoff decisions, § Calls made lists the lead's, § Open questions what each brief settles first). Read
+them before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (274 tests; nine touch the real shell and clipboard, one of them the Recycle
