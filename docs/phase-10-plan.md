@@ -453,6 +453,72 @@ box of its own). Gate: the defaults triplet (new chrome, no per-row change) unle
 the list's top, in which case `dnd.rs`'s constants and the driver's aims follow in the same commit
 and a soak runs before the gate.
 
+Go: Jeremy's word on 2026-10-22 after P10-M1 merged (main 8dc692a, then 0ab9a83 with the Phase 11
+kickoff), relayed by the coordinating session: "let's proceed with the other items remaining in P10".
+Branch `feat/p10-m2-search-box` from 0ab9a83.
+
+### Settled first (2026-10-22, before any code)
+
+**What is there today** (`pane.slint`, `main.rs`): Ctrl+F opens a 220 px `LineEdit` at the right end
+of the pane's path bar, created only while `filter-open`; typing filters the listing live (150 ms
+after the last edit); Return or Down applies the filter at once and gives the list the focus; Escape
+or the clear glyph closes it; Ctrl+Shift+F runs a recursive name search for the box's text in a new
+tab, or, with the box empty, opens it "armed" so that Return there starts the search. Nothing on
+screen says any of this exists, which is Jeremy's remark.
+
+**The box.** One box per pane, **always visible**, at the right end of the path bar where the filter
+box opens today, inside the 36 px bar (a 32 px outline field in the look: the hairline, 6 px corners,
+the card colour; a leading Lucide `search` icon; the placeholder "Filter, Enter to search"), 200 px
+wide, 150 px in a pane narrower than 520 px (a pane property, never per row). The crumbs and the path
+entry give up that width as they do today while the box is open. **It does not move the list's top**
+(the bar stays 36 px; `dnd.rs` LIST_TOP and the crumb clip's width arithmetic are as they are), so the
+gate is the defaults triplet and no soak is owed for geometry; one soak cycle is added anyway for the
+new paths. The `filter-open` property stays as the "has text" state Rust and the driver set; the
+`LineEdit` is no longer under an `if`.
+
+**What typing, the keys and the button do.** Typing filters the listing live, as today. **Return runs
+the recursive name search** for the box's text in a new tab (what Ctrl+Shift+F does; with an empty
+box Return gives the list the focus). **Down** applies the filter at once and gives the list the
+focus (today's Return). Escape clears the box and the filter and gives the list the focus. A
+**search button** at the box's right end (Lucide `search` again, 24 px, ghost, the tooltip "Search
+this folder and below (Ctrl+Shift+F)") runs the same search as Return and Ctrl+Shift+F; the clear
+glyph shows left of it while the box has text. **Ctrl+F** focuses the box with its text selected, as
+today; **Ctrl+Shift+F** searches as today, and with an empty box focuses it (the "armed" state goes:
+Return always searches, so nothing needs arming). Nothing is removed: the live filter, the applied
+filter, the recursive search and both keys are all reachable from the box, and the driver's `filter`
+and `search` steps keep their meaning. Return's change (search, not apply) is the one behaviour
+change, named for Jeremy's console check; the live filter has already applied by the time Return is
+pressed, so nothing is lost by it.
+
+**The hook for P11-M1.** The search button is where the mode goes: P11-M1 makes it a name-or-content
+choice (a chevron beside it, or a toggle), `csearch <pane> <text>` sets the box's text and runs the
+content mode, and the content rules (never a cloud location, the matching line appended to the
+label) are P11-M1's; P10-M2 leaves the button a plain search so that P11-M1 adds a mode to this box
+and never a second box (`docs/phase-11-plan.md` § P11-M1 reads "a second box, or a mode of the
+filter box, settled first against the toolkit and the Phase 10 restyle": this is that settlement).
+
+**Code, tests first.** A pure module `src/searchbox.rs`: `width(pane_w: f32) -> f32` (200, or 150
+under 520), `on_return(text: &str) -> ReturnAction` (`Search(pattern)` for a trimmed non-empty text,
+`FocusList` otherwise), `placeholder()`; tests for the three. `pane.slint`: the always-present box,
+its icon, its clear glyph and its search button, `accepted` → `filter-return(text)` (new callback),
+Down → `filter-now(text)` (new; the old apply) and the list's focus, the button → `search-pressed()`;
+`app.slint` routes the three to Rust; `main.rs` `filter_return` (search or focus), `filter_now`
+(today's `filter_apply`), `search_key` without the armed state. Driver: `searchreturn <pane>` (Return
+in the box: `filter-return` with the box's text) and `searchbutton <pane>` (the button); `filter` and
+`search` as before. `[search]` lines: `pane=N box Return: searches "<text>"`, `pane=N box Return:
+empty, the list takes the focus`, `pane=N search button`; `[auto] searchreturn ...`, `[auto]
+searchbutton ...`. Soak (`tools/soak-p5m3.ps1`): per cycle `filter 0 tree`, `searchreturn 0`,
+`waitsearch`, the search tab closed, and `searchbutton 0` once with the box empty (the list takes the
+focus, no tab); the report counts box searches and empty Returns. CLAUDE.md § Measuring's filter and
+search paragraph gains the steps and lines. Screenshots: both toolbar placements, the box empty and
+with text, a narrow pane.
+
+**Gate**: `target-p10m2` from a detached checkout of the PR head against `target-p10m1` (b8b8853),
+tag ab42, the defaults; the coordinating session is told before the build, the soak and any question
+for Jeremy. Console checks: the box at 100% and 150%, typing then Return, Down, Escape, the button,
+Ctrl+F and Ctrl+Shift+F with and without text, a search in a search tab, the path entry mode with
+the box, a narrow pane.
+
 ## Deferred to Phase 12 (roadmap)
 
 Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadmap list."
