@@ -58,6 +58,8 @@ pub const CLOUD: &str = "Not previewed: the file is in the cloud and not downloa
 pub const ARCHIVE: &str = "Not previewed inside an archive";
 pub const UNREADABLE: &str = "This file could not be read";
 pub const PICTURE_UNREADABLE: &str = "This picture could not be read";
+/// A HEIC, HEIF or AVIF picture with no HEIF decoder installed (P11-M4, wic.rs).
+pub const NO_DECODER: &str = "No decoder for this format is installed";
 pub const OFFICE_UNREADABLE: &str = "This document could not be read";
 pub const OFFICE_PASSWORD: &str = "Password-protected document: not previewed";
 /// A Markdown file's pictures share this many bytes of decoded pixels (RGBA); one past it shows
@@ -72,7 +74,8 @@ pub const TEXT_EXTS: &[&str] = &[
     "txt", "log", "ini", "cfg", "csv", "json", "xml", "yaml", "yml", "toml", "rs", "py", "ps1", "sh", "c", "h", "cpp", "cs", "js", "ts", "css",
     "slint", "bat", "cmd", "tsv", "conf", "reg", "inf", "diff", "patch", "psm1", "psd1", "hpp", "cc", "go", "java", "sql", "jsx", "tsx", "lock",
 ];
-/// Pictures, decoded by the `image` crate (resvg for SVG). HEIC, HEIF and AVIF are not on it.
+/// Pictures, decoded by the `image` crate (resvg for SVG); since P11-M4 also HEIC, HEIF and AVIF,
+/// through Windows' own decoders (`wic::EXTS`).
 pub const PICTURE_EXTS: &[&str] = &["jpg", "jpeg", "jpe", "jfif", "png", "gif", "webp", "bmp", "tif", "tiff", "ico", "svg", "svgz"];
 pub const HTML_EXTS: &[&str] = &["html", "htm"];
 /// An SVG file larger than this is not read.
@@ -192,7 +195,7 @@ pub fn classify(name: &str, attrs: u32, is_dir: bool, in_archive: impl FnOnce() 
         Class::Markdown
     } else if on(TEXT_EXTS) {
         Class::Text
-    } else if on(PICTURE_EXTS) {
+    } else if on(PICTURE_EXTS) || on(crate::wic::EXTS) {
         Class::Picture
     } else if on(HTML_EXTS) {
         Class::Html
@@ -804,7 +807,7 @@ fn serve_picture(reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path) {
         Ok(g) => g,
         Err(why) => {
             eprintln!("[preview] pane={pane} gen={seq} {}: picture failed: {why}", path.display());
-            reply(Reply::Message { seq, text: PICTURE_UNREADABLE });
+            reply(Reply::Message { seq, text: if why == crate::wic::NO_DECODER { NO_DECODER } else { PICTURE_UNREADABLE } });
             return;
         }
     };
@@ -902,6 +905,9 @@ fn decode_picture(path: &Path, max: u64) -> Result<(image::RgbaImage, &'static s
         let mut data = Vec::new();
         f.take(SVG_MAX_BYTES).read_to_end(&mut data).map_err(|e| fail(&e))?;
         return svg(&data, max);
+    }
+    if path.extension().and_then(|e| e.to_str()).is_some_and(|e| crate::wic::EXTS.iter().any(|x| x.eq_ignore_ascii_case(e))) {
+        return crate::wic::decode(path, max);
     }
     raster(|| image::ImageReader::open(path).map_err(|e| fail(&e))?.with_guessed_format().map_err(|e| fail(&e)), max)
 }
@@ -1563,7 +1569,9 @@ mod tests {
         assert_eq!(classify("a.txt", 0, false, || true), Class::Archive);
         assert_eq!(classify("a.png", RECALL, false, || false), Class::CloudOnly);
         assert_eq!(classify("a.html", RECALL, false, || false), Class::CloudOnly);
-        assert_eq!(classify("phone.heic", 0, false, never), Class::Other, "HEIC is not previewed");
+        // P11-M4: HEIC, HEIF and AVIF through Windows' decoders.
+        assert_eq!(classify("phone.HEIC", 0, false, || false), Class::Picture);
+        assert_eq!(classify("a.avif", RECALL, false, || false), Class::CloudOnly);
         assert_eq!(classify("Makefile", 0, false, never), Class::Other, "no extension, no guess");
         // Office files (P9-M3): the Open XML formats and their macro-enabled forms; not the binary ones.
         assert_eq!(classify("Report.DOCX", 0, false, || false), Class::Office(OfficeKind::Docx));

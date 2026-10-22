@@ -37,6 +37,7 @@ mod statusbar;
 mod tabs;
 mod toolbar;
 mod verbs;
+mod wic;
 mod winmenu;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
