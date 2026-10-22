@@ -56,6 +56,12 @@ Input: what daily use with the new look shows (the best source, as at every clos
 close's Deferred list, and the polish left from Phases 7 and 8. Sizes as before: a milestone is what
 P9-M1 or P9-M2 was; a small item is an afternoon.
 
+- **From Jeremy's P10-M1 console check (2026-10-22)**, routed by his decision the same day ("add the
+  click-and-drag to phase 12, or a roadmap list. add in the search as another p10 task."): the
+  **rubber band in the details list** is § Deferred to Phase 12 (roadmap) below; the **search box and
+  button** are **P10-M2**, § P10-M2 below, the next milestone after P10-M1 merges; the **in-app theme
+  switch** was taken into P10-M1 as task 7 the same day; left from it: the native title bar's colour
+  following the setting (a DWM attribute, small).
 - **The rest of P10-M1 itself**: Inter bundled (task 4, after Jeremy's OK for the download), the bar
   heights (task 5, after his values), a popup choice and a text field in the look (so the settings
   dialog and the filter box stop being the one fluent corner), the Windows 11 menu's icon row with
@@ -367,6 +373,51 @@ first thing to look at.
 - **Daily use** from `target\release` for a few days: what the look gets wrong in use goes on the
   Phase 10 list.
 
+### After the console check (2026-10-22)
+
+Jeremy's results, his words (relayed by the coordinating session): "2-7 all seem to work as expected."
+Check 1, light mode, he read as a TwinFM setting ("I don't see a personalization option"); it is
+Windows' Settings app, and TwinFM follows the system's app mode. His three remarks, verbatim:
+
+- "The highlight of a single line (in details) or large icon is difficult to see the first few times
+  using it. Is there a way to make a highlighted item more visible?"
+- "On folders that are configured with details view, I cannot click-and-drag the mouse cursor to
+  highlight multiple items."
+- "What's the search function? Can we consider adding a dedicated search box/button?"
+
+**The first is fixed in P10-M1, f2a5d63**, colours and alpha only (no geometry, nothing new per row, so
+no re-gate): the cursor ring on a row, a tile and the grid's name overlay is the Windows accent
+(`Theme.cursor`, from `Palette.accent-background`, the system's accent lightened for dark mode by the
+fluent style; 2 px as before, full strength instead of grey at 50%), and the selection is an accent
+tint (`Theme.selection`: the accent at 22% in light mode, 28% in dark) on rows, tiles, the sidebar's
+current row, the crumb dropdown's highlight, every drop highlight (a row, a tile, a tab, a sidebar
+row, a crumb, the pane) and the band; hover stays the muted grey. The one-token change the kickoff
+had left open (§ Open questions, dark mode's accent) is thus taken, for both schemes. One in-app
+defaults run on the gate scenario: `[busy] 10 s after split` (the accent fix and task 7 together, this build against the gated `target-p10m1` in four swapped pairs, one session state): candidate 18.6 / 20.3 / 21.1 / 18.6 (median 19.5) against the gated build's 18.4 / 16.7 / 18.4 / 21.7 (median 18.4); no reference run sits below every candidate run, the medians differ by one point, in-app noise is two to five points per build, and three earlier single runs of the candidate on a busier machine read 21.1 to 24.4; nothing per row changed (two global brushes replace two), so the reading is noise, put to the coordinating session for the re-gate call, render p50 2.35 to 2.45 on both builds ms, in the
+gate's range. Scripted screenshots in both schemes through a new override, `TWINFM_SCHEME=light|dark`
+(`main.rs`, read at start, sets the fluent `Palette.color-scheme`; unset, the system decides as
+always; `Palette` is re-exported from `app.slint` for it): the light look was seen on this machine for
+the first time (white ground and cards, `#F5F5F5` hover, `#E5E5E5` hairlines, the blue ring and tint),
+and the dark one as before with the blue in place of the grey.
+
+**The other two are P10-M2 candidates** (§ Phase 10 candidates, from daily use), not started.
+
+**Task 7, the theme switch, 6fa9b09** (2026-10-22, Jeremy's decision, his words: "Let's make light/dark a
+selectable switch inside twinfm", folded into P10-M1 before the merge): the setting `theme` =
+`"system"` (the default; Windows' app mode, followed live) | `"light"` | `"dark"` in `config.toml`
+(`settings::ThemeMode`; a file without the key reads system, anything else too), the dialog's Theme
+row (System, Light, Dark; a `ComboBox` under the View row; the dialog 550 px), applied on OK
+(`[settings] dialog: theme system -> light`) and at start, live without a restart: light and dark
+set the fluent `Palette.color-scheme`, system sets it unknown so the style resolves it from the OS
+and follows it again (`main.rs` `apply_theme`). `TWINFM_SCHEME` keeps precedence for scripts (a
+run under it ignores the setting); the driver's `settings set theme system|light|dark` goes
+through the generic stage path, no new step. A scripted run switched system, light, dark, system
+through the dialog, each logged, with the dialog captured open in the light scheme after the
+switch: the fluent `ComboBox` and `LineEdit` follow the scheme; **the window's title bar does not**
+(Windows draws it from the app mode; a `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` call
+per setting is a small later item, § Phase 10 candidates). The same in-app run as the accent fix
+covers it (above): colours and a dialog row, nothing per row.
+
 ### Open questions
 
 - **Row height and the bar heights**: answered 2026-10-22, the lead's recommendation taken: rows stay
@@ -374,5 +425,33 @@ first thing to look at.
   44 (task 5). The canvas's roomier values (36, 36, 40, 40, 32, 52, with 30 px rows) stay a density
   candidate.
 - **Inter**: answered 2026-10-22, bundled (task 4; 1.2 MB in the exe).
-- **Dark mode's accent**: none; the look is grey in both schemes, the canvas's choice. Jeremy may
-  want the Windows accent for the cursor ring; a one-token change.
+- **Dark mode's accent**: taken on 2026-10-22 after the console check, for both schemes (the cursor
+  ring and the selection tint, § After the console check).
+
+## P10-M2: the search box and button
+
+Jeremy's decision, 2026-10-22, from his P10-M1 console check ("What's the search function? Can we
+consider adding a dedicated search box/button?") and his routing the same day: "add in the search as
+another p10 task." It is the milestone after P10-M1, not a P10-M1 task: P10-M1 is gated and the
+Phase 11 preview stream waits on its merge. **No code before the coordinating session says P10-M1 is
+merged.**
+
+The brief, to be settled first then: one search box in the chrome (where, settled against the
+toolbar's two placements and the path bar; whether it moves the list's top decides the gate), a
+button and a key; name search as today, nothing removed (the filter box's Ctrl+F behaviour and
+Ctrl+Shift+F's recursive name search both reachable from it); and a content mode left as a hook for
+Phase 11's P11-M1 content search (`docs/phase-11-plan.md` § P11-M1 on PR #93 names `csearch <pane>
+<text>` and the box: the two designs are kept one, so P11-M1 adds a mode to this box rather than a
+box of its own). Gate: the defaults triplet (new chrome, no per-row change) unless the box changes
+the list's top, in which case `dnd.rs`'s constants and the driver's aims follow in the same commit
+and a soak runs before the gate.
+
+## Deferred to Phase 12 (roadmap)
+
+Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadmap list."
+
+- **The rubber band in the details list** (his P10-M1 console check: "On folders that are configured
+  with details view, I cannot click-and-drag the mouse cursor to highlight multiple items"): deferred
+  since Phase 4; `src/band.rs` applies to the grid only; a press on a row starts a drag today, so the
+  band would start from a press on empty space, or past a threshold on a row, settled first. Phase
+  11's kickoff (PR #93) carries its own Phase 12 items; the Phase 11 close gathers them with this one.
