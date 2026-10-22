@@ -418,6 +418,13 @@ switch: the fluent `ComboBox` and `LineEdit` follow the scheme; **the window's t
 per setting is a small later item, § Phase 10 candidates). The same in-app run as the accent fix
 covers it (above): colours and a dialog row, nothing per row.
 
+**The reading, accepted by the coordinating session (2026-10-22): noise, no re-gate.** Nothing per
+row changed, the gated build's own runs span 16.7 to 21.7 inside the same pairs, so a one-point median
+gap over four runs sits inside the day's spread; the gap rule is for console triplets. **For the next
+gates**: `target-p10m1` (b8b8853) stays the reference as the gated build of P10-M1; main's P10-M1 head
+is b8b8853 plus the accent fix and the theme switch, both measured in-app only, which the next
+reference carries as its caveat.
+
 ### Open questions
 
 - **Row height and the bar heights**: answered 2026-10-22, the lead's recommendation taken: rows stay
