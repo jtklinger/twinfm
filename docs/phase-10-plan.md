@@ -505,6 +505,65 @@ for Jeremy. Console checks: the box at 100% and 150%, typing then Return, Down, 
 Ctrl+F and Ctrl+Shift+F with and without text, a search in a search tab, the path entry mode with
 the box, a narrow pane.
 
+### What landed (2026-10-22)
+
+- **2a797a6**: the box always in the path bar (`pane.slint`: a `TextInput` in an outline `Rectangle`
+  of the look, 200 px or 150 under 520 px, the placeholder, the clear glyph while there is text, the
+  search button with its tooltip; the fluent `LineEdit` went because its minimum width overflowed the
+  slot and its unfocused dark face was invisible, seen at the first screenshot), `filter-return` and
+  `search-pressed` through `app.slint` to `main.rs` (`filter_return`, `search_button`; `search_key`
+  without the armed state, which is gone from the state struct), `src/searchbox.rs` `on_return`, the
+  driver's `searchreturn` and `searchbutton`, the soak's cycle and counters, CLAUDE.md § Measuring.
+- **aa2ecbf**: `searchbox.rs` keeps `on_return` only (the gate build warned on the unused `width` and
+  `placeholder` copies); the record's Settled first says so.
+- **795d1a0**: `tools/gate-p10m2.ps1`.
+
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-22, on 2a797a6's build, the machine otherwise
+idle): exit 0, 0 panics, 5 cycles, 292 jobs (0 failed), drags dropped 0, toolbar presses refused 0,
+menupicks refused 0, spring-loaded tabs 0, zip jobs not done 0, picture failures 0, Office unreadable
+0, alt text 0, waitpreview timeouts 0, worker panics 0; crumb drops 4 (the P5-M3 crumb aim holds
+with the box at the bar's end); **search box: Return searches 4, button searches 4, blank Returns 4**
+(one each per cycle); working set 136 to 226 MB.
+
+### Gate
+
+Run by Jeremy on 2026-10-22, finished 12:08 (tag ab42, `C:\traces\gate-p10m2.ps1`, the same file as
+`tools/gate-p10m2.ps1`, 9 min): `target-p10m2` (aa2ecbf, built `--locked` from a detached checkout)
+against `target-p10m1` (b8b8853, P10-M1's gate build), the defaults only, three runs each interleaved.
+Every run passed the wrapper's checks, no panic.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p10m1-1 / 2 / 3 | 23.8 / 24.2 / 21.9 | 25.2 / 23.9 / 23.4 | 2.88 / 3.03 / 2.90 |
+| p10m2-1 / 2 / 3 | 23.9 / 22.0 / 22.9 | 25.6 / 22.2 / 22.5 | 2.97 / 2.96 / 2.98 |
+
+Medians 23.8 (reference) / 22.9 (candidate): no gap (not every reference run below every candidate
+run; the candidate's median is the lower). **The whole session was in the slow state** (ab23's):
+render p50 2.88 to 3.03 ms in every run of both binaries, against 2.3 to 2.5 ms in the morning's
+normal-state runs, so the figures are like for like and the 20% bar is met by neither binary in that
+state, the reference included; the box adds nothing the triplet can see. **Held.**
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+`target-p10m2\release\twinfm.exe` (the gated build), from a normal console:
+
+- **The box in both toolbar placements** (Settings > Toolbar: across the top, then in each pane) and
+  **both schemes** (Settings > Theme): the field, its placeholder "Filter, Enter to search", the
+  search button at its end; the crumbs and the path entry giving up the box's width.
+- **Typing filters** the listing live (the status bar's "K of M items"); the clear glyph appears
+  with the first character and clears on a click.
+- **Return searches**: a word, Return: a search tab opens after the active one with the results, the
+  title "Search: <word>"; Return again in the search tab's box searches under the same root in place.
+- **The button**: the same search; its tooltip after 500 ms; with a blank box it focuses the box.
+- **Escape** in the box clears the text and the filter and gives the list the focus; **Down** keeps the
+  filter and moves to the list; **Ctrl+F** focuses the box with its text selected; **Ctrl+Shift+F**
+  searches, and with a blank box focuses it.
+- **A narrow pane with the preview column on** (Alt+P): the box at 150 px, the crumbs still readable,
+  nothing clipped at the bar's right end.
+- **The crumb row beside the box**: the crumbs' dropdown chevron, and a file dropped from Explorer on
+  a crumb left of the box (the copy goes to that folder, the highlight on the crumb).
+- **150% scaling**: the field's 32 px, its text and button, the box's width.
+
 ## P10-M3: the P10-M1 leftovers
 
 Jeremy's pick, 2026-10-22, his words (relayed by the coordinating session): "the P10-M1 leftovers
