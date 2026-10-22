@@ -715,6 +715,12 @@ overlay's size and list for 16, 32, 48 and 96 px at 100% and 150%.
   drag shows the small cloud), since the mark is what keeps its thumbnail to the cache.
 - **Folders' state reads are not logged** (`[cloud] state read` is for files), since every sync root
   folder is looked up at every listing (P6-M1) and the line would fill the log.
+- **A lapse, recorded**: a121e5c (the pane fix below) was committed and pushed by a command that
+  chained the test run and the commit, while the suite reported one failure,
+  `real_clipboard_round_trip_overwrites_clipboard`: Jeremy's screen was locked (LogonUI running;
+  `OpenClipboard` refused with `ERROR_ACCESS_DENIED` even from a bare PowerShell call), so the test
+  could not pass. Not rewritten; the suite is run again once the screen is unlocked (After the
+  console check), and from here the tests are run and read, then the commit made, as two steps.
 
 ### Scripted checks
 
@@ -787,6 +793,41 @@ With `C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe`, thumbnails
    `& C:\Users\jtkli\projects\twinfm\target-p9m4\release\twinfm.exe "$env:USERPROFILE\OneDrive\Documents" 2> C:\traces\p9m4-hydration.txt`
    then close TwinFM and tell me what you saw. The file shows whether Windows reported the change
    (`[watch] ... applied: +0 -0 ~1` for the file) or not (no `[watch]` record at all).
+
+### After the console check
+
+Jeremy, 2026-10-21, on the five checks: 1 works as expected; 2 search results showed no thumbnails
+(in Downloads; open, see below); 3 "Keep them"; 4 the OneDrive marks as expected, and a bug found on
+the way; 5 "Free up space" seemed not to change the mark, "Always keep on this device" did.
+
+- **The bug (fixed, a121e5c, Jeremy's choice to fold it into P9-M4)**: with the right pane active, a
+  click on the left pane's empty space (no file) did not make the left pane active, so a sidebar
+  click opened its folder in the right pane. In the details list `band-ev` returned before asking for
+  the focus (only the grid's band did); now a left press on the empty space calls `focus-list` and
+  `focus-requested` in either view (`src/ui/pane.slint`, one handler, off the scroll path). Scripted:
+  `click 1 0`, then `band 0 100 400 100 400` (a press and release on the left list's empty space),
+  then `sidebar click 1`: `[nav] pane=1 gen=3 path=C:\` on `target-p9m4`, `[nav] pane=0 gen=3
+  path=C:\` with the fix.
+- **The hydration check, answered** (in `OneDrive\Documents\Stack`, which Jeremy gave for testing;
+  `attrib -P +U` and `+P -U` are what Explorer's two commands set): one file, `AMD.pdf`, freed: its
+  attributes went from `0x00000420` (tag `0x9000601A`, state `0x9`) to `0x00501620` (recall on data
+  access, unpinned, offline, sparse; tag `0x9000401A`, state `0x39`: in sync, partial), and with
+  TwinFM open in the folder the row went cloud, solid tick (kept: `0x00080420`, pinned), cloud again,
+  each without F5 (`[watch] ... applied: +0 -0 ~1` per change, the row re-keyed and drawn with the
+  new glyph). The whole folder freed (`attrib -P +U Stack\* /S`): all 35 files went from the tick to
+  the cloud as OneDrive released them, `applied: +0 -0 ~34`, `~32`, `~2` in three windows. The watch
+  delivers the attribute change and the stat's key carries the new mark, so no fix is needed; F5 is
+  not the answer it was feared to be. Jeremy's log shows he freed the folder from Documents (the
+  classic menu on its row); what he watched there is being asked. After the test, `Stack`'s 35 files
+  are online-only and the folder unpinned (as Explorer's "Free up space" leaves them).
+- **a121e5c's gates, run again with the screen unlocked**: `cargo test --release` 274 passed, 0
+  failed (the clipboard test with them). No triplet for the fix (one handler, off the scroll path);
+  two in-app runs of the gate scenario on a121e5c's `target\release`, console session active, no build
+  running, Narrator off: `[busy] 10 s after split` 17.8% and 17.8%, render p50 2.43 and 2.44 ms,
+  frames at 16.5 ms, in the normal range.
+- **The search without thumbnails**: not reproduced. In Downloads a search for "jpg" and one for
+  "Klinger" show the JPEGs' thumbnails in the 32 px list and in the large tiles (screenshots), the
+  same as in `%TEMP%`. Jeremy's steps and binary are being asked.
 
 ## Open questions
 
