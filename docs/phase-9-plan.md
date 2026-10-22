@@ -1441,3 +1441,142 @@ beside Word, Excel or PowerPoint (or Edge, which opens all three):
 
 Jeremy, 2026-10-21, unelevated with `target-p9m3`: "console checks are all nominal". The PowerPoint
 bullets-by-default call stands as recorded (not reversed).
+
+## Phase 9 close
+
+Written 2026-10-21, the day the phase opened. All four milestones are in, each squash-merged on
+Jeremy's word, in the order the gates allowed rather than the kickoff's: the kickoff record (#85,
+ab95aaf), P9-M2 text, pictures and HTML in the preview (#86, 192d388; gate build `target-p9m2`,
+95ace9f), P9-M1 adjustable column widths (#87, 85ef7b8; `target-p9m1`, b9fbd9d), P9-M3 Word, Excel
+and PowerPoint in the preview (#89, f2fa4eb; `target-p9m3`, 111ef17), P9-M4 thumbnails beyond the
+listing and cloud polish (#90, 6d12300; `target-p9m4`, 3374f2b). The reference note in `CLAUDE.md`
+(#88) was opened for `target-p9m2` and brought forward at each merge; the reference for the next
+milestone is `target-p9m4`, the last merged. Phase 9 was the first phase run as **two parallel
+streams** (two Opus sessions, one on the lists, P9-M1 then P9-M4, one on the preview, P9-M2 then
+P9-M3) with a third session coordinating gates, soaks and merges; the whole phase, kickoff to close,
+took one day.
+
+The gates, against the build merged before each:
+
+| Milestone | Tag | Reference | Medians (WPR, reference / candidate) | Note |
+|---|---|---|---|---|
+| P9-M2 | ab37 | `target-p8m2` (db30820) | defaults 17.6 / 18.0, preview shown 17.1 / 17.1 | the last three runs in a slower state, both binaries; rounds 1 to 2 like for like, all under 20 |
+| P9-M1 | ab38 | `target-p9m2` (95ace9f) | defaults 17.7 / 18.4, cols 18.5 / 17.7 (round 1); wrapper 21.1 / 21.7, 21.2 / 20.9 | rounds 2 and 3 slow for both binaries; one normal round per setting, read as ab23 was; Jeremy accepted |
+| P9-M3 | ab39 | `target-p9m1` (b9fbd9d) | defaults 18.3 / 18.4, preview shown 17.7 / 17.7 | one session state throughout, every run under 20 |
+| P9-M4 | ab40 | `target-p9m3` (111ef17) | defaults 18.3 / 18.4 (round 1); thumbs 17.8 / 18.1 (all rounds) | the defaults' rounds 2 and 3 slow for both binaries while every thumbs run stayed normal |
+
+No gap counted in any of the eight settings. The session-state change (ab23's) appeared in three of
+the four gates; the wrappers now print each run's render p50 beside its busy figure so the reading is
+made from the file, not remembered.
+
+What Phase 9 answered, against the kickoff's open questions:
+
+- **The cost of a per-row width binding**: none within noise. The spike measured a pane property read
+  by each row's cells against per-pane list variants, twelve in-app runs, and the triplet confirmed it
+  (P9-M1 § The spike, § Gate). The list components stayed at eight rather than sixteen.
+- **Which HTML parser pins cleanly**: neither. `html5ever` brings twelve crates and a build-time code
+  generator; `tl` has no raw-text state for scripts, no entity decoding and no maintenance since 2023.
+  TwinFM's own scanner (`src/html.rs`, pure, tested against the mapping) was the plan's fallback and
+  is what shipped (P9-M2 § Settled first).
+- **Office files Jeremy actually has**: his Word files, workbooks and decks read as expected beside
+  their programs; headings show where the file uses heading styles (P9-M3 § Console checks).
+- **The hydration check**: run at last, and it works live. A file freed or kept in OneDrive changes
+  its mark through the folder watch with no refresh; a whole folder freed turned all 35 marks as
+  OneDrive dehydrated them. One case needed code: for two minutes or more after "Free up space" a file
+  is unpinned but its data still here, which the attribute rule drew as the tick; such a file now gets
+  the state read and shows the pending glyph until the cloud mark arrives (P9-M4 § After the console
+  check).
+
+Lessons of the phase:
+
+- **Two streams need a coordinator, and the coordinator's messages cross.** "Soak go" and "gate
+  running" reached the lists stream seconds apart and it had to stop a soak in its setup; a hold on
+  commits arrived after the commit it meant to stop. What held: every stream reports before any gate
+  build, soak or hand-over and waits for a reply; the coordinator names the reference with each
+  clearance; one soak at a time on the machine (the soaks share `%TEMP%\twinfm-m5` and the fence);
+  nothing builds, soaks or opens a TwinFM window from "gate running" to "machine free". The sessions
+  found the shared-scratch rule themselves, before it bit.
+- **In-app numbers taken while a sibling compiles or soaks are not numbers.** The P9-M1 spike's
+  pairs ran while the preview stream compiled and soaked; the spread stayed in the usual range and
+  the choice stood, but the record carries the caveat, and later in-app checks waited for a quiet
+  machine.
+- **The gate-before-every-commit rule slipped twice**, both times on a docs-only or test-unrelated
+  change under time pressure: a kickoff bullet committed during a hold without a run, and a chained
+  test-and-commit that committed past a clipboard test failing because the screen was locked
+  (Windows refuses `OpenClipboard` from the lock screen). Neither was rewritten; both were gated
+  after the fact and recorded. The rule now reads: run the tests, read the result, then commit, as
+  two steps, and never chain them.
+- **Settle-first probes must run in TwinFM's own process.** P9-M4's probes of OneDrive's placeholder
+  state ran in PowerShell, where placeholders are visible; Windows hides them from TwinFM (every
+  OneDrive file lists as a plain file, no reparse point, state 0), so the in-sync gate they settled
+  never fires there, and the attribute test that works was found at the console check. The same
+  goes for thumbnails: OneDrive files do get them in TwinFM's process, so the search guard became
+  per file.
+- **The builder check earned its place**: a fresh reviewer reading the kickoff draft caught that a
+  grip "dragging its column's width" cannot work with the list's right edge pinned, that a tree XML
+  parser cannot stop after 500 rows, and that plain text "not wrapped" contradicted the code blocks it
+  reused. All three became the lead's calls before any brief went out; a fourth point went to Jeremy.
+- **The kickoff's calls were superseded in six places by what was built**, each marked with the date
+  where it stands (the fit's column, the tile overlay rule, the search guard, the archive thumbnails,
+  the OneDrive state gate, the streaming reader). A kickoff written in a morning cannot know what the
+  code and the shell will say by afternoon; the rule that each milestone's Settled first may correct
+  the kickoff, in place and dated, kept the record honest without rewriting history.
+- **A fix after the console check does not always need a triplet.** The rule applied: no triplet for
+  a change confined to event handlers, a stat on a watch record or the listing's keys, with one in-app
+  run recorded; a triplet for anything touching the rows, the icon workers' per-row work or the
+  compose path. P9-M4's two post-gate fixes took the first path.
+- **Jeremy gave several decisions to a stream directly** (the fit rule, the P9-M1 and P9-M3 merge
+  go-aheads, the tile overlays, the console results). It worked because the stream quoted his words
+  to the coordinator before acting and the coordinator checked the PR's state before a merge, so a
+  second `gh pr merge` never ran.
+
+Deferred, from the four milestones and their console checks:
+
+- **Columns** (P9-M1): no "reset to defaults" (the keys can be deleted from the file); a pane narrower
+  than its widths clips them as before.
+- **Text** (P9-M2): no syntax colours; long lines wrap (Jeremy's choice) and there is no horizontal
+  scroll in the column; `<meta charset>` is not read (a Windows-1252 page shows replaced accents); the
+  named-entity table is the common names, not all 2,231; `colspan`, CSS and implied end tags beyond
+  the list.
+- **Pictures** (P9-M2): HEIC, HEIF and AVIF are "No preview" (no pure Rust decoder); an SVG's text is
+  not drawn (P8-M2's).
+- **Office** (P9-M3): layout, fonts, charts and SmartArt are lost by design; the binary `.doc`,
+  `.xls`, `.ppt` are "No preview"; headers, footers, footnotes, comments and notes pages are never
+  read; a sheet shows at most 500 rows by 50 columns; money and other number formats show as stored.
+- **Cloud** (P9-M4 § Deferred): OneDrive files syncing or in error show their attribute mark, not the
+  provider's glyph, because Windows hides placeholders from TwinFM's process; the ways in are a
+  property read per file on screen (23 ms each) or `RtlSetProcessPlaceholderCompatibilityMode`, which
+  changes how every OneDrive entry lists. Thumbnails inside archive levels stay off: the shell has no
+  thumbnail provider inside a zip or a 7z.
+- **From Phase 8, unchanged**: zoom and text selection in the preview, password PDFs through PDFium,
+  the Markdown details (HTML layout, table borders, the scrollbar's drift on a long file).
+
+Open questions at the close:
+
+- **Carried from Phases 7 and 8**: Google Drive's volume found by its name; a sync-root scratch folder
+  for the soak; the Slint whole-row snap patch and upstreaming the two accessibility patches; the dead
+  share console check owed since P5-M1.
+- **The stale worktrees and gate builds**: eight worktrees and four `target-*` directories from Phases
+  6 to 8 were audited on 2026-10-21 and found clean, but not yet removed (the permission system
+  refused the agent's deletion; Jeremy's call). `target-p9m1`, `target-p9m2` and `target-p9m3` have
+  each served as a reference and can go once `target-p9m4` has served.
+
+Phase 10 candidates, for Jeremy's decision, the lead's recommendation first. Sizes in this project's
+units: a milestone is what P9-M1 or P9-M2 was; a small item is an afternoon.
+
+- **Daily use** (recommended, as at the two closes before): Phase 9 began from one line of daily-use
+  friction, the column widths, and that milestone was the phase's smallest and most used. A fortnight
+  with the P9-M4 build and a written list of what gets in the way is the best kickoff Phase 10 can
+  have.
+- **Content search** (out since P3-M2): text inside files in the search tab; a milestone at least,
+  with encodings, size limits and binary files to settle first. The preview's text reader (P9-M2)
+  already settles the encodings.
+- **OneDrive's syncing and error states** (P9-M4 § Deferred): a small item if the property read per
+  file on screen is accepted at 23 ms each; half a milestone with the placeholder compatibility mode
+  and its listing changes.
+- **The preview's deferred items**: syntax colours for text (a milestone with a grammar set to
+  choose), zoom and selection, PDFium for password PDFs. After Jeremy's word on each.
+- **The Slint fork**: the whole-row snap patch and the upstreaming decision. Jeremy's.
+- **Two streams again**: the parallel shape held for a one-day phase of four milestones; Phase 10 can
+  run the same way if its milestones split by file area as Phase 9's did.
+- Accessibility stays deferred for much later (Jeremy, 2026-10-15): not a candidate.
