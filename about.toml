@@ -1,0 +1,16 @@
+# cargo-about: `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html` writes the notices
+# shipped in each release zip. Only crates in the Windows binary count.
+targets = ["x86_64-pc-windows-msvc"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "LicenseRef-Slint-Royalty-free-2.0",
+]

@@ -205,6 +205,26 @@ written, so the wait is short):
    fixture with `pdfpassword` per cycle. Gate: the defaults triplet and the preview triplet. Console
    checks: Jeremy's own password PDFs beside Edge, a wrong password, Cancel.
 
+**Added 2026-10-22, at the 0.1.0 public release** (lists stream, after P11-M3; it touches
+`src/settings.rs`, `src/main.rs` and the settings dialog in `src/ui/app.slint`):
+
+7. **P11-M7, logging as a setting.** Since 0.1.0 `twinfm.exe` is a windowed program
+   (`#![windows_subsystem = "windows"]` in `src/main.rs`; Jeremy: "I want the 0.1.0 version to ship
+   without the logging. Let's add a p11 task to enable logging via settings."): no console window
+   opens, and the stderr lines (`[perf]`, `[enum]` and the rest, `CLAUDE.md` § Measuring) go nowhere
+   unless the launcher redirects stderr, as `Start-Process -RedirectStandardError` in the gate and
+   soak scripts does. P11-M7 lets a user turn the log on: a setting (`log`, default false, a row in
+   the settings dialog) that writes the same lines to a file under `%APPDATA%\twinfm\` while it is on,
+   applied on OK without a restart. Settled first: the file's name and rotation (one file per run, or
+   one file cut at a size, and how many are kept), whether a redirected stderr keeps receiving the
+   lines as now with the setting off (it must: the gate tools read stderr, and a scripted run neither
+   reads nor writes the settings file), whether every `eprintln!` goes through one sink or the stderr
+   handle is swapped for the file's (`SetStdHandle`) so no call site changes, and a dialog button that
+   opens the log's folder. `[settings] dialog: log false -> true`; the file's first line names the
+   version and the start time. Tests: the sink writes, rotates and closes; the setting round-trips.
+   Gate: the defaults triplet (the setting off: no file, no cost) and one in-app run with it on.
+   Console checks: the setting on and off without a restart, the file read while TwinFM runs.
+
 Each milestone brings its driver steps and stderr lines (in `CLAUDE.md` § Measuring), tests for its
 maths, and its soak cycle, added to `tools/soak-p5m3.ps1`. Console checks after each triplet,
 unelevated. Every item in the two bundles is a commit of its own, and the record says per item: done,

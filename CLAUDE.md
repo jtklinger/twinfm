@@ -77,6 +77,11 @@ them before changing the list.
   is blank on that path. The renderer stays femtovg.
 
 ## Measuring
+- Since 0.1.0 the exe is a windowed program (`#![windows_subsystem = "windows"]`): no console window,
+  and stderr's lines reach a file only through a redirect (`Start-Process -RedirectStandardError`, as
+  every tool here does, or PowerShell's `2>`); run by hand in a terminal it prints nothing there.
+  P11-M7 adds a setting that writes them to a log file. A gate whose reference was built before
+  0.1.0 compares a console build against a windowed one: say so in its record.
 - In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
   `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]`,
   `[filter]`, `[search]`, `[size]`, `[archive]` lines.
@@ -1088,6 +1093,11 @@ The app is MIT. Slint is used under its Royalty-free 2.0 license, which allows a
 Slint inside an application with attribution (the badge in `README.md`, and since M6b the
 `AboutSlint` widget in the About dialog, F1 or "About TwinFM" at the foot of the sidebar). The
 patches and fork commits are offered under MIT; see README § License before changing any of this.
+The repository is public since 0.1.0 (2026-10-22). Releases are zips built by
+`tools/package-release.ps1` (into the ignored `dist\`): the exe, `THIRD-PARTY-LICENSES.html` from
+`cargo about` (`about.toml`, `about.hbs`), and `licenses/` (Slint's license, and the fonts, CMaps and
+profile hayro embeds, which cargo-about does not see). A new dependency with a license outside
+`about.toml`'s `accepted` list fails the packaging: decide it, then add it there.
 
 ## Delivery
 Branch, PR, squash-merge on Jeremy's go-ahead, per the projects-root `CLAUDE.md`.
