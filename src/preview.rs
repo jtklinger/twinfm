@@ -545,7 +545,13 @@ fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usiz
     // The document, whether it was cut, the file's size, and (text) its lines and encoding.
     let parsed = read().map_err(|e| e.to_string()).and_then(|(bytes, size)| {
         std::panic::catch_unwind(|| {
-            let (text, cut) = markdown::decode(&bytes);
+            // A page's `<meta>` may name a single-byte code page (P11-M4).
+            let (text, cut, encoding) = if class == Class::Html {
+                crate::html::decode(&bytes)
+            } else {
+                let (text, cut) = markdown::decode(&bytes);
+                (text, cut, markdown::encoding(&bytes).to_string())
+            };
             let (doc, lines) = match class {
                 Class::Html => (crate::html::parse(&text, Some(&base)), 0),
                 Class::Text => {
@@ -554,7 +560,7 @@ fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usiz
                 }
                 _ => (markdown::parse_doc(&text, Some(&base)), 0),
             };
-            (doc, cut, size, lines, markdown::encoding(&bytes))
+            (doc, cut, size, lines, encoding)
         })
         .map_err(|p| {
             let msg = panic_text(&*p);
@@ -589,6 +595,10 @@ fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usiz
     let n = blocks.len();
     match class {
         Class::Text => eprintln!("[preview] pane={pane} gen={seq} {}: text, {lines} lines, {size} bytes, {encoding}{cut_note}", path.display()),
+        Class::Html => eprintln!(
+            "[preview] pane={pane} gen={seq} {}: html, {n} blocks ({headings} headings, {code} code, {tables} tables, {pictures} images), parsed in {ms:.0} ms{cut_note}, {encoding}",
+            path.display()
+        ),
         _ => eprintln!(
             "[preview] pane={pane} gen={seq} {}: {}, {n} blocks ({headings} headings, {code} code, {tables} tables, {pictures} images), parsed in {ms:.0} ms{cut_note}",
             path.display(),

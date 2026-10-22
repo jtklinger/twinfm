@@ -18,6 +18,8 @@ const BREAKS: &[&str] = &[
     "p", "div", "section", "article", "main", "header", "footer", "aside", "figure", "figcaption", "address", "details", "summary", "dl", "dt",
     "dd", "form", "fieldset", "center", "body", "html",
 ];
+/// A `colspan` past this counts as this (the HTML standard's own limit is 1,000).
+const MAX_SPAN: usize = 64;
 /// Elements that never have an end tag.
 const VOID: &[&str] = &["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"];
 
@@ -334,8 +336,8 @@ impl Ink {
 struct Table {
     rows: Vec<Row>,
     row: Option<(Vec<Cell>, bool)>,
-    /// The open cell, and whether it is a `th`.
-    cell: Option<(Ink, bool)>,
+    /// The open cell, whether it is a `th`, and its `colspan` (P11-M4).
+    cell: Option<(Ink, bool, usize)>,
     thead: bool,
     /// Tables open inside the cells.
     inner: usize,
@@ -343,11 +345,13 @@ struct Table {
 
 impl Table {
     fn end_cell(&mut self) {
-        let Some((mut ink, th)) = self.cell.take() else { return };
+        let Some((mut ink, th, span)) = self.cell.take() else { return };
         let i = ink.take();
         let md = if th && !i.md.is_empty() { format!("**{}**", i.md) } else { i.md };
         let (cells, all_th) = self.row.get_or_insert_with(|| (Vec::new(), true));
         cells.push(Cell { md, plain: i.plain.trim().to_string() });
+        // A cell spanning columns is followed by empty ones, so the cells after it line up.
+        cells.extend((1..span).map(|_| Cell::default()));
         *all_th &= th;
     }
 
@@ -385,7 +389,7 @@ impl Builder {
     /// The inline content text goes into now: the open table cell's, else the paragraph's.
     fn ink(&mut self) -> &mut Ink {
         match self.table.as_mut().and_then(|t| t.cell.as_mut()) {
-            Some((ink, _)) => ink,
+            Some((ink, ..)) => ink,
             None => &mut self.para,
         }
     }
@@ -505,7 +509,8 @@ impl Builder {
                     "tr" => t.end_row(),
                     "td" | "th" => {
                         t.end_cell();
-                        t.cell = Some((Ink::default(), name == "th"));
+                        let span = attr(attrs, "colspan").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, MAX_SPAN);
+                        t.cell = Some((Ink::default(), name == "th", span));
                     }
                     "thead" => {
                         t.end_row();
@@ -585,7 +590,7 @@ impl Builder {
     /// Inside a heading or a table's head cell: the whole is bold, so a bold run is not written.
     fn bold(&self) -> bool {
         match self.table.as_ref().and_then(|t| t.cell.as_ref()) {
-            Some((_, th)) => *th,
+            Some((_, th, _)) => *th,
             None => self.heading.is_some(),
         }
     }
@@ -721,6 +726,107 @@ impl Builder {
         }
         self.flush();
         Doc { blocks: self.out, remote: self.remote }
+    }
+}
+
+/// Windows-1252's characters for the bytes 0x80 to 0x9F (the rest of its upper half is Latin-1);
+/// the five bytes it leaves undefined stand for themselves, as the HTML standard maps them.
+const CP1252: [u16; 32] = [
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F, 0x0090,
+    0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+];
+/// ISO-8859-15's eight changes to Latin-1.
+const ISO8859_15: [(u8, u16); 8] = [(0xA4, 0x20AC), (0xA6, 0x0160), (0xA8, 0x0161), (0xB4, 0x017D), (0xB8, 0x017E), (0xBC, 0x0152), (0xBD, 0x0153), (0xBE, 0x0178)];
+
+/// The single-byte code pages TwinFM reads a page in (P11-M4). The HTML standard reads a page
+/// labelled ISO-8859-1 or ASCII as Windows-1252, a superset, and so does this.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CodePage {
+    Cp1252,
+    Iso8859_15,
+}
+
+impl CodePage {
+    fn char(self, b: u8) -> char {
+        let u = match (self, b) {
+            (_, 0..=0x7F) => u16::from(b),
+            (CodePage::Cp1252, 0x80..=0x9F) => CP1252[usize::from(b - 0x80)],
+            (CodePage::Iso8859_15, _) => ISO8859_15.iter().find(|(x, _)| *x == b).map_or(u16::from(b), |&(_, u)| u),
+            _ => u16::from(b),
+        };
+        char::from_u32(u32::from(u)).unwrap_or(char::REPLACEMENT_CHARACTER)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            CodePage::Cp1252 => "windows-1252",
+            CodePage::Iso8859_15 => "ISO-8859-15",
+        }
+    }
+}
+
+/// What a page's `<meta>` says it is written in.
+#[derive(Debug, PartialEq)]
+pub enum Charset {
+    /// None given, or UTF-8; also UTF-16 named in a `<meta>`, which the HTML standard reads as
+    /// UTF-8 (a page that is really UTF-16 starts with its byte order mark, read before this).
+    Utf8,
+    Single(CodePage),
+    /// A label TwinFM has no table for (read as UTF-8, invalid bytes replaced, and named).
+    Unknown(String),
+}
+
+/// The charset a page's first 1,024 bytes declare (the HTML standard's prescan, simplified): a
+/// `<meta charset="...">`, or a `<meta http-equiv="Content-Type" content="text/html; charset=...">`.
+pub fn meta_charset(bytes: &[u8]) -> Charset {
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]);
+    let lower = head.to_ascii_lowercase();
+    let mut from = 0;
+    let label = loop {
+        let Some(i) = lower[from..].find("<meta") else { break None };
+        let start = from + i + 5;
+        let end = lower[start..].find('>').map_or(lower.len(), |j| start + j);
+        from = end;
+        let attrs = &lower[start..end];
+        if let Some(c) = attr(attrs, "charset") {
+            break Some(c);
+        }
+        if let Some(c) = attr(attrs, "content").and_then(|c| c.split_once("charset=").map(|(_, r)| r.to_string())) {
+            break Some(c.trim_matches(['"', '\'', ' ']).split([';', ' ']).next().unwrap_or("").to_string());
+        }
+    };
+    let Some(label) = label.map(|l| l.trim().to_string()) else { return Charset::Utf8 };
+    match label.as_str() {
+        "" | "utf-8" | "utf8" | "unicode-1-1-utf-8" | "utf-16" | "utf-16le" | "utf-16be" | "unicode" | "ucs-2" => Charset::Utf8,
+        "windows-1252" | "cp1252" | "x-cp1252" | "iso-8859-1" | "iso8859-1" | "iso_8859-1" | "latin1" | "l1" | "us-ascii" | "ascii" | "cp819"
+        | "ibm819" | "iso-ir-100" | "csisolatin1" | "ansi_x3.4-1968" => Charset::Single(CodePage::Cp1252),
+        "iso-8859-15" | "iso8859-15" | "iso_8859-15" | "iso885915" | "latin9" | "l9" | "csisolatin9" | "latin-9" => Charset::Single(CodePage::Iso8859_15),
+        _ => Charset::Unknown(label),
+    }
+}
+
+/// A page's text from its first bytes (`MAX_BYTES` + 1 read): a byte order mark first, then the
+/// `<meta>` charset, else UTF-8, as `markdown::decode` cuts it. Also whether it was cut and the
+/// encoding's name for the `[preview]` line.
+pub fn decode(bytes: &[u8]) -> (String, bool, String) {
+    let bom = bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) || bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+    let utf8 = |note: String| {
+        let (text, cut) = markdown::decode(bytes);
+        (text, cut, format!("{}{note}", markdown::encoding(bytes)))
+    };
+    match if bom { Charset::Utf8 } else { meta_charset(bytes) } {
+        Charset::Utf8 => utf8(String::new()),
+        Charset::Unknown(label) => utf8(format!(", charset \"{label}\" not known")),
+        Charset::Single(cp) => {
+            let cut = bytes.len() > markdown::MAX_BYTES;
+            let mut head = &bytes[..bytes.len().min(markdown::MAX_BYTES)];
+            if cut {
+                if let Some(i) = head.iter().rposition(|&b| b == b'\n') {
+                    head = &head[..=i];
+                }
+            }
+            (head.iter().map(|&b| cp.char(b)).collect(), cut, cp.name().to_string())
+        }
     }
 }
 
@@ -897,5 +1003,36 @@ fn main() {
         assert_eq!((b[0].anchor.as_str(), b[1].anchor.as_str()), ("here", "s2"));
         // A local picture with no base is its alt text.
         assert_eq!(parse("<img src=a.png alt=A>", None).blocks[0].plain, "A");
+    }
+
+    #[test]
+    fn colspan_repeats_empty_cells() {
+        let b = parse("<table><tr><th colspan=3>Head</th></tr><tr><td>a<td colspan='2'>b<tr><td colspan=0>c<td>d<td colspan=x>e</table>", None).blocks;
+        let rows: Vec<Vec<&str>> = b[0].rows.iter().map(|r| r.cells.iter().map(|c| c.plain.as_str()).collect()).collect();
+        assert_eq!(rows, vec![vec!["Head", "", ""], vec!["a", "b", ""], vec!["c", "d", "e"]]);
+        assert_eq!(parse("<table><tr><td colspan=999>x</table>", None).blocks[0].rows[0].cells.len(), MAX_SPAN);
+    }
+
+    #[test]
+    fn the_meta_charset() {
+        assert_eq!(meta_charset(b"<html><meta charset=\"Windows-1252\">"), Charset::Single(CodePage::Cp1252));
+        assert_eq!(meta_charset(b"<META http-equiv=Content-Type content='text/html; charset=iso-8859-1'>"), Charset::Single(CodePage::Cp1252));
+        assert_eq!(meta_charset(b"<meta content=\"text/html;charset=ISO-8859-15\" http-equiv=\"content-type\">"), Charset::Single(CodePage::Iso8859_15));
+        assert_eq!(meta_charset(b"<meta charset=utf-16>"), Charset::Utf8);
+        assert_eq!(meta_charset(b"<meta name=viewport content=\"width=device-width\"><p>x"), Charset::Utf8);
+        assert_eq!(meta_charset(b"<meta charset=shift_jis>"), Charset::Unknown("shift_jis".into()));
+        // Only the first 1,024 bytes are looked at.
+        let mut late = vec![b' '; 1100];
+        late.extend_from_slice(b"<meta charset=windows-1252>");
+        assert_eq!(meta_charset(&late), Charset::Utf8);
+        // Windows-1252's 0x80 to 0x9F, Latin-1's upper half, and ISO-8859-15's euro.
+        let page = b"<meta charset=windows-1252><p>\x93caf\xe9\x94 \x80 \x81\xff";
+        let (text, cut, name) = decode(page);
+        assert_eq!((text.ends_with("\u{201C}caf\u{e9}\u{201D} \u{20AC} \u{81}\u{ff}"), cut, name.as_str()), (true, false, "windows-1252"));
+        assert_eq!(parse(&text, None).blocks[0].plain, "\u{201C}caf\u{e9}\u{201D} \u{20AC} \u{81}\u{ff}");
+        assert!(decode(b"<meta charset=latin9>\xa4\xbd").0.ends_with("\u{20AC}\u{153}"));
+        // A byte order mark wins over the meta; an unknown label is named.
+        assert_eq!(decode(b"\xef\xbb\xbf<meta charset=windows-1252>\xc3\xa9").0, "<meta charset=windows-1252>\u{e9}");
+        assert_eq!(decode(b"<meta charset=koi8-r>\xc1").2, "UTF-8 (invalid bytes replaced), charset \"koi8-r\" not known");
     }
 }
