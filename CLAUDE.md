@@ -839,7 +839,12 @@ them before changing the list.
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
   0.35, its handle's drag); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
   `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
-  `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
+  `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme; since P10-M3 the
+  native title bar follows it through `DWMWA_USE_IMMERSIVE_DARK_MODE`, set when the window's handle is
+  first fetched and on each change, and **a system setting sets no colour scheme at start**: the style's
+  own binding follows Windows live, while setting the scheme to unknown would blank Slint's default
+  text colour in dark mode; a switch back to system at runtime sets Windows' mode of that moment until
+  the next start); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
   the `_right` three (each pane's column widths, logical px, defaults 120, 90, 140, 40 to 2,000;
   the header grips set them). `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
@@ -1065,7 +1070,10 @@ them before changing the list.
 - Screenshots of a scripted run: the femtovg window captures blank (CopyFromScreen and
   PrintWindow alike). Run with `SLINT_BACKEND=winit-software` and capture with
   `PrintWindow(hwnd, hdc, 2)` from a script started in the background, finding the window by its
-  title prefix `TwinFM - ` (2026-10-18, P7-M2's menu check).
+  title prefix `TwinFM - ` (2026-10-18, P7-M2's menu check). **The title bar is not in that capture**:
+  `PrintWindow` draws a stale frame (it showed the bar dark after the theme had set it light, P10-M3), so
+  the bar is checked by a `CopyFromScreen` of the window's top 60 px from `GetWindowRect`, with the real
+  renderer; the client area stays the `PrintWindow` capture.
 
 ## License
 The app is MIT. Slint is used under its Royalty-free 2.0 license, which allows a modified

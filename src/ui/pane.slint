@@ -1,5 +1,5 @@
-import { ListView, LineEdit } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { ListView } from "std-widgets.slint";
+import { Theme, Field } from "theme.slint";
 
 // kind: 0 directory, 1 file, 2 drive, 3 other reparse point, 4 junction, 5 symbolic link,
 // 6 cloud placeholder, 7 app execution alias (model::Kind)
@@ -1420,10 +1420,10 @@ export component Pane inherits Rectangle {
                 // Behind the entry, which takes no side button: the mouse's Back or Forward button
                 // over it is ignored, not taken by the pane as a move in the history (P6-M3).
                 TouchArea { }
-                path-edit := LineEdit {
+                path-edit := Field {
                     width: 100%;
                     height: 100%;
-                    accessible-label: "Path";
+                    label: "Path";
                     placeholder-text: "Path";
                     accepted(s) => {
                         root.navigate(s);
@@ -1856,10 +1856,10 @@ export component Pane inherits Rectangle {
         // As behind the path entry: Back or Forward over the editor is ignored, not taken by the
         // row under it (P6-M3).
         TouchArea { }
-        edit := LineEdit {
+        edit := Field {
             width: 100%;
             height: 100%;
-            accessible-label: root.edit-mode == 1 ? "Rename" : root.edit-mode == 3 ? "New file name" : "New folder name";
+            label: root.edit-mode == 1 ? "Rename" : root.edit-mode == 3 ? "New file name" : "New folder name";
             accepted(t) => {
                 root.edit-commit(root.edit-mode, root.edit-original, t);
                 root.end-edit();

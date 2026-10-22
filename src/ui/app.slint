@@ -1,6 +1,6 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
-import { ListView, AboutSlint, LineEdit, ComboBox } from "std-widgets.slint";
-import { Theme, Btn, Switch } from "theme.slint";
+import { ListView, AboutSlint } from "std-widgets.slint";
+import { Theme, Btn, Switch, Field, Choice } from "theme.slint";
 // Inter (SIL Open Font License 1.1, src/ui/fonts/OFL.txt), the face of the look (P10-M1 task 4):
 // the three static weights the window uses, embedded in the exe.
 import "fonts/Inter-Regular.ttf";
@@ -58,12 +58,12 @@ component SideRow inherits Rectangle {
         }
     }
     // Exists only while the row is being renamed; takes the focus with the title selected.
-    if root.editing: LineEdit {
+    if root.editing: Field {
         x: 8px;
         width: parent.width - 12px;
         height: parent.height;
         text: root.item.label;
-        accessible-label: "Bookmark title";
+        label: "Bookmark title";
         init => {
             self.focus();
             self.select-all();
@@ -197,12 +197,14 @@ component MenuToolButton inherits Rectangle {
     background: ta.has-hover ? Theme.muted : transparent;
     accessible-role: button;
     accessible-label: root.tool.text;
-    Text {
-        text: root.tool.glyph;
-        font-family: "Segoe Fluent Icons";
-        font-size: 16px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    // The Lucide set by the button's name (P10-M3); winmenu.rs's glyph is left as it is.
+    Image {
+        x: (parent.width - 16px) / 2;
+        y: (parent.height - 16px) / 2;
+        width: 16px;
+        height: 16px;
+        colorize: Theme.fg;
+        source: root.tool.text == "Cut" ? @image-url("icons/scissors.svg") : root.tool.text == "Copy" ? @image-url("icons/copy.svg") : root.tool.text == "Rename" ? @image-url("icons/pencil.svg") : root.tool.text == "Share" ? @image-url("icons/share.svg") : root.tool.text == "Delete" ? @image-url("icons/trash.svg") : @image-url("icons/clipboard-paste.svg");
     }
     ta := TouchArea { clicked => { root.picked(); } }
 }
@@ -1321,19 +1323,19 @@ export component App inherits Window {
                         spacing: 8px;
                         Row {
                             Text { text: "Left start folder"; vertical-alignment: center; }
-                            start-left-edit := LineEdit {
+                            start-left-edit := Field {
                                 text: root.dlg-start-left;
                                 placeholder-text: "C:\\";
-                                accessible-label: "Left start folder";
+                                label: "Left start folder";
                                 edited(t) => { root.settings-stage("start_left", t); }
                             }
                         }
                         Row {
                             Text { text: "Right start folder"; vertical-alignment: center; }
-                            LineEdit {
+                            Field {
                                 text: root.dlg-start-right;
                                 placeholder-text: "The left pane's folder";
-                                accessible-label: "Right start folder";
+                                label: "Right start folder";
                                 edited(t) => { root.settings-stage("start_right", t); }
                             }
                         }
@@ -1377,26 +1379,26 @@ export component App inherits Window {
                             Text { text: "View"; vertical-alignment: center; }
                             HorizontalLayout {
                                 spacing: 12px;
-                                ComboBox {
+                                Choice {
                                     model: ["Left: details", "Left: large icons", "Left: medium icons"];
                                     current-index: root.dlg-view-left;
-                                    accessible-label: "View in the left pane";
+                                    label: "View in the left pane";
                                     selected => { root.settings-stage("view_left", self.current-index == 2 ? "medium" : self.current-index == 1 ? "large" : "details"); }
                                 }
-                                ComboBox {
+                                Choice {
                                     model: ["Right: details", "Right: large icons", "Right: medium icons"];
                                     current-index: root.dlg-view-right;
-                                    accessible-label: "View in the right pane";
+                                    label: "View in the right pane";
                                     selected => { root.settings-stage("view_right", self.current-index == 2 ? "medium" : self.current-index == 1 ? "large" : "details"); }
                                 }
                             }
                         }
                         Row {
                             Text { text: "Theme"; vertical-alignment: center; }
-                            ComboBox {
+                            Choice {
                                 model: ["System", "Light", "Dark"];
                                 current-index: root.dlg-theme;
-                                accessible-label: "Theme";
+                                label: "Theme";
                                 selected => { root.settings-stage("theme", self.current-index == 1 ? "light" : self.current-index == 2 ? "dark" : "system"); }
                             }
                         }
@@ -1429,10 +1431,10 @@ export component App inherits Window {
                         }
                         Row {
                             Text { text: "Toolbar"; vertical-alignment: center; }
-                            ComboBox {
+                            Choice {
                                 model: ["None", "Across the top", "In each pane"];
                                 current-index: root.dlg-toolbar;
-                                accessible-label: "Toolbar";
+                                label: "Toolbar";
                                 selected => { root.settings-stage("toolbar", self.current-index == 0 ? "none" : self.current-index == 2 ? "pane" : "top"); }
                             }
                         }

@@ -104,3 +104,132 @@ export component Switch inherits Rectangle {
     }
     ta := TouchArea { clicked => { root.checked = !root.checked; root.toggled(); } }
 }
+
+// A text field in the look (P10-M3): a TextInput in an outline Rectangle, the surface the fluent
+// LineEdit offered where TwinFM used it (text, placeholder, accepted, edited, key-pressed,
+// has-focus, focus and select-all). `label` is the input's accessible label.
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder-text;
+    in property <string> label;
+    out property <bool> has-focus: input.has-focus;
+    callback accepted(string);
+    callback edited(string);
+    callback key-pressed(KeyEvent) -> EventResult;
+    // focus() on the field goes to the input (a component cannot define focus() itself).
+    forward-focus: input;
+    public function select-all() { input.select-all(); }
+    height: 32px;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.cursor : Theme.border;
+    border-radius: Theme.radius;
+    background: Theme.card;
+    clip: true;
+    // The press lands in the input wherever it falls in the field.
+    TouchArea { clicked => { input.focus(); } }
+    input := TextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        single-line: true;
+        vertical-alignment: center;
+        font-size: 13px;
+        color: Theme.fg;
+        selection-background-color: Theme.selection;
+        selection-foreground-color: Theme.fg;
+        accessible-label: root.label;
+        text <=> root.text;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(self.text); }
+        key-pressed(e) => { root.key-pressed(e) }
+    }
+    if root.text == "": Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.placeholder-text;
+        vertical-alignment: center;
+        overflow: elide;
+        font-size: 13px;
+        color: Theme.fg-muted;
+    }
+}
+
+// A choice in the look (P10-M3): the current option and a chevron on an outline button; a click,
+// Space or Return opens the options under it (the window's own popup, so it works inside the
+// Settings dialog's popup as the fluent ComboBox did); Up and Down move the choice without opening.
+// selected() fires after current-index changed, as the ComboBox's did.
+export component Choice inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current-index;
+    in property <string> label;
+    callback selected();
+    height: 32px;
+    min-width: 120px;
+    border-width: 1px;
+    border-color: fs.has-focus ? Theme.cursor : (ta.has-hover ? Theme.ring : Theme.border);
+    border-radius: Theme.radius;
+    background: Theme.card;
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-value: root.model[root.current-index];
+    accessible-action-default => { popup.show(); }
+    function step(by: int) {
+        let next = max(0, min(root.model.length - 1, root.current-index + by));
+        if (next != root.current-index) {
+            root.current-index = next;
+            root.selected();
+        }
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.DownArrow) { root.step(1); return accept; }
+            if (e.text == Key.UpArrow) { root.step(-1); return accept; }
+            if (e.text == Key.Return || e.text == " ") { popup.show(); return accept; }
+            return reject;
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 6px;
+        Text { text: root.model[root.current-index]; vertical-alignment: center; overflow: elide; font-size: 13px; color: Theme.fg; horizontal-stretch: 1; }
+        Rectangle {
+            width: 14px;
+            Image { y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: @image-url("icons/chevron-down.svg"); colorize: Theme.fg-muted; }
+        }
+    }
+    ta := TouchArea { clicked => { fs.focus(); popup.show(); } }
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 2px;
+        width: root.width;
+        Rectangle {
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: Theme.radius;
+            drop-shadow-blur: 12px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #00000033;
+            VerticalLayout {
+                padding: 4px;
+                for opt[i] in root.model: Rectangle {
+                    height: 32px;
+                    border-radius: Theme.radius;
+                    background: i == root.current-index ? Theme.selection : (ota.has-hover ? Theme.muted : transparent);
+                    accessible-role: button;
+                    accessible-label: opt;
+                    Text { x: 8px; width: parent.width - 16px; height: parent.height; text: opt; vertical-alignment: center; overflow: elide; font-size: 13px; color: Theme.fg; }
+                    ota := TouchArea {
+                        clicked => {
+                            root.current-index = i;
+                            root.selected();
+                            popup.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

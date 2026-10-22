@@ -582,6 +582,152 @@ here touches a row).
 3. **The Windows 11 menu's icon row with the Lucide set**: `src/winmenu.rs`'s items unchanged, only
    the glyphs (Cut, Copy, Rename, Share, Delete, Paste) drawn from `src/ui/icons/`.
 
+Go: 2026-10-22 after P10-M2 merged (main ef83a3d), Jeremy's words relayed by the coordinating session:
+"The P10-M2 console checks are fine; merge PR #94 (squash, no --delete-branch), rebuild target\release,
+and start P10-M3." Branch `feat/p10-m3-leftovers` from ef83a3d. Reference `target-p10m2` (aa2ecbf),
+tag ab43, the defaults triplet.
+
+### Settled first (2026-10-22, before any code)
+
+**1. The title bar follows the theme setting.** Windows draws the native title bar from the app mode
+unless the window asks otherwise; `DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &TRUE
+or FALSE)` asks (`windows-sys` gains the `Win32_Graphics_Dwm` feature; no crate). It is set in two
+places: in `main_hwnd` the moment the window's handle is first fetched (the setting's mode from the
+config), and in `apply_theme` on every change through the dialog. Light sets it off, dark on; system
+sets what Windows would (the app mode read from `HKCU\...\Themes\Personalize\AppsUseLightTheme`,
+0 meaning dark), so the bar matches the window at once. **A known limit, for the console check**: a
+system app-mode change while the setting is light or dark may flip the bar back (winit re-applies
+the system theme to the title bar on that event); the bar is right again after the dialog's OK or a
+restart, and system mode follows Windows as today. `TWINFM_SCHEME` sets the bar as it sets the
+scheme. The pure part, tested: `settings::ThemeMode::title_bar_dark(self, system_dark: bool) -> bool`.
+`[settings] title bar: dark|light (mode)` on each set.
+
+**2. The look's choice and text field.** Two components in `theme.slint`, drawn as the search box
+and the look's buttons are (the hairline, 6 px corners, the card colour, the accent ring on focus,
+13 px text, the muted placeholder):
+
+- `Field`: a `TextInput` in an outline `Rectangle`, the surface the five `LineEdit`s use today and
+  nothing more: `text` (in-out), `placeholder-text`, `accessible-label` (forwarded to the input),
+  `accepted(string)`, `edited(string)`, `key-pressed(KeyEvent) -> EventResult`, `has-focus` (out, the
+  input's), `focus()` and `select-all()`. It replaces the Settings dialog's two start-folder fields,
+  the path bar's text entry, the rename editor and the bookmark title editor, each keeping its
+  callbacks and `changed has-focus` handlers word for word. The search box's inline input stays as
+  built in P10-M2 (it is that field already, with its own button row).
+- `Choice`: a button showing the current option's text and a chevron, 32 px, the outline; a click
+  opens a `PopupWindow` under it listing the options as 32 px rows (muted on hover, the accent tint
+  on the current one; the window's own popup, as the fluent `ComboBox` uses, so it works inside the
+  Settings dialog's popup as the `ComboBox` does); `model` (`[string]`), `current-index` (in-out),
+  `selected()` (after the index changed; the dialog's handlers read `self.current-index` as today).
+  It replaces the dialog's four `ComboBox`es (view left, view right, toolbar, theme). The driver's
+  `settings set` goes through `settings-stage` and is untouched; `key Escape` in the dialog as
+  before; a scripted pick of an option is not added (no step picked one before either).
+- What stays fluent after this: `ListView` and `ScrollView` (layout, not look), `AboutSlint` (the
+  licence asks for it), the About dialog's text. CLAUDE.md's "`ComboBox` and `LineEdit` stay fluent"
+  note goes.
+
+**3. The Windows 11 menu's icon row in the Lucide set.** `MenuToolButton` draws the row's button from
+its `text` (Cut, Copy, Rename, Share, Delete, Paste: `src/winmenu.rs`'s `Tool` list, unchanged, its
+`glyph` field left as it is for the record) through a Lucide image per name: scissors, copy, pencil,
+`share.svg` (new, Lucide's share-2), trash, clipboard-paste; 16 px, `Theme.fg`. The menu's item rows
+keep their Segoe glyphs (Open, Open with, the terminal, Copy path, Properties: not in the brief).
+
+**Code order, tests first**: item 1 (the pure rule and its test, the two set points, the line), item
+3 (the image map and `share.svg`), item 2 (`Field`, then its five uses; `Choice`, then its four
+uses), each built and screenshotted (the Settings dialog open in both schemes with a choice popped,
+the path entry, the rename editor, a bookmark being renamed, the icon row of a row's menu). Soak: the
+P5-M3 soak as it is (its cycles rename through the editor, open the icon-row menu and pick from it,
+and run `settings set` through the dialog); no new step. Gate: `target-p10m3` against `target-p10m2`
+(aa2ecbf), tag ab43, the defaults (nothing per row; the dialog, the editors and the menu are not in
+the scenario). Console checks: the title bar in each mode and after a system app-mode change; every
+field typed into and committed; each choice opened, picked by click and by keyboard; the icon row's
+buttons; 150% scaling.
+
+### What landed (2026-10-22)
+
+- **54afcea, items 1 and 3**: `settings::ThemeMode::title_bar_dark` and its test; `main.rs`
+  `set_title_bar` (`DwmSetWindowAttribute`, `DWMWA_USE_IMMERSIVE_DARK_MODE`; `windows-sys` gains
+  `Win32_Graphics_Dwm`), called from `main_hwnd` when the handle is first fetched and from
+  `apply_theme`; `system_dark` reads `AppsUseLightTheme`; `title_bar_mode` gives `TWINFM_SCHEME`
+  precedence; `[settings] title bar: dark|light (mode)`. `MenuToolButton` draws the icon row from the
+  button's text through the Lucide set, `share.svg` added; `winmenu.rs` untouched.
+- **1c0c48d, item 2**: `theme.slint`'s `Field` (a `TextInput` in the outline; `forward-focus` to the
+  input, since a component cannot define `focus()` itself) and `Choice` (the current option and a
+  chevron; a `PopupWindow` of 32 px rows under it on click, Space or Return; Up and Down move the
+  choice; `accessible-role: combobox`); the five fields and four choices replaced in `app.slint` and
+  `pane.slint`, their callbacks and `changed has-focus` handlers word for word, `accessible-label`
+  become `label`. `std-widgets` now provides `ListView`, `ScrollView` and `AboutSlint` only.
+
+**Three things found on the way**, each settled in the code:
+
+- **A system theme setting must not set the scheme to unknown.** The first build set
+  `Palette.color-scheme` to unknown for system mode at start; the fluent palette followed the OS, but
+  Slint's default text colour (the dialog's labels, the About text, every `Text` without a colour)
+  turned black in dark mode. Now a system setting sets nothing at start (the style's own binding
+  follows the OS live, as before P10-M1 task 7), and a switch back to system at runtime sets the mode
+  Windows has at that moment (`system_dark`), kept until the next start.
+- **`apply_theme` at start ran before the app state existed**: its new title-bar step read the state
+  and panicked (seen in a scripted run, "state initialised"); it now reads the state with
+  `try_borrow`, and at start the bar is set by `main_hwnd` instead.
+- **`PrintWindow` shows a stale frame.** The P7-M2 screenshot method captured the title bar dark
+  after the attribute had set it light; a `CopyFromScreen` of the window's top 60 px shows it right
+  (light after Light, dark after Dark, through the dialog, live). The title bar is checked that way
+  from now on; the client area is still the P7-M2 capture.
+
+Scripted checks: the icon row of a row's menu in the light scheme (Lucide); the theme switched
+system, light, dark, system through the dialog with the bar captured from the screen at each step
+and `[settings] title bar` logged; the Settings dialog in dark after a light-and-back round trip
+(labels, fields, choices); the rename editor, the bookmark editor and the path entry in light, each
+the look's field with the accent ring and the text selected; `settings set start_right D:\work` typed
+into a field. The Choice's popup was not opened by a script (no step clicks it; the console check
+does).
+
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-22, on 1c0c48d's build, the machine otherwise
+idle): exit 0, 0 panics, 5 cycles, 290 jobs (0 failed), drags dropped 0, toolbar presses refused 0,
+renamed to t 5 (the new `Field` editor), menus shown 40 (the Lucide icon row), menupicks refused 0,
+spring-loaded tabs 0, zip jobs not done 0, picture failures 0, Office unreadable 0, alt text 0,
+waitpreview timeouts 0, worker panics 0, search box 4 / 4 / 4; working set 133 to 226 MB.
+
+### Gate
+
+Run by Jeremy on 2026-10-22, finished 15:17 (tag ab43, `C:\traces\gate-p10m3.ps1`, the same file as
+`tools/gate-p10m3.ps1`, 9 min): `target-p10m3` (4f07cba, built `--locked` from a detached checkout)
+against `target-p10m2` (aa2ecbf, P10-M2's gate build), the defaults only, three runs each interleaved.
+Every run passed the wrapper's checks, no panic.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p10m2-1 / 2 / 3 | 19.1 / 18.8 / 22.5 | 20.2 / 21.9 / 23.9 | 2.29 / 2.21 / 2.99 |
+| p10m3-1 / 2 / 3 | 19.3 / 18.7 / 23.1 | 20.3 / 19.8 / 21.7 | 2.24 / 2.25 / 2.89 |
+
+Medians 19.1 (reference) / 19.3 (candidate): no gap (not every reference run below every candidate
+run; the medians differ by a fifth of a point). Rounds 1 and 2 in the normal state (render p50 2.21 to
+2.29 ms), round 3 slow for both binaries (2.99 / 2.89, ab23's state); like for like 19.1 / 18.8
+against 19.3 / 18.7, every normal-state run under 20. **Held**: nothing per row changed and the
+triplet sees nothing.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+`target-p10m3\release\twinfm.exe` (the gated build), from a normal console:
+
+- **The title bar**: Settings > Theme set to Light, Dark and System in turn, the bar following each
+  on OK; then, with the window open and the setting on System, Windows' own app mode switched
+  (Settings > Personalization > Colors > Choose your mode): the bar and the window follow; then the
+  same switch with the setting on Light or Dark (the known limit from Settled first: the bar may flip
+  back with Windows until the dialog's OK or a restart; the window keeps the setting).
+- **The Settings dialog with the keyboard**: Tab between the fields, the switches and the choices;
+  in a choice Up and Down move the option, Space or Return open its popup, a click or Return picks,
+  Escape closes the popup (and, with no popup, the dialog); a field typed into, its text selected on
+  Tab in.
+- **The editors**: F2 on a row (the rename editor: the name selected, Return commits, Escape
+  cancels), Ctrl+Shift+N (a new folder named in it), F2 on a bookmark row in the sidebar (its title
+  editor), Ctrl+L (the path entry: the folder selected, a typed path navigates, Escape returns to the
+  crumbs); each the look's field with the accent ring.
+- **The filter box** as in P10-M2 (typing filters, Return searches), beside the path entry.
+- **The Windows 11 menu's icon row** on a file, a folder and the background, in both schemes: Cut,
+  Copy, Rename, Share (a file), Delete, Paste (the background with files on the clipboard), each
+  button's icon and its action.
+- **150% scaling**: the fields and choices, the popup's rows, the icon row.
+
 ## Deferred to Phase 12 (roadmap)
 
 Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadmap list."
