@@ -417,8 +417,9 @@ test), so it is the renderer's font fallback, to be read with femtovg at the con
 
 ### Gate
 
-Pending: the wrapper is `tools/gate-p11m4.ps1` (the defaults and the preview triplet,
-`C:\traces\preview.toml`, against `target-p10m3`), its tag to be allocated by the coordinating session.
+Pending: the wrapper is `tools/gate-p11m4.ps1`, tag ab45 (the defaults and the preview triplet,
+`C:\traces\preview.toml`, against `target-p10m3`), after ab44 (P11-M1); the soak runs before both gates (the coordinating
+session's order).
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 

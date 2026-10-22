@@ -1,8 +1,8 @@
-# P11-M4 gate, tag TAG: target-p11m4 from the P11-M4 PR's code head 2d3a096 (the preview gaps bundle:
+# P11-M4 gate, tag ab45: target-p11m4 from the P11-M4 PR's code head 2d3a096 (the preview gaps bundle:
 # PDF zoom, HTML's meta charset, the full entity table and colspan, HEIC, HEIF and AVIF through
 # Windows' decoders, the Markdown details, "Copy text"; the docs and this wrapper follow it) against
 # target-p10m3 (4f07cba, P10-M3's gate build, the last merged milestone's), two pairs interleaved in
-# one session under the one tag TAG: the defaults (preview off: expected flat) and the preview column
+# one session under the one tag ab45: the defaults (preview off: expected flat) and the preview column
 # (C:\traces\preview.toml, read-only, `preview = true`: the column shown while the lists scroll, the
 # scenario's cursor on no file), the reference run with the same settings file as the candidate each
 # time. Each round runs p10m3, p11m4, p10m3-preview, p11m4-preview. 12 runs, about 18 minutes, then
@@ -15,14 +15,14 @@
 #   powershell -ExecutionPolicy Bypass -File C:\traces\gate-p11m4.ps1
 # (a copy of tools\gate-p11m4.ps1 on the P11-M4 branch; the scripts it calls are the gate checkout's
 # tools\wpr-triplet.ps1, which calls wpr-gate.ps1 beside it, and tools\analyze-trace.py).
-# Writes C:\traces\twinfm-TAG-*.etl (+ .stderr.txt), C:\traces\export\TAG-*.txt and
-# C:\traces\gate-TAG-summary.txt.
+# Writes C:\traces\twinfm-ab45-*.etl (+ .stderr.txt), C:\traces\export\ab45-*.txt and
+# C:\traces\gate-ab45-summary.txt.
 # The gate build is already made (Claude built it, --locked, from the detached checkout); the build
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 $Head = '2d3a096'
-$Tag = 'TAG'
+$Tag = 'ab45'
 $Ref = 'p10m3'
 $Cand = 'p11m4'
 $Gate = "$Root\.claude\worktrees\gate-p11m4"
