@@ -29,10 +29,12 @@ preview; Word, Excel and PowerPoint read into the preview's own blocks; the thum
 bundle; four milestones run as two parallel streams, opened and closed 2026-10-21; its first section
 quotes Jeremy's kickoff decisions, § Calls made lists the lead's with the six superseded by what was
 built, and § Phase 9 close holds the gates, lessons, what is deferred and the Phase 10 candidates, daily
-use recommended), `docs/phase-10-plan.md` the Phase 10 record (UI and UX polish, opened 2026-10-22;
-P10-M1 the rust-ui look: `src/ui/theme.slint`'s tokens, the Lucide icons under `src/ui/icons/`, the dialog
-controls; its first section quotes Jeremy's decision, § Calls made lists the lead's, § Phase 10 candidates
-what Jeremy picks next), `docs/phase-11-plan.md` the Phase 11 record (the deferred
+use recommended), `docs/phase-10-plan.md` the Phase 10 record (UI and UX polish; opened and closed
+2026-10-22: P10-M1 the rust-ui look (`src/ui/theme.slint`'s tokens and controls, the Lucide icons under
+`src/ui/icons/`, Inter, the bar heights, the accent cursor and selection, the theme switch), P10-M2 the
+search box, P10-M3 the title bar, the look's field and choice, the menu's icon row; its first section
+quotes Jeremy's decision, § Calls made lists the lead's, § Phase 10 close holds the gates, lessons, what is
+deferred, the open questions and the Phase 11 note; § Deferred to Phase 12 the roadmap), `docs/phase-11-plan.md` the Phase 11 record (the deferred
 list swept and the cut features picked up: content search, the cloud and search sweep, the edge-case
 bundle with the owed checks, the preview gaps bundle, syntax colours, password PDFs through hayro; two
 streams, the preview stream after P10-M1 merges; opened 2026-10-22; its first section quotes Jeremy's
@@ -1051,7 +1053,7 @@ them before changing the list.
   3.2 ms against 2.2 to 2.3 ms in ab23) before reading the medians, and read such a session like for
   like; the gap rule is about a cost, so a candidate's median below the reference's is not a gap.
   The reference binary is the last merged milestone's
-  gate build (`target-p9m4`, 3374f2b, after P9-M4); the previous one is deleted once the new one
+  gate build (`target-p10m3`, 4f07cba, after P10-M3); the previous one is deleted once the new one
   has served as a reference. Console checks run AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running

@@ -737,3 +737,118 @@ Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadma
   since Phase 4; `src/band.rs` applies to the grid only; a press on a row starts a drag today, so the
   band would start from a press on empty space, or past a threshold on a row, settled first. Phase
   11's kickoff (PR #93) carries its own Phase 12 items; the Phase 11 close gathers them with this one.
+
+## Phase 10 close
+
+Written 2026-10-22, the day the phase opened. All three milestones are in, each squash-merged on
+Jeremy's word (quoted to the coordinating session before each merge), the merges and the rebuilds of
+`target\release` done by that session: P10-M1 the rust-ui look (#91, 8dc692a; gate build
+`target-p10m1`, b8b8853), P10-M2 the search box and button (#94, ef83a3d; `target-p10m2`, aa2ecbf),
+P10-M3 the P10-M1 leftovers (#95, 0e5b2b4; `target-p10m3`, 4f07cba). The kickoff rode on #91 (the
+record moved out of the Phase 9 record when Jeremy named the phase); this close is its own PR. The
+reference for the next milestone is `target-p10m3`, the last merged; `target-p10m1` and
+`target-p10m2` have each served as a reference and can go once `target-p10m3` has served. Phase 10
+ran as one stream in one session (the session that had made the canvas on 2026-10-21), the Phase 9
+coordinating session serialising the machine, handing the gates to Jeremy and merging; Jeremy's
+words came through it and, twice, to the stream directly, quoted back before acting.
+
+Jeremy's decisions through the phase, his words: "Phase 10 is going to be a UI/UX polish, connect
+with session 'Display windows modernization' and advise it to begin working on the polish as phase
+10." / "Yes, download Inter and bundle it as task 4." / "Task 5: keep 22 and 32 px rows; raise the
+bars to the lead's values." / "gates are complete" / "The highlight of a single line (in details) or
+large icon is difficult to see the first few times using it. Is there a way to make a highlighted
+item more visible?" / "Let's make light/dark a selectable switch inside twinfm." / "add the
+click-and-drag to phase 12, or a roadmap list. add in the search as another p10 task." / "Just merge
+91, do not start on any additional steps." / "let's proceed with the other items remaining in P10" /
+"the P10-M1 leftovers only" / "The P10-M2 console checks are fine; merge PR #94" / "console checks
+look good" / "Merge PR #95 ... and have the Phase 10 session write the Phase 10 close."
+
+The gates, against the build merged before each:
+
+| Milestone | Tag | Reference | Medians (WPR, reference / candidate) | Note |
+|---|---|---|---|---|
+| P10-M1 | ab41 | `target-p9m4` (3374f2b) | defaults 19.9 / 20.3, grid-thumbs 11.3 / 11.7 | reference run 1 slow; like for like the candidate half a point above, two defaults runs at 20.3 and 20.6; the hairline experiment ruled the per-row hairline out, Inter's shaping the remainder, accepted |
+| P10-M2 | ab42 | `target-p10m1` (b8b8853) | defaults 23.8 / 22.9 | the whole session slow (render p50 2.88 to 3.03 ms, both binaries); like for like no gap, the candidate below; the 20% bar met by neither in that state |
+| P10-M3 | ab43 | `target-p10m2` (aa2ecbf) | defaults 19.1 / 19.3 | rounds 1 and 2 normal, every run under 20; round 3 slow for both |
+
+No gap counted in any of the four settings. Two changes rode on in-app pairs alone, after P10-M1's
+gate and before its merge: the accent cursor and selection tint and the theme switch (colours and a
+dialog row, nothing per row; eight runs against the gated build read a point apart by the medians
+inside the gated build's own 16.7 to 21.7 spread), accepted as noise by the coordinating session,
+recorded with the figures so the next reference carries the caveat.
+
+What Phase 10 answered, against the kickoff's open questions and what the day raised:
+
+- **Can a look change be gate-safe?** Yes, by the rule the phase added: a change inside the same
+  boxes, with nothing new per row, costs nothing the triplet sees (ab41's defaults were half a point
+  above, and the experiment showed the per-row hairline was not it; Inter's shaping of every row's
+  text is the plausible remainder). The bar heights moved every geometry constant, the driver and
+  the soak in one commit and cost nothing either.
+- **Row height**: 22 and 32 px kept, the bars raised (tab strip 30, path bar 36, header 32, status
+  28, sidebar rows 32, toolbar 44), Jeremy's choice from the lead's recommendation; the canvas's 30 px
+  rows stay a density candidate.
+- **Inter**: bundled (1.2 MB in the exe), Jeremy's yes to the download.
+- **The accent**: taken for both schemes after Jeremy's console check, as the cursor ring and the
+  selection tint; the grey scale kept everywhere else.
+- **The theme**: a setting (system, light, dark) applied live, with the native title bar following it
+  since P10-M3; `TWINFM_SCHEME` for scripts.
+- **Search**: one box always in the path bar, Return searching, the button the hook Phase 11's
+  content search takes (one box, never two).
+
+Lessons of the phase:
+
+- **The look was seen only in dark until the switch existed.** Every screenshot of P10-M1's first five
+  tasks was the dark board, this machine's app mode; the light scheme was first seen through the
+  `TWINFM_SCHEME` override written for Jeremy's console-check fix. A restyle's first task should give
+  the scripts a way to see both schemes.
+- **A fluent widget's minimum width shows only at the first screenshot.** The search box's `LineEdit`
+  overflowed its slot and vanished unfocused in dark; the look's own field (a `TextInput` in an
+  outline) replaced it the same hour, and P10-M3 replaced the rest. Draw the look's own controls from
+  the start rather than restyling a toolkit's.
+- **A system theme must set nothing.** Setting the fluent scheme to unknown blanked Slint's default
+  text colour in dark mode; the labels of the Settings dialog vanished. The rule is in CLAUDE.md.
+- **`PrintWindow` draws a stale frame.** The title bar read dark after it had been set light; the
+  screen capture tells the truth. The rule is in CLAUDE.md § Measuring.
+- **One in-app-only change at a time, recorded.** The accent fix and the theme switch rode on in-app
+  pairs because nothing per row changed; the coordinating session accepted the reading with the
+  reference's own spread as the argument. The rule stands as Phase 9 wrote it: a triplet for anything
+  touching the rows, the icon workers' per-row work or the compose path; in-app pairs, recorded with
+  the render figures, for the rest, and the next reference carries the caveat.
+- **The session's state swung within the day**: ab42 ran whole in the slow state, ab41 and ab43 part
+  of a round each; the wrappers' render p50 column made every reading like for like without a rerun.
+- **Jeremy's console check drove two decisions in an hour** (the accent, the theme switch) and routed
+  two more (the band to Phase 12, the search box to P10-M2); the record quotes him each time, and
+  the coordinating session checked the PR's state before each merge.
+
+Deferred, from the three milestones and their console checks:
+
+- **Corners still fluent-styled**: `ListView` and `ScrollView` (layout, not look), `AboutSlint` (the
+  licence asks for it) and the About dialog's text; Slint's `Tooltip`; the Windows message boxes
+  (the password, replace and open-many questions).
+- **The title bar under Light or Dark when Windows' app mode changes** may flip with Windows until
+  the dialog's OK or a restart (winit re-applies the system theme on that event); a
+  `WM_SETTINGCHANGE` hook re-setting the attribute would close it. A switch back to System at
+  runtime keeps Windows' mode of that moment until the next start.
+- **A choice's popup is not scriptable** (no driver step clicks it); the console check does it.
+- **The later list** (§ Phase 10 candidates): a comfortable row height as a setting, the sidebar's
+  collapsed state and bookmark drag, the preview column's chrome and the Markdown details, TwinFM's
+  own questions in the look, tooltips and the status bar's badges, a hover ease, and the Phase 9 close's
+  carried items. Nothing of it was started.
+- **The Phase 12 roadmap** (§ Deferred to Phase 12): the rubber band in the details list.
+
+Open questions at the close:
+
+- **The title bar and winit**: whether a settings-change hook or a winit theme preference is the
+  cleaner fix for the flip, and whether System mode should follow a runtime OS change without a
+  restart (it did before P10-M1 task 7, through the style's own binding, and does again at start).
+- **The later list's order**: Jeremy's, from daily use with the new look.
+- **Carried from the Phase 9 close**: Google Drive's volume by its name; a sync-root scratch folder
+  for the soak; the dead share console check owed since P5-M1; the stale worktrees and gate builds
+  (`target-p9m4`, `target-p10m1`, `target-p10m2` can go once `target-p10m3` has served).
+
+**Phase 11** (`docs/phase-11-plan.md`, its kickoff merged as 0ab9a83 while P10-M1 was in flight): its
+candidates list stands; its preview stream, which waited for P10-M1's merge, builds on the restyled
+files; its content search takes the search box's button as its mode, by P10-M2's settlement; its
+syntax colours take the theme's tokens. Its record says tags continue from ab42: **ab42 and ab43 are
+P10-M2's and P10-M3's, so Phase 11's first gate is ab44.** The later list above is Phase 10's; the
+Phase 11 close may pick it up.
