@@ -29,7 +29,10 @@ preview; Word, Excel and PowerPoint read into the preview's own blocks; the thum
 bundle; four milestones run as two parallel streams, opened and closed 2026-10-21; its first section
 quotes Jeremy's kickoff decisions, § Calls made lists the lead's with the six superseded by what was
 built, and § Phase 9 close holds the gates, lessons, what is deferred and the Phase 10 candidates, daily
-use recommended). Read them before changing the list.
+use recommended), `docs/phase-10-plan.md` the Phase 10 record (UI and UX polish, opened 2026-10-22;
+P10-M1 the rust-ui look: `src/ui/theme.slint`'s tokens, the Lucide icons under `src/ui/icons/`, the dialog
+controls; its first section quotes Jeremy's decision, § Calls made lists the lead's, § Phase 10 candidates
+what Jeremy picks next). Read them before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (274 tests; nine touch the real shell and clipboard, one of them the Recycle
