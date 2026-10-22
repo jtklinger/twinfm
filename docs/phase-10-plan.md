@@ -320,6 +320,25 @@ own runs read 19.6 to 22.3 in the same session. **Passed by the gate's rule**; t
 plausible price of the hairline `Rectangle` in every visible row and of Inter's shaping, and it is
 recorded here for the next reference to carry. Jeremy's word on the merge is the next step.
 
+**The hairline experiment** (2026-10-22, after the gate, asked by the coordinating session since two
+like-for-like candidate runs read above 20%): a build in which each row's hairline is the last pixel
+of the row's own background (a hard-edged `@linear-gradient` on the existing `Rectangle`, stops at
+95.45% for 22 px rows and 96.875% for 32 px rows, two `color` tokens for the stops) in place of the
+child `Rectangle` per row, measured in-app against the gate's code, four pairs with the order swapped
+(ref, cand, cand, ref, ref, cand, cand, ref), the gate scenario, a quiet machine, one session state
+(render p50 2.34 to 2.55 ms throughout):
+
+| Build | `[busy] 10 s after split` | Median | Render p50 (ms) |
+|---|---|---|---|
+| the gate's code (a child Rectangle per row) | 18.9 / 19.1 / 18.9 / 18.4 | 18.9 | 2.44 / 2.38 / 2.35 / 2.34 |
+| the gradient variant | 18.9 / 20.5 / 20.0 / 18.6 | 19.5 | 2.47 / 2.54 / 2.55 / 2.45 |
+
+The variant reads no lower (half a point higher by the medians, a tenth of a millisecond more per
+frame: a gradient paint per row costs femtovg more than a solid 1 px rectangle), so the per-row
+hairline is not the gate's half point and the code stays as gated. What remains of the half point is
+Inter's shaping of every visible row's text against Segoe UI's, accepted. Nothing of the variant was
+kept; `target-hairline` was removed.
+
 ### Console checks (for Jeremy, unelevated, after the gate)
 
 The look was only ever seen in dark mode here (this machine's app mode); the light scheme is the
