@@ -6006,10 +6006,15 @@ fn apply_theme(app: &App, mode: settings::ThemeMode) {
     if std::env::var("TWINFM_SCHEME").is_ok() {
         return;
     }
+    // System: Windows' app mode as it is now. (Setting the scheme to unknown leaves the fluent
+    // palette following the OS but loses Slint's default text colour in dark mode, so the
+    // resolved mode is set instead; at start a system setting sets nothing, so the style's own
+    // binding follows the OS live as it always did, and a switch back to system at runtime keeps
+    // the mode Windows had at that moment until the next start: P10-M3.)
     app.global::<Palette>().set_color_scheme(match mode {
         settings::ThemeMode::Light => ColorScheme::Light,
         settings::ThemeMode::Dark => ColorScheme::Dark,
-        settings::ThemeMode::System => ColorScheme::Unknown,
+        settings::ThemeMode::System => if system_dark() { ColorScheme::Dark } else { ColorScheme::Light },
     });
     // The title bar too, once the window exists (at start `main_hwnd` sets it when it first
     // fetches the handle).
@@ -6251,7 +6256,11 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
     app.set_toolbar(settings::Toolbar::from_name(&config.toolbar).index());
-    apply_theme(&app, settings::ThemeMode::from_name(&config.theme));
+    // A system setting sets nothing at start (the style follows the OS live); the title bar is
+    // set when the handle is first fetched.
+    if settings::ThemeMode::from_name(&config.theme) != settings::ThemeMode::System {
+        apply_theme(&app, settings::ThemeMode::from_name(&config.theme));
+    }
     app.set_preview_width(config.preview_width);
     app.set_preview(config.preview);
     preview::init(&app);
