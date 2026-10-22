@@ -446,6 +446,9 @@ export component App inherits Window {
     callback filter-edited(int, string);
     callback filter-apply(int, string);
     callback filter-clear(int);
+    // filter-return(pane, text): Return in the search box (P10-M2); search-pressed(pane): its button.
+    callback filter-return(int, string);
+    callback search-pressed(int);
     callback search(int);
     // Ctrl+F, and Rust when a search waits for its pattern: the pane's filter box, focused.
     public function open-filter(p: int) {
@@ -929,6 +932,8 @@ export component App inherits Window {
                 filter-text <=> root.left-filter-text;
                 filter-edited(t) => { root.filter-edited(0, t); }
                 filter-apply(t) => { root.filter-apply(0, t); }
+                filter-return(t) => { root.filter-return(0, t); }
+                search-pressed => { root.search-pressed(0); }
                 filter-clear => { root.filter-clear(0); }
                 toolbar: root.toolbar == 2;
                 tools: root.left-tools;
@@ -990,6 +995,8 @@ export component App inherits Window {
                 filter-text <=> root.right-filter-text;
                 filter-edited(t) => { root.filter-edited(1, t); }
                 filter-apply(t) => { root.filter-apply(1, t); }
+                filter-return(t) => { root.filter-return(1, t); }
+                search-pressed => { root.search-pressed(1); }
                 filter-clear => { root.filter-clear(1); }
                 toolbar: root.toolbar == 2;
                 tools: root.right-tools;

@@ -52,35 +52,20 @@ takes a soak as well as the triplet. Nothing drawn with `drop-shadow` moves with
 
 ## Phase 10 candidates, for Jeremy's decision
 
-Input: what daily use with the new look shows (the best source, as at every close), the Phase 9
-close's Deferred list, and the polish left from Phases 7 and 8. Sizes as before: a milestone is what
-P9-M1 or P9-M2 was; a small item is an afternoon.
+Decided so far (2026-10-22): **P10-M2, the search box and button** (§ P10-M2 below, from his P10-M1
+console check) and **P10-M3, the P10-M1 leftovers** (§ P10-M3 below, his pick, his words: "the
+P10-M1 leftovers only"); the rubber band in the details list went to § Deferred to Phase 12 by his
+routing. The in-app theme switch became P10-M1's task 7 the same day.
 
-- **From Jeremy's P10-M1 console check (2026-10-22)**, routed by his decision the same day ("add the
-  click-and-drag to phase 12, or a roadmap list. add in the search as another p10 task."): the
-  **rubber band in the details list** is § Deferred to Phase 12 (roadmap) below; the **search box and
-  button** are **P10-M2**, § P10-M2 below, the next milestone after P10-M1 merges; the **in-app theme
-  switch** was taken into P10-M1 as task 7 the same day; left from it: the native title bar's colour
-  following the setting (a DWM attribute, small).
-- **The rest of P10-M1 itself**: Inter bundled (task 4, after Jeremy's OK for the download), the bar
-  heights (task 5, after his values), a popup choice and a text field in the look (so the settings
-  dialog and the filter box stop being the one fluent corner), the Windows 11 menu's icon row with
-  the Lucide set, the light scheme checked on screen (this machine runs dark).
-- **Density**: a "comfortable" row height as a setting (the canvas's 30 px rows) beside today's 22 px;
-  it doubles the row variants or needs the per-row binding P9-M1 measured as free; half a milestone
-  with the driver and soaks.
-- **The sidebar**: a collapsed state with icons only; drag-reorder of bookmarks by the pointer
-  (keyboard only today); a Recent or Pinned group. Small items each.
-- **The preview column's chrome**: its title bar and the message states in the look; the Markdown
-  details deferred since Phase 8 (table borders, the scrollbar's drift on a long file).
-- **Dialogs**: the password prompt, the replace question and the open-many question are Windows
-  message boxes today; TwinFM's own in the look is a small item each, with the driver's answers kept.
-- **Tooltips and the status bar**: tooltips in the look (Slint's `Tooltip` is fluent-styled); the
-  status bar's badges for the selection as the canvas draws them.
-- **Animation**: none today beyond the switch's knob; a 100 ms ease on hover fills and the tab
-  segment is cheap and may be worth a console check, never on anything that scrolls.
-- **Carried from the Phase 9 close**: Google Drive's volume by its name; a sync-root scratch folder
-  for the soak; the dead share console check owed since P5-M1; the stale worktrees and gate builds.
+Later, not started, Jeremy picks (kept short so the list stays honest): a comfortable row height as a
+setting (the canvas's 30 px rows beside today's 22; it doubles the row variants or rests on the
+per-row binding P9-M1 measured as free, with the driver and soaks to follow); the sidebar
+(icons-only collapsed state, pointer drag-reorder of bookmarks, a Recent or Pinned group); the
+preview column's chrome in the look and the Markdown details deferred since Phase 8; TwinFM's own
+password, replace and open-many questions in the look (Windows message boxes today); tooltips in
+the look and the status bar's badges; a 100 ms ease on hover fills (never on anything that scrolls);
+and, carried from the Phase 9 close, Google Drive's volume by its name, a sync-root scratch folder
+for the soak, the dead share console check owed since P5-M1, the stale worktrees and gate builds.
 
 ## P10-M1: the rust-ui look
 
@@ -452,6 +437,150 @@ Phase 11's P11-M1 content search (`docs/phase-11-plan.md` § P11-M1 on PR #93 na
 box of its own). Gate: the defaults triplet (new chrome, no per-row change) unless the box changes
 the list's top, in which case `dnd.rs`'s constants and the driver's aims follow in the same commit
 and a soak runs before the gate.
+
+Go: Jeremy's word on 2026-10-22 after P10-M1 merged (main 8dc692a, then 0ab9a83 with the Phase 11
+kickoff), relayed by the coordinating session: "let's proceed with the other items remaining in P10".
+Branch `feat/p10-m2-search-box` from 0ab9a83.
+
+### Settled first (2026-10-22, before any code)
+
+**What is there today** (`pane.slint`, `main.rs`): Ctrl+F opens a 220 px `LineEdit` at the right end
+of the pane's path bar, created only while `filter-open`; typing filters the listing live (150 ms
+after the last edit); Return or Down applies the filter at once and gives the list the focus; Escape
+or the clear glyph closes it; Ctrl+Shift+F runs a recursive name search for the box's text in a new
+tab, or, with the box empty, opens it "armed" so that Return there starts the search. Nothing on
+screen says any of this exists, which is Jeremy's remark.
+
+**The box.** One box per pane, **always visible**, at the right end of the path bar where the filter
+box opens today, inside the 36 px bar (a 32 px outline field in the look: the hairline, 6 px corners,
+the card colour; a leading Lucide `search` icon; the placeholder "Filter, Enter to search"), 200 px
+wide, 150 px in a pane narrower than 520 px (a pane property, never per row). The crumbs and the path
+entry give up that width as they do today while the box is open. **It does not move the list's top**
+(the bar stays 36 px; `dnd.rs` LIST_TOP and the crumb clip's width arithmetic are as they are), so the
+gate is the defaults triplet and no soak is owed for geometry; one soak cycle is added anyway for the
+new paths. The `filter-open` property stays as the "has text" state Rust and the driver set; the
+`LineEdit` is no longer under an `if`.
+
+**What typing, the keys and the button do.** Typing filters the listing live, as today. **Return runs
+the recursive name search** for the box's text in a new tab (what Ctrl+Shift+F does; with an empty
+box Return gives the list the focus). **Down** applies the filter at once and gives the list the
+focus (today's Return). Escape clears the box and the filter and gives the list the focus. A
+**search button** at the box's right end (Lucide `search` again, 24 px, ghost, the tooltip "Search
+this folder and below (Ctrl+Shift+F)") runs the same search as Return and Ctrl+Shift+F; the clear
+glyph shows left of it while the box has text. **Ctrl+F** focuses the box with its text selected, as
+today; **Ctrl+Shift+F** searches as today, and with an empty box focuses it (the "armed" state goes:
+Return always searches, so nothing needs arming). Nothing is removed: the live filter, the applied
+filter, the recursive search and both keys are all reachable from the box, and the driver's `filter`
+and `search` steps keep their meaning. Return's change (search, not apply) is the one behaviour
+change, named for Jeremy's console check; the live filter has already applied by the time Return is
+pressed, so nothing is lost by it.
+
+**The hook for P11-M1.** The search button is where the mode goes: P11-M1 makes it a name-or-content
+choice (a chevron beside it, or a toggle), `csearch <pane> <text>` sets the box's text and runs the
+content mode, and the content rules (never a cloud location, the matching line appended to the
+label) are P11-M1's; P10-M2 leaves the button a plain search so that P11-M1 adds a mode to this box
+and never a second box (`docs/phase-11-plan.md` § P11-M1 reads "a second box, or a mode of the
+filter box, settled first against the toolkit and the Phase 10 restyle": this is that settlement).
+
+**Code, tests first.** A pure module `src/searchbox.rs`: `on_return(text: &str) -> ReturnAction`
+(`Search(pattern)` for a trimmed non-empty text, `FocusList` otherwise), tested; the width rule (200,
+or 150 under 520) and the placeholder live in the Slint alone (a Rust copy of each was written first
+and dropped as dead code when the gate build warned on it, 2026-10-22). `pane.slint`: the always-present box,
+its icon, its clear glyph and its search button, `accepted` → `filter-return(text)` (new callback),
+Down → `filter-now(text)` (new; the old apply) and the list's focus, the button → `search-pressed()`;
+`app.slint` routes the three to Rust; `main.rs` `filter_return` (search or focus), `filter_now`
+(today's `filter_apply`), `search_key` without the armed state. Driver: `searchreturn <pane>` (Return
+in the box: `filter-return` with the box's text) and `searchbutton <pane>` (the button); `filter` and
+`search` as before. `[search]` lines: `pane=N box Return: searches "<text>"`, `pane=N box Return:
+empty, the list takes the focus`, `pane=N search button`; `[auto] searchreturn ...`, `[auto]
+searchbutton ...`. Soak (`tools/soak-p5m3.ps1`): per cycle `filter 0 tree`, `searchreturn 0`,
+`waitsearch`, the search tab closed, and `searchbutton 0` once with the box empty (the list takes the
+focus, no tab); the report counts box searches and empty Returns. CLAUDE.md § Measuring's filter and
+search paragraph gains the steps and lines. Screenshots: both toolbar placements, the box empty and
+with text, a narrow pane.
+
+**Gate**: `target-p10m2` from a detached checkout of the PR head against `target-p10m1` (b8b8853),
+tag ab42, the defaults; the coordinating session is told before the build, the soak and any question
+for Jeremy. Console checks: the box at 100% and 150%, typing then Return, Down, Escape, the button,
+Ctrl+F and Ctrl+Shift+F with and without text, a search in a search tab, the path entry mode with
+the box, a narrow pane.
+
+### What landed (2026-10-22)
+
+- **2a797a6**: the box always in the path bar (`pane.slint`: a `TextInput` in an outline `Rectangle`
+  of the look, 200 px or 150 under 520 px, the placeholder, the clear glyph while there is text, the
+  search button with its tooltip; the fluent `LineEdit` went because its minimum width overflowed the
+  slot and its unfocused dark face was invisible, seen at the first screenshot), `filter-return` and
+  `search-pressed` through `app.slint` to `main.rs` (`filter_return`, `search_button`; `search_key`
+  without the armed state, which is gone from the state struct), `src/searchbox.rs` `on_return`, the
+  driver's `searchreturn` and `searchbutton`, the soak's cycle and counters, CLAUDE.md § Measuring.
+- **aa2ecbf**: `searchbox.rs` keeps `on_return` only (the gate build warned on the unused `width` and
+  `placeholder` copies); the record's Settled first says so.
+- **795d1a0**: `tools/gate-p10m2.ps1`.
+
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-22, on 2a797a6's build, the machine otherwise
+idle): exit 0, 0 panics, 5 cycles, 292 jobs (0 failed), drags dropped 0, toolbar presses refused 0,
+menupicks refused 0, spring-loaded tabs 0, zip jobs not done 0, picture failures 0, Office unreadable
+0, alt text 0, waitpreview timeouts 0, worker panics 0; crumb drops 4 (the P5-M3 crumb aim holds
+with the box at the bar's end); **search box: Return searches 4, button searches 4, blank Returns 4**
+(one each per cycle); working set 136 to 226 MB.
+
+### Gate
+
+Run by Jeremy on 2026-10-22, finished 12:08 (tag ab42, `C:\traces\gate-p10m2.ps1`, the same file as
+`tools/gate-p10m2.ps1`, 9 min): `target-p10m2` (aa2ecbf, built `--locked` from a detached checkout)
+against `target-p10m1` (b8b8853, P10-M1's gate build), the defaults only, three runs each interleaved.
+Every run passed the wrapper's checks, no panic.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p10m1-1 / 2 / 3 | 23.8 / 24.2 / 21.9 | 25.2 / 23.9 / 23.4 | 2.88 / 3.03 / 2.90 |
+| p10m2-1 / 2 / 3 | 23.9 / 22.0 / 22.9 | 25.6 / 22.2 / 22.5 | 2.97 / 2.96 / 2.98 |
+
+Medians 23.8 (reference) / 22.9 (candidate): no gap (not every reference run below every candidate
+run; the candidate's median is the lower). **The whole session was in the slow state** (ab23's):
+render p50 2.88 to 3.03 ms in every run of both binaries, against 2.3 to 2.5 ms in the morning's
+normal-state runs, so the figures are like for like and the 20% bar is met by neither binary in that
+state, the reference included; the box adds nothing the triplet can see. **Held.**
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+`target-p10m2\release\twinfm.exe` (the gated build), from a normal console:
+
+- **The box in both toolbar placements** (Settings > Toolbar: across the top, then in each pane) and
+  **both schemes** (Settings > Theme): the field, its placeholder "Filter, Enter to search", the
+  search button at its end; the crumbs and the path entry giving up the box's width.
+- **Typing filters** the listing live (the status bar's "K of M items"); the clear glyph appears
+  with the first character and clears on a click.
+- **Return searches**: a word, Return: a search tab opens after the active one with the results, the
+  title "Search: <word>"; Return again in the search tab's box searches under the same root in place.
+- **The button**: the same search; its tooltip after 500 ms; with a blank box it focuses the box.
+- **Escape** in the box clears the text and the filter and gives the list the focus; **Down** keeps the
+  filter and moves to the list; **Ctrl+F** focuses the box with its text selected; **Ctrl+Shift+F**
+  searches, and with a blank box focuses it.
+- **A narrow pane with the preview column on** (Alt+P): the box at 150 px, the crumbs still readable,
+  nothing clipped at the bar's right end.
+- **The crumb row beside the box**: the crumbs' dropdown chevron, and a file dropped from Explorer on
+  a crumb left of the box (the copy goes to that folder, the highlight on the crumb).
+- **150% scaling**: the field's 32 px, its text and button, the box's width.
+
+## P10-M3: the P10-M1 leftovers
+
+Jeremy's pick, 2026-10-22, his words (relayed by the coordinating session): "the P10-M1 leftovers
+only". Three items and nothing more; it starts after P10-M2 merges, in a new branch from main, with
+its own Settled first, a soak cycle where a step changes, and the gate (the defaults triplet; nothing
+here touches a row).
+
+1. **The native title bar's colour follows the theme setting**: the DWM dark-title-bar attribute
+   (`DwmSetWindowAttribute`, `DWMWA_USE_IMMERSIVE_DARK_MODE`) set at start and on each theme change;
+   system mode follows Windows as today (P10-M1 task 7's note).
+2. **A popup choice and a text field drawn in the look**, replacing the fluent `ComboBox` and
+   `LineEdit` where they remain: the Settings dialog's choices (view per pane, toolbar, theme) and
+   its start-folder fields, the path bar's text entry, the rename editor and the bookmark title
+   editor (the search box is already a field of the look since P10-M2). The driver's `settings set`
+   path and the fields' `edited` and `accepted` callbacks are unchanged.
+3. **The Windows 11 menu's icon row with the Lucide set**: `src/winmenu.rs`'s items unchanged, only
+   the glyphs (Cut, Copy, Rename, Share, Delete, Paste) drawn from `src/ui/icons/`.
 
 ## Deferred to Phase 12 (roadmap)
 
