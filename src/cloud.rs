@@ -63,10 +63,15 @@ impl Locations {
         });
         if google { Cloud::Overlays } else { Cloud::None }
     }
+
+    /// The sync roots (`normalise`d), for a content search's walk to stay out of (P11-M1).
+    pub fn roots(&self) -> Vec<String> {
+        self.roots.clone()
+    }
 }
 
 /// Lowercase, backslashes, no `\\?\` prefix, no trailing separator.
-fn normalise(p: &str) -> String {
+pub fn normalise(p: &str) -> String {
     let s = p.replace('/', "\\").to_lowercase();
     let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
     s.trim_end_matches('\\').to_string()

@@ -42,7 +42,7 @@ kickoff decisions, § Calls made lists the lead's, § Open questions what each b
 them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (274 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (282 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -53,7 +53,7 @@ them before changing the list.
   scratch folders, and since P8-M1 the preview worker's test writes PDFs into one, and since P8-M2
   two more write Markdown and pictures into scratch folders, and since P9-M2 two more write text,
   pictures and a page into scratch folders, and since P9-M3 one more writes Office files into one,
-  see below)
+  and since P11-M1 two more write text files (and a junction) into scratch folders, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -328,6 +328,28 @@ them before changing the list.
   after D folders (<why>)` (tab closed, navigated away, new search, Escape, F5), `skipped N
   folders`; `[watch] no watch for <root>: search results` and `[dnd] pane N tab I shows search
   results: no drop there` for search tabs.
+  Since P11-M1, **content search**: the box's content toggle (the Lucide `file-text` button left of
+  the search button, lit with the accent while on; per pane, for the session, never saved; the
+  placeholder "Text in files, Enter") makes Return, the button and Ctrl+Shift+F search inside the
+  files for the box's text, in a tab titled `Text: <text>`, and typing filters nothing (turning it
+  on clears the tab's name filter, turning it off applies the box's text as one). The walker
+  (`fs::enumerate::walk` with a `Content`) reads every plain file below the root (`src/fs/content.rs`):
+  over 16 MB (`CONTENT_MAX_BYTES`, the listing's size) never opened; binary by its first 8 KB (a
+  NUL, or over 10% invalid UTF-8 or control characters; a UTF-16 byte order mark is text); decoded
+  by the preview's rule; a case-insensitive substring (`content::fold`, a final sigma read as
+  sigma); a result's row reads `file.txt  (sub\dir)  <the first matching line>` (`model::search_label`
+  with `Entry::found`; control characters as spaces, trimmed, cut at 200 characters, a match deeper
+  in a long line shown from 40 characters before it behind `…`). Never read: a cloud-only file (its
+  attributes, `content::cloud_only`), links and reparse points, anything below a sync root met on the
+  way (`Locations::roots`); a content search rooted in a cloud location (a sync root or the Google
+  Drive volume) or inside an archive is refused with a note. Its history entry re-runs it (`Place`'s
+  `content`). Driver: `contentmode <pane> on|off` (the toggle's click: the property, then its
+  callback when it changed; `[auto] contentmode pane=N on|off`), `csearch <pane> <text>` (the toggle
+  on, the text in the box, Ctrl+Shift+F's callback); `waitsearch` covers it. `[search]` lines: `pane=N
+  content mode on|off`, `pane=N gen=G content "<text>" in <root>`, `done: N found in F files read, S
+  skipped (B over the cap, C binary, O cloud-only, U unreadable), D folders walked, K cloud, L not
+  listed, in T ms`, `pane=N content "<text>" in <root>: refused (<why>)`, `box Return: searches
+  "<text>" inside files`.
   Since P3-M3, folder sizes: `sizeall <pane>` focuses the pane's list and presses Alt+Shift+Return
   (key name `AltShiftReturn`, Alt+Return until P7-M2: size every folder of the listing, at most 500, nearest the cursor first);
   `waitsize <ms>` waits until no folder size is queued or walking and the last reply has landed (at
@@ -1018,7 +1040,11 @@ them before changing the list.
   between two zips. Since P8-L3 `fs::archive::tests::archives_inside_archives_list_from_their_copies`
   makes a zip holding a zip and a 7z holding it in `%TEMP%\twinfm-p8l3-nested-<pid>\` (copies in
   `%TEMP%\twinfm-nested-<pid>\`, removed by the test), and `zip_jobs_on_the_worker` copies from a 7z
-  into a zip (a temporary `%TEMP%\twinfm-copy-<pid>-<job>\`). All remove their folders.
+  into a zip (a temporary `%TEMP%\twinfm-copy-<pid>-<job>\`). Since P11-M1
+  `fs::content::tests::files_are_read_up_to_the_cap` writes text, UTF-16 and binary files in
+  `%TEMP%\twinfm-p11m1-content-<pid>\`, and `fs::enumerate::tests::content_search_reads_text_files_and_stays_out_of_links_and_clouds`
+  a tree with a junction to its root and a file marked offline in `%TEMP%\twinfm-p11m1-test-<pid>\`.
+  All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

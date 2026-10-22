@@ -292,6 +292,77 @@ pub struct WalkStats {
     pub skipped: usize,
     /// The cancel flag's value when the walk stopped early (None: it ran to the end).
     pub cancelled: Option<u8>,
+    /// A content search (P11-M1): files opened and searched, files left unread (over the cap, binary
+    /// by their first bytes, cloud-only by their attributes, unreadable), and folders under a sync
+    /// root that were not entered.
+    pub read: usize,
+    pub over_cap: usize,
+    pub binary: usize,
+    pub cloud_only: usize,
+    pub unreadable: usize,
+    pub cloud_folders: usize,
+}
+
+impl WalkStats {
+    /// Files a content search left unread.
+    pub fn files_skipped(&self) -> usize {
+        self.over_cap + self.binary + self.cloud_only + self.unreadable
+    }
+}
+
+/// What a content search looks for (P11-M1): the text, `content::fold`ed, and the sync roots
+/// (`cloud::normalise`d) whose folders the walk never enters, since reading a file there could
+/// download it.
+#[derive(Clone, Debug, Default)]
+pub struct Content {
+    pub needle: String,
+    pub cloud_roots: Vec<String>,
+}
+
+impl Content {
+    fn in_cloud(&self, dir: &Path) -> bool {
+        let d = crate::cloud::normalise(&dir.to_string_lossy());
+        self.cloud_roots.iter().any(|r| crate::cloud::under(&d, r))
+    }
+
+    /// Read file `e` at `path`: true when it holds the text (its row's line set in `found`).
+    fn holds(&self, e: &mut Entry, path: &Path, stats: &mut WalkStats) -> bool {
+        use crate::fs::content::{Outcome, cloud_only, search_file};
+        if e.is_dir() {
+            return false;
+        }
+        if e.kind == Kind::Cloud || cloud_only(e.attrs) {
+            stats.cloud_only += 1;
+            return false;
+        }
+        // Links, app aliases and other reparse points are not followed, as the name walk's folders.
+        if e.kind != Kind::File {
+            return false;
+        }
+        match search_file(path, e.size, &self.needle) {
+            Outcome::Found(line) => {
+                stats.read += 1;
+                e.found = line.into();
+                true
+            }
+            Outcome::Missed => {
+                stats.read += 1;
+                false
+            }
+            Outcome::OverCap => {
+                stats.over_cap += 1;
+                false
+            }
+            Outcome::Binary => {
+                stats.binary += 1;
+                false
+            }
+            Outcome::Unreadable => {
+                stats.unreadable += 1;
+                false
+            }
+        }
+    }
 }
 
 /// The recursive name search: list `root` and every folder under it with `list_dir`, depth first,
@@ -306,11 +377,15 @@ pub struct WalkStats {
 /// the error text when `root` itself cannot be listed; a folder below it that cannot be listed is
 /// counted as skipped. `thumbnails`: a result in `THUMB_EXTS` gets its `thumb:` key, as in a folder
 /// (P9-M4; the caller passes false for a cloud location's root, where a thumbnail could download).
+/// `content` (P11-M1): a content search, whose results are the plain files `matcher` accepts that
+/// hold its text, each read once (`Content::holds`), and which enters no folder under a sync root;
+/// `cancel` is read before each file it opens too.
 pub fn walk(
     root: &Path,
     matcher: &crate::model::NameMatch,
     show: crate::model::Show,
     thumbnails: bool,
+    content: Option<&Content>,
     cancel: &std::sync::atomic::AtomicU8,
     mut emit: impl FnMut(Vec<Entry>) -> bool,
 ) -> Result<WalkStats, String> {
@@ -339,9 +414,26 @@ pub fn walk(
             let leaf = e.name.clone();
             let enter = e.kind == Kind::Directory && depth < SEARCH_MAX_DEPTH && crate::model::shows(&e, show);
             if enter {
-                stack.push((dir.join(leaf.as_str()), format!("{rel}{leaf}\\"), depth + 1));
+                let sub = dir.join(leaf.as_str());
+                if content.is_some_and(|c| c.in_cloud(&sub)) {
+                    stats.cloud_folders += 1;
+                } else {
+                    stack.push((sub, format!("{rel}{leaf}\\"), depth + 1));
+                }
             }
-            if matcher.matches(&leaf) {
+            let hit = match content {
+                None => matcher.matches(&leaf),
+                Some(c) => {
+                    if !matcher.matches(&leaf) || e.is_dir() {
+                        false
+                    } else if cancel.load(Ordering::Relaxed) != SEARCH_RUNNING {
+                        return false;
+                    } else {
+                        c.holds(&mut e, &dir.join(leaf.as_str()), &mut stats)
+                    }
+                }
+            };
+            if hit {
                 e.name = format!("{rel}{leaf}").into();
                 batch.push(e);
                 stats.found += 1;
@@ -394,6 +486,7 @@ pub fn spawn_search(
     matcher: crate::model::NameMatch,
     show: crate::model::Show,
     thumbnails: bool,
+    content: Option<Content>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicU8>,
     pane: usize,
     generation: u64,
@@ -409,7 +502,7 @@ pub fn spawn_search(
             let t0 = Instant::now();
             let (mut batches, mut sent) = (0usize, 0usize);
             let mut logged: Option<Instant> = None;
-            let res = walk(&root, &matcher, show, thumbnails, &cancel, |entries| {
+            let res = walk(&root, &matcher, show, thumbnails, content.as_ref(), &cancel, |entries| {
                 batches += 1;
                 sent += entries.len();
                 if logged.is_none_or(|t| t.elapsed() >= SEARCH_FLUSH) {
@@ -425,6 +518,21 @@ pub fn spawn_search(
                 Ok(s) => {
                     if let Some(code) = s.cancelled {
                         eprintln!("[search] pane={pane} gen={generation} cancelled after {} folders ({})", s.walked, cancel_reason(code));
+                    } else if content.is_some() {
+                        eprintln!(
+                            "[search] pane={pane} gen={generation} done: {} found in {} files read, {} skipped ({} over the cap, {} binary, {} cloud-only, {} unreadable), {} folders walked, {} cloud, {} not listed, in {:.0} ms",
+                            s.found,
+                            s.read,
+                            s.files_skipped(),
+                            s.over_cap,
+                            s.binary,
+                            s.cloud_only,
+                            s.unreadable,
+                            s.walked,
+                            s.cloud_folders,
+                            s.skipped,
+                            elapsed.as_secs_f64() * 1e3
+                        );
                     } else {
                         eprintln!(
                             "[search] pane={pane} gen={generation} done: {} found, {} folders walked, {} skipped, in {:.0} ms",
@@ -872,7 +980,7 @@ mod tests {
             let show_hidden = if show_hidden { crate::model::Show::HIDDEN } else { crate::model::Show::OFF };
             let cancel = AtomicU8::new(SEARCH_RUNNING);
             let mut batches: Vec<Vec<Entry>> = Vec::new();
-            let stats = walk(root, &hit, show_hidden, false, &cancel, |b| {
+            let stats = walk(root, &hit, show_hidden, false, None, &cancel, |b| {
                 if cancel_after_first {
                     cancel.store(SEARCH_ESCAPE, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -885,20 +993,20 @@ mod tests {
         let (hidden, hidden_batches) = run(&root, true, false);
         let (cancelled, cancelled_batches) = run(&bulk, false, true);
         let (bulk_all, _) = run(&bulk, false, false);
-        let missing = walk(&dir.join("nope"), &hit, crate::model::Show::OFF, false, &AtomicU8::new(0), |_| true);
+        let missing = walk(&dir.join("nope"), &hit, crate::model::Show::OFF, false, None, &AtomicU8::new(0), |_| true);
         // P9-M4: with thumbnails on a result in THUMB_EXTS is keyed by its full path, as a listing's is.
         let pics = dir.join("pics");
         std::fs::create_dir_all(pics.join("sub")).unwrap();
         std::fs::write(pics.join(r"sub\hit.jpg"), b"x").unwrap();
         std::fs::write(pics.join("hit.txt"), b"x").unwrap();
         let mut thumbed: Vec<Entry> = Vec::new();
-        walk(&pics, &hit, crate::model::Show::OFF, true, &AtomicU8::new(SEARCH_RUNNING), |b| {
+        walk(&pics, &hit, crate::model::Show::OFF, true, None, &AtomicU8::new(SEARCH_RUNNING), |b| {
             thumbed.extend(b);
             true
         })
         .unwrap();
         let mut unthumbed: Vec<Entry> = Vec::new();
-        walk(&pics, &hit, crate::model::Show::OFF, false, &AtomicU8::new(SEARCH_RUNNING), |b| {
+        walk(&pics, &hit, crate::model::Show::OFF, false, None, &AtomicU8::new(SEARCH_RUNNING), |b| {
             unthumbed.extend(b);
             true
         })
@@ -941,6 +1049,59 @@ mod tests {
         assert!(cancelled.found > 0 && cancelled.found <= SEARCH_BATCH, "found {}", cancelled.found);
         assert_eq!((cancelled_batches.len(), cancelled_batches.concat().len()), (1, cancelled.found));
         assert!(missing.is_err(), "a root that cannot be listed is an error");
+    }
+
+    #[test]
+    fn content_search_reads_text_files_and_stays_out_of_links_and_clouds() {
+        use crate::model::NameMatch;
+        use std::sync::atomic::AtomicU8;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_OFFLINE};
+        let dir = std::env::temp_dir().join(format!("twinfm-p11m1-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(r"sub\needle-folder")).unwrap();
+        std::fs::create_dir_all(dir.join("cloudy")).unwrap();
+        std::fs::write(dir.join("a.txt"), "first\nthe NEEDLE is here\nneedle again\n").unwrap();
+        std::fs::write(dir.join("miss.txt"), "nothing to see").unwrap();
+        std::fs::write(dir.join("needle-in-name.txt"), "only the name").unwrap();
+        let wide: Vec<u8> = [0xFF, 0xFE].into_iter().chain("one\r\nwide needle\r\n".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        std::fs::write(dir.join(r"sub\w.txt"), wide).unwrap();
+        std::fs::write(dir.join("b.bin"), b"needle\x00needle").unwrap();
+        std::fs::write(dir.join("offline.txt"), "needle").unwrap();
+        set_attrs(&dir.join("offline.txt"), FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_ARCHIVE);
+        std::fs::write(dir.join(r"cloudy\c.txt"), "needle").unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(dir.join(r"sub\loop"))
+            .arg(&dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let content = Content { needle: crate::fs::content::fold("Needle"), cloud_roots: vec![crate::cloud::normalise(&dir.join("cloudy").to_string_lossy())] };
+        let mut found: Vec<Entry> = Vec::new();
+        let stats = walk(&dir, &NameMatch::default(), crate::model::Show::OFF, false, Some(&content), &AtomicU8::new(SEARCH_RUNNING), |b| {
+            found.extend(b);
+            true
+        });
+        // Cancelled before the first file: nothing is read.
+        let mut none: Vec<Entry> = Vec::new();
+        let stopped = walk(&dir, &NameMatch::default(), crate::model::Show::OFF, false, Some(&content), &AtomicU8::new(SEARCH_ESCAPE), |b| {
+            none.extend(b);
+            true
+        });
+        set_attrs(&dir.join("offline.txt"), FILE_ATTRIBUTE_ARCHIVE);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(made, "mklink /J failed");
+        let mut rows: Vec<(String, String)> = found.iter().map(|e| (e.name.to_string(), e.found.to_string())).collect();
+        rows.sort();
+        assert_eq!(rows, [("a.txt".into(), "the NEEDLE is here".into()), (r"sub\w.txt".into(), "wide needle".into())], "files holding the text, each with its first line; no folder, no name match");
+        let s = stats.unwrap();
+        // a.txt, miss.txt, needle-in-name.txt and w.txt read; the binary, the offline file and the
+        // cloud folder's file not; the junction not entered (root, sub, needle-folder walked).
+        assert_eq!((s.found, s.read, s.binary, s.cloud_only, s.over_cap, s.unreadable), (2, 4, 1, 1, 0, 0));
+        assert_eq!((s.walked, s.cloud_folders, s.skipped, s.files_skipped()), (3, 1, 0, 2));
+        let stopped = stopped.unwrap();
+        assert_eq!((stopped.read, stopped.cancelled, none.len()), (0, Some(SEARCH_ESCAPE), 0));
     }
 
     #[test]

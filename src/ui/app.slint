@@ -451,6 +451,10 @@ export component App inherits Window {
     // filter-return(pane, text): Return in the search box (P10-M2); search-pressed(pane): its button.
     callback filter-return(int, string);
     callback search-pressed(int);
+    // The box's content toggle (P11-M1): the pane's mode, and content-toggled(pane, on) after a flip.
+    in-out property <bool> left-content-mode;
+    in-out property <bool> right-content-mode;
+    callback content-toggled(int, bool);
     callback search(int);
     // Ctrl+F, and Rust when a search waits for its pattern: the pane's filter box, focused.
     public function open-filter(p: int) {
@@ -936,6 +940,8 @@ export component App inherits Window {
                 filter-apply(t) => { root.filter-apply(0, t); }
                 filter-return(t) => { root.filter-return(0, t); }
                 search-pressed => { root.search-pressed(0); }
+                content-mode <=> root.left-content-mode;
+                content-toggled(on) => { root.content-toggled(0, on); }
                 filter-clear => { root.filter-clear(0); }
                 toolbar: root.toolbar == 2;
                 tools: root.left-tools;
@@ -999,6 +1005,8 @@ export component App inherits Window {
                 filter-apply(t) => { root.filter-apply(1, t); }
                 filter-return(t) => { root.filter-return(1, t); }
                 search-pressed => { root.search-pressed(1); }
+                content-mode <=> root.right-content-mode;
+                content-toggled(on) => { root.content-toggled(1, on); }
                 filter-clear => { root.filter-clear(1); }
                 toolbar: root.toolbar == 2;
                 tools: root.right-tools;

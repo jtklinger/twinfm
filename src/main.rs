@@ -8,6 +8,7 @@ mod fs {
     pub mod archive;
     pub mod archivefolder;
     pub mod archivewrite;
+    pub mod content;
     pub mod enumerate;
     pub mod sizes;
     pub mod watch;
@@ -151,15 +152,21 @@ struct Tab {
 }
 
 /// What a search tab searches for, and its worker's cancel flag (`fs::enumerate::SEARCH_*`).
+/// `content` (P11-M1): the pattern is text searched for inside the files, not a name.
 struct Search {
     pattern: NameMatch,
+    content: bool,
     cancel: Arc<AtomicU8>,
 }
 
 impl Tab {
     /// Where the tab is, as its history records it: its folder, or its search and root.
     fn place(&self) -> Place {
-        Place { path: self.path.clone(), search: self.search.as_ref().map(|s| s.pattern.pattern.clone()) }
+        Place {
+            path: self.path.clone(),
+            search: self.search.as_ref().map(|s| s.pattern.pattern.clone()),
+            content: self.search.as_ref().is_some_and(|s| s.content),
+        }
     }
 
     /// Folder sizes are computed in folder tabs only (not for search results, not on This PC, not
@@ -651,10 +658,12 @@ fn refresh(pane: usize) {
         if let Some(s) = &mut t.search {
             s.cancel(fs::enumerate::SEARCH_REFRESH);
             s.cancel = Arc::new(AtomicU8::new(fs::enumerate::SEARCH_RUNNING));
-            let (pattern, cancel, hidden) = (s.pattern.clone(), s.cancel.clone(), t.model.show());
-            eprintln!("[search] pane={pane} gen={generation} start \"{}\" in {}", pattern.pattern, path.display());
+            let (pattern, content, cancel, hidden) = (s.pattern.pattern.clone(), s.content, s.cancel.clone(), t.model.show());
+            let what = if content { "content" } else { "start" };
+            eprintln!("[search] pane={pane} gen={generation} {what} \"{pattern}\" in {}", path.display());
             let thumbs = search_thumbnails(st, &path);
-            fs::enumerate::spawn_search(path, pattern, hidden, thumbs, cancel, pane, generation, st.tx.clone(), wake);
+            let (matcher, content) = search_spec(st, &pattern, content);
+            fs::enumerate::spawn_search(path, matcher, hidden, thumbs, content, cancel, pane, generation, st.tx.clone(), wake);
             return;
         }
         let cloud = cloud_of(st, pane, &path);
@@ -667,6 +676,17 @@ fn refresh(pane: usize) {
 /// so nothing would keep them to the cache).
 fn search_thumbnails(st: &mut State, root: &Path) -> bool {
     st.config.thumbnails && st.cloud.of(root) == icons::Cloud::None
+}
+
+/// The walk's name matcher and content search for a search tab's `pattern`: a name search matches
+/// it against the names; a content search (P11-M1) reads every file for it and stays out of the
+/// sync roots.
+fn search_spec(st: &State, pattern: &str, content: bool) -> (NameMatch, Option<fs::enumerate::Content>) {
+    if content {
+        (NameMatch::default(), Some(fs::enumerate::Content { needle: fs::content::fold(pattern), cloud_roots: st.cloud.roots() }))
+    } else {
+        (NameMatch::new(pattern), None)
+    }
 }
 
 /// The folder's cloud location (`cloud::Locations::of`), logged when it has one; This PC and
@@ -864,9 +884,11 @@ fn strip_resized(pane: usize) {
     }
 }
 
-/// A tab's title: its folder's name, or `Search: <pattern>` for a search tab.
+/// A tab's title: its folder's name, or `Search: <pattern>` for a search tab (`Text: <text>` for
+/// a content search, P11-M1).
 fn tab_title(t: &Tab) -> String {
     match &t.search {
+        Some(s) if s.content => format!("Text: {}", s.pattern.pattern),
         Some(s) => format!("Search: {}", s.pattern.pattern),
         None => pathbar::title(&t.path.to_string_lossy()),
     }
@@ -880,7 +902,8 @@ fn set_path(st: &State, app: &App, pane: usize) {
     let path = t.path.to_string_lossy().to_string();
     let mut crumbs: Vec<Crumb> = pathbar::crumbs(&path).into_iter().map(|c| Crumb { label: c.label.into() }).collect();
     if let Some(s) = &t.search {
-        crumbs.push(Crumb { label: format!("Search: \"{}\"", s.pattern.pattern).into() });
+        let what = if s.content { "Text" } else { "Search" };
+        crumbs.push(Crumb { label: format!("{what}: \"{}\"", s.pattern.pattern).into() });
     }
     crumb_geometry_reset(pane, crumbs.len());
     st.crumb_models[pane].set_vec(crumbs);
@@ -4169,8 +4192,8 @@ fn history_move(pane: usize, forward: bool) {
     });
     match target {
         // A search in the history runs again, in this tab, under the same root.
-        Some(Place { path, search: Some(pattern) }) => start_search(pane, &pattern, Some(path)),
-        Some(Place { path, search: None }) => navigate_to(pane, path, false),
+        Some(Place { path, search: Some(pattern), content }) => start_search(pane, &pattern, content, Some(path)),
+        Some(Place { path, search: None, .. }) => navigate_to(pane, path, false),
         None => {}
     }
 }
@@ -5545,8 +5568,9 @@ fn filter_clear(pane: usize) {
 fn filter_return(pane: usize, text: SharedString) {
     match searchbox::on_return(&text) {
         searchbox::ReturnAction::Search(pattern) => {
-            eprintln!("[search] pane={pane} box Return: searches \"{pattern}\"");
-            start_search(pane, &pattern, None);
+            let content = content_mode(pane);
+            eprintln!("[search] pane={pane} box Return: searches \"{pattern}\"{}", if content { " inside files" } else { "" });
+            start_search(pane, &pattern, content, None);
         }
         searchbox::ReturnAction::FocusList => {
             eprintln!("[search] pane={pane} box Return: empty, the list takes the focus");
@@ -5561,6 +5585,27 @@ fn filter_return(pane: usize, text: SharedString) {
 fn search_button(pane: usize) {
     eprintln!("[search] pane={pane} search button");
     search_key(pane);
+}
+
+/// The pane's search box is in content mode (P11-M1, its toggle): Return, the button and
+/// Ctrl+Shift+F search inside files, and typing filters nothing.
+fn content_mode(pane: usize) -> bool {
+    with_state(|st| st.app.upgrade()).is_some_and(|app| if pane == 0 { app.get_left_content_mode() } else { app.get_right_content_mode() })
+}
+
+/// The search box's content toggle (P11-M1), after it flipped: into content mode the tab's name
+/// filter goes (the text stays in the box, to be searched for); back to name mode the box's text
+/// filters the listing again, at once.
+fn content_toggled(pane: usize, on: bool) {
+    let Some((app, id)) = with_state(|st| {
+        st.filter_timer[pane].stop();
+        Some((st.app.upgrade()?, st.tab(pane).id))
+    }) else {
+        return;
+    };
+    let text = if pane == 0 { app.get_left_filter_text() } else { app.get_right_filter_text() };
+    eprintln!("[search] pane={pane} content mode {}", if on { "on" } else { "off" });
+    apply_filter(pane, id, if on { "" } else { text.as_str() });
 }
 
 /// Set tab `id`'s name filter and run its pass (the hidden-file switch's pass: the snapshot, the
@@ -5590,10 +5635,11 @@ fn search_key(pane: usize) {
         eprintln!("[search] pane={pane} no pattern yet: the search box takes the focus, Return searches");
         return app.invoke_open_filter(pane as i32);
     }
-    start_search(pane, text.trim(), None);
+    start_search(pane, text.trim(), content_mode(pane), None);
 }
 
-/// Start a recursive name search for `pattern` under the active tab's folder: in a new tab after
+/// Start a recursive name search for `pattern` (with `content`, a search for that text inside the
+/// files, P11-M1) under the active tab's folder: in a new tab after
 /// it, or in place when the active tab is a search tab already (its old search is cancelled). The
 /// search worker sends its matches through the enumeration channel with the tab's generation, so
 /// they stream in as a listing's batches do.
@@ -5602,7 +5648,7 @@ fn search_key(pane: usize) {
 /// tab under that root, and nothing is pushed. Otherwise the search is a navigation: a new search
 /// tab starts with its root folder on its back stack (it was searched from there), and a new search
 /// in a search tab pushes the old one.
-fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
+fn start_search(pane: usize, pattern: &str, content: bool, history_root: Option<PathBuf>) {
     let started = with_state(|st| {
         let app = st.app.upgrade()?;
         st.filter_timer[pane].stop();
@@ -5610,7 +5656,24 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
             note(st, &app, pane, "This PC lists drives; open a folder to search in it".into());
             return None;
         }
-        let to = |root: &Path| Place::search(root, pattern);
+        // A content search never reads a cloud location (a read downloads the file) nor inside an
+        // archive (P11-M1).
+        let root = history_root.clone().unwrap_or_else(|| st.tab(pane).path.clone());
+        if content {
+            let refusal = if fs::archive::inside(&root) {
+                Some("A search inside files does not read inside archives")
+            } else if st.cloud.of(&root) != icons::Cloud::None {
+                Some("A search inside files does not read cloud folders: reading a file there downloads it")
+            } else {
+                None
+            };
+            if let Some(why) = refusal {
+                eprintln!("[search] pane={pane} content \"{pattern}\" in {}: refused ({why})", root.display());
+                note(st, &app, pane, why.into());
+                return None;
+            }
+        }
+        let to = |root: &Path| Place::search(root, pattern, content);
         if let Some(root) = history_root {
             st.tab_mut(pane).path = root;
         } else if st.is_search(pane) {
@@ -5640,13 +5703,13 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
             eprintln!("[tab] pane={pane} opened tab {} of {} (id {id}) on {} for a search", tabs.active_index() + 1, tabs.len(), root.display());
         }
         let generation = st.generation();
-        let matcher = NameMatch::new(pattern);
+        let (matcher, spec) = search_spec(st, pattern, content);
         let cancel = Arc::new(AtomicU8::new(fs::enumerate::SEARCH_RUNNING));
         let t = st.tab_mut(pane);
         if let Some(old) = t.search.take() {
             old.cancel(fs::enumerate::SEARCH_REPLACED);
         }
-        t.search = Some(Search { pattern: matcher.clone(), cancel: cancel.clone() });
+        t.search = Some(Search { pattern: NameMatch::new(pattern), content, cancel: cancel.clone() });
         t.model.search_names.set(true);
         *t.model.filter.borrow_mut() = NameMatch::default();
         t.model.generation.set(generation);
@@ -5669,9 +5732,10 @@ fn start_search(pane: usize, pattern: &str, history_root: Option<PathBuf>) {
         st.icon_gens[pane].store(generation, Ordering::Relaxed);
         show_tab(st, &app, pane);
         schedule_save(st);
-        eprintln!("[search] pane={pane} gen={generation} start \"{pattern}\" in {}", root.display());
+        let what = if content { "content" } else { "start" };
+        eprintln!("[search] pane={pane} gen={generation} {what} \"{pattern}\" in {}", root.display());
         let thumbs = search_thumbnails(st, &root);
-        fs::enumerate::spawn_search(root, matcher, hidden, thumbs, cancel, pane, generation, st.tx.clone(), wake);
+        fs::enumerate::spawn_search(root, matcher, hidden, thumbs, spec, cancel, pane, generation, st.tx.clone(), wake);
         Some(app)
     });
     // The search started from the filter box (Ctrl+Shift+F there, or Return with a search waiting)
@@ -6563,6 +6627,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_search(|pane| search_key(pane as usize));
     app.on_filter_return(|pane, text| filter_return(pane as usize, text));
     app.on_search_pressed(|pane| search_button(pane as usize));
+    app.on_content_toggled(|pane, on| content_toggled(pane as usize, on));
     app.on_settings_requested(settings_open);
     app.on_settings_closed(settings_closed);
     app.on_toggle_split({

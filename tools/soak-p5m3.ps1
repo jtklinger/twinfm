@@ -114,6 +114,10 @@
 # `searchreturn 0` (Return: a search tab, closed), the same with `searchbutton 0` (the button), and
 # `searchreturn 0` with the box blank (the list takes the focus, no tab); the report counts the
 # three (one each per cycle).
+# P11-M1: each cycle also runs a content search in src (`csearch 0 scratch file 3/7`: the box's
+# content toggle on, the text, Ctrl+Shift+F), closes its tab and turns the toggle off; the report
+# counts content searches done (one per cycle), the files they read (src's 200 at least) and the
+# files they found (one per cycle: tree\d03\f07.txt).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -451,7 +455,10 @@ $cycle = @(
     # with the box blank (the list takes the focus, no tab); see the header.
     'filter 0 notes', 'sleep 300', 'searchreturn 0', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
     'filter 0 notes', 'sleep 300', 'searchbutton 0', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
-    'filter 0', 'sleep 200', 'searchreturn 0', 'sleep 300'
+    'filter 0', 'sleep 200', 'searchreturn 0', 'sleep 300',
+    # P11-M1: a content search in src (see the header).
+    "nav 0 $src", 'sleep 500', 'csearch 0 scratch file 3/7', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
+    'contentmode 0 off', 'filter 0', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -622,6 +629,10 @@ $thumbSearches = @($log | Select-String -SimpleMatch '[search] pane=0' | Select-
 $boxReturns = @($log | Select-String -SimpleMatch '[search] pane=0 box Return: searches "notes"').Count
 $boxButtons = @($log | Select-String -SimpleMatch '[search] pane=0 search button').Count
 $boxEmpty = @($log | Select-String -SimpleMatch '[search] pane=0 box Return: empty, the list takes the focus').Count
+# P11-M1: the content searches, the files they read and found.
+$contentDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: (\d+) found in (\d+) files read')
+$contentRead = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[2].Value } | Measure-Object -Sum).Sum
+$contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum).Sum
 $colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 60 px (drag)').Count
 $colFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit modified: ').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
@@ -657,4 +668,5 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (one per cycle and one at start)"
 "thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
 "search box: Return searches $boxReturns (one per cycle), button searches $boxButtons (one per cycle), blank Returns $boxEmpty (one per cycle)"
+"content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
