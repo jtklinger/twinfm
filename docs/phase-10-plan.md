@@ -681,6 +681,53 @@ the look's field with the accent ring and the text selected; `settings set start
 into a field. The Choice's popup was not opened by a script (no step clicks it; the console check
 does).
 
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-22, on 1c0c48d's build, the machine otherwise
+idle): exit 0, 0 panics, 5 cycles, 290 jobs (0 failed), drags dropped 0, toolbar presses refused 0,
+renamed to t 5 (the new `Field` editor), menus shown 40 (the Lucide icon row), menupicks refused 0,
+spring-loaded tabs 0, zip jobs not done 0, picture failures 0, Office unreadable 0, alt text 0,
+waitpreview timeouts 0, worker panics 0, search box 4 / 4 / 4; working set 133 to 226 MB.
+
+### Gate
+
+Run by Jeremy on 2026-10-22, finished 15:17 (tag ab43, `C:\traces\gate-p10m3.ps1`, the same file as
+`tools/gate-p10m3.ps1`, 9 min): `target-p10m3` (4f07cba, built `--locked` from a detached checkout)
+against `target-p10m2` (aa2ecbf, P10-M2's gate build), the defaults only, three runs each interleaved.
+Every run passed the wrapper's checks, no panic.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p10m2-1 / 2 / 3 | 19.1 / 18.8 / 22.5 | 20.2 / 21.9 / 23.9 | 2.29 / 2.21 / 2.99 |
+| p10m3-1 / 2 / 3 | 19.3 / 18.7 / 23.1 | 20.3 / 19.8 / 21.7 | 2.24 / 2.25 / 2.89 |
+
+Medians 19.1 (reference) / 19.3 (candidate): no gap (not every reference run below every candidate
+run; the medians differ by a fifth of a point). Rounds 1 and 2 in the normal state (render p50 2.21 to
+2.29 ms), round 3 slow for both binaries (2.99 / 2.89, ab23's state); like for like 19.1 / 18.8
+against 19.3 / 18.7, every normal-state run under 20. **Held**: nothing per row changed and the
+triplet sees nothing.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+`target-p10m3\release\twinfm.exe` (the gated build), from a normal console:
+
+- **The title bar**: Settings > Theme set to Light, Dark and System in turn, the bar following each
+  on OK; then, with the window open and the setting on System, Windows' own app mode switched
+  (Settings > Personalization > Colors > Choose your mode): the bar and the window follow; then the
+  same switch with the setting on Light or Dark (the known limit from Settled first: the bar may flip
+  back with Windows until the dialog's OK or a restart; the window keeps the setting).
+- **The Settings dialog with the keyboard**: Tab between the fields, the switches and the choices;
+  in a choice Up and Down move the option, Space or Return open its popup, a click or Return picks,
+  Escape closes the popup (and, with no popup, the dialog); a field typed into, its text selected on
+  Tab in.
+- **The editors**: F2 on a row (the rename editor: the name selected, Return commits, Escape
+  cancels), Ctrl+Shift+N (a new folder named in it), F2 on a bookmark row in the sidebar (its title
+  editor), Ctrl+L (the path entry: the folder selected, a typed path navigates, Escape returns to the
+  crumbs); each the look's field with the accent ring.
+- **The filter box** as in P10-M2 (typing filters, Return searches), beside the path entry.
+- **The Windows 11 menu's icon row** on a file, a folder and the background, in both schemes: Cut,
+  Copy, Rename, Share (a file), Delete, Paste (the background with files on the clipboard), each
+  button's icon and its action.
+- **150% scaling**: the fields and choices, the popup's rows, the icon row.
+
 ## Deferred to Phase 12 (roadmap)
 
 Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadmap list."
