@@ -642,6 +642,45 @@ the scenario). Console checks: the title bar in each mode and after a system app
 field typed into and committed; each choice opened, picked by click and by keyboard; the icon row's
 buttons; 150% scaling.
 
+### What landed (2026-10-22)
+
+- **54afcea, items 1 and 3**: `settings::ThemeMode::title_bar_dark` and its test; `main.rs`
+  `set_title_bar` (`DwmSetWindowAttribute`, `DWMWA_USE_IMMERSIVE_DARK_MODE`; `windows-sys` gains
+  `Win32_Graphics_Dwm`), called from `main_hwnd` when the handle is first fetched and from
+  `apply_theme`; `system_dark` reads `AppsUseLightTheme`; `title_bar_mode` gives `TWINFM_SCHEME`
+  precedence; `[settings] title bar: dark|light (mode)`. `MenuToolButton` draws the icon row from the
+  button's text through the Lucide set, `share.svg` added; `winmenu.rs` untouched.
+- **1c0c48d, item 2**: `theme.slint`'s `Field` (a `TextInput` in the outline; `forward-focus` to the
+  input, since a component cannot define `focus()` itself) and `Choice` (the current option and a
+  chevron; a `PopupWindow` of 32 px rows under it on click, Space or Return; Up and Down move the
+  choice; `accessible-role: combobox`); the five fields and four choices replaced in `app.slint` and
+  `pane.slint`, their callbacks and `changed has-focus` handlers word for word, `accessible-label`
+  become `label`. `std-widgets` now provides `ListView`, `ScrollView` and `AboutSlint` only.
+
+**Three things found on the way**, each settled in the code:
+
+- **A system theme setting must not set the scheme to unknown.** The first build set
+  `Palette.color-scheme` to unknown for system mode at start; the fluent palette followed the OS, but
+  Slint's default text colour (the dialog's labels, the About text, every `Text` without a colour)
+  turned black in dark mode. Now a system setting sets nothing at start (the style's own binding
+  follows the OS live, as before P10-M1 task 7), and a switch back to system at runtime sets the mode
+  Windows has at that moment (`system_dark`), kept until the next start.
+- **`apply_theme` at start ran before the app state existed**: its new title-bar step read the state
+  and panicked (seen in a scripted run, "state initialised"); it now reads the state with
+  `try_borrow`, and at start the bar is set by `main_hwnd` instead.
+- **`PrintWindow` shows a stale frame.** The P7-M2 screenshot method captured the title bar dark
+  after the attribute had set it light; a `CopyFromScreen` of the window's top 60 px shows it right
+  (light after Light, dark after Dark, through the dialog, live). The title bar is checked that way
+  from now on; the client area is still the P7-M2 capture.
+
+Scripted checks: the icon row of a row's menu in the light scheme (Lucide); the theme switched
+system, light, dark, system through the dialog with the bar captured from the screen at each step
+and `[settings] title bar` logged; the Settings dialog in dark after a light-and-back round trip
+(labels, fields, choices); the rename editor, the bookmark editor and the path entry in light, each
+the look's field with the accent ring and the text selected; `settings set start_right D:\work` typed
+into a field. The Choice's popup was not opened by a script (no step clicks it; the console check
+does).
+
 ## Deferred to Phase 12 (roadmap)
 
 Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadmap list."
