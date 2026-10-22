@@ -52,35 +52,20 @@ takes a soak as well as the triplet. Nothing drawn with `drop-shadow` moves with
 
 ## Phase 10 candidates, for Jeremy's decision
 
-Input: what daily use with the new look shows (the best source, as at every close), the Phase 9
-close's Deferred list, and the polish left from Phases 7 and 8. Sizes as before: a milestone is what
-P9-M1 or P9-M2 was; a small item is an afternoon.
+Decided so far (2026-10-22): **P10-M2, the search box and button** (§ P10-M2 below, from his P10-M1
+console check) and **P10-M3, the P10-M1 leftovers** (§ P10-M3 below, his pick, his words: "the
+P10-M1 leftovers only"); the rubber band in the details list went to § Deferred to Phase 12 by his
+routing. The in-app theme switch became P10-M1's task 7 the same day.
 
-- **From Jeremy's P10-M1 console check (2026-10-22)**, routed by his decision the same day ("add the
-  click-and-drag to phase 12, or a roadmap list. add in the search as another p10 task."): the
-  **rubber band in the details list** is § Deferred to Phase 12 (roadmap) below; the **search box and
-  button** are **P10-M2**, § P10-M2 below, the next milestone after P10-M1 merges; the **in-app theme
-  switch** was taken into P10-M1 as task 7 the same day; left from it: the native title bar's colour
-  following the setting (a DWM attribute, small).
-- **The rest of P10-M1 itself**: Inter bundled (task 4, after Jeremy's OK for the download), the bar
-  heights (task 5, after his values), a popup choice and a text field in the look (so the settings
-  dialog and the filter box stop being the one fluent corner), the Windows 11 menu's icon row with
-  the Lucide set, the light scheme checked on screen (this machine runs dark).
-- **Density**: a "comfortable" row height as a setting (the canvas's 30 px rows) beside today's 22 px;
-  it doubles the row variants or needs the per-row binding P9-M1 measured as free; half a milestone
-  with the driver and soaks.
-- **The sidebar**: a collapsed state with icons only; drag-reorder of bookmarks by the pointer
-  (keyboard only today); a Recent or Pinned group. Small items each.
-- **The preview column's chrome**: its title bar and the message states in the look; the Markdown
-  details deferred since Phase 8 (table borders, the scrollbar's drift on a long file).
-- **Dialogs**: the password prompt, the replace question and the open-many question are Windows
-  message boxes today; TwinFM's own in the look is a small item each, with the driver's answers kept.
-- **Tooltips and the status bar**: tooltips in the look (Slint's `Tooltip` is fluent-styled); the
-  status bar's badges for the selection as the canvas draws them.
-- **Animation**: none today beyond the switch's knob; a 100 ms ease on hover fills and the tab
-  segment is cheap and may be worth a console check, never on anything that scrolls.
-- **Carried from the Phase 9 close**: Google Drive's volume by its name; a sync-root scratch folder
-  for the soak; the dead share console check owed since P5-M1; the stale worktrees and gate builds.
+Later, not started, Jeremy picks (kept short so the list stays honest): a comfortable row height as a
+setting (the canvas's 30 px rows beside today's 22; it doubles the row variants or rests on the
+per-row binding P9-M1 measured as free, with the driver and soaks to follow); the sidebar
+(icons-only collapsed state, pointer drag-reorder of bookmarks, a Recent or Pinned group); the
+preview column's chrome in the look and the Markdown details deferred since Phase 8; TwinFM's own
+password, replace and open-many questions in the look (Windows message boxes today); tooltips in
+the look and the status bar's badges; a 100 ms ease on hover fills (never on anything that scrolls);
+and, carried from the Phase 9 close, Google Drive's volume by its name, a sync-root scratch folder
+for the soak, the dead share console check owed since P5-M1, the stale worktrees and gate builds.
 
 ## P10-M1: the rust-ui look
 
@@ -518,6 +503,24 @@ tag ab42, the defaults; the coordinating session is told before the build, the s
 for Jeremy. Console checks: the box at 100% and 150%, typing then Return, Down, Escape, the button,
 Ctrl+F and Ctrl+Shift+F with and without text, a search in a search tab, the path entry mode with
 the box, a narrow pane.
+
+## P10-M3: the P10-M1 leftovers
+
+Jeremy's pick, 2026-10-22, his words (relayed by the coordinating session): "the P10-M1 leftovers
+only". Three items and nothing more; it starts after P10-M2 merges, in a new branch from main, with
+its own Settled first, a soak cycle where a step changes, and the gate (the defaults triplet; nothing
+here touches a row).
+
+1. **The native title bar's colour follows the theme setting**: the DWM dark-title-bar attribute
+   (`DwmSetWindowAttribute`, `DWMWA_USE_IMMERSIVE_DARK_MODE`) set at start and on each theme change;
+   system mode follows Windows as today (P10-M1 task 7's note).
+2. **A popup choice and a text field drawn in the look**, replacing the fluent `ComboBox` and
+   `LineEdit` where they remain: the Settings dialog's choices (view per pane, toolbar, theme) and
+   its start-folder fields, the path bar's text entry, the rename editor and the bookmark title
+   editor (the search box is already a field of the look since P10-M2). The driver's `settings set`
+   path and the fields' `edited` and `accepted` callbacks are unchanged.
+3. **The Windows 11 menu's icon row with the Lucide set**: `src/winmenu.rs`'s items unchanged, only
+   the glyphs (Cut, Copy, Rename, Share, Delete, Paste) drawn from `src/ui/icons/`.
 
 ## Deferred to Phase 12 (roadmap)
 
