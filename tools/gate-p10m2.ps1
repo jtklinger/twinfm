@@ -1,4 +1,4 @@
-# P10-M2 gate, tag ab42: target-p10m2 from PR #94 at 2f67590 (the search box always in the path
+# P10-M2 gate, tag ab42: target-p10m2 from PR #94 at aa2ecbf (the search box always in the path
 # bar, Return searches, the search button; the wrapper's own commit follows it) against target-p10m1
 # (b8b8853, P10-M1's gate build, the last merged milestone's), the defaults only (the box moves no
 # row and no list top: new chrome inside the 36 px path bar), three runs each interleaved under the
@@ -15,7 +15,7 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = '2f67590'
+$Head = 'aa2ecbf'
 $Tag = 'ab42'
 $Ref = 'p10m1'
 $Cand = 'p10m2'
