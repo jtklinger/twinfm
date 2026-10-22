@@ -488,6 +488,16 @@ impl ThemeMode {
             _ => ThemeMode::System,
         }
     }
+
+    /// Whether the native title bar is drawn dark for this mode (P10-M3): light and dark say so
+    /// themselves; system takes Windows' app mode, `system_dark`.
+    pub fn title_bar_dark(self, system_dark: bool) -> bool {
+        match self {
+            ThemeMode::Light => false,
+            ThemeMode::Dark => true,
+            ThemeMode::System => system_dark,
+        }
+    }
 }
 
 /// What the settings dialog shows and stages, one field per control. Opening it takes the live
@@ -954,6 +964,14 @@ show_type = false
             assert_eq!(Config::parse(&c.to_toml()).unwrap(), c);
         }
         assert_eq!(ThemeMode::from_name("auto"), ThemeMode::System, "anything else is the default");
+    }
+
+    #[test]
+    fn the_title_bar_follows_the_mode_and_system_follows_windows() {
+        assert!(!ThemeMode::Light.title_bar_dark(true));
+        assert!(ThemeMode::Dark.title_bar_dark(false));
+        assert!(ThemeMode::System.title_bar_dark(true));
+        assert!(!ThemeMode::System.title_bar_dark(false));
     }
 
     #[test]

@@ -2422,6 +2422,8 @@ fn main_hwnd(st: &mut State, app: &App) -> isize {
                 st.hwnd = w.hwnd.get();
                 devices::install(st.hwnd);
                 st.watch.set_hwnd(st.hwnd);
+                // The title bar's colour, the moment the window exists (P10-M3).
+                set_title_bar(st.hwnd, title_bar_mode(&st.config.theme));
             }
         }
     }
@@ -6009,6 +6011,46 @@ fn apply_theme(app: &App, mode: settings::ThemeMode) {
         settings::ThemeMode::Dark => ColorScheme::Dark,
         settings::ThemeMode::System => ColorScheme::Unknown,
     });
+    // The title bar too, once the window exists (at start `main_hwnd` sets it when it first
+    // fetches the handle).
+    // At start the state is not made yet (`main_hwnd` sets the bar when it first fetches the
+    // handle); afterwards the handle is known.
+    let hwnd = STATE.with(|s| s.try_borrow().ok().and_then(|g| g.as_ref().map(|st| st.hwnd)).unwrap_or(0));
+    if hwnd != 0 {
+        set_title_bar(hwnd, mode);
+    }
+}
+
+/// The mode the title bar follows: `TWINFM_SCHEME` when set (as the scheme does), else the
+/// setting.
+fn title_bar_mode(setting: &str) -> settings::ThemeMode {
+    match std::env::var("TWINFM_SCHEME").as_deref() {
+        Ok("light") => settings::ThemeMode::Light,
+        Ok("dark") => settings::ThemeMode::Dark,
+        _ => settings::ThemeMode::from_name(setting),
+    }
+}
+
+/// Windows' app mode: `AppsUseLightTheme` under the Personalize key, 0 meaning dark (missing:
+/// light, Windows' own default).
+fn system_dark() -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let key: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0".encode_utf16().collect();
+    let name: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
+    let mut value: u32 = 1;
+    let mut size: u32 = 4;
+    let rc = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut value as *mut u32 as *mut _, &mut size) };
+    rc == 0 && value == 0
+}
+
+/// Draw the native title bar dark or light for `mode` (P10-M3): `DWMWA_USE_IMMERSIVE_DARK_MODE`,
+/// which Windows 11 honours at once. System mode asks for what Windows' app mode would draw.
+fn set_title_bar(hwnd: isize, mode: settings::ThemeMode) {
+    use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+    let dark = mode.title_bar_dark(system_dark());
+    let value: i32 = i32::from(dark);
+    let hr = unsafe { DwmSetWindowAttribute(hwnd as windows_sys::Win32::Foundation::HWND, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, &value as *const i32 as *const _, 4) };
+    eprintln!("[settings] title bar: {} ({}){}", if dark { "dark" } else { "light" }, mode.name(), if hr == 0 { String::new() } else { format!(": DwmSetWindowAttribute = 0x{hr:08X}") });
 }
 
 /// For the scripted driver's `waitsize`: a folder size is still queued or walking.

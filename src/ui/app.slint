@@ -197,12 +197,14 @@ component MenuToolButton inherits Rectangle {
     background: ta.has-hover ? Theme.muted : transparent;
     accessible-role: button;
     accessible-label: root.tool.text;
-    Text {
-        text: root.tool.glyph;
-        font-family: "Segoe Fluent Icons";
-        font-size: 16px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    // The Lucide set by the button's name (P10-M3); winmenu.rs's glyph is left as it is.
+    Image {
+        x: (parent.width - 16px) / 2;
+        y: (parent.height - 16px) / 2;
+        width: 16px;
+        height: 16px;
+        colorize: Theme.fg;
+        source: root.tool.text == "Cut" ? @image-url("icons/scissors.svg") : root.tool.text == "Copy" ? @image-url("icons/copy.svg") : root.tool.text == "Rename" ? @image-url("icons/pencil.svg") : root.tool.text == "Share" ? @image-url("icons/share.svg") : root.tool.text == "Delete" ? @image-url("icons/trash.svg") : @image-url("icons/clipboard-paste.svg");
     }
     ta := TouchArea { clicked => { root.picked(); } }
 }
