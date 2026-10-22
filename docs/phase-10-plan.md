@@ -261,6 +261,18 @@ Each task is one commit on the branch, pushed; the PR is opened after task 1 and
   under `src/ui/fonts/` with the release's licence as `OFL.txt`, three `import "fonts/..."` lines at the
   top of `app.slint`, `default-font-family: "Inter"` on the window, and the notice in README § License.
   The `P9-M5` comments in the three Slint files read `P10-M1`.
+- **Task 5, 4fb6a0d** (2026-10-22, Jeremy's answer: "keep 22 and 32 px rows; raise the bars to the lead's
+  values"): the toolbar band across the window 44 px (36), the tab strip 30 (26), the path bar 36 (32),
+  the header 32 (24), the status line 28 (18), the sidebar's rows, headers and footer 32 (24, 26, 26);
+  the in-pane toolbar and the list rows unchanged. In one commit with them: `dnd.rs` `LIST_TOP` 75 (63),
+  `LIST_BOTTOM_GAP` 33 (23), `TAB_STRIP` 32 (28), `TOP_BAR` 44, `SIDE_FOOTER` 32, `TAB_H` 30, `CRUMB_H` 30;
+  `main.rs`'s sidebar row heights and keyboard scroll step (32); `auto.rs`'s crumb-menu point
+  (36 px above the list), the grip's centre (18 px above the list, was 14) and its comments;
+  `tools/soak-p5m3.ps1`'s hovers at y 22 (was 18); CLAUDE.md's three figures. Checked by a scripted
+  run before the commit: `coldrag 0 size 30` read back as `size 90 -> 60 px (drag)`, `colfit`, the three
+  tooltips at y 22, `sidebar click 3` then `key Down` (row 4, Home), `crumbmenu` on both panes, a
+  `dragover tab 1 0` (`spring armed: pane 1 tab 0`), `dragover strip` and `dragover side bottom`,
+  `rclickempty` (the background menu shown and closed); then `tools/soak-p5m3.ps1 -Minutes 10` on it (2026-10-22, the machine otherwise idle): exit 0, 0 panics, 5 cycles started, 296 jobs done (0 failed), drops 73, drags dropped 0, menupicks refused 0, spring-loaded tabs 0, toolbar presses refused 0, zip jobs not done 0, picture failures 0, Office unreadable 0, alt text 0, waitpreview timeouts 0, worker panics 0; tooltips 15 (three per cycle at y 22), column drags read back as Size 90 -> 60 four times, fits 4, widths back at 120, 90, 140 five times; working set 135 to 240 MB over the ten minutes.
 
 **Checks**: `cargo build --release` after each task; `cargo test --release` 270 of 271 after each,
 the one failure `fileops::clipboard::tests::real_clipboard_round_trip_overwrites_clipboard` ("the
@@ -278,19 +290,15 @@ pair read 18.0 / 22.2 and the next four runs presented no frames (render n=6, in
 session had changed state), so they decide nothing; tasks 2 and 3 change nothing the gate scenario
 draws per row. The console triplet is still to run.
 
-**Waiting on Jeremy** (§ Open questions): the row and bar heights (task 5), and the gate (task 6,
-his elevated console, handed over by the coordinating session once the font decision is in the build).
-Inter was answered 2026-10-22 (task 4 above).
+**Waiting on Jeremy**: the gate (task 6, his elevated console, handed over by the coordinating session).
+Inter and the bar heights were answered 2026-10-22 (tasks 4 and 5 above).
 
 ### Open questions
 
-- **Row height**: keep 22 px (32 with thumbnails), Explorer's compact spacing, or go to the
-  canvas's 30 px (36 with thumbnails)? The lead recommends keeping 22 and 32: a 40k folder shows a
-  third more rows, and every row-aimed soak step and `dnd` figure stays as it is. Jeremy's call
-  before task 5.
-- **The bar heights** for task 5 (the canvas: tab strip 36, path bar 36 with 32 px buttons, header
-  40, status 40, sidebar rows 32, toolbar band 52). The lead recommends a smaller step: tab strip 30,
-  path bar 36, header 32, status 28, sidebar rows 32, toolbar 44.
+- **Row height and the bar heights**: answered 2026-10-22, the lead's recommendation taken: rows stay
+  22 and 32 px; the bars take tab strip 30, path bar 36, header 32, status 28, sidebar rows 32, toolbar
+  44 (task 5). The canvas's roomier values (36, 36, 40, 40, 32, 52, with 30 px rows) stay a density
+  candidate.
 - **Inter**: answered 2026-10-22, bundled (task 4; 1.2 MB in the exe).
 - **Dark mode's accent**: none; the look is grey in both schemes, the canvas's choice. Jeremy may
   want the Windows accent for the cursor ring; a one-token change.
