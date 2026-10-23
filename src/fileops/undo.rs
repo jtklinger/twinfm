@@ -117,9 +117,11 @@ pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
 
 /// What a finished job leaves on the undo stack (or, for an undo job, on the redo stack): only
 /// successful jobs leave anything; a recycle the bin reported no items for, and a zip's write,
-/// leave a record that undoes nothing; a permanent delete none.
+/// leave a record that undoes nothing; a permanent delete none. A restore from the Recycle Bin that
+/// failed on some items records the ones it brought back (P11-M3), so they can be recycled again.
 pub fn record_for(job: &Job, outcome: &Outcome, results: &[ItemResult], text: &str) -> Option<Record> {
-    if *outcome != Outcome::Done {
+    let partial_restore = matches!((job, outcome), (Job::Restore { .. }, Outcome::Failed(_))) && results.iter().any(ItemResult::ok);
+    if *outcome != Outcome::Done && !partial_restore {
         return None;
     }
     if matches!(super::archive::classify(job), Ok(Some(_))) {
@@ -253,6 +255,16 @@ mod tests {
         let res = [ok(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt", r"C:\a\x.txt")];
         let rec = record_for(&restore, &Outcome::Done, &res, "Restored 1 item from the Recycle Bin").unwrap();
         assert_eq!(rec.undo.unwrap().job, Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: false }, "the redo of a restore");
+        // P11-M3: a restore that failed on one item records the one it brought back; one that
+        // brought nothing back, or a failed job of another kind, records nothing.
+        let two = Job::Restore {
+            items: vec![(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt".into(), r"C:\a\x.txt".into()), (r"C:\$Recycle.Bin\S-1-5-21-1\$RZZ.txt".into(), r"C:\a\y.txt".into())],
+        };
+        let half = [ok(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt", r"C:\a\x.txt"), ItemResult { hr: -1, ..ok(r"C:\$Recycle.Bin\S-1-5-21-1\$RZZ.txt", r"C:\a\y.txt") }];
+        let rec = record_for(&two, &Outcome::Failed(-1), &half, "Restored 1 of 2 items").unwrap();
+        assert_eq!(rec.undo.unwrap().job, Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: false });
+        assert_eq!(record_for(&two, &Outcome::Failed(-1), &half[1..], "x"), None, "nothing came back");
+        assert_eq!(record_for(&del, &Outcome::Failed(-1), &res, "x"), None, "only a restore records a partial run");
         let nuke = Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: true };
         assert_eq!(record_for(&nuke, &Outcome::Done, &[], "x"), None, "a permanent delete records nothing");
         let ren = Job::Rename { source: r"C:\a\old.txt".into(), new_name: "new.txt".into() };
