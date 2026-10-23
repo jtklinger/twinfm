@@ -870,3 +870,122 @@ The list as handed to Jeremy:
 - A long Markdown file's scrollbar (the drift recorded since Phase 8).
 - "Copy this block" and "Copy all" pasted into Notepad, a table pasted into Excel.
 - Entity symbols (`&notin;`, `&CounterClockwiseContourIntegral;`) as femtovg draws them.
+
+## P11-M5: syntax colours
+
+The preview stream's second milestone, opened 2026-10-23 on main at 3cd18cd (P11-M4 merged), branch
+`feat/p11-m5-syntax-colours`. The gate reference is `target-p11m4` (2d3a096), the last merged
+milestone's gate build; it predates P11-M1's content search (merged before P11-M4), so the candidate
+carries both. Both builds are windowed.
+
+### Settled first (2026-10-23, the pin check)
+
+- **The engine: Jeremy's choice, TwinFM's own tokenizer** ("Hand-written (Recommended)", 2026-10-23,
+  from the two options with the measurements below). syntect 5 with its pure-Rust regex engine
+  (`default-fancy`), built in a scratch project outside the repo: 9 crates new to TwinFM (syntect,
+  fancy-regex, plist, yaml-rust, linked-hash-map, time, time-core, deranged, powerfmt, num-conv), the
+  probe program 2.6 MB (so about 2.5 MB more), 6.5 s to colour a 2 MB log (as Rust, 687,000 runs), and
+  no PowerShell, TOML, TypeScript, Slint or log grammar among its 75 (more crates or grammar files to
+  add them). tree-sitter was not built: a C library and one crate per language. TwinFM's tokenizer:
+  no crate, every language on the kickoff's list, and on the same 2 MB log 114 ms for all 366 chunks
+  (tokenize, markup and Slint's parse; 0.6 ms for the first chunk) in the test process, 192 to 244 ms
+  in the app's worker, after the plain text is already shown.
+- **Colour in Slint at the pinned rev**: `StyledText::from_markdown` takes `<font color="#rrggbb">`
+  inline (`internal/common/styled_text.rs`), and the `StyledText` element takes
+  `default-font-family`, so a code chunk can be coloured runs in Consolas with no fork change.
+- **Where the colours live**: in `src/syntax.rs` (`LIGHT`, `DARK`), not as `theme.slint` tokens: a
+  `StyledText`'s colours are written into its markup by Rust, so Slint never reads them; the scheme
+  is read from `Palette.color-scheme` when the file is asked for, and a change of scheme previews the
+  file again.
+
+### What landed
+
+- `src/syntax.rs`: one table per language (line and block comments, string delimiters with escapes
+  and multi-line ones, keywords, types, capitalised identifiers as types where the language names
+  types so, case-blind keywords, `$` and `%` variables), and three line-shaped readers for INI, TOML
+  and YAML (sections, keys, values), logs (levels: errors as keywords, warnings as numbers, the quiet
+  ones and the time stamp as comments; `[tags]` as types; quoted text; numbers) and diffs (added,
+  removed, hunk and file heads). A block comment or a multi-line string open at a chunk's end is
+  carried into the next chunk. `markup` writes a chunk as inline Markdown: ASCII punctuation escaped,
+  a line's leading spaces as no-break spaces, every line a hard break, an empty line a no-break space.
+- The worker answers the plain blocks first and colours the chunks after, in order, one answer each,
+  the generation checked between them: a file is never coloured whole before it shows.
+- The setting `syntax_colours` (default true), the dialog's "Code" row; off, text shows as before.
+- Not coloured: `.txt`, `.csv` and the other plain types; Markdown's fenced code blocks (their
+  language is not kept in the block list: a later item if wanted).
+
+### Scripted checks (2026-10-23, the worktree's own build, not a gate build)
+
+A scripted run over `%TEMP%\twinfm-p11m5-check` (this milestone's `syntax.rs`, the soak script,
+`Cargo.toml`, a JSON file, the 2 MB log, P9-M2's text with a 20,000-character line, `preview.slint`),
+in dark and in light (`TWINFM_SCHEME`): every file coloured as its language (3 ms for the 38 KB Rust
+file, 3 ms for the 55 KB script, the 2 MB log 192 ms and 244 ms), the long-line `.txt` plain, the
+setting switched off through the dialog previewing the file again plain. Screenshots (software
+renderer) read right in both schemes: keywords violet, strings green, comments grey, numbers orange,
+types and log tags cyan.
+
+### Gate
+
+ab49, passed (2026-10-23 13:35, 17 min, Jeremy at the console): `tools/gate-p11m5.ps1`,
+`target-p11m5` (530bd8e) against `target-p11m4` (2d3a096), the defaults and the preview column. Both
+builds windowed; the reference predates P11-M1's code.
+
+| Setting | p11m4 (WPR) | p11m5 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 18.6, 18.6, 18.8 | 18.9, 18.8, 19.1 | 18.6 / 18.9 | 2.19 to 2.27 ms |
+| preview | 18.1, 18.1, 17.4 | 17.9, 19.1, 18.0 | 18.1 / 18.0 | 1.96 to 2.08 ms |
+
+No gap that counts; every candidate run under 20%; one session state throughout, no build overlapping.
+The defaults were close: every reference run sat at or below every candidate run but for ref-3 equal
+to cand-2 at 18.8, and the medians 0.3 apart, under the one-point rule. The gate's scenario never
+previews a text file (its cursor sits on no row), so the colouring itself is not in it.
+
+### Soak (2026-10-23, `target-p11m5`)
+
+`tools/soak-p5m3.ps1 -Minutes 10`: 10.1 min, exit 0, no panic, 286 jobs done (none failed or
+cancelled). Files coloured 8 (two per cycle), chunks refused 0; text previews 16 (four per cycle);
+zooms 16; waitpreview timeouts 0, worker panics 0. **Copy failures 1** (must be 0): `copy block 0:
+failed: the clipboard is in use by another program`, Windows refusing `OpenClipboard` once while
+another program held the clipboard (P11-M4's Copy text through the shared writer, which tries once;
+not this milestone's code). The fix, a few tries about 10 ms apart in the shared writer, was approved
+for the follow-up PR with the stale-preview fix (§ Clean-up items).
+
+Memory, against the soaks before it (working set start to end, peak; private): P11-M1 172 to 261 MB,
+peak 279; P11-M4 170.8 to 245.4, peak 276.6, private 155.6 to 225.2; P11-M5 171.8 to 265.9, peak
+273.1, private 155.6 to 220.6 (its private end the lowest, its peak the lowest of the three). The
+CSV shows the climb to about 260 MB in the first four minutes as the caches fill, then a plateau at
+259 to 268. Not new: the coloured rows are dropped with the block list when another file is shown
+(`blocks.set_vec`), a colour answer of an older generation is dropped on arrival, and the worker stops
+between chunks when superseded; only the shown file's colours are held. My worktree's test build
+(11:28 to 11:38) ran during ab46 (P11-M2) and voided it, before the coordinating session's hold
+reached this session; ab46 was rerun as ab47. The lesson: under two streams, any cargo run or TwinFM
+window waits for the coordinator's word too, not only gate builds and soaks.
+
+### Console checks (Jeremy, 2026-10-23, unelevated, `target-p11m5` on `C:\traces\p11m5-console`)
+
+Jeremy: "everything checks out great." Every item below passed.
+
+- A Rust file, a PowerShell script, a JSON file, a 2 MB log, a file with a 20,000-character line.
+- The colours in light and dark (the theme switch in Settings while a file shows).
+- The "Code" switch in Settings off and on.
+
+## Clean-up items from daily use
+
+Recorded as they come from Jeremy's daily use; each is an open item until he says when to do it.
+
+- **The preview keeps a deleted file** (Jeremy, 2026-10-23): "when a file is deleted, the preview
+  pane retains the image/preview of file until the selected file changes either by moving keyboard
+  or mouse. I would expect that when the file is deleted and a new file 'moves up' in the list of
+  files, that the new file would automatically be previewed in the preview pane." The cause, found by
+  reading the code (nothing run): the preview follows the cursor through app.slint's `changed`
+  handlers on `left-current-row` and `right-current-row`, which call `preview::kick`. After a delete
+  the cursor keeps its row number (P2-M2's rule), so when a watch window lands as row edits
+  (`main.rs` `land_edits`, `set_current_row(&app, pane, a.cursor)`) or a whole pass lands (`land_pass`,
+  `set_current_row(&app, pane, cursor)`), the property is set to the value it already had, no
+  `changed` fires, and the preview is never asked. The coordinating session's guess holds. The fix:
+  call `preview::kick()` after those two `set_current_row` calls for the active tab (two lines).
+  `kick` is one timer restart, and only while the column shows. After the settle, `refresh` previews
+  the cursor's file only when its path differs from the one shown, so an unchanged file costs a
+  path compare. It covers a rename under the cursor and a folder emptied (the column then empties)
+  too. Size: two lines and a scripted check (`delete` with the column on, then the `[preview]` line
+  for the next file). It touches event handlers only: one in-app run, no triplet.

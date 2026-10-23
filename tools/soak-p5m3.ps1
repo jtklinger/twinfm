@@ -135,6 +135,9 @@
 # (`previewzoom`), and on f-readme.md "Copy text" copies everything and the first block
 # (`previewcopy`, the clipboard overwritten). Reported besides: zoom lines (four per cycle), copies
 # (two per cycle), copy failures and copies with no text shown (both must be 0).
+# P11-M5: the setup adds n-code.rs (a block comment over 40 lines, so over a chunk's end) and
+# o-script.ps1; after m-deck.pptx the cursor goes on through the two. Reported besides: files
+# coloured (two per cycle), chunks Slint refused (must be 0); text previews are four per cycle.
 #
 # P8-L1, after the preview cycle: the left pane on src\tree (ten folders) goes to medium tiles,
 # PageDown and PageUp move its cursor by grid rows (Explorer's), it goes back to details, two
@@ -259,6 +262,10 @@ $sb = New-Object System.Text.StringBuilder
 for ($i = 0; $i -lt 60; $i++) { [void]$sb.Append("`tline $i of the soak's notes`r`n") }
 [void]$sb.Append(('x' * 20000) + "`r`n")
 [System.IO.File]::WriteAllText((Join-Path $prev 'h-notes.txt'), $sb.ToString())
+# P11-M5: source to colour, a block comment across the first chunk's end.
+$rs = "/// A fixture for the syntax colours.`nfn main() {`n    let s = ""text"";`n" + ((1..36 | ForEach-Object { "    let x$_ = $_; // line $_" }) -join "`n") + "`n    /* a comment`n    over the chunk's end`n    */`n}`n"
+[System.IO.File]::WriteAllText((Join-Path $prev 'n-code.rs'), $rs)
+[System.IO.File]::WriteAllText((Join-Path $prev 'o-script.ps1'), "<# help #>`r`nparam([int]`$Minutes = 5)`r`nif (`$Minutes -gt 0) { Write-Host ""run `$Minutes"" } # done`r`n")
 $bmp = New-Object System.Drawing.Bitmap 1200, 800
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush((New-Object System.Drawing.Point 0, 0), (New-Object System.Drawing.Point 1200, 800), [System.Drawing.Color]::SteelBlue, [System.Drawing.Color]::Orange)
@@ -453,6 +460,8 @@ $cycle = @(
     'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'previewlink #end', 'waitpreview 5000',
     # P9-M3: k-report.docx, l-table.xlsx (its second sheet), m-deck.pptx.
     'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000', 'previewlink #sheet=2', 'waitpreview 5000', 'key Down', 'waitpreview 5000',
+    # P11-M5: n-code.rs and o-script.ps1, coloured.
+    'key Down', 'waitpreview 5000', 'key Down', 'waitpreview 5000',
     'preview width 0.5', 'waitpreview 5000', 'preview width 0.35', 'waitpreview 5000', 'preview toggle', 'sleep 200',
     # P8-L1: the grid's PageDown and Return on two folders (see the header).
     "nav 0 $src\tree", 'sleep 500', 'click 0 0', 'view medium', 'sleep 300', 'key PageDown', 'sleep 100', 'key PageUp', 'sleep 100',
@@ -660,6 +669,9 @@ $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Cou
 $pvZooms = @($log | Select-String -Pattern '\[preview\] zoom \d+%: ').Count
 $pvCopies = @($log | Select-String -Pattern '\[preview\] copy (all|block \d+): \d+ characters').Count
 $pvCopyBad = @($log | Select-String -Pattern '\[preview\] copy( (all|block \d+): failed|: no text shown)').Count
+# P11-M5: the syntax colours.
+$pvColoured = @($log | Select-String -Pattern '\[preview\] gen=\d+ coloured \d+ chunk').Count
+$pvColourBad = @($log | Select-String -SimpleMatch 'colours refused, plain kept').Count
 $menus = @($log | Select-String -SimpleMatch '[menu] closed').Count
 $ticks = @($log | Select-String -SimpleMatch '[auto] in-menu tick')
 $ticksBusy = @($ticks | Select-String -SimpleMatch 'free=false').Count
@@ -687,7 +699,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "between zips: copies from a zip $fromZip (three per cycle), moves from a zip $fromZipMoves (one per cycle); passwords from the script $pwScript, right $pwRight (one each per cycle)"
 "archives inside archives: copies out $nestedOut, copies from an archive into a zip $fromShell (one each per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
-"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (two per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0), zooms $pvZooms (four per cycle), copies $pvCopies (two per cycle), copy failures $pvCopyBad (must be 0)"
+"preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (four per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0), zooms $pvZooms (four per cycle), copies $pvCopies (two per cycle), copy failures $pvCopyBad (must be 0), files coloured $pvColoured (two per cycle), chunks refused $pvColourBad (must be 0)"
 "column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (two per cycle and one at start), resets through the dialog $colResets (two per cycle)"
 "thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
 "search box: Return searches $boxReturns (one per cycle), button searches $boxButtons (one per cycle), blank Returns $boxEmpty (one per cycle)"
