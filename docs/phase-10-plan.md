@@ -737,6 +737,19 @@ Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadma
   since Phase 4; `src/band.rs` applies to the grid only; a press on a row starts a drag today, so the
   band would start from a press on empty space, or past a threshold on a row, settled first. Phase
   11's kickoff (PR #93) carries its own Phase 12 items; the Phase 11 close gathers them with this one.
+- **A new tab by mouse** (Jeremy, 2026-10-23: "have a way to create a new tab inside a pane without
+  having to use keyboard"): today a new tab takes Ctrl+T, or a middle-click on a folder row or a
+  sidebar row (which needs a middle button and opens that folder, not the pane's own); the tab strip
+  shows only with two tabs or more, and nothing on screen makes a tab. Settled first: where the control
+  sits (a "+" at the strip's end, which would mean showing the strip, or that button alone, with one
+  tab; a toolbar button; "New tab" in the path bar's background menu) and which folder the tab opens
+  (the pane's own, as Ctrl+T does).
+- **Scrollbars easier to see** (Jeremy, 2026-10-23: "the scroll bars are too transparent and need to
+  be more visible"): the lists, the grid and the preview use the Fluent style's own scrollbar (an
+  overlay, `pane.slint`'s ListView notes), which the Phase 10 look left as it was. Settled first:
+  whether the style's scrollbar takes a colour at the pinned Slint rev or needs TwinFM's own (a theme
+  token in `src/ui/theme.slint`, as Field and Choice replaced Fluent's in P10-M3), and the contrast in
+  both themes; a scroll check on bigdir, since the scrollbar is drawn every frame while scrolling.
 
 ## Phase 10 close
 
