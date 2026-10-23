@@ -891,3 +891,54 @@ Recorded as they come from Jeremy's daily use; each is an open item until he say
   path compare. It covers a rename under the cursor and a folder emptied (the column then empties)
   too. Size: two lines and a scripted check (`delete` with the column on, then the `[preview]` line
   for the next file). It touches event handlers only: one in-app run, no triplet.
+
+## P11-M6: password PDFs through hayro
+
+The preview stream's third milestone, opened 2026-10-23 on main at f09cafc (P11-M5 merged; the
+stale-preview fix, #105, waiting for its merge word), branch `feat/p11-m6-password-pdfs`. The gate
+reference is `target-p11m5` (530bd8e), the last merged milestone's gate build. No new dependency
+(Jeremy, 2026-10-22: "keep the library already in twinfm").
+
+### Settled first (2026-10-23, code reading and a probe in TwinFM's test process)
+
+- **Which revisions hayro's password path takes** (`hayro-syntax 0.8.0`, `crypto/mod.rs`): the
+  Standard handler, V 1, 2, 4 and 5 (RC4 40 to 128 bit, AES-128, AES-256). For revisions 2 to 4
+  hayro authenticates the **user** password only (algorithm 6); the owner password of such a file
+  does not open it. For revisions 5 and 6 the user or the owner password opens it. The empty password
+  is tried first, so an owner-password-only file opens with no question. Revision 6's SASLprep step
+  is a TODO in hayro: a password with characters SASLprep would change may not open. Probe, five
+  files written by pypdf 6.16.2 (RC4-40, RC4-128, AES-128, AES-256, AES-256 owner-only): every one as
+  the reading says, the red box drawn once opened.
+- **How the test gets an encrypted fixture**: no MD5, RC4 or AES is reachable in the build (hayro
+  keeps its own private), so a writer in the test would mean a hand-made MD5 and RC4 at least. pypdf
+  on this machine writes them instead: the test holds three of its files as hex (RC4-128 revision 3,
+  AES-256 revision 6, AES-256 owner-only; 940 to 1,356 bytes each), and the soak writes the AES-256
+  one from the same hex.
+- **When to ask**: Jeremy's choice (2026-10-23), from "Button in the column (Recommended)" and "Ask
+  at once": the column shows "Password-protected PDF" with an "Enter password…" button; the dialog
+  opens only when it is pressed, never as the cursor passes a protected file.
+
+### What landed
+
+- The button opens the file again with the window's handle (`Req::Open`'s `ask`); the worker asks in
+  the masked dialog P8-L2 made for zips (`fileops::archive::ask_password`, which now takes its prompt
+  from the caller), asks again while the password is wrong, and on Cancel leaves the message and the
+  button. Pages render as any PDF's, from the opened document, which holds the password; nothing
+  writes it anywhere.
+- `pdfpassword <text>` gives a scripted run the answer and presses the button; a scripted question
+  without one is refused, never shown.
+
+### Scripted checks
+
+Waiting for the coordinating session's clearance (the lists stream has TwinFM windows open).
+
+### Gate
+
+Pending: `tools/gate-p11m6.ps1` (the defaults and the preview triplet against `target-p11m5`), its
+tag from the coordinating session.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+- His own password PDFs beside Edge: the button, the right password, a wrong one (asked again),
+  Cancel (the message stays).
+- An owner-password-only PDF (opens with no question), if one is to hand.
