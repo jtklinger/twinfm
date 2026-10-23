@@ -499,6 +499,8 @@ export component App inherits Window {
     // The colour scheme choice (P10-M1 task 7): 0 system, 1 light, 2 dark.
     in-out property <int> dlg-theme;
     in-out property <bool> dlg-preview;
+    // "Reset column widths" pressed (P11-M2): both panes' widths go back to the defaults on OK.
+    in-out property <bool> dlg-cols-reset;
     // "Saved to <file>", or that a scripted run saves nothing.
     in property <string> settings-note;
     private property <bool> settings-shown: false;
@@ -537,6 +539,7 @@ export component App inherits Window {
         if (field == "toolbar") { dlg-toolbar = value == "none" ? 0 : value == "pane" ? 2 : 1; }
         if (field == "theme") { dlg-theme = value == "light" ? 1 : value == "dark" ? 2 : 0; }
         if (field == "preview") { dlg-preview = value == "true"; }
+        if (field == "cols_reset") { dlg-cols-reset = value != "false"; }
     }
 
     // The breadcrumb dropdown's contents and place, set from Rust before show-crumb-menu.
@@ -1303,9 +1306,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 550px) / 2);
+        y: max(10px, (root.height - 590px) / 2);
         width: 480px;
-        height: 550px;
+        height: 590px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Theme.card;
@@ -1417,6 +1420,13 @@ export component App inherits Window {
                                 checked: root.dlg-type-column;
                                 accessible-label: "Show the Type column";
                                 toggled => { root.settings-stage("type_column", self.checked ? "true" : "false"); }
+                            }
+                        }
+                        Row {
+                            Text { }
+                            Btn {
+                                text: root.dlg-cols-reset ? "Widths reset on OK" : "Reset column widths";
+                                clicked => { root.settings-stage("cols_reset", "true"); }
                             }
                         }
                         Row {

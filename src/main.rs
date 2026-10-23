@@ -5995,6 +5995,7 @@ fn settings_open() {
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
     app.set_dlg_theme(settings::ThemeMode::from_name(&d.theme).index());
     app.set_dlg_preview(d.preview);
+    app.set_dlg_cols_reset(false);
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
     // Outside the state borrow: showing the popup moves keyboard focus.
@@ -6025,8 +6026,21 @@ fn settings_closed(ok: bool) {
     }
     .normalized();
     let changes = opened.changes(&staged);
+    // "Reset column widths" (P11-M2), counted as a change of its own.
+    let reset = app.get_dlg_cols_reset();
     if !ok {
-        return eprintln!("[settings] dialog closed (cancel), {} change(s) discarded", changes.len());
+        return eprintln!("[settings] dialog closed (cancel), {} change(s) discarded", changes.len() + usize::from(reset));
+    }
+    if reset {
+        eprintln!("[settings] dialog: cols_reset");
+        with_state(|st| {
+            for pane in 0..2 {
+                let old = cols_of(&app, pane);
+                set_cols(&app, pane, cols::DEFAULT);
+                eprintln!("[cols] pane={pane} widths reset to {:.0}, {:.0}, {:.0}", cols::DEFAULT.ty, cols::DEFAULT.size, cols::DEFAULT.modified);
+                cols_changed(st, &app, pane, old, cols::DEFAULT, "reset");
+            }
+        });
     }
     for (key, old, new) in &changes {
         eprintln!("[settings] dialog: {key} {old} -> {new}");
@@ -6078,7 +6092,7 @@ fn settings_closed(ok: bool) {
     if !changes.is_empty() {
         with_state(|st| schedule_save(st));
     }
-    eprintln!("[settings] dialog closed (ok), {} change(s)", changes.len());
+    eprintln!("[settings] dialog closed (ok), {} change(s)", changes.len() + usize::from(reset));
 }
 
 /// The colour scheme from the `theme` setting (P10-M1 task 7), live: light or dark set the fluent
