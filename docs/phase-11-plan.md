@@ -639,6 +639,104 @@ with stderr kept; his word: "All Look good!"), each found right, with the log be
   re-stat line (no search tab); a search tab still re-states (`4 rows, 1 gone, 1 changed` after
   outside changes).
 
+**Merged** 2026-10-23 as 8ddd2dd (#102), on Jeremy's word ("Merge PR #102 and PR #104."), by the
+coordinating session.
+
+## P11-M3: the edge-case bundle and the owed checks
+
+Settled from code while the machine was held (2026-10-23, the shared note
+`p11-m3-settle-first-from-code.md`), then built on `feat/p11-m3-edge-cases`, cut from main 3cd18cd
+and brought up to b14d18d (P11-M2 merged) before the gate. Each item a commit of its own. The gate
+reference is `target-p11m2` (c075a0a), the last merged milestone's build; it **contains** P11-M4
+(the P11-M2 branch had main at 3cd18cd merged in before its gate build: `git merge-base
+--is-ancestor 3cd18cd c075a0a`), so this gate compares P11-M3's changes alone.
+
+### The items (2026-10-23)
+
+1. **A USB hard disk no longer blocks "Safely remove": done** (5bf4935). Settled: `Watch::new` set
+   `removable` for `DRIVE_REMOVABLE` only, and a USB hard disk reports `DRIVE_FIXED`. Now a fixed
+   drive whose disk answers `IOCTL_STORAGE_GET_HOTPLUG_INFO` with hot-pluggable or removable media
+   registers too (`watch.rs` `removable`, `hotplug`; no access right needed). Probed in TwinFM's test
+   process on this machine: C: fixed, not hot-pluggable; **G: (Google Drive's virtual disk) fixed and
+   hot-pluggable**, so a G: watch now registers too (harmless: it only lets a removal close it); the
+   optical and card-reader letters are `DRIVE_REMOVABLE` as before. The USB disk itself is a console
+   check (Jeremy's disk).
+2. **A folder moved to another parent is followed: done** (8323861). Settled by a probe as a test:
+   Windows reports such a move to the parent watch as the folder **removed** (`FILE_ACTION_REMOVED`),
+   not as a rename, so the code took it for a deletion. Both branches (a removal, and an old name with
+   no new one) now ask the folder's own handle, still open, for its path
+   (`GetFinalPathNameByHandleW`): another existing folder means `Moved` (the tab follows, a new parent
+   watch on the new parent); none, or the same path, means `Lost` as before (a real deletion). The
+   test `moving_the_watched_folder_to_another_parent_follows_it` (was `..._loses_it`) checks the
+   `Moved` and a change made in the new place.
+3. **A partial Recycle Bin restore records what it restored: done** (ec8b1ee). `record_for`
+   recorded only `Done` jobs; a `Restore` that failed on some items now records the undo of those it
+   brought back (`undo_for` already left the failed out). A test.
+4. **Undo of a copy or move that replaced a file: the plan's fallback, done** (447f5ba). Settled: the
+   shell overwrites in place, so the replaced content is gone and nothing can restore it. The file
+   worker notes the destination paths there before a copy or move (`Done::existed`); an item that
+   landed on one makes the record not undoable (`forbid_if_replaced`, Ctrl+Z's note "Cannot undo: it
+   replaced a file, which cannot be brought back"), instead of recycling the new file and leaving
+   neither. Probed with the real shell (the worker test copies a file over itself: the sink names the
+   existing path as the item's destination); a pure test covers "keep both" (`y (2).txt`) not counting.
+5. **Ctrl+Z from the sidebar, tab strip and crumbs: done** (1500df0). The plan's sentence had it the
+   wrong way round: Ctrl+Y was already window-level (P5-M2), Ctrl+Z list-level. Ctrl+Z moved beside
+   Ctrl+Y in the outer scope. Scripted: a recycle, `sidebar click 2`, `key CtrlZ`: `Undid: Deleted 1
+   item to the Recycle Bin`.
+6. **The subtree-watch overflow path and `waitsize`: done, one part recorded** (a04e9cb). A test
+   makes 2,000 files in the folder itself under a subtree watch: a window past `MAX_RECORDS` with no
+   edits (the UI lists the folder again). The buffer's own overflow (`overflow: true`) **could not be
+   forced**: the watcher kept up with 3,200 records of over 400 bytes from eight threads; recorded in
+   the test. `sizes_busy` (what `waitsize` waits on) counts a stale size waiting for its re-walk.
+7. **The history menu and saved history: done** (c044de8, c92c839, 8f6fafd). Alt+Down in a list, or a
+   right click on the path bar's background, opens the pane's places in the Windows 11 menu (forward
+   places first, the current one checked, back places after it); a pick goes that many steps in one
+   move (`History::jump`). The first screenshot showed long paths cut to the same start, so each place
+   reads its name first, then where it is (`beta  (C:\...\alpha)`). Each tab's back and forward places
+   are saved with it (`SavedTab::back` / `forward`, 50 each, a search's pattern and content flag
+   kept). A run with a scratch settings file showed a restored **search tab** (saved as its root)
+   going Back to its own root, a no-op: an entry equal to the restored place is now dropped
+   (`History::restored`). Scripted: two picks (3 back, 2 forward); a restart's Back twice (`a`, then
+   `C:\`). The Calls made line ("long press or right click of Back and Forward") is superseded by the
+   builder check's line, as the brief said.
+8. **Browse for the start folders and a note for a missing one: done** (78cac09). A Browse button
+   beside each start folder (the rows had room; the dialog's height is P11-M2's 590 px) runs the
+   shell's folder picker (`IFileOpenDialog`, `FOS_PICKFOLDERS`) on the verb worker, owned by the
+   window; the answer fills the field (now two-way bound, so a picked folder reaches it after typing).
+   A start folder staged that is not a folder shows "Left start folder not found: ..." in the footer
+   (never asked for a network path). Scripted: the warning line; screenshot below. The picker itself
+   is a console check (a script never drives a shell dialog).
+9. **Spring-loading a sidebar row and a crumb: done** (643ae08). A sidebar row opens in the active
+   pane, a crumb in its pane (not the folder shown); never inside an archive. Scripted with the new
+   `dragover side <row>`: crumb -2 and sidebar row 1 (C:\) each spring-loaded after about 1000 ms.
+10. **The owed checks**: the console checks below (the dead share, an ancestor renamed, the
+    right-button drag out of Explorer, video and Office thumbnails, the 187 MB question).
+
+Screenshots (light, `winit-software`): the history menu (gamma, beta checked, alpha, C:), the
+settings dialog with Browse beside both start folders and the not-found note in the footer.
+
+### Gate
+
+Pending: the defaults triplet, `target-p11m3` against `target-p11m2`, tag ab50 (allocated by the
+coordinating session), after its go.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+- **A USB hard disk**: plug it in, open a folder on it in TwinFM, then "Safely remove" it from the
+  taskbar: Windows lets it go (before, "in use"); the stderr names it `fixed, removable media`.
+- **A folder moved to another folder** in Explorer while TwinFM shows it: the tab follows to the new
+  place.
+- **Ctrl+Z after clicking in the sidebar**; **Alt+Down** in a list and a **right click on the path
+  bar**: the history menu, a pick; restart TwinFM, Back still works.
+- **Settings > Browse** beside a start folder: the picker, a folder, OK; a typed folder that does not
+  exist shows the note.
+- **A drag held over a sidebar folder or a crumb** opens it after a second.
+- **The owed checks**: a dead network share (a name that does not resolve, then one that resolves
+  but does not answer: `stalled: no watch`, the 30 s cool-down, F5); rename an ancestor of a watched
+  folder in Explorer (the "folder in use" case); a right-button drag out of Explorer into TwinFM
+  (without Logi Options+ running); video and Office files with thumbnails on, in a 32 px list and the
+  tiles; the 187 MB first-run working set (one heap-sampling trace of a first run against a second).
+
 ## P11-M4: the preview gaps bundle
 
 The preview stream's first milestone, opened 2026-10-22 on main at d1abbe3 (0.1.0, Phase 10 merged),

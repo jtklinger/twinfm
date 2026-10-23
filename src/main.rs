@@ -3902,7 +3902,7 @@ fn winmenu_key(name: &str) {
 
 /// An item or icon-row button was picked: an item with a submenu opens it; any other closes the
 /// menu and runs its command, the one its key, its toolbar button or its P7-M1 route calls.
-fn winmenu_picked(id: i32) {
+pub fn winmenu_picked(id: i32) {
     let Some(cmd) = winmenu::Cmd::from_id(id) else { return };
     let (sub, enabled) = with_state(|st| {
         st.winmenu.as_ref().map_or((false, false), |m| {

@@ -384,6 +384,8 @@ enum Step {
     Filter { pane: usize, text: String },
     /// The pane's history menu, as Alt+Down opens it (P11-M3).
     HistMenu(usize),
+    /// The open history menu's entry at that position (0: the top), as a click picks it.
+    HistPick(usize),
     /// Ctrl+Shift+F's callback on the pane.
     Search(usize),
     /// Return in the pane's search box, with the box's text (P10-M2).
@@ -477,6 +479,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "menukey" => Step::MenuKey(a.get(1).unwrap_or(&"").to_string()),
                 "menupick" => Step::MenuPick(a[1..].join(" ")),
                 "histmenu" => Step::HistMenu(num(1) as usize),
+                "histpick" => Step::HistPick(num(1) as usize),
                 "menuclose" => Step::MenuClose,
                 "dragrow" => Step::DragRow {
                     pane: num(1) as usize,
@@ -1526,6 +1529,11 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::HistMenu(pane) => {
             app.invoke_command(pane as i32, "histmenu".into());
+            schedule(runner, 1);
+        }
+        Step::HistPick(i) => {
+            eprintln!("[auto] histpick {i}");
+            crate::winmenu_picked(crate::winmenu::Cmd::History(i).id());
             schedule(runner, 1);
         }
         Step::SearchButton(pane) => {
