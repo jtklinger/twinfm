@@ -729,8 +729,22 @@ recorded to watch, not read as a leak over four full cycles).
 
 ### Gate
 
-Pending: the defaults triplet, `target-p11m3` against `target-p11m2`, tag ab50 (allocated by the
-coordinating session), after its go. **The reference predates P11-M5** (f09cafc, syntax colours,
+Run by Jeremy on 2026-10-23, finished 15:50 (tag ab50, `C:\traces\gate-p11m3.ps1`, the same file as
+`tools/gate-p11m3.ps1`, 9 min): `target-p11m3` (ff0d120, built `--locked` from a detached checkout)
+against `target-p11m2` (c075a0a), the defaults, three runs each interleaved; every run passed the
+wrapper's checks, no panic, no build overlapping (the coordinating session's word).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11m2-1 / 2 / 3 | 18.6 / 18.6 / 18.5 | 21.6 / 19.5 / 19.7 | 2.24 / 2.26 / 2.25 |
+| p11m3-1 / 2 / 3 | 18.3 / 18.6 / 19.0 | 19.8 / 21.2 / 17.0 | 2.15 / 2.33 / 2.26 |
+
+Medians 18.6 / 18.6: no gap (not every reference run below every candidate run, 18.3 under all the
+reference's); render p50 2.15 to 2.33 ms throughout, the session in its normal state; every candidate
+run under 20%. **Passed.**
+
+The gate's terms: the defaults triplet, `target-p11m3` against `target-p11m2`, tag ab50 (allocated by
+the coordinating session). **The reference predates P11-M5** (f09cafc, syntax colours,
 merged into main after `target-p11m2` was built and into this branch at c3f2312): the candidate
 carries P11-M5's preview code as well as P11-M3; the gate scenario opens no preview.
 
@@ -761,6 +775,35 @@ the Phase 11 close.
   folder in Explorer (the "folder in use" case); a right-button drag out of Explorer into TwinFM
   (without Logi Options+ running); video and Office files with thumbnails on, in a 32 px list and the
   tiles; the 187 MB first-run working set (one heap-sampling trace of a first run against a second).
+
+**Results** (2026-10-23, Jeremy at the console, `target-p11m3`, unelevated):
+
+- **Checks 1 to 6** (the USB hard disk, the moved folder, the history menu and a restart, Ctrl+Z
+  from the sidebar, Browse and the not-found note, the springs): "checks 1-6 all work as expected".
+  **Found right.**
+- **The dead network share**: not checked ("don't have a network share to test"); carried, as since
+  P5-M1.
+- **Renaming an ancestor of a watched folder** in Explorer: "Rename in explorer works" (no "folder in
+  use"). **Found right**; nothing to change.
+- **A right-button drag out of Explorer**, Logi Options+ stopped: "Right button drag works". **Found
+  right.**
+- **Video and Office thumbnails**: in Downloads, large icons, thumbnails on, an `.mp4` and an `.xlsx`
+  showed their type icons (Jeremy's screenshot) while JPEGs and scanned images showed their content.
+  - The `.xlsx`: Explorer shows its icon too (Office's handler gives a picture only for a workbook
+    saved with one). **Found right.**
+  - The `.mp4`: **Explorer shows a frame of the video; TwinFM does not. Found wrong, not fixed in
+    P11-M3.** What was settled: both files get `thumb:` keys (`THUMB_EXTS`, plain attributes), and
+    the request asks with `WTS_EXTRACT`; a probe in TwinFM's test process got the thumbnail from
+    `IThumbnailCache::GetThumbnail` for two fresh copies of the same video, in an MTA thread (775 ms)
+    and an STA thread (434 ms). After Explorer had made the thumbnail, F5 in Jeremy's window still
+    showed the icon, because the icon table keeps a key's first answer for the session (F5 asks
+    nothing again). Why the first request in the running app fell back to the icon is not found: a
+    timeout or a pending answer from the cache for a large file read cold (594 MB) is the lead, and a
+    fallback kept for the session would then explain the rest. Proposed as its own item, with a test
+    video made for it (not Jeremy's): log the `GetThumbnail` HRESULT, and do not keep the icon fallback
+    as the key's answer when the cache says the extraction is pending or timed out.
+- **The 187 MB first-run question**: not run (a heap-sampling trace); carried to the Phase 11 close's
+  long soak, with this milestone's working-set note.
 
 ## P11-M4: the preview gaps bundle
 
