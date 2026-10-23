@@ -3733,6 +3733,24 @@ mod tests {
             let back = read_hglobal(data.0, registered_format(CFSTR_DROPDESCRIPTION)).expect("DropDescription stored");
             assert_eq!(&back[..1044], description_block(&d).as_slice());
         }
+        // P11-M2: a search tab's results from two folders, as the desktop's absolute PIDLs.
+        std::fs::create_dir_all(root.join("s1")).unwrap();
+        std::fs::create_dir_all(root.join("s2")).unwrap();
+        std::fs::write(root.join(r"s1\x.txt"), b"x").unwrap();
+        std::fs::write(root.join(r"s2\y.txt"), b"y").unwrap();
+        {
+            let names = vec![r"s1\x.txt".to_string(), r"s2\y.txt".to_string()];
+            let (folder_pidl, _folder, children) = shellmenu::parse_items(std::ptr::null_mut(), &root, &names).unwrap();
+            let apidl: Vec<*const _> = children.iter().map(|c| c.0 as *const _).collect();
+            let mut q: *mut c_void = std::ptr::null_mut();
+            // SAFETY: as in `drag`.
+            let hr = unsafe { SHCreateDataObject(folder_pidl.0, 2, apidl.as_ptr(), std::ptr::null_mut(), &IID_IDATAOBJECT, &mut q) };
+            assert!(hr >= 0 && !q.is_null(), "SHCreateDataObject over two folders 0x{:08X}", hr as u32);
+            let data = Com(q);
+            let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+            let got: Vec<_> = read_hdrop(data.0).expect("CF_HDROP offered").iter().map(|p| canon(p)).collect();
+            assert_eq!(got, vec![canon(&root.join(r"s1\x.txt")), canon(&root.join(r"s2\y.txt"))]);
+        }
         if com >= 0 {
             // SAFETY: pairs the CoInitializeEx above.
             unsafe { windows_sys::Win32::System::Com::CoUninitialize() };

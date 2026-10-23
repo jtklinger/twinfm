@@ -42,7 +42,7 @@ kickoff decisions, § Calls made lists the lead's, § Open questions what each b
 them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (292 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (296 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -53,9 +53,10 @@ them before changing the list.
   scratch folders, and since P8-M1 the preview worker's test writes PDFs into one, and since P8-M2
   two more write Markdown and pictures into scratch folders, and since P9-M2 two more write text,
   pictures and a page into scratch folders, and since P9-M3 one more writes Office files into one,
-  and since P11-M1 two more write text files (and a junction) into scratch folders, and since P11-M4
-  one more writes a HEIC with Windows' HEIF encoder into one, and since P11-M5 one more writes source
-  files into one, see below)
+  and since P11-M1 two more write text files (and a junction) into scratch folders, since P11-M4
+  one more writes a HEIC with Windows' HEIF encoder into one, since P11-M2 one more writes two
+  folders of files for a shell menu over both, and since P11-M5 one more writes source files into
+  one, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -352,6 +353,27 @@ them before changing the list.
   skipped (B over the cap, C binary, O cloud-only, U unreadable), D folders walked, K cloud, L not
   listed, in T ms`, `pane=N content "<text>" in <root>: refused (<why>)`, `box Return: searches
   "<text>" inside files`.
+  Since P11-M2, the cloud and search sweep: **a refresh of a cloud listing** keeps each row's icon
+  while its mark is looked up again (`model::finish_refresh`, `carry_marks`: a new entry with a
+  `look:` key takes the icon its name had on screen when its key differs only by the mark,
+  `icons::same_but_mark`; the lookup still runs, `resolve_icons` asks for a kept row's `look:` key
+  while any is kept, and `relabel` keeps the icon when the mark is the same or puts the placeholder
+  back when it changed): `[icons] pane=N marks carried: K of L across the refresh` (L the entries
+  waiting for a lookup, K those that kept an icon; rows never on screen have none to keep). **Search
+  results from several folders** get one shell menu (classic and Windows 11) and one drag:
+  `shellmenu::parse_items` hands the shell the desktop's `IShellFolder` and each item's absolute PIDL
+  (`parse_absolute`) when `common_parent` finds more than one folder (not inside an archive, which
+  keeps the refusal). **A search tab's rows on screen follow changes**: every 5 s
+  (`RESTAT_EVERY`) and when the tab comes to the front, a finished search tab in front has its
+  visible rows statted again on a worker thread (`restat_results`, `stat_entry` per row under its
+  folder), and `land_restat` removes the gone and updates the changed through `apply_edits`
+  (`model::restat_edits`; new matches still need F5): `[search] pane=N results re-stated: R rows, G
+  gone, C changed, in T ms`, `results re-stated: dropped (the listing changed)`, `results re-stated:
+  not applied (<why>)`. **A rename in a search tab** puts the cursor on the renamed result
+  (`search_row_name`: its path under the root). **Reset column widths** (the settings dialog, under
+  the Type column switch; staged, applied on OK): `settings set cols_reset`, `[settings] dialog:
+  cols_reset`, `[cols] pane=N widths reset to 120, 90, 140` per pane, then the `(reset)` change lines;
+  it counts as one change in the dialog's closed line.
   Since P3-M3, folder sizes: `sizeall <pane>` focuses the pane's list and presses Alt+Shift+Return
   (key name `AltShiftReturn`, Alt+Return until P7-M2: size every folder of the listing, at most 500, nearest the cursor first);
   `waitsize <ms>` waits until no folder size is queued or walking and the last reply has landed (at
@@ -1011,6 +1033,10 @@ them before changing the list.
   drags read back as Size 90 -> 60, fits, and widths lines back at 120, 90, 140. Since P9-M4 each
   cycle also turns thumbnails on, drags i-photo.jpg's row in `preview` (cancelled) and searches for
   photo there, then turns them off; it reports drag images from the thumbnail and the searches.
+  Since P11-M1 each cycle also runs a content search in `src` (`csearch 0 scratch file 3/7`, its tab
+  closed, the toggle off again); it reports content searches done, files read and files found (one).
+  Since P11-M2 each cycle also narrows the left pane's Type column and resets both panes through the
+  settings dialog (`settings set cols_reset`, OK); it reports the resets (two per cycle).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
@@ -1103,7 +1129,9 @@ them before changing the list.
   `fs::content::tests::files_are_read_up_to_the_cap` writes text, UTF-16 and binary files in
   `%TEMP%\twinfm-p11m1-content-<pid>\`, and `fs::enumerate::tests::content_search_reads_text_files_and_stays_out_of_links_and_clouds`
   a tree with a junction to its root and a file marked offline in `%TEMP%\twinfm-p11m1-test-<pid>\`.
-  All remove their folders.
+  Since P11-M2 `shellmenu::tests::a_menu_for_results_in_two_folders` builds a shell menu over files
+  in two folders of `%TEMP%\twinfm-p11m2-menu-<pid>\`, and `dnd::tests::shell_data_object_offers_hdrop`
+  also makes a data object over two subfolders of its scratch folder. All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

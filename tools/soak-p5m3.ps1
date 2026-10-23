@@ -118,6 +118,10 @@
 # content toggle on, the text, Ctrl+Shift+F), closes its tab and turns the toggle off; the report
 # counts content searches done (one per cycle), the files they read (src's 200 at least) and the
 # files they found (one per cycle: tree\d03\f07.txt).
+# P11-M2: each cycle also narrows the left pane's Type column to 100 px and puts both panes back
+# through the settings dialog's "Reset column widths" (`settings set cols_reset`, OK); the report
+# counts the resets (two lines per cycle, one per pane), and the widths-back lines are two per
+# cycle since (the P9-M1 cycle's and the reset's).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -473,7 +477,9 @@ $cycle = @(
     'filter 0', 'sleep 200', 'searchreturn 0', 'sleep 300',
     # P11-M1: a content search in src (see the header).
     "nav 0 $src", 'sleep 500', 'csearch 0 scratch file 3/7', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
-    'contentmode 0 off', 'filter 0', 'sleep 300'
+    'contentmode 0 off', 'filter 0', 'sleep 300',
+    # P11-M2: the widths reset through the dialog (see the header).
+    "nav 0 $src\tree", 'sleep 500', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -650,6 +656,7 @@ $contentRead = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[2].Val
 $contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum).Sum
 $colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 60 px (drag)').Count
 $colFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit modified: ').Count
+$colResets = @($log | Select-String -SimpleMatch '[cols] pane=0 widths reset to 120, 90, 140').Count + @($log | Select-String -SimpleMatch '[cols] pane=1 widths reset to 120, 90, 140').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 # P11-M4: the zoom and "Copy text".
@@ -687,7 +694,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "archives inside archives: copies out $nestedOut, copies from an archive into a zip $fromShell (one each per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
 "preview: PDFs opened $pvOpened (two per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (four per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0), zooms $pvZooms (four per cycle), copies $pvCopies (two per cycle), copy failures $pvCopyBad (must be 0), files coloured $pvColoured (two per cycle), chunks refused $pvColourBad (must be 0)"
-"column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (one per cycle and one at start)"
+"column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (two per cycle and one at start), resets through the dialog $colResets (two per cycle)"
 "thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
 "search box: Return searches $boxReturns (one per cycle), button searches $boxButtons (one per cycle), blank Returns $boxEmpty (one per cycle)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
