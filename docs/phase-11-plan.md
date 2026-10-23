@@ -713,7 +713,10 @@ reference is `target-p11m2` (c075a0a), the last merged milestone's build; it **c
     right-button drag out of Explorer, video and Office thumbnails, the 187 MB question).
 
 Screenshots (light, `winit-software`): the history menu (gamma, beta checked, alpha, C:), the
-settings dialog with Browse beside both start folders and the not-found note in the footer.
+settings dialog with Browse beside both start folders and the not-found note in the footer. After
+main's P11-M5 (f09cafc) was merged in, the dialog's new "Code" row (syntax colours) had pushed the
+footer below the dialog's 590 px (the "Saved to" note too, on main): the dialog is 630 px now, the
+footer inside it again (screenshot after the fix).
 
 ### Gate
 
