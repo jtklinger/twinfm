@@ -1903,4 +1903,23 @@ mod tests {
         // NTFS may also report "sub" modified, lazily, after the deep write.
         assert!(changes.contains(&Change::Added(s("top2.txt"))), "{changes:?}");
     }
+
+    #[test]
+    fn a_subtree_watch_past_the_record_cap_gives_no_edits() {
+        // P11-M3: a burst of more than `MAX_RECORDS` records in the folder itself under a subtree
+        // watch is a window with no edits (`raw_over`), so the UI lists the folder again instead of
+        // folding them. (The buffer's own overflow, `overflow: true`, could not be forced here: the
+        // watcher kept up with 3,200 records of over 400 bytes from eight threads.)
+        let dir = Scratch::new("subtree-overflow");
+        std::fs::create_dir_all(dir.0.join("sub")).unwrap();
+        let (w, rx) = watcher();
+        w.watch(0, 7, dir.0.clone(), true, false);
+        w.sync();
+        for i in 0..(2 * MAX_RECORDS) {
+            std::fs::write(dir.0.join(format!("burst-{i:05}.txt")), b"x").unwrap();
+        }
+        let events = collect(&rx, Duration::from_secs(4));
+        let capped = events.iter().filter(|e| matches!(e, Event::Subtree { tab_id: 7, top: true, overflow: false, edits: None, records, .. } if *records > MAX_RECORDS)).count();
+        assert!(capped >= 1, "expected a window past the cap with no edits, got {events:?}");
+    }
 }

@@ -6130,7 +6130,8 @@ fn set_title_bar(hwnd: isize, mode: settings::ThemeMode) {
 /// For the scripted driver's `waitsize`: a folder size is still queued or walking.
 pub fn sizes_busy() -> bool {
     STATE.with(|s| match s.try_borrow() {
-        Ok(g) => g.as_ref().is_some_and(|st| st.panes.iter().any(|p| p.iter().any(|t| !t.sizes.pending.is_empty()))),
+        // A stale size waiting for its re-walk counts too (P11-M3).
+        Ok(g) => g.as_ref().is_some_and(|st| st.panes.iter().any(|p| p.iter().any(|t| !t.sizes.pending.is_empty() || !t.sizes.stale.is_empty()))),
         Err(_) => true,
     })
 }
