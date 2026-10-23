@@ -627,6 +627,18 @@ with stderr kept; his word: "All Look good!"), each found right, with the log be
 - **Reset column widths**: Cancel (nothing applied), then the button and OK (`widths reset to 120,
   90, 140` for both panes).
 
+### After the console check (2026-10-23)
+
+- **The re-stat timer checks for a search tab first.** Found while reading the code for ab47: every
+  5 s `restat_results` worked out the visible rows and `search_thumbnails` (one `cloud.of` path
+  lookup) for each pane before asking whether its tab was a search tab, so folder tabs paid that
+  every tick for nothing. The check now comes first. Event-handler only (a timer), so by the Phase 9
+  rule one in-app run, no triplet (the coordinating session's word): the gate scenario on
+  `C:\traces\bigdir`, gate build then fixed build back to back, Jeremy's idle console window from
+  the checks still open: `[busy]` 18.9% and 19.2%, render p50 2.14 and 2.15 ms, no panic, no
+  re-stat line (no search tab); a search tab still re-states (`4 rows, 1 gone, 1 changed` after
+  outside changes).
+
 ## P11-M4: the preview gaps bundle
 
 The preview stream's first milestone, opened 2026-10-22 on main at d1abbe3 (0.1.0, Phase 10 merged),

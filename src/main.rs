@@ -5779,13 +5779,14 @@ fn restat_results(st: &mut State, app: &App, pane: usize) {
     if pane == 1 && !app.get_split() {
         return;
     }
+    // A folder tab (nearly every tick) asks nothing more.
+    let t = st.tab(pane);
+    if !t.search.as_ref().is_some_and(|s| !s.restating) || unsettled(t).is_some() {
+        return;
+    }
     let range = visible_rows(st, app, pane);
     let thumbs = search_thumbnails(st, &st.tab(pane).path.clone());
     let t = st.tab_mut(pane);
-    let Some(s) = t.search.as_mut() else { return };
-    if s.restating || unsettled(t).is_some() {
-        return;
-    }
     let Some((first, last)) = range else { return };
     let rows: Vec<model::Entry> = (first..=last).filter_map(|i| t.model.entry(i)).collect();
     if rows.is_empty() {
