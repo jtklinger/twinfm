@@ -1,8 +1,8 @@
-# P11-M5 gate, tag TAG: target-p11m5 from the P11-M5 PR's code head 530bd8e (syntax colours in the
+# P11-M5 gate, tag ab49: target-p11m5 from the P11-M5 PR's code head 530bd8e (syntax colours in the
 # preview: TwinFM's own tokenizer, the coloured code chunks, the `syntax_colours` setting; the docs and
 # this wrapper follow it) against target-p11m4 (2d3a096, P11-M4's gate build, the last merged
 # milestone's; it predates P11-M1's content search, merged before P11-M4, so the candidate carries both),
-# two pairs interleaved in one session under the one tag TAG: the defaults (preview off: expected flat)
+# two pairs interleaved in one session under the one tag ab49: the defaults (preview off: expected flat)
 # and the preview column (C:\traces\preview.toml, read-only, `preview = true`: the column shown while
 # the lists scroll, the scenario's cursor on no file), the reference run with the same settings file as
 # the candidate each time. Each round runs p11m4, p11m5, p11m4-preview, p11m5-preview. 12 runs, about
@@ -12,14 +12,14 @@
 #   powershell -ExecutionPolicy Bypass -File C:\traces\gate-p11m5.ps1
 # (a copy of tools\gate-p11m5.ps1 on the P11-M5 branch; the scripts it calls are the gate checkout's
 # tools\wpr-triplet.ps1, which calls wpr-gate.ps1 beside it, and tools\analyze-trace.py).
-# Writes C:\traces\twinfm-TAG-*.etl (+ .stderr.txt), C:\traces\export\TAG-*.txt and
-# C:\traces\gate-TAG-summary.txt.
+# Writes C:\traces\twinfm-ab49-*.etl (+ .stderr.txt), C:\traces\export\ab49-*.txt and
+# C:\traces\gate-ab49-summary.txt.
 # The gate build is already made (Claude built it, --locked, from the detached checkout); the build
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 $Head = '530bd8e'
-$Tag = 'TAG'
+$Tag = 'ab49'
 $Ref = 'p11m4'
 $Cand = 'p11m5'
 $Gate = "$Root\.claude\worktrees\gate-p11m5"

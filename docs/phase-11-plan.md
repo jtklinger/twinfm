@@ -675,7 +675,10 @@ types and log tags cyan.
 ### Gate
 
 Pending: `tools/gate-p11m5.ps1` (the defaults and the preview triplet, `C:\traces\preview.toml`,
-against `target-p11m4`), its tag from the coordinating session.
+against `target-p11m4`), tag ab49; `target-p11m5` built from 530bd8e. My worktree's test build
+(11:28 to 11:38) ran during ab46 (P11-M2) and voided it, before the coordinating session's hold
+reached this session; ab46 was rerun as ab47. The lesson: under two streams, any cargo run or TwinFM
+window waits for the coordinator's word too, not only gate builds and soaks.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
