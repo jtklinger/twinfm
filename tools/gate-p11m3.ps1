@@ -1,4 +1,4 @@
-# P11-M3 gate, tag ab50: target-p11m3 from the P11-M3 PR at 0e8dd28 (the edge-case bundle: Ctrl+Z at
+# P11-M3 gate, tag ab50: target-p11m3 from the P11-M3 PR at ff0d120 (the edge-case bundle: Ctrl+Z at
 # the window level, a partial restore recorded, a replaced file's copy not undone, a moved folder
 # followed, a hot-pluggable fixed drive registered, the history menu and saved history, Browse for
 # the start folders, spring-loading on sidebar rows and crumbs; the wrapper's own commit follows it)
@@ -17,7 +17,7 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = '0e8dd28'
+$Head = 'ff0d120'
 $Tag = 'ab50'
 $Ref = 'p11m2'
 $Cand = 'p11m3'

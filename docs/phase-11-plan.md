@@ -734,6 +734,17 @@ coordinating session), after its go. **The reference predates P11-M5** (f09cafc,
 merged into main after `target-p11m2` was built and into this branch at c3f2312): the candidate
 carries P11-M5's preview code as well as P11-M3; the gate scenario opens no preview.
 
+**The soak ran on 0e8dd28, the gate on ff0d120.** After the soak, CI failed
+`worker_runs_real_shell_operations`: the runner's `%TEMP%` is an 8.3 path (`RUNNER~1`) while the shell
+names a copied item by its long path, so the replaced-file check (item 4) missed and the undo was not
+refused (a user's tab on a short path would miss the same). Fixed in ff0d120: the paths there before a
+job are taken in their long form (`GetLongPathNameW`, no link followed); the test copies through the
+folder's 8.3 name (this machine has 8.3 names on C:, as the runner does). The coordinating session
+chose to rebuild `target-p11m3` at ff0d120 before the gate, so the gate measures what merges; no new
+soak (the fix is one path lookup per copy or move job on the file worker, nothing per row or frame).
+The soak's working set (173 to 290 MB) is on the coordinating session's watch list, for a long soak at
+the Phase 11 close.
+
 ### Console checks (for Jeremy, unelevated, after the gate)
 
 - **A USB hard disk**: plug it in, open a folder on it in TwinFM, then "Safely remove" it from the
