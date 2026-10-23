@@ -45,7 +45,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES,
     FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, OPEN_EXISTING, ReadDirectoryChangesW,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, GetFinalPathNameByHandleW, OPEN_EXISTING,
+    ReadDirectoryChangesW,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
 use windows_sys::Win32::System::IO::{
@@ -486,6 +487,23 @@ fn drive_type(path: &Path) -> Option<u32> {
         }
         _ => None,
     }
+}
+
+/// Where the folder open as `handle` is now (`GetFinalPathNameByHandleW`, without the `\\?\`
+/// prefix it gives: `\\?\C:\x` is `C:\x`, `\\?\UNC\server\share` is `\\server\share`).
+fn final_path(handle: HANDLE) -> Option<PathBuf> {
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: a live handle; `buf` holds its length in u16s.
+    let n = unsafe { GetFinalPathNameByHandleW(handle, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
+    if n == 0 || n >= buf.len() {
+        return None;
+    }
+    let s = String::from_utf16_lossy(&buf[..n]);
+    let s = match s.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => s.strip_prefix(r"\\?\").unwrap_or(&s).to_string(),
+    };
+    Some(PathBuf::from(s))
 }
 
 /// A network folder: a UNC path or a mapped network drive.
@@ -1129,7 +1147,7 @@ impl<W: Fn()> Dirwatch<W> {
                 // parent (moved to another folder on the volume).
                 let renamed_to = if i == 0 && std::mem::take(&mut pw.cut_old) {
                     if *action != FILE_ACTION_RENAMED_NEW_NAME {
-                        return self.lose(m, "the folder was moved away".into());
+                        return self.moved_away(m, pp, "the folder was moved away");
                     }
                     Some(n.clone())
                 } else if *action == FILE_ACTION_RENAMED_OLD_NAME && n.eq_ignore_ascii_case(&name) {
@@ -1138,7 +1156,7 @@ impl<W: Fn()> Dirwatch<W> {
                             i += 1;
                             Some(new.clone())
                         }
-                        Some(_) => return self.lose(m, "the folder was moved away".into()),
+                        Some(_) => return self.moved_away(m, pp, "the folder was moved away"),
                         None => {
                             pw.cut_old = true;
                             None
@@ -1154,7 +1172,7 @@ impl<W: Fn()> Dirwatch<W> {
                     mw.path = to.clone();
                     self.send(Event::Moved { pane: mw.pane, tab_id: mw.tab_id, from, to });
                 } else if *action == FILE_ACTION_REMOVED && n.eq_ignore_ascii_case(&name) {
-                    return self.lose(m, "the folder was deleted".into());
+                    return self.moved_away(m, pp, "the folder was deleted");
                 }
                 i += 1;
             }
@@ -1221,6 +1239,26 @@ impl<W: Fn()> Dirwatch<W> {
             self.open_parent(p);
         }
         self.send(Event::Changed { pane, tab_id, changes: Vec::new(), records: 0, overflow: true });
+    }
+
+    /// The watched folder at `m` left its parent (watched by `pp`): a move to another folder comes
+    /// as a removal record, or an old name with no new one (P11-M3). Its own handle, still open,
+    /// names where it is now, so the watch follows it there (`Moved`, a new parent watch on its new
+    /// parent); `Lost` with `lost` when the handle names no other folder (it was deleted).
+    fn moved_away(&mut self, m: *mut Watch, pp: *mut Watch, lost: &str) {
+        // SAFETY: a live main watch owned by this thread.
+        let mw = unsafe { &mut *m };
+        let Some(to) = final_path(mw.handle).filter(|to| !to.as_os_str().eq_ignore_ascii_case(mw.path.as_os_str()) && to.is_dir()) else {
+            return self.lose(m, lost.into());
+        };
+        let from = std::mem::replace(&mut mw.path, to.clone());
+        eprintln!("[watch] pane={} tab={} folder moved: {} -> {}", mw.pane, mw.tab_id, from.display(), to.display());
+        mw.parent = std::ptr::null_mut();
+        self.retire(pp);
+        self.open_parent(m);
+        // SAFETY: as above; `open_parent` keeps the watch.
+        let mw = unsafe { &*m };
+        self.send(Event::Moved { pane: mw.pane, tab_id: mw.tab_id, from, to });
     }
 
     /// The live main watch at `p` failed: take it out of its slot, retire it (and its parent),
@@ -1705,7 +1743,8 @@ mod tests {
     }
 
     #[test]
-    fn moving_the_watched_folder_away_loses_it() {
+    fn moving_the_watched_folder_to_another_parent_follows_it() {
+        // P11-M3: before it the watch was lost; the folder's own handle names its new place.
         let dir = Scratch::new("moved-away");
         let (from, to) = (dir.0.join("a"), dir.0.join("b"));
         std::fs::create_dir_all(from.join("watched")).unwrap();
@@ -1715,10 +1754,16 @@ mod tests {
         w.sync();
         std::fs::rename(from.join("watched"), to.join("watched")).unwrap();
         let events = collect(&rx, Duration::from_secs(1));
-        let lost: Vec<_> = events.iter().filter_map(|e| if let Event::Lost { tab_id: 6, error, .. } = e { Some(error.as_str()) } else { None }).collect();
-        eprintln!("moved away: {lost:?}");
-        assert_eq!(lost.len(), 1, "{events:?}");
-        assert!(!events.iter().any(|e| matches!(e, Event::Moved { .. })), "{events:?}");
+        let moved: Vec<_> = events.iter().filter_map(|e| if let Event::Moved { tab_id: 6, to, .. } = e { Some(to.clone()) } else { None }).collect();
+        assert_eq!(moved.len(), 1, "{events:?}");
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(canon(&moved[0]), canon(&to.join("watched")));
+        assert!(!events.iter().any(|e| matches!(e, Event::Lost { tab_id: 6, .. })), "{events:?}");
+        // The watch goes on in the new place: a file made there is a change of this tab.
+        std::fs::write(to.join(r"watched\x.txt"), b"x").unwrap();
+        let (pane, tab, changes, _) = next_changed(&rx);
+        assert_eq!((pane, tab), (0, 6));
+        assert_eq!(changes, vec![Change::Added(s("x.txt"))]);
     }
 
     #[test]
