@@ -42,7 +42,7 @@ kickoff decisions, § Calls made lists the lead's, § Open questions what each b
 them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (292 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (296 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -54,8 +54,9 @@ them before changing the list.
   two more write Markdown and pictures into scratch folders, and since P9-M2 two more write text,
   pictures and a page into scratch folders, and since P9-M3 one more writes Office files into one,
   and since P11-M1 two more write text files (and a junction) into scratch folders, since P11-M4
-  one more writes a HEIC with Windows' HEIF encoder into one, and since P11-M2 one more writes two
-  folders of files for a shell menu over both, see below)
+  one more writes a HEIC with Windows' HEIF encoder into one, since P11-M2 one more writes two
+  folders of files for a shell menu over both, and since P11-M5 one more writes source files into
+  one, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -892,6 +893,24 @@ them before changing the list.
   MB], <encoding>` (`UTF-8`, `UTF-8 BOM`, `UTF-16LE`, `windows-1252`, `ISO-8859-15`, ... `, charset
   "<label>" not known`), `pane=N gen=G <path>: picture WxH px, HEIC|HEIF|AVIF, decoded in T ms`, and
   `picture failed: no decoder | failed: not a picture Windows can read | failed: <call> 0x...`.
+  Since P11-M5, syntax colours: a text file whose extension `syntax::lang_of` knows (Rust, PowerShell,
+  Python, JSON, TOML, INI and `.reg`/`.inf`/`.cfg`/`.conf`, YAML, XML, CSS, JavaScript and TypeScript,
+  C and C++, C#, Java, Go, shell, batch, Slint, SQL, `.log`, diff; `.txt`, `.csv` and the rest stay
+  plain) is coloured by TwinFM's own tokenizer (`src/syntax.rs`, pure: one table per language, five
+  token kinds, keywords, strings, comments, numbers, types; a block comment or a multi-line string open
+  at a chunk's end carried into the next; a log's levels, time stamps and `[tags]`; Jeremy chose it over
+  syntect, 2026-10-23). The worker answers the plain blocks first (one more answer counted per code
+  chunk in `Blocks`' `pictures`), then colours the chunks in order, the generation checked between
+  them, each a `StyledText` made from inline Markdown with `<font color>` runs (`syntax::markup`: ASCII
+  punctuation escaped, a line's leading spaces as no-break spaces, every line a hard break), answered as
+  `Reply::Colour` and drawn by preview.slint's code block as a `StyledText` in Consolas (`MdBlock`'s
+  `coloured`). The palette (`syntax::LIGHT`, `DARK`: Tailwind's 600 and 400 steps) is chosen by
+  `Palette.color-scheme` when the file is asked for; a change of scheme (app.slint's `theme-dark`) or of
+  the setting previews the file again (`preview::recolour`). Setting `syntax_colours` (default true, the
+  dialog's "Code" row; `settings set syntax_colours true|false`). `waitpreview` waits for the colours.
+  `[preview]` lines: the text line ends `, <language> | plain | plain (colours off)`, `gen=G coloured N
+  chunk(s) in T ms (<language>)`, `gen=G superseded: N chunk(s) not coloured`, `gen=G block K: colours
+  refused, plain kept: <err>`, `recolour: the file is previewed again`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -925,7 +944,7 @@ them before changing the list.
   defaults new tabs have), and the next save writes tables; since P8-M1 `preview` (the preview
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
   0.35, its handle's drag), since P11-M4 `preview_zoom` (a PDF's zoom, percent, 50 to 400, default
-  100); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
+  100), since P11-M5 `syntax_colours` (default true, in the dialog); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
   `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
   `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme; since P10-M3 the
   native title bar follows it through `DWMWA_USE_IMMERSIVE_DARK_MODE`, set when the window's handle is
@@ -1098,7 +1117,8 @@ them before changing the list.
   `wic::tests::heic_through_windows_decoders` writes a HEIC with Windows' HEIF encoder (skipped, with a
   check of the "no decoder" answer, where none is installed) and a damaged one into
   `%TEMP%\twinfm-p11m4-heic-<pid>\`, and `preview::tests::svg_text_is_drawn` reads seven fonts from
-  `%WINDIR%\Fonts`. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
+  `%WINDIR%\Fonts`; since P11-M5 `the_worker_colours_source_after_its_blocks` writes a Rust file
+  and a text file into `%TEMP%\twinfm-p11m5-test-<pid>\`. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
   `%TEMP%\twinfm-p8l2-raw-<pid>.zip`, `fs::archivewrite::tests::password_zips_and_copies_between_zips`
   makes ZipCrypto, AES and plain zips in `%TEMP%\twinfm-p8l2-pw-<pid>\`, and `zip_jobs_on_the_worker`
   writes into its tar.exe password zip with the script's password (`zippassword`'s path) and copies

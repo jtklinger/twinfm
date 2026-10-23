@@ -318,6 +318,12 @@ export component App inherits Window {
     callback preview-zoom-key(int) -> bool;
     callback preview-menu(int);
     callback preview-copy(int);
+    // Since P11-M5: text and source coloured by language (the `syntax_colours` setting), and
+    // preview-recolour() when the scheme or the setting changes (Rust previews the file again).
+    in-out property <bool> syntax-colours: true;
+    callback preview-recolour();
+    private property <bool> theme-dark: Theme.dark;
+    changed theme-dark => { root.preview-recolour(); }
     callback toggle-preview();
     callback preview-cursor();
     callback preview-scrolled(length, length);
@@ -508,6 +514,7 @@ export component App inherits Window {
     // The colour scheme choice (P10-M1 task 7): 0 system, 1 light, 2 dark.
     in-out property <int> dlg-theme;
     in-out property <bool> dlg-preview;
+    in-out property <bool> dlg-syntax-colours;
     // "Reset column widths" pressed (P11-M2): both panes' widths go back to the defaults on OK.
     in-out property <bool> dlg-cols-reset;
     // "Saved to <file>", or that a scripted run saves nothing.
@@ -548,6 +555,7 @@ export component App inherits Window {
         if (field == "toolbar") { dlg-toolbar = value == "none" ? 0 : value == "pane" ? 2 : 1; }
         if (field == "theme") { dlg-theme = value == "light" ? 1 : value == "dark" ? 2 : 0; }
         if (field == "preview") { dlg-preview = value == "true"; }
+        if (field == "syntax_colours") { dlg-syntax-colours = value == "true"; }
         if (field == "cols_reset") { dlg-cols-reset = value != "false"; }
     }
 
@@ -1518,6 +1526,15 @@ export component App inherits Window {
                                 checked: root.dlg-preview;
                                 accessible-label: "Show the preview pane";
                                 toggled => { root.settings-stage("preview", self.checked ? "true" : "false"); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Code"; vertical-alignment: center; }
+                            Switch {
+                                text: "Syntax colours in the preview";
+                                checked: root.dlg-syntax-colours;
+                                accessible-label: "Colour text and source by language in the preview";
+                                toggled => { root.settings-stage("syntax_colours", self.checked ? "true" : "false"); }
                             }
                         }
                         Row {
