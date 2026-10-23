@@ -302,6 +302,9 @@ export component App inherits Window {
     in-out property <float> preview-width: 0.35;
     in property <string> preview-title;
     in property <string> preview-message;
+    // Since P11-M6: the button under the message ("Enter password…"), and its press.
+    in property <string> preview-action;
+    callback preview-password();
     in property <[PreviewPage]> preview-pages;
     in property <length> preview-content-h;
     // Since P8-M2: 0 a PDF's pages, 1 a Markdown file's blocks; preview-link(destination) a link
@@ -1077,6 +1080,8 @@ export component App inherits Window {
             width: max(0px, parent.width - self.x); height: parent.height - root.top-h;
             title: root.preview-title;
             message: root.preview-message;
+            action: root.preview-action;
+            action-clicked => { root.preview-password(); }
             pages: root.preview-pages;
             content-h: root.preview-content-h;
             mode: root.preview-mode;

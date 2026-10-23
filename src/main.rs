@@ -6711,6 +6711,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_preview_zoom_key(preview::zoom_key);
     app.on_preview_menu(preview::menu);
     app.on_preview_recolour(preview::recolour);
+    app.on_preview_password(preview::password);
     app.on_preview_copy(|k| preview::copy(usize::try_from(k).ok()));
     // Closing the window writes the settings at once (the window's placement included).
     app.window().on_close_requested(|| {

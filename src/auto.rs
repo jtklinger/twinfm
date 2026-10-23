@@ -242,6 +242,9 @@
 //!                                    launched in a scripted run (P8-M2)
 //!   previewzoom <in|out|reset>       a PDF's zoom one step larger or smaller, or back to 100%, as
 //!                                    Ctrl+wheel over the column does (P11-M4)
+//!   pdfpassword <text>               the answer to the next PDF password question, then the column's
+//!                                    "Enter password…" button pressed (P11-M6); a scripted run never
+//!                                    shows the dialog, so a question without it is refused
 //!   previewcopy <block|all>          the "Copy text" menu's pick: block <block> (0-based, a code
 //!                                    block or table whole) or every block onto the clipboard (P11-M4)
 //!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
@@ -408,6 +411,8 @@ enum Step {
     PreviewLink(String),
     /// A PDF's zoom step: 1 in, -1 out, 0 back to 100%.
     PreviewZoom(i32),
+    /// A PDF's password, given and the button pressed.
+    PdfPassword(String),
     /// "Copy text": a block, or None for all.
     PreviewCopy(Option<usize>),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
@@ -619,6 +624,7 @@ fn parse(script: &str) -> Vec<Step> {
                     Some("out") => -1,
                     _ => 0,
                 }),
+                "pdfpassword" => Step::PdfPassword(s.trim_start()["pdfpassword".len()..].trim().to_string()),
                 "previewcopy" => Step::PreviewCopy(a.get(1).and_then(|v| v.parse().ok())),
                 "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
@@ -1589,6 +1595,12 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             if !crate::preview::zoom(step) {
                 eprintln!("[auto] previewzoom: no PDF shown");
             }
+            schedule(runner, 1);
+        }
+        Step::PdfPassword(p) => {
+            eprintln!("[auto] pdfpassword: the next password question gets the script's answer");
+            crate::preview::script_password(&p);
+            crate::preview::password();
             schedule(runner, 1);
         }
         Step::PreviewCopy(one) => {
