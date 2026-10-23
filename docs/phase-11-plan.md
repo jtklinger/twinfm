@@ -423,10 +423,32 @@ option):
   tab and crumb `Text: "needle"`, the rows `notes.txt  the Needle sits here`, `wide.txt  (sub)  wide
   needle line`, and the long line shown around its match.
 
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-22, on the gate build `target-p11m1`, the
+coordinator's go, the preview stream waiting): ran 10.1 min, exit 0, 0 panics; 264 jobs (0 failed, 0
+cancelled, 0 refused), 0 waitops timeouts; every must-be-0 count 0 (drags dropped, toolbar presses
+refused, menupicks refused, spring-loaded tabs, zip jobs not done, picture failures, Office
+unreadable, alt text, waitpreview timeouts, worker panics); search box 4 Return searches, 4 button
+searches, 4 blank Returns; **content search: done 4 (one per cycle), files read 806, found 4 (one
+per cycle)**; working set 172 to 261 MB, peak 279 MB (above P10-M2's 136 to 226 on a longer cycle;
+not read as a leak of this change).
+
 ### Gate
 
-Pending: `target-p11m1` against `target-p10m3`, tag ab44, the defaults, after the coordinating
-session's go.
+Run by Jeremy on 2026-10-22, finished 19:43 (tag ab44, `C:\traces\gate-p11m1.ps1`, the same file as
+`tools/gate-p11m1.ps1`, 8 min): `target-p11m1` (79410ab, built `--locked` from a detached checkout)
+against `target-p10m3` (4f07cba), the defaults, three runs each interleaved. Every run passed the
+wrapper's checks, no panic. The reference predates 0.1.0's windowed exe: a console build against a
+windowed one.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p10m3-1 / 2 / 3 | 18.3 / 18.3 / 18.6 | 18.1 / 19.4 / 18.9 | 2.18 / 2.22 / 2.23 |
+| p11m1-1 / 2 / 3 | 18.6 / 18.6 / 18.6 | 20.9 / 18.0 / 17.2 | 2.21 / 2.20 / 2.20 |
+
+Medians 18.3 (reference) / 18.6 (candidate): no gap (0.3 points, under the one-point rule; p10m3-3
+equals the candidates, so not every reference run sits below every candidate run). Render p50 2.18
+to 2.23 ms in every run: the session in its normal state throughout. Every candidate run under 20%.
+**Passed.**
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
