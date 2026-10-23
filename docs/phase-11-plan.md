@@ -325,3 +325,162 @@ Written 2026-10-22 at the kickoff.
   patch and upstreaming the two accessibility patches.
 - **Carried**: Google Drive's volume found by its name; a sync-root scratch folder for the soak; the
   binary Office formats; thumbnails inside archives.
+
+## P11-M1: content search
+
+The lists and file-system stream's first milestone, started 2026-10-22 from main at d1abbe3 (0.1.0,
+after the Phase 10 close), branch `claude/p11-m1-content-search-3bb55d`, in a session of its own
+started by the coordinating session. Corrections to the kickoff for this stream, from the
+coordinating session's brief: Phase 10 has merged, so `pane.slint` and `app.slint` are free to
+change on their restyled versions; the gate reference is `target-p10m3` (4f07cba), not
+`target-p9m4`; tags start at ab44, allocated by the coordinator; the reference predates 0.1.0's
+windowed exe and the candidate does not, which the gate record says; the Calls made line "a history
+menu opens on a long press or right-click of Back and Forward" is superseded by the builder check's
+line below it (Alt+Down and the path bar's background menu; P11-M3's).
+
+Jeremy's decisions, 2026-10-22, from the choices put to him in this session (each the recommended
+option):
+
+- **The mode switch**: "Toggle button" (a button inside the box beside the search button, lit while
+  on), not a dropdown beside it.
+- **Typing in content mode**: "No, just hold the text": typing filters nothing while the toggle is
+  on; name mode keeps the live filter.
+- **Which files are read**: "Every file below": no name pattern with a content search in P11-M1
+  (the `word in *.ext` syntax was offered and not taken).
+- **Remembered**: "No, start in name mode": the toggle is the pane's for the session, never saved.
+
+### Settled first (2026-10-22, before any code)
+
+- **A second box or a mode of the box**: a mode, by P10-M2's settlement (one box, its button the
+  hook); the form, a toggle, is Jeremy's choice above. Drawn as the look's own control (a 26 px
+  ghost button with the Lucide `file-text` icon, added to `src/ui/icons/`, the accent and the muted
+  face while on), not a toolkit widget (the Phase 10 lesson).
+- **What reads the files**: no crate. `std::fs::File` and the decoding rule are enough; the
+  preview's `markdown::decode` stops at 2 MB and is the preview stream's file, so
+  `src/fs/content.rs` holds its own decode (the same rule: a UTF-16 byte order mark, else UTF-8 with
+  invalid bytes replaced, the UTF-8 mark dropped) up to the 16 MB cap. Case-insensitivity is
+  `char::to_lowercase` per character on both sides (`str::to_lowercase` turns a final sigma into
+  `ς` in one and not the other; `ς` is read as `σ`); the text is folded once and, when no character
+  changed its length (nearly always), the match's offset is the text's, so the line is found without
+  a second pass; otherwise line by line.
+- **Binary**: after the encoding rule, a NUL in the first 8 KB, or over 10% of its characters
+  invalid UTF-8 or control characters other than tab, line breaks, form feed and escape. A UTF-16
+  file with a byte order mark is text (its NULs are half its bytes); one without a mark reads as
+  binary, as the preview reads it as UTF-8.
+- **Cloud**: a content search rooted in a cloud location (`cloud::Locations::of`: a sync root or
+  the Google Drive volume, the P9-M4 rule) is refused with a note, and a walk from elsewhere does not
+  enter a folder under a sync root (`Locations::roots`, normalised, checked per folder entered, only
+  in a content walk), counted as `cloud` in the done line. The Phase 9 lesson (OneDrive files list
+  as plain files in TwinFM's process) is why the folder rule exists beside the attribute rule: the
+  attributes alone would not keep a walk out of OneDrive. A file whose attributes say cloud-only
+  (recall on data access, recall on open, offline; the preview's test) or whose reparse tag is a
+  cloud one is never opened, counted as `cloud-only`. The Google Drive volume is a drive of its own,
+  so no walk from another root meets it.
+- **Archives and links**: a content search rooted inside an archive is refused with a note (the
+  name walk's pass over cached levels has no file to read); an archive file met on the way is read
+  as a file and is binary. Junctions are not entered (the name walk's rule, unchanged); file
+  symbolic links, app aliases and other reparse points are not read.
+- **The row**: `Entry` gains `found` (the matching line, empty everywhere else: one more
+  `SharedString` per entry, an empty one costing a pointer), and `search_label` appends it after the
+  `(sub\dir)` part, so the label path of search tabs carries it and folder tabs' rows are untouched;
+  no list variant, no Type cell change. One row per file, the first match; the status bar's "N found
+  in T s" is the count of files holding the text (the "count of matches" of the kickoff).
+- **History**: `tabs::Place` gains `content`, so Back and Forward re-run a content search as one,
+  and a content search and a name search for the same text are two places.
+
+### What landed (2026-10-22)
+
+- `src/fs/content.rs` (new): `sniff`, `decode`, `fold`, `first_match` and its cut (200 characters, a
+  match deeper than fits shown from 40 characters before it behind `…`), `search_file`, `cloud_only`;
+  four tests (binary, encodings, the first line and its cut, files read up to the cap).
+- `fs::enumerate::walk` takes `Option<&Content>` (the folded text and the sync roots): in a content
+  walk only plain files that hold the text are results, `cancel` is read before each file opened,
+  folders under a sync root are not entered; `WalkStats` counts files read, over the cap, binary,
+  cloud-only, unreadable and cloud folders; `spawn_search` logs the content done line. A test: a
+  tree with a junction to its root, a UTF-16 file, a binary file, a file marked offline and a folder
+  standing in for a sync root.
+- `model::Entry::found`, `search_label(name, found)`; `tabs::Place::content`; `cloud::Locations::roots`
+  and `cloud::normalise` public.
+- `main.rs`: `Search::content`, `search_spec` (the matcher and the `Content` for a tab), the refusals
+  in `start_search`, `content_mode` and `content_toggled`, the titles `Text: <text>` (tab, crumb,
+  window).
+- `pane.slint`: the toggle (`content-mode`, `content-toggled`), `edited` ignored while it is on, the
+  placeholder; `app.slint` the two panes' properties and the callback.
+- The driver's `contentmode` and `csearch`; CLAUDE.md § Measuring; the soak's cycle; the gate
+  wrapper `tools/gate-p11m1.ps1`.
+
+### Scripted checks (2026-10-22, the branch's own build, `target\release` of the worktree)
+
+- A scratch tree (a UTF-8 file, a UTF-16 file in a subfolder, a binary file, a 6,000-character log
+  line with the word in its middle): `csearch 0 needle` gave `done: 3 found in 4 files read, 1
+  skipped (0 over the cap, 1 binary, 0 cloud-only, 0 unreadable), 3 folders walked, 0 cloud, 0 not
+  listed, in 27 ms`; the toggle off applied the box's text as a filter, on cleared it; Return with
+  the toggle off ran a name search, and Back re-ran the content search (`history back: search "note"
+  in ... -> content "needle" in ...`).
+- `csearch 1 needle` in `C:\Users\jtkli\OneDrive`: `refused (A search inside files does not read
+  cloud folders: reading a file there downloads it)`, nothing walked.
+- A screenshot (light, `winit-software`): the toggle lit, the placeholder "Text in files, Enter", the
+  tab and crumb `Text: "needle"`, the rows `notes.txt  the Needle sits here`, `wide.txt  (sub)  wide
+  needle line`, and the long line shown around its match.
+
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-22, on the gate build `target-p11m1`, the
+coordinator's go, the preview stream waiting): ran 10.1 min, exit 0, 0 panics; 264 jobs (0 failed, 0
+cancelled, 0 refused), 0 waitops timeouts; every must-be-0 count 0 (drags dropped, toolbar presses
+refused, menupicks refused, spring-loaded tabs, zip jobs not done, picture failures, Office
+unreadable, alt text, waitpreview timeouts, worker panics); search box 4 Return searches, 4 button
+searches, 4 blank Returns; **content search: done 4 (one per cycle), files read 806, found 4 (one
+per cycle)**; working set 172 to 261 MB, peak 279 MB (above P10-M2's 136 to 226 on a longer cycle;
+not read as a leak of this change).
+
+### Gate
+
+Run by Jeremy on 2026-10-22, finished 19:43 (tag ab44, `C:\traces\gate-p11m1.ps1`, the same file as
+`tools/gate-p11m1.ps1`, 8 min): `target-p11m1` (79410ab, built `--locked` from a detached checkout)
+against `target-p10m3` (4f07cba), the defaults, three runs each interleaved. Every run passed the
+wrapper's checks, no panic. The reference predates 0.1.0's windowed exe: a console build against a
+windowed one.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p10m3-1 / 2 / 3 | 18.3 / 18.3 / 18.6 | 18.1 / 19.4 / 18.9 | 2.18 / 2.22 / 2.23 |
+| p11m1-1 / 2 / 3 | 18.6 / 18.6 / 18.6 | 20.9 / 18.0 / 17.2 | 2.21 / 2.20 / 2.20 |
+
+Medians 18.3 (reference) / 18.6 (candidate): no gap (0.3 points, under the one-point rule; p10m3-3
+equals the candidates, so not every reference run sits below every candidate run). Render p50 2.18
+to 2.23 ms in every run: the session in its normal state throughout. Every candidate run under 20%.
+**Passed.**
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+`target-p11m1\release\twinfm.exe`, from a normal console:
+
+- **A word in `C:\Users\jtkli\projects`**: the toggle on, the word, Return; the results beside
+  Windows Search or `findstr /s /i /m <word> *` in the same folder (the same files, give or take
+  binaries and files over 16 MB).
+- **A UTF-16 file found** (a `.reg` export or a PowerShell `Out-File` from 5.1).
+- **A binary skipped**: a word you know is in an `.exe` or a `.dll`'s strings does not find it.
+- **Escape mid-search** in a large folder: the walk stops, the results so far stay.
+- **The matching line for a long line** (a minified `.js` or a one-line JSON): the word visible on
+  the row.
+- **The toggle**: typing with it on filters nothing; off again, the box's text filters; its tooltip.
+- **A cloud folder**: the toggle on in OneDrive or on `G:\My Drive`, Return: the note, no search.
+
+**Results** (2026-10-23, Jeremy at the console, `target-p11m1` started unelevated from this session
+with stderr kept; his word: "All fine; I couldn't check #5"):
+
+- **A word in `projects`**: "jeremy" searched inside files under `C:\Users\jtkli\projects`, then
+  stopped with Escape after 919 folders (the build folders are large), so the comparison with
+  `findstr` was run by the session on a smaller tree with the same build: `csearch 0 jeremy` in
+  `C:\Users\jtkli\projects\claude` gave `done: 5 found in 15 files read, 0 skipped, 7 folders
+  walked, in 131 ms`, and `findstr /s /i /m jeremy *` there the same 5 files. **Found right.**
+- **Escape mid-search**: twice ("jeremy" after 919 folders, "apple" after 251), `cancelled ...
+  (Escape)`, the results so far kept. **Found right.**
+- **The toggle**: on and off four times, typing with it on filtering nothing, its tooltip. **Found
+  right.**
+- **A cloud folder**: `content "anything" in G:\My Drive: refused (...)`, the note, no tab. **Found
+  right.** (OneDrive's refusal was checked in the scripted run.)
+- **The long line**: not checked at the console (no file to hand); covered by the scripted check
+  and its screenshot above (a 6,000-character line shown from 40 characters before the word).
+- **A UTF-16 file** and **a binary skipped**: not separate console steps this time; covered by the
+  tests and the scripted checks (the UTF-16 file found, the binary counted as skipped). No panic in
+  the console run's stderr.
