@@ -618,3 +618,67 @@ The list as handed to Jeremy:
 - A long Markdown file's scrollbar (the drift recorded since Phase 8).
 - "Copy this block" and "Copy all" pasted into Notepad, a table pasted into Excel.
 - Entity symbols (`&notin;`, `&CounterClockwiseContourIntegral;`) as femtovg draws them.
+
+## P11-M5: syntax colours
+
+The preview stream's second milestone, opened 2026-10-23 on main at 3cd18cd (P11-M4 merged), branch
+`feat/p11-m5-syntax-colours`. The gate reference is `target-p11m4` (2d3a096), the last merged
+milestone's gate build; it predates P11-M1's content search (merged before P11-M4), so the candidate
+carries both. Both builds are windowed.
+
+### Settled first (2026-10-23, the pin check)
+
+- **The engine: Jeremy's choice, TwinFM's own tokenizer** ("Hand-written (Recommended)", 2026-10-23,
+  from the two options with the measurements below). syntect 5 with its pure-Rust regex engine
+  (`default-fancy`), built in a scratch project outside the repo: 9 crates new to TwinFM (syntect,
+  fancy-regex, plist, yaml-rust, linked-hash-map, time, time-core, deranged, powerfmt, num-conv), the
+  probe program 2.6 MB (so about 2.5 MB more), 6.5 s to colour a 2 MB log (as Rust, 687,000 runs), and
+  no PowerShell, TOML, TypeScript, Slint or log grammar among its 75 (more crates or grammar files to
+  add them). tree-sitter was not built: a C library and one crate per language. TwinFM's tokenizer:
+  no crate, every language on the kickoff's list, and on the same 2 MB log 114 ms for all 366 chunks
+  (tokenize, markup and Slint's parse; 0.6 ms for the first chunk) in the test process, 192 to 244 ms
+  in the app's worker, after the plain text is already shown.
+- **Colour in Slint at the pinned rev**: `StyledText::from_markdown` takes `<font color="#rrggbb">`
+  inline (`internal/common/styled_text.rs`), and the `StyledText` element takes
+  `default-font-family`, so a code chunk can be coloured runs in Consolas with no fork change.
+- **Where the colours live**: in `src/syntax.rs` (`LIGHT`, `DARK`), not as `theme.slint` tokens: a
+  `StyledText`'s colours are written into its markup by Rust, so Slint never reads them; the scheme
+  is read from `Palette.color-scheme` when the file is asked for, and a change of scheme previews the
+  file again.
+
+### What landed
+
+- `src/syntax.rs`: one table per language (line and block comments, string delimiters with escapes
+  and multi-line ones, keywords, types, capitalised identifiers as types where the language names
+  types so, case-blind keywords, `$` and `%` variables), and three line-shaped readers for INI, TOML
+  and YAML (sections, keys, values), logs (levels: errors as keywords, warnings as numbers, the quiet
+  ones and the time stamp as comments; `[tags]` as types; quoted text; numbers) and diffs (added,
+  removed, hunk and file heads). A block comment or a multi-line string open at a chunk's end is
+  carried into the next chunk. `markup` writes a chunk as inline Markdown: ASCII punctuation escaped,
+  a line's leading spaces as no-break spaces, every line a hard break, an empty line a no-break space.
+- The worker answers the plain blocks first and colours the chunks after, in order, one answer each,
+  the generation checked between them: a file is never coloured whole before it shows.
+- The setting `syntax_colours` (default true), the dialog's "Code" row; off, text shows as before.
+- Not coloured: `.txt`, `.csv` and the other plain types; Markdown's fenced code blocks (their
+  language is not kept in the block list: a later item if wanted).
+
+### Scripted checks (2026-10-23, the worktree's own build, not a gate build)
+
+A scripted run over `%TEMP%\twinfm-p11m5-check` (this milestone's `syntax.rs`, the soak script,
+`Cargo.toml`, a JSON file, the 2 MB log, P9-M2's text with a 20,000-character line, `preview.slint`),
+in dark and in light (`TWINFM_SCHEME`): every file coloured as its language (3 ms for the 38 KB Rust
+file, 3 ms for the 55 KB script, the 2 MB log 192 ms and 244 ms), the long-line `.txt` plain, the
+setting switched off through the dialog previewing the file again plain. Screenshots (software
+renderer) read right in both schemes: keywords violet, strings green, comments grey, numbers orange,
+types and log tags cyan.
+
+### Gate
+
+Pending: `tools/gate-p11m5.ps1` (the defaults and the preview triplet, `C:\traces\preview.toml`,
+against `target-p11m4`), its tag from the coordinating session.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+- A Rust file, a PowerShell script, a JSON file, a 2 MB log, a file with a 20,000-character line.
+- The colours in light and dark (the theme switch in Settings while a file shows).
+- The "Code" switch in Settings off and on.
