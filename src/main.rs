@@ -35,6 +35,7 @@ mod settings;
 mod shellmenu;
 mod sidebar;
 mod statusbar;
+mod syntax;
 mod tabs;
 mod toolbar;
 mod verbs;
@@ -974,6 +975,7 @@ fn save_now() {
         c.preview = app.get_preview();
         c.preview_width = app.get_preview_width();
         c.preview_zoom = app.get_preview_zoom() as u32;
+        c.syntax_colours = app.get_syntax_colours();
         let w = app.window();
         // Maximised: the Win32 placement's normal rectangle, so un-maximising after a restart
         // gives the right size. Otherwise the window as it is; minimised: left as last saved.
@@ -5955,6 +5957,7 @@ fn settings_open() {
             toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
             theme: st.config.theme.clone(),
             preview: app.get_preview(),
+            syntax_colours: app.get_syntax_colours(),
         };
         st.dialog = Some(d.clone());
         let note = match &st.config_path {
@@ -5980,6 +5983,7 @@ fn settings_open() {
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
     app.set_dlg_theme(settings::ThemeMode::from_name(&d.theme).index());
     app.set_dlg_preview(d.preview);
+    app.set_dlg_syntax_colours(d.syntax_colours);
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
     // Outside the state borrow: showing the popup moves keyboard focus.
@@ -6007,6 +6011,7 @@ fn settings_closed(ok: bool) {
         toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
         theme: settings::ThemeMode::from_index(app.get_dlg_theme()).name().into(),
         preview: app.get_dlg_preview(),
+        syntax_colours: app.get_dlg_syntax_colours(),
     }
     .normalized();
     let changes = opened.changes(&staged);
@@ -6056,6 +6061,10 @@ fn settings_closed(ok: bool) {
                 if app.get_preview() != staged.preview {
                     toggle_preview();
                 }
+            }
+            "syntax_colours" => {
+                app.set_syntax_colours(staged.syntax_colours);
+                preview::recolour();
             }
             _ => {}
         }
@@ -6332,6 +6341,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     app.set_preview_width(config.preview_width);
     app.set_preview_zoom(config.preview_zoom as i32);
+    app.set_syntax_colours(config.syntax_colours);
     app.set_preview(config.preview);
     preview::init(&app);
     app.set_show_type(config.show_type);
@@ -6563,6 +6573,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_preview_zoom_step(preview::zoom);
     app.on_preview_zoom_key(preview::zoom_key);
     app.on_preview_menu(preview::menu);
+    app.on_preview_recolour(preview::recolour);
     app.on_preview_copy(|k| preview::copy(usize::try_from(k).ok()));
     // Closing the window writes the settings at once (the window's placement included).
     app.window().on_close_requested(|| {

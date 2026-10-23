@@ -50,6 +50,8 @@ export struct MdBlock {
     first: bool,
     last: bool,
     center: bool,
+    // A code block's text coloured by language in `text` (P11-M5), drawn in place of `code`.
+    coloured: bool,
 }
 
 // One Markdown block as a row of the column's ListView. Rust lays nothing out: the row's height is
@@ -118,12 +120,18 @@ component MdItem inherits Rectangle {
                 padding-right: 10px;
                 padding-top: b.first ? 8px : 0px;
                 padding-bottom: b.last ? 8px : 0px;
-                Text {
+                if !b.coloured: Text {
                     text: b.code;
                     font-family: "Consolas";
                     font-size: 12px;
                     wrap: word-wrap;
                     color: Theme.fg;
+                }
+                if b.coloured: StyledText {
+                    text: b.text;
+                    default-font-family: "Consolas";
+                    default-font-size: 12px;
+                    default-color: Theme.fg;
                 }
             }
         }

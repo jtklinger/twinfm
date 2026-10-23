@@ -311,7 +311,8 @@ pub struct Target {
 #[derive(Debug)]
 enum Req {
     /// `sheet`: the Excel sheet to show (P9-M3; 0, the first, for any other file).
-    Open { seq: u64, pane: usize, path: PathBuf, attrs: u32, is_dir: bool, sheet: usize },
+    /// `palette`: the syntax colours for a text file (P11-M5), None with the setting off.
+    Open { seq: u64, pane: usize, path: PathBuf, attrs: u32, is_dir: bool, sheet: usize, palette: Option<[u32; 5]> },
     /// Render page `page` (0-based) at `width_px`.
     Page { seq: u64, page: usize, width_px: u32 },
     /// Close the document (the column was hidden, or the cursor is on no file).
@@ -355,9 +356,11 @@ enum Reply {
     Message { seq: u64, text: &'static str },
     Pdf { seq: u64, sizes: Vec<(f32, f32)> },
     /// A Markdown, text, HTML or picture file's blocks, each block's anchors (a heading's slug and
-    /// an HTML element's ids, space separated; "" for none), and how many pictures follow (one
-    /// `Picture` each).
+    /// an HTML element's ids, space separated; "" for none), and how many answers follow (one
+    /// `Picture` per picture, one `Colour` per code chunk of a coloured text file).
     Blocks { seq: u64, blocks: Vec<Shown>, anchors: Vec<String>, pictures: usize },
+    /// Block `block`'s coloured text (P11-M5), or None (Slint refused it: its plain text stays).
+    Colour { seq: u64, block: usize, text: Option<StyledText> },
     /// Block `block`'s picture, or None (its alt text stays). `physical`: its pixels are screen
     /// pixels (a picture file shown alone, never drawn larger than itself), else logical px.
     Picture { seq: u64, block: usize, pic: Option<SharedPixelBuffer<Rgba8Pixel>>, physical: bool },
@@ -407,8 +410,8 @@ fn worker(rx: Receiver<Req>, keep: Arc<Mutex<Keep>>, reply: impl Fn(Reply)) {
             },
         };
         // A page or a close with no document open belongs to a generation that is gone.
-        if let Req::Open { seq, pane, path, attrs, is_dir, sheet } = req {
-            next = serve(&mut inbox, &keep, &reply, seq, pane, &path, attrs, is_dir, sheet);
+        if let Req::Open { seq, pane, path, attrs, is_dir, sheet, palette } = req {
+            next = serve(&mut inbox, &keep, &reply, seq, pane, &path, attrs, is_dir, sheet, palette);
         }
     }
 }
@@ -416,7 +419,7 @@ fn worker(rx: Receiver<Req>, keep: Arc<Mutex<Keep>>, reply: impl Fn(Reply)) {
 /// Classify and open one file, answer, then render its pages until a newer request arrives (that
 /// request is returned) or the document cannot go on.
 #[allow(clippy::too_many_arguments)]
-fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path, attrs: u32, is_dir: bool, sheet: usize) -> Option<Req> {
+fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path, attrs: u32, is_dir: bool, sheet: usize, palette: Option<[u32; 5]>) -> Option<Req> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let class = classify(&name, attrs, is_dir, || crate::fs::archive::within(path));
     if let Some(text) = class.message() {
@@ -426,7 +429,7 @@ fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64
     }
     match class {
         Class::Markdown | Class::Text | Class::Html => {
-            serve_blocks(keep, reply, seq, pane, path, class);
+            serve_blocks(keep, reply, seq, pane, path, class, palette);
             return None;
         }
         Class::Picture => {
@@ -557,7 +560,7 @@ fn styled(md: &str, plain: &str, seq: u64, block: usize, fell: &mut usize) -> St
 /// Read, cut and parse a Markdown, text or HTML file, answer its blocks, then decode its local
 /// pictures one at a time, each answered as it is done, until they are all done or the UI has
 /// moved to another file.
-fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path, class: Class) {
+fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path, class: Class, palette: Option<[u32; 5]>) {
     let t0 = Instant::now();
     let read = || -> std::io::Result<(Vec<u8>, u64)> {
         let f = std::fs::File::open(path)?;
@@ -614,12 +617,25 @@ fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usiz
     let (shown, anchors, fell) = shown_blocks(&blocks, seq);
     let count = |k: Kind| blocks.iter().filter(|b| b.kind == k && (b.first || !matches!(k, Kind::Code | Kind::Table))).count();
     let pictures = count(Kind::Image);
+    // A text file in a language TwinFM colours (P11-M5): its code chunks are coloured after the
+    // blocks are answered, one answer each.
+    let lang = path.extension().and_then(|e| e.to_str()).and_then(crate::syntax::lang_of).filter(|_| class == Class::Text);
+    let colour = palette.zip(lang);
+    let chunks = if colour.is_some() { blocks.iter().filter(|b| b.kind == Kind::Code).count() } else { 0 };
     let cut_note = if cut { ", cut at 2 MB" } else { "" };
     let ms = crate::perf::elapsed_ms(t0);
     let (headings, code, tables) = (count(Kind::Heading), count(Kind::Code), count(Kind::Table));
     let n = blocks.len();
     match class {
-        Class::Text => eprintln!("[preview] pane={pane} gen={seq} {}: text, {lines} lines, {size} bytes, {encoding}{cut_note}", path.display()),
+        Class::Text => eprintln!(
+            "[preview] pane={pane} gen={seq} {}: text, {lines} lines, {size} bytes, {encoding}{cut_note}, {}",
+            path.display(),
+            match (lang, palette) {
+                (Some(l), Some(_)) => l.name,
+                (Some(_), None) => "plain (colours off)",
+                (None, _) => "plain",
+            }
+        ),
         Class::Html => eprintln!(
             "[preview] pane={pane} gen={seq} {}: html, {n} blocks ({headings} headings, {code} code, {tables} tables, {pictures} images), parsed in {ms:.0} ms{cut_note}, {encoding}",
             path.display()
@@ -636,7 +652,10 @@ fn serve_blocks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usiz
     for src in &doc.remote {
         eprintln!("[preview] gen={seq} image {src}: alt text (remote)");
     }
-    reply(Reply::Blocks { seq, blocks: shown, anchors, pictures });
+    reply(Reply::Blocks { seq, blocks: shown, anchors, pictures: pictures + chunks });
+    if let Some((palette, lang)) = colour {
+        colour_chunks(keep, reply, seq, &blocks, lang, &palette);
+    }
     decode_pictures(keep, reply, seq, &blocks, Pics::Folder(&base), pictures);
 }
 
@@ -742,6 +761,33 @@ fn serve_office(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usiz
 enum Pics<'a> {
     Folder(&'a Path),
     Zip(&'a Path),
+}
+
+/// Colour a text file's code chunks in order (P11-M5), each answered as it is done, a comment or
+/// string still open at a chunk's end carried into the next, until all are done or the UI has moved
+/// to another file. A chunk Slint refuses keeps its plain text (logged).
+fn colour_chunks(keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, blocks: &[Block], lang: &crate::syntax::Lang, palette: &[u32; 5]) {
+    let t0 = Instant::now();
+    let mut state = crate::syntax::State::default();
+    let mut done = 0;
+    let total = blocks.iter().filter(|b| b.kind == Kind::Code).count();
+    for (k, b) in blocks.iter().enumerate().filter(|(_, b)| b.kind == Kind::Code) {
+        if keep.lock().unwrap_or_else(|e| e.into_inner()).seq != seq {
+            eprintln!("[preview] gen={seq} superseded: {} chunk(s) not coloured", total - done);
+            return;
+        }
+        let runs = crate::syntax::tokens(lang, &b.plain, &mut state);
+        let text = match StyledText::from_markdown(&crate::syntax::markup(&b.plain, &runs, palette)) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("[preview] gen={seq} block {k}: colours refused, plain kept: {}", e.to_string().replace('\n', "; "));
+                None
+            }
+        };
+        reply(Reply::Colour { seq, block: k, text });
+        done += 1;
+    }
+    eprintln!("[preview] gen={seq} coloured {done} chunk(s) in {:.0} ms ({})", crate::perf::elapsed_ms(t0), lang.name);
 }
 
 /// Decode a document's local pictures one at a time, each answered as it is done, until they are
@@ -1316,6 +1362,18 @@ fn over_column() -> bool {
     ok && l.preview > 0.0 && x >= l.width - l.preview && x < l.width && (0.0..l.height).contains(&y)
 }
 
+/// The theme or the `syntax_colours` setting changed (app.slint): the file shown is previewed again,
+/// so a text file's colours are made for the new scheme.
+pub fn recolour() {
+    with_ui(|u| {
+        if u.visible && matches!(u.doc, Doc::Markdown(_)) {
+            let target = u.target.clone();
+            eprintln!("[preview] recolour: the file is previewed again");
+            u.show(target, 0);
+        }
+    });
+}
+
 /// A right-click on block `k` of the column's list (preview.slint), or the driver's `previewmenu`:
 /// logged, the menu itself is app.slint's.
 pub fn menu(k: i32) {
@@ -1364,6 +1422,7 @@ fn md_block(s: Shown) -> MdBlock {
         first: s.first,
         last: s.last,
         center: s.center,
+        coloured: false,
     }
 }
 
@@ -1374,6 +1433,7 @@ fn on_reply(r: Reply) {
             | Reply::Pdf { seq, .. }
             | Reply::Blocks { seq, .. }
             | Reply::Picture { seq, .. }
+            | Reply::Colour { seq, .. }
             | Reply::Page { seq, .. }
             | Reply::Note { seq, .. }
             | Reply::Skipped { seq, .. } => *seq,
@@ -1404,6 +1464,15 @@ fn on_reply(r: Reply) {
                 u.blocks.set_vec(blocks.into_iter().map(md_block).collect::<Vec<_>>());
                 app.invoke_preview_set_scroll(0.0);
                 eprintln!("[preview] gen={seq} {n} blocks in the list in {:.1} ms (UI thread)", crate::perf::elapsed_ms(t));
+            }
+            Reply::Colour { block, text, .. } => {
+                if let Doc::Markdown(m) = &mut u.doc {
+                    m.pending = m.pending.saturating_sub(1);
+                }
+                if let (Some(text), Some(mut row)) = (text, u.blocks.row_data(block)) {
+                    (row.text, row.coloured) = (text, true);
+                    u.blocks.set_row_data(block, row);
+                }
             }
             Reply::Picture { block, pic, physical, .. } => {
                 if let Doc::Markdown(m) = &mut u.doc {
@@ -1533,6 +1602,15 @@ fn scroll_to_block(k: usize) {
 }
 
 impl Ui {
+    /// The syntax colours for the scheme shown now, None with the `syntax_colours` setting off.
+    fn palette(&self) -> Option<[u32; 5]> {
+        use slint::private_unstable_api::re_exports::ColorScheme;
+        let app = self.app.upgrade()?;
+        app.get_syntax_colours().then(|| {
+            if app.global::<crate::Palette>().get_color_scheme() == ColorScheme::Dark { crate::syntax::DARK } else { crate::syntax::LIGHT }
+        })
+    }
+
     /// A new generation for `target` (None: no file), the column emptied for it; `sheet` the Excel
     /// sheet to show.
     fn show(&mut self, target: Option<Target>, sheet: usize) {
@@ -1554,7 +1632,7 @@ impl Ui {
             app.invoke_preview_set_scroll(0.0);
         }
         let _ = self.tx.send(match target {
-            Some(t) => Req::Open { seq: self.seq, pane: t.pane, path: t.path, attrs: t.attrs, is_dir: t.is_dir, sheet },
+            Some(t) => Req::Open { seq: self.seq, pane: t.pane, path: t.path, attrs: t.attrs, is_dir: t.is_dir, sheet, palette: self.palette() },
             None => Req::Close,
         });
     }
@@ -1859,7 +1937,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0 };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None };
 
         tx.send(open(1, &md)).unwrap();
         match recv() {
@@ -1902,6 +1980,44 @@ mod tests {
     }
 
     #[test]
+    fn the_worker_colours_source_after_its_blocks() {
+        // P11-M5: a Rust file of two chunks with a block comment across the boundary; a .txt stays plain.
+        let dir = std::env::temp_dir().join(format!("twinfm-p11m5-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rs = dir.join("lib.rs");
+        let mut src: String = (0..38).map(|i| format!("let x{i} = {i};\n")).collect();
+        src.push_str("/* a comment\nover the chunk's end\nstill */ fn f() {}\n");
+        std::fs::write(&rs, &src).unwrap();
+        let txt = dir.join("notes.txt");
+        std::fs::write(&txt, "fn not coloured\n").unwrap();
+
+        let (tx, rx) = unbounded();
+        let (rtx, rrx) = std::sync::mpsc::channel::<Reply>();
+        let keep = Arc::new(Mutex::new(Keep { seq: 1, ..Default::default() }));
+        let k2 = keep.clone();
+        let rtx = Mutex::new(rtx);
+        let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
+        let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: Some(crate::syntax::LIGHT) };
+
+        tx.send(open(1, &rs)).unwrap();
+        assert!(matches!(recv(), Reply::Blocks { seq: 1, pictures: 2, ref blocks, .. } if blocks.len() == 2), "two chunks, two answers to follow");
+        for k in 0..2 {
+            match recv() {
+                Reply::Colour { seq: 1, block, text: Some(_) } => assert_eq!(block, k),
+                _ => panic!("chunk {k} coloured"),
+            }
+        }
+        keep.lock().unwrap().seq = 2;
+        tx.send(open(2, &txt)).unwrap();
+        assert!(matches!(recv(), Reply::Blocks { seq: 2, pictures: 0, .. }), "plain text: nothing follows");
+        drop(tx);
+        w.join().unwrap();
+        assert!(rrx.try_recv().is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_worker_previews_text_pictures_and_html() {
         let dir = std::env::temp_dir().join(format!("twinfm-p9m2-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("img")).unwrap();
@@ -1926,7 +2042,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0 };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None };
 
         // Text: code blocks of 40 lines, tabs as spaces, no pictures.
         tx.send(open(1, &txt)).unwrap();
@@ -2018,7 +2134,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path, sheet| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet };
+        let open = |seq, path: &Path, sheet| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet, palette: None };
 
         // Word: its blocks, then its picture from the zip.
         tx.send(open(1, &docx, 0)).unwrap();
@@ -2158,7 +2274,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0 };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None };
 
         tx.send(open(1, &pdf)).unwrap();
         match recv() {
@@ -2187,7 +2303,7 @@ mod tests {
         assert!(matches!(recv(), Reply::Message { seq: 2, text: DAMAGED }));
         tx.send(open(3, &txt)).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 3, text: NO_PREVIEW }));
-        tx.send(Req::Open { seq: 4, pane: 0, path: dir.clone(), attrs: 0x10, is_dir: true, sheet: 0 }).unwrap();
+        tx.send(Req::Open { seq: 4, pane: 0, path: dir.clone(), attrs: 0x10, is_dir: true, sheet: 0, palette: None }).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 4, text: NO_PREVIEW }));
         tx.send(open(5, &dir.join("missing.pdf"))).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 5, text: DAMAGED }), "a file that cannot be read");
