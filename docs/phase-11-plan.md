@@ -956,6 +956,14 @@ word), and it predates what the candidate carries besides P11-M6: P11-M2's sweep
 after 530bd8e was branched) and #105 (the stale-preview fix and the clipboard retry). P11-M3 (#106)
 is in neither.
 
+**ab51** (2026-10-23, 17:00 to 17:18): the defaults passed, 22.3 against 22.3 by the medians, every
+run in the costlier state (render p50 2.9 to 3.6 ms). The preview half is void: p11m5 30.9, 23.3,
+24.2 against p11m6 27.4, 28.0, 23.3, the reference's own spread wider than any gap. The cause, found
+by the coordinating session: the Claude desktop app spinning about 36% of a core, with Task Manager
+and the Files app open; no build overlapped (the last fingerprint 16:51). Jeremy closed them and
+restarted the Claude app. **ab52**: the preview triplet alone, `tools/gate-p11m6-ab52.ps1`, the same
+head (0dcac60) and reference (`target-p11m5`).
+
 ### Console checks (for Jeremy, unelevated, after the gate)
 
 - His own password PDFs beside Edge: the button, the right password, a wrong one (asked again),
