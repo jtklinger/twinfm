@@ -718,6 +718,15 @@ main's P11-M5 (f09cafc) was merged in, the dialog's new "Code" row (syntax colou
 footer below the dialog's 590 px (the "Saved to" note too, on main): the dialog is 630 px now, the
 footer inside it again (screenshot after the fix).
 
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-23, on the gate build `target-p11m3` at 0e8dd28,
+the coordinating session's go, the machine otherwise idle): 10.1 min, exit 0, 0 panics; 256 jobs (0
+failed, 0 cancelled, 0 refused), 0 waitops timeouts; every must-be-0 count 0 (P11-M5's chunks refused
+included); **history menu: jumps back one place 4 (one per cycle)**; spring armed 15 (was 7 in P11-M2's
+soak: the sidebar and crumb hovers of the P5-M3 cycle now arm), spring-loaded rows 4, tabs 0; resets 8,
+widths back 9; content search 4 / 806 / 4; P11-M5's files coloured 8; working set 173 to 290 MB, peak
+290 (P11-M2's runs: 135 to 217 and 176 to 247; this candidate also carries P11-M5's syntax colouring;
+recorded to watch, not read as a leak over four full cycles).
+
 ### Gate
 
 Pending: the defaults triplet, `target-p11m3` against `target-p11m2`, tag ab50 (allocated by the
