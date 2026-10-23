@@ -240,6 +240,10 @@
 //!                                    a click on it: logged; an anchor, a folder and a program run
 //!                                    (scroll, navigate, show), a browser or document link is never
 //!                                    launched in a scripted run (P8-M2)
+//!   previewzoom <in|out|reset>       a PDF's zoom one step larger or smaller, or back to 100%, as
+//!                                    Ctrl+wheel over the column does (P11-M4)
+//!   previewcopy <block|all>          the "Copy text" menu's pick: block <block> (0-based, a code
+//!                                    block or table whole) or every block onto the clipboard (P11-M4)
 //!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
 //!                                    the close button does (WM_CLOSE: settings saved, app exits)
 //!   quit                             exit the event loop
@@ -402,6 +406,10 @@ enum Step {
     WaitPreview(u64),
     /// A link in the Markdown preview, as clicked.
     PreviewLink(String),
+    /// A PDF's zoom step: 1 in, -1 out, 0 back to 100%.
+    PreviewZoom(i32),
+    /// "Copy text": a block, or None for all.
+    PreviewCopy(Option<usize>),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
     /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
     Window(String),
@@ -606,6 +614,12 @@ fn parse(script: &str) -> Vec<Step> {
                 "previewscroll" => Step::PreviewScroll(num(1) as f32),
                 "waitpreview" => Step::WaitPreview(num(1).max(1) as u64),
                 "previewlink" => Step::PreviewLink(s.trim_start()["previewlink".len()..].trim().to_string()),
+                "previewzoom" => Step::PreviewZoom(match a.get(1).copied() {
+                    Some("in") => 1,
+                    Some("out") => -1,
+                    _ => 0,
+                }),
+                "previewcopy" => Step::PreviewCopy(a.get(1).and_then(|v| v.parse().ok())),
                 "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
@@ -1570,6 +1584,16 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         Step::PreviewLink(dest) => {
             crate::preview::link(dest.into());
             schedule(runner, 100);
+        }
+        Step::PreviewZoom(step) => {
+            if !crate::preview::zoom(step) {
+                eprintln!("[auto] previewzoom: no PDF shown");
+            }
+            schedule(runner, 1);
+        }
+        Step::PreviewCopy(one) => {
+            crate::preview::copy(one);
+            schedule(runner, 1);
         }
         Step::WaitPreview(max_ms) => {
             let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);

@@ -135,6 +135,8 @@ pub struct Config {
     /// drag). Missing in an older file: off, 0.35.
     pub preview: bool,
     pub preview_width: f32,
+    /// A PDF's zoom in the column, percent (P11-M4; `preview::ZOOMS`, 50 to 400). Missing: 100.
+    pub preview_zoom: u32,
     /// Each pane's column widths in the details list (P9-M1), logical px: Type, Size and Modified
     /// (`cols`; a header grip's drag or double-click sets them). Missing in an older file: 120, 90,
     /// 140. Pulled into 40 to 2,000 px on load.
@@ -256,6 +258,7 @@ impl Default for Config {
             theme: "system".into(),
             preview: false,
             preview_width: crate::preview::RATIO_DEFAULT,
+            preview_zoom: 100,
             col_type_left: crate::cols::DEFAULT.ty,
             col_size_left: crate::cols::DEFAULT.size,
             col_modified_left: crate::cols::DEFAULT.modified,
@@ -607,6 +610,7 @@ impl Config {
         self.sidebar_width =
             if self.sidebar_width.is_finite() { self.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX) } else { 180.0 };
         self.preview_width = crate::preview::clamp_ratio(self.preview_width);
+        self.preview_zoom = crate::preview::clamp_zoom(self.preview_zoom);
         for pane in 0..2 {
             self.set_cols(pane, self.cols(pane).clamped());
         }
@@ -762,6 +766,7 @@ col_size_right = 99999.0
         let wild = Config::parse("split_ratio = 9.0\nsidebar_width = 5.0\npreview_width = 0.9\n").unwrap();
         assert_eq!((wild.split_ratio, wild.sidebar_width, wild.preview_width), (0.85, SIDEBAR_MIN, 0.6));
         assert_eq!((d.preview, d.preview_width), (false, 0.35), "the preview column is off by default (P8-M1)");
+        assert_eq!((d.preview_zoom, Config::parse("preview_zoom = 5000\n").unwrap().preview_zoom), (100, 400), "P11-M4");
         use crate::model::SortCol;
         for c in [SortCol::Name, SortCol::Size, SortCol::Modified, SortCol::Type] {
             assert_eq!(sort_from_name(sort_name(c)), c);
