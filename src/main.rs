@@ -689,6 +689,15 @@ fn search_spec(st: &State, pattern: &str, content: bool) -> (NameMatch, Option<f
     }
 }
 
+/// A search tab's row name for `name`, the new name of the item at `source`, in its folder under
+/// the search's `root` (`sub\dir\name`; `name` alone for an item in the root itself).
+fn search_row_name(root: &Path, source: &Path, name: &str) -> String {
+    match source.parent().and_then(|p| p.strip_prefix(root).ok()).map(|rel| rel.to_string_lossy().to_string()) {
+        Some(rel) if !rel.is_empty() => format!("{rel}\\{name}"),
+        _ => name.to_string(),
+    }
+}
+
 /// The folder's cloud location (`cloud::Locations::of`), logged when it has one; This PC and
 /// archive levels have none (nor do search tabs, which never come here).
 fn cloud_of(st: &mut State, pane: usize, path: &Path) -> icons::Cloud {
@@ -3145,6 +3154,11 @@ fn job_done(d: fileops::Done) {
                 match &d.job {
                     Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } | Job::NewFile { name: n, .. } => {
                         let real = fileops::real_name(&d.job, &d.results).unwrap_or_else(|| n.clone());
+                        // A search tab's rows are named by their path under its root (P11-M2).
+                        let real = match &d.job {
+                            Job::Rename { source, .. } if t.search.is_some() => search_row_name(&t.path, source, &real),
+                            _ => real,
+                        };
                         t.focus_name = Some(real.as_str().into());
                     }
                     _ => {}
@@ -6694,6 +6708,14 @@ mod tests {
     use super::*;
     use fs::watch::Change;
     use model::Edit;
+
+    #[test]
+    fn a_renamed_search_result_keeps_its_folder() {
+        let root = Path::new(r"C:\t\root");
+        assert_eq!(search_row_name(root, Path::new(r"C:\t\root\s2\deep\hit-b.txt"), "hit-y.txt"), r"s2\deep\hit-y.txt");
+        assert_eq!(search_row_name(root, Path::new(r"C:\t\root\hit-b.txt"), "hit-y.txt"), "hit-y.txt", "a result in the root");
+        assert_eq!(search_row_name(root, Path::new(r"D:\elsewhere\b.txt"), "y.txt"), "y.txt", "not under the root: the name");
+    }
 
     fn s(n: &str) -> String {
         n.to_string()
