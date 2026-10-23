@@ -4581,7 +4581,9 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 if read_only_dest(&dest) {
                     return refuse_archive_drop(active_pane(&app), &dest);
                 }
-                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest, springs: false });
+                // Held there, it opens in the active pane (P11-M3), never inside an archive.
+                let springs = !fs::archive::inside(&dest);
+                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest, springs });
             }
             // A tab's folder; a tab on This PC is no folder. A tab other than the active one opens
             // when the drag is held over it.
@@ -4617,7 +4619,10 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 if read_only_dest(&c.target) {
                     return refuse_archive_drop(p, &c.target);
                 }
-                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Crumb(i), dest: c.target, springs: false });
+                // Held there, it opens in its pane (P11-M3): not the folder the pane already shows,
+                // never inside an archive.
+                let springs = !c.target.as_os_str().eq_ignore_ascii_case(tab.path.as_os_str()) && !fs::archive::inside(&c.target);
+                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Crumb(i), dest: c.target, springs });
             }
         };
         if st.is_search(pane) {
