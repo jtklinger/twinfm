@@ -412,6 +412,8 @@ export component App inherits Window {
     // crumb-menu(pane, index, x, y): the chevron after a crumb; Rust lists its subfolders on a
     // worker and shows the dropdown below (x, y). crumb-pick(i): item i of the dropdown.
     callback crumb-menu(int, int, length, length);
+    // history-menu(pane, x, y): a right click on the path bar's background (P11-M3).
+    callback history-menu(int, length, length);
     callback crumb-pick(int);
     // crumb-geometry(pane, index, x, width): a crumb's place in its row (index -1: the row's offset
     // in the bar and the bar's width), for the drop target's hit test (main.rs `crumb_geometry`).
@@ -915,6 +917,7 @@ export component App inherits Window {
                 strip-resized => { root.strip-resized(0); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(0, i, x, y); }
+                history-menu(x, y) => { root.history-menu(0, x, y); }
                 crumb-geometry(i, x, w) => { root.crumb-geometry(0, i, x, w); }
                 active: !split || active-pane == 0;
                 sort-col: left-sort-col; sort-asc: left-sort-asc;
@@ -980,6 +983,7 @@ export component App inherits Window {
                 strip-resized => { root.strip-resized(1); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(1, i, x, y); }
+                history-menu(x, y) => { root.history-menu(1, x, y); }
                 crumb-geometry(i, x, w) => { root.crumb-geometry(1, i, x, w); }
                 active: split && active-pane == 1;
                 sort-col: right-sort-col; sort-asc: right-sort-asc;

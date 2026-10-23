@@ -161,6 +161,8 @@ pub struct Config {
 /// One saved tab (P6-M3): its folder and, when TwinFM saved them, its sort (`sort_name`), its
 /// hidden-file switch, the name of its cursor row and its list's scroll offset (logical px, zero or
 /// negative). A missing field (a bare path from an older file) takes the default a new tab has.
+/// Since P11-M3 its history too: the places Back and Forward go to (`back` newest last, `forward`
+/// next last, at most `HISTORY_SAVED` each).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "TabEntry")]
 pub struct SavedTab {
@@ -175,12 +177,30 @@ pub struct SavedTab {
     pub cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scroll: Option<f32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub back: Vec<SavedPlace>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub forward: Vec<SavedPlace>,
+}
+
+/// The places of a tab's history saved each way (P11-M3).
+pub const HISTORY_SAVED: usize = 50;
+
+/// One place of a saved history: a folder, or a search (its pattern, `content` for a search inside
+/// files) under the folder, which runs again when Back or Forward reaches it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedPlace {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub content: bool,
 }
 
 impl SavedTab {
     /// A tab that is only a folder (an old entry, a start folder).
     pub fn path(path: &str) -> SavedTab {
-        SavedTab { path: path.into(), sort: None, ascending: None, hidden: None, cursor: None, scroll: None }
+        SavedTab { path: path.into(), sort: None, ascending: None, hidden: None, cursor: None, scroll: None, back: Vec::new(), forward: Vec::new() }
     }
 }
 
@@ -202,6 +222,10 @@ enum TabEntry {
         hidden: Option<bool>,
         cursor: Option<String>,
         scroll: Option<f32>,
+        #[serde(default)]
+        back: Vec<SavedPlace>,
+        #[serde(default)]
+        forward: Vec<SavedPlace>,
     },
 }
 
@@ -209,7 +233,9 @@ impl From<TabEntry> for SavedTab {
     fn from(e: TabEntry) -> SavedTab {
         match e {
             TabEntry::Path(p) => SavedTab::path(&p),
-            TabEntry::Table { path, sort, ascending, hidden, cursor, scroll } => SavedTab { path, sort, ascending, hidden, cursor, scroll },
+            TabEntry::Table { path, sort, ascending, hidden, cursor, scroll, back, forward } => {
+                SavedTab { path, sort, ascending, hidden, cursor, scroll, back, forward }
+            }
         }
     }
 }
@@ -794,6 +820,12 @@ col_size_right = 99999.0
             hidden: Some(true),
             cursor: Some("notes.txt".into()),
             scroll: Some(-440.0),
+            // P11-M3: its history, a content search among the places.
+            back: vec![
+                SavedPlace { path: r"C:\a".into(), search: None, content: false },
+                SavedPlace { path: r"C:\a".into(), search: Some("needle".into()), content: true },
+            ],
+            forward: vec![SavedPlace { path: r"C:\b\sub".into(), search: None, content: false }],
         };
         let c = Config {
             start_left: r"C:\b".into(),

@@ -922,6 +922,8 @@ component FileListHost inherits Rectangle {
             root.cursor-moved(e.modifiers.shift);
             return EventResult.accept;
         }
+        // Alt+Down: the pane's history menu (P11-M3).
+        if (e.text == Key.DownArrow && e.modifiers.alt) { root.command("histmenu"); return EventResult.accept; }
         if (e.text == Key.DownArrow) {
             if (root.current-row < 0) { if (root.rows.length > 0) { root.current-row = 0; } }
             else if (root.current-row + root.step < root.rows.length) { root.current-row += root.step; }
@@ -1148,6 +1150,8 @@ export component Pane inherits Rectangle {
     callback crumb-clicked(int);
     // crumb-menu(index, x, y): the chevron after crumb `index`, at window coordinates.
     callback crumb-menu(int, length, length);
+    // A right click on the path bar's background (P11-M3): the history menu at that point.
+    callback history-menu(length, length);
     callback toggle-sticky();
     // The mouse's Back or Forward button released anywhere over the pane that is not a text entry,
     // the tab strip or the scrollbar: main.rs makes the pane active and goes back or forward in
@@ -1453,6 +1457,17 @@ export component Pane inherits Rectangle {
                 width: parent.width - 26px - root.filter-w;
                 clip: true;
                 changed width => { root.crumb-geometry(-1, crumb-row.x, self.width); }
+                // The bar's background behind the crumbs: a right click opens the pane's history
+                // menu (P11-M3); the mouse's side buttons go back and forward as over a crumb.
+                TouchArea {
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right) {
+                            root.history-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back-button(); }
+                        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward-button(); }
+                    }
+                }
                 crumb-row := HorizontalLayout {
                     x: min(0px, parent.width - self.preferred-width);
                     width: self.preferred-width;

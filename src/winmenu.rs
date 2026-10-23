@@ -55,6 +55,8 @@ pub enum Cmd {
     Sub(usize, usize),
     /// The Open with app at that index of the worker's answer.
     App(usize),
+    /// The history menu's place at that index (P11-M3).
+    History(usize),
 }
 
 impl Cmd {
@@ -82,9 +84,11 @@ impl Cmd {
     ];
 
     /// The id the Slint model carries: 1 to 20 for the fixed commands, 100 + i for a packaged
-    /// command, 500 + k for an app, 1000 + 100 i + j for a command's own command.
+    /// command, 500 + k for an app, 1000 + 100 i + j for a command's own command, 10000 + k for a
+    /// history place.
     pub fn id(self) -> i32 {
         match self {
+            Cmd::History(k) => 10_000 + k as i32,
             Cmd::Packaged(i) => 100 + i as i32,
             Cmd::App(k) => 500 + k as i32,
             Cmd::Sub(i, j) => 1000 + 100 * i as i32 + j as i32,
@@ -97,6 +101,7 @@ impl Cmd {
             1..=20 => Some(Cmd::FIXED[id as usize - 1]),
             100..=499 => Some(Cmd::Packaged(id as usize - 100)),
             500..=999 => Some(Cmd::App(id as usize - 500)),
+            10_000.. => Some(Cmd::History(id as usize - 10_000)),
             1000.. => Some(Cmd::Sub((id as usize - 1000) / 100, (id as usize - 1000) % 100)),
             _ => None,
         }
@@ -209,6 +214,13 @@ const G_PROPERTIES: &str = "\u{E946}";
 const G_MORE: &str = "\u{E712}";
 const G_NEW_FOLDER: &str = "\u{E8F4}";
 const G_NEW_FILE: &str = "\u{E8A5}";
+const G_CHECK: &str = "\u{E73E}";
+
+/// The history menu's rows (P11-M3): one per place, as `tabs::History::list` orders them, the
+/// current one (`current` true) checked.
+pub fn history_items(places: &[(String, bool)]) -> Vec<Entry> {
+    places.iter().enumerate().map(|(i, (text, current))| Entry::item(Cmd::History(i), text, if *current { G_CHECK } else { "" }, "")).collect()
+}
 
 /// The icon row for `ctx`: the buttons that apply, in Explorer's order (Cut, Copy, Rename, Share,
 /// Delete; Paste on the background). Which apply is the toolbar's rule (`toolbar::state`); Share

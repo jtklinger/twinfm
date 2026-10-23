@@ -927,6 +927,15 @@ fn schedule_save(st: &State) {
     }
 }
 
+/// A history place as the settings file keeps it, and back (P11-M3).
+fn saved_place(p: &Place) -> settings::SavedPlace {
+    settings::SavedPlace { path: p.path.to_string_lossy().to_string(), search: p.search.clone(), content: p.content }
+}
+
+fn place_of(s: &settings::SavedPlace) -> Place {
+    Place { path: PathBuf::from(&s.path), search: s.search.clone(), content: s.content }
+}
+
 /// Gather the settings from the window and the panes and write them (atomically).
 fn save_now() {
     let Some((config, path)) = with_state(|st| {
@@ -944,7 +953,10 @@ fn save_now() {
                 .map(|(i, t)| {
                     let (cursor, scroll) = if i == active { (current_row(&app, pane), app.invoke_get_scroll(pane as i32)) } else { (t.cursor, t.scroll) };
                     let cursor = t.restore_cursor.clone().or_else(|| usize::try_from(cursor).ok().and_then(|r| t.model.entry(r)).map(|e| e.name));
+                    let (back, forward) = t.history.saved(settings::HISTORY_SAVED);
                     settings::SavedTab {
+                        back: back.iter().map(saved_place).collect(),
+                        forward: forward.iter().map(saved_place).collect(),
                         path: t.path.to_string_lossy().to_string(),
                         sort: Some(settings::sort_name(t.model.sort_col.get()).into()),
                         ascending: Some(t.model.sort_asc.get()),
@@ -2625,6 +2637,17 @@ fn command(pane: usize, cmd: &str) {
             });
         }
         "cc" | "cx" => return clipboard_put(pane, cmd == "cx"),
+        // Alt+Down (P11-M3): the history menu, under the pane's path bar.
+        "histmenu" => {
+            let Some(at) = with_state(|st| {
+                let app = st.app.upgrade()?;
+                let l = window_layout(&app);
+                Some((dnd::pane_x(&l, pane).0 + 8.0, dnd::list_top(&l, pane) - 34.0))
+            }) else {
+                return;
+            };
+            return open_history_menu(pane, at.0, at.1);
+        }
         "cv" => return clipboard_paste(pane),
         "undo" => return undo(pane),
         "redo" => return redo(pane),
@@ -3447,6 +3470,9 @@ struct WinMenu {
     placed: winmenu::Placed,
     hl: i32,
     sub: Option<SubMenu>,
+    /// The history menu (P11-M3): its rows and each one's steps from the current place, in place
+    /// of the selection's items.
+    history: Option<(Vec<winmenu::Entry>, Vec<isize>)>,
 }
 
 /// An open submenu: whose it is, its rows, where it is, its highlight, and whether the keyboard
@@ -3540,6 +3566,7 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
             placed,
             hl: -1,
             sub: None,
+            history: None,
         });
         Some((seq, waiting))
     });
@@ -3552,6 +3579,43 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
         Some((_, false)) => show_winmenu("no query"),
         None => {}
     }
+}
+
+/// The history menu (P11-M3): Alt+Down, or a right click on the path bar. The pane's places,
+/// forward ones first, the current one checked, back ones after it, in the Windows 11 menu at
+/// (`x`, `y`), window logical px; a pick goes that many steps (`history_jump`).
+fn open_history_menu(pane: usize, x: f32, y: f32) {
+    winmenu_close("another menu opens");
+    let Some((req, ctx)) = menu_request(pane, -1, x, y, false) else { return };
+    with_state(|st| {
+        let t = st.tab(pane);
+        let here = t.place();
+        let list = t.history.list(&here);
+        let labels: Vec<(String, bool)> = list.iter().map(|(steps, p)| (p.to_string(), *steps == 0)).collect();
+        eprintln!("[nav] pane={pane} history menu: {} entries ({} back, {} forward)", list.len(), t.history.back_len(), t.history.forward_len());
+        let wctx = winmenu::Ctx { place: tool_place(st, pane), what: winmenu::What::Background, clipboard_files: st.clip_files, same_type: false };
+        st.winmenu_seq += 1;
+        st.winmenu = Some(WinMenu {
+            seq: st.winmenu_seq,
+            pane,
+            row: -1,
+            at: (x, y),
+            req,
+            ctx,
+            wctx,
+            waiting: false,
+            answer: explorercmd::Answer { seq: st.winmenu_seq, ..Default::default() },
+            opened: Instant::now(),
+            shown: false,
+            tools: Vec::new(),
+            items: Vec::new(),
+            placed: winmenu::Placed { x, y, h: 0.0, scrolls: false, left: false, up: false },
+            hl: -1,
+            sub: None,
+            history: Some((winmenu::history_items(&labels), list.iter().map(|(s, _)| *s).collect())),
+        });
+    });
+    show_winmenu("history");
 }
 
 /// The verb worker's answer for a menu (on the UI thread): shown now, or rebuilt when the menu
@@ -3605,8 +3669,10 @@ fn show_winmenu(why: &str) {
     let first = with_state(|st| {
         let app = st.app.upgrade()?;
         let m = st.winmenu.as_mut()?;
-        m.tools = winmenu::tools(&m.wctx);
-        m.items = winmenu::items(&m.wctx, &m.answer.commands);
+        (m.tools, m.items) = match &m.history {
+            Some((items, _)) => (Vec::new(), items.clone()),
+            None => (winmenu::tools(&m.wctx), winmenu::items(&m.wctx, &m.answer.commands)),
+        };
         let win = window_logical(&app);
         let h = winmenu::menu_height(!m.tools.is_empty(), &m.items);
         m.placed = winmenu::place(m.at, winmenu::MENU_W, h, win);
@@ -3855,6 +3921,11 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
     let pane = m.pane;
     eprintln!("[winmenu] pane={pane} runs {cmd:?}");
     match cmd {
+        Cmd::History(i) => {
+            if let Some(steps) = m.history.as_ref().and_then(|(_, s)| s.get(i)) {
+                history_jump(pane, *steps);
+            }
+        }
         Cmd::Delete => {
             // Shift held deletes permanently, as the key and the classic menu's Delete do.
             // SAFETY: a plain key state query on the UI thread.
@@ -4192,11 +4263,34 @@ fn history_move(pane: usize, forward: bool) {
         }
         to
     });
-    match target {
-        // A search in the history runs again, in this tab, under the same root.
-        Some(Place { path, search: Some(pattern), content }) => start_search(pane, &pattern, content, Some(path)),
-        Some(Place { path, search: None, .. }) => navigate_to(pane, path, false),
-        None => {}
+    if let Some(p) = target {
+        go_to_place(pane, p);
+    }
+}
+
+/// Go to a place taken from the tab's history, without recording the move: a search in it runs
+/// again, in this tab, under the same root.
+fn go_to_place(pane: usize, place: Place) {
+    match place {
+        Place { path, search: Some(pattern), content } => start_search(pane, &pattern, content, Some(path)),
+        Place { path, search: None, .. } => navigate_to(pane, path, false),
+    }
+}
+
+/// A history menu pick (P11-M3): `steps` places back (negative) or forward, in one move.
+fn history_jump(pane: usize, steps: isize) {
+    let target = with_state(|st| {
+        let t = st.tab_mut(pane);
+        let here = t.place();
+        let to = t.history.jump(&here, steps);
+        match &to {
+            Some(to) => eprintln!("[nav] pane={pane} history jump {steps}: {here} -> {to} ({} back, {} forward left)", t.history.back_len(), t.history.forward_len()),
+            None => eprintln!("[nav] pane={pane} history jump {steps}: nothing there"),
+        }
+        to
+    });
+    if let Some(p) = target {
+        go_to_place(pane, p);
     }
 }
 
@@ -6291,6 +6385,8 @@ fn main() -> Result<(), slint::PlatformError> {
                 t.model.show_protected.set(protected);
                 t.restore_cursor = p.cursor.as_deref().map(SharedString::from);
                 t.restore_scroll = p.scroll.filter(|y| y.is_finite() && *y < 0.0);
+                // Its Back and Forward places (P11-M3).
+                t.history = tabs::History::restored(p.back.iter().map(place_of).collect(), p.forward.iter().map(place_of).collect());
                 t
             })
             .collect();
@@ -6622,6 +6718,7 @@ fn main() -> Result<(), slint::PlatformError> {
             crumb_clicked(pane as usize, i);
         }
     });
+    app.on_history_menu(|pane, x, y| open_history_menu(pane as usize, x, y));
     app.on_crumb_menu(|pane, i, x, y| {
         if let Ok(i) = usize::try_from(i) {
             crumb_menu(pane as usize, i, x, y);
