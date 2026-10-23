@@ -115,6 +115,7 @@ foreach ($s in $Settings) {
     $lines += "${name}: $Cand median $cMed% against $Ref $rMed% (WPR); every reference run below every candidate run: $allBelow; a gap that counts: $counts; every candidate run under 20%: $under"
 }
 $lines += 'Compare RenderP50 across runs before the medians: a run about a third higher than the rest is the session changing state (ab23).'
+$lines += "target-$Ref predates P11-M5 (f09cafc, merged into main after it): the candidate carries P11-M5's preview code as well as P11-M3."
 $lines | Set-Content -Encoding utf8 "C:\traces\gate-$Tag-summary.txt"
 ''
 $lines

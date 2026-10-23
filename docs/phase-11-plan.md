@@ -721,7 +721,9 @@ footer inside it again (screenshot after the fix).
 ### Gate
 
 Pending: the defaults triplet, `target-p11m3` against `target-p11m2`, tag ab50 (allocated by the
-coordinating session), after its go.
+coordinating session), after its go. **The reference predates P11-M5** (f09cafc, syntax colours,
+merged into main after `target-p11m2` was built and into this branch at c3f2312): the candidate
+carries P11-M5's preview code as well as P11-M3; the gate scenario opens no preview.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
