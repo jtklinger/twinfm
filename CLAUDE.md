@@ -42,7 +42,7 @@ kickoff decisions, § Calls made lists the lead's, § Open questions what each b
 them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (282 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (288 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -53,7 +53,8 @@ them before changing the list.
   scratch folders, and since P8-M1 the preview worker's test writes PDFs into one, and since P8-M2
   two more write Markdown and pictures into scratch folders, and since P9-M2 two more write text,
   pictures and a page into scratch folders, and since P9-M3 one more writes Office files into one,
-  and since P11-M1 two more write text files (and a junction) into scratch folders, see below)
+  and since P11-M1 two more write text files (and a junction) into scratch folders, and since P11-M4
+  one more writes a HEIC with Windows' HEIF encoder into one, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -836,6 +837,39 @@ them before changing the list.
   reads are not logged). The shell's overlay images (Google Drive's mark, the link arrow) over an icon
   larger than 48 physical px are drawn at two thirds of it at its lower left (`icons::overlay_side`,
   `lower_left`); `[icons] overlay index K fetched at S px over P px` then. No new driver step.
+  Since P11-M4, the preview gaps bundle. **PDF zoom**: Ctrl+wheel over a PDF's pages (preview.slint's
+  TouchArea behind them; never a scroll), or Ctrl+plus (`+` or `=`), Ctrl+minus and Ctrl+0 (100%) with
+  the pointer over the column (app.slint's outer scope; `preview::zoom_key` checks the cursor's client
+  point against `window_layout`, else the key goes on), steps `preview::ZOOMS` 50, 67, 75, 90, 100,
+  110, 125, 150, 175, 200, 250, 300, 400 (`zoom_step`), saved as `preview_zoom`; the pages are laid out
+  and rendered at the zoom times the column's width (the 8,192 px cap kept), centred when narrower,
+  scrolled sideways when wider (the ScrollView's content width), the scroll kept at the same place in the
+  document; Markdown and the rest have no zoom. **HTML's charset**: a page with no BOM is read in the code
+  page its first 1,024 bytes name (`html::meta_charset`: `<meta charset>` or the Content-Type meta):
+  Windows-1252 for its labels and ISO-8859-1's and ASCII's (the HTML standard's mapping), ISO-8859-15,
+  UTF-8; UTF-16 named in a meta reads as UTF-8 (the standard's rule; a real UTF-16 page has its BOM); any
+  other label reads as UTF-8, invalid bytes replaced. **Entities**: all 2,125 HTML5 names (the 2,231 less
+  the legacy forms without `;`), asked of pulldown-cmark's own table (`markdown::entity`). **colspan**: a
+  cell is followed by `colspan - 1` empty cells (at most 64). **HEIC, HEIF, AVIF** (`.heic .heif .hif
+  .avif`, `wic::EXTS`): pictures decoded by Windows' own decoders (`src/wic.rs`, WIC on the preview
+  worker in the multithreaded apartment; the HEIF Image Extensions from the Store, with HEVC for HEIC and
+  AV1 for AVIF), oriented by `System.Photo.Orientation`; without the extension the column reads "No
+  decoder for this format is installed". **Markdown details**: a picture inside `<p align=center>`, `<div
+  align=center>` or `<center>` is centred (`Block::center`; text stays left); table lines are 1 px where
+  cells meet; an SVG's text is drawn with seven Windows fonts read at the first SVG (`SVG_FONTS`: Segoe UI
+  and bold, Arial and bold, Times New Roman and bold, Consolas; an unknown family in Segoe UI). **Copy
+  text**: a right-click on a block of the Markdown, text, HTML, Office or picture preview opens app.slint's
+  `preview-menu` ("Copy this block": a code block or table whole; "Copy all"), plain text with CRLF line
+  ends (`markdown::block_text`, `copy_text`; a table's cells tab-separated, a list item with its marker,
+  a picture its alt text; text as shown: tabs as four spaces); the column takes no keyboard focus, so
+  Ctrl+A and Ctrl+C stay the lists'. Driver: `previewzoom <in|out|reset>` (as Ctrl+wheel; `[auto]
+  previewzoom: no PDF shown` when there is none), `previewcopy <block|all>` (the menu's pick; overwrites
+  the clipboard). `[preview]` lines: `zoom Z%: pages W px wide[ (unchanged)]`, `menu on block K`, `copy
+  all|block K: N characters, L lines`, `copy all|block K: failed: <why>`, `copy: no text shown`, `svg
+  fonts: F faces from N files in T ms` (once), `pane=N gen=G <path>: html, ... parsed in T ms[, cut at 2
+  MB], <encoding>` (`UTF-8`, `UTF-8 BOM`, `UTF-16LE`, `windows-1252`, `ISO-8859-15`, ... `, charset
+  "<label>" not known`), `pane=N gen=G <path>: picture WxH px, HEIC|HEIF|AVIF, decoded in T ms`, and
+  `picture failed: no decoder | failed: not a picture Windows can read | failed: <call> 0x...`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -868,7 +902,8 @@ them before changing the list.
   gets its sort, hidden files, cursor and scroll back; a bare list of paths still loads (the
   defaults new tabs have), and the next save writes tables; since P8-M1 `preview` (the preview
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
-  0.35, its handle's drag); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
+  0.35, its handle's drag), since P11-M4 `preview_zoom` (a PDF's zoom, percent, 50 to 400, default
+  100); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
   `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
   `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme; since P10-M3 the
   native title bar follows it through `DWMWA_USE_IMMERSIVE_DARK_MODE`, set when the window's handle is
@@ -1033,7 +1068,11 @@ them before changing the list.
   runs the worker on text (UTF-16 and over 2 MB too), a JPEG, a broken PNG and a page in
   `%TEMP%\twinfm-p9m2-test-<pid>\`; since P9-M3 `the_worker_previews_office_files` writes the office
   tests' hand-made docx, xlsx and pptx, a text file named .xlsx and an OLE header named .docx into
-  `%TEMP%\twinfm-p9m3-test-<pid>\` (the `office::tests` build their zips in memory). Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
+  `%TEMP%\twinfm-p9m3-test-<pid>\` (the `office::tests` build their zips in memory); since P11-M4
+  `wic::tests::heic_through_windows_decoders` writes a HEIC with Windows' HEIF encoder (skipped, with a
+  check of the "no decoder" answer, where none is installed) and a damaged one into
+  `%TEMP%\twinfm-p11m4-heic-<pid>\`, and `preview::tests::svg_text_is_drawn` reads seven fonts from
+  `%WINDIR%\Fonts`. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
   `%TEMP%\twinfm-p8l2-raw-<pid>.zip`, `fs::archivewrite::tests::password_zips_and_copies_between_zips`
   makes ZipCrypto, AES and plain zips in `%TEMP%\twinfm-p8l2-pw-<pid>\`, and `zip_jobs_on_the_worker`
   writes into its tar.exe password zip with the script's password (`zippassword`'s path) and copies

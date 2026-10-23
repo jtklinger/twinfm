@@ -484,3 +484,137 @@ with stderr kept; his word: "All fine; I couldn't check #5"):
 - **A UTF-16 file** and **a binary skipped**: not separate console steps this time; covered by the
   tests and the scripted checks (the UTF-16 file found, the binary counted as skipped). No panic in
   the console run's stderr.
+
+## P11-M4: the preview gaps bundle
+
+The preview stream's first milestone, opened 2026-10-22 on main at d1abbe3 (0.1.0, Phase 10 merged),
+branch `feat/p11-m4-preview-gaps`. Two corrections to the kickoff, from the coordinating session's
+brief: Phase 10 had merged, so the stream started at once on the restyled `preview.slint` and
+`theme.slint`; the gate reference is `target-p10m3` (4f07cba), not `target-p9m4`, and it predates
+0.1.0's windowed exe while the candidate does not (a console build against a windowed one,
+`CLAUDE.md` § Measuring).
+
+### Settled first (2026-10-22, before any code; probes in TwinFM's own test process)
+
+- **The HEIF Store extension on this machine**: installed. `Get-AppxPackage` lists
+  Microsoft.HEIFImageExtension 1.2.48.0, HEVCVideoExtension 2.5.33.0 and AV1VideoExtension 2.0.35.0.
+  In TwinFM's process the Windows Imaging Component decoded a 256 x 256 AVIF (425 ms cold: COM, the
+  factory and the packaged codec loading; 112 ms in the app's scripted run) and a HEIC written by WIC's
+  own HEIF encoder (76 ms first, 8 ms after). No HEIC from a phone was on the machine: Jeremy's own is
+  the console check. No crate: `windows-sys` gains its `Win32_System_Variant` feature for
+  `PROPVARIANT` (a feature of a crate already in the build).
+- **The entity table's binary size**: zero. pulldown-cmark, already in the build for Markdown, carries
+  the whole HTML5 table (2,125 names: the 2,231 of the list less the 106 legacy forms without a
+  semicolon, which pulldown-cmark does not take either) because CommonMark decodes every HTML5 entity;
+  its table is private, so `markdown::entity` parses `&name;` and keeps the text when it changed. The
+  alternative found, quick-xml's `escape-html` feature (also in the build), holds 1,448 names in one
+  generated `match` and adds its compile time, so it was not taken.
+- **SVG text through resvg's font database**: under 50 ms, so done. The font database in the build has
+  no "load the system fonts" (fontdb's `fs` feature is off in Slint's tree); reading the whole Fonts
+  folder by hand took 5.5 s cold and 0.16 s warm (381 faces, 397 MB), seven chosen files 1 to 3 ms (3 ms
+  in the app's scripted run).
+- **Charsets**: the kickoff's list held: Windows-1252, ISO-8859-1 (read as 1252, the HTML standard's
+  mapping) and ISO-8859-15 by a table each; UTF-16 named in a meta is read as UTF-8, as the standard
+  says (a page that is UTF-16 has its BOM, which `markdown::decode` already reads).
+- **Which items were already finished**: none of the six.
+
+### What landed
+
+Five code commits (each built and tested before it was made: 277, 279, 280, 281 and 283 tests), then
+the docs, soak and gate wrapper. Per item:
+
+- **PDF zoom**: done (2d3a096). Ctrl+wheel over the pages, Ctrl+plus, minus and 0 with the pointer
+  over the column; 13 steps from 50% to 400% (Edge's, without 33% and 500%); `preview_zoom` saved;
+  pages laid out and rendered at the zoom times the column's width, the 8,192 px cap kept, centred
+  when narrower, the column scrolled sideways when wider, the scroll kept at the same place in the
+  document. Markdown, text and the rest have no zoom (the kickoff's item is the PDF's).
+- **HTML's meta charset**: done (cc6683f). Windows-1252, ISO-8859-15 and UTF-8 by the first 1,024
+  bytes; any other label read as UTF-8 with its name in the `[preview]` line.
+- **The full entity table**: done (7652ad1), as settled above.
+- **colspan**: done (cc6683f), as repeated cells: the cell, then `colspan - 1` empty ones, so the cells
+  after it line up (at most 64; the kickoff's "repeated cells" read as empty ones following it, since a
+  repeated text would read as data). It shares the charset's commit: their tests share one hunk.
+- **HEIC, HEIF and AVIF**: done (19ffd0f), through WIC (`src/wic.rs`), oriented by
+  `System.Photo.Orientation`; "No decoder for this format is installed" without the extension (told
+  from a damaged file by asking WIC for the HEIF container's decoder).
+- **The Markdown details**: done (41352d7). A picture inside a centred `p` or `div`, or `<center>`, is
+  centred (text stays left, Jeremy's 2026-10-20 call on text); table lines are 1 px where cells meet
+  (each cell draws its right and bottom line, the table its left and top); an SVG's text is drawn with
+  seven Windows fonts. The scrollbar's drift on a long Markdown file is the console check's (the
+  kickoff lists it there).
+- **Copy text**: done (2d3a096), as the kickoff's call: a right-click on a block offers "Copy this
+  block" (a code block or table whole, whatever chunk was clicked) and "Copy all"; plain text, CRLF
+  line ends, a table's cells tab-separated so it pastes into Excel as cells. The nearest thing to
+  selection at the pinned Slint rev; selection itself waits for the fork or a Slint release. It shares
+  the zoom's commit: both use the column's callbacks, the driver and app.slint's property block.
+  A PDF has no "Copy text" (hayro renders pages; extracting their text is not in this milestone).
+
+### Calls made in this milestone, for Jeremy to check
+
+- The zoom steps are Edge's from 50% to 400%; Ctrl+0 is back to 100%.
+- Ctrl+plus and Ctrl+minus zoom only with the pointer over the column, so they never reach the lists
+  by surprise; Ctrl+wheel needs the pointer there by its nature.
+- The full entity table comes from the Markdown library's own copy rather than a table of TwinFM's.
+- SVG text uses seven fonts (Segoe UI, Arial, Times New Roman and Consolas, with bold), not every font
+  on the machine: the whole folder costs up to 5.5 s at the first SVG.
+- The `<p align=center>` centring is for pictures only, as the kickoff wrote it.
+
+### Scripted checks (2026-10-22, the worktree's own build, not a gate build)
+
+A scripted run over a scratch folder (`%TEMP%\twinfm-p11m4-check`: a four-page PDF, an AVIF, a
+Windows-1252 page with entities and a colspan, a Markdown file with a centred logo and a table, the PNG,
+an SVG with text in `Helvetica, sans-serif`): the zoom went 110, 125, ..., 300 and down to 67, every
+step rendering its pages at the new width (337 px at 100% to 1,010 px at 300%), and back to 100 with
+Ctrl+0's path; `previewzoom` on the AVIF logged "no PDF shown"; the AVIF decoded in 112 ms; the page
+read as `windows-1252` (Café, the curly quotes and the euro sign right in the screenshot); `previewcopy
+all` gave 45 characters and the clipboard held the page's text, `previewcopy 3` on the Markdown file the
+table as `x<TAB>y`, `1<TAB>2`, `3<TAB>4`; the SVG fonts loaded in 3 ms and "SVG text" was drawn.
+Screenshots (software renderer): the logo centred, the table's lines 1 px, the PDF at 200% wider than
+the column. One thing for the console check: in that capture the rarest symbols of the entity table
+(the contour integral, the Fraktur A) drew as small or missing glyphs; the characters are right (the
+test), so it is the renderer's font fallback, to be read with femtovg at the console.
+
+### Soak (2026-10-22, `target-p11m4`, before the gates by the coordinating session's order)
+
+`tools/soak-p5m3.ps1 -Minutes 10`: 10.1 min, exit 0, no panic, 270 jobs done (none failed or
+cancelled), every must-be-0 count at 0. The preview: PDFs opened 8, pages rendered 76, zooms 16 (four
+per cycle), copies 8 (two per cycle), copy failures 0, picture failures 0, waitpreview timeouts 0,
+worker panics 0. Working set 170.8 MB at 5 s, 245.4 MB at 600 s (max 276.6; private 155.6 to 225.2).
+
+CI's first run failed one test: on the runner, with no HEIF extension, the test's fallback checked a
+file it had never written (file not found) where it meant one no decoder takes. Fixed in the test only
+(1 file, `#[cfg(test)]`), after the gate build: the gate binary at 2d3a096 is the program the PR ships.
+
+### Gate
+
+ab45, passed (2026-10-22 20:07, 17 min, Jeremy at the console after ab44): `tools/gate-p11m4.ps1`,
+`target-p11m4` (2d3a096) against `target-p10m3` (4f07cba), the defaults and the preview column
+(`C:\traces\preview.toml`). The reference is a console build (before 0.1.0) and the candidate a
+windowed one (`CLAUDE.md` § Measuring).
+
+| Setting | p10m3 (WPR) | p11m4 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 18.0, 18.7, 19.1 | 18.4, 18.7, 19.1 | 18.7 / 18.7 | 2.15 to 2.40 ms (p10m3-3's 2.40, a reference run) |
+| preview | 17.8, 18.0, 17.8 | 17.6, 17.9, 17.9 | 17.8 / 17.9 | 1.97 to 2.01 ms |
+
+No gap that counts in either; every candidate run under 20%; one session state throughout.
+
+### Console checks (Jeremy, 2026-10-23, unelevated, `target-p11m4` on `C:\traces\p11m4-console`)
+
+Jeremy: "All checks look good." Every item below passed: the zoom by Ctrl+wheel and the keys with the
+sideways scroll, the AVIF, the Windows-1252 page, the centred logo and thin table lines, Copy this
+block into Excel and Copy all into Notepad, SVG text, the long Markdown file's scrollbar. One finding:
+of the rare entities, ∉ draws small and ∳, 𝔄, ⫅̸ draw as empty boxes in TwinFM's window (his
+screenshot), since the UI's font has no glyphs for them and Slint's fallback found none. The
+characters are right: "Copy this block" of that line pasted into Word showed them correctly (Jeremy:
+"Pasting into word displays the characters correctly"). Deferred: font fallback for symbols outside
+the UI font, a Slint question, not this milestone's; the common entities all draw.
+
+The list as handed to Jeremy:
+
+- A PDF zoomed with Ctrl+wheel and Ctrl+plus beside Edge at 200%; the sideways scroll at 400%.
+- A Windows-1252 page (any old saved web page or a hand-made one) beside Edge.
+- A HEIC from a phone (upright?) and an AVIF.
+- A long Markdown file's scrollbar (the drift recorded since Phase 8).
+- "Copy this block" and "Copy all" pasted into Notepad, a table pasted into Excel.
+- Entity symbols (`&notin;`, `&CounterClockwiseContourIntegral;`) as femtovg draws them.

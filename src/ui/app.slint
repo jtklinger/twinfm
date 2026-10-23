@@ -309,6 +309,15 @@ export component App inherits Window {
     in property <int> preview-mode;
     in property <[MdBlock]> preview-blocks;
     callback preview-link(string);
+    // Since P11-M4: a PDF's zoom (percent, saved; preview-zoom-step(step) Ctrl+wheel over the pages,
+    // preview-zoom-key(step) Ctrl+plus, minus or 0, which Rust takes only with the pointer over the
+    // column), and "Copy text": preview-menu(block) a right-click on a block, preview-copy(block,
+    // -1 for all) the menu's pick.
+    in-out property <int> preview-zoom: 100;
+    callback preview-zoom-step(int) -> bool;
+    callback preview-zoom-key(int) -> bool;
+    callback preview-menu(int);
+    callback preview-copy(int);
     callback toggle-preview();
     callback preview-cursor();
     callback preview-scrolled(length, length);
@@ -702,6 +711,10 @@ export component App inherits Window {
             if (e.modifiers.control && e.modifiers.shift && (e.text == "2" || e.text == "@")) { root.set-view(active-pane, 1); return accept; }
             if (e.modifiers.control && e.modifiers.shift && (e.text == "3" || e.text == "#")) { root.set-view(active-pane, 2); return accept; }
             if (e.modifiers.control && (e.text == "l" || e.text == "L")) { root.set-path-mode(active-pane, true); return accept; }
+            // The preview's zoom, with the pointer over the column (P11-M4); "=" is plus unshifted.
+            if (e.modifiers.control && !e.modifiers.alt && root.preview && (e.text == "+" || e.text == "=" || e.text == "-" || e.text == "0")) {
+                if (root.preview-zoom-key(e.text == "-" ? -1 : e.text == "0" ? 0 : 1)) { return accept; }
+            }
             if (e.modifiers.control && (e.text == "f" || e.text == "F")) {
                 if (e.modifiers.shift) { root.search(active-pane); } else { root.open-filter(active-pane); }
                 return accept;
@@ -1058,8 +1071,50 @@ export component App inherits Window {
             mode: root.preview-mode;
             blocks: root.preview-blocks;
             link(u) => { root.preview-link(u); }
+            zoom: root.preview-zoom;
+            zoom-step(s) => { return root.preview-zoom-step(s); }
+            menu(k, x, y) => {
+                root.preview-menu-block = k;
+                root.preview-menu-x = x;
+                root.preview-menu-y = y;
+                preview-menu.show();
+                root.preview-menu(k);
+            }
             scrolled(top, h) => { root.preview-scrolled(top, h); }
             resized(w) => { root.preview-resized(w); }
+        }
+    }
+
+    // The preview's "Copy text" menu (P11-M4): the block right-clicked and where (window px).
+    private property <int> preview-menu-block;
+    private property <length> preview-menu-x;
+    private property <length> preview-menu-y;
+    preview-menu := PopupWindow {
+        x: min(root.preview-menu-x, root.width - 166px);
+        y: min(root.preview-menu-y, root.height - 2 * 26px - 12px);
+        width: 160px;
+        height: 2 * 26px + 6px;
+        Rectangle {
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 3px;
+                MenuItem {
+                    text: "Copy this block";
+                    activated => {
+                        preview-menu.close();
+                        root.preview-copy(root.preview-menu-block);
+                    }
+                }
+                MenuItem {
+                    text: "Copy all";
+                    activated => {
+                        preview-menu.close();
+                        root.preview-copy(-1);
+                    }
+                }
+            }
         }
     }
 

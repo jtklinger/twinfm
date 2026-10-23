@@ -31,7 +31,8 @@ export struct MdRow {
 // its box (1 open, 2 done), on the item's first block. text is a paragraph's or heading's styled
 // text, code a code block's lines (or the note's text), rows a table's. A picture shows img at
 // img-w by img-h (logical px, scaled down to the column) once decoded, its alt text until then and
-// when it cannot be shown. first and last: a code block's or table's first and last chunk.
+// when it cannot be shown, centred with center (P11-M4). first and last: a code block's or table's
+// first and last chunk.
 export struct MdBlock {
     kind: int,
     level: int,
@@ -48,6 +49,7 @@ export struct MdBlock {
     alt: string,
     first: bool,
     last: bool,
+    center: bool,
 }
 
 // One Markdown block as a row of the column's ListView. Rust lays nothing out: the row's height is
@@ -56,6 +58,16 @@ export struct MdBlock {
 component MdItem inherits Rectangle {
     in property <MdBlock> b;
     callback link(string);
+    // A right-click on the block (P11-M4): where, in window px, for the "Copy text" menu.
+    callback menu(length, length);
+    // Behind the block's content, so a link's click still goes to its text.
+    TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
     // Left of the text: the quote bars and list levels (a list item's marker sits in the last 24 px).
     property <length> left: 12px + b.quote * 14px + b.indent * 24px;
     property <length> content-w: max(0px, root.width - root.left - 12px);
@@ -119,34 +131,40 @@ component MdItem inherits Rectangle {
             height: 9px;
             Rectangle { y: 4px; height: 1px; background: Theme.border; }
         }
-        // A table: the columns' shares come from Rust, so its chunks line up.
-        if b.kind == 4: GridLayout {
-            for r in b.rows: Row {
-                for c in r.cells: Rectangle {
-                    horizontal-stretch: c.weight;
-                    min-width: 0px;
-                    preferred-width: 0px;
-                    background: r.head ? root.tint : transparent;
-                    border-width: 1px;
-                    border-color: Theme.border;
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        padding-top: 3px;
-                        padding-bottom: 3px;
-                        StyledText {
-                            text: c.text;
-                            horizontal-alignment: c.align == 1 ? TextHorizontalAlignment.center : c.align == 2 ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
-                            default-color: Theme.fg;
-                            link-color: Theme.link;
-                            link-clicked(u) => { root.link(u); }
+        // A table: the columns' shares come from Rust, so its chunks line up. Each cell draws its
+        // right and bottom line and the table its left and top (the top on its first chunk), so
+        // where two cells meet the line is 1 px, not two borders side by side (P11-M4).
+        if b.kind == 4: Rectangle {
+            GridLayout {
+                for r in b.rows: Row {
+                    for c in r.cells: Rectangle {
+                        horizontal-stretch: c.weight;
+                        min-width: 0px;
+                        preferred-width: 0px;
+                        background: r.head ? root.tint : transparent;
+                        Rectangle { x: parent.width - 1px; width: 1px; background: Theme.border; }
+                        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            padding-top: 3px;
+                            padding-bottom: 3px;
+                            StyledText {
+                                text: c.text;
+                                horizontal-alignment: c.align == 1 ? TextHorizontalAlignment.center : c.align == 2 ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
+                                default-color: Theme.fg;
+                                link-color: Theme.link;
+                                link-clicked(u) => { root.link(u); }
+                            }
                         }
                     }
                 }
             }
+            Rectangle { x: 0px; width: 1px; background: Theme.border; }
+            if b.first: Rectangle { y: 0px; height: 1px; background: Theme.border; }
         }
         if b.kind == 5 && b.img-w > 0: HorizontalLayout {
-            alignment: start;
+            alignment: b.center ? LayoutAlignment.center : LayoutAlignment.start;
             Image {
                 source: b.img;
                 width: min(b.img-w, root.content-w);
@@ -182,7 +200,9 @@ component MdItem inherits Rectangle {
 // moves (Rust compares the pages in view and does nothing more when they are the same), and
 // resized(width) with the width a page is drawn at, when it changes (Rust re-renders after it has
 // settled). Since P8-M2, mode 1 shows a Markdown file's blocks in a ListView instead (only the rows
-// on screen are built); link(destination) is a link clicked in one.
+// on screen are built); link(destination) is a link clicked in one. Since P11-M4 a PDF's pages are
+// drawn at `zoom` percent of the column's width (centred when narrower, scrolled sideways when
+// wider), zoom-step(step) is Ctrl+wheel over them, and menu(block, x, y) a right-click on a block.
 export component Preview inherits Rectangle {
     in property <string> title;
     in property <string> message;
@@ -190,6 +210,9 @@ export component Preview inherits Rectangle {
     in property <length> content-h;
     in property <int> mode;
     in property <[MdBlock]> blocks;
+    in property <int> zoom: 100;
+    callback zoom-step(int) -> bool;
+    callback menu(int, length, length);
     callback scrolled(length, length);
     callback resized(length);
     callback link(string);
@@ -217,8 +240,10 @@ export component Preview inherits Rectangle {
         }
         Rectangle {
             body := ScrollView {
+                // A page's width at the zoom (Rust lays the pages out at the same width).
+                property <length> page-w: (self.visible-width - 16px) * root.zoom / 100;
                 visible: root.message == "" && root.mode == 0;
-                content-width: self.visible-width;
+                content-width: max(self.visible-width, self.page-w + 16px);
                 content-height: root.content-h;
                 init => { root.resized(self.visible-width - 16px); }
                 changed visible-width => { root.resized(self.visible-width - 16px); }
@@ -229,15 +254,20 @@ export component Preview inherits Rectangle {
                 // wheel does (Jeremy's console check). Anything else goes back as before.
                 TouchArea {
                     scroll-event(e) => {
+                        // Ctrl and the wheel zoom (P11-M4), a step per notch, never scrolling.
+                        if (e.modifiers.control) {
+                            if (e.delta-y != 0) { root.zoom-step(e.delta-y > 0 ? 1 : -1); }
+                            return accept;
+                        }
                         if (!e.modifiers.shift || body.content-width > body.visible-width) { return reject; }
                         body.content-y = clamp(body.content-y + e.delta-y, min(0px, body.visible-height - body.content-height), 0px);
                         return accept;
                     }
                 }
                 for p in root.pages: Rectangle {
-                    x: 8px;
+                    x: max(8px, (body.visible-width - body.page-w) / 2);
                     y: p.y;
-                    width: body.visible-width - 16px;
+                    width: body.page-w;
                     height: p.h;
                     background: #FFFFFF;
                     border-width: 1px;
@@ -267,9 +297,10 @@ export component Preview inherits Rectangle {
             }
             md := ListView {
                 visible: root.message == "" && root.mode == 1;
-                for b in root.blocks: MdItem {
+                for b[k] in root.blocks: MdItem {
                     b: b;
                     link(u) => { root.link(u); }
+                    menu(x, y) => { root.menu(k, x, y); }
                 }
             }
             if root.message != "": Text {
