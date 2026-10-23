@@ -1141,7 +1141,10 @@ fn drain() {
                     let Some(t) = st.by_generation(pane, generation) else { continue };
                     let wall = t.timing.requested.map(perf::elapsed_ms).unwrap_or(0.0);
                     if t.model.is_refreshing() {
-                        t.model.finish_refresh();
+                        let (carried, looked) = t.model.finish_refresh();
+                        if looked > 0 {
+                            eprintln!("[icons] pane={pane} marks carried: {carried} of {looked} across the refresh");
+                        }
                         t.keep_scroll = true;
                         // A refresh that kept the folder sizes (the watch's, an operation's).
                         if !t.sizes.cache.is_empty() {

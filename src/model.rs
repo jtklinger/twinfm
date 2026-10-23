@@ -232,6 +232,10 @@ pub struct PaneModel {
     /// Shell icons, shared by both panes; `Entry::icon` indexes it and the pane's icon strip
     /// is composed from it (`icons::compose`).
     icons: Rc<RefCell<IconTable>>,
+    /// A cloud listing's refresh (P11-M2): the `look:` keys whose rows kept their old icon
+    /// (`finish_refresh`), each with the key that icon was drawn for, until the lookup lands
+    /// (`relabel`). Empty everywhere else, so `resolve_icons` looks at no key for it.
+    carried: RefCell<HashMap<SharedString, SharedString>>,
 }
 
 impl Default for PaneModel {
@@ -266,6 +270,7 @@ impl PaneModel {
             show_protected: Cell::new(false),
             filter: RefCell::new(NameMatch::default()),
             search_names: Cell::new(false),
+            carried: RefCell::new(HashMap::new()),
         }
     }
 
@@ -286,9 +291,11 @@ impl PaneModel {
         let (keys, cap) = table.keys(px);
         let mut shown = self.shown.borrow_mut();
         let Some(end) = shown.len().checked_sub(1).map(|n| n.min(last)) else { return changed };
+        // A row that kept its icon across a cloud refresh still asks for its lookup.
+        let carrying = !self.carried.borrow().is_empty();
         for i in first..=end {
             let e = &mut shown[i];
-            if e.icon >= PLACEHOLDERS || e.icon_key.is_empty() {
+            if (e.icon >= PLACEHOLDERS && !(carrying && crate::icons::is_look_key(&e.icon_key))) || e.icon_key.is_empty() {
                 continue;
             }
             let mut state = keys.state(&e.icon_key);
@@ -319,11 +326,7 @@ impl PaneModel {
     /// list showed its 16 px icons blown up to 96 px in the grid, P4-M1 to P6-M1). A key already
     /// held at the new size is taken on that resolve, with no request.
     pub fn forget_icons(&self) {
-        let placeholder = |e: &Entry| match e.kind {
-            Kind::Drive => PLACEHOLDER_DRIVE,
-            _ if e.is_dir() => PLACEHOLDER_FOLDER,
-            _ => PLACEHOLDER_FILE,
-        };
+        self.carried.borrow_mut().clear();
         for e in self.all.borrow_mut().iter_mut() {
             e.icon = placeholder(e);
         }
@@ -334,8 +337,11 @@ impl PaneModel {
 
     /// Give the entry keyed `from` (a cloud lookup's `look:` key, at `row` unless a pass moved it)
     /// the key `to`, in the listing and in its row; its icon stays the placeholder, so the next
-    /// resolve asks for `to`. False when no entry has `from` any more (a refresh replaced it).
+    /// resolve asks for `to`. A row that kept its icon across a refresh (P11-M2) keeps it when `to`
+    /// is the key it was drawn for, and goes back to its placeholder when the mark changed. False
+    /// when no entry has `from` any more (a refresh replaced it).
     pub fn relabel(&self, row: usize, from: &SharedString, to: SharedString) -> bool {
+        let kept = self.carried.borrow_mut().remove(from).map(|old| old == to);
         if let Some(e) = self.all.borrow_mut().iter_mut().find(|e| &e.icon_key == from) {
             e.icon_key = to.clone();
         }
@@ -343,6 +349,9 @@ impl PaneModel {
         let i = if shown.get(row).is_some_and(|e| &e.icon_key == from) { Some(row) } else { shown.iter().position(|e| &e.icon_key == from) };
         match i {
             Some(i) => {
+                if kept == Some(false) {
+                    shown[i].icon = placeholder(&shown[i]);
+                }
                 shown[i].icon_key = to;
                 true
             }
@@ -608,10 +617,17 @@ impl PaneModel {
     }
 
     /// The refresh listing is complete: it becomes `all`. `shown` (and the selection indices
-    /// into it) stay valid until the following pass swaps in the new rows.
-    pub fn finish_refresh(&self) {
-        *self.all.borrow_mut() = std::mem::take(&mut *self.incoming.borrow_mut());
+    /// into it) stay valid until the following pass swaps in the new rows. In a cloud listing
+    /// (P11-M2) each new entry waiting for its mark (a `look:` key) keeps the icon its name had on
+    /// screen when its key differs only by the mark (`icons::same_but_mark`), so a refresh does not
+    /// flash the rows to their placeholders; the lookup still runs and `relabel` settles the icon.
+    /// Returns (entries that kept their icon, entries waiting for a lookup).
+    pub fn finish_refresh(&self) -> (usize, usize) {
+        let mut incoming = std::mem::take(&mut *self.incoming.borrow_mut());
+        let counts = carry_marks(&self.shown.borrow(), &mut incoming, &mut self.carried.borrow_mut());
+        *self.all.borrow_mut() = incoming;
         self.refreshing.set(false);
+        counts
     }
 
     /// Copy of the full listing for a worker pass.
@@ -1091,6 +1107,36 @@ impl Model for PaneModel {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+/// An entry's placeholder icon, by its kind.
+fn placeholder(e: &Entry) -> u16 {
+    match e.kind {
+        Kind::Drive => PLACEHOLDER_DRIVE,
+        _ if e.is_dir() => PLACEHOLDER_FOLDER,
+        _ => PLACEHOLDER_FILE,
+    }
+}
+
+/// `finish_refresh`'s carry (P11-M2): each entry of `new` with a `look:` key takes the icon of the
+/// row in `old` (the rows on screen before the refresh) with its name, when that row's icon is
+/// resolved and its key is the lookup's key with some mark; `carried` (cleared first) maps the look
+/// key to that old key. Returns (carried, entries with a `look:` key). Nothing is built when no
+/// entry waits for a lookup (every listing outside a cloud location).
+fn carry_marks(old: &[Entry], new: &mut [Entry], carried: &mut HashMap<SharedString, SharedString>) -> (usize, usize) {
+    carried.clear();
+    let looked = new.iter().filter(|e| crate::icons::is_look_key(&e.icon_key)).count();
+    if looked == 0 {
+        return (0, 0);
+    }
+    let by_name: HashMap<&str, &Entry> = old.iter().filter(|e| e.icon >= PLACEHOLDERS).map(|e| (e.name.as_str(), e)).collect();
+    for e in new.iter_mut().filter(|e| crate::icons::is_look_key(&e.icon_key)) {
+        if let Some(o) = by_name.get(e.name.as_str()).filter(|o| crate::icons::same_but_mark(&o.icon_key, &e.icon_key)) {
+            e.icon = o.icon;
+            carried.insert(e.icon_key.clone(), o.icon_key.clone());
+        }
+    }
+    (carried.len(), looked)
 }
 
 /// A search result's name as its row shows it (P6-M3): the file's own name first, then the folder
@@ -2729,6 +2775,55 @@ mod tests {
         }
         assert_eq!(LocalZone::from_tzi(&utc_minus_5()).format(0), "1969-12-31 19:00");
         assert_eq!(LocalZone::from_tzi(&utc_minus_5()).format(1_790_000_000), "2026-09-21 09:13");
+    }
+
+    #[test]
+    fn a_cloud_refresh_keeps_each_rows_mark_until_its_lookup() {
+        use crate::icons::Outcome;
+        let keyed = |name: &str, key: &str| Entry { icon_key: key.into(), ..e(name, 0, false) };
+        let m = PaneModel::default();
+        // Before the refresh: a, b and c looked up and drawn (b's mark o12, c's thumbnail), d still
+        // waiting for its lookup (a placeholder).
+        m.append(vec![keyed("a.txt", "ext:o12:.txt"), keyed("b.txt", "ext:.txt"), keyed("c.png", r"thumb:o3:G:\c.png|5|6"), keyed("d.txt", r"look:o:ext:.txt|G:\d.txt")]);
+        for k in ["ext:o12:.txt", "ext:.txt", r"thumb:o3:G:\c.png|5|6"] {
+            m.icons.borrow_mut().complete(k.into(), 16, Outcome::Pixels(slint::SharedPixelBuffer::new(1, 1)));
+        }
+        m.resolve_icons(0, 3, 16, |_, _| {});
+        let before = m.icon_indices(0, 3);
+        assert!(before[..3].iter().all(|&i| i >= PLACEHOLDERS) && before[3] == PLACEHOLDER_FILE);
+        // The refresh: every entry waits for a lookup again; c's thumbnail changed (a new size), e is new.
+        m.begin_refresh();
+        m.append(vec![
+            keyed("a.txt", r"look:o:ext:.txt|G:\a.txt"),
+            keyed("b.txt", r"look:o:ext:.txt|G:\b.txt"),
+            keyed("c.png", r"look:o:thumb:G:\c.png|5|7|G:\c.png"),
+            keyed("d.txt", r"look:o:ext:.txt|G:\d.txt"),
+            keyed("e.txt", r"look:o:ext:.txt|G:\e.txt"),
+        ]);
+        assert_eq!(m.finish_refresh(), (2, 5), "a and b keep their icons; c's key changed, d had none, e is new");
+        let all = m.snapshot_all();
+        assert_eq!(all.iter().map(|e| e.icon).collect::<Vec<_>>(), [before[0], before[1], PLACEHOLDER_FILE, PLACEHOLDER_FILE, PLACEHOLDER_FILE]);
+        m.replace(filter_sort(all, Show::OFF, &NameMatch::default(), SortCol::Name, true, &Restore::default()));
+        // The kept rows still ask for their lookups (d's, asked before the refresh, is pending).
+        let mut asked = Vec::new();
+        m.resolve_icons(0, 4, 16, |_, e| asked.push(e.name.to_string()));
+        assert_eq!(asked, ["a.txt", "b.txt", "c.png", "e.txt"]);
+        // a's mark is unchanged: its icon stays. b got a mark: back to its placeholder, so the next
+        // resolve asks for the marked key.
+        assert!(m.relabel(0, &r"look:o:ext:.txt|G:\a.txt".into(), "ext:o12:.txt".into()));
+        assert!(m.relabel(1, &r"look:o:ext:.txt|G:\b.txt".into(), "ext:o5:.txt".into()));
+        assert_eq!(m.icon_indices(0, 1), [before[0], PLACEHOLDER_FILE]);
+        // Every carried key settled: nothing more is looked at for them.
+        for (row, name) in [(2, "c.png"), (3, "d.txt"), (4, "e.txt")] {
+            m.relabel(row, &m.entry(row).unwrap().icon_key.clone(), format!("x:{name}").into());
+        }
+        assert!(m.carried.borrow().is_empty());
+        // Outside a cloud location nothing is carried or counted.
+        let plain = PaneModel::default();
+        plain.append(vec![keyed("a.txt", "ext:.txt")]);
+        plain.begin_refresh();
+        plain.append(vec![keyed("a.txt", "ext:.txt")]);
+        assert_eq!(plain.finish_refresh(), (0, 0));
     }
 
     #[test]
