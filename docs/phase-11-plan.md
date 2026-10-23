@@ -949,8 +949,12 @@ Waiting for the coordinating session's clearance (the lists stream has TwinFM wi
 
 ### Gate
 
-Pending: `tools/gate-p11m6.ps1` (the defaults and the preview triplet against `target-p11m5`), its
-tag from the coordinating session.
+Pending: `tools/gate-p11m6.ps1`, tag ab51, the defaults and the preview triplet. The candidate
+`target-p11m6` is built from 0dcac60 (P11-M6 with main at 45ff94f merged in). The reference
+`target-p11m5` (530bd8e) is the last merged milestone's gate build (the coordinating session's
+word), and it predates what the candidate carries besides P11-M6: P11-M2's sweep (#102, merged
+after 530bd8e was branched) and #105 (the stale-preview fix and the clipboard retry). P11-M3 (#106)
+is in neither.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
