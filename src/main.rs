@@ -24,6 +24,7 @@ mod explorercmd;
 mod fileops;
 mod html;
 mod icons;
+mod logfile;
 mod markdown;
 mod model;
 mod office;
@@ -6177,6 +6178,7 @@ fn settings_open() {
             theme: st.config.theme.clone(),
             preview: app.get_preview(),
             syntax_colours: app.get_syntax_colours(),
+            log: st.config.log,
         };
         st.dialog = Some(d.clone());
         let note = match &st.config_path {
@@ -6204,6 +6206,7 @@ fn settings_open() {
     app.set_dlg_preview(d.preview);
     app.set_dlg_start_warning("".into());
     app.set_dlg_syntax_colours(d.syntax_colours);
+    app.set_dlg_log(d.log);
     app.set_dlg_cols_reset(false);
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
@@ -6254,6 +6257,49 @@ fn start_folder_check(field: &str, text: &str) {
     }
 }
 
+/// The folder the log is written to (P11-M7): the settings file's; none in a scripted run without
+/// `TWINFM_CONFIG`.
+fn log_dir(st: &State) -> Option<PathBuf> {
+    st.config_path.as_deref().and_then(Path::parent).map(Path::to_path_buf)
+}
+
+/// The log file's first line: the version and the start time.
+fn log_first_line() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    format!("TwinFM {} log, started {}", env!("CARGO_PKG_VERSION"), model::LocalZone::current().format(now))
+}
+
+fn log_start(dir: &Path) {
+    match logfile::start(dir, &log_first_line()) {
+        Ok(p) => eprintln!("[log] writing to {} (the last run's kept as {})", p.display(), logfile::PREVIOUS),
+        Err(e) => eprintln!("[log] cannot write to {}: {e}", dir.display()),
+    }
+}
+
+/// The log setting applied (the dialog's OK): on writes `twinfm.log` from now, off gives the lines
+/// back to wherever they went at start.
+fn set_log(st: &State, on: bool) {
+    match (on, log_dir(st)) {
+        (true, Some(dir)) => log_start(&dir),
+        (true, None) => eprintln!("[log] not written: no settings file in a scripted run"),
+        (false, _) => {
+            if let Some(p) = logfile::stop() {
+                eprintln!("[log] stopped writing to {}", p.display());
+            }
+        }
+    }
+}
+
+/// The dialog's "Open log folder" (P11-M7): the dialog closes as OK does, and the active pane shows
+/// the log's folder with the log selected (the folder alone before a log was written).
+fn open_log_folder() {
+    let Some((app, dir)) = with_state(|st| Some((st.app.upgrade()?, log_dir(st)?))) else { return };
+    app.invoke_settings_ok();
+    let file = dir.join(logfile::NAME);
+    eprintln!("[log] open log folder: {}", dir.display());
+    slint::Timer::single_shot(Duration::ZERO, move || if file.exists() { show_in_pane(&file, true) } else { show_in_pane(&dir, false) });
+}
+
 /// The dialog closed: OK applies every field whose staged value differs from the value it opened
 /// with, through the path the rest of the app uses for it (Ctrl+H, F9, the path bar's glyph);
 /// Cancel and Escape drop them.
@@ -6276,6 +6322,7 @@ fn settings_closed(ok: bool) {
         theme: settings::ThemeMode::from_index(app.get_dlg_theme()).name().into(),
         preview: app.get_dlg_preview(),
         syntax_colours: app.get_dlg_syntax_colours(),
+        log: app.get_dlg_log(),
     }
     .normalized();
     let changes = opened.changes(&staged);
@@ -6343,6 +6390,10 @@ fn settings_closed(ok: bool) {
                 app.set_syntax_colours(staged.syntax_colours);
                 preview::recolour();
             }
+            "log" => with_state(|st| {
+                st.config.log = staged.log;
+                set_log(st, staged.log);
+            }),
             _ => {}
         }
     }
@@ -6536,6 +6587,12 @@ fn main() -> Result<(), slint::PlatformError> {
             settings::Config::default()
         }
     };
+    // The log (P11-M7), as early as the settings allow, so the start's own lines are in it.
+    if config.log {
+        if let Some(dir) = config_path.as_deref().and_then(Path::parent) {
+            log_start(dir);
+        }
+    }
     // With the Type column off, a header click cannot reach a Type sort, so none is restored.
     if !config.show_type && settings::sort_from_name(&config.sort_column) == SortCol::Type {
         eprintln!("[settings] the Type column is off: sorting by name instead of the saved type sort");
@@ -6749,6 +6806,13 @@ fn main() -> Result<(), slint::PlatformError> {
     report_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(5), perf::report);
     let icon_timer = slint::Timer::default();
     icon_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), report_icons);
+    // A long run's log is cut past 20 MB (P11-M7): its size looked at once a minute.
+    let log_timer = slint::Timer::default();
+    log_timer.start(slint::TimerMode::Repeated, Duration::from_secs(60), || {
+        if logfile::cut_if_over(logfile::CUT_BYTES, &log_first_line()) {
+            eprintln!("[log] cut at {} MB: a fresh {}", logfile::CUT_BYTES >> 20, logfile::NAME);
+        }
+    });
     // A search tab's rows on screen follow changes (P11-M2).
     let restat_timer = slint::Timer::default();
     restat_timer.start(slint::TimerMode::Repeated, RESTAT_EVERY, || {
@@ -6920,6 +6984,7 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_history_menu(|pane, x, y| open_history_menu(pane as usize, x, y));
     app.on_browse_start(|field| browse_start(field.as_str()));
+    app.on_open_log_folder(open_log_folder);
     app.on_start_folder_check(|field, text| start_folder_check(field.as_str(), text.as_str()));
     app.on_crumb_menu(|pane, i, x, y| {
         if let Ok(i) = usize::try_from(i) {
