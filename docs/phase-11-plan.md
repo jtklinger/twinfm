@@ -891,3 +891,10 @@ Recorded as they come from Jeremy's daily use; each is an open item until he say
   path compare. It covers a rename under the cursor and a folder emptied (the column then empties)
   too. Size: two lines and a scripted check (`delete` with the column on, then the `[preview]` line
   for the next file). It touches event handlers only: one in-app run, no triplet.
+  **Done 2026-10-23 after P11-M5's merge, Jeremy's word** ("Fix the stale preview after P11-M5 merges,
+  as its own small PR"): branch `fix/preview-follows-deletes`, the two `preview::kick()` calls as
+  above. With it, **the clipboard retry** (P11-M5's soak, one `copy block 0: failed: the clipboard is
+  in use by another program`; the coordinating session approved): `fileops::clipboard`'s open tries
+  five times 10 ms apart before it gives up, for every clipboard read and write TwinFM makes (Copy
+  text, Copy path, cut, copy and paste), at most 40 ms more on the UI thread when another program
+  holds the clipboard. Scripted check and in-app run: below, once the machine was cleared.
