@@ -966,7 +966,6 @@ component FileListHost inherits Rectangle {
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "c" || e.text == "C")) { root.command("cc"); return EventResult.accept; }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "x" || e.text == "X")) { root.command("cx"); return EventResult.accept; }
         if (e.modifiers.control && !e.modifiers.shift && (e.text == "v" || e.text == "V")) { root.command("cv"); return EventResult.accept; }
-        if (e.modifiers.control && !e.modifiers.shift && (e.text == "z" || e.text == "Z")) { root.command("undo"); return EventResult.accept; }
         // Escape stops a search, cancels queued jobs, or else clears the selection (main.rs). Reject
         // after it: the runtime closes the topmost popup (crumb menu, bookmark menu, About) on an
         // Escape the focused item did not take; accepting it here broke that (P2-M2).

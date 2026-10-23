@@ -699,6 +699,9 @@ export component App inherits Window {
                 return accept;
             }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "t" || e.text == "T")) { root.tab-key(active-pane, "new"); return accept; }
+            // Ctrl+Z (since P11-M3, the list's until then) and Ctrl+Y from anywhere but the text boxes
+            // (their own undo takes the key first) and the settings dialog.
+            if (e.modifiers.control && !e.modifiers.shift && (e.text == "z" || e.text == "Z") && !root.settings-shown) { root.command(active-pane, "undo"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "y" || e.text == "Y") && !root.settings-shown) { root.command(active-pane, "redo"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "w" || e.text == "W")) { root.tab-key(active-pane, "close"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "1" || e.text == "2" || e.text == "3" || e.text == "4" || e.text == "5" || e.text == "6" || e.text == "7" || e.text == "8" || e.text == "9")) {
