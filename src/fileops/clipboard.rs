@@ -74,12 +74,20 @@ fn preferred_drop_effect() -> u32 {
 struct Open;
 
 impl Open {
+    /// Another program (a clipboard manager, Windows' own history) holds the clipboard open for
+    /// moments at a time, so a refusal is tried again, five times 10 ms apart (the P11-M5 soak's one
+    /// failed copy), before it is given up.
     fn new(hwnd: isize) -> Result<Open, String> {
-        // SAFETY: plain Win32 call; fails if another window holds the clipboard open.
-        if unsafe { OpenClipboard(hwnd as HWND) } == 0 {
-            return Err("the clipboard is in use by another program".into());
+        for attempt in 0..5 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            // SAFETY: plain Win32 call; fails if another window holds the clipboard open.
+            if unsafe { OpenClipboard(hwnd as HWND) } != 0 {
+                return Ok(Open);
+            }
         }
-        Ok(Open)
+        Err("the clipboard is in use by another program".into())
     }
 }
 
