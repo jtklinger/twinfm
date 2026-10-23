@@ -428,11 +428,30 @@ file it had never written (file not found) where it meant one no decoder takes. 
 
 ### Gate
 
-Pending: the wrapper is `tools/gate-p11m4.ps1`, tag ab45 (the defaults and the preview triplet,
-`C:\traces\preview.toml`, against `target-p10m3`), after ab44 (P11-M1); the soak runs before both gates (the coordinating
-session's order).
+ab45, passed (2026-10-22 20:07, 17 min, Jeremy at the console after ab44): `tools/gate-p11m4.ps1`,
+`target-p11m4` (2d3a096) against `target-p10m3` (4f07cba), the defaults and the preview column
+(`C:\traces\preview.toml`). The reference is a console build (before 0.1.0) and the candidate a
+windowed one (`CLAUDE.md` § Measuring).
 
-### Console checks (for Jeremy, unelevated, after the gate)
+| Setting | p10m3 (WPR) | p11m4 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 18.0, 18.7, 19.1 | 18.4, 18.7, 19.1 | 18.7 / 18.7 | 2.15 to 2.40 ms (p10m3-3's 2.40, a reference run) |
+| preview | 17.8, 18.0, 17.8 | 17.6, 17.9, 17.9 | 17.8 / 17.9 | 1.97 to 2.01 ms |
+
+No gap that counts in either; every candidate run under 20%; one session state throughout.
+
+### Console checks (Jeremy, 2026-10-23, unelevated, `target-p11m4` on `C:\traces\p11m4-console`)
+
+Jeremy: "All checks look good." Every item below passed: the zoom by Ctrl+wheel and the keys with the
+sideways scroll, the AVIF, the Windows-1252 page, the centred logo and thin table lines, Copy this
+block into Excel and Copy all into Notepad, SVG text, the long Markdown file's scrollbar. One finding:
+of the rare entities, ∉ draws small and ∳, 𝔄, ⫅̸ draw as empty boxes in TwinFM's window (his
+screenshot), since the UI's font has no glyphs for them and Slint's fallback found none. The
+characters are right: "Copy this block" of that line pasted into Word showed them correctly (Jeremy:
+"Pasting into word displays the characters correctly"). Deferred: font fallback for symbols outside
+the UI font, a Slint question, not this milestone's; the common entities all draw.
+
+The list as handed to Jeremy:
 
 - A PDF zoomed with Ctrl+wheel and Ctrl+plus beside Edge at 200%; the sideways scroll at 400%.
 - A Windows-1252 page (any old saved web page or a hand-made one) beside Edge.
