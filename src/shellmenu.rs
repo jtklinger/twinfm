@@ -486,6 +486,93 @@ impl Drop for Com {
     }
 }
 
+/// IFileOpenDialog (IModalWindow, IFileDialog) in declaration order (shobjidl_core.h), up to
+/// `GetResult`; unused slots are opaque.
+#[repr(C)]
+struct FileDialogVtbl {
+    base: UnknownVtbl,
+    show: unsafe extern "system" fn(*mut c_void, HWND) -> HRESULT,
+    _set_file_types: Slot,
+    _set_file_type_index: Slot,
+    _get_file_type_index: Slot,
+    _advise: Slot,
+    _unadvise: Slot,
+    set_options: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT,
+    get_options: unsafe extern "system" fn(*mut c_void, *mut u32) -> HRESULT,
+    _set_default_folder: Slot,
+    set_folder: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT,
+    _get_folder: Slot,
+    _get_current_selection: Slot,
+    _set_file_name: Slot,
+    _get_file_name: Slot,
+    _set_title: Slot,
+    _set_ok_button_label: Slot,
+    _set_file_name_label: Slot,
+    get_result: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
+}
+
+/// IShellItem, up to `GetDisplayName`.
+#[repr(C)]
+struct ShellItemVtbl {
+    base: UnknownVtbl,
+    _bind_to_handler: Slot,
+    _get_parent: Slot,
+    get_display_name: unsafe extern "system" fn(*mut c_void, i32, *mut *mut u16) -> HRESULT,
+}
+
+/// The settings dialog's Browse button (P11-M3), on the verb worker (an STA): the shell's folder
+/// picker (`IFileOpenDialog` with `FOS_PICKFOLDERS`), owned by `hwnd`, opening at `start` when it
+/// is a folder. The folder picked, None when the user cancelled.
+pub fn pick_folder(hwnd: isize, start: &Path) -> Result<Option<PathBuf>, String> {
+    use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows_sys::Win32::UI::Shell::{FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, SHCreateItemFromParsingName, SIGDN_FILESYSPATH};
+    const IID_IFILEOPENDIALOG: GUID = GUID::from_u128(0xd57c7288_d4ad_4768_be02_9d969532d960);
+    const IID_ISHELLITEM: GUID = GUID::from_u128(0x43826d1e_e718_42ee_bc55_a1e261c37bfa);
+    const CANCELLED: HRESULT = 0x800704C7_u32 as HRESULT;
+    let mut p: *mut c_void = std::ptr::null_mut();
+    // SAFETY: creates the picker; `p` receives an IFileOpenDialog we own, or stays null.
+    check(unsafe { CoCreateInstance(&FileOpenDialog, std::ptr::null_mut(), CLSCTX_INPROC_SERVER, &IID_IFILEOPENDIALOG, &mut p) }, "CoCreateInstance(FileOpenDialog)")?;
+    let dialog = Com(p);
+    // SAFETY: `dialog` is an IFileOpenDialog.
+    let v = unsafe { dialog.vtbl::<FileDialogVtbl>() };
+    let mut opts = 0u32;
+    // SAFETY: live dialog, a valid out pointer.
+    check(unsafe { (v.get_options)(dialog.0, &mut opts) }, "GetOptions")?;
+    // SAFETY: as above.
+    check(unsafe { (v.set_options)(dialog.0, opts | FOS_PICKFOLDERS as u32 | FOS_FORCEFILESYSTEM as u32) }, "SetOptions")?;
+    if start.is_dir() {
+        let w = wide(start.as_os_str());
+        let mut item: *mut c_void = std::ptr::null_mut();
+        // SAFETY: NUL-terminated path; `item` receives an IShellItem we own, or stays null.
+        if unsafe { SHCreateItemFromParsingName(w.as_ptr(), std::ptr::null_mut(), &IID_ISHELLITEM, &mut item) } >= 0 && !item.is_null() {
+            let item = Com(item);
+            // SAFETY: live dialog and item; the dialog takes its own reference.
+            unsafe { (v.set_folder)(dialog.0, item.0) };
+        }
+    }
+    // SAFETY: shows the modal picker over `hwnd` (another thread's window: it is disabled meanwhile).
+    let hr = unsafe { (v.show)(dialog.0, hwnd as HWND) };
+    if hr == CANCELLED {
+        return Ok(None);
+    }
+    check(hr, "Show")?;
+    let mut item: *mut c_void = std::ptr::null_mut();
+    // SAFETY: live dialog, a valid out pointer; the result is an IShellItem we own.
+    check(unsafe { (v.get_result)(dialog.0, &mut item) }, "GetResult")?;
+    let item = Com(item);
+    let mut s: *mut u16 = std::ptr::null_mut();
+    // SAFETY: `item` is an IShellItem; `s` is allocated with the COM allocator, freed below.
+    check(unsafe { (item.vtbl::<ShellItemVtbl>().get_display_name)(item.0, SIGDN_FILESYSPATH, &mut s) }, "GetDisplayName")?;
+    // SAFETY: `s` is a NUL-terminated string the shell allocated.
+    let path = unsafe {
+        let len = (0..).take_while(|&i| *s.add(i) != 0).count();
+        let path = PathBuf::from(<std::ffi::OsString as std::os::windows::ffi::OsStringExt>::from_wide(std::slice::from_raw_parts(s, len)));
+        CoTaskMemFree(s as *const c_void);
+        path
+    };
+    Ok(Some(path))
+}
+
 /// A PIDL the shell allocated for us, freed with CoTaskMemFree.
 pub(crate) struct Pidl(pub(crate) *mut ITEMIDLIST);
 

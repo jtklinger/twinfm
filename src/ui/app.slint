@@ -512,6 +512,12 @@ export component App inherits Window {
     in-out property <bool> dlg-preview;
     // "Saved to <file>", or that a scripted run saves nothing.
     in property <string> settings-note;
+    // A start folder that is not a folder (P11-M3), shown in place of settings-note.
+    in property <string> dlg-start-warning;
+    // The Browse button beside a start folder (field "start_left" or "start_right"), and the check
+    // of a start folder staged (main.rs `start_folder_check`).
+    callback browse-start(string);
+    callback start-folder-check(string, string);
     private property <bool> settings-shown: false;
     // Bumped after each show: the dialog then puts the focus in its first field (see there).
     private property <int> settings-focus-token: 0;
@@ -533,8 +539,8 @@ export component App inherits Window {
     // type_column, thumbnails, sidebar ("true" or "false"), path_bar ("entry" or "crumb"), view_left,
     // view_right ("details", "large" or "medium"), toolbar ("top", "pane" or "none"), preview (P8-M1, "true" or "false").
     public function settings-stage(field: string, value: string) {
-        if (field == "start_left") { dlg-start-left = value; }
-        if (field == "start_right") { dlg-start-right = value; }
+        if (field == "start_left") { dlg-start-left = value; root.start-folder-check(field, value); }
+        if (field == "start_right") { dlg-start-right = value; root.start-folder-check(field, value); }
         if (field == "hidden_left") { dlg-hidden-left = value == "true"; }
         if (field == "hidden_right") { dlg-hidden-right = value == "true"; }
         if (field == "protected_left") { dlg-protected-left = value == "true"; }
@@ -1393,20 +1399,36 @@ export component App inherits Window {
                         spacing: 8px;
                         Row {
                             Text { text: "Left start folder"; vertical-alignment: center; }
-                            start-left-edit := Field {
-                                text: root.dlg-start-left;
-                                placeholder-text: "C:\\";
-                                label: "Left start folder";
-                                edited(t) => { root.settings-stage("start_left", t); }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                start-left-edit := Field {
+                                    horizontal-stretch: 1;
+                                    text <=> root.dlg-start-left;
+                                    placeholder-text: "C:\\";
+                                    label: "Left start folder";
+                                    edited(t) => { root.settings-stage("start_left", t); }
+                                }
+                                Btn {
+                                    text: "Browse";
+                                    clicked => { root.browse-start("start_left"); }
+                                }
                             }
                         }
                         Row {
                             Text { text: "Right start folder"; vertical-alignment: center; }
-                            Field {
-                                text: root.dlg-start-right;
-                                placeholder-text: "The left pane's folder";
-                                label: "Right start folder";
-                                edited(t) => { root.settings-stage("start_right", t); }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Field {
+                                    horizontal-stretch: 1;
+                                    text <=> root.dlg-start-right;
+                                    placeholder-text: "The left pane's folder";
+                                    label: "Right start folder";
+                                    edited(t) => { root.settings-stage("start_right", t); }
+                                }
+                                Btn {
+                                    text: "Browse";
+                                    clicked => { root.browse-start("start_right"); }
+                                }
                             }
                         }
                         Row {
@@ -1542,10 +1564,10 @@ export component App inherits Window {
                         }
                     }
                     Text {
-                        text: root.settings-note;
+                        text: root.dlg-start-warning != "" ? root.dlg-start-warning : root.settings-note;
                         font-size: 11px;
                         overflow: elide;
-                        color: Theme.fg-muted;
+                        color: root.dlg-start-warning != "" ? Theme.fg : Theme.fg-muted;
                     }
                 }
             }

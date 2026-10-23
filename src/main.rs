@@ -6079,10 +6079,54 @@ fn settings_open() {
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
     app.set_dlg_theme(settings::ThemeMode::from_name(&d.theme).index());
     app.set_dlg_preview(d.preview);
+    app.set_dlg_start_warning("".into());
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
     // Outside the state borrow: showing the popup moves keyboard focus.
     app.invoke_show_settings();
+}
+
+/// The settings dialog's Browse button (P11-M3): the shell's folder picker on the verb worker,
+/// opening at the field's folder (`browse_done` fills it).
+fn browse_start(field: &str) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let text = if field == "start_left" { app.get_dlg_start_left() } else { app.get_dlg_start_right() };
+        let hwnd = main_hwnd(st, &app);
+        st.next_verb += 1;
+        let work = verbs::Work::PickFolder { hwnd, start: PathBuf::from(text.as_str()), field: field.to_string() };
+        let queued = st.verbs.submit(verbs::Job { id: st.next_verb, pane: active_pane(&app), work });
+        eprintln!("[settings] browse {field}: the folder picker {}", if queued { "queued on the verb worker" } else { "not queued (the worker is gone)" });
+    });
+}
+
+/// The folder picker answered: the field takes the folder (staged as typing stages it).
+fn browse_done(field: &str, path: Option<PathBuf>, error: Option<String>) {
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    match (path, error) {
+        (Some(p), _) => {
+            eprintln!("[settings] browse {field}: {}", p.display());
+            app.invoke_settings_stage(field.into(), p.to_string_lossy().as_ref().into());
+        }
+        (None, Some(e)) => eprintln!("[settings] browse {field}: failed: {e}"),
+        (None, None) => eprintln!("[settings] browse {field}: cancelled"),
+    }
+}
+
+/// A start folder typed, picked or set by the driver (P11-M3): the dialog's footer says when it is
+/// not a folder. No check for a network path (a dead share would stall the window here).
+fn start_folder_check(field: &str, text: &str) {
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    let side = if field == "start_left" { "Left" } else { "Right" };
+    let t = text.trim();
+    let missing = !t.is_empty() && !is_this_pc(t) && !t.starts_with(r"\\") && !fs::watch::is_remote(Path::new(t)) && !Path::new(t).is_dir();
+    let warning = if missing { format!("{side} start folder not found: {t}") } else { String::new() };
+    if missing {
+        eprintln!("[settings] dialog: {field} \"{t}\" is not a folder");
+    }
+    if app.get_dlg_start_warning() != warning.as_str() {
+        app.set_dlg_start_warning(warning.into());
+    }
 }
 
 /// The dialog closed: OK applies every field whose staged value differs from the value it opened
@@ -6320,6 +6364,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = slint::invoke_from_event_loop(move || match r {
             verbs::Reply::Done(d) => verb_done(d),
             verbs::Reply::Answer(a) => winmenu_answer(a),
+            verbs::Reply::Folder { field, path, error } => browse_done(&field, path, error),
         });
     });
     let soak = (std::env::var("TWINFM_SOAK").as_deref() == Ok("1"))
@@ -6719,6 +6764,8 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     app.on_history_menu(|pane, x, y| open_history_menu(pane as usize, x, y));
+    app.on_browse_start(|field| browse_start(field.as_str()));
+    app.on_start_folder_check(|field, text| start_folder_check(field.as_str(), text.as_str()));
     app.on_crumb_menu(|pane, i, x, y| {
         if let Ok(i) = usize::try_from(i) {
             crumb_menu(pane as usize, i, x, y);
