@@ -891,6 +891,21 @@ Recorded as they come from Jeremy's daily use; each is an open item until he say
   path compare. It covers a rename under the cursor and a folder emptied (the column then empties)
   too. Size: two lines and a scripted check (`delete` with the column on, then the `[preview]` line
   for the next file). It touches event handlers only: one in-app run, no triplet.
+  **Done 2026-10-23 after P11-M5's merge, Jeremy's word** ("Fix the stale preview after P11-M5 merges,
+  as its own small PR"): branch `fix/preview-follows-deletes`, the two `preview::kick()` calls as
+  above. With it, **the clipboard retry** (P11-M5's soak, one `copy block 0: failed: the clipboard is
+  in use by another program`; the coordinating session approved): `fileops::clipboard`'s open tries
+  five times 10 ms apart before it gives up, for every clipboard read and write TwinFM makes (Copy
+  text, Copy path, cut, copy and paste), at most 40 ms more on the UI thread when another program
+  holds the clipboard. Scripted check (the coordinating session's go, 2026-10-23): three text files,
+  the column on, the cursor on `a.txt`; `rmfile` of `a.txt` landed as the watch's row edits (`applied:
+  +0 -1 ~0`) and the preview moved to `b.txt` with no key pressed (`[preview] ... b.txt: text`), which
+  is Jeremy's case; `rmfile` of `b.txt` with F5 at once landed as a pass, which keeps the cursor by the
+  file's name, so with `b.txt` gone the cursor went to no row (`[sort] ... cursor=None`) and the preview
+  emptied with it, where before it kept the deleted file (the pass's cursor rule, P2-M2's, is
+  unchanged). In-app run of the gate scenario on `C:\traces\bigdir`, `target-p11m5` then the fixed
+  build back to back on a quiet machine: `[busy]` 21.2% and 19.4%, render p50 2.11 and 2.11 ms, no
+  panic.
 
 ## P11-M6: password PDFs through hayro
 

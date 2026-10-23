@@ -1748,6 +1748,10 @@ fn land_edits(job: StatJob, edits: Vec<model::Edit>, gone: Vec<String>, folder_g
                 st.watch_edits += 1;
                 if active {
                     set_current_row(&app, pane, usize::try_from(a.cursor).ok());
+                    // The cursor keeps its row number, so a deleted file's row may now hold the
+                    // next file with no `changed` firing: the preview asks again (it reads only a
+                    // file other than the one it shows).
+                    preview::kick();
                     size_selection(st, pane);
                     update_status(st, &app, pane);
                     st.strip_dirty[pane] = true;
@@ -2041,6 +2045,8 @@ fn land_pass(
         return;
     }
     set_current_row(&app, pane, cursor);
+    // As after row edits: the same row number may hold another file now.
+    preview::kick();
     if let (Some(y), Some(_)) = (scroll, cursor) {
         app.invoke_set_scroll(pane as i32, y);
         eprintln!("[refresh] pane={pane} scroll restored to {y:.0} (now {:.0})", app.invoke_get_scroll(pane as i32));
