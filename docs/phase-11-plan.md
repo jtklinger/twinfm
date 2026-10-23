@@ -639,6 +639,172 @@ with stderr kept; his word: "All Look good!"), each found right, with the log be
   re-stat line (no search tab); a search tab still re-states (`4 rows, 1 gone, 1 changed` after
   outside changes).
 
+**Merged** 2026-10-23 as 8ddd2dd (#102), on Jeremy's word ("Merge PR #102 and PR #104."), by the
+coordinating session.
+
+## P11-M3: the edge-case bundle and the owed checks
+
+Settled from code while the machine was held (2026-10-23, the shared note
+`p11-m3-settle-first-from-code.md`), then built on `feat/p11-m3-edge-cases`, cut from main 3cd18cd
+and brought up to b14d18d (P11-M2 merged) before the gate. Each item a commit of its own. The gate
+reference is `target-p11m2` (c075a0a), the last merged milestone's build; it **contains** P11-M4
+(the P11-M2 branch had main at 3cd18cd merged in before its gate build: `git merge-base
+--is-ancestor 3cd18cd c075a0a`), so this gate compares P11-M3's changes alone.
+
+### The items (2026-10-23)
+
+1. **A USB hard disk no longer blocks "Safely remove": done** (5bf4935). Settled: `Watch::new` set
+   `removable` for `DRIVE_REMOVABLE` only, and a USB hard disk reports `DRIVE_FIXED`. Now a fixed
+   drive whose disk answers `IOCTL_STORAGE_GET_HOTPLUG_INFO` with hot-pluggable or removable media
+   registers too (`watch.rs` `removable`, `hotplug`; no access right needed). Probed in TwinFM's test
+   process on this machine: C: fixed, not hot-pluggable; **G: (Google Drive's virtual disk) fixed and
+   hot-pluggable**, so a G: watch now registers too (harmless: it only lets a removal close it); the
+   optical and card-reader letters are `DRIVE_REMOVABLE` as before. The USB disk itself is a console
+   check (Jeremy's disk).
+2. **A folder moved to another parent is followed: done** (8323861). Settled by a probe as a test:
+   Windows reports such a move to the parent watch as the folder **removed** (`FILE_ACTION_REMOVED`),
+   not as a rename, so the code took it for a deletion. Both branches (a removal, and an old name with
+   no new one) now ask the folder's own handle, still open, for its path
+   (`GetFinalPathNameByHandleW`): another existing folder means `Moved` (the tab follows, a new parent
+   watch on the new parent); none, or the same path, means `Lost` as before (a real deletion). The
+   test `moving_the_watched_folder_to_another_parent_follows_it` (was `..._loses_it`) checks the
+   `Moved` and a change made in the new place.
+3. **A partial Recycle Bin restore records what it restored: done** (ec8b1ee). `record_for`
+   recorded only `Done` jobs; a `Restore` that failed on some items now records the undo of those it
+   brought back (`undo_for` already left the failed out). A test.
+4. **Undo of a copy or move that replaced a file: the plan's fallback, done** (447f5ba). Settled: the
+   shell overwrites in place, so the replaced content is gone and nothing can restore it. The file
+   worker notes the destination paths there before a copy or move (`Done::existed`); an item that
+   landed on one makes the record not undoable (`forbid_if_replaced`, Ctrl+Z's note "Cannot undo: it
+   replaced a file, which cannot be brought back"), instead of recycling the new file and leaving
+   neither. Probed with the real shell (the worker test copies a file over itself: the sink names the
+   existing path as the item's destination); a pure test covers "keep both" (`y (2).txt`) not counting.
+5. **Ctrl+Z from the sidebar, tab strip and crumbs: done** (1500df0). The plan's sentence had it the
+   wrong way round: Ctrl+Y was already window-level (P5-M2), Ctrl+Z list-level. Ctrl+Z moved beside
+   Ctrl+Y in the outer scope. Scripted: a recycle, `sidebar click 2`, `key CtrlZ`: `Undid: Deleted 1
+   item to the Recycle Bin`.
+6. **The subtree-watch overflow path and `waitsize`: done, one part recorded** (a04e9cb). A test
+   makes 2,000 files in the folder itself under a subtree watch: a window past `MAX_RECORDS` with no
+   edits (the UI lists the folder again). The buffer's own overflow (`overflow: true`) **could not be
+   forced**: the watcher kept up with 3,200 records of over 400 bytes from eight threads; recorded in
+   the test. `sizes_busy` (what `waitsize` waits on) counts a stale size waiting for its re-walk.
+7. **The history menu and saved history: done** (c044de8, c92c839, 8f6fafd). Alt+Down in a list, or a
+   right click on the path bar's background, opens the pane's places in the Windows 11 menu (forward
+   places first, the current one checked, back places after it); a pick goes that many steps in one
+   move (`History::jump`). The first screenshot showed long paths cut to the same start, so each place
+   reads its name first, then where it is (`beta  (C:\...\alpha)`). Each tab's back and forward places
+   are saved with it (`SavedTab::back` / `forward`, 50 each, a search's pattern and content flag
+   kept). A run with a scratch settings file showed a restored **search tab** (saved as its root)
+   going Back to its own root, a no-op: an entry equal to the restored place is now dropped
+   (`History::restored`). Scripted: two picks (3 back, 2 forward); a restart's Back twice (`a`, then
+   `C:\`). The Calls made line ("long press or right click of Back and Forward") is superseded by the
+   builder check's line, as the brief said.
+8. **Browse for the start folders and a note for a missing one: done** (78cac09). A Browse button
+   beside each start folder (the rows had room; the dialog's height is P11-M2's 590 px) runs the
+   shell's folder picker (`IFileOpenDialog`, `FOS_PICKFOLDERS`) on the verb worker, owned by the
+   window; the answer fills the field (now two-way bound, so a picked folder reaches it after typing).
+   A start folder staged that is not a folder shows "Left start folder not found: ..." in the footer
+   (never asked for a network path). Scripted: the warning line; screenshot below. The picker itself
+   is a console check (a script never drives a shell dialog).
+9. **Spring-loading a sidebar row and a crumb: done** (643ae08). A sidebar row opens in the active
+   pane, a crumb in its pane (not the folder shown); never inside an archive. Scripted with the new
+   `dragover side <row>`: crumb -2 and sidebar row 1 (C:\) each spring-loaded after about 1000 ms.
+10. **The owed checks**: the console checks below (the dead share, an ancestor renamed, the
+    right-button drag out of Explorer, video and Office thumbnails, the 187 MB question).
+
+Screenshots (light, `winit-software`): the history menu (gamma, beta checked, alpha, C:), the
+settings dialog with Browse beside both start folders and the not-found note in the footer. After
+main's P11-M5 (f09cafc) was merged in, the dialog's new "Code" row (syntax colours) had pushed the
+footer below the dialog's 590 px (the "Saved to" note too, on main): the dialog is 630 px now, the
+footer inside it again (screenshot after the fix).
+
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-23, on the gate build `target-p11m3` at 0e8dd28,
+the coordinating session's go, the machine otherwise idle): 10.1 min, exit 0, 0 panics; 256 jobs (0
+failed, 0 cancelled, 0 refused), 0 waitops timeouts; every must-be-0 count 0 (P11-M5's chunks refused
+included); **history menu: jumps back one place 4 (one per cycle)**; spring armed 15 (was 7 in P11-M2's
+soak: the sidebar and crumb hovers of the P5-M3 cycle now arm), spring-loaded rows 4, tabs 0; resets 8,
+widths back 9; content search 4 / 806 / 4; P11-M5's files coloured 8; working set 173 to 290 MB, peak
+290 (P11-M2's runs: 135 to 217 and 176 to 247; this candidate also carries P11-M5's syntax colouring;
+recorded to watch, not read as a leak over four full cycles).
+
+### Gate
+
+Run by Jeremy on 2026-10-23, finished 15:50 (tag ab50, `C:\traces\gate-p11m3.ps1`, the same file as
+`tools/gate-p11m3.ps1`, 9 min): `target-p11m3` (ff0d120, built `--locked` from a detached checkout)
+against `target-p11m2` (c075a0a), the defaults, three runs each interleaved; every run passed the
+wrapper's checks, no panic, no build overlapping (the coordinating session's word).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11m2-1 / 2 / 3 | 18.6 / 18.6 / 18.5 | 21.6 / 19.5 / 19.7 | 2.24 / 2.26 / 2.25 |
+| p11m3-1 / 2 / 3 | 18.3 / 18.6 / 19.0 | 19.8 / 21.2 / 17.0 | 2.15 / 2.33 / 2.26 |
+
+Medians 18.6 / 18.6: no gap (not every reference run below every candidate run, 18.3 under all the
+reference's); render p50 2.15 to 2.33 ms throughout, the session in its normal state; every candidate
+run under 20%. **Passed.**
+
+The gate's terms: the defaults triplet, `target-p11m3` against `target-p11m2`, tag ab50 (allocated by
+the coordinating session). **The reference predates P11-M5** (f09cafc, syntax colours,
+merged into main after `target-p11m2` was built and into this branch at c3f2312): the candidate
+carries P11-M5's preview code as well as P11-M3; the gate scenario opens no preview.
+
+**The soak ran on 0e8dd28, the gate on ff0d120.** After the soak, CI failed
+`worker_runs_real_shell_operations`: the runner's `%TEMP%` is an 8.3 path (`RUNNER~1`) while the shell
+names a copied item by its long path, so the replaced-file check (item 4) missed and the undo was not
+refused (a user's tab on a short path would miss the same). Fixed in ff0d120: the paths there before a
+job are taken in their long form (`GetLongPathNameW`, no link followed); the test copies through the
+folder's 8.3 name (this machine has 8.3 names on C:, as the runner does). The coordinating session
+chose to rebuild `target-p11m3` at ff0d120 before the gate, so the gate measures what merges; no new
+soak (the fix is one path lookup per copy or move job on the file worker, nothing per row or frame).
+The soak's working set (173 to 290 MB) is on the coordinating session's watch list, for a long soak at
+the Phase 11 close.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+- **A USB hard disk**: plug it in, open a folder on it in TwinFM, then "Safely remove" it from the
+  taskbar: Windows lets it go (before, "in use"); the stderr names it `fixed, removable media`.
+- **A folder moved to another folder** in Explorer while TwinFM shows it: the tab follows to the new
+  place.
+- **Ctrl+Z after clicking in the sidebar**; **Alt+Down** in a list and a **right click on the path
+  bar**: the history menu, a pick; restart TwinFM, Back still works.
+- **Settings > Browse** beside a start folder: the picker, a folder, OK; a typed folder that does not
+  exist shows the note.
+- **A drag held over a sidebar folder or a crumb** opens it after a second.
+- **The owed checks**: a dead network share (a name that does not resolve, then one that resolves
+  but does not answer: `stalled: no watch`, the 30 s cool-down, F5); rename an ancestor of a watched
+  folder in Explorer (the "folder in use" case); a right-button drag out of Explorer into TwinFM
+  (without Logi Options+ running); video and Office files with thumbnails on, in a 32 px list and the
+  tiles; the 187 MB first-run working set (one heap-sampling trace of a first run against a second).
+
+**Results** (2026-10-23, Jeremy at the console, `target-p11m3`, unelevated):
+
+- **Checks 1 to 6** (the USB hard disk, the moved folder, the history menu and a restart, Ctrl+Z
+  from the sidebar, Browse and the not-found note, the springs): "checks 1-6 all work as expected".
+  **Found right.**
+- **The dead network share**: not checked ("don't have a network share to test"); carried, as since
+  P5-M1.
+- **Renaming an ancestor of a watched folder** in Explorer: "Rename in explorer works" (no "folder in
+  use"). **Found right**; nothing to change.
+- **A right-button drag out of Explorer**, Logi Options+ stopped: "Right button drag works". **Found
+  right.**
+- **Video and Office thumbnails**: in Downloads, large icons, thumbnails on, an `.mp4` and an `.xlsx`
+  showed their type icons (Jeremy's screenshot) while JPEGs and scanned images showed their content.
+  - The `.xlsx`: Explorer shows its icon too (Office's handler gives a picture only for a workbook
+    saved with one). **Found right.**
+  - The `.mp4`: **Explorer shows a frame of the video; TwinFM does not. Found wrong, not fixed in
+    P11-M3.** What was settled: both files get `thumb:` keys (`THUMB_EXTS`, plain attributes), and
+    the request asks with `WTS_EXTRACT`; a probe in TwinFM's test process got the thumbnail from
+    `IThumbnailCache::GetThumbnail` for two fresh copies of the same video, in an MTA thread (775 ms)
+    and an STA thread (434 ms). After Explorer had made the thumbnail, F5 in Jeremy's window still
+    showed the icon, because the icon table keeps a key's first answer for the session (F5 asks
+    nothing again). Why the first request in the running app fell back to the icon is not found: a
+    timeout or a pending answer from the cache for a large file read cold (594 MB) is the lead, and a
+    fallback kept for the session would then explain the rest. Proposed as its own item, with a test
+    video made for it (not Jeremy's): log the `GetThumbnail` HRESULT, and do not keep the icon fallback
+    as the key's answer when the cache says the extraction is pending or timed out.
+- **The 187 MB first-run question**: not run (a heap-sampling trace); carried to the Phase 11 close's
+  long soak, with this milestone's working-set note.
+
 ## P11-M4: the preview gaps bundle
 
 The preview stream's first milestone, opened 2026-10-22 on main at d1abbe3 (0.1.0, Phase 10 merged),

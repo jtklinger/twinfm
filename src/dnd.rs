@@ -1679,8 +1679,9 @@ pub struct DropSpot {
     pub pane: usize,
     pub mark: Mark,
     pub dest: PathBuf,
-    /// A drag held here opens it (`Spring`): a folder row or tile (`Mark::Row` with a row), or a
-    /// tab that is not the pane's active one.
+    /// A drag held here opens it (`Spring`): a folder row or tile (`Mark::Row` with a row), a tab
+    /// that is not the pane's active one, and since P11-M3 a sidebar row (in the active pane) and a
+    /// crumb other than the folder shown.
     pub springs: bool,
 }
 

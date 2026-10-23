@@ -50,6 +50,20 @@ pub struct Record {
     pub cannot: &'static str,
 }
 
+/// The note Ctrl+Z shows for a copy or move that replaced a file (P11-M3): the shell overwrote it,
+/// so undoing would recycle the new file and leave neither.
+pub const CANNOT_UNDO_REPLACED: &str = "Cannot undo: it replaced a file, which cannot be brought back";
+
+/// A copy's or move's record when an item landed on a path that was there before (`existed`): it
+/// cannot be undone (P11-M3). Other records pass through.
+pub fn forbid_if_replaced(rec: Option<Record>, existed: &[PathBuf], results: &[ItemResult]) -> Option<Record> {
+    let replaced = results.iter().filter(|r| r.ok()).any(|r| r.dest.as_ref().is_some_and(|d| existed.iter().any(|e| e.as_os_str().eq_ignore_ascii_case(d.as_os_str()))));
+    if !replaced {
+        return rec;
+    }
+    rec.map(|r| Record { undo: None, cannot: CANNOT_UNDO_REPLACED, ..r })
+}
+
 /// The note Ctrl+Z shows for a recycle whose items the bin did not report.
 pub const CANNOT_UNDO_DELETE: &str = "Cannot undo: the Recycle Bin reported no items";
 /// The note Ctrl+Z shows for a write into a zip archive or an edit inside one (P7-M3).
@@ -117,9 +131,11 @@ pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
 
 /// What a finished job leaves on the undo stack (or, for an undo job, on the redo stack): only
 /// successful jobs leave anything; a recycle the bin reported no items for, and a zip's write,
-/// leave a record that undoes nothing; a permanent delete none.
+/// leave a record that undoes nothing; a permanent delete none. A restore from the Recycle Bin that
+/// failed on some items records the ones it brought back (P11-M3), so they can be recycled again.
 pub fn record_for(job: &Job, outcome: &Outcome, results: &[ItemResult], text: &str) -> Option<Record> {
-    if *outcome != Outcome::Done {
+    let partial_restore = matches!((job, outcome), (Job::Restore { .. }, Outcome::Failed(_))) && results.iter().any(ItemResult::ok);
+    if *outcome != Outcome::Done && !partial_restore {
         return None;
     }
     if matches!(super::archive::classify(job), Ok(Some(_))) {
@@ -242,6 +258,21 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_that_replaced_a_file_is_not_undone() {
+        let cp = Job::Copy { sources: vec![r"C:\a\x.txt".into(), r"C:\a\y.txt".into()], dest_dir: r"C:\b".into() };
+        let res = [ok(r"C:\a\x.txt", r"C:\b\x.txt"), ok(r"C:\a\y.txt", r"C:\b\y.txt")];
+        let rec = || record_for(&cp, &Outcome::Done, &res, "Copied 2 items");
+        // y.txt was in C:\b before: the copy replaced it.
+        let r = forbid_if_replaced(rec(), &[r"C:\B\Y.TXT".into()], &res).unwrap();
+        assert_eq!((r.undo, r.cannot, r.text.as_str()), (None, CANNOT_UNDO_REPLACED, "Copied 2 items"));
+        // Nothing was there, or the shell kept both ("y (2).txt"): the record stands.
+        assert!(forbid_if_replaced(rec(), &[], &res).unwrap().undo.is_some());
+        let kept = [ok(r"C:\a\x.txt", r"C:\b\x.txt"), ok(r"C:\a\y.txt", r"C:\b\y (2).txt")];
+        assert!(forbid_if_replaced(record_for(&cp, &Outcome::Done, &kept, "x"), &[r"C:\b\y.txt".into()], &kept).unwrap().undo.is_some());
+        assert_eq!(forbid_if_replaced(None, &[r"C:\b\y.txt".into()], &res), None);
+    }
+
+    #[test]
     fn records_and_the_cap() {
         let del = Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: false };
         let rec = record_for(&del, &Outcome::Done, &[], "Deleted 1 item to the Recycle Bin").unwrap();
@@ -253,6 +284,16 @@ mod tests {
         let res = [ok(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt", r"C:\a\x.txt")];
         let rec = record_for(&restore, &Outcome::Done, &res, "Restored 1 item from the Recycle Bin").unwrap();
         assert_eq!(rec.undo.unwrap().job, Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: false }, "the redo of a restore");
+        // P11-M3: a restore that failed on one item records the one it brought back; one that
+        // brought nothing back, or a failed job of another kind, records nothing.
+        let two = Job::Restore {
+            items: vec![(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt".into(), r"C:\a\x.txt".into()), (r"C:\$Recycle.Bin\S-1-5-21-1\$RZZ.txt".into(), r"C:\a\y.txt".into())],
+        };
+        let half = [ok(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt", r"C:\a\x.txt"), ItemResult { hr: -1, ..ok(r"C:\$Recycle.Bin\S-1-5-21-1\$RZZ.txt", r"C:\a\y.txt") }];
+        let rec = record_for(&two, &Outcome::Failed(-1), &half, "Restored 1 of 2 items").unwrap();
+        assert_eq!(rec.undo.unwrap().job, Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: false });
+        assert_eq!(record_for(&two, &Outcome::Failed(-1), &half[1..], "x"), None, "nothing came back");
+        assert_eq!(record_for(&del, &Outcome::Failed(-1), &res, "x"), None, "only a restore records a partial run");
         let nuke = Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: true };
         assert_eq!(record_for(&nuke, &Outcome::Done, &[], "x"), None, "a permanent delete records nothing");
         let ren = Job::Rename { source: r"C:\a\old.txt".into(), new_name: "new.txt".into() };

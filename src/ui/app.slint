@@ -418,6 +418,8 @@ export component App inherits Window {
     // crumb-menu(pane, index, x, y): the chevron after a crumb; Rust lists its subfolders on a
     // worker and shows the dropdown below (x, y). crumb-pick(i): item i of the dropdown.
     callback crumb-menu(int, int, length, length);
+    // history-menu(pane, x, y): a right click on the path bar's background (P11-M3).
+    callback history-menu(int, length, length);
     callback crumb-pick(int);
     // crumb-geometry(pane, index, x, width): a crumb's place in its row (index -1: the row's offset
     // in the bar and the bar's width), for the drop target's hit test (main.rs `crumb_geometry`).
@@ -519,6 +521,12 @@ export component App inherits Window {
     in-out property <bool> dlg-cols-reset;
     // "Saved to <file>", or that a scripted run saves nothing.
     in property <string> settings-note;
+    // A start folder that is not a folder (P11-M3), shown in place of settings-note.
+    in property <string> dlg-start-warning;
+    // The Browse button beside a start folder (field "start_left" or "start_right"), and the check
+    // of a start folder staged (main.rs `start_folder_check`).
+    callback browse-start(string);
+    callback start-folder-check(string, string);
     private property <bool> settings-shown: false;
     // Bumped after each show: the dialog then puts the focus in its first field (see there).
     private property <int> settings-focus-token: 0;
@@ -540,8 +548,8 @@ export component App inherits Window {
     // type_column, thumbnails, sidebar ("true" or "false"), path_bar ("entry" or "crumb"), view_left,
     // view_right ("details", "large" or "medium"), toolbar ("top", "pane" or "none"), preview (P8-M1, "true" or "false").
     public function settings-stage(field: string, value: string) {
-        if (field == "start_left") { dlg-start-left = value; }
-        if (field == "start_right") { dlg-start-right = value; }
+        if (field == "start_left") { dlg-start-left = value; root.start-folder-check(field, value); }
+        if (field == "start_right") { dlg-start-right = value; root.start-folder-check(field, value); }
         if (field == "hidden_left") { dlg-hidden-left = value == "true"; }
         if (field == "hidden_right") { dlg-hidden-right = value == "true"; }
         if (field == "protected_left") { dlg-protected-left = value == "true"; }
@@ -710,6 +718,9 @@ export component App inherits Window {
                 return accept;
             }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "t" || e.text == "T")) { root.tab-key(active-pane, "new"); return accept; }
+            // Ctrl+Z (since P11-M3, the list's until then) and Ctrl+Y from anywhere but the text boxes
+            // (their own undo takes the key first) and the settings dialog.
+            if (e.modifiers.control && !e.modifiers.shift && (e.text == "z" || e.text == "Z") && !root.settings-shown) { root.command(active-pane, "undo"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "y" || e.text == "Y") && !root.settings-shown) { root.command(active-pane, "redo"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "w" || e.text == "W")) { root.tab-key(active-pane, "close"); return accept; }
             if (e.modifiers.control && !e.modifiers.shift && (e.text == "1" || e.text == "2" || e.text == "3" || e.text == "4" || e.text == "5" || e.text == "6" || e.text == "7" || e.text == "8" || e.text == "9")) {
@@ -923,6 +934,7 @@ export component App inherits Window {
                 strip-resized => { root.strip-resized(0); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(0, i, x, y); }
+                history-menu(x, y) => { root.history-menu(0, x, y); }
                 crumb-geometry(i, x, w) => { root.crumb-geometry(0, i, x, w); }
                 active: !split || active-pane == 0;
                 sort-col: left-sort-col; sort-asc: left-sort-asc;
@@ -988,6 +1000,7 @@ export component App inherits Window {
                 strip-resized => { root.strip-resized(1); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }
                 crumb-menu(i, x, y) => { root.crumb-menu(1, i, x, y); }
+                history-menu(x, y) => { root.history-menu(1, x, y); }
                 crumb-geometry(i, x, w) => { root.crumb-geometry(1, i, x, w); }
                 active: split && active-pane == 1;
                 sort-col: right-sort-col; sort-asc: right-sort-asc;
@@ -1369,9 +1382,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 590px) / 2);
+        y: max(10px, (root.height - 630px) / 2);
         width: 480px;
-        height: 590px;
+        height: 630px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Theme.card;
@@ -1397,20 +1410,36 @@ export component App inherits Window {
                         spacing: 8px;
                         Row {
                             Text { text: "Left start folder"; vertical-alignment: center; }
-                            start-left-edit := Field {
-                                text: root.dlg-start-left;
-                                placeholder-text: "C:\\";
-                                label: "Left start folder";
-                                edited(t) => { root.settings-stage("start_left", t); }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                start-left-edit := Field {
+                                    horizontal-stretch: 1;
+                                    text <=> root.dlg-start-left;
+                                    placeholder-text: "C:\\";
+                                    label: "Left start folder";
+                                    edited(t) => { root.settings-stage("start_left", t); }
+                                }
+                                Btn {
+                                    text: "Browse";
+                                    clicked => { root.browse-start("start_left"); }
+                                }
                             }
                         }
                         Row {
                             Text { text: "Right start folder"; vertical-alignment: center; }
-                            Field {
-                                text: root.dlg-start-right;
-                                placeholder-text: "The left pane's folder";
-                                label: "Right start folder";
-                                edited(t) => { root.settings-stage("start_right", t); }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Field {
+                                    horizontal-stretch: 1;
+                                    text <=> root.dlg-start-right;
+                                    placeholder-text: "The left pane's folder";
+                                    label: "Right start folder";
+                                    edited(t) => { root.settings-stage("start_right", t); }
+                                }
+                                Btn {
+                                    text: "Browse";
+                                    clicked => { root.browse-start("start_right"); }
+                                }
                             }
                         }
                         Row {
@@ -1562,10 +1591,10 @@ export component App inherits Window {
                         }
                     }
                     Text {
-                        text: root.settings-note;
+                        text: root.dlg-start-warning != "" ? root.dlg-start-warning : root.settings-note;
                         font-size: 11px;
                         overflow: elide;
-                        color: Theme.fg-muted;
+                        color: root.dlg-start-warning != "" ? Theme.fg : Theme.fg-muted;
                     }
                 }
             }

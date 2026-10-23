@@ -939,6 +939,15 @@ fn schedule_save(st: &State) {
     }
 }
 
+/// A history place as the settings file keeps it, and back (P11-M3).
+fn saved_place(p: &Place) -> settings::SavedPlace {
+    settings::SavedPlace { path: p.path.to_string_lossy().to_string(), search: p.search.clone(), content: p.content }
+}
+
+fn place_of(s: &settings::SavedPlace) -> Place {
+    Place { path: PathBuf::from(&s.path), search: s.search.clone(), content: s.content }
+}
+
 /// Gather the settings from the window and the panes and write them (atomically).
 fn save_now() {
     let Some((config, path)) = with_state(|st| {
@@ -956,7 +965,10 @@ fn save_now() {
                 .map(|(i, t)| {
                     let (cursor, scroll) = if i == active { (current_row(&app, pane), app.invoke_get_scroll(pane as i32)) } else { (t.cursor, t.scroll) };
                     let cursor = t.restore_cursor.clone().or_else(|| usize::try_from(cursor).ok().and_then(|r| t.model.entry(r)).map(|e| e.name));
+                    let (back, forward) = t.history.saved(settings::HISTORY_SAVED);
                     settings::SavedTab {
+                        back: back.iter().map(saved_place).collect(),
+                        forward: forward.iter().map(saved_place).collect(),
                         path: t.path.to_string_lossy().to_string(),
                         sort: Some(settings::sort_name(t.model.sort_col.get()).into()),
                         ascending: Some(t.model.sort_asc.get()),
@@ -2647,6 +2659,17 @@ fn command(pane: usize, cmd: &str) {
             });
         }
         "cc" | "cx" => return clipboard_put(pane, cmd == "cx"),
+        // Alt+Down (P11-M3): the history menu, under the pane's path bar.
+        "histmenu" => {
+            let Some(at) = with_state(|st| {
+                let app = st.app.upgrade()?;
+                let l = window_layout(&app);
+                Some((dnd::pane_x(&l, pane).0 + 8.0, dnd::list_top(&l, pane) - 34.0))
+            }) else {
+                return;
+            };
+            return open_history_menu(pane, at.0, at.1);
+        }
         "cv" => return clipboard_paste(pane),
         "undo" => return undo(pane),
         "redo" => return redo(pane),
@@ -3125,7 +3148,8 @@ fn job_done(d: fileops::Done) {
         let (text, record) = match &info.replay {
             None => {
                 let r = fileops::undo::record_for(&d.job, &d.outcome, &d.results, &text);
-                (text, r)
+                // A copy or move that replaced a file is not undone (P11-M3).
+                (text, fileops::undo::forbid_if_replaced(r, &d.existed, &d.results))
             }
             Some((r, orig)) => {
                 let shown = replay_text(*r, done, &orig.text, &text);
@@ -3474,6 +3498,9 @@ struct WinMenu {
     placed: winmenu::Placed,
     hl: i32,
     sub: Option<SubMenu>,
+    /// The history menu (P11-M3): its rows and each one's steps from the current place, in place
+    /// of the selection's items.
+    history: Option<(Vec<winmenu::Entry>, Vec<isize>)>,
 }
 
 /// An open submenu: whose it is, its rows, where it is, its highlight, and whether the keyboard
@@ -3567,6 +3594,7 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
             placed,
             hl: -1,
             sub: None,
+            history: None,
         });
         Some((seq, waiting))
     });
@@ -3579,6 +3607,43 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
         Some((_, false)) => show_winmenu("no query"),
         None => {}
     }
+}
+
+/// The history menu (P11-M3): Alt+Down, or a right click on the path bar. The pane's places,
+/// forward ones first, the current one checked, back ones after it, in the Windows 11 menu at
+/// (`x`, `y`), window logical px; a pick goes that many steps (`history_jump`).
+fn open_history_menu(pane: usize, x: f32, y: f32) {
+    winmenu_close("another menu opens");
+    let Some((req, ctx)) = menu_request(pane, -1, x, y, false) else { return };
+    with_state(|st| {
+        let t = st.tab(pane);
+        let here = t.place();
+        let list = t.history.list(&here);
+        let labels: Vec<(String, bool)> = list.iter().map(|(steps, p)| (p.label(), *steps == 0)).collect();
+        eprintln!("[nav] pane={pane} history menu: {} entries ({} back, {} forward)", list.len(), t.history.back_len(), t.history.forward_len());
+        let wctx = winmenu::Ctx { place: tool_place(st, pane), what: winmenu::What::Background, clipboard_files: st.clip_files, same_type: false };
+        st.winmenu_seq += 1;
+        st.winmenu = Some(WinMenu {
+            seq: st.winmenu_seq,
+            pane,
+            row: -1,
+            at: (x, y),
+            req,
+            ctx,
+            wctx,
+            waiting: false,
+            answer: explorercmd::Answer { seq: st.winmenu_seq, ..Default::default() },
+            opened: Instant::now(),
+            shown: false,
+            tools: Vec::new(),
+            items: Vec::new(),
+            placed: winmenu::Placed { x, y, h: 0.0, scrolls: false, left: false, up: false },
+            hl: -1,
+            sub: None,
+            history: Some((winmenu::history_items(&labels), list.iter().map(|(s, _)| *s).collect())),
+        });
+    });
+    show_winmenu("history");
 }
 
 /// The verb worker's answer for a menu (on the UI thread): shown now, or rebuilt when the menu
@@ -3632,8 +3697,10 @@ fn show_winmenu(why: &str) {
     let first = with_state(|st| {
         let app = st.app.upgrade()?;
         let m = st.winmenu.as_mut()?;
-        m.tools = winmenu::tools(&m.wctx);
-        m.items = winmenu::items(&m.wctx, &m.answer.commands);
+        (m.tools, m.items) = match &m.history {
+            Some((items, _)) => (Vec::new(), items.clone()),
+            None => (winmenu::tools(&m.wctx), winmenu::items(&m.wctx, &m.answer.commands)),
+        };
         let win = window_logical(&app);
         let h = winmenu::menu_height(!m.tools.is_empty(), &m.items);
         m.placed = winmenu::place(m.at, winmenu::MENU_W, h, win);
@@ -3843,7 +3910,7 @@ fn winmenu_key(name: &str) {
 
 /// An item or icon-row button was picked: an item with a submenu opens it; any other closes the
 /// menu and runs its command, the one its key, its toolbar button or its P7-M1 route calls.
-fn winmenu_picked(id: i32) {
+pub fn winmenu_picked(id: i32) {
     let Some(cmd) = winmenu::Cmd::from_id(id) else { return };
     let (sub, enabled) = with_state(|st| {
         st.winmenu.as_ref().map_or((false, false), |m| {
@@ -3882,6 +3949,11 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
     let pane = m.pane;
     eprintln!("[winmenu] pane={pane} runs {cmd:?}");
     match cmd {
+        Cmd::History(i) => {
+            if let Some(steps) = m.history.as_ref().and_then(|(_, s)| s.get(i)) {
+                history_jump(pane, *steps);
+            }
+        }
         Cmd::Delete => {
             // Shift held deletes permanently, as the key and the classic menu's Delete do.
             // SAFETY: a plain key state query on the UI thread.
@@ -4219,11 +4291,34 @@ fn history_move(pane: usize, forward: bool) {
         }
         to
     });
-    match target {
-        // A search in the history runs again, in this tab, under the same root.
-        Some(Place { path, search: Some(pattern), content }) => start_search(pane, &pattern, content, Some(path)),
-        Some(Place { path, search: None, .. }) => navigate_to(pane, path, false),
-        None => {}
+    if let Some(p) = target {
+        go_to_place(pane, p);
+    }
+}
+
+/// Go to a place taken from the tab's history, without recording the move: a search in it runs
+/// again, in this tab, under the same root.
+fn go_to_place(pane: usize, place: Place) {
+    match place {
+        Place { path, search: Some(pattern), content } => start_search(pane, &pattern, content, Some(path)),
+        Place { path, search: None, .. } => navigate_to(pane, path, false),
+    }
+}
+
+/// A history menu pick (P11-M3): `steps` places back (negative) or forward, in one move.
+fn history_jump(pane: usize, steps: isize) {
+    let target = with_state(|st| {
+        let t = st.tab_mut(pane);
+        let here = t.place();
+        let to = t.history.jump(&here, steps);
+        match &to {
+            Some(to) => eprintln!("[nav] pane={pane} history jump {steps}: {here} -> {to} ({} back, {} forward left)", t.history.back_len(), t.history.forward_len()),
+            None => eprintln!("[nav] pane={pane} history jump {steps}: nothing there"),
+        }
+        to
+    });
+    if let Some(p) = target {
+        go_to_place(pane, p);
     }
 }
 
@@ -4608,7 +4703,9 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 if read_only_dest(&dest) {
                     return refuse_archive_drop(active_pane(&app), &dest);
                 }
-                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest, springs: false });
+                // Held there, it opens in the active pane (P11-M3), never inside an archive.
+                let springs = !fs::archive::inside(&dest);
+                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Side(i), dest, springs });
             }
             // A tab's folder; a tab on This PC is no folder. A tab other than the active one opens
             // when the drag is held over it.
@@ -4644,7 +4741,10 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 if read_only_dest(&c.target) {
                     return refuse_archive_drop(p, &c.target);
                 }
-                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Crumb(i), dest: c.target, springs: false });
+                // Held there, it opens in its pane (P11-M3): not the folder the pane already shows,
+                // never inside an archive.
+                let springs = !c.target.as_os_str().eq_ignore_ascii_case(tab.path.as_os_str()) && !fs::archive::inside(&c.target);
+                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Crumb(i), dest: c.target, springs });
             }
         };
         if st.is_search(pane) {
@@ -6102,12 +6202,56 @@ fn settings_open() {
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
     app.set_dlg_theme(settings::ThemeMode::from_name(&d.theme).index());
     app.set_dlg_preview(d.preview);
+    app.set_dlg_start_warning("".into());
     app.set_dlg_syntax_colours(d.syntax_colours);
     app.set_dlg_cols_reset(false);
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
     // Outside the state borrow: showing the popup moves keyboard focus.
     app.invoke_show_settings();
+}
+
+/// The settings dialog's Browse button (P11-M3): the shell's folder picker on the verb worker,
+/// opening at the field's folder (`browse_done` fills it).
+fn browse_start(field: &str) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let text = if field == "start_left" { app.get_dlg_start_left() } else { app.get_dlg_start_right() };
+        let hwnd = main_hwnd(st, &app);
+        st.next_verb += 1;
+        let work = verbs::Work::PickFolder { hwnd, start: PathBuf::from(text.as_str()), field: field.to_string() };
+        let queued = st.verbs.submit(verbs::Job { id: st.next_verb, pane: active_pane(&app), work });
+        eprintln!("[settings] browse {field}: the folder picker {}", if queued { "queued on the verb worker" } else { "not queued (the worker is gone)" });
+    });
+}
+
+/// The folder picker answered: the field takes the folder (staged as typing stages it).
+fn browse_done(field: &str, path: Option<PathBuf>, error: Option<String>) {
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    match (path, error) {
+        (Some(p), _) => {
+            eprintln!("[settings] browse {field}: {}", p.display());
+            app.invoke_settings_stage(field.into(), p.to_string_lossy().as_ref().into());
+        }
+        (None, Some(e)) => eprintln!("[settings] browse {field}: failed: {e}"),
+        (None, None) => eprintln!("[settings] browse {field}: cancelled"),
+    }
+}
+
+/// A start folder typed, picked or set by the driver (P11-M3): the dialog's footer says when it is
+/// not a folder. No check for a network path (a dead share would stall the window here).
+fn start_folder_check(field: &str, text: &str) {
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    let side = if field == "start_left" { "Left" } else { "Right" };
+    let t = text.trim();
+    let missing = !t.is_empty() && !is_this_pc(t) && !t.starts_with(r"\\") && !fs::watch::is_remote(Path::new(t)) && !Path::new(t).is_dir();
+    let warning = if missing { format!("{side} start folder not found: {t}") } else { String::new() };
+    if missing {
+        eprintln!("[settings] dialog: {field} \"{t}\" is not a folder");
+    }
+    if app.get_dlg_start_warning() != warning.as_str() {
+        app.set_dlg_start_warning(warning.into());
+    }
 }
 
 /// The dialog closed: OK applies every field whose staged value differs from the value it opened
@@ -6272,7 +6416,8 @@ fn set_title_bar(hwnd: isize, mode: settings::ThemeMode) {
 /// For the scripted driver's `waitsize`: a folder size is still queued or walking.
 pub fn sizes_busy() -> bool {
     STATE.with(|s| match s.try_borrow() {
-        Ok(g) => g.as_ref().is_some_and(|st| st.panes.iter().any(|p| p.iter().any(|t| !t.sizes.pending.is_empty()))),
+        // A stale size waiting for its re-walk counts too (P11-M3).
+        Ok(g) => g.as_ref().is_some_and(|st| st.panes.iter().any(|p| p.iter().any(|t| !t.sizes.pending.is_empty() || !t.sizes.stale.is_empty()))),
         Err(_) => true,
     })
 }
@@ -6362,6 +6507,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = slint::invoke_from_event_loop(move || match r {
             verbs::Reply::Done(d) => verb_done(d),
             verbs::Reply::Answer(a) => winmenu_answer(a),
+            verbs::Reply::Folder { field, path, error } => browse_done(&field, path, error),
         });
     });
     let soak = (std::env::var("TWINFM_SOAK").as_deref() == Ok("1"))
@@ -6427,6 +6573,8 @@ fn main() -> Result<(), slint::PlatformError> {
                 t.model.show_protected.set(protected);
                 t.restore_cursor = p.cursor.as_deref().map(SharedString::from);
                 t.restore_scroll = p.scroll.filter(|y| y.is_finite() && *y < 0.0);
+                // Its Back and Forward places (P11-M3).
+                t.history = tabs::History::restored(p.back.iter().map(place_of).collect(), p.forward.iter().map(place_of).collect(), &t.place());
                 t
             })
             .collect();
@@ -6770,6 +6918,9 @@ fn main() -> Result<(), slint::PlatformError> {
             crumb_clicked(pane as usize, i);
         }
     });
+    app.on_history_menu(|pane, x, y| open_history_menu(pane as usize, x, y));
+    app.on_browse_start(|field| browse_start(field.as_str()));
+    app.on_start_folder_check(|field, text| start_folder_check(field.as_str(), text.as_str()));
     app.on_crumb_menu(|pane, i, x, y| {
         if let Ok(i) = usize::try_from(i) {
             crumb_menu(pane as usize, i, x, y);

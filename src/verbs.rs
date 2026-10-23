@@ -52,12 +52,17 @@ pub enum Work {
     Query(explorercmd::Query),
     /// A pick among them.
     Run(explorercmd::Run),
+    /// The settings dialog's Browse button (P11-M3): the shell's folder picker, owned by the main
+    /// window `hwnd`, opening at `start`; `field` is the dialog field it fills.
+    PickFolder { hwnd: isize, start: std::path::PathBuf, field: String },
 }
 
 /// What the worker hands back after a job.
 pub enum Reply {
     Done(Done),
     Answer(explorercmd::Answer),
+    /// The folder picked for a dialog field, or None (cancelled, or the picker failed: `error`).
+    Folder { field: String, path: Option<std::path::PathBuf>, error: Option<String> },
 }
 
 pub struct Done {
@@ -168,6 +173,13 @@ fn run(job: Job, com: HRESULT) -> Reply {
         Work::Sleep(req, ms) => (req, Some(ms)),
         Work::Query(q) if com >= 0 => return Reply::Answer(explorercmd::query(&q)),
         Work::Query(q) => return Reply::Answer(explorercmd::Answer { seq: q.seq, ..Default::default() }),
+        Work::PickFolder { hwnd, start, field } => {
+            let (path, error) = match crate::shellmenu::pick_folder(hwnd, &start) {
+                Ok(p) => (p, None),
+                Err(e) => (None, Some(e)),
+            };
+            return Reply::Folder { field, path, error };
+        }
         Work::Run(r) => {
             let mut d = Done { id: job.id, pane: job.pane, verb: String::new(), label: r.title.clone(), how: None, hr: 0, ms: 0.0, error: None };
             match explorercmd::run(&r) {

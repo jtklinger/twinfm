@@ -27,6 +27,20 @@ impl Place {
         Place { path: root.into(), search: Some(pattern.to_string()), content }
     }
 
+    /// The history menu's text for the place (P11-M3): the folder's own name first and the folder it
+    /// is in after it (`beta  (C:\a\alpha)`), as search results read, so a long path is never cut
+    /// to its common start; a search names its pattern and root (`Search: "x"  (C:\a)`).
+    pub fn label(&self) -> String {
+        let full = self.path.to_string_lossy();
+        match &self.search {
+            Some(p) => format!("{}: \"{p}\"  ({full})", if self.content { "Text" } else { "Search" }),
+            None => match self.path.parent().filter(|_| self.path.file_name().is_some()) {
+                Some(parent) => format!("{}  ({})", crate::pathbar::title(&full), parent.display()),
+                None => crate::pathbar::title(&full),
+            },
+        }
+    }
+
     /// The same place: the same folder ignoring ASCII case (Windows paths), the same search.
     fn same(&self, other: &Place) -> bool {
         self.path.as_os_str().eq_ignore_ascii_case(other.path.as_os_str()) && self.search == other.search && self.content == other.content
@@ -44,7 +58,8 @@ impl std::fmt::Display for Place {
 }
 
 /// One tab's back/forward history: the places left behind (newest last) and the ones gone back
-/// from (next forward last). Starts empty for every tab; not saved.
+/// from (next forward last). Starts empty for a new tab; since P11-M3 saved with restored tabs
+/// (`saved`, `restored`).
 #[derive(Debug, Default)]
 pub struct History {
     back: Vec<Place>,
@@ -90,6 +105,49 @@ impl History {
 
     pub fn forward_len(&self) -> usize {
         self.forward.len()
+    }
+
+    /// The history menu's entries (P11-M3), as a browser lists them: the forward places, the
+    /// furthest first, then `current`, then the back places, the newest first; each with the steps
+    /// to it (positive forward, 0 the current place, negative back).
+    pub fn list(&self, current: &Place) -> Vec<(isize, Place)> {
+        let fwd = self.forward.iter().enumerate().map(|(i, p)| ((self.forward.len() - i) as isize, p.clone()));
+        let back = self.back.iter().rev().enumerate().map(|(i, p)| (-(i as isize) - 1, p.clone()));
+        fwd.chain([(0, current.clone())]).chain(back).collect()
+    }
+
+    /// Go `steps` places back (negative) or forward (positive) from `current` in one move: the
+    /// place to go to, every place passed put on the other stack as single steps would; None when
+    /// the history is not that long, or for 0.
+    pub fn jump(&mut self, current: &Place, steps: isize) -> Option<Place> {
+        let n = steps.unsigned_abs();
+        if n == 0 || n > if steps < 0 { self.back.len() } else { self.forward.len() } {
+            return None;
+        }
+        let mut here = current.clone();
+        for _ in 0..n {
+            here = if steps < 0 { self.back(&here)? } else { self.forward(&here)? };
+        }
+        Some(here)
+    }
+
+    /// The back and forward places to save with a restored tab (P11-M3), the newest `cap` of each.
+    pub fn saved(&self, cap: usize) -> (Vec<Place>, Vec<Place>) {
+        let newest = |v: &Vec<Place>| v[v.len().saturating_sub(cap)..].to_vec();
+        (newest(&self.back), newest(&self.forward))
+    }
+
+    /// A restored tab's history, from what `saved` gave, for a tab restored at `current`. A search
+    /// tab is restored as its root folder, which its history holds as the place before the search:
+    /// an entry next to `current` that is `current` itself is dropped, so Back is never a no-op.
+    pub fn restored(mut back: Vec<Place>, mut forward: Vec<Place>, current: &Place) -> History {
+        while back.last().is_some_and(|p| p.same(current)) {
+            back.pop();
+        }
+        while forward.last().is_some_and(|p| p.same(current)) {
+            forward.pop();
+        }
+        History { back, forward }
     }
 }
 
@@ -235,6 +293,39 @@ mod tests {
         let content = Place::search(root, "hit", true);
         assert!(h.push(&search, &content));
         assert_eq!(content.to_string(), r#"content "hit" in C:\Temp\root"#);
+    }
+
+    #[test]
+    fn the_history_menu_lists_and_jumps() {
+        let mut h = History::default();
+        for (from, to) in [(r"C:\a", r"C:\b"), (r"C:\b", r"C:\c"), (r"C:\c", r"C:\d")] {
+            assert!(h.push(&p(from), &p(to)));
+        }
+        // At d, back once to c: forward holds d.
+        assert_eq!(h.back(&p(r"C:\d")), Some(p(r"C:\c")));
+        let list = h.list(&p(r"C:\c"));
+        assert_eq!(list, [(1, p(r"C:\d")), (0, p(r"C:\c")), (-1, p(r"C:\b")), (-2, p(r"C:\a"))]);
+        // Two steps back from c: a, with b and c on the forward stack as two Backs would leave them.
+        let mut j = History::restored(h.back.clone(), h.forward.clone(), &p(r"C:\c"));
+        assert_eq!(j.jump(&p(r"C:\c"), -2), Some(p(r"C:\a")));
+        assert_eq!(j.list(&p(r"C:\a")), [(3, p(r"C:\d")), (2, p(r"C:\c")), (1, p(r"C:\b")), (0, p(r"C:\a"))]);
+        assert_eq!(j.jump(&p(r"C:\a"), 3), Some(p(r"C:\d")));
+        assert_eq!(j.jump(&p(r"C:\d"), 1), None, "nothing forward");
+        assert_eq!(j.jump(&p(r"C:\d"), -9), None, "not that far back");
+        assert_eq!(j.jump(&p(r"C:\d"), 0), None);
+        // Saved for a restored tab: the newest of each stack.
+        let (back, fwd) = h.saved(1);
+        assert_eq!((back, fwd), (vec![p(r"C:\b")], vec![p(r"C:\d")]));
+        let (back, _) = h.saved(50);
+        assert_eq!(back, [p(r"C:\a"), p(r"C:\b")]);
+        // The menu's labels: the name first, then where it is.
+        assert_eq!(p(r"C:\a\alpha\beta").label(), r"beta  (C:\a\alpha)");
+        assert_eq!(Place::search(r"C:\a", "x", false).label(), r#"Search: "x"  (C:\a)"#);
+        assert_eq!(Place::search(r"C:\a", "x", true).label(), r#"Text: "x"  (C:\a)"#);
+        assert!(!p(r"C:\").label().contains('('), "a drive root has no parent: {}", p(r"C:\").label());
+        // Restored at b (a search tab restored as its root, say): the b next to it goes, so Back is a.
+        let r = History::restored(back, Vec::new(), &p(r"C:\b"));
+        assert_eq!(r.list(&p(r"C:\b")), [(0, p(r"C:\b")), (-1, p(r"C:\a"))]);
     }
 
     #[test]
