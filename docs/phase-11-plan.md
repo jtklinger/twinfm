@@ -464,3 +464,23 @@ to 2.23 ms in every run: the session in its normal state throughout. Every candi
   the row.
 - **The toggle**: typing with it on filters nothing; off again, the box's text filters; its tooltip.
 - **A cloud folder**: the toggle on in OneDrive or on `G:\My Drive`, Return: the note, no search.
+
+**Results** (2026-10-23, Jeremy at the console, `target-p11m1` started unelevated from this session
+with stderr kept; his word: "All fine; I couldn't check #5"):
+
+- **A word in `projects`**: "jeremy" searched inside files under `C:\Users\jtkli\projects`, then
+  stopped with Escape after 919 folders (the build folders are large), so the comparison with
+  `findstr` was run by the session on a smaller tree with the same build: `csearch 0 jeremy` in
+  `C:\Users\jtkli\projects\claude` gave `done: 5 found in 15 files read, 0 skipped, 7 folders
+  walked, in 131 ms`, and `findstr /s /i /m jeremy *` there the same 5 files. **Found right.**
+- **Escape mid-search**: twice ("jeremy" after 919 folders, "apple" after 251), `cancelled ...
+  (Escape)`, the results so far kept. **Found right.**
+- **The toggle**: on and off four times, typing with it on filtering nothing, its tooltip. **Found
+  right.**
+- **A cloud folder**: `content "anything" in G:\My Drive: refused (...)`, the note, no tab. **Found
+  right.** (OneDrive's refusal was checked in the scripted run.)
+- **The long line**: not checked at the console (no file to hand); covered by the scripted check
+  and its screenshot above (a 6,000-character line shown from 40 characters before the word).
+- **A UTF-16 file** and **a binary skipped**: not separate console steps this time; covered by the
+  tests and the scripted checks (the UTF-16 file found, the binary counted as skipped). No panic in
+  the console run's stderr.
