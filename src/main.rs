@@ -158,6 +158,8 @@ struct Search {
     pattern: NameMatch,
     content: bool,
     cancel: Arc<AtomicU8>,
+    /// Its rows on screen are being statted again (`restat_results`, P11-M2).
+    restating: bool,
 }
 
 impl Tab {
@@ -690,6 +692,15 @@ fn search_spec(st: &State, pattern: &str, content: bool) -> (NameMatch, Option<f
     }
 }
 
+/// A search tab's row name for `name`, the new name of the item at `source`, in its folder under
+/// the search's `root` (`sub\dir\name`; `name` alone for an item in the root itself).
+fn search_row_name(root: &Path, source: &Path, name: &str) -> String {
+    match source.parent().and_then(|p| p.strip_prefix(root).ok()).map(|rel| rel.to_string_lossy().to_string()) {
+        Some(rel) if !rel.is_empty() => format!("{rel}\\{name}"),
+        _ => name.to_string(),
+    }
+}
+
 /// The folder's cloud location (`cloud::Locations::of`), logged when it has one; This PC and
 /// archive levels have none (nor do search tabs, which never come here).
 fn cloud_of(st: &mut State, pane: usize, path: &Path) -> icons::Cloud {
@@ -1143,7 +1154,10 @@ fn drain() {
                     let Some(t) = st.by_generation(pane, generation) else { continue };
                     let wall = t.timing.requested.map(perf::elapsed_ms).unwrap_or(0.0);
                     if t.model.is_refreshing() {
-                        t.model.finish_refresh();
+                        let (carried, looked) = t.model.finish_refresh();
+                        if looked > 0 {
+                            eprintln!("[icons] pane={pane} marks carried: {carried} of {looked} across the refresh");
+                        }
                         t.keep_scroll = true;
                         // A refresh that kept the folder sizes (the watch's, an operation's).
                         if !t.sizes.cache.is_empty() {
@@ -3144,6 +3158,11 @@ fn job_done(d: fileops::Done) {
                 match &d.job {
                     Job::Rename { new_name: n, .. } | Job::NewFolder { name: n, .. } | Job::NewFile { name: n, .. } => {
                         let real = fileops::real_name(&d.job, &d.results).unwrap_or_else(|| n.clone());
+                        // A search tab's rows are named by their path under its root (P11-M2).
+                        let real = match &d.job {
+                            Job::Rename { source, .. } if t.search.is_some() => search_row_name(&t.path, source, &real),
+                            _ => real,
+                        };
                         t.focus_name = Some(real.as_str().into());
                     }
                     _ => {}
@@ -5196,6 +5215,7 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
     update_status(st, app, pane);
     resolve_view(st, app, pane);
     st.watch_active(app, pane);
+    restat_results(st, app, pane);
     // Another tab under the same cursor row number is another file (P8-M1).
     preview::kick();
 }
@@ -5711,7 +5731,7 @@ fn start_search(pane: usize, pattern: &str, content: bool, history_root: Option<
         if let Some(old) = t.search.take() {
             old.cancel(fs::enumerate::SEARCH_REPLACED);
         }
-        t.search = Some(Search { pattern: NameMatch::new(pattern), content, cancel: cancel.clone() });
+        t.search = Some(Search { pattern: NameMatch::new(pattern), content, cancel: cancel.clone(), restating: false });
         t.model.search_names.set(true);
         *t.model.filter.borrow_mut() = NameMatch::default();
         t.model.generation.set(generation);
@@ -5746,6 +5766,99 @@ fn start_search(pane: usize, pattern: &str, content: bool, history_root: Option<
     if let Some(app) = started {
         app.invoke_focus_pane(pane as i32);
     }
+}
+
+/// How often a search tab in front states its rows on screen again (P11-M2).
+const RESTAT_EVERY: Duration = Duration::from_secs(5);
+
+/// A finished search tab in front of pane `pane` (P11-M2: results follow changes; a watch per
+/// result folder would be too many): its rows on screen are statted again on a worker thread, and
+/// `land_restat` removes the gone and updates the changed. Called every `RESTAT_EVERY` and when a
+/// tab comes to the front; nothing while a re-stat is out or the listing is not settled.
+fn restat_results(st: &mut State, app: &App, pane: usize) {
+    if pane == 1 && !app.get_split() {
+        return;
+    }
+    // A folder tab (nearly every tick) asks nothing more.
+    let t = st.tab(pane);
+    if !t.search.as_ref().is_some_and(|s| !s.restating) || unsettled(t).is_some() {
+        return;
+    }
+    let range = visible_rows(st, app, pane);
+    let thumbs = search_thumbnails(st, &st.tab(pane).path.clone());
+    let t = st.tab_mut(pane);
+    let Some((first, last)) = range else { return };
+    let rows: Vec<model::Entry> = (first..=last).filter_map(|i| t.model.entry(i)).collect();
+    if rows.is_empty() {
+        return;
+    }
+    let s = t.search.as_mut().expect("checked above");
+    s.restating = true;
+    let (id, root, generation, pass) = (t.id, t.path.clone(), t.model.generation.get(), t.model.pass.get());
+    std::thread::spawn(move || {
+        let t0 = Instant::now();
+        let (mut types, zone) = (fs::enumerate::TypeNames::default(), model::LocalZone::current());
+        let fresh: Vec<Option<model::Entry>> = rows
+            .iter()
+            .map(|r| {
+                let (rel, leaf) = r.name.rsplit_once('\\').unwrap_or(("", r.name.as_str()));
+                let dir = stat_dir(&root.join(rel));
+                let mut keys = icons::IconKeys::new(dir.clone(), thumbs);
+                fs::enumerate::stat_entry(&dir, leaf, &mut types, &mut keys, &zone)
+            })
+            .collect();
+        let ms = perf::elapsed_ms(t0);
+        let _ = slint::invoke_from_event_loop(move || land_restat(pane, id, generation, pass, rows, fresh, ms));
+    });
+}
+
+/// A search tab's re-stat came back (on the UI thread): applied when its listing is still the one
+/// statted, else dropped (the next tick states again).
+fn land_restat(pane: usize, id: u64, generation: u64, pass: u64, rows: Vec<model::Entry>, fresh: Vec<Option<model::Entry>>, stat_ms: f64) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let active = st.is_active(pane, id);
+        let Some(t) = st.find(pane, id) else { return };
+        let Some(s) = t.search.as_mut() else { return };
+        s.restating = false;
+        if t.model.generation.get() != generation || t.model.pass.get() != pass || unsettled(t).is_some() {
+            return eprintln!("[search] pane={pane} results re-stated: dropped (the listing changed)");
+        }
+        let (edits, gone, changed) = model::restat_edits(&rows, fresh);
+        eprintln!("[search] pane={pane} results re-stated: {} rows, {gone} gone, {changed} changed, in {stat_ms:.1} ms", rows.len());
+        if edits.is_empty() {
+            return;
+        }
+        let cursor = if active { current_row(&app, pane) } else { t.cursor };
+        match t.model.apply_edits(edits, cursor) {
+            Ok(a) => {
+                t.model.set_grid_cursor(a.cursor);
+                if !active {
+                    t.cursor = a.cursor;
+                }
+            }
+            Err(e) => return eprintln!("[search] pane={pane} results re-stated: not applied ({e})"),
+        }
+        if active {
+            update_status(st, &app, pane);
+            resolve_view(st, &app, pane);
+        }
+    });
+}
+
+/// The rows of pane `pane`'s list on screen (entries, the grid's whole grid rows), as
+/// `resolve_view` finds them; None when none are.
+fn visible_rows(st: &State, app: &App, pane: usize) -> Option<(usize, usize)> {
+    let model = &st.panes[pane].active().model;
+    let (y, h) = st.view[pane];
+    let n = if st.grid[pane] { model.grid_n() } else { 1 };
+    let (lines, line_px) = if st.grid[pane] {
+        (model.grid_len(), icons::GridGeom::new(app.window().scale_factor(), n, st.tile[pane]).tile.h)
+    } else {
+        (model.len(), icons::StripGeom::new(app.window().scale_factor(), st.config.thumbnails).list.row_px)
+    };
+    let visible = icons::visible_range(y, h, lines, line_px)?;
+    Some((visible.0 * n, ((visible.1 + 1) * n - 1).min(model.len().checked_sub(1)?)))
 }
 
 /// For the scripted driver's `waitsearch`: a search tab is still walking.
@@ -5980,6 +6093,7 @@ fn settings_open() {
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
     app.set_dlg_theme(settings::ThemeMode::from_name(&d.theme).index());
     app.set_dlg_preview(d.preview);
+    app.set_dlg_cols_reset(false);
     app.set_settings_note(note.into());
     eprintln!("[settings] dialog opened");
     // Outside the state borrow: showing the popup moves keyboard focus.
@@ -6010,8 +6124,21 @@ fn settings_closed(ok: bool) {
     }
     .normalized();
     let changes = opened.changes(&staged);
+    // "Reset column widths" (P11-M2), counted as a change of its own.
+    let reset = app.get_dlg_cols_reset();
     if !ok {
-        return eprintln!("[settings] dialog closed (cancel), {} change(s) discarded", changes.len());
+        return eprintln!("[settings] dialog closed (cancel), {} change(s) discarded", changes.len() + usize::from(reset));
+    }
+    if reset {
+        eprintln!("[settings] dialog: cols_reset");
+        with_state(|st| {
+            for pane in 0..2 {
+                let old = cols_of(&app, pane);
+                set_cols(&app, pane, cols::DEFAULT);
+                eprintln!("[cols] pane={pane} widths reset to {:.0}, {:.0}, {:.0}", cols::DEFAULT.ty, cols::DEFAULT.size, cols::DEFAULT.modified);
+                cols_changed(st, &app, pane, old, cols::DEFAULT, "reset");
+            }
+        });
     }
     for (key, old, new) in &changes {
         eprintln!("[settings] dialog: {key} {old} -> {new}");
@@ -6063,7 +6190,7 @@ fn settings_closed(ok: bool) {
     if !changes.is_empty() {
         with_state(|st| schedule_save(st));
     }
-    eprintln!("[settings] dialog closed (ok), {} change(s)", changes.len());
+    eprintln!("[settings] dialog closed (ok), {} change(s)", changes.len() + usize::from(reset));
 }
 
 /// The colour scheme from the `theme` setting (P10-M1 task 7), live: light or dark set the fluent
@@ -6458,6 +6585,16 @@ fn main() -> Result<(), slint::PlatformError> {
     report_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(5), perf::report);
     let icon_timer = slint::Timer::default();
     icon_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), report_icons);
+    // A search tab's rows on screen follow changes (P11-M2).
+    let restat_timer = slint::Timer::default();
+    restat_timer.start(slint::TimerMode::Repeated, RESTAT_EVERY, || {
+        with_state(|st| {
+            if let Some(app) = st.app.upgrade() {
+                restat_results(st, &app, 0);
+                restat_results(st, &app, 1);
+            }
+        })
+    });
     app.on_viewport_changed(|pane, y, h| on_viewport(pane as usize, y, h));
     app.on_grid_cols(|pane, n| on_grid_cols(pane as usize, n.max(1) as usize));
     app.on_grid_cursor(|pane, row| on_grid_cursor(pane as usize, row));
@@ -6698,6 +6835,14 @@ mod tests {
     use super::*;
     use fs::watch::Change;
     use model::Edit;
+
+    #[test]
+    fn a_renamed_search_result_keeps_its_folder() {
+        let root = Path::new(r"C:\t\root");
+        assert_eq!(search_row_name(root, Path::new(r"C:\t\root\s2\deep\hit-b.txt"), "hit-y.txt"), r"s2\deep\hit-y.txt");
+        assert_eq!(search_row_name(root, Path::new(r"C:\t\root\hit-b.txt"), "hit-y.txt"), "hit-y.txt", "a result in the root");
+        assert_eq!(search_row_name(root, Path::new(r"D:\elsewhere\b.txt"), "y.txt"), "y.txt", "not under the root: the name");
+    }
 
     fn s(n: &str) -> String {
         n.to_string()

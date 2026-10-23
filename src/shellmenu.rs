@@ -40,7 +40,7 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows_sys::Win32::UI::Shell::{
     CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFOEX,
-    DefSubclassProc, GCS_VERBW, RemoveWindowSubclass, SHBindToObject, SHParseDisplayName, SetWindowSubclass,
+    DefSubclassProc, GCS_VERBW, RemoveWindowSubclass, SHBindToObject, SHGetDesktopFolder, SHParseDisplayName, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyMenu, GetMenuDefaultItem, GetMenuItemCount, GetMenuItemInfoW, GetMenuStringW, GetSubMenu, HMENU, InsertMenuW,
@@ -643,8 +643,13 @@ pub(crate) fn common_parent(folder: &Path, names: &[String]) -> Result<(PathBuf,
 /// in this order so the children go first, then the folder, then its PIDL.
 pub(crate) fn parse_items(hwnd: HWND, folder: &Path, names: &[String]) -> Result<(Pidl, Com, Vec<Pidl>), String> {
     // A search tab's names are paths relative to its root: the items' own folder and their own
-    // names, since a child PIDL must be one level deep.
-    let (folder, names) = &common_parent(folder, names)?;
+    // names, since a child PIDL must be one level deep. Results from several folders (P11-M2) are
+    // the desktop's absolute PIDLs instead, as Explorer's search results are.
+    let (folder, names) = &match common_parent(folder, names) {
+        Ok(one) => one,
+        Err(_) if !crate::fs::archive::inside(folder) => return parse_absolute(folder, names),
+        Err(e) => return Err(e),
+    };
     // Inside an archive inside an archive: the inner archive's copy (P8-L3).
     let folder = &crate::fs::archive::real(folder).unwrap_or_else(|| folder.clone());
     let folder_name = if crate::fs::enumerate::is_this_pc(&folder.to_string_lossy()) {
@@ -674,6 +679,34 @@ pub(crate) fn parse_items(hwnd: HWND, folder: &Path, names: &[String]) -> Result
         children.push(Pidl(child));
     }
     Ok((folder_pidl, shell_folder, children))
+}
+
+/// `parse_items` for items in several folders (a search tab's results, P11-M2): the desktop's
+/// empty PIDL and `IShellFolder`, and each item's absolute PIDL as its "child", which
+/// `GetUIObjectOf`, `SHCreateDataObject` and `SHCreateShellItemArray` take from the desktop.
+fn parse_absolute(root: &Path, names: &[String]) -> Result<(Pidl, Com, Vec<Pidl>), String> {
+    let mut p: *mut c_void = std::ptr::null_mut();
+    // SAFETY: `p` receives the desktop's IShellFolder, owned by us.
+    check(unsafe { SHGetDesktopFolder(&mut p as *mut *mut c_void as *mut _) }, "SHGetDesktopFolder")?;
+    let desktop = Com(p);
+    // The desktop's PIDL is the empty list: its two-byte terminator.
+    // SAFETY: a COM task allocation of two bytes, zeroed, freed by `Pidl`'s drop.
+    let empty = unsafe { windows_sys::Win32::System::Com::CoTaskMemAlloc(2) } as *mut ITEMIDLIST;
+    if empty.is_null() {
+        return Err("out of memory".into());
+    }
+    // SAFETY: two writable bytes just allocated.
+    unsafe { std::ptr::write_bytes(empty as *mut u8, 0, 2) };
+    let desktop_pidl = Pidl(empty);
+    let mut children = Vec::with_capacity(names.len());
+    for name in names {
+        let w = wide(root.join(name).as_os_str());
+        let mut raw: *mut ITEMIDLIST = std::ptr::null_mut();
+        // SAFETY: NUL-terminated name; `raw` receives a PIDL we own or stays null.
+        check(unsafe { SHParseDisplayName(w.as_ptr(), std::ptr::null_mut(), &mut raw, 0, std::ptr::null_mut()) }, &format!("parsing \"{name}\""))?;
+        children.push(Pidl(raw));
+    }
+    Ok((desktop_pidl, desktop, children))
 }
 
 /// Build, show and run the menu. Blocks in `TrackPopupMenuEx` (and in `InvokeCommand`) until the
@@ -1096,6 +1129,33 @@ pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_menu_for_results_in_two_folders() {
+        // P11-M2: a search tab's results in two folders get one shell menu, from the desktop.
+        let root = std::env::temp_dir().join(format!("twinfm-p11m2-menu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("s1")).unwrap();
+        std::fs::create_dir_all(root.join("s2")).unwrap();
+        std::fs::write(root.join(r"s1\x.txt"), b"x").unwrap();
+        std::fs::write(root.join(r"s2\y.txt"), b"y").unwrap();
+        ensure_com().unwrap();
+        let items = {
+            let names = vec![r"s1\x.txt".to_string(), r"s2\y.txt".to_string()];
+            let (_pidl, folder, children) = parse_items(std::ptr::null_mut(), &root, &names).unwrap();
+            let cm = context_menu_of(std::ptr::null_mut(), &folder, &children).unwrap();
+            // SAFETY: `cm` is an IContextMenu.
+            let cv = unsafe { cm.vtbl::<ContextMenuVtbl>() };
+            let menu = Menu::new().unwrap();
+            // SAFETY: a live menu and IContextMenu.
+            check(unsafe { (cv.query_context_menu)(cm.0, menu.0, 0, SHELL_FIRST, SHELL_LAST, CMF_NORMAL) }, "QueryContextMenu").unwrap();
+            menu_items(menu.0)
+        };
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(items.len() > 3, "a shell menu for both items: {items:?}");
+        // One folder's items keep the folder's own IShellFolder (child PIDLs, as before).
+        assert!(common_parent(&root, &[r"s1\x.txt".to_string()]).is_ok());
+    }
 
     #[test]
     fn relative_names_resolve_to_their_own_folder() {

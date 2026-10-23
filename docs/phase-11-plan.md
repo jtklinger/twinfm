@@ -485,6 +485,160 @@ with stderr kept; his word: "All fine; I couldn't check #5"):
   tests and the scripted checks (the UTF-16 file found, the binary counted as skipped). No panic in
   the console run's stderr.
 
+**Merged** 2026-10-23 as 8a23a4e (#98), on Jeremy's word ("merge 98,100,101 but don't rebuild the
+daily"), by the coordinating session; `target\release` not rebuilt, by the same word.
+
+## P11-M2: the cloud and search sweep
+
+Started 2026-10-23 from main at 6615f9a (P11-M1 and the app icon merged), branch
+`feat/p11-m2-cloud-search-sweep`, the coordinating session's go: "start P11-M2 ... settle each first.
+Reference for its gate is still target-p10m3". Brought up to date with main after P11-M4 merged
+(3cd18cd; conflicts in CLAUDE.md's test count and the soak's report lines, both kept). Six items,
+each settled first, each a commit of its own.
+
+### The items (2026-10-23)
+
+1. **A cloud refresh keeps each row's mark: done** (66fee1e). Settled: a refresh's new entries in a
+   Google Drive or sync-root listing carry `look:` keys, and the rows went back to their placeholders
+   until each lookup returned. Now `finish_refresh` gives each such entry the icon its name had on
+   screen when the old key is the new one's plain key with some mark (`icons::same_but_mark`: the
+   same type, the same thumbnail path, time and size); the lookup still runs (`resolve_icons` asks for
+   a kept row's `look:` key, but only while some row is kept, so no listing outside a cloud location
+   pays a key check), and `relabel` keeps the icon when the mark came back the same or puts the
+   placeholder back when it changed. Scripted on this machine: `G:\My Drive`, F5 twice, `marks
+   carried: 41 of 126 across the refresh` (the rows that had been on screen); OneDrive `9 of 9`. A
+   test covers the carry, a changed thumbnail, a new name, a changed mark and the empty case.
+2. **The Google Drive thumbnail cost: measured, recorded, nothing changed.** The kickoff's 300 to
+   570 ms did not reproduce. With thumbnails on (asked `WTS_INCACHEONLY` there since P6-M1), the
+   `[icons]` line's average over two back-to-back runs on `G:\My Drive\Reagyn\100VTECH` (926
+   pictures) was 50 to 58 ms a thumbnail, against 9 to 14 ms for the same kind of request on the local
+   fixture `%TEMP%\twinfm-p3m5-thumbs` (both from the shell's cache, both runs alike, so no cold
+   start). The extra 40 ms is the Google Drive volume answering the shell's item and property reads,
+   not the cache and not an extraction (`INCACHEONLY` runs none). The kickoff's remedy (thumbnails on
+   Google Drive asked only for rows on screen for 500 ms) was for a cost about ten times this; rows
+   scrolled away are already dropped (`dropped` 0 in these runs), so a delay would only show the
+   thumbnails later. Left as it is; the measurement is the record.
+3. **Search results from several folders in one menu and one drag: done** (b1f8bfd). Settled by a
+   probe in TwinFM's test process: the desktop's `IShellFolder` with each item's absolute PIDL as its
+   "child" gives a full shell menu (`GetUIObjectOf`) and a data object whose `CF_HDROP` names both
+   files (`SHCreateDataObject` with the desktop's empty PIDL), the way Explorer's own search results
+   are built. `parse_items` takes that path (`parse_absolute`) when `common_parent` finds more than
+   one folder; inside an archive the refusal stays. Scripted: two results in two folders selected,
+   the Windows 11 menu (with the packaged apps' commands), "Show more options" (the classic menu) and
+   a drag (cancelled) all for both items. Two tests (the menu, the data object).
+4. **Results that follow changes: done** (0c461a5). As the kickoff called it: no watch per result
+   folder; every 5 s (`RESTAT_EVERY`) and when a finished search tab comes to the front, its rows on
+   screen are statted again on a worker thread and `land_restat` applies `model::restat_edits`
+   (gone rows removed, changed ones updated in place under their row name, the content search's line
+   kept) through `apply_edits`, the watch's path. A new match still needs F5. Scripted: a result
+   deleted and another touched from outside, `results re-stated: 4 rows, 1 gone, 1 changed, in 4.0
+   ms` on the next tick; the tab brought to the front states at once. A test for the edits.
+5. **The cursor after a rename in a search tab: checked, found wrong, fixed** (c0ce2ab). The cursor
+   was lost (row -1, nothing selected): the rename asked for the bare new name, and a search tab's
+   rows are named by their path under the root. `search_row_name` gives the result's own folder back;
+   scripted: `s2\hit-b.txt` renamed `hit-y.txt`, the cursor on row 4 (`s2\hit-y.txt`); `s1\hit-a.txt`
+   renamed `hit-0.txt`, row 0. A test.
+6. **Reset column widths: done** (f29aef1). A button under the Type column switch in the settings
+   dialog, staged like every field (its label reads "Widths reset on OK" once pressed; Cancel drops
+   it): on OK both panes' widths go back to 120, 90, 140 (`[cols] pane=N widths reset to 120, 90,
+   140`, then the `(reset)` change lines). The dialog grew 40 px for the row (550 to 590); a
+   screenshot against `target-p10m3`'s dialog showed the rest of its layout unchanged. No pure part
+   beyond `cols::DEFAULT`; checked by the scripted run (the cancel, then OK) and the soak.
+
+Also: CLAUDE.md § Measuring's P11-M2 paragraph, the tests list and the soak paragraph (which had
+missed P11-M1's cycle too, added now); the soak's reset cycle; `tools/gate-p11m2.ps1`.
+
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-23, on the gate build `target-p11m2`, the
+coordinating session's go, the machine otherwise idle). The first run widened the left pane's Type
+column to 150 px before the reset, which the pane refused (its name cell was already under the
+120 px floor), so the reset found nothing to undo and the widths-back count read 5 for an expected 9;
+the cycle now narrows Type to 100 px, and the second run is the record: 10.1 min, exit 0, 0 panics;
+286 jobs (0 failed, 0 cancelled, 0 refused), 0 waitops timeouts; every must-be-0 count 0; **resets
+through the dialog 8 (two per cycle), widths back at 120, 90, 140 9 (two per cycle and one at
+start)**; content search 4 done, 806 files read, 4 found; search box 4, 4, 4; preview zooms 16 and
+copies 8 (P11-M4's cycle); working set 135 to 217 MB, peak 241 MB (the first run 176 to 247, peak
+258).
+
+### Gate
+
+The defaults and the thumbnails triplets (`C:\traces\thumbs.toml`), `target-p11m2` (c075a0a, built
+`--locked` from a detached checkout) against `target-p11m4` (2d3a096, P11-M4's gate build, the last
+merged milestone's: the coordinating session's reference once P11-M4 merged, in place of
+`target-p10m3`). **The reference predates P11-M1**: P11-M4 branched before content search merged, so
+the candidate carries P11-M1's walker and `Entry::found` as well as P11-M2 against it. The thumbnails
+setting is there for item 1's change in `resolve_icons`.
+
+- **ab46: void.** A build in the preview stream's worktree overlapped rounds 2 and 3 (its test build
+  compiled from 11:28 to 11:38, the coordinating session's sequencing slip): reference runs 21.3,
+  29.4, 26.8, render p50 3.1 to 4.8 ms, two runs at 1.8 (the process lost). `C:\traces\gate-ab46-summary.txt`
+  is kept as the record of the void run, not a result.
+- **ab47: passed** (Jeremy, 2026-10-23: "Skip ab48; ab47 passes."). Run by Jeremy, finished 12:04,
+  17 min, `C:\traces\gate-ab47-summary.txt`.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11m4-1 / 2 / 3 | 23.8 / 21.9 / 21.9 | 24.2 / 21.2 / 23.3 | 3.06 / 3.00 / 2.90 |
+| p11m2-1 / 2 / 3 | 22.2 / 22.0 / 22.5 | 22.2 / 20.5 / 21.2 | 2.90 / 2.91 / 3.04 |
+| p11m4-thumbs-1 / 2 / 3 | 18.6* / 17.4 / 17.8 | 18.0 / 17.7 / 16.7 | 2.27 / 2.23 / 2.23 |
+| p11m2-thumbs-1 / 2 / 3 | 17.5 / 18.5 / 18.9 | 18.0 / 19.8 / 18.3 | 2.27 / 2.47 / 2.54 |
+
+  **Defaults**: medians 21.9 (reference) / 22.2 (candidate), no gap; the whole defaults session ran
+  in the costlier state (render p50 2.90 to 3.06 ms in all six, against about 2.2 normally), read like
+  for like, the reference over 20% too. **Thumbs**: the wrapper first read "a gap that counts" (18.5
+  against 17.4) because `p11m4-thumbs-1` had no WPR figure. *That was an analyser bug, not the run:
+  the process's PID was 404, which xperf prints padded (`twinfm.exe ( 404)`), and
+  `analyze-trace.py`'s `\((\d+)\)` allowed no space, so it raised and the wrapper read 0; fixed to
+  `\(\s*(\d+)\)` (16e71d1), the trace re-analysed: 18.6%. Corrected medians 17.8 / 18.5, 0.7 points,
+  under the one-point rule, and not every reference run below every candidate run (18.6 above 17.5):
+  **no gap**. Two caveats recorded: the candidate always ran in the second slot (about a point higher
+  by the P7-M4 rule), and its runs 2 and 3 read a higher render p50 (2.47, 2.54 ms), the render path
+  P11-M2 does not touch. The code read for the coordinating session: the carried-mark check in
+  `resolve_icons` is one empty-map test per resolve call and one bool per resolved row that
+  short-circuits while nothing is carried, and the map fills only at a cloud listing's refresh, so
+  the gate scenario pays the empty-map test alone.
+- **ab48: prepared, not run.** `tools/gate-p11m2-ab48.ps1` (the thumbnails triplet only, the
+  candidate first in each round, the fixed analyser from `C:\traces\analyze-trace.py`) was written to
+  settle the order caveat; Jeremy judged ab47 enough.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+- **F5 on `G:\My Drive` and on a OneDrive folder**, beside `target-p10m3`: the icons and their marks
+  stay put through the refresh (the old build flashes them to plain icons).
+- **A search whose results lie in two folders**: select one from each, right-click (the menu acts on
+  both: Copy path, Properties), then drag them to Explorer or the desktop (Copy: both arrive).
+- **A result changed in another program**: with a search tab in front, delete one result in Explorer
+  and edit another; within 5 s the first leaves the list and the second shows its new size and time.
+- **Rename in a search tab** (F2): the cursor stays on the renamed result.
+- **Settings > Reset column widths**: drag a column wider, open Settings, press the button, OK: both
+  panes back to the default widths; Cancel instead leaves them.
+
+**Results** (2026-10-23, Jeremy at the console, `target-p11m2` started unelevated from this session
+with stderr kept; his word: "All Look good!"), each found right, with the log behind it:
+
+- **F5 on Google Drive and OneDrive**: no flash; `marks carried: 46 of 126 across the refresh` on
+  `G:\My Drive` (three refreshes), `9 of 9` on OneDrive.
+- **Results from two folders**: the Windows 11 menu for 2 items from two folders of a search in
+  Downloads, and a right-button drag of both (`DoDragDrop returned ... (dropped): effect copy`).
+- **A result changed in another program**: `results re-stated: 3 rows, 1 gone, 0 changed` after a
+  result was removed outside TwinFM, the row gone from the list. (No edited file showed in the log
+  as "changed"; the scripted check above covers that case.)
+- **Rename in a search tab**: a result renamed with F2, the cursor on it after the search ran again
+  (`cursor=Some(1) selected=1`).
+- **Reset column widths**: Cancel (nothing applied), then the button and OK (`widths reset to 120,
+  90, 140` for both panes).
+
+### After the console check (2026-10-23)
+
+- **The re-stat timer checks for a search tab first.** Found while reading the code for ab47: every
+  5 s `restat_results` worked out the visible rows and `search_thumbnails` (one `cloud.of` path
+  lookup) for each pane before asking whether its tab was a search tab, so folder tabs paid that
+  every tick for nothing. The check now comes first. Event-handler only (a timer), so by the Phase 9
+  rule one in-app run, no triplet (the coordinating session's word): the gate scenario on
+  `C:\traces\bigdir`, gate build then fixed build back to back, Jeremy's idle console window from
+  the checks still open: `[busy]` 18.9% and 19.2%, render p50 2.14 and 2.15 ms, no panic, no
+  re-stat line (no search tab); a search tab still re-states (`4 rows, 1 gone, 1 changed` after
+  outside changes).
+
 ## P11-M4: the preview gaps bundle
 
 The preview stream's first milestone, opened 2026-10-22 on main at d1abbe3 (0.1.0, Phase 10 merged),

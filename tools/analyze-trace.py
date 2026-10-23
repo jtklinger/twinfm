@@ -71,7 +71,8 @@ def main():
         start = -1 if f[0] == "MIN" else int(f[0])
         end = 10**15 if f[1] == "MAX" else int(f[1])
         kind = f[2]
-        pid = int(re.search(r"\((\d+)\)", f[4]).group(1))
+        # xperf pads a short PID inside the brackets: "twinfm.exe ( 404)" (ab47).
+        pid = int(re.search(r"\(\s*(\d+)\)", f[4]).group(1))
         if kind == "Process":
             procs.append((start, end, pid))
         elif kind == "Thread":

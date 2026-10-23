@@ -448,9 +448,21 @@ pub fn is_look_key(key: &str) -> bool {
 
 /// A looked-up entry's key: its plain key with the mark found.
 pub fn looked(look: &str, mark: Mark) -> Option<String> {
+    Some(marked(look_plain(look)?, mark))
+}
+
+/// A `look:` key's plain key.
+fn look_plain(look: &str) -> Option<&str> {
     let rest = look.strip_prefix(LOOK_PREFIX)?;
-    let (plain, _path) = rest.get(2..)?.rsplit_once('|')?;
-    Some(marked(plain, mark))
+    Some(rest.get(2..)?.rsplit_once('|')?.0)
+}
+
+/// Whether `old`, an entry's key from before a refresh, is the key a lookup of `look` (the new
+/// listing's key for the same name) gives with `old`'s mark: the same type, the same thumbnail
+/// (path, time and size), whatever the mark (P11-M2: the row may show `old`'s icon until the
+/// lookup lands).
+pub fn same_but_mark(old: &str, look: &str) -> bool {
+    look_plain(look).is_some_and(|plain| marked(plain, key_mark(old)) == old)
 }
 
 /// Per-enumeration key builder: extension keys and `dir` are shared SharedStrings, so most
