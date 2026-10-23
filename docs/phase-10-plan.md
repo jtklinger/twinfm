@@ -750,6 +750,13 @@ Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadma
   whether the style's scrollbar takes a colour at the pinned Slint rev or needs TwinFM's own (a theme
   token in `src/ui/theme.slint`, as Field and Choice replaced Fluent's in P10-M3), and the contrast in
   both themes; a scroll check on bigdir, since the scrollbar is drawn every frame while scrolling.
+- **Save a search results tab** (Jeremy, 2026-10-23: "be able to save a search results tab as a
+  custom tab"): today a search tab is a place in the tab's history (Back re-runs it) and is lost when
+  the tab closes; restored tabs keep only folders (P11-M3 adds search places to restored history).
+  Settled first, with Jeremy: what is kept (the query, so the tab re-runs the search when opened, as
+  Windows' saved searches do, or the results as found, a fixed list); where it lives (a bookmark row
+  in the sidebar, a tab restored at start, or both); how it is named (the query by default, renamed as
+  bookmarks are); and whether a content search (P11-M1) is saved the same way.
 
 ## Phase 10 close
 
