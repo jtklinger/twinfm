@@ -1,4 +1,4 @@
-# P11-M2 gate, tag TAGNN: target-p11m2 from the P11-M2 PR at HEADSHA (the cloud and search sweep: a
+# P11-M2 gate, tag TAGNN: target-p11m2 from the P11-M2 PR at c075a0a (the cloud and search sweep: a
 # cloud refresh keeps each row's mark until its lookup lands, search results from several folders in
 # one menu and drag, results that follow changes, the cursor after a rename in a search tab, Reset
 # column widths; the wrapper's own commit follows it) against target-p10m3 (4f07cba, the reference
@@ -19,7 +19,7 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = 'HEADSHA'
+$Head = 'c075a0a'
 $Tag = 'TAGNN'
 $Ref = 'p10m3'
 $Cand = 'p11m2'
