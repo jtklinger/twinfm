@@ -1016,7 +1016,7 @@ them before changing the list.
   photo there, then turns them off; it reports drag images from the thumbnail and the searches.
   Since P11-M1 each cycle also runs a content search in `src` (`csearch 0 scratch file 3/7`, its tab
   closed, the toggle off again); it reports content searches done, files read and files found (one).
-  Since P11-M2 each cycle also widens the left pane's Type column and resets both panes through the
+  Since P11-M2 each cycle also narrows the left pane's Type column and resets both panes through the
   settings dialog (`settings set cols_reset`, OK); it reports the resets (two per cycle).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,

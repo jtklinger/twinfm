@@ -1,4 +1,4 @@
-# P11-M2 gate, tag TAGNN: target-p11m2 from the P11-M2 PR at c075a0a (the cloud and search sweep: a
+# P11-M2 gate, tag ab46: target-p11m2 from the P11-M2 PR at c075a0a (the cloud and search sweep: a
 # cloud refresh keeps each row's mark until its lookup lands, search results from several folders in
 # one menu and drag, results that follow changes, the cursor after a rename in a search tab, Reset
 # column widths; the wrapper's own commit follows it) against target-p11m4 (2d3a096, P11-M4's gate
@@ -12,14 +12,14 @@
 #   powershell -ExecutionPolicy Bypass -File C:\traces\gate-p11m2.ps1
 # (a copy of tools\gate-p11m2.ps1 on the P11-M2 branch; the scripts it calls are the gate checkout's
 # tools\wpr-triplet.ps1, which calls wpr-gate.ps1 beside it, and tools\analyze-trace.py).
-# Writes C:\traces\twinfm-TAGNN-*.etl (+ .stderr.txt), C:\traces\export\TAGNN-*.txt and
-# C:\traces\gate-TAGNN-summary.txt.
+# Writes C:\traces\twinfm-ab46-*.etl (+ .stderr.txt), C:\traces\export\ab46-*.txt and
+# C:\traces\gate-ab46-summary.txt.
 # The gate build is already made (Claude built it, --locked, from the detached checkout); the build
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 $Head = 'c075a0a'
-$Tag = 'TAGNN'
+$Tag = 'ab46'
 $Ref = 'p11m4'
 $Cand = 'p11m2'
 $Gate = "$Root\.claude\worktrees\gate-p11m2"

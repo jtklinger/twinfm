@@ -118,7 +118,7 @@
 # content toggle on, the text, Ctrl+Shift+F), closes its tab and turns the toggle off; the report
 # counts content searches done (one per cycle), the files they read (src's 200 at least) and the
 # files they found (one per cycle: tree\d03\f07.txt).
-# P11-M2: each cycle also widens the left pane's Type column to 150 px and puts both panes back
+# P11-M2: each cycle also narrows the left pane's Type column to 100 px and puts both panes back
 # through the settings dialog's "Reset column widths" (`settings set cols_reset`, OK); the report
 # counts the resets (two lines per cycle, one per pane), and the widths-back lines are two per
 # cycle since (the P9-M1 cycle's and the reset's).
@@ -470,7 +470,7 @@ $cycle = @(
     "nav 0 $src", 'sleep 500', 'csearch 0 scratch file 3/7', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
     'contentmode 0 off', 'filter 0', 'sleep 300',
     # P11-M2: the widths reset through the dialog (see the header).
-    "nav 0 $src\tree", 'sleep 500', 'colwidth 0 type 150', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300'
+    "nav 0 $src\tree", 'sleep 500', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }

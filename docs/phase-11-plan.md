@@ -548,6 +548,17 @@ each settled first, each a commit of its own.
 Also: CLAUDE.md § Measuring's P11-M2 paragraph, the tests list and the soak paragraph (which had
 missed P11-M1's cycle too, added now); the soak's reset cycle; `tools/gate-p11m2.ps1`.
 
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-23, on the gate build `target-p11m2`, the
+coordinating session's go, the machine otherwise idle). The first run widened the left pane's Type
+column to 150 px before the reset, which the pane refused (its name cell was already under the
+120 px floor), so the reset found nothing to undo and the widths-back count read 5 for an expected 9;
+the cycle now narrows Type to 100 px, and the second run is the record: 10.1 min, exit 0, 0 panics;
+286 jobs (0 failed, 0 cancelled, 0 refused), 0 waitops timeouts; every must-be-0 count 0; **resets
+through the dialog 8 (two per cycle), widths back at 120, 90, 140 9 (two per cycle and one at
+start)**; content search 4 done, 806 files read, 4 found; search box 4, 4, 4; preview zooms 16 and
+copies 8 (P11-M4's cycle); working set 135 to 217 MB, peak 241 MB (the first run 176 to 247, peak
+258).
+
 ### Gate
 
 Pending: the defaults and the thumbnails triplets (`C:\traces\thumbs.toml`), `target-p11m2` against
