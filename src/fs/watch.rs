@@ -404,7 +404,7 @@ impl Watch {
             pane,
             tab_id,
             remote: is_remote(&path),
-            removable: role == Role::Main && drive_type(&path) == Some(crate::fs::enumerate::DRIVE_REMOVABLE),
+            removable: role == Role::Main && removable(&path),
             path,
             buf: vec![0u32; bytes / 4],
             pending: false,
@@ -477,6 +477,50 @@ fn last_error() -> String {
 }
 
 /// `GetDriveTypeW` of a drive-letter path's root; None for any other path.
+/// A watch on this drive registers for its device events, so "Safely remove" can close it: a
+/// removable drive, and since P11-M3 a fixed one whose disk says it is hot-pluggable or has
+/// removable media (a USB hard disk reports `DRIVE_FIXED`). Logged once per drive.
+fn removable(path: &Path) -> bool {
+    match drive_type(path) {
+        Some(crate::fs::enumerate::DRIVE_REMOVABLE) => true,
+        Some(DRIVE_FIXED) => {
+            let Some(Component::Prefix(p)) = path.components().next() else { return false };
+            let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = p.kind() else { return false };
+            let hot = hotplug(letter as char);
+            thread_local!(static LOGGED: std::cell::RefCell<std::collections::HashSet<char>> = Default::default());
+            if LOGGED.with(|l| l.borrow_mut().insert(letter as char)) {
+                eprintln!("[devices] {}: fixed, {}", letter as char, if hot { "removable media: registered" } else { "not removable" });
+            }
+            hot
+        }
+        _ => false,
+    }
+}
+
+/// `GetDriveTypeW`'s fixed drive (WinBase.h).
+const DRIVE_FIXED: u32 = 3;
+
+/// The volume's disk says it is hot-pluggable or has removable media
+/// (`IOCTL_STORAGE_GET_HOTPLUG_INFO` on `\\.\X:`, which needs no access rights).
+fn hotplug(letter: char) -> bool {
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    const IOCTL_STORAGE_GET_HOTPLUG_INFO: u32 = 0x002D_0C14;
+    let name: Vec<u16> = format!(r"\\.\{letter}:").encode_utf16().chain([0]).collect();
+    // SAFETY: NUL-terminated name; no access asked, so no admin right is needed.
+    let h = unsafe { CreateFileW(name.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null_mut()) };
+    if h == INVALID_HANDLE_VALUE {
+        return false;
+    }
+    // STORAGE_HOTPLUG_INFO: Size, then MediaRemovable, MediaHotplug, DeviceHotplug, WriteCacheEnableOverride.
+    let mut info = [0u8; 8];
+    let mut got = 0u32;
+    // SAFETY: a live handle; `info` is the out buffer of its size.
+    let ok = unsafe { DeviceIoControl(h, IOCTL_STORAGE_GET_HOTPLUG_INFO, std::ptr::null(), 0, info.as_mut_ptr().cast(), info.len() as u32, &mut got, std::ptr::null_mut()) } != 0;
+    // SAFETY: the handle opened above, closed once.
+    unsafe { CloseHandle(h) };
+    ok && got >= 7 && (info[4] != 0 || info[6] != 0)
+}
+
 fn drive_type(path: &Path) -> Option<u32> {
     let Some(Component::Prefix(p)) = path.components().next() else { return None };
     match p.kind() {
