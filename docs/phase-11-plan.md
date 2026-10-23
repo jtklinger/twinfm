@@ -674,13 +674,44 @@ types and log tags cyan.
 
 ### Gate
 
-Pending: `tools/gate-p11m5.ps1` (the defaults and the preview triplet, `C:\traces\preview.toml`,
-against `target-p11m4`), tag ab49; `target-p11m5` built from 530bd8e. My worktree's test build
+ab49, passed (2026-10-23 13:35, 17 min, Jeremy at the console): `tools/gate-p11m5.ps1`,
+`target-p11m5` (530bd8e) against `target-p11m4` (2d3a096), the defaults and the preview column. Both
+builds windowed; the reference predates P11-M1's code.
+
+| Setting | p11m4 (WPR) | p11m5 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 18.6, 18.6, 18.8 | 18.9, 18.8, 19.1 | 18.6 / 18.9 | 2.19 to 2.27 ms |
+| preview | 18.1, 18.1, 17.4 | 17.9, 19.1, 18.0 | 18.1 / 18.0 | 1.96 to 2.08 ms |
+
+No gap that counts; every candidate run under 20%; one session state throughout, no build overlapping.
+The defaults were close: every reference run sat at or below every candidate run but for ref-3 equal
+to cand-2 at 18.8, and the medians 0.3 apart, under the one-point rule. The gate's scenario never
+previews a text file (its cursor sits on no row), so the colouring itself is not in it.
+
+### Soak (2026-10-23, `target-p11m5`)
+
+`tools/soak-p5m3.ps1 -Minutes 10`: 10.1 min, exit 0, no panic, 286 jobs done (none failed or
+cancelled). Files coloured 8 (two per cycle), chunks refused 0; text previews 16 (four per cycle);
+zooms 16; waitpreview timeouts 0, worker panics 0. **Copy failures 1** (must be 0): `copy block 0:
+failed: the clipboard is in use by another program`, Windows refusing `OpenClipboard` once while
+another program held the clipboard (P11-M4's Copy text through the shared writer, which tries once;
+not this milestone's code). The fix, a few tries about 10 ms apart in the shared writer, was approved
+for the follow-up PR with the stale-preview fix (§ Clean-up items).
+
+Memory, against the soaks before it (working set start to end, peak; private): P11-M1 172 to 261 MB,
+peak 279; P11-M4 170.8 to 245.4, peak 276.6, private 155.6 to 225.2; P11-M5 171.8 to 265.9, peak
+273.1, private 155.6 to 220.6 (its private end the lowest, its peak the lowest of the three). The
+CSV shows the climb to about 260 MB in the first four minutes as the caches fill, then a plateau at
+259 to 268. Not new: the coloured rows are dropped with the block list when another file is shown
+(`blocks.set_vec`), a colour answer of an older generation is dropped on arrival, and the worker stops
+between chunks when superseded; only the shown file's colours are held. My worktree's test build
 (11:28 to 11:38) ran during ab46 (P11-M2) and voided it, before the coordinating session's hold
 reached this session; ab46 was rerun as ab47. The lesson: under two streams, any cargo run or TwinFM
 window waits for the coordinator's word too, not only gate builds and soaks.
 
-### Console checks (for Jeremy, unelevated, after the gate)
+### Console checks (Jeremy, 2026-10-23, unelevated, `target-p11m5` on `C:\traces\p11m5-console`)
+
+Jeremy: "everything checks out great." Every item below passed.
 
 - A Rust file, a PowerShell script, a JSON file, a 2 MB log, a file with a 20,000-character line.
 - The colours in light and dark (the theme switch in Settings while a file shows).
