@@ -1,8 +1,8 @@
-# P11-M6 gate, tag TAG: target-p11m6 from the P11-M6 PR's code head 0dcac60 (password PDFs through
+# P11-M6 gate, tag ab51: target-p11m6 from the P11-M6 PR's code head 0dcac60 (password PDFs through
 # hayro: the "Enter password…" button, the masked dialog on the preview worker; the docs and this
 # wrapper follow it; 0dcac60 is main merged in, so it carries #105, the stale-preview fix and the
 # clipboard retry, too) against target-p11m5 (530bd8e, P11-M5's gate build, the last merged milestone's),
-# two pairs interleaved in one session under the one tag TAG: the defaults (preview off: expected flat)
+# two pairs interleaved in one session under the one tag ab51: the defaults (preview off: expected flat)
 # and the preview column (C:\traces\preview.toml, read-only, `preview = true`: the column shown while
 # the lists scroll, the scenario's cursor on no file), the reference run with the same settings file as
 # the candidate each time. Each round runs p11m5, p11m6, p11m5-preview, p11m6-preview. 12 runs, about
@@ -12,14 +12,14 @@
 #   powershell -ExecutionPolicy Bypass -File C:\traces\gate-p11m6.ps1
 # (a copy of tools\gate-p11m6.ps1 on the P11-M6 branch; the scripts it calls are the gate checkout's
 # tools\wpr-triplet.ps1, which calls wpr-gate.ps1 beside it, and tools\analyze-trace.py).
-# Writes C:\traces\twinfm-TAG-*.etl (+ .stderr.txt), C:\traces\export\TAG-*.txt and
-# C:\traces\gate-TAG-summary.txt.
+# Writes C:\traces\twinfm-ab51-*.etl (+ .stderr.txt), C:\traces\export\ab51-*.txt and
+# C:\traces\gate-ab51-summary.txt.
 # The gate build is already made (Claude built it, --locked, from the detached checkout); the build
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 $Head = '0dcac60'
-$Tag = 'TAG'
+$Tag = 'ab51'
 $Ref = 'p11m5'
 $Cand = 'p11m6'
 $Gate = "$Root\.claude\worktrees\gate-p11m6"
