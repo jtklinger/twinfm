@@ -1,6 +1,7 @@
-# P11-M6 gate, tag TAG: target-p11m6 from the P11-M6 PR's code head 4314836 (password PDFs through
+# P11-M6 gate, tag TAG: target-p11m6 from the P11-M6 PR's code head 0dcac60 (password PDFs through
 # hayro: the "Enter password…" button, the masked dialog on the preview worker; the docs and this
-# wrapper follow it) against target-p11m5 (530bd8e, P11-M5's gate build, the last merged milestone's),
+# wrapper follow it; 0dcac60 is main merged in, so it carries #105, the stale-preview fix and the
+# clipboard retry, too) against target-p11m5 (530bd8e, P11-M5's gate build, the last merged milestone's),
 # two pairs interleaved in one session under the one tag TAG: the defaults (preview off: expected flat)
 # and the preview column (C:\traces\preview.toml, read-only, `preview = true`: the column shown while
 # the lists scroll, the scenario's cursor on no file), the reference run with the same settings file as
@@ -17,7 +18,7 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = '4314836'
+$Head = '0dcac60'
 $Tag = 'TAG'
 $Ref = 'p11m5'
 $Cand = 'p11m6'
