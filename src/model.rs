@@ -996,6 +996,30 @@ pub enum Edit {
     Rename { from: SharedString, entry: Entry },
 }
 
+/// A search tab's rows on screen against their fresh stats (P11-M2: results follow changes): a row
+/// whose file is gone is removed; one whose size, time or attributes changed takes its fresh entry,
+/// under the row's own name (its path under the root) and with its matching line. Returns the
+/// edits and how many rows were gone and changed.
+pub fn restat_edits(rows: &[Entry], fresh: Vec<Option<Entry>>) -> (Vec<Edit>, usize, usize) {
+    let (mut edits, mut gone, mut changed) = (Vec::new(), 0, 0);
+    for (row, f) in rows.iter().zip(fresh) {
+        match f {
+            None => {
+                gone += 1;
+                edits.push(Edit::Remove(row.name.clone()));
+            }
+            Some(mut f) if (f.size, f.modified, f.attrs) != (row.size, row.modified, row.attrs) => {
+                changed += 1;
+                f.name = row.name.clone();
+                f.found = row.found.clone();
+                edits.push(Edit::Upsert(f));
+            }
+            Some(_) => {}
+        }
+    }
+    (edits, gone, changed)
+}
+
 /// What `apply_edits` did: entries of the listing added, removed and changed (a rename counts as
 /// changed; one onto an existing name also as removed), and the cursor's row now (-1: none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2775,6 +2799,29 @@ mod tests {
         }
         assert_eq!(LocalZone::from_tzi(&utc_minus_5()).format(0), "1969-12-31 19:00");
         assert_eq!(LocalZone::from_tzi(&utc_minus_5()).format(1_790_000_000), "2026-09-21 09:13");
+    }
+
+    #[test]
+    fn restated_results_drop_the_gone_and_update_the_changed() {
+        let row = |name: &str, size: u64, found: &str| Entry { found: found.into(), ..Entry::new(name.into(), size, 100, 0, "".into()) };
+        let rows = [row(r"s1\a.txt", 1, "line a"), row(r"s2\b.txt", 2, ""), row("c.txt", 3, "")];
+        // a grew, b is gone, c is as it was; the stats carry the bare file name.
+        let fresh = vec![Some(row("a.txt", 9, "")), None, Some(row("c.txt", 3, ""))];
+        let (edits, gone, changed) = restat_edits(&rows, fresh);
+        assert_eq!((gone, changed, edits.len()), (1, 1, 2));
+        match &edits[0] {
+            Edit::Upsert(e) => assert_eq!((e.name.as_str(), e.size, e.found.as_str()), (r"s1\a.txt", 9, "line a"), "the row's own name and line"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(&edits[1], Edit::Remove(n) if n.as_str() == r"s2\b.txt"));
+        // Applied to a settled listing: b leaves, a's size changes.
+        let m = PaneModel::default();
+        m.append(rows.to_vec());
+        m.replace(filter_sort(m.snapshot_all(), Show::OFF, &NameMatch::default(), SortCol::Name, true, &Restore::default()));
+        m.pass.set(1);
+        m.set_landed_pass(1);
+        let a = m.apply_edits(edits, -1).unwrap();
+        assert_eq!((a.removed, a.changed, m.len()), (1, 1, 2));
     }
 
     #[test]
