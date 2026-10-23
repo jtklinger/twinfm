@@ -805,6 +805,10 @@ the Phase 11 close.
 - **The 187 MB first-run question**: not run (a heap-sampling trace); carried to the Phase 11 close's
   long soak, with this milestone's working-set note.
 
+**Merged** 2026-10-23 as 94d37e7 (#106), on Jeremy's word ("Merge PR #106 once its CI is green."), by
+the coordinating session, after main's 45ff94f (#105) was merged into the branch. The video thumbnail
+follow-up waits for Jeremy's decision.
+
 ## P11-M4: the preview gaps bundle
 
 The preview stream's first milestone, opened 2026-10-22 on main at d1abbe3 (0.1.0, Phase 10 merged),
@@ -1072,3 +1076,60 @@ Recorded as they come from Jeremy's daily use; each is an open item until he say
   unchanged). In-app run of the gate scenario on `C:\traces\bigdir`, `target-p11m5` then the fixed
   build back to back on a quiet machine: `[busy]` 21.2% and 19.4%, render p50 2.11 and 2.11 ms, no
   panic.
+
+## P11-M7: logging as a setting
+
+Started 2026-10-23 from main at 94d37e7 (P11-M3 merged), branch `feat/p11-m7-log-setting`, the
+coordinating session's go ("Settle first, then ask Jeremy where the plan leaves it to him"). The gate
+reference is `target-p11m3` (ff0d120).
+
+Jeremy's decisions, 2026-10-23, from the choices put to him in this session (each the recommended
+option): **"One per run, keep 2"** (the file and its rotation), **"Redirect its output"** (how the lines
+reach the file), **"Open in TwinFM"** (the dialog row's button).
+
+### Settled first (2026-10-23, before any code)
+
+- **One sink or `SetStdHandle`**: about 500 `eprintln!` lines in the code; a sink would change every
+  one. A probe in TwinFM's test process: after `SetStdHandle(STD_ERROR_HANDLE, file)` a write to
+  Rust's stderr landed in the file, and after the old handle was put back it did not (std looks the
+  handle up on every write). `SetStdHandle` it is, declared by hand from kernel32 (windows-sys's
+  Console feature is not enabled; the code's habit is to declare two functions rather than enable a
+  feature).
+- **A redirected stderr with the setting off**: untouched, so the gate's and the soak's
+  `-RedirectStandardError` get the lines as before. With it on the lines go to the file only; a
+  scripted run reads no settings, so the gate, soak and check scripts never turn it on unless
+  `TWINFM_CONFIG` names a file with `log = true`.
+- **The file**: `twinfm.log` beside the settings file (`%APPDATA%\twinfm\`); at start the last run's
+  becomes `twinfm.previous.log` (replacing it); a run past 20 MB is cut the same way, its size looked at
+  once a minute (a timer; the handle is not counted per write, as no write goes through TwinFM). The
+  file is opened shared for delete, so it can be renamed while open (the cut). Its first line: `TwinFM
+  <version> log, started <local time>`.
+- **Turning it off**: standard error goes back to what it was at start (nothing, for a windowed
+  program nobody redirected); the file the log left stays open until TwinFM exits, so a write racing
+  the switch can never reach a handle Windows has given to something else.
+- **The button**: "Open log folder" closes the dialog as OK does (a log switched on there is written
+  first) and shows the folder in the active pane, the log selected (`show_in_pane`), or the folder
+  alone before any log was written.
+
+### What landed (2026-10-23)
+
+- `src/logfile.rs` (new): `start`, `stop`, `cut_if_over`, a test (stderr into the file, the previous
+  file, the cut, stop).
+- `settings::Config::log` (default false) and `Dialog::log`; `main.rs` starts the log right after the
+  settings are read when it is on, applies it on OK (`set_log`), cuts once a minute, and runs the
+  dialog's button (`open_log_folder`); the dialog's Log row (a switch and the button; the dialog 670 px).
+- CLAUDE.md § Measuring (the first bullet, the settings list, the tests list).
+
+### Gate
+
+Pending: the defaults triplet (the setting off: no file, nothing per row or frame), `target-p11m7`
+against `target-p11m3`, after the coordinating session's go and tag; then one in-app run with the
+setting on (`TWINFM_CONFIG` naming a read-only file with `log = true`), its numbers read from the log.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+- Settings > Log on, OK: `%APPDATA%\twinfm\twinfm.log` appears and grows while TwinFM runs (open it in
+  Notepad, which reads it while TwinFM writes it).
+- "Open log folder": the dialog closes, the active pane shows the folder with the log selected.
+- Log off, OK: the file stops growing; on again: a fresh `twinfm.log`, the earlier one kept as
+  `twinfm.previous.log`. Restart with it on: the last run's file is `twinfm.previous.log`.

@@ -42,7 +42,7 @@ kickoff decisions, § Calls made lists the lead's, § Open questions what each b
 them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (299 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (300 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -55,8 +55,9 @@ them before changing the list.
   pictures and a page into scratch folders, and since P9-M3 one more writes Office files into one,
   and since P11-M1 two more write text files (and a junction) into scratch folders, since P11-M4
   one more writes a HEIC with Windows' HEIF encoder into one, since P11-M2 one more writes two
-  folders of files for a shell menu over both, and since P11-M5 one more writes source files into
-  one, see below)
+  folders of files for a shell menu over both, since P11-M5 one more writes source files into
+  one, and since P11-M7 one more writes log files into one (and points the process's stderr at them
+  while it runs), see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -83,7 +84,20 @@ them before changing the list.
 - Since 0.1.0 the exe is a windowed program (`#![windows_subsystem = "windows"]`): no console window,
   and stderr's lines reach a file only through a redirect (`Start-Process -RedirectStandardError`, as
   every tool here does, or PowerShell's `2>`); run by hand in a terminal it prints nothing there.
-  P11-M7 adds a setting that writes them to a log file. A gate whose reference was built before
+  Since P11-M7 the setting `log` (off by default; the dialog's Log row, applied on OK without a
+  restart) writes them to `twinfm.log` beside the settings file (`src/logfile.rs`): TwinFM points its
+  own standard error at the file (`SetStdHandle`; Rust's stderr looks the handle up on every write, so
+  no `eprintln!` changed), the file's first line is `TwinFM <version> log, started <time>`, the last
+  run's file is kept as `twinfm.previous.log`, and a run past 20 MB is cut the same way (checked once a
+  minute). Off, nothing is touched, so a launcher's redirect gets the lines as before; on, they go to
+  the file only (a scripted run reads no settings, so the gate, soak and check scripts never turn it
+  on unless `TWINFM_CONFIG` names a file with `log = true`). A file the log left is not closed while
+  TwinFM runs (a write racing the switch must not reach a reused handle). Lines: `[log] writing to
+  <path> (the last run's kept as twinfm.previous.log)`, `[log] cannot write to <dir>: <why>`, `[log]
+  stopped writing to <path>` (to wherever stderr went at start), `[log] not written: no settings file in
+  a scripted run`, `[log] cut at 20 MB: a fresh twinfm.log`, `[log] open log folder: <dir>` (the
+  dialog's "Open log folder": the dialog closes as OK does and the active pane shows the folder with
+  the log selected), `[settings] dialog: log false -> true`. A gate whose reference was built before
   0.1.0 compares a console build against a windowed one: say so in its record.
 - In-app: `TWINFM_SCRIPT` (syntax in `src/auto.rs`) drives scenarios; stderr carries `[perf]`,
   `[busy]`, `[split]`, `[enum]`, `[sort]`, `[select]`, `[hidden]`, `[refresh]`, `[icons]`, `[watch]`,
@@ -975,7 +989,8 @@ them before changing the list.
   defaults new tabs have), and the next save writes tables; since P8-M1 `preview` (the preview
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
   0.35, its handle's drag), since P11-M4 `preview_zoom` (a PDF's zoom, percent, 50 to 400, default
-  100), since P11-M5 `syntax_colours` (default true, in the dialog); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
+  100), since P11-M5 `syntax_colours` (default true, in the dialog), since P11-M7 `log` (default
+  false, in the dialog, `logfile`); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
   `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
   `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme; since P10-M3 the
   native title bar follows it through `DWMWA_USE_IMMERSIVE_DARK_MODE`, set when the window's handle is
@@ -1167,8 +1182,10 @@ them before changing the list.
   also makes a data object over two subfolders of its scratch folder. Since P11-M3
   `fs::watch::tests::moving_the_watched_folder_to_another_parent_follows_it` and
   `a_subtree_watch_past_the_record_cap_gives_no_edits` (2,000 files) use the `fs::watch` scratch
-  folder, and `worker_runs_real_shell_operations` also copies a file over itself (a replace). All
-  remove their folders.
+  folder, and `worker_runs_real_shell_operations` also copies a file over itself (a replace). Since
+  P11-M7 `logfile::tests::the_log_takes_stderr_rotates_and_cuts` writes `twinfm.log` and
+  `twinfm.previous.log` in `%TEMP%\twinfm-p11m7-log-<pid>\` and points the test process's stderr at
+  them while it runs. All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols
