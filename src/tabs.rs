@@ -123,8 +123,16 @@ impl History {
         (newest(&self.back), newest(&self.forward))
     }
 
-    /// A restored tab's history, from what `saved` gave.
-    pub fn restored(back: Vec<Place>, forward: Vec<Place>) -> History {
+    /// A restored tab's history, from what `saved` gave, for a tab restored at `current`. A search
+    /// tab is restored as its root folder, which its history holds as the place before the search:
+    /// an entry next to `current` that is `current` itself is dropped, so Back is never a no-op.
+    pub fn restored(mut back: Vec<Place>, mut forward: Vec<Place>, current: &Place) -> History {
+        while back.last().is_some_and(|p| p.same(current)) {
+            back.pop();
+        }
+        while forward.last().is_some_and(|p| p.same(current)) {
+            forward.pop();
+        }
         History { back, forward }
     }
 }
@@ -284,7 +292,7 @@ mod tests {
         let list = h.list(&p(r"C:\c"));
         assert_eq!(list, [(1, p(r"C:\d")), (0, p(r"C:\c")), (-1, p(r"C:\b")), (-2, p(r"C:\a"))]);
         // Two steps back from c: a, with b and c on the forward stack as two Backs would leave them.
-        let mut j = History::restored(h.back.clone(), h.forward.clone());
+        let mut j = History::restored(h.back.clone(), h.forward.clone(), &p(r"C:\c"));
         assert_eq!(j.jump(&p(r"C:\c"), -2), Some(p(r"C:\a")));
         assert_eq!(j.list(&p(r"C:\a")), [(3, p(r"C:\d")), (2, p(r"C:\c")), (1, p(r"C:\b")), (0, p(r"C:\a"))]);
         assert_eq!(j.jump(&p(r"C:\a"), 3), Some(p(r"C:\d")));
@@ -296,6 +304,9 @@ mod tests {
         assert_eq!((back, fwd), (vec![p(r"C:\b")], vec![p(r"C:\d")]));
         let (back, _) = h.saved(50);
         assert_eq!(back, [p(r"C:\a"), p(r"C:\b")]);
+        // Restored at b (a search tab restored as its root, say): the b next to it goes, so Back is a.
+        let r = History::restored(back, Vec::new(), &p(r"C:\b"));
+        assert_eq!(r.list(&p(r"C:\b")), [(0, p(r"C:\b")), (-1, p(r"C:\a"))]);
     }
 
     #[test]

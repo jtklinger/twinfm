@@ -529,6 +529,8 @@ fn parse(script: &str) -> Vec<Step> {
                         Some("tab") => (HoverAt::At(DropAt::Tab(num(2) as usize, num(3) as usize)), 4),
                         Some("crumb") => (HoverAt::At(DropAt::Crumb(num(2) as usize, num(3) as i32)), 4),
                         Some("strip") => (HoverAt::Strip(num(2) as usize, a.get(3) == Some(&"right")), 4),
+                        // `side <row>` (P11-M3): a sidebar row's centre, as `dropfiles side <row>`.
+                        Some("side") if a.get(2).is_some_and(|v| v.parse::<i32>().is_ok()) => (HoverAt::At(DropAt::Side(num(2) as i32)), 3),
                         Some("side") => (HoverAt::Side(a.get(2) == Some(&"top")), 3),
                         _ => (HoverAt::Edge(num(1) as usize, a.get(2) == Some(&"top")), 3),
                     };

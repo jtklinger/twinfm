@@ -6559,7 +6559,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 t.restore_cursor = p.cursor.as_deref().map(SharedString::from);
                 t.restore_scroll = p.scroll.filter(|y| y.is_finite() && *y < 0.0);
                 // Its Back and Forward places (P11-M3).
-                t.history = tabs::History::restored(p.back.iter().map(place_of).collect(), p.forward.iter().map(place_of).collect());
+                t.history = tabs::History::restored(p.back.iter().map(place_of).collect(), p.forward.iter().map(place_of).collect(), &t.place());
                 t
             })
             .collect();
