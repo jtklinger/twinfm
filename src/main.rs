@@ -3140,7 +3140,8 @@ fn job_done(d: fileops::Done) {
         let (text, record) = match &info.replay {
             None => {
                 let r = fileops::undo::record_for(&d.job, &d.outcome, &d.results, &text);
-                (text, r)
+                // A copy or move that replaced a file is not undone (P11-M3).
+                (text, fileops::undo::forbid_if_replaced(r, &d.existed, &d.results))
             }
             Some((r, orig)) => {
                 let shown = replay_text(*r, done, &orig.text, &text);

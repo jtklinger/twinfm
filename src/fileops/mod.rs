@@ -154,6 +154,20 @@ pub struct Done {
     pub outcome: Outcome,
     /// The job's own items as the sink reported them, in the order the shell finished them.
     pub results: Vec<ItemResult>,
+    /// A copy's or move's destination paths that were there before it ran (P11-M3): an item that
+    /// landed on one replaced that file (`undo::forbid_if_replaced`).
+    pub existed: Vec<PathBuf>,
+}
+
+/// The destination paths a copy or move would land on that are there already (P11-M3), looked at
+/// on the worker just before the job runs.
+fn existing_dests(job: &Job) -> Vec<PathBuf> {
+    let (dest_dir, names): (&Path, Vec<std::ffi::OsString>) = match job {
+        Job::Copy { sources, dest_dir } | Job::Move { sources, dest_dir } => (dest_dir, sources.iter().filter_map(|s| s.file_name().map(|n| n.to_os_string())).collect()),
+        Job::MoveAs { items, dest_dir } => (dest_dir, items.iter().map(|(_, n)| n.into()).collect()),
+        _ => return Vec::new(),
+    };
+    names.into_iter().map(|n| dest_dir.join(n)).filter(|p| std::fs::symlink_metadata(p).is_ok()).collect()
 }
 
 /// The name the shell really gave a renamed item, a new folder or a new file ("New folder (2)"),
@@ -408,6 +422,7 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
         }
         if msg.hwnd.is_null() && msg.message == WM_RUN {
             while let Ok(req) = rx.try_recv() {
+                let existed = existing_dests(&req.job);
                 let (outcome, results) = if req.id <= cancel_upto.load(std::sync::atomic::Ordering::Acquire) {
                     (Outcome::Cancelled, Vec::new()) // cancelled while queued: never started
                 } else if com >= 0 {
@@ -415,7 +430,7 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
                 } else {
                     (Outcome::Failed(com), Vec::new())
                 };
-                done(Done { id: req.id, job: req.job, outcome, results });
+                done(Done { id: req.id, job: req.job, outcome, results, existed });
             }
             continue;
         }
@@ -1364,6 +1379,13 @@ mod tests {
         assert_eq!(std::fs::read(root.join("made").join("a.txt")).unwrap(), b"hello");
         assert!(root.join("a.txt").exists(), "a copy keeps the source");
         assert_eq!(dest(&r), [canon(&root.join("made").join("a.txt"))]);
+        // P11-M3: the same copy again replaces it (no confirmation asked): the worker saw the path
+        // before the job, the sink reports the item landing on it, so the record cannot be undone.
+        assert!(worker.submit(Request { id: 900, job: Job::Copy { sources: vec![root.join("a.txt")], dest_dir: root.join("made") }, hwnd: 0, no_confirm: true }));
+        let r = rx.recv_timeout(Duration::from_secs(30)).expect("job finishes within 30 s");
+        assert_eq!((r.id, r.outcome.clone(), r.existed.clone()), (900, Outcome::Done, vec![root.join("made").join("a.txt")]));
+        let rec = undo::forbid_if_replaced(undo::record_for(&r.job, &r.outcome, &r.results, "Copied"), &r.existed, &r.results).unwrap();
+        assert_eq!((rec.undo, rec.cannot), (None, undo::CANNOT_UNDO_REPLACED), "{:?}", r.results);
 
         let r = run(Job::Rename { source: root.join("made").join("a.txt"), new_name: "b.txt".into() });
         assert!(root.join("made").join("b.txt").exists());

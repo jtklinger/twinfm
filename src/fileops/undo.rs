@@ -50,6 +50,20 @@ pub struct Record {
     pub cannot: &'static str,
 }
 
+/// The note Ctrl+Z shows for a copy or move that replaced a file (P11-M3): the shell overwrote it,
+/// so undoing would recycle the new file and leave neither.
+pub const CANNOT_UNDO_REPLACED: &str = "Cannot undo: it replaced a file, which cannot be brought back";
+
+/// A copy's or move's record when an item landed on a path that was there before (`existed`): it
+/// cannot be undone (P11-M3). Other records pass through.
+pub fn forbid_if_replaced(rec: Option<Record>, existed: &[PathBuf], results: &[ItemResult]) -> Option<Record> {
+    let replaced = results.iter().filter(|r| r.ok()).any(|r| r.dest.as_ref().is_some_and(|d| existed.iter().any(|e| e.as_os_str().eq_ignore_ascii_case(d.as_os_str()))));
+    if !replaced {
+        return rec;
+    }
+    rec.map(|r| Record { undo: None, cannot: CANNOT_UNDO_REPLACED, ..r })
+}
+
 /// The note Ctrl+Z shows for a recycle whose items the bin did not report.
 pub const CANNOT_UNDO_DELETE: &str = "Cannot undo: the Recycle Bin reported no items";
 /// The note Ctrl+Z shows for a write into a zip archive or an edit inside one (P7-M3).
@@ -241,6 +255,21 @@ mod tests {
         let restore = Job::Restore { items: vec![(r.into(), r"C:\a\x.txt".into())] };
         let u = undo_for(&restore, &[ok(r, r"C:\a\x.txt")]).unwrap();
         assert_eq!(u.job, Job::Delete { sources: vec![r"C:\a\x.txt".into()], permanent: false });
+    }
+
+    #[test]
+    fn a_copy_that_replaced_a_file_is_not_undone() {
+        let cp = Job::Copy { sources: vec![r"C:\a\x.txt".into(), r"C:\a\y.txt".into()], dest_dir: r"C:\b".into() };
+        let res = [ok(r"C:\a\x.txt", r"C:\b\x.txt"), ok(r"C:\a\y.txt", r"C:\b\y.txt")];
+        let rec = || record_for(&cp, &Outcome::Done, &res, "Copied 2 items");
+        // y.txt was in C:\b before: the copy replaced it.
+        let r = forbid_if_replaced(rec(), &[r"C:\B\Y.TXT".into()], &res).unwrap();
+        assert_eq!((r.undo, r.cannot, r.text.as_str()), (None, CANNOT_UNDO_REPLACED, "Copied 2 items"));
+        // Nothing was there, or the shell kept both ("y (2).txt"): the record stands.
+        assert!(forbid_if_replaced(rec(), &[], &res).unwrap().undo.is_some());
+        let kept = [ok(r"C:\a\x.txt", r"C:\b\x.txt"), ok(r"C:\a\y.txt", r"C:\b\y (2).txt")];
+        assert!(forbid_if_replaced(record_for(&cp, &Outcome::Done, &kept, "x"), &[r"C:\b\y.txt".into()], &kept).unwrap().undo.is_some());
+        assert_eq!(forbid_if_replaced(None, &[r"C:\b\y.txt".into()], &res), None);
     }
 
     #[test]
