@@ -485,6 +485,87 @@ with stderr kept; his word: "All fine; I couldn't check #5"):
   tests and the scripted checks (the UTF-16 file found, the binary counted as skipped). No panic in
   the console run's stderr.
 
+**Merged** 2026-10-23 as 8a23a4e (#98), on Jeremy's word ("merge 98,100,101 but don't rebuild the
+daily"), by the coordinating session; `target\release` not rebuilt, by the same word.
+
+## P11-M2: the cloud and search sweep
+
+Started 2026-10-23 from main at 6615f9a (P11-M1 and the app icon merged), branch
+`feat/p11-m2-cloud-search-sweep`, the coordinating session's go: "start P11-M2 ... settle each first.
+Reference for its gate is still target-p10m3". Brought up to date with main after P11-M4 merged
+(3cd18cd; conflicts in CLAUDE.md's test count and the soak's report lines, both kept). Six items,
+each settled first, each a commit of its own.
+
+### The items (2026-10-23)
+
+1. **A cloud refresh keeps each row's mark: done** (66fee1e). Settled: a refresh's new entries in a
+   Google Drive or sync-root listing carry `look:` keys, and the rows went back to their placeholders
+   until each lookup returned. Now `finish_refresh` gives each such entry the icon its name had on
+   screen when the old key is the new one's plain key with some mark (`icons::same_but_mark`: the
+   same type, the same thumbnail path, time and size); the lookup still runs (`resolve_icons` asks for
+   a kept row's `look:` key, but only while some row is kept, so no listing outside a cloud location
+   pays a key check), and `relabel` keeps the icon when the mark came back the same or puts the
+   placeholder back when it changed. Scripted on this machine: `G:\My Drive`, F5 twice, `marks
+   carried: 41 of 126 across the refresh` (the rows that had been on screen); OneDrive `9 of 9`. A
+   test covers the carry, a changed thumbnail, a new name, a changed mark and the empty case.
+2. **The Google Drive thumbnail cost: measured, recorded, nothing changed.** The kickoff's 300 to
+   570 ms did not reproduce. With thumbnails on (asked `WTS_INCACHEONLY` there since P6-M1), the
+   `[icons]` line's average over two back-to-back runs on `G:\My Drive\Reagyn\100VTECH` (926
+   pictures) was 50 to 58 ms a thumbnail, against 9 to 14 ms for the same kind of request on the local
+   fixture `%TEMP%\twinfm-p3m5-thumbs` (both from the shell's cache, both runs alike, so no cold
+   start). The extra 40 ms is the Google Drive volume answering the shell's item and property reads,
+   not the cache and not an extraction (`INCACHEONLY` runs none). The kickoff's remedy (thumbnails on
+   Google Drive asked only for rows on screen for 500 ms) was for a cost about ten times this; rows
+   scrolled away are already dropped (`dropped` 0 in these runs), so a delay would only show the
+   thumbnails later. Left as it is; the measurement is the record.
+3. **Search results from several folders in one menu and one drag: done** (b1f8bfd). Settled by a
+   probe in TwinFM's test process: the desktop's `IShellFolder` with each item's absolute PIDL as its
+   "child" gives a full shell menu (`GetUIObjectOf`) and a data object whose `CF_HDROP` names both
+   files (`SHCreateDataObject` with the desktop's empty PIDL), the way Explorer's own search results
+   are built. `parse_items` takes that path (`parse_absolute`) when `common_parent` finds more than
+   one folder; inside an archive the refusal stays. Scripted: two results in two folders selected,
+   the Windows 11 menu (with the packaged apps' commands), "Show more options" (the classic menu) and
+   a drag (cancelled) all for both items. Two tests (the menu, the data object).
+4. **Results that follow changes: done** (0c461a5). As the kickoff called it: no watch per result
+   folder; every 5 s (`RESTAT_EVERY`) and when a finished search tab comes to the front, its rows on
+   screen are statted again on a worker thread and `land_restat` applies `model::restat_edits`
+   (gone rows removed, changed ones updated in place under their row name, the content search's line
+   kept) through `apply_edits`, the watch's path. A new match still needs F5. Scripted: a result
+   deleted and another touched from outside, `results re-stated: 4 rows, 1 gone, 1 changed, in 4.0
+   ms` on the next tick; the tab brought to the front states at once. A test for the edits.
+5. **The cursor after a rename in a search tab: checked, found wrong, fixed** (c0ce2ab). The cursor
+   was lost (row -1, nothing selected): the rename asked for the bare new name, and a search tab's
+   rows are named by their path under the root. `search_row_name` gives the result's own folder back;
+   scripted: `s2\hit-b.txt` renamed `hit-y.txt`, the cursor on row 4 (`s2\hit-y.txt`); `s1\hit-a.txt`
+   renamed `hit-0.txt`, row 0. A test.
+6. **Reset column widths: done** (f29aef1). A button under the Type column switch in the settings
+   dialog, staged like every field (its label reads "Widths reset on OK" once pressed; Cancel drops
+   it): on OK both panes' widths go back to 120, 90, 140 (`[cols] pane=N widths reset to 120, 90,
+   140`, then the `(reset)` change lines). The dialog grew 40 px for the row (550 to 590); a
+   screenshot against `target-p10m3`'s dialog showed the rest of its layout unchanged. No pure part
+   beyond `cols::DEFAULT`; checked by the scripted run (the cancel, then OK) and the soak.
+
+Also: CLAUDE.md § Measuring's P11-M2 paragraph, the tests list and the soak paragraph (which had
+missed P11-M1's cycle too, added now); the soak's reset cycle; `tools/gate-p11m2.ps1`.
+
+### Gate
+
+Pending: the defaults and the thumbnails triplets (`C:\traces\thumbs.toml`), `target-p11m2` against
+`target-p10m3`, after the coordinating session's go and tag. The thumbnails setting is there for
+item 1's change in `resolve_icons`.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+- **F5 on `G:\My Drive` and on a OneDrive folder**, beside `target-p10m3`: the icons and their marks
+  stay put through the refresh (the old build flashes them to plain icons).
+- **A search whose results lie in two folders**: select one from each, right-click (the menu acts on
+  both: Copy path, Properties), then drag them to Explorer or the desktop (Copy: both arrive).
+- **A result changed in another program**: with a search tab in front, delete one result in Explorer
+  and edit another; within 5 s the first leaves the list and the second shows its new size and time.
+- **Rename in a search tab** (F2): the cursor stays on the renamed result.
+- **Settings > Reset column widths**: drag a column wider, open Settings, press the button, OK: both
+  panes back to the default widths; Cancel instead leaves them.
+
 ## P11-M4: the preview gaps bundle
 
 The preview stream's first milestone, opened 2026-10-22 on main at d1abbe3 (0.1.0, Phase 10 merged),
