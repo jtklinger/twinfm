@@ -1,13 +1,12 @@
 # P11-M2 gate, tag TAGNN: target-p11m2 from the P11-M2 PR at c075a0a (the cloud and search sweep: a
 # cloud refresh keeps each row's mark until its lookup lands, search results from several folders in
 # one menu and drag, results that follow changes, the cursor after a rename in a search tab, Reset
-# column widths; the wrapper's own commit follows it) against target-p10m3 (4f07cba, the reference
-# the coordinating session named), two settings, each three runs interleaved under the one tag:
+# column widths; the wrapper's own commit follows it) against target-p11m4 (2d3a096, P11-M4's gate
+# build, the last merged milestone's, named by the coordinating session; it predates P11-M1's content
+# search, so the candidate carries P11-M1 and P11-M2 against it), two settings, each three runs interleaved under the one tag:
 # the defaults (no search tab in the scenario: the 5 s re-stat timer finds none) and thumbnails
 # (C:\traces\thumbs.toml: the icon path's carried-mark check in `resolve_icons`). 12 runs, about 18
 # minutes, then the analysis.
-# The reference predates 0.1.0's windowed exe and the candidate does not: a console build against a
-# windowed one (CLAUDE.md § Measuring); the summary says so.
 # Only one gate at a time on this machine.
 # Elevated PowerShell at the physical console, Narrator off, every TwinFM window closed:
 #   powershell -ExecutionPolicy Bypass -File C:\traces\gate-p11m2.ps1
@@ -21,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 $Head = 'c075a0a'
 $Tag = 'TAGNN'
-$Ref = 'p10m3'
+$Ref = 'p11m4'
 $Cand = 'p11m2'
 $Gate = "$Root\.claude\worktrees\gate-p11m2"
 # The defaults, and thumbnails on (its stderr shows the 32 px list geometry).
@@ -116,7 +115,7 @@ foreach ($s in $Settings) {
     $lines += "${name}: $Cand median $cMed% against $Ref $rMed% (WPR); every reference run below every candidate run: $allBelow; a gap that counts: $counts; every candidate run under 20%: $under"
 }
 $lines += 'Compare RenderP50 across runs before the medians: a run about a third higher than the rest is the session changing state (ab23).'
-$lines += "target-$Ref predates 0.1.0's windowed exe: a console build against a windowed one (CLAUDE.md, Measuring)."
+$lines += "target-$Ref predates P11-M1: the candidate carries P11-M1's content search and P11-M2 against it."
 $lines | Set-Content -Encoding utf8 "C:\traces\gate-$Tag-summary.txt"
 ''
 $lines

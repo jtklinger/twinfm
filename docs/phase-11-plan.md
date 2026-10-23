@@ -551,8 +551,11 @@ missed P11-M1's cycle too, added now); the soak's reset cycle; `tools/gate-p11m2
 ### Gate
 
 Pending: the defaults and the thumbnails triplets (`C:\traces\thumbs.toml`), `target-p11m2` against
-`target-p10m3`, after the coordinating session's go and tag. The thumbnails setting is there for
-item 1's change in `resolve_icons`.
+`target-p11m4` (2d3a096, P11-M4's gate build, the last merged milestone's: the coordinating
+session's reference once P11-M4 merged, in place of `target-p10m3`), after its go and tag (from
+ab46). **The reference predates P11-M1**: P11-M4 branched before content search merged, so the
+candidate carries P11-M1's walker and `Entry::found` as well as P11-M2 against it. The thumbnails
+setting is there for item 1's change in `resolve_icons`.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
