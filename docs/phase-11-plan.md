@@ -685,3 +685,24 @@ window waits for the coordinator's word too, not only gate builds and soaks.
 - A Rust file, a PowerShell script, a JSON file, a 2 MB log, a file with a 20,000-character line.
 - The colours in light and dark (the theme switch in Settings while a file shows).
 - The "Code" switch in Settings off and on.
+
+## Clean-up items from daily use
+
+Recorded as they come from Jeremy's daily use; each is an open item until he says when to do it.
+
+- **The preview keeps a deleted file** (Jeremy, 2026-10-23): "when a file is deleted, the preview
+  pane retains the image/preview of file until the selected file changes either by moving keyboard
+  or mouse. I would expect that when the file is deleted and a new file 'moves up' in the list of
+  files, that the new file would automatically be previewed in the preview pane." The cause, found by
+  reading the code (nothing run): the preview follows the cursor through app.slint's `changed`
+  handlers on `left-current-row` and `right-current-row`, which call `preview::kick`. After a delete
+  the cursor keeps its row number (P2-M2's rule), so when a watch window lands as row edits
+  (`main.rs` `land_edits`, `set_current_row(&app, pane, a.cursor)`) or a whole pass lands (`land_pass`,
+  `set_current_row(&app, pane, cursor)`), the property is set to the value it already had, no
+  `changed` fires, and the preview is never asked. The coordinating session's guess holds. The fix:
+  call `preview::kick()` after those two `set_current_row` calls for the active tab (two lines).
+  `kick` is one timer restart, and only while the column shows. After the settle, `refresh` previews
+  the cursor's file only when its path differs from the one shown, so an unchanged file costs a
+  path compare. It covers a rename under the cursor and a folder emptied (the column then empties)
+  too. Size: two lines and a scripted check (`delete` with the column on, then the `[preview]` line
+  for the next file). It touches event handlers only: one in-app run, no triplet.
