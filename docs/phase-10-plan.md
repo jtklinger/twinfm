@@ -744,6 +744,12 @@ Jeremy's routing of 2026-10-22: "add the click-and-drag to phase 12, or a roadma
   sits (a "+" at the strip's end, which would mean showing the strip, or that button alone, with one
   tab; a toolbar button; "New tab" in the path bar's background menu) and which folder the tab opens
   (the pane's own, as Ctrl+T does).
+- **Scrollbars easier to see** (Jeremy, 2026-10-23: "the scroll bars are too transparent and need to
+  be more visible"): the lists, the grid and the preview use the Fluent style's own scrollbar (an
+  overlay, `pane.slint`'s ListView notes), which the Phase 10 look left as it was. Settled first:
+  whether the style's scrollbar takes a colour at the pinned Slint rev or needs TwinFM's own (a theme
+  token in `src/ui/theme.slint`, as Field and Choice replaced Fluent's in P10-M3), and the contrast in
+  both themes; a scroll check on bigdir, since the scrollbar is drawn every frame while scrolling.
 
 ## Phase 10 close
 
