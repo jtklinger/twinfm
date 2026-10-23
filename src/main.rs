@@ -3611,7 +3611,7 @@ fn open_history_menu(pane: usize, x: f32, y: f32) {
         let t = st.tab(pane);
         let here = t.place();
         let list = t.history.list(&here);
-        let labels: Vec<(String, bool)> = list.iter().map(|(steps, p)| (p.to_string(), *steps == 0)).collect();
+        let labels: Vec<(String, bool)> = list.iter().map(|(steps, p)| (p.label(), *steps == 0)).collect();
         eprintln!("[nav] pane={pane} history menu: {} entries ({} back, {} forward)", list.len(), t.history.back_len(), t.history.forward_len());
         let wctx = winmenu::Ctx { place: tool_place(st, pane), what: winmenu::What::Background, clipboard_files: st.clip_files, same_type: false };
         st.winmenu_seq += 1;

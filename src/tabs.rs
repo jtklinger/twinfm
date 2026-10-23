@@ -27,6 +27,20 @@ impl Place {
         Place { path: root.into(), search: Some(pattern.to_string()), content }
     }
 
+    /// The history menu's text for the place (P11-M3): the folder's own name first and the folder it
+    /// is in after it (`beta  (C:\a\alpha)`), as search results read, so a long path is never cut
+    /// to its common start; a search names its pattern and root (`Search: "x"  (C:\a)`).
+    pub fn label(&self) -> String {
+        let full = self.path.to_string_lossy();
+        match &self.search {
+            Some(p) => format!("{}: \"{p}\"  ({full})", if self.content { "Text" } else { "Search" }),
+            None => match self.path.parent().filter(|_| self.path.file_name().is_some()) {
+                Some(parent) => format!("{}  ({})", crate::pathbar::title(&full), parent.display()),
+                None => crate::pathbar::title(&full),
+            },
+        }
+    }
+
     /// The same place: the same folder ignoring ASCII case (Windows paths), the same search.
     fn same(&self, other: &Place) -> bool {
         self.path.as_os_str().eq_ignore_ascii_case(other.path.as_os_str()) && self.search == other.search && self.content == other.content
@@ -304,6 +318,11 @@ mod tests {
         assert_eq!((back, fwd), (vec![p(r"C:\b")], vec![p(r"C:\d")]));
         let (back, _) = h.saved(50);
         assert_eq!(back, [p(r"C:\a"), p(r"C:\b")]);
+        // The menu's labels: the name first, then where it is.
+        assert_eq!(p(r"C:\a\alpha\beta").label(), r"beta  (C:\a\alpha)");
+        assert_eq!(Place::search(r"C:\a", "x", false).label(), r#"Search: "x"  (C:\a)"#);
+        assert_eq!(Place::search(r"C:\a", "x", true).label(), r#"Text: "x"  (C:\a)"#);
+        assert!(!p(r"C:\").label().contains('('), "a drive root has no parent: {}", p(r"C:\").label());
         // Restored at b (a search tab restored as its root, say): the b next to it goes, so Back is a.
         let r = History::restored(back, Vec::new(), &p(r"C:\b"));
         assert_eq!(r.list(&p(r"C:\b")), [(0, p(r"C:\b")), (-1, p(r"C:\a"))]);
