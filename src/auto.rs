@@ -388,6 +388,10 @@ enum Step {
     SearchReturn(usize),
     /// The pane's search button (P10-M2).
     SearchButton(usize),
+    /// The search box's content toggle set on or off, as its click does (P11-M1).
+    ContentMode { pane: usize, on: bool },
+    /// The content toggle on, `text` in the box, then Ctrl+Shift+F's callback (P11-M1).
+    ContentSearch { pane: usize, text: String },
     /// Wait until no search tab is still walking (at most `ms`), then 300 ms for the pass.
     WaitSearch(u64),
     /// Alt+Shift+Return in the pane's list.
@@ -597,6 +601,11 @@ fn parse(script: &str) -> Vec<Step> {
                 "search" => Step::Search(num(1) as usize),
                 "searchreturn" => Step::SearchReturn(num(1) as usize),
                 "searchbutton" => Step::SearchButton(num(1) as usize),
+                "contentmode" => Step::ContentMode { pane: num(1) as usize, on: a.get(2) != Some(&"off") },
+                "csearch" => Step::ContentSearch {
+                    pane: num(1) as usize,
+                    text: s.trim().splitn(3, char::is_whitespace).nth(2).unwrap_or("").to_string(),
+                },
                 "waitsearch" => Step::WaitSearch(num(1).max(1) as u64),
                 "sizeall" => Step::SizeAll(num(1) as usize),
                 "waitsize" => Step::WaitSize(num(1).max(1) as u64),
@@ -673,6 +682,18 @@ fn schedule(runner: Rc<RefCell<Runner>>, delay_ms: u64) {
         .borrow()
         .timer
         .start(TimerMode::SingleShot, Duration::from_millis(delay_ms), move || run_step(r2.clone()));
+}
+
+/// The search box's content toggle (P11-M1) set as its click sets it: the property, then
+/// `content-toggled` when it changed.
+fn set_content_mode(app: &App, pane: usize, on: bool) {
+    let was = if pane == 0 { app.get_left_content_mode() } else { app.get_right_content_mode() };
+    eprintln!("[auto] contentmode pane={pane} {}", if on { "on" } else { "off" });
+    if was == on {
+        return;
+    }
+    if pane == 0 { app.set_left_content_mode(on) } else { app.set_right_content_mode(on) }
+    app.invoke_content_toggled(pane as i32, on);
 }
 
 /// Logical window size and a point inside the given pane's list.
@@ -1500,6 +1521,20 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::SearchButton(pane) => {
             app.invoke_search_pressed(pane as i32);
+            schedule(runner, 1);
+        }
+        Step::ContentMode { pane, on } => {
+            set_content_mode(&app, pane, on);
+            schedule(runner, 1);
+        }
+        Step::ContentSearch { pane, text } => {
+            set_content_mode(&app, pane, true);
+            if pane == 0 {
+                app.set_left_filter_text(text.as_str().into());
+            } else {
+                app.set_right_filter_text(text.as_str().into());
+            }
+            app.invoke_search(pane as i32);
             schedule(runner, 1);
         }
         Step::WaitSearch(max_ms) => {

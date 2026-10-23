@@ -54,6 +54,10 @@ skia = ["slint/renderer-skia"]
 [build-dependencies]
 slint-build = { git = "https://github.com/jtklinger/slint", rev = "c1d3a8d0aa2d61d72da6c11501060eb1650674b6" }
 
+# Embeds assets/icon/twinfm.ico as the exe's icon (MIT; a build tool, not in the binary).
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "=0.1.34", default-features = false }
+
 [profile.release]
 debug = 1
 

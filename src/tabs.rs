@@ -8,32 +8,35 @@ use std::path::PathBuf;
 /// Folders a tab keeps to go back to (the oldest is dropped past this).
 pub const HISTORY_CAP: usize = 100;
 
-/// Where a tab is: a folder, or a recursive name search (`search`: the pattern) under the folder
-/// `path`, its root. A search is a history entry like a folder (a page in a browser).
+/// Where a tab is: a folder, or a recursive search (`search`: the pattern; `content`: a search
+/// inside files for that text, P11-M1) under the folder `path`, its root. A search is a history
+/// entry like a folder (a page in a browser).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Place {
     pub path: PathBuf,
     pub search: Option<String>,
+    pub content: bool,
 }
 
 impl Place {
     pub fn folder(path: impl Into<PathBuf>) -> Place {
-        Place { path: path.into(), search: None }
+        Place { path: path.into(), search: None, content: false }
     }
 
-    pub fn search(root: impl Into<PathBuf>, pattern: &str) -> Place {
-        Place { path: root.into(), search: Some(pattern.to_string()) }
+    pub fn search(root: impl Into<PathBuf>, pattern: &str, content: bool) -> Place {
+        Place { path: root.into(), search: Some(pattern.to_string()), content }
     }
 
     /// The same place: the same folder ignoring ASCII case (Windows paths), the same search.
     fn same(&self, other: &Place) -> bool {
-        self.path.as_os_str().eq_ignore_ascii_case(other.path.as_os_str()) && self.search == other.search
+        self.path.as_os_str().eq_ignore_ascii_case(other.path.as_os_str()) && self.search == other.search && self.content == other.content
     }
 }
 
 impl std::fmt::Display for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.search {
+            Some(p) if self.content => write!(f, "content \"{p}\" in {}", self.path.display()),
             Some(p) => write!(f, "search \"{p}\" in {}", self.path.display()),
             None => write!(f, "{}", self.path.display()),
         }
@@ -214,7 +217,7 @@ mod tests {
     fn history_holds_searches_like_folders() {
         let mut h = History::default();
         let root = r"C:\Temp\root";
-        let search = Place::search(root, "hit");
+        let search = Place::search(root, "hit", false);
         // A search started from its root (a new search tab), then a folder result opened.
         assert!(h.push(&p(root), &search));
         assert!(h.push(&search, &p(r"C:\Temp\root\sub\hit-folder")));
@@ -224,10 +227,14 @@ mod tests {
         assert_eq!(h.forward(&p(root)), Some(search.clone()));
         assert_eq!(h.forward(&search), Some(p(r"C:\Temp\root\sub\hit-folder")));
         // The search and its root are different places; the same search twice in a row is one.
-        assert!(!h.push(&Place::search(r"c:\temp\ROOT", "hit"), &search));
-        assert!(h.push(&Place::search(root, "hit"), &Place::search(root, "HIT")));
+        assert!(!h.push(&Place::search(r"c:\temp\ROOT", "hit", false), &search));
+        assert!(h.push(&Place::search(root, "hit", false), &Place::search(root, "HIT", false)));
         assert_eq!(search.to_string(), r#"search "hit" in C:\Temp\root"#);
         assert_eq!(p(root).to_string(), root);
+        // P11-M1: a content search for the same text is another place.
+        let content = Place::search(root, "hit", true);
+        assert!(h.push(&search, &content));
+        assert_eq!(content.to_string(), r#"content "hit" in C:\Temp\root"#);
     }
 
     #[test]
