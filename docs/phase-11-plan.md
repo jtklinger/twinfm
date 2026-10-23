@@ -561,12 +561,44 @@ copies 8 (P11-M4's cycle); working set 135 to 217 MB, peak 241 MB (the first run
 
 ### Gate
 
-Pending: the defaults and the thumbnails triplets (`C:\traces\thumbs.toml`), `target-p11m2` against
-`target-p11m4` (2d3a096, P11-M4's gate build, the last merged milestone's: the coordinating
-session's reference once P11-M4 merged, in place of `target-p10m3`), after its go and tag (from
-ab46). **The reference predates P11-M1**: P11-M4 branched before content search merged, so the
-candidate carries P11-M1's walker and `Entry::found` as well as P11-M2 against it. The thumbnails
+The defaults and the thumbnails triplets (`C:\traces\thumbs.toml`), `target-p11m2` (c075a0a, built
+`--locked` from a detached checkout) against `target-p11m4` (2d3a096, P11-M4's gate build, the last
+merged milestone's: the coordinating session's reference once P11-M4 merged, in place of
+`target-p10m3`). **The reference predates P11-M1**: P11-M4 branched before content search merged, so
+the candidate carries P11-M1's walker and `Entry::found` as well as P11-M2 against it. The thumbnails
 setting is there for item 1's change in `resolve_icons`.
+
+- **ab46: void.** A build in the preview stream's worktree overlapped rounds 2 and 3 (its test build
+  compiled from 11:28 to 11:38, the coordinating session's sequencing slip): reference runs 21.3,
+  29.4, 26.8, render p50 3.1 to 4.8 ms, two runs at 1.8 (the process lost). `C:\traces\gate-ab46-summary.txt`
+  is kept as the record of the void run, not a result.
+- **ab47: passed** (Jeremy, 2026-10-23: "Skip ab48; ab47 passes."). Run by Jeremy, finished 12:04,
+  17 min, `C:\traces\gate-ab47-summary.txt`.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11m4-1 / 2 / 3 | 23.8 / 21.9 / 21.9 | 24.2 / 21.2 / 23.3 | 3.06 / 3.00 / 2.90 |
+| p11m2-1 / 2 / 3 | 22.2 / 22.0 / 22.5 | 22.2 / 20.5 / 21.2 | 2.90 / 2.91 / 3.04 |
+| p11m4-thumbs-1 / 2 / 3 | 18.6* / 17.4 / 17.8 | 18.0 / 17.7 / 16.7 | 2.27 / 2.23 / 2.23 |
+| p11m2-thumbs-1 / 2 / 3 | 17.5 / 18.5 / 18.9 | 18.0 / 19.8 / 18.3 | 2.27 / 2.47 / 2.54 |
+
+  **Defaults**: medians 21.9 (reference) / 22.2 (candidate), no gap; the whole defaults session ran
+  in the costlier state (render p50 2.90 to 3.06 ms in all six, against about 2.2 normally), read like
+  for like, the reference over 20% too. **Thumbs**: the wrapper first read "a gap that counts" (18.5
+  against 17.4) because `p11m4-thumbs-1` had no WPR figure. *That was an analyser bug, not the run:
+  the process's PID was 404, which xperf prints padded (`twinfm.exe ( 404)`), and
+  `analyze-trace.py`'s `\((\d+)\)` allowed no space, so it raised and the wrapper read 0; fixed to
+  `\(\s*(\d+)\)` (16e71d1), the trace re-analysed: 18.6%. Corrected medians 17.8 / 18.5, 0.7 points,
+  under the one-point rule, and not every reference run below every candidate run (18.6 above 17.5):
+  **no gap**. Two caveats recorded: the candidate always ran in the second slot (about a point higher
+  by the P7-M4 rule), and its runs 2 and 3 read a higher render p50 (2.47, 2.54 ms), the render path
+  P11-M2 does not touch. The code read for the coordinating session: the carried-mark check in
+  `resolve_icons` is one empty-map test per resolve call and one bool per resolved row that
+  short-circuits while nothing is carried, and the map fills only at a cloud listing's refresh, so
+  the gate scenario pays the empty-map test alone.
+- **ab48: prepared, not run.** `tools/gate-p11m2-ab48.ps1` (the thumbnails triplet only, the
+  candidate first in each round, the fixed analyser from `C:\traces\analyze-trace.py`) was written to
+  settle the order caveat; Jeremy judged ab47 enough.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
@@ -579,6 +611,21 @@ setting is there for item 1's change in `resolve_icons`.
 - **Rename in a search tab** (F2): the cursor stays on the renamed result.
 - **Settings > Reset column widths**: drag a column wider, open Settings, press the button, OK: both
   panes back to the default widths; Cancel instead leaves them.
+
+**Results** (2026-10-23, Jeremy at the console, `target-p11m2` started unelevated from this session
+with stderr kept; his word: "All Look good!"), each found right, with the log behind it:
+
+- **F5 on Google Drive and OneDrive**: no flash; `marks carried: 46 of 126 across the refresh` on
+  `G:\My Drive` (three refreshes), `9 of 9` on OneDrive.
+- **Results from two folders**: the Windows 11 menu for 2 items from two folders of a search in
+  Downloads, and a right-button drag of both (`DoDragDrop returned ... (dropped): effect copy`).
+- **A result changed in another program**: `results re-stated: 3 rows, 1 gone, 0 changed` after a
+  result was removed outside TwinFM, the row gone from the list. (No edited file showed in the log
+  as "changed"; the scripted check above covers that case.)
+- **Rename in a search tab**: a result renamed with F2, the cursor on it after the search ran again
+  (`cursor=Some(1) selected=1`).
+- **Reset column widths**: Cancel (nothing applied), then the button and OK (`widths reset to 120,
+  90, 140` for both panes).
 
 ## P11-M4: the preview gaps bundle
 
