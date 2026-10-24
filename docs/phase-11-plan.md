@@ -1072,3 +1072,87 @@ Recorded as they come from Jeremy's daily use; each is an open item until he say
   unchanged). In-app run of the gate scenario on `C:\traces\bigdir`, `target-p11m5` then the fixed
   build back to back on a quiet machine: `[busy]` 21.2% and 19.4%, render p50 2.11 and 2.11 ms, no
   panic.
+
+## P11-M6: password PDFs through hayro
+
+The preview stream's third milestone, opened 2026-10-23 on main at f09cafc (P11-M5 merged; the
+stale-preview fix, #105, waiting for its merge word), branch `feat/p11-m6-password-pdfs`. The gate
+reference is `target-p11m5` (530bd8e), the last merged milestone's gate build. No new dependency
+(Jeremy, 2026-10-22: "keep the library already in twinfm").
+
+### Settled first (2026-10-23, code reading and a probe in TwinFM's test process)
+
+- **Which revisions hayro's password path takes** (`hayro-syntax 0.8.0`, `crypto/mod.rs`): the
+  Standard handler, V 1, 2, 4 and 5 (RC4 40 to 128 bit, AES-128, AES-256). For revisions 2 to 4
+  hayro authenticates the **user** password only (algorithm 6); the owner password of such a file
+  does not open it. For revisions 5 and 6 the user or the owner password opens it. The empty password
+  is tried first, so an owner-password-only file opens with no question. Revision 6's SASLprep step
+  is a TODO in hayro: a password with characters SASLprep would change may not open. Probe, five
+  files written by pypdf 6.16.2 (RC4-40, RC4-128, AES-128, AES-256, AES-256 owner-only): every one as
+  the reading says, the red box drawn once opened.
+- **How the test gets an encrypted fixture**: no MD5, RC4 or AES is reachable in the build (hayro
+  keeps its own private), so a writer in the test would mean a hand-made MD5 and RC4 at least. pypdf
+  on this machine writes them instead: the test holds three of its files as hex (RC4-128 revision 3,
+  AES-256 revision 6, AES-256 owner-only; 940 to 1,356 bytes each), and the soak writes the AES-256
+  one from the same hex.
+- **When to ask**: Jeremy's choice (2026-10-23), from "Button in the column (Recommended)" and "Ask
+  at once": the column shows "Password-protected PDF" with an "Enter password…" button; the dialog
+  opens only when it is pressed, never as the cursor passes a protected file.
+
+### What landed
+
+- The button opens the file again with the window's handle (`Req::Open`'s `ask`); the worker asks in
+  the masked dialog P8-L2 made for zips (`fileops::archive::ask_password`, which now takes its prompt
+  from the caller), asks again while the password is wrong, and on Cancel leaves the message and the
+  button. Pages render as any PDF's, from the opened document, which holds the password; nothing
+  writes it anywhere.
+- `pdfpassword <text>` gives a scripted run the answer and presses the button; a scripted question
+  without one is refused, never shown.
+
+### Scripted checks
+
+On `target-p11m6` (the coordinating session's go): a.pdf (AES-256) showed "Password-protected PDF" and
+the "Enter password…" button (screenshot); `pdfpassword nope` was refused (`wrong`, the message kept),
+`pdfpassword twinfm` opened it (`right`, opened in 21 ms) and drew the red box; b.pdf (RC4-128) the
+same (`right`, 1 ms); c.pdf (owner-only) opened with no question.
+
+### Soak (2026-10-23, `target-p11m6`)
+
+`tools/soak-p5m3.ps1 -Minutes 10`: 10.1 min, exit 0, no panic, 256 jobs done (none failed or
+cancelled); passwords right 4 (one per cycle), wrong or refused 0, password PDFs opened 4; copy
+failures 0 (#105's retry held), chunks refused 0, picture failures 0, waitpreview timeouts 0, worker
+panics 0; PDFs opened 12 (three per cycle now, with p-locked.pdf; the report's "two per cycle" note
+predates it). Working set 160.7 to 263.3 MB (its peak), private 156.2 to 232 MB: the band of the
+P11-M1, P11-M4 and P11-M5 soaks.
+
+### Gate
+
+Pending: `tools/gate-p11m6.ps1`, tag ab51, the defaults and the preview triplet. The candidate
+`target-p11m6` is built from 0dcac60 (P11-M6 with main at 45ff94f merged in). The reference
+`target-p11m5` (530bd8e) is the last merged milestone's gate build (the coordinating session's
+word), and it predates what the candidate carries besides P11-M6: P11-M2's sweep (#102, merged
+after 530bd8e was branched) and #105 (the stale-preview fix and the clipboard retry). P11-M3 (#106)
+is in neither.
+
+**ab51** (2026-10-23, 17:00 to 17:18): the defaults passed, 22.3 against 22.3 by the medians, every
+run in the costlier state (render p50 2.9 to 3.6 ms). The preview half is void: p11m5 30.9, 23.3,
+24.2 against p11m6 27.4, 28.0, 23.3, the reference's own spread wider than any gap. The cause, found
+by the coordinating session: the Claude desktop app spinning about 36% of a core, with Task Manager
+and the Files app open; no build overlapped (the last fingerprint 16:51). Jeremy closed them and
+restarted the Claude app. **ab52** (18:53, 8 min): the preview triplet alone,
+`tools/gate-p11m6-ab52.ps1`, the same head (0dcac60) and reference (`target-p11m5`), passed: p11m5
+17.5, 17.6, 17.4 against p11m6 18.0, 17.4, 17.6, medians 17.5 / 17.6, every candidate run under
+20%, render p50 1.98 to 2.04 ms (a quiet session). **P11-M6's gate is ab51's defaults half and
+ab52's preview half; no gap that counts in either.**
+
+### Console checks (Jeremy, 2026-10-23, unelevated, `target-p11m6` on `C:\traces\p11m6-console`)
+
+Jeremy: "all good." The three test PDFs (AES-256 and RC4-128 with the password "twinfm", an AES-256
+owner-only file) and his own: the button, a wrong password asked again, Cancel leaving the message,
+the right password drawing the page, the owner-only file opening unasked.
+
+The list as handed to Jeremy:
+
+- His own password PDFs beside Edge: the button, the right password, a wrong one (asked again),
+  Cancel (the message stays).
+- An owner-password-only PDF (opens with no question), if one is to hand.

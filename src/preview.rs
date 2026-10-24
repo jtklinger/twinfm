@@ -52,7 +52,11 @@ pub const RATIO_DEFAULT: f32 = 0.35;
 pub const PAD: f32 = 8.0;
 
 pub const NO_PREVIEW: &str = "No preview";
-pub const PASSWORD: &str = "Password-protected PDF: not previewed";
+/// Shown with the "Enter password…" button (P11-M6, Jeremy's choice: the password is asked only
+/// when the button is pressed, never as the cursor passes).
+pub const PASSWORD: &str = "Password-protected PDF";
+/// The button's text beside `PASSWORD`.
+pub const PASSWORD_ACTION: &str = "Enter password\u{2026}";
 pub const DAMAGED: &str = "This PDF could not be read";
 pub const CLOUD: &str = "Not previewed: the file is in the cloud and not downloaded";
 pub const ARCHIVE: &str = "Not previewed inside an archive";
@@ -311,8 +315,10 @@ pub struct Target {
 #[derive(Debug)]
 enum Req {
     /// `sheet`: the Excel sheet to show (P9-M3; 0, the first, for any other file).
-    /// `palette`: the syntax colours for a text file (P11-M5), None with the setting off.
-    Open { seq: u64, pane: usize, path: PathBuf, attrs: u32, is_dir: bool, sheet: usize, palette: Option<[u32; 5]> },
+    /// `palette`: the syntax colours for a text file (P11-M5), None with the setting off. `ask`: a
+    /// password-protected PDF's password is asked (the "Enter password…" button, P11-M6), in a
+    /// dialog owned by this window.
+    Open { seq: u64, pane: usize, path: PathBuf, attrs: u32, is_dir: bool, sheet: usize, palette: Option<[u32; 5]>, ask: Option<isize> },
     /// Render page `page` (0-based) at `width_px`.
     Page { seq: u64, page: usize, width_px: u32 },
     /// Close the document (the column was hidden, or the cursor is on no file).
@@ -410,8 +416,8 @@ fn worker(rx: Receiver<Req>, keep: Arc<Mutex<Keep>>, reply: impl Fn(Reply)) {
             },
         };
         // A page or a close with no document open belongs to a generation that is gone.
-        if let Req::Open { seq, pane, path, attrs, is_dir, sheet, palette } = req {
-            next = serve(&mut inbox, &keep, &reply, seq, pane, &path, attrs, is_dir, sheet, palette);
+        if let Req::Open { seq, pane, path, attrs, is_dir, sheet, palette, ask } = req {
+            next = serve(&mut inbox, &keep, &reply, seq, pane, &path, attrs, is_dir, sheet, palette, ask);
         }
     }
 }
@@ -419,7 +425,19 @@ fn worker(rx: Receiver<Req>, keep: Arc<Mutex<Keep>>, reply: impl Fn(Reply)) {
 /// Classify and open one file, answer, then render its pages until a newer request arrives (that
 /// request is returned) or the document cannot go on.
 #[allow(clippy::too_many_arguments)]
-fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64, pane: usize, path: &Path, attrs: u32, is_dir: bool, sheet: usize, palette: Option<[u32; 5]>) -> Option<Req> {
+fn serve(
+    inbox: &mut Inbox,
+    keep: &Mutex<Keep>,
+    reply: &impl Fn(Reply),
+    seq: u64,
+    pane: usize,
+    path: &Path,
+    attrs: u32,
+    is_dir: bool,
+    sheet: usize,
+    palette: Option<[u32; 5]>,
+    ask: Option<isize>,
+) -> Option<Req> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let class = classify(&name, attrs, is_dir, || crate::fs::archive::within(path));
     if let Some(text) = class.message() {
@@ -442,28 +460,17 @@ fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64
         }
         _ => {}
     }
-    use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
     let t0 = Instant::now();
-    // Err(None): password-protected (hayro opens no encrypted file that needs a password);
+    // Err(None): password-protected (the empty password opens an owner-password-only file);
     // Err(Some(why)): anything else that stops it.
-    let opened: Result<(Pdf, Vec<(f32, f32)>), Option<String>> = std::fs::read(path).map_err(|e| Some(e.to_string())).and_then(|data| {
-        match std::panic::catch_unwind(|| {
-            Pdf::new(data).map(|pdf| {
-                let sizes: Vec<(f32, f32)> = pdf.pages().iter().map(|p| p.render_dimensions()).collect();
-                (pdf, sizes)
-            })
-        }) {
-            Ok(Ok((_, sizes))) if sizes.is_empty() => Err(Some("no pages".into())),
-            Ok(Ok(o)) => Ok(o),
-            Ok(Err(LoadPdfError::Decryption(DecryptionError::PasswordProtected))) => Err(None),
-            Ok(Err(e)) => Err(Some(format!("{e:?}"))),
-            Err(p) => {
-                let msg = panic_text(&*p);
-                eprintln!("[preview] worker panicked on {}: {msg}", path.display());
-                Err(Some(format!("panicked: {msg}")))
-            }
-        }
+    let mut opened = std::fs::read(path).map_err(|e| Some(e.to_string())).map(|data| {
+        let first = open_pdf(&data, "", path);
+        (data, first)
     });
+    if let (Some(hwnd), Ok((data, first @ Err(None)))) = (ask, &mut opened) {
+        *first = pdf_password(data, path, pane, seq, hwnd);
+    }
+    let opened = opened.and_then(|(_, o)| o);
     let (pdf, sizes) = match opened {
         Ok(o) => o,
         Err(why) => {
@@ -540,6 +547,93 @@ fn serve(inbox: &mut Inbox, keep: &Mutex<Keep>, reply: &impl Fn(Reply), seq: u64
         eprintln!("[preview] gen={seq} superseded: {dropped} queued page(s) dropped");
     }
     next
+}
+
+/// A PDF opened with `password` (P11-M6: hayro reads the user password of revisions 2 to 4 and the
+/// user or owner password of 5 and 6; "" opens an owner-password-only file), its page sizes with it.
+/// Err(None): the password does not open it; Err(Some(why)): anything else that stops it.
+fn open_pdf(data: &[u8], password: &str, path: &Path) -> Result<(hayro::hayro_syntax::Pdf, Vec<(f32, f32)>), Option<String>> {
+    use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
+    match std::panic::catch_unwind(|| {
+        Pdf::new_with_password(data.to_vec(), password).map(|pdf| {
+            let sizes: Vec<(f32, f32)> = pdf.pages().iter().map(|p| p.render_dimensions()).collect();
+            (pdf, sizes)
+        })
+    }) {
+        Ok(Ok((_, sizes))) if sizes.is_empty() => Err(Some("no pages".into())),
+        Ok(Ok(o)) => Ok(o),
+        Ok(Err(LoadPdfError::Decryption(DecryptionError::PasswordProtected))) => Err(None),
+        Ok(Err(e)) => Err(Some(format!("{e:?}"))),
+        Err(p) => {
+            let msg = panic_text(&*p);
+            eprintln!("[preview] worker panicked on {}: {msg}", path.display());
+            Err(Some(format!("panicked: {msg}")))
+        }
+    }
+}
+
+/// The password the script gives (`pdfpassword <text>`, TWINFM_SCRIPT only): taken by the next
+/// question in place of the dialog.
+static SCRIPT_PASSWORD: Mutex<Option<String>> = Mutex::new(None);
+
+/// The driver's `pdfpassword <text>`: the answer to the next password question.
+pub fn script_password(password: &str) {
+    *SCRIPT_PASSWORD.lock().unwrap_or_else(|e| e.into_inner()) = Some(password.to_string());
+}
+
+/// A password-protected PDF's password, asked on this worker (TwinFM's masked dialog, owned by
+/// `hwnd`; or the script's), asked again while it is wrong, until it opens the file or the question
+/// is cancelled (Err(None): the message stays). The password lives only in this call and the open
+/// document; it is never written anywhere. A scripted run without a password of the script's is
+/// refused, never shown the dialog.
+fn pdf_password(data: &[u8], path: &Path, pane: usize, seq: u64, hwnd: isize) -> Result<(hayro::hayro_syntax::Pdf, Vec<(f32, f32)>), Option<String>> {
+    let head = format!("[preview] pane={pane} gen={seq} {}: pdf password", path.display());
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let scripted = std::env::var_os("TWINFM_SCRIPT").is_some();
+    let mut wrong = false;
+    loop {
+        let given = SCRIPT_PASSWORD.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let (password, from_script) = match given {
+            Some(p) => {
+                eprintln!("{head} from the script");
+                (p, true)
+            }
+            None if scripted => {
+                eprintln!("{head} refused (the script gave none)");
+                return Err(None);
+            }
+            None => {
+                eprintln!("{head} asked{}", if wrong { " again" } else { "" });
+                let prompt = if wrong {
+                    format!("That password does not open {name}. Type it again:")
+                } else {
+                    format!("{name} is password-protected. Its password, to preview it:")
+                };
+                match crate::fileops::archive::ask_password(hwnd, &prompt) {
+                    Some(p) => (p, false),
+                    None => {
+                        eprintln!("{head} cancelled");
+                        return Err(None);
+                    }
+                }
+            }
+        };
+        match open_pdf(data, &password, path) {
+            Err(None) => {
+                eprintln!("{head} wrong");
+                if scripted || from_script {
+                    return Err(None);
+                }
+                wrong = true;
+            }
+            other => {
+                if other.is_ok() {
+                    eprintln!("{head} right");
+                }
+                return other;
+            }
+        }
+    }
 }
 
 /// A paragraph's, heading's or cell's inline Markdown as styled text; on Slint's refusal its plain
@@ -1130,6 +1224,8 @@ struct Ui {
     width_px: u32,
     pages: Rc<VecModel<PreviewPage>>,
     blocks: Rc<VecModel<MdBlock>>,
+    /// The next open asks a protected PDF's password, in a dialog owned by this window (P11-M6).
+    asking: Option<isize>,
 }
 
 thread_local! {
@@ -1185,6 +1281,7 @@ pub fn init(app: &App) {
             width_px: 0,
             pages,
             blocks,
+            asking: None,
         })
     });
 }
@@ -1362,6 +1459,20 @@ fn over_column() -> bool {
     ok && l.preview > 0.0 && x >= l.width - l.preview && x < l.width && (0.0..l.height).contains(&y)
 }
 
+/// The column's "Enter password…" button (P11-M6), or the driver's `pdfpassword`: the file shown
+/// is opened again, its password asked on the worker.
+pub fn password() {
+    let hwnd = crate::preview_hwnd();
+    with_ui(|u| {
+        if u.visible && u.target.is_some() {
+            eprintln!("[preview] password button");
+            let target = u.target.clone();
+            u.asking = Some(hwnd);
+            u.show(target, 0);
+        }
+    });
+}
+
 /// The theme or the `syntax_colours` setting changed (app.slint): the file shown is previewed again,
 /// so a text file's colours are made for the new scheme.
 pub fn recolour() {
@@ -1446,6 +1557,7 @@ fn on_reply(r: Reply) {
             Reply::Message { text, .. } => {
                 u.opening = false;
                 app.set_preview_message(text.into());
+                app.set_preview_action(if text == PASSWORD { PASSWORD_ACTION } else { "" }.into());
             }
             Reply::Pdf { sizes, .. } => {
                 u.opening = false;
@@ -1627,12 +1739,13 @@ impl Ui {
             let title = target.as_ref().and_then(|t| t.path.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             app.set_preview_title(title.into());
             app.set_preview_message("".into());
+            app.set_preview_action("".into());
             app.set_preview_content_h(0.0);
             app.set_preview_mode(0);
             app.invoke_preview_set_scroll(0.0);
         }
         let _ = self.tx.send(match target {
-            Some(t) => Req::Open { seq: self.seq, pane: t.pane, path: t.path, attrs: t.attrs, is_dir: t.is_dir, sheet, palette: self.palette() },
+            Some(t) => Req::Open { seq: self.seq, pane: t.pane, path: t.path, attrs: t.attrs, is_dir: t.is_dir, sheet, palette: self.palette(), ask: self.asking.take() },
             None => Req::Close,
         });
     }
@@ -1937,7 +2050,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask: None };
 
         tx.send(open(1, &md)).unwrap();
         match recv() {
@@ -1979,6 +2092,164 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Encrypted one-page PDFs (200 x 300 pt, a red box) written by pypdf 6.16.2 (P11-M6): RC4-128
+    /// (revision 3, user password "twinfm", owner "owner3"), AES-256 (revision 6, user "twinfm",
+    /// owner "owner6"), and AES-256 with an owner password alone ("owner6"). Hex, so the repository
+    /// holds no binary file.
+    const PDF_R3: &[&str] = &[
+        "255044462d312e330a25e2e3cfd30a312030206f626a0a3c3c0a2f50726f6475636572203c333231343635346136303e",
+        "0a3e3e0a656e646f626a0a322030206f626a0a3c3c0a2f54797065202f50616765730a2f436f756e7420310a2f4b6964",
+        "73205b203420302052205d0a3e3e0a656e646f626a0a332030206f626a0a3c3c0a2f54797065202f436174616c6f670a",
+        "2f50616765732032203020520a3e3e0a656e646f626a0a342030206f626a0a3c3c0a2f54797065202f506167650a2f52",
+        "65736f7572636573203c3c0a3e3e0a2f4d65646961426f78205b20302e3020302e302032303020333030205d0a2f5061",
+        "72656e742032203020520a2f436f6e74656e74732035203020520a3e3e0a656e646f626a0a352030206f626a0a3c3c0a",
+        "2f4c656e6774682032370a3e3e0a73747265616d0a23b521bb1931d6c0e026a7bea945cae780ceb091916e9746ecfc3f",
+        "0a656e6473747265616d0a656e646f626a0a362030206f626a0a3c3c0a2f5620320a2f5220330a2f4c656e6774682031",
+        "32380a2f5020343239343936373239320a2f46696c746572202f5374616e646172640a2f4f203c333166303332393933",
+        "373031386330333266373562343736316132306436363161663136333338363062663634393461326665613537613137",
+        "383337306564373e0a2f55203c3465666362613734636663626336386666373231306536393438376134396130323862",
+        "66346535653465373538613431363430303465353666666661303130383e0a3e3e0a656e646f626a0a787265660a3020",
+        "370a303030303030303030302036353533352066200a30303030303030303135203030303030206e200a303030303030",
+        "30303539203030303030206e200a30303030303030313138203030303030206e200a3030303030303031363720303030",
+        "3030206e200a30303030303030323737203030303030206e200a30303030303030333534203030303030206e200a7472",
+        "61696c65720a3c3c0a2f53697a6520370a2f526f6f742033203020520a2f496e666f2031203020520a2f4944205b203c",
+        "333233373631363133393338333933363336333536323634333333393634363336363631333133303338363333333636",
+        "363133303334363136313334363536353e203c3332333736313631333933383339333633363335363236343333333936",
+        "34363336363631333133303338363333333636363133303334363136313334363536353e205d0a2f456e637279707420",
+        "36203020520a3e3e0a7374617274787265660a3536390a2525454f460a",
+    ];
+    const PDF_R6: &[&str] = &[
+        "255044462d312e330a25e2e3cfd30a312030206f626a0a3c3c0a2f50726f6475636572203c6234393239306361653230",
+        "306563333239393063613962386231373864616364656534656663663935383166666338636332613731323035373830",
+        "32383665323e0a3e3e0a656e646f626a0a322030206f626a0a3c3c0a2f54797065202f50616765730a2f436f756e7420",
+        "310a2f4b696473205b203420302052205d0a3e3e0a656e646f626a0a332030206f626a0a3c3c0a2f54797065202f4361",
+        "74616c6f670a2f50616765732032203020520a3e3e0a656e646f626a0a342030206f626a0a3c3c0a2f54797065202f50",
+        "6167650a2f5265736f7572636573203c3c0a3e3e0a2f4d65646961426f78205b20302e3020302e302032303020333030",
+        "205d0a2f506172656e742032203020520a2f436f6e74656e74732035203020520a3e3e0a656e646f626a0a352030206f",
+        "626a0a3c3c0a2f4c656e6774682034380a3e3e0a73747265616d0ad9865c0a9cafeaec97f94a580586522c54a8821d8f",
+        "3f38280227ad08450da0dff94684f12e0f8d2c1baf5a73472784900a656e6473747265616d0a656e646f626a0a362030",
+        "206f626a0a3c3c0a2f5620350a2f5220360a2f4c656e677468203235360a2f5020343239343936373239320a2f46696c",
+        "746572202f5374616e646172640a2f4f203c313932343732663163373234386130323863636234646538346639333634",
+        "626265626261623032383034353133373436666466363135643364613265396635306230393434636333353837316432",
+        "3936346138323237396266336439633532313e0a2f55203c643439383966623030353734383061313431626666316363",
+        "653239613161353739303363333863363166386266316431643338656162333963363938393866613135313837613539",
+        "3862663264323464383661333061636464386432353062393e0a2f4346203c3c0a2f5374644346203c3c0a2f41757468",
+        "4576656e74202f446f634f70656e0a2f43464d202f41455356330a2f4c656e6774682033320a3e3e0a3e3e0a2f53746d",
+        "46202f53746443460a2f53747246202f53746443460a2f4f45203c373766396434386237336262643761333864626237",
+        "616534616131323938303736373164353931306565613638623038373961396332626431636433383862643e0a2f5545",
+        "203c66316361316431376337383263356662636633346261303164663539336664353832303861313132656635383963",
+        "6235363864346336633961613166373133383e0a2f5065726d73203c3538353638313861303236383462383038663763",
+        "6361616165336264663931373e0a3e3e0a656e646f626a0a787265660a3020370a303030303030303030302036353533",
+        "352066200a30303030303030303135203030303030206e200a30303030303030313133203030303030206e200a303030",
+        "30303030313732203030303030206e200a30303030303030323231203030303030206e200a3030303030303033333120",
+        "3030303030206e200a30303030303030343239203030303030206e200a747261696c65720a3c3c0a2f53697a6520370a",
+        "2f526f6f742033203020520a2f496e666f2031203020520a2f4944205b203c3332333736313631333933383339333633",
+        "36333536323634333333393634363336363631333133303338363333333636363133303334363136313334363536353e",
+        "203c33323337363136313339333833393336333633353632363433333339363436333636363133313330333836333333",
+        "3636363133303334363136313334363536353e205d0a2f456e63727970742036203020520a3e3e0a7374617274787265",
+        "660a3938340a2525454f460a",
+    ];
+    const PDF_R6_OWNER_ONLY: &[&str] = &[
+        "255044462d312e330a25e2e3cfd30a312030206f626a0a3c3c0a2f50726f6475636572203c6433623564666164623237",
+        "323435343533373062646439613566336166643437303163326438363939376661316165326462623530383432393461",
+        "36313636323e0a3e3e0a656e646f626a0a322030206f626a0a3c3c0a2f54797065202f50616765730a2f436f756e7420",
+        "310a2f4b696473205b203420302052205d0a3e3e0a656e646f626a0a332030206f626a0a3c3c0a2f54797065202f4361",
+        "74616c6f670a2f50616765732032203020520a3e3e0a656e646f626a0a342030206f626a0a3c3c0a2f54797065202f50",
+        "6167650a2f5265736f7572636573203c3c0a3e3e0a2f4d65646961426f78205b20302e3020302e302032303020333030",
+        "205d0a2f506172656e742032203020520a2f436f6e74656e74732035203020520a3e3e0a656e646f626a0a352030206f",
+        "626a0a3c3c0a2f4c656e6774682034380a3e3e0a73747265616d0ae9a5964cbe5853e7f39f9fbe4d1070511b9684976b",
+        "0d0417d658a9c97c7deabb4b9eadaca3eba732d1b59695aca2ae430a656e6473747265616d0a656e646f626a0a362030",
+        "206f626a0a3c3c0a2f5620350a2f5220360a2f4c656e677468203235360a2f5020343239343936373239320a2f46696c",
+        "746572202f5374616e646172640a2f4f203c306530313863323762653436316266376133663563623766623236343266",
+        "663037303565333932613734393533323061633166306535613639326534653631643333373831376566323639383465",
+        "6563333362396137613837656532333266323e0a2f55203c376633656564373931383539616232343033303233613730",
+        "623962366238306338663933383561663030363839376365636437663966623834353561626562613538353830613834",
+        "3335633635663334346664633534626330306565643037383e0a2f4346203c3c0a2f5374644346203c3c0a2f41757468",
+        "4576656e74202f446f634f70656e0a2f43464d202f41455356330a2f4c656e6774682033320a3e3e0a3e3e0a2f53746d",
+        "46202f53746443460a2f53747246202f53746443460a2f4f45203c366539336162656531613564383536306238316563",
+        "333166313363366331666433623632646363346437376135326638633138656536613663616531386564353e0a2f5545",
+        "203c39353535326632313833346433366363356665353734623064393832643538623533306633356633326337373333",
+        "6666346430373931623366373036313036323e0a2f5065726d73203c6238323562303038623366396133623266316234",
+        "3934313262326232363961373e0a3e3e0a656e646f626a0a787265660a3020370a303030303030303030302036353533",
+        "352066200a30303030303030303135203030303030206e200a30303030303030313133203030303030206e200a303030",
+        "30303030313732203030303030206e200a30303030303030323231203030303030206e200a3030303030303033333120",
+        "3030303030206e200a30303030303030343239203030303030206e200a747261696c65720a3c3c0a2f53697a6520370a",
+        "2f526f6f742033203020520a2f496e666f2031203020520a2f4944205b203c3332333736313631333933383339333633",
+        "36333536323634333333393634363336363631333133303338363333333636363133303334363136313334363536353e",
+        "203c33323337363136313339333833393336333633353632363433333339363436333636363133313330333836333333",
+        "3636363133303334363136313334363536353e205d0a2f456e63727970742036203020520a3e3e0a7374617274787265",
+        "660a3938340a2525454f460a",
+    ];
+
+    fn unhex(lines: &[&str]) -> Vec<u8> {
+        let h: String = lines.concat();
+        (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn password_pdfs_open_with_their_password() {
+        let p = Path::new("x.pdf");
+        let (r3, r6, owner_only) = (unhex(PDF_R3), unhex(PDF_R6), unhex(PDF_R6_OWNER_ONLY));
+        let opens = |data: &[u8], pw: &str| match open_pdf(data, pw, p) {
+            Ok((_, sizes)) => Ok(sizes),
+            Err(e) => Err(e),
+        };
+        // Revision 3: the user password only (hayro does not take the owner password there).
+        assert_eq!(opens(&r3, ""), Err(None));
+        assert_eq!(opens(&r3, "twinfm"), Ok(vec![(200.0, 300.0)]));
+        assert_eq!(opens(&r3, "owner3"), Err(None));
+        // Revision 6: the user or the owner password; a wrong one refused.
+        assert_eq!(opens(&r6, ""), Err(None));
+        assert!(opens(&r6, "twinfm").is_ok() && opens(&r6, "owner6").is_ok());
+        assert_eq!(opens(&r6, "nope"), Err(None));
+        // An owner password alone: opened with none, never asked.
+        assert!(opens(&owner_only, "").is_ok());
+
+        // The worker: shown with the button's message, then opened with the script's password and
+        // rendered; a wrong password from the script leaves the message (no dialog is ever shown).
+        let dir = std::env::temp_dir().join(format!("twinfm-p11m6-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f6, fo) = (dir.join("locked.pdf"), dir.join("owner-only.pdf"));
+        std::fs::write(&f6, &r6).unwrap();
+        std::fs::write(&fo, &owner_only).unwrap();
+        let (tx, rx) = unbounded();
+        let (rtx, rrx) = std::sync::mpsc::channel::<Reply>();
+        let keep = Arc::new(Mutex::new(Keep { seq: 1, ..Default::default() }));
+        let k2 = keep.clone();
+        let rtx = Mutex::new(rtx);
+        let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
+        let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
+        let open = |seq, path: &Path, ask| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask };
+        tx.send(open(1, &f6, None)).unwrap();
+        assert!(matches!(recv(), Reply::Message { seq: 1, text: PASSWORD }), "not asked until the button");
+        keep.lock().unwrap().seq = 2;
+        script_password("nope");
+        tx.send(open(2, &f6, Some(0))).unwrap();
+        assert!(matches!(recv(), Reply::Message { seq: 2, text: PASSWORD }), "a wrong password from the script");
+        keep.lock().unwrap().seq = 3;
+        script_password("twinfm");
+        tx.send(open(3, &f6, Some(0))).unwrap();
+        assert!(matches!(recv(), Reply::Pdf { seq: 3, ref sizes } if *sizes == vec![(200.0, 300.0)]));
+        {
+            let mut k = keep.lock().unwrap();
+            (k.first, k.last, k.width_px) = (0, 0, 100);
+        }
+        tx.send(Req::Page { seq: 3, page: 0, width_px: 100 }).unwrap();
+        match recv() {
+            Reply::Page { seq: 3, buf, .. } => {
+                let px = buf.as_slice()[(75 * 100 + 50) as usize];
+                assert_eq!((px.r, px.g, px.b), (255, 0, 0), "the red box, decrypted and drawn");
+            }
+            _ => panic!("page 1"),
+        }
+        keep.lock().unwrap().seq = 4;
+        tx.send(open(4, &fo, None)).unwrap();
+        assert!(matches!(recv(), Reply::Pdf { seq: 4, .. }), "an owner password alone is never asked");
+        drop(tx);
+        w.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn the_worker_colours_source_after_its_blocks() {
         // P11-M5: a Rust file of two chunks with a block comment across the boundary; a .txt stays plain.
@@ -1998,7 +2269,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: Some(crate::syntax::LIGHT) };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: Some(crate::syntax::LIGHT), ask: None };
 
         tx.send(open(1, &rs)).unwrap();
         assert!(matches!(recv(), Reply::Blocks { seq: 1, pictures: 2, ref blocks, .. } if blocks.len() == 2), "two chunks, two answers to follow");
@@ -2042,7 +2313,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask: None };
 
         // Text: code blocks of 40 lines, tabs as spaces, no pictures.
         tx.send(open(1, &txt)).unwrap();
@@ -2134,7 +2405,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path, sheet| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet, palette: None };
+        let open = |seq, path: &Path, sheet| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet, palette: None, ask: None };
 
         // Word: its blocks, then its picture from the zip.
         tx.send(open(1, &docx, 0)).unwrap();
@@ -2274,7 +2545,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask: None };
 
         tx.send(open(1, &pdf)).unwrap();
         match recv() {
@@ -2303,7 +2574,7 @@ mod tests {
         assert!(matches!(recv(), Reply::Message { seq: 2, text: DAMAGED }));
         tx.send(open(3, &txt)).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 3, text: NO_PREVIEW }));
-        tx.send(Req::Open { seq: 4, pane: 0, path: dir.clone(), attrs: 0x10, is_dir: true, sheet: 0, palette: None }).unwrap();
+        tx.send(Req::Open { seq: 4, pane: 0, path: dir.clone(), attrs: 0x10, is_dir: true, sheet: 0, palette: None, ask: None }).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 4, text: NO_PREVIEW }));
         tx.send(open(5, &dir.join("missing.pdf"))).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 5, text: DAMAGED }), "a file that cannot be read");
