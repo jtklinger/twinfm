@@ -46,10 +46,18 @@ fn open(path: &Path) -> std::io::Result<File> {
     OpenOptions::new().create(true).write(true).truncate(true).share_mode(7).open(path)
 }
 
+/// Point standard error at `handle`, holding Rust's stderr lock meanwhile: an `eprintln!` writes its
+/// line in pieces under that lock, so no line is split between the old place and the new one.
+fn switch_to(handle: *mut c_void) {
+    let _line = std::io::stderr().lock();
+    // SAFETY: a live file handle, kept open as long as it is standard error (module docs), or the
+    // handle the process started with.
+    unsafe { SetStdHandle(STD_ERROR_HANDLE, handle) };
+}
+
 /// Point standard error at `file`.
 fn redirect(file: &File) {
-    // SAFETY: a live file handle, kept open as long as it is standard error (module docs).
-    unsafe { SetStdHandle(STD_ERROR_HANDLE, file.as_raw_handle() as *mut c_void) };
+    switch_to(file.as_raw_handle() as *mut c_void);
 }
 
 /// Start writing the log into `dir` (the settings folder), `first` its first line (the version and
@@ -81,8 +89,7 @@ pub fn stop() -> Option<PathBuf> {
     let log = g.as_mut()?;
     let (mut f, path) = log.current.take()?;
     let _ = writeln!(f, "[log] stopped");
-    // SAFETY: the handle the process started with (or null), as it was.
-    unsafe { SetStdHandle(STD_ERROR_HANDLE, log.original as *mut c_void) };
+    switch_to(log.original as *mut c_void);
     log.retired.push(f);
     Some(path)
 }
