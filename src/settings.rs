@@ -139,6 +139,9 @@ pub struct Config {
     pub preview_zoom: u32,
     /// Text and source in the preview coloured by language (P11-M5, in the dialog). Missing: on.
     pub syntax_colours: bool,
+    /// Write the stderr lines to `twinfm.log` beside this file (P11-M7, `logfile`; in the dialog).
+    /// Missing: off.
+    pub log: bool,
     /// Each pane's column widths in the details list (P9-M1), logical px: Type, Size and Modified
     /// (`cols`; a header grip's drag or double-click sets them). Missing in an older file: 120, 90,
     /// 140. Pulled into 40 to 2,000 px on load.
@@ -288,6 +291,7 @@ impl Default for Config {
             preview_width: crate::preview::RATIO_DEFAULT,
             preview_zoom: 100,
             syntax_colours: true,
+            log: false,
             col_type_left: crate::cols::DEFAULT.ty,
             col_size_left: crate::cols::DEFAULT.size,
             col_modified_left: crate::cols::DEFAULT.modified,
@@ -560,6 +564,8 @@ pub struct Dialog {
     pub preview: bool,
     /// `Config::syntax_colours` (P11-M5).
     pub syntax_colours: bool,
+    /// `Config::log` (P11-M7).
+    pub log: bool,
 }
 
 impl Dialog {
@@ -574,7 +580,7 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 16] {
+    fn fields(&self) -> [(&'static str, String); 17] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
@@ -592,6 +598,7 @@ impl Dialog {
             ("theme", self.theme.clone()),
             ("preview", self.preview.to_string()),
             ("syntax_colours", self.syntax_colours.to_string()),
+            ("log", self.log.to_string()),
         ]
     }
 
@@ -799,6 +806,7 @@ col_size_right = 99999.0
         assert_eq!((wild.split_ratio, wild.sidebar_width, wild.preview_width), (0.85, SIDEBAR_MIN, 0.6));
         assert_eq!((d.preview, d.preview_width), (false, 0.35), "the preview column is off by default (P8-M1)");
         assert!(d.syntax_colours && !Config::parse("syntax_colours = false\n").unwrap().syntax_colours, "P11-M5");
+        assert!(!d.log && Config::parse("log = true\n").unwrap().log, "P11-M7");
         assert_eq!((d.preview_zoom, Config::parse("preview_zoom = 5000\n").unwrap().preview_zoom), (100, 400), "P11-M4");
         use crate::model::SortCol;
         for c in [SortCol::Name, SortCol::Size, SortCol::Modified, SortCol::Type] {
@@ -957,9 +965,10 @@ show_type = false
             theme: "system".into(),
             preview: false,
             syntax_colours: true,
+            log: false,
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), toolbar: "pane".into(), theme: "dark".into(), preview: true, syntax_colours: false, ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), toolbar: "pane".into(), theme: "dark".into(), preview: true, syntax_colours: false, log: true, ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
@@ -973,6 +982,7 @@ show_type = false
                 ("theme", "system".into(), "dark".into()),
                 ("preview", "false".into(), "true".into()),
                 ("syntax_colours", "true".into(), "false".into()),
+                ("log", "false".into(), "true".into()),
             ]
         );
         // Start folders: trimmed; an empty left one is the default, so blanking it changes nothing.

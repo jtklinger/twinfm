@@ -805,6 +805,10 @@ the Phase 11 close.
 - **The 187 MB first-run question**: not run (a heap-sampling trace); carried to the Phase 11 close's
   long soak, with this milestone's working-set note.
 
+**Merged** 2026-10-23 as 94d37e7 (#106), on Jeremy's word ("Merge PR #106 once its CI is green."), by
+the coordinating session, after main's 45ff94f (#105) was merged into the branch. The video thumbnail
+follow-up waits for Jeremy's decision.
+
 ## P11-M4: the preview gaps bundle
 
 The preview stream's first milestone, opened 2026-10-22 on main at d1abbe3 (0.1.0, Phase 10 merged),
@@ -1156,3 +1160,126 @@ The list as handed to Jeremy:
 - His own password PDFs beside Edge: the button, the right password, a wrong one (asked again),
   Cancel (the message stays).
 - An owner-password-only PDF (opens with no question), if one is to hand.
+
+## P11-M7: logging as a setting
+
+Started 2026-10-23 from main at 94d37e7 (P11-M3 merged), branch `feat/p11-m7-log-setting`, the
+coordinating session's go ("Settle first, then ask Jeremy where the plan leaves it to him"). The gate
+reference is `target-p11m3` (ff0d120).
+
+Jeremy's decisions, 2026-10-23, from the choices put to him in this session (each the recommended
+option): **"One per run, keep 2"** (the file and its rotation), **"Redirect its output"** (how the lines
+reach the file), **"Open in TwinFM"** (the dialog row's button).
+
+### Settled first (2026-10-23, before any code)
+
+- **One sink or `SetStdHandle`**: about 500 `eprintln!` lines in the code; a sink would change every
+  one. A probe in TwinFM's test process: after `SetStdHandle(STD_ERROR_HANDLE, file)` a write to
+  Rust's stderr landed in the file, and after the old handle was put back it did not (std looks the
+  handle up on every write). `SetStdHandle` it is, declared by hand from kernel32 (windows-sys's
+  Console feature is not enabled; the code's habit is to declare two functions rather than enable a
+  feature).
+- **A redirected stderr with the setting off**: untouched, so the gate's and the soak's
+  `-RedirectStandardError` get the lines as before. With it on the lines go to the file only; a
+  scripted run reads no settings, so the gate, soak and check scripts never turn it on unless
+  `TWINFM_CONFIG` names a file with `log = true`.
+- **The file**: `twinfm.log` beside the settings file (`%APPDATA%\twinfm\`); at start the last run's
+  becomes `twinfm.previous.log` (replacing it); a run past 20 MB is cut the same way, its size looked at
+  once a minute (a timer; the handle is not counted per write, as no write goes through TwinFM). The
+  file is opened shared for delete, so it can be renamed while open (the cut). Its first line: `TwinFM
+  <version> log, started <local time>`.
+- **Turning it off**: standard error goes back to what it was at start (nothing, for a windowed
+  program nobody redirected); the file the log left stays open until TwinFM exits, so a write racing
+  the switch can never reach a handle Windows has given to something else.
+- **The button**: "Open log folder" closes the dialog as OK does (a log switched on there is written
+  first) and shows the folder in the active pane, the log selected (`show_in_pane`), or the folder
+  alone before any log was written.
+
+### What landed (2026-10-23)
+
+- `src/logfile.rs` (new): `start`, `stop`, `cut_if_over`, a test (stderr into the file, the previous
+  file, the cut, stop).
+- `settings::Config::log` (default false) and `Dialog::log`; `main.rs` starts the log right after the
+  settings are read when it is on, applies it on OK (`set_log`), cuts once a minute, and runs the
+  dialog's button (`open_log_folder`); the dialog's Log row (a switch and the button; the dialog 670 px).
+- CLAUDE.md § Measuring (the first bullet, the settings list, the tests list).
+
+### Scripted checks (2026-10-23, the gate build `target-p11m7`, a scratch `TWINFM_CONFIG`)
+
+- The dialog: `settings set log true`, OK: `[settings] dialog: log false -> true`, `twinfm.log`
+  beside the scratch settings, its first line `TwinFM 0.1.0 log, started 2026-10-23 21:50`, then
+  `[log] writing to ...`; the run's lines went to the file, not the redirect. `settings set log false`,
+  OK: the file ends `[settings] dialog: log true -> false` / `[log] stopped`, and the redirect gets
+  `[log] stopped writing to ...` and the rest; the settings file saved `log = false`.
+- A restart with `log = true` in the file: the log from the start (only the two lines before the
+  settings are read reach the redirect), the last run's file kept as `twinfm.previous.log`.
+- **Found and fixed**: one start's log had a line `0000000`, the end of the verb worker's
+  `CoInitializeEx = 0x00000000` line, whose beginning went to the old output: the switch landed in the
+  middle of another thread's `eprintln!`, which writes a line in pieces. The switch now holds Rust's
+  stderr lock (7469487), the lock an `eprintln!` holds for its whole line; three starts after it, no
+  line out of shape. `target-p11m7` was rebuilt at 7469487 (from 9dd0cad) before the soak.
+- A screenshot (light): the Log row (the switch, "Open log folder") and the footer inside the 670 px
+  dialog.
+- Two test-suite flakes seen on this branch and recorded: `zip_jobs_on_the_worker` and
+  `shell_levels_are_listed_and_cached` failed at their scratch folders' removal (a file held) in some
+  full runs, passed alone, and failed the same way with the log test skipped (2 of 3 runs): something
+  on the machine (Defender or the indexer on fresh archives in `%TEMP%`) holds the files, not P11-M7.
+
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-23, on `target-p11m7` at 7469487, the
+coordinating session's screen go; a scripted run reads no settings, so the log stays off and the soak
+checks that the setting changes nothing there): 10.1 min, exit 0, 0 panics; 256 jobs (0 failed, 0
+cancelled, 0 refused), 0 waitops timeouts; every must-be-0 count 0; history jumps 4, resets 8, content
+search 4 / 806 / 4, P11-M5's files coloured 8; working set 136 to 246 MB (P11-M3's run: 173 to 290).
+
+### Gate
+
+The defaults triplet (the setting off: no file, nothing per row or frame), `target-p11m7` (7469487)
+against `target-p11m3`; then one in-app run with the setting on (`TWINFM_CONFIG` naming a read-only file
+with `log = true`), its numbers read from the log.
+
+- **ab53: a gap by the rule, sent for an order-swapped rerun.** Run by Jeremy, finished 2026-10-23
+  22:18, 8 min, `C:\traces\gate-ab53-summary.txt`; every run passed the wrapper's checks, no build
+  overlapping (the coordinating session's word).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11m3-1 / 2 / 3 | 18.3 / 18.6 / 18.4 | 19.4 / 19.5 / 18.4 | 2.30 / 2.19 / 2.22 |
+| p11m7-1 / 2 / 3 | 18.8 / 18.8 / 18.8 | 18.0 / 17.3 / 18.4 | 2.16 / 2.34 / 2.37 |
+
+  Medians 18.4 / 18.8 (0.4 points), every reference run below every candidate run: a gap that counts
+  by the rule, though under a point; render p50 even (2.16 to 2.37 ms); every candidate run under 20%.
+  The candidate always ran in the second slot, which reads high (the P7-M4 rule: a fixed-order gap is
+  checked with the order swapped); the in-app figures go the other way (the candidate's all at or
+  below the reference's). **The code read for the coordinating session**: with `log` off nothing of
+  P11-M7 runs per frame or per `eprintln!` (no wrapper, no lock, no setting checked per line; Rust's
+  stderr looks its handle up on every write as before; the stderr lock is taken only when the log is
+  switched); the only recurring work is the once-a-minute cut timer (a mutex, the log found off, a
+  return; it also formats the first-line string every minute, a clean-up for later), which first
+  fires at 60 s, after the gate's 10 s window. So in the measured window P11-M7 runs nothing.
+- **ab54: passed, the slot bias confirmed.** The defaults again, the candidate first in each round
+  (`tools/gate-p11m7-ab54.ps1`), same head and reference. Run by Jeremy, finished 2026-10-24 08:52,
+  8 min, `C:\traces\gate-ab54-summary.txt`; every run passed the wrapper's checks, no build
+  overlapping.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11m7-1 / 2 / 3 (first slot) | 18.4 / 18.2 / 18.3 | 18.4 / 19.1 / 17.0 | 2.20 / 2.18 / 2.28 |
+| p11m3-1 / 2 / 3 (second slot) | 18.6 / 18.5 / 18.5 | 18.6 / 20.0 / 19.1 | 2.22 / 2.21 / 2.24 |
+
+  Medians 18.3 (candidate) / 18.5 (reference): this time every candidate run sits below every
+  reference run, the second slot again the higher one; render p50 even (2.18 to 2.28 ms); every
+  candidate run under 20%. **ab53 and ab54 together are P11-M7's gate: passed.** ab53's 0.4 points
+  were the second slot, as the code reading said; with the order swapped the gap turned round.
+
+### Console checks (Jeremy, 2026-10-24, unelevated, `target-p11m7` on `C:\traces\p11m7-console`)
+
+Jeremy: "All four log checks look good."
+
+The list as handed to Jeremy: `target-p11m7` with `TWINFM_CONFIG=C:\traces\p11m7-console\config.toml` (Jeremy's own settings file
+untouched), so the log is written beside it in `C:\traces\p11m7-console`.
+
+- Settings > Log on, OK: `twinfm.log` appears and grows while TwinFM runs (open it in
+  Notepad, which reads it while TwinFM writes it).
+- "Open log folder": the dialog closes, the active pane shows the folder with the log selected.
+- Log off, OK: the file stops growing; on again: a fresh `twinfm.log`, the earlier one kept as
+  `twinfm.previous.log`. Restart with it on: the last run's file is `twinfm.previous.log`.

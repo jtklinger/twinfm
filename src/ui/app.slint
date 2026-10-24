@@ -529,6 +529,10 @@ export component App inherits Window {
     // The Browse button beside a start folder (field "start_left" or "start_right"), and the check
     // of a start folder staged (main.rs `start_folder_check`).
     callback browse-start(string);
+    // The log (P11-M7): the setting staged, and the row's "Open log folder" button (main.rs
+    // `open_log_folder`).
+    in-out property <bool> dlg-log;
+    callback open-log-folder();
     callback start-folder-check(string, string);
     private property <bool> settings-shown: false;
     // Bumped after each show: the dialog then puts the focus in its first field (see there).
@@ -567,6 +571,7 @@ export component App inherits Window {
         if (field == "theme") { dlg-theme = value == "light" ? 1 : value == "dark" ? 2 : 0; }
         if (field == "preview") { dlg-preview = value == "true"; }
         if (field == "syntax_colours") { dlg-syntax-colours = value == "true"; }
+        if (field == "log") { dlg-log = value == "true"; }
         if (field == "cols_reset") { dlg-cols-reset = value != "false"; }
     }
 
@@ -1387,9 +1392,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 630px) / 2);
+        y: max(10px, (root.height - 670px) / 2);
         width: 480px;
-        height: 630px;
+        height: 670px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Theme.card;
@@ -1569,6 +1574,22 @@ export component App inherits Window {
                                 checked: root.dlg-syntax-colours;
                                 accessible-label: "Colour text and source by language in the preview";
                                 toggled => { root.settings-stage("syntax_colours", self.checked ? "true" : "false"); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Log"; vertical-alignment: center; }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Switch {
+                                    text: "Write a log file";
+                                    checked: root.dlg-log;
+                                    accessible-label: "Write the log to a file";
+                                    toggled => { root.settings-stage("log", self.checked ? "true" : "false"); }
+                                }
+                                Btn {
+                                    text: "Open log folder";
+                                    clicked => { root.open-log-folder(); }
+                                }
                             }
                         }
                         Row {
