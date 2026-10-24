@@ -42,7 +42,7 @@ kickoff decisions, § Calls made lists the lead's, § Open questions what each b
 them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (301 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (302 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -968,6 +968,18 @@ them before changing the list.
   `[preview]` lines: `password button`, `pane=N gen=G <path>: pdf password asked | asked again | from the
   script | right | wrong | cancelled | refused (the script gave none)`; the open's `password` line as
   before.
+  Since the P11 video-thumbnail follow-up: `IThumbnailCache::GetThumbnail`'s failures are logged,
+  `[icons] thumbnail <path>: GetThumbnail = 0x...` (never `WTS_E_FAILEDEXTRACTION`, no picture to make,
+  nor `STG_E_FILENOTFOUND` under `WTS_INCACHEONLY`, a cloud-only file not in the cache). An answer that
+  says "not yet" (`LATER_HRESULTS`: `WTS_E_EXTRACTIONTIMEDOUT`, `WTS_E_SURROGATEUNAVAILABLE`,
+  `WTS_E_EXTRACTIONPENDING`, `E_PENDING`; extraction only) ends the line ` (asked again later)`: the row
+  shows the type icon (`Outcome::Later`), the worker gives the key back, and the table asks again after
+  2, 5 and 10 s (`LATER_WAITS`, `SizeKeys::later`, `IconTable::retry_due` from the once-a-second icon
+  timer; the rows showing that icon keep it while they ask, `SizeKeys::stale`); after the fourth such
+  answer the icon stays for the session. `[icons] N thumbnail(s) asked again`, `[icons] thumbnail not
+  ready after 4 answers: <key> keeps its type icon`. No new driver step. A test video made by Windows
+  itself (no ffmpeg here): WinRT `MediaComposition` with `MediaClip.CreateFromImageFileAsync` and
+  `RenderToFileAsync` from Windows PowerShell (the plan's record has the script's shape).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

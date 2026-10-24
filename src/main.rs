@@ -2439,6 +2439,15 @@ fn drain_icons() {
 /// (in total) with their average compose time.
 fn report_icons() {
     with_state(|st| {
+        // Thumbnails the cache had not got yet are asked for again once their wait runs out.
+        let due = st.icons.borrow_mut().retry_due(Instant::now());
+        if due > 0 {
+            eprintln!("[icons] {due} thumbnail(s) asked again");
+            if let Some(app) = st.app.upgrade() {
+                resolve_view(st, &app, 0);
+                resolve_view(st, &app, 1);
+            }
+        }
         let c = &mut st.icon_counts;
         let rendered = st.icon_stats.rendered.load(Ordering::Relaxed);
         let render_ns = st.icon_stats.render_ns.load(Ordering::Relaxed);
