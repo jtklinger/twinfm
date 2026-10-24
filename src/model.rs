@@ -295,7 +295,8 @@ impl PaneModel {
         let carrying = !self.carried.borrow().is_empty();
         for i in first..=end {
             let e = &mut shown[i];
-            if (e.icon >= PLACEHOLDERS && !(carrying && crate::icons::is_look_key(&e.icon_key))) || e.icon_key.is_empty() {
+            // So does one showing a thumbnail's type icon whose wait for the thumbnail ran out.
+            if (e.icon >= PLACEHOLDERS && !(carrying && crate::icons::is_look_key(&e.icon_key)) && !keys.is_stale(e.icon)) || e.icon_key.is_empty() {
                 continue;
             }
             let mut state = keys.state(&e.icon_key);
@@ -2871,6 +2872,41 @@ mod tests {
         plain.begin_refresh();
         plain.append(vec![keyed("a.txt", "ext:.txt")]);
         assert_eq!(plain.finish_refresh(), (0, 0));
+    }
+
+    #[test]
+    fn a_thumbnail_not_ready_shows_the_icon_and_is_asked_again() {
+        use crate::icons::Outcome;
+        use std::time::{Duration, Instant};
+        let px = || slint::SharedPixelBuffer::new(1, 1);
+        let key = "thumb:C:\\v.mp4|1|2";
+        let m = PaneModel::default();
+        m.append(vec![Entry { icon_key: key.into(), ..e("v.mp4", 0, false) }]);
+        let mut asked = 0;
+        m.resolve_icons(0, 0, 32, |_, _| asked += 1);
+        // The cache says not yet: the row shows the type icon at once.
+        m.icons.borrow_mut().complete(key.into(), 32, Outcome::Later(px()));
+        assert_eq!(m.resolve_icons(0, 0, 32, |_, _| panic!("not before its wait")), [0]);
+        let icon = m.icon_indices(0, 0)[0];
+        assert!(icon >= PLACEHOLDERS);
+        assert_eq!(m.icons.borrow_mut().retry_due(Instant::now()), 0, "two seconds to wait");
+        // Past the wait the row asks again and keeps the icon meanwhile; the picture then lands.
+        assert_eq!(m.icons.borrow_mut().retry_due(Instant::now() + Duration::from_secs(3)), 1);
+        assert!(m.resolve_icons(0, 0, 32, |_, _| asked += 1).is_empty());
+        assert_eq!((asked, m.icon_indices(0, 0)[0]), (2, icon), "asked again, the icon kept");
+        m.icons.borrow_mut().complete(key.into(), 32, Outcome::Picture(px(), [0, 0, 1, 1]));
+        assert_eq!(m.resolve_icons(0, 0, 32, |_, _| panic!("held")), [0]);
+        assert!(m.icon_indices(0, 0)[0] > icon, "the thumbnail in place of the icon");
+        // A thumbnail that stays not ready is asked three more times, then keeps its icon.
+        let other = "thumb:C:\\w.mp4|1|2";
+        let mut t = m.icons.borrow_mut();
+        let later = Instant::now() + Duration::from_secs(60);
+        for _ in 0..3 {
+            t.complete(other.into(), 32, Outcome::Later(px()));
+            assert_eq!(t.retry_due(later), 1);
+        }
+        t.complete(other.into(), 32, Outcome::Later(px()));
+        assert_eq!(t.retry_due(later), 0, "the fourth answer is the last");
     }
 
     #[test]

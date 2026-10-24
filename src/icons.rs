@@ -27,7 +27,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::SIZE;
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject,
@@ -195,6 +195,9 @@ pub enum Outcome {
     Skipped,
     /// A `look:` key's mark (None when the shell gave none): the entry takes `looked`'s key.
     Looked(Mark),
+    /// A thumbnail the cache has not got yet (`LATER_HRESULTS`): the type icon, shown meanwhile;
+    /// the table asks for the thumbnail again (`SizeKeys::later`).
+    Later(SharedPixelBuffer<Rgba8Pixel>),
 }
 
 pub struct Reply {
@@ -973,6 +976,21 @@ const WTS_EXTRACT: u32 = 0;
 /// WTS_INCACHEONLY: from the cache only, never extracted (a cloud-only file's content would be
 /// downloaded by an extraction; P6-M1).
 const WTS_INCACHEONLY: u32 = 1;
+/// WTS_E_FAILEDEXTRACTION (thumbcache.h): the handler could not make a picture of this file.
+const WTS_E_FAILEDEXTRACTION: HRESULT = 0x8004B200_u32 as HRESULT;
+/// STG_E_FILENOTFOUND: under WTS_INCACHEONLY, not in the cache.
+const STG_E_FILENOTFOUND: HRESULT = 0x80030002_u32 as HRESULT;
+/// The answers that say "not now" rather than "no picture": WTS_E_EXTRACTIONTIMEDOUT,
+/// WTS_E_SURROGATEUNAVAILABLE, WTS_E_EXTRACTIONPENDING (thumbcache.h) and E_PENDING. The type icon
+/// shows meanwhile and the thumbnail is asked for again (`SizeKeys::later`).
+const LATER_HRESULTS: [HRESULT; 4] = [0x8004B201_u32 as HRESULT, 0x8004B202_u32 as HRESULT, 0x8004B205_u32 as HRESULT, 0x8000000A_u32 as HRESULT];
+
+/// A thumbnail's answer: the picture, none (the type icon stands), or none yet (`LATER_HRESULTS`).
+enum Thumbnail {
+    Got(Rendered),
+    None,
+    Later,
+}
 
 /// Whether a request is for a thumbnail, and where the thumbnail may come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -989,12 +1007,12 @@ thread_local! {
 }
 
 /// The shell's thumbnail for `path` from the system thumbnail cache (extracted and cached on a
-/// miss, unless `wts` is `WTS_INCACHEONLY`), letterboxed into a `size_px` square, or None (no
-/// handler, the extraction failed, or not in the cache).
+/// miss, unless `wts` is `WTS_INCACHEONLY`), letterboxed into a `size_px` square; None when there is
+/// no handler, the extraction failed or it is not in the cache, Later when the cache says not yet.
 /// The cache hands back its own stored size (32, 96, 256 px ...), fitted here. Measured against
 /// `IShellItemImageFactory::GetImage(SIIGBF_THUMBNAILONLY)` on 200 JPEGs (P3-M5 decision 1): 7.3 ms
 /// against 8.9 warm and 36 against 38 cold per thumbnail. Worker threads only (COM, MTA).
-fn thumbnail(path: &Path, size_px: u32, wts: u32) -> Option<Rendered> {
+fn thumbnail(path: &Path, size_px: u32, wts: u32) -> Thumbnail {
     let cache = THUMB_CACHE.with(|c| {
         if c.get().is_null() {
             let mut p: *mut c_void = std::ptr::null_mut();
@@ -1007,13 +1025,13 @@ fn thumbnail(path: &Path, size_px: u32, wts: u32) -> Option<Rendered> {
         c.get()
     });
     if cache.is_null() {
-        return None;
+        return Thumbnail::None;
     }
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let mut item: *mut c_void = std::ptr::null_mut();
     // SAFETY: `wide` is NUL-terminated and outlives the call; `item` receives an IShellItem or stays null.
     if unsafe { SHCreateItemFromParsingName(wide.as_ptr(), std::ptr::null_mut(), &IID_ISHELLITEM, &mut item) } < 0 || item.is_null() {
-        return None;
+        return Thumbnail::None;
     }
     let mut shared: *mut c_void = std::ptr::null_mut();
     let mut flags = 0u32;
@@ -1025,7 +1043,15 @@ fn thumbnail(path: &Path, size_px: u32, wts: u32) -> Option<Rendered> {
         hr
     };
     if hr < 0 || shared.is_null() {
-        return None;
+        // WTS_E_FAILEDEXTRACTION is every file with no handler or no picture (inside an archive, a
+        // text file named .jpg), STG_E_FILENOTFOUND under WTS_INCACHEONLY every cloud-only file
+        // not in the cache: the type icon, as before, without a line.
+        let later = wts == WTS_EXTRACT && LATER_HRESULTS.contains(&hr);
+        if hr != WTS_E_FAILEDEXTRACTION && !(wts == WTS_INCACHEONLY && hr == STG_E_FILENOTFOUND) {
+            let then = if later { " (asked again later)" } else { "" };
+            eprintln!("[icons] thumbnail {}: GetThumbnail = 0x{:08X}{then}", path.display(), hr as u32);
+        }
+        return if later { Thumbnail::Later } else { Thumbnail::None };
     }
     let mut hbm: HBITMAP = std::ptr::null_mut();
     // SAFETY: `shared` is a live ISharedBitmap; the bitmap it lends stays its own (read, never
@@ -1036,7 +1062,7 @@ fn thumbnail(path: &Path, size_px: u32, wts: u32) -> Option<Rendered> {
         (vt.release)(shared);
         p
     };
-    pixels.map(|p| (letterbox(&p, size_px), letterbox_rect(p.width(), p.height(), size_px)))
+    pixels.map_or(Thumbnail::None, |p| Thumbnail::Got((letterbox(&p, size_px), letterbox_rect(p.width(), p.height(), size_px))))
 }
 
 /// Release this thread's IThumbnailCache, if it made one.
@@ -1049,15 +1075,19 @@ fn release_thumbnail_cache() {
 }
 
 /// What a worker renders for a request: for a thumbnail the shell's thumbnail (`thumbnail`;
-/// from its cache only for `Thumb::CacheOnly`), else, or when there is none, the icon (`render`).
-fn render_request(path: &Path, size_px: u32, thumb: Thumb) -> Option<Rendered> {
+/// from its cache only for `Thumb::CacheOnly`), else, or when there is none, the icon (`render`);
+/// and whether the thumbnail is to be asked for again (the cache said not yet).
+fn render_request(path: &Path, size_px: u32, thumb: Thumb) -> (Option<Rendered>, bool) {
     let flags = if thumb == Thumb::CacheOnly { WTS_INCACHEONLY } else { WTS_EXTRACT };
+    let mut later = false;
     if thumb != Thumb::No {
-        if let Some(t) = thumbnail(path, size_px, flags) {
-            return Some(t);
+        match thumbnail(path, size_px, flags) {
+            Thumbnail::Got(t) => return (Some(t), false),
+            Thumbnail::Later => later = true,
+            Thumbnail::None => {}
         }
     }
-    render(path, size_px).map(|p| (p, None))
+    (render(path, size_px).map(|p| (p, None)), later)
 }
 
 /// A render's pixels and, for a thumbnail, where its picture lies in the square (`letterbox_rect`;
@@ -1074,7 +1104,7 @@ const SLOW_MS: u64 = 100;
 
 /// How a worker turns a path (a size in px, thumbnail or not) into pixels: `render_request`, or a
 /// stand-in in the tests.
-type RenderFn = fn(&Path, u32, Thumb) -> Option<Rendered>;
+type RenderFn = fn(&Path, u32, Thumb) -> (Option<Rendered>, bool);
 
 /// What the worker threads share.
 #[derive(Default)]
@@ -1222,7 +1252,8 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
             (true, false) => Thumb::Extract,
             (true, true) => Thumb::CacheOnly,
         };
-        let (mut pixels, picture) = match if com >= 0 { render(&r.path, r.size_px, thumb) } else { None } {
+        let (got, later) = if com >= 0 { render(&r.path, r.size_px, thumb) } else { (None, false) };
+        let (mut pixels, picture) = match got {
             Some((p, picture)) => (Some(p), picture),
             None => (None, None),
         };
@@ -1247,6 +1278,11 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
         }
         let outcome = match (pixels, picture) {
             (Some(p), Some(rect)) => Outcome::Picture(p, rect),
+            // The type icon for now; the key is given back, so the UI's next ask renders it again.
+            (Some(p), None) if later && !drag => {
+                lock(&pool.taken).remove(&taken);
+                Outcome::Later(p)
+            }
             (Some(p), None) => Outcome::Pixels(p),
             (None, _) => {
                 if !drag {
@@ -1665,7 +1701,17 @@ pub struct SizeKeys {
     index: HashMap<SharedString, u16>,
     pending: HashSet<SharedString>,
     failed: HashSet<SharedString>,
+    /// Thumbnails answered with the type icon for now (`Outcome::Later`): when each is asked for
+    /// again (None once it has been taken out of `index` and is asked), and the answers so far.
+    later: HashMap<SharedString, (Option<Instant>, usize)>,
+    /// The icons those keys showed when taken out of `index`: rows showing one are looked at by
+    /// the resolve as placeholder rows are, so they ask again and keep the icon meanwhile.
+    stale: HashSet<u16>,
 }
+
+/// After a thumbnail's first, second and third `Later` answer, the wait before it is asked again;
+/// after the fourth the type icon stays for the session.
+const LATER_WAITS: [Duration; 3] = [Duration::from_secs(2), Duration::from_secs(5), Duration::from_secs(10)];
 
 impl SizeKeys {
     pub fn state(&self, key: &SharedString) -> KeyState {
@@ -1683,6 +1729,11 @@ impl SizeKeys {
     /// Mark a key as requested.
     pub fn begin(&mut self, key: &SharedString) {
         self.pending.insert(key.clone());
+    }
+
+    /// Whether a row showing icon `i` is to ask again: its key's thumbnail is due (`retry_due`).
+    pub fn is_stale(&self, i: u16) -> bool {
+        !self.stale.is_empty() && self.stale.contains(&i)
     }
 }
 
@@ -1779,13 +1830,52 @@ impl IconTable {
         &mut sizes[i].1
     }
 
+    /// Take every thumbnail whose wait has run out (`LATER_WAITS`) out of the keys, its icon marked
+    /// stale, so the next resolve asks for it again from the rows that show that icon. Returns how
+    /// many; the caller resolves the panes when any.
+    pub fn retry_due(&mut self, now: Instant) -> usize {
+        let mut n = 0;
+        for (_, keys) in &mut self.sizes {
+            let SizeKeys { index, later, stale, .. } = keys;
+            for (key, (due, _)) in later.iter_mut() {
+                if due.is_some_and(|d| d <= now) {
+                    *due = None;
+                    if let Some(i) = index.remove(key) {
+                        stale.insert(i);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        n
+    }
+
     /// Apply a worker reply for `key` at `px`. Returns true when a new image was interned.
     pub fn complete(&mut self, key: SharedString, px: u32, outcome: Outcome) -> bool {
         let keys = Self::at(&mut self.sizes, px);
         keys.pending.remove(&key);
         let (p, picture) = match outcome {
-            Outcome::Pixels(p) => (p, None),
-            Outcome::Picture(p, rect) => (p, Some(rect)),
+            Outcome::Pixels(p) => {
+                keys.later.remove(&key);
+                (p, None)
+            }
+            Outcome::Picture(p, rect) => {
+                keys.later.remove(&key);
+                (p, Some(rect))
+            }
+            Outcome::Later(p) => {
+                let tries = keys.later.get(&key).map_or(0, |l| l.1);
+                match LATER_WAITS.get(tries) {
+                    Some(wait) => {
+                        keys.later.insert(key.clone(), (Some(Instant::now() + *wait), tries + 1));
+                    }
+                    None => {
+                        keys.later.remove(&key);
+                        eprintln!("[icons] thumbnail not ready after {} answers: {key} keeps its type icon", tries + 1);
+                    }
+                }
+                (p, None)
+            }
             Outcome::Failed => {
                 keys.failed.insert(key);
                 return false;
@@ -2414,7 +2504,7 @@ mod tests {
     }
 
     /// A stand-in render: "slow" takes 2 s, "busy" 50 ms (counted in BUSY_RENDERS), others none.
-    fn fake_render(path: &Path, _size_px: u32, thumb: Thumb) -> Option<Rendered> {
+    fn fake_render(path: &Path, _size_px: u32, thumb: Thumb) -> (Option<Rendered>, bool) {
         if path.to_str().is_some_and(|p| p.starts_with("thumbmode")) {
             lock(&THUMB_MODES).push((path.to_string_lossy().into_owned(), thumb));
         }
@@ -2424,11 +2514,12 @@ mod tests {
                 BUSY_RENDERS.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(50));
             }
-            Some("fail") => return None,
-            Some("picture") => return Some((SharedPixelBuffer::new(1, 1), Some([0, 0, 1, 1]))),
+            Some("fail") => return (None, false),
+            Some("picture") => return (Some((SharedPixelBuffer::new(1, 1), Some([0, 0, 1, 1]))), false),
+            Some("later") => return (Some((SharedPixelBuffer::new(1, 1), None)), true),
             _ => {}
         }
-        Some((SharedPixelBuffer::new(1, 1), None))
+        (Some((SharedPixelBuffer::new(1, 1), None)), false)
     }
 
     static BUSY_RENDERS: AtomicU64 = AtomicU64::new(0);
@@ -2474,6 +2565,13 @@ mod tests {
         req_tx.send(req(1, "p", "picture")).unwrap();
         assert!(matches!(rep_rx.recv_timeout(Duration::from_millis(500)).unwrap().outcome, Outcome::Picture(_, [0, 0, 1, 1])));
 
+        // A thumbnail the cache has not got yet comes back as the icon for now, and its key is
+        // given back: asked again, it renders again rather than being skipped as delivered.
+        for _ in 0..2 {
+            req_tx.send(req(1, "l", "later")).unwrap();
+            assert!(matches!(rep_rx.recv_timeout(Duration::from_millis(500)).unwrap().outcome, Outcome::Later(_)));
+        }
+
         let r = rep_rx.recv_timeout(Duration::from_secs(3)).expect("the slow icon arrives");
         assert_eq!(r.key, "slow");
         assert_eq!(stats.slow.load(Ordering::Relaxed), 1, "only the 2 s render is slow");
@@ -2493,7 +2591,7 @@ mod tests {
             match rep_rx.recv_timeout(Duration::from_secs(2)).expect("20 replies").outcome {
                 Outcome::Pixels(_) => pixels += 1,
                 Outcome::Skipped => {}
-                Outcome::Failed | Outcome::Looked(_) | Outcome::Picture(..) => panic!("the fake render does not fail here"),
+                Outcome::Failed | Outcome::Looked(_) | Outcome::Picture(..) | Outcome::Later(_) => panic!("the fake render does not fail here"),
             }
         }
         assert_eq!(pixels, 1, "one reply carries the icon, the other 19 are skipped");
