@@ -36,10 +36,11 @@ search box, P10-M3 the title bar, the look's field and choice, the menu's icon r
 quotes Jeremy's decision, § Calls made lists the lead's, § Phase 10 close holds the gates, lessons, what is
 deferred, the open questions and the Phase 11 note; § Deferred to Phase 12 the roadmap), `docs/phase-11-plan.md` the Phase 11 record (the deferred
 list swept and the cut features picked up: content search, the cloud and search sweep, the edge-case
-bundle with the owed checks, the preview gaps bundle, syntax colours, password PDFs through hayro; two
-streams, the preview stream after P10-M1 merges; opened 2026-10-22; its first section quotes Jeremy's
-kickoff decisions, § Calls made lists the lead's, § Open questions what each brief settles first). Read
-them before changing the list.
+bundle with the owed checks, the preview gaps bundle, syntax colours, password PDFs through hayro, logging
+as a setting; two streams and a coordinating session; opened 2026-10-22, closed 2026-10-24; its first
+section quotes Jeremy's kickoff decisions, § Calls made lists the lead's, § Open questions what each brief
+settles first, and § Phase 11 close holds the gates, the long soak, lessons, what is deferred and the
+Phase 12 list). Read them before changing the list.
 
 ## Gates (run before every commit)
 - `cargo test --release` (302 tests; nine touch the real shell and clipboard, one of them the Recycle
@@ -1252,7 +1253,7 @@ them before changing the list.
   3.2 ms against 2.2 to 2.3 ms in ab23) before reading the medians, and read such a session like for
   like; the gap rule is about a cost, so a candidate's median below the reference's is not a gap.
   The reference binary is the last merged milestone's
-  gate build (`target-p10m3`, 4f07cba, after P10-M3); the previous one is deleted once the new one
+  gate build (`target-p11close`, a99f2f2, main at the Phase 11 close); the previous one is deleted once the new one
   has served as a reference. When milestones run as parallel sessions, one coordinating session
   serializes the machine: every session reports before a gate build, a soak or a hand-over and waits
   for its reply; one soak at a time (the soaks share `%TEMP%\twinfm-m5` and the fence); nothing
