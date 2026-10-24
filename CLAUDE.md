@@ -42,7 +42,7 @@ kickoff decisions, § Calls made lists the lead's, § Open questions what each b
 them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (300 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (301 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -56,8 +56,8 @@ them before changing the list.
   and since P11-M1 two more write text files (and a junction) into scratch folders, since P11-M4
   one more writes a HEIC with Windows' HEIF encoder into one, since P11-M2 one more writes two
   folders of files for a shell menu over both, since P11-M5 one more writes source files into
-  one, and since P11-M7 one more writes log files into one (and points the process's stderr at them
-  while it runs), see below)
+  one, since P11-M6 one more writes encrypted PDFs into one, and since P11-M7 one more writes log
+  files into one (and points the process's stderr at them while it runs), see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -956,6 +956,18 @@ them before changing the list.
   `[preview]` lines: the text line ends `, <language> | plain | plain (colours off)`, `gen=G coloured N
   chunk(s) in T ms (<language>)`, `gen=G superseded: N chunk(s) not coloured`, `gen=G block K: colours
   refused, plain kept: <err>`, `recolour: the file is previewed again`.
+  Since P11-M6, password PDFs through hayro (no new crate): a PDF hayro cannot open with the empty
+  password shows "Password-protected PDF" and an "Enter password…" button (Jeremy's choice: never asked
+  as the cursor passes); the button opens the file again with `Req::Open`'s `ask` (the window's handle),
+  and the worker asks in TwinFM's masked dialog (`fileops::archive::ask_password`, the zip password's,
+  now taking its prompt), asks again while the password is wrong, and on Cancel leaves the message.
+  hayro takes the user password of revisions 2 to 4 (RC4-40, RC4-128, AES-128) and the user or owner
+  password of 5 and 6 (AES-256); an owner-password-only file opens with no question. The password lives
+  in the open document only, never written anywhere. Driver: `pdfpassword <text>` (the answer to the next
+  question, then the button pressed; a scripted run without it is refused, never shown the dialog).
+  `[preview]` lines: `password button`, `pane=N gen=G <path>: pdf password asked | asked again | from the
+  script | right | wrong | cancelled | refused (the script gave none)`; the open's `password` line as
+  before.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -1166,7 +1178,8 @@ them before changing the list.
   check of the "no decoder" answer, where none is installed) and a damaged one into
   `%TEMP%\twinfm-p11m4-heic-<pid>\`, and `preview::tests::svg_text_is_drawn` reads seven fonts from
   `%WINDIR%\Fonts`; since P11-M5 `the_worker_colours_source_after_its_blocks` writes a Rust file
-  and a text file into `%TEMP%\twinfm-p11m5-test-<pid>\`. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
+  and a text file into `%TEMP%\twinfm-p11m5-test-<pid>\`; since P11-M6 `password_pdfs_open_with_their_password` writes
+  two encrypted PDFs (pypdf's, kept in the test as hex) into `%TEMP%\twinfm-p11m6-test-<pid>\`. Since P8-L2 `fs::zipraw::tests::copies_keep_every_byte_but_the_name_and_offset` writes
   `%TEMP%\twinfm-p8l2-raw-<pid>.zip`, `fs::archivewrite::tests::password_zips_and_copies_between_zips`
   makes ZipCrypto, AES and plain zips in `%TEMP%\twinfm-p8l2-pw-<pid>\`, and `zip_jobs_on_the_worker`
   writes into its tar.exe password zip with the script's password (`zippassword`'s path) and copies

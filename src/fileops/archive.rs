@@ -493,7 +493,13 @@ fn key_for(req: &Request, zip: &Path, protection: &Protection) -> Result<Option<
             None if scripted => return Err("this zip is password-protected and the script gave no password".into()),
             None => {
                 eprintln!("[archive] password for {} ({method}): asked{}", zip.display(), if wrong { " again" } else { "" });
-                match ask_password(req.hwnd, zip, method, wrong) {
+                let name = zip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let prompt = if wrong {
+                    format!("That password does not open {name}. Type it again:")
+                } else {
+                    format!("{name} is password-protected. Its password, to encrypt the files added ({method}):")
+                };
+                match ask_password(req.hwnd, &prompt) {
                     Some(p) => (p, false),
                     None => {
                         eprintln!("[archive] password for {}: cancelled", zip.display());
@@ -517,19 +523,15 @@ fn key_for(req: &Request, zip: &Path, protection: &Protection) -> Result<Option<
 /// The edit box's id in the password dialog.
 const PASSWORD_EDIT: i32 = 100;
 
-/// A dialog of TwinFM's own asking for `zip`'s password (a masked box, OK and Cancel), owned by
-/// the app's window and run on this worker as `ask_conflicts`' message box is. None: cancelled.
-fn ask_password(hwnd: isize, zip: &Path, method: &str, wrong: bool) -> Option<String> {
+/// A dialog of TwinFM's own asking for a password (`prompt` above a masked box, OK and Cancel),
+/// owned by the app's window and run on the calling worker (the file operation worker for a zip,
+/// as `ask_conflicts`' message box is; the preview worker for a PDF since P11-M6). None: cancelled.
+pub(crate) fn ask_password(hwnd: isize, prompt: &str) -> Option<String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BS_DEFPUSHBUTTON, BS_PUSHBUTTON, DLGTEMPLATE, DS_CENTER, DS_MODALFRAME, DS_SETFONT, DialogBoxIndirectParamW, ES_AUTOHSCROLL, ES_PASSWORD, IDCANCEL, IDOK,
         WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
     };
-    let name = zip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let text = if wrong {
-        format!("That password does not open {name}. Type it again:")
-    } else {
-        format!("{name} is password-protected. Its password, to encrypt the files added ({method}):")
-    };
+    let text = prompt;
     // The template, built as 16-bit words: header, then each item DWORD-aligned.
     let mut t: Vec<u16> = Vec::new();
     let push32 = |t: &mut Vec<u16>, v: u32| t.extend_from_slice(&[v as u16, (v >> 16) as u16]);
@@ -541,7 +543,7 @@ fn ask_password(hwnd: isize, zip: &Path, method: &str, wrong: bool) -> Option<St
     t.push(9);
     push_str(&mut t, "Segoe UI");
     let items: [(u32, [i16; 4], u16, u16, &str); 4] = [
-        (WS_CHILD | WS_VISIBLE, [7, 7, 236, 24], 0xFFFF, 0x0082, &text),
+        (WS_CHILD | WS_VISIBLE, [7, 7, 236, 24], 0xFFFF, 0x0082, text),
         (WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | (ES_PASSWORD | ES_AUTOHSCROLL) as u32, [7, 34, 236, 14], PASSWORD_EDIT as u16, 0x0081, ""),
         (WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON as u32, [139, 58, 50, 14], IDOK as u16, 0x0080, "OK"),
         (WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32, [193, 58, 50, 14], IDCANCEL as u16, 0x0080, "Cancel"),

@@ -1,5 +1,5 @@
 import { ScrollView, ListView } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { Theme, Btn } from "theme.slint";
 
 // One page of the previewed PDF (preview.rs `layout`): its top and height in the scroll's content,
 // laid out from the page sizes before any page is drawn, its picture once the worker has rendered
@@ -219,6 +219,9 @@ export component Preview inherits Rectangle {
     in property <int> mode;
     in property <[MdBlock]> blocks;
     in property <int> zoom: 100;
+    // A button under the message (P11-M6: "Enter password…" under "Password-protected PDF"), "" for none.
+    in property <string> action;
+    callback action-clicked();
     callback zoom-step(int) -> bool;
     callback menu(int, length, length);
     callback scrolled(length, length);
@@ -311,14 +314,23 @@ export component Preview inherits Rectangle {
                     menu(x, y) => { root.menu(k, x, y); }
                 }
             }
-            if root.message != "": Text {
-                x: 16px;
-                width: parent.width - 32px;
-                text: root.message;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                wrap: word-wrap;
-                color: Theme.fg-muted;
+            if root.message != "": VerticalLayout {
+                alignment: center;
+                padding: 16px;
+                spacing: 12px;
+                Text {
+                    text: root.message;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    color: Theme.fg-muted;
+                }
+                if root.action != "": HorizontalLayout {
+                    alignment: center;
+                    Btn {
+                        text: root.action;
+                        clicked => { root.action-clicked(); }
+                    }
+                }
             }
         }
     }
