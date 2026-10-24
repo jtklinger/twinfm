@@ -1256,12 +1256,29 @@ with `log = true`), its numbers read from the log.
   switched); the only recurring work is the once-a-minute cut timer (a mutex, the log found off, a
   return; it also formats the first-line string every minute, a clean-up for later), which first
   fires at 60 s, after the gate's 10 s window. So in the measured window P11-M7 runs nothing.
-- **ab54**: the defaults again, the candidate first in each round (`tools/gate-p11m7-ab54.ps1`),
-  same head and reference.
+- **ab54: passed, the slot bias confirmed.** The defaults again, the candidate first in each round
+  (`tools/gate-p11m7-ab54.ps1`), same head and reference. Run by Jeremy, finished 2026-10-24 08:52,
+  8 min, `C:\traces\gate-ab54-summary.txt`; every run passed the wrapper's checks, no build
+  overlapping.
 
-### Console checks (for Jeremy, unelevated, after the gate)
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11m7-1 / 2 / 3 (first slot) | 18.4 / 18.2 / 18.3 | 18.4 / 19.1 / 17.0 | 2.20 / 2.18 / 2.28 |
+| p11m3-1 / 2 / 3 (second slot) | 18.6 / 18.5 / 18.5 | 18.6 / 20.0 / 19.1 | 2.22 / 2.21 / 2.24 |
 
-- Settings > Log on, OK: `%APPDATA%\twinfm\twinfm.log` appears and grows while TwinFM runs (open it in
+  Medians 18.3 (candidate) / 18.5 (reference): this time every candidate run sits below every
+  reference run, the second slot again the higher one; render p50 even (2.18 to 2.28 ms); every
+  candidate run under 20%. **ab53 and ab54 together are P11-M7's gate: passed.** ab53's 0.4 points
+  were the second slot, as the code reading said; with the order swapped the gap turned round.
+
+### Console checks (Jeremy, 2026-10-24, unelevated, `target-p11m7` on `C:\traces\p11m7-console`)
+
+Jeremy: "All four log checks look good."
+
+The list as handed to Jeremy: `target-p11m7` with `TWINFM_CONFIG=C:\traces\p11m7-console\config.toml` (Jeremy's own settings file
+untouched), so the log is written beside it in `C:\traces\p11m7-console`.
+
+- Settings > Log on, OK: `twinfm.log` appears and grows while TwinFM runs (open it in
   Notepad, which reads it while TwinFM writes it).
 - "Open log folder": the dialog closes, the active pane shows the folder with the log selected.
 - Log off, OK: the file stops growing; on again: a fresh `twinfm.log`, the earlier one kept as
