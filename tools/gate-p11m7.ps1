@@ -1,4 +1,4 @@
-# P11-M7 gate, tag ab53: target-p11m7 from the P11-M7 PR at 9dd0cad (logging as a setting: the `log`
+# P11-M7 gate, tag ab53: target-p11m7 from the P11-M7 PR at 7469487 (logging as a setting: the `log`
 # setting, off by default, points stderr at twinfm.log; the wrapper's own commit follows it) against
 # target-p11m3 (ff0d120, P11-M3's gate build, the last merged milestone's), the defaults only (the
 # setting off: no file, nothing per row or frame; a scripted run reads no settings), three runs each
@@ -14,7 +14,7 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = '9dd0cad'
+$Head = '7469487'
 $Tag = 'ab53'
 $Ref = 'p11m3'
 $Cand = 'p11m7'

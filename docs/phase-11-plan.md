@@ -1120,11 +1120,38 @@ reach the file), **"Open in TwinFM"** (the dialog row's button).
   dialog's button (`open_log_folder`); the dialog's Log row (a switch and the button; the dialog 670 px).
 - CLAUDE.md § Measuring (the first bullet, the settings list, the tests list).
 
+### Scripted checks (2026-10-23, the gate build `target-p11m7`, a scratch `TWINFM_CONFIG`)
+
+- The dialog: `settings set log true`, OK: `[settings] dialog: log false -> true`, `twinfm.log`
+  beside the scratch settings, its first line `TwinFM 0.1.0 log, started 2026-10-23 21:50`, then
+  `[log] writing to ...`; the run's lines went to the file, not the redirect. `settings set log false`,
+  OK: the file ends `[settings] dialog: log true -> false` / `[log] stopped`, and the redirect gets
+  `[log] stopped writing to ...` and the rest; the settings file saved `log = false`.
+- A restart with `log = true` in the file: the log from the start (only the two lines before the
+  settings are read reach the redirect), the last run's file kept as `twinfm.previous.log`.
+- **Found and fixed**: one start's log had a line `0000000`, the end of the verb worker's
+  `CoInitializeEx = 0x00000000` line, whose beginning went to the old output: the switch landed in the
+  middle of another thread's `eprintln!`, which writes a line in pieces. The switch now holds Rust's
+  stderr lock (7469487), the lock an `eprintln!` holds for its whole line; three starts after it, no
+  line out of shape. `target-p11m7` was rebuilt at 7469487 (from 9dd0cad) before the soak.
+- A screenshot (light): the Log row (the switch, "Open log folder") and the footer inside the 670 px
+  dialog.
+- Two test-suite flakes seen on this branch and recorded: `zip_jobs_on_the_worker` and
+  `shell_levels_are_listed_and_cached` failed at their scratch folders' removal (a file held) in some
+  full runs, passed alone, and failed the same way with the log test skipped (2 of 3 runs): something
+  on the machine (Defender or the indexer on fresh archives in `%TEMP%`) holds the files, not P11-M7.
+
+**Soak** (`tools/soak-p5m3.ps1 -Minutes 10`, 2026-10-23, on `target-p11m7` at 7469487, the
+coordinating session's screen go; a scripted run reads no settings, so the log stays off and the soak
+checks that the setting changes nothing there): 10.1 min, exit 0, 0 panics; 256 jobs (0 failed, 0
+cancelled, 0 refused), 0 waitops timeouts; every must-be-0 count 0; history jumps 4, resets 8, content
+search 4 / 806 / 4, P11-M5's files coloured 8; working set 136 to 246 MB (P11-M3's run: 173 to 290).
+
 ### Gate
 
 Pending: the defaults triplet (the setting off: no file, nothing per row or frame), `target-p11m7`
-against `target-p11m3`, after the coordinating session's go and tag; then one in-app run with the
-setting on (`TWINFM_CONFIG` naming a read-only file with `log = true`), its numbers read from the log.
+(7469487) against `target-p11m3`, tag ab53; then one in-app run with the setting on (`TWINFM_CONFIG`
+naming a read-only file with `log = true`), its numbers read from the log.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
