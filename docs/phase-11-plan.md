@@ -1329,3 +1329,36 @@ type icon as the key's answer, ask again; test with a video made for it, never J
 Both test videos (six fresh copies each), OneDrive's Camera Roll (cloud-only, cache-only) and
 Screenshots (local): every video a picture, no `GetThumbnail` line, no retry, no panic; `thumbs` counts
 as before (Screenshots 32 at 31 ms average).
+
+### Gate
+
+- **ab55: passed by the rule; the changed path does not run in the scenario.** The thumbnails triplet
+  (`tools/gate-video-thumbs.ps1`), `target-vthumbs` (9368df8) against `target-p11m7` (7469487), both on
+  `C:\traces\thumbs.toml`. Run by Jeremy, finished 2026-10-24 15:56, 9 min,
+  `C:\traces\gate-ab55-summary.txt`; every run passed the wrapper's checks.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11m7-thumbs-1 / 2 / 3 | 16.1 / 15.1 / 20.7 | 17.8 / 15.9 / 20.3 | 1.86 / 1.75 / 2.66 |
+| vthumbs-thumbs-1 / 2 / 3 | 17.1 / 15.3 / 25.1 | 18.6 / 17.8 / 24.7 | 1.98 / 1.88 / 2.60 |
+
+  Medians 16.1 / 17.1, a difference of exactly 1.0 (not over a point); not every reference run below
+  every candidate run: no gap that counts. Round 3 moved both builds into the costlier state (render
+  p50 2.66 and 2.60 against about 1.8 before: the ab23 note), which is where the candidate's 25.1 (over
+  20%) comes from; the machine was busy too (right after the gate a browser held 66% of a core and the
+  Claude app 42%, the coordinating session's reading). Round 1 reads +1.0 with the candidate in the
+  second slot, which reads high (the P7-M4 rule). **Deciding**: every run's `[icons]` lines read
+  `thumbs 0` and none has a `GetThumbnail` line: bigdir's files never ask for a thumbnail, so the
+  fix's failure and retry path cannot run in the gate's scenario, and with thumbnails succeeding it
+  adds one comparison per answer. Recorded as passed, on the coordinating session's reading.
+
+### Jeremy's Downloads check (2026-10-24, after the gate, his agreement)
+
+`target-vthumbs` with `TWINFM_CONFIG=C:\traces\vthumbs-console\config.toml` (thumbnails and the log on),
+his Downloads opened, the mp4 on screen about 20 s; only the log's lines naming the mp4 were read, the
+file itself never opened or copied by Claude. Jeremy: "The mp4 showed a picture (a frame of the
+video) in that run." The log has no `GetThumbnail` line, no retry and no `not ready` line for it: the
+cache answered with the picture at once. His daily settings already have `thumbnails = true`, so the
+P11-M3 miss was not the setting. Most likely the system thumbnail cache now holds the frame Explorer
+made since, so the cold answer that cost the icon then is not reproducible now; this fix covers it if
+it was a "not yet" answer (asked again after 2, 5, 10 s), and the log line names it if it comes back.
