@@ -1131,7 +1131,7 @@ P11-M1, P11-M4 and P11-M5 soaks.
 
 ### Gate
 
-Pending: `tools/gate-p11m6.ps1`, tag ab51, the defaults and the preview triplet. The candidate
+Run (see the ab51 and ab52 lines below): `tools/gate-p11m6.ps1`, tag ab51, the defaults and the preview triplet. The candidate
 `target-p11m6` is built from 0dcac60 (P11-M6 with main at 45ff94f merged in). The reference
 `target-p11m5` (530bd8e) is the last merged milestone's gate build (the coordinating session's
 word), and it predates what the candidate carries besides P11-M6: P11-M2's sweep (#102, merged
@@ -1362,3 +1362,133 @@ cache answered with the picture at once. His daily settings already have `thumbn
 P11-M3 miss was not the setting. Most likely the system thumbnail cache now holds the frame Explorer
 made since, so the cold answer that cost the icon then is not reproducible now; this fix covers it if
 it was a "not yet" answer (asked again after 2, 5, 10 s), and the log line names it if it comes back.
+
+## Phase 11 close
+
+Written 2026-10-24 by the coordinating session, two days after the kickoff. All seven milestones are in,
+with the two follow-ups Jeremy asked for, each squash-merged on his word (quoted before each merge; twice
+given to a stream directly and merged by it). The lists stream (one session) built P11-M1, P11-M2,
+P11-M3, P11-M7 and the video thumbnail follow-up; the preview stream (one session) built P11-M4, P11-M5,
+P11-M6 and the stale-preview follow-up; the coordinating session serialised the machine, allocated the
+tags, verified every gate's inputs and handed each gate to Jeremy.
+
+| Item | PR, merge | Gate build | Tag | Reference | Medians (WPR, reference / candidate) |
+|---|---|---|---|---|---|
+| P11-M1 content search | #98, 8a23a4e | `target-p11m1` 79410ab | ab44 | `target-p10m3` | defaults 18.3 / 18.6 |
+| P11-M4 preview gaps | #99, 3cd18cd | `target-p11m4` 2d3a096 | ab45 | `target-p10m3` | defaults 18.7 / 18.7, preview 17.8 / 17.9 |
+| P11-M2 cloud and search sweep | #102, 8ddd2dd | `target-p11m2` c075a0a | ab47 (ab46 void) | `target-p11m4` | defaults 21.9 / 22.2, thumbs 17.8 / 18.5 (after the analyser fix) |
+| P11-M5 syntax colours | #103, f09cafc | `target-p11m5` 530bd8e | ab49 | `target-p11m4` | defaults 18.6 / 18.9, preview 18.1 / 18.0 |
+| Stale preview after a delete, clipboard retry | #105, 45ff94f | (none) | (in-app run) | `target-p11m5` | `[busy]` 21.2 / 19.4 |
+| P11-M3 edge-case bundle | #106, 94d37e7 | `target-p11m3` ff0d120 | ab50 | `target-p11m2` | defaults 18.6 / 18.6 |
+| P11-M6 password PDFs | #107, 762a678 | `target-p11m6` 0dcac60 | ab51 + ab52 | `target-p11m5` | defaults 22.3 / 22.3 (ab51), preview 17.5 / 17.6 (ab52) |
+| P11-M7 logging as a setting | #108, 0799b23 | `target-p11m7` 7469487 | ab53 + ab54 | `target-p11m3` | ab53 18.4 / 18.8 (candidate second), ab54 18.5 / 18.3 (candidate first) |
+| Video thumbnails | #109, a99f2f2 | `target-vthumbs` 9368df8 | ab55 | `target-p11m7` | thumbs 16.1 / 17.1 (exactly 1.0) |
+
+Outside the milestones, on main in the same days: the app icon (#100, 6615f9a; `winresource` as a build
+dependency only) and three Phase 12 roadmap entries (#101, #104; `docs/phase-10-plan.md` § Deferred to
+Phase 12). No gap counted in any setting once read by the rules; every reading that needed more than the
+medians is in its milestone's Gate section.
+
+Jeremy's decisions through the phase beyond the kickoff's, his words: "Two streams (Recommended)" (how to
+run the phase) / "merge 98,100,101 but don't rebuild the daily" / "if 99 is ready, go ahead and merge it" /
+"Skip ab48; ab47 passes. Go on to the P11-M2 console checks and the P11-M5 soak." / "Fix the stale preview
+after P11-M5 merges, as its own small PR." / "Merge PR #102 and PR #104." / "Merge PR #103 once its CI is
+green." / "Merge PR #105 once its CI is green." / "I'll close Task Manager and the Files app and restart the
+Claude app; prepare the preview-only rerun." / "Merge PR #106 once its CI is green." / "Fix the video
+thumbnails as a small follow-up after P11-M7." / "Run the thumbnail fix and close. Don't rebuild main until
+we're completly finished with P11." / "merge it" (#109) / "60 minutes now" (the long soak). The roadmap
+entries and the stale-preview item are quoted where they stand.
+
+**The long soak** (the memory question three milestones carried here): `tools/soak-p5m3.ps1 -Minutes 60`
+on `target-p11close`, built `--locked` from a detached `gate-p11close` worktree at a99f2f2 (main with
+everything above), 2026-10-24, by the coordinating session. 60.5 minutes, exit code 0, no panics, 76
+cycles, 1,647 jobs (none failed or cancelled), every must-be-0 count 0 (dropped drags, refused menupicks,
+picture and Office failures, waitpreview timeouts, worker panics, copy failures, wrong passwords). Memory
+(working set / private bytes, MB, every 300 s):
+
+| s | 5 | 305 | 605 | 905 | 1205 | 1505 | 1805 | 2105 | 2405 | 2705 | 3005 | 3305 | 3601 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| WS | 177 | 263 | 272 | 258 | 259 | 263 | 268 | 264 | 273 | 307 | 276 | 277 | 313 |
+| private | 157 | 222 | 236 | 241 | 241 | 246 | 258 | 250 | 257 | 292 | 261 | 264 | 300 |
+
+Read: the first five minutes' climb (to about 260 MB) is the caches filling, as the 10-minute soaks of
+P11-M1 to P11-M7 each showed, and it is not a leak. After it the working set holds at 258 to 277 MB with
+spikes (307 at 45 min, 313 at the end), and private bytes creep by about 28 MB from 10 to 55 minutes,
+about 0.6 MB a minute, under spikes. That is a slow creep or a slow fill, not a runaway; one hour cannot
+tell the two apart. Carried to Phase 12 as one question with the "187 MB first run" of ab20 and ab21: a heap trace
+(WPR's heap profile) of a long soak, which says what the growth is, rather than a longer soak, which would
+only say how much.
+
+What Phase 11 answered, against the kickoff's open questions:
+
+- **Which items were already finished**: P11-M4 none of six; P11-M3 found Ctrl+Y window-wide since
+  P5-M2; P11-M2 none. The "search leftovers", the Phase 4 and 5 small items and the P2-M5 scale-change
+  case were not named again and stay as the Phase 3 to 5 closes left them.
+- **The Google Drive thumbnail cost**: the volume answering the shell's item and property reads (50 to
+  58 ms against 9 to 14 locally), not the cache; the 300 to 570 ms did not reproduce; nothing changed.
+- **The progress sink and a replaced file**: the sink names it, but the shell overwrites in place, so
+  nothing can restore it; the undo of such a job is refused.
+- **The syntax engine**: TwinFM's own tokenizer, Jeremy's choice ("Hand-written (Recommended)"); syntect
+  would have added nine crates, about 2.5 MB and 6.5 s on a 2 MB log.
+- **hayro's revisions**: V 1, 2, 4, 5 (RC4 40 to 128, AES-128, AES-256); revisions 2 to 4 open with the
+  user password only, 5 and 6 with either; SASLprep is a TODO in hayro. Which revisions Jeremy's own
+  files use is not recorded (they opened).
+- **The HEIF extension**: installed (HEIFImageExtension 1.2.48.0); HEIC and AVIF decode through WIC.
+
+Lessons of the phase:
+
+- **Two streams need the coordinator's word for any cargo run or TwinFM window**, not only gate builds
+  and soaks: ab46 was voided by a stream's test build that started when Jeremy answered its question
+  mid-gate, and a session waiting on Jeremy cannot be sent a hold. The coordinator now clears a gate only
+  after every stream has acked "holding".
+- **Check the machine, not only the processes TwinFM's rules name**: ab51 ran with the Claude desktop
+  app spinning about a third of a core and Task Manager and the Files app open (render p50 about 3 ms,
+  runs 21 to 31%); after closing them and restarting the app the rerun (ab52) read render p50 2.0. A
+  five-second per-process CPU sample before handing a gate catches it; Brave was at two thirds of a core
+  after ab55.
+- **The second slot reads high, and the rule needs the swap**: ab53's 0.4-point gap with every reference
+  run below every candidate run turned round when the order was swapped (ab54). A fixed-order gap that
+  the code cannot explain gets the swapped rerun before anything else.
+- **The analyser trusted xperf's PID format**: a short PID printed padded (`twinfm.exe ( 404)`) read as no
+  run; fixed (`\(\s*(\d+)\)`), and a run that reads 0 is the analyser until shown otherwise.
+- **A gate scenario that never exercises the change proves only that the rest is untouched**: P11-M5's
+  colours (no text preview in the scenario) and the video thumbnail fix (`thumbs 0` in bigdir) were
+  argued from the code and the `[icons]` lines; the record says so in each.
+- **CI's 8.3 `%TEMP%` found a real bug** (a replaced file not recognised through a short path); paths are
+  now taken in their long form. A conflicting PR gets no CI at all: merge main before reading CI's silence.
+- **Daily use fed the phase**: the stale preview after a delete and three roadmap items came from Jeremy
+  driving the builds between checks; each was recorded in his words the same hour.
+
+Deferred, from the milestones and their console checks (each in its section with the reason):
+
+- **Search**: glob, regular expression and an index (not in P11-M1); a new match in a search tab still
+  needs F5; the `word in *.ext` syntax offered and not taken.
+- **Preview**: zoom for anything but a PDF; text extraction from a PDF ("Copy text" covers the block
+  views); selection (waits for the fork or a Slint release); font fallback for symbols outside the UI font
+  (a Slint question); colours for `.txt`, `.csv` and Markdown's fenced code; HTML charsets beyond 1252,
+  8859-1 and -15 and UTF-16 named in a meta; `colspan`'s repeats drawn empty; the 106 legacy entity forms.
+- **Password PDFs**: hayro's SASLprep TODO (a revision 6 password with characters it would change).
+- **Files and watching**: a real deletion of a watched folder stays `Lost`; the subtree overflow could
+  not be forced (the test covers the handling); the logging cut timer's per-minute string (a clean-up).
+- **Thumbnails**: the cause of Jeremy's cold `.mp4` miss (not reproduced; the new log line names it if it
+  returns).
+- **Owed checks still owed**: the dead network share (since P5-M1; no share to test with) and the
+  187 MB first run (now one question with the long soak's creep, above).
+- **From the kickoff's starting point, never picked up**: size on disk; the mouse's Back and Forward over
+  a text entry, the tab strip and the list scrollbar.
+
+**Phase 12** (Jeremy chooses; nothing is planned yet), gathered from the kickoff and the roadmap:
+
+- Deferred by Jeremy at the kickoff: OneDrive's syncing and error glyphs; the Slint fork's whole-row snap
+  patch and upstreaming the two accessibility patches.
+- The roadmap (`docs/phase-10-plan.md` § Deferred to Phase 12): the rubber band in the details list; a new
+  tab by mouse; scrollbars easier to see; save a search results tab.
+- The memory question (above): a heap trace of a long soak.
+- Carried since Phase 9: Google Drive's volume found by its name; a sync-root scratch folder for the soak;
+  the binary Office formats; thumbnails inside archives. Accessibility stays deferred for much later.
+
+The fleet at the close: the reference for the next gate is **`target-p11close`** (a99f2f2, main at this
+close, built `--locked` from a detached `gate-p11close` worktree); tags continue from **ab56**. Every
+earlier gate build (`target-p9m3` to `target-p11m7`, `target-vthumbs`) has served and can go with its
+`gate-*` worktree, and the two stream worktrees with them. `target\release` is rebuilt from main after
+this close merges (Jeremy held it at 0.1.0 until Phase 11 was finished).
