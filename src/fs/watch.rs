@@ -45,7 +45,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES,
     FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, OPEN_EXISTING, ReadDirectoryChangesW,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, GetFinalPathNameByHandleW, OPEN_EXISTING,
+    ReadDirectoryChangesW,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
 use windows_sys::Win32::System::IO::{
@@ -403,7 +404,7 @@ impl Watch {
             pane,
             tab_id,
             remote: is_remote(&path),
-            removable: role == Role::Main && drive_type(&path) == Some(crate::fs::enumerate::DRIVE_REMOVABLE),
+            removable: role == Role::Main && removable(&path),
             path,
             buf: vec![0u32; bytes / 4],
             pending: false,
@@ -476,6 +477,50 @@ fn last_error() -> String {
 }
 
 /// `GetDriveTypeW` of a drive-letter path's root; None for any other path.
+/// A watch on this drive registers for its device events, so "Safely remove" can close it: a
+/// removable drive, and since P11-M3 a fixed one whose disk says it is hot-pluggable or has
+/// removable media (a USB hard disk reports `DRIVE_FIXED`). Logged once per drive.
+fn removable(path: &Path) -> bool {
+    match drive_type(path) {
+        Some(crate::fs::enumerate::DRIVE_REMOVABLE) => true,
+        Some(DRIVE_FIXED) => {
+            let Some(Component::Prefix(p)) = path.components().next() else { return false };
+            let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = p.kind() else { return false };
+            let hot = hotplug(letter as char);
+            thread_local!(static LOGGED: std::cell::RefCell<std::collections::HashSet<char>> = Default::default());
+            if LOGGED.with(|l| l.borrow_mut().insert(letter as char)) {
+                eprintln!("[devices] {}: fixed, {}", letter as char, if hot { "removable media: registered" } else { "not removable" });
+            }
+            hot
+        }
+        _ => false,
+    }
+}
+
+/// `GetDriveTypeW`'s fixed drive (WinBase.h).
+const DRIVE_FIXED: u32 = 3;
+
+/// The volume's disk says it is hot-pluggable or has removable media
+/// (`IOCTL_STORAGE_GET_HOTPLUG_INFO` on `\\.\X:`, which needs no access rights).
+fn hotplug(letter: char) -> bool {
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    const IOCTL_STORAGE_GET_HOTPLUG_INFO: u32 = 0x002D_0C14;
+    let name: Vec<u16> = format!(r"\\.\{letter}:").encode_utf16().chain([0]).collect();
+    // SAFETY: NUL-terminated name; no access asked, so no admin right is needed.
+    let h = unsafe { CreateFileW(name.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null_mut()) };
+    if h == INVALID_HANDLE_VALUE {
+        return false;
+    }
+    // STORAGE_HOTPLUG_INFO: Size, then MediaRemovable, MediaHotplug, DeviceHotplug, WriteCacheEnableOverride.
+    let mut info = [0u8; 8];
+    let mut got = 0u32;
+    // SAFETY: a live handle; `info` is the out buffer of its size.
+    let ok = unsafe { DeviceIoControl(h, IOCTL_STORAGE_GET_HOTPLUG_INFO, std::ptr::null(), 0, info.as_mut_ptr().cast(), info.len() as u32, &mut got, std::ptr::null_mut()) } != 0;
+    // SAFETY: the handle opened above, closed once.
+    unsafe { CloseHandle(h) };
+    ok && got >= 7 && (info[4] != 0 || info[6] != 0)
+}
+
 fn drive_type(path: &Path) -> Option<u32> {
     let Some(Component::Prefix(p)) = path.components().next() else { return None };
     match p.kind() {
@@ -486,6 +531,23 @@ fn drive_type(path: &Path) -> Option<u32> {
         }
         _ => None,
     }
+}
+
+/// Where the folder open as `handle` is now (`GetFinalPathNameByHandleW`, without the `\\?\`
+/// prefix it gives: `\\?\C:\x` is `C:\x`, `\\?\UNC\server\share` is `\\server\share`).
+fn final_path(handle: HANDLE) -> Option<PathBuf> {
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: a live handle; `buf` holds its length in u16s.
+    let n = unsafe { GetFinalPathNameByHandleW(handle, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
+    if n == 0 || n >= buf.len() {
+        return None;
+    }
+    let s = String::from_utf16_lossy(&buf[..n]);
+    let s = match s.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => s.strip_prefix(r"\\?\").unwrap_or(&s).to_string(),
+    };
+    Some(PathBuf::from(s))
 }
 
 /// A network folder: a UNC path or a mapped network drive.
@@ -1129,7 +1191,7 @@ impl<W: Fn()> Dirwatch<W> {
                 // parent (moved to another folder on the volume).
                 let renamed_to = if i == 0 && std::mem::take(&mut pw.cut_old) {
                     if *action != FILE_ACTION_RENAMED_NEW_NAME {
-                        return self.lose(m, "the folder was moved away".into());
+                        return self.moved_away(m, pp, "the folder was moved away");
                     }
                     Some(n.clone())
                 } else if *action == FILE_ACTION_RENAMED_OLD_NAME && n.eq_ignore_ascii_case(&name) {
@@ -1138,7 +1200,7 @@ impl<W: Fn()> Dirwatch<W> {
                             i += 1;
                             Some(new.clone())
                         }
-                        Some(_) => return self.lose(m, "the folder was moved away".into()),
+                        Some(_) => return self.moved_away(m, pp, "the folder was moved away"),
                         None => {
                             pw.cut_old = true;
                             None
@@ -1154,7 +1216,7 @@ impl<W: Fn()> Dirwatch<W> {
                     mw.path = to.clone();
                     self.send(Event::Moved { pane: mw.pane, tab_id: mw.tab_id, from, to });
                 } else if *action == FILE_ACTION_REMOVED && n.eq_ignore_ascii_case(&name) {
-                    return self.lose(m, "the folder was deleted".into());
+                    return self.moved_away(m, pp, "the folder was deleted");
                 }
                 i += 1;
             }
@@ -1221,6 +1283,26 @@ impl<W: Fn()> Dirwatch<W> {
             self.open_parent(p);
         }
         self.send(Event::Changed { pane, tab_id, changes: Vec::new(), records: 0, overflow: true });
+    }
+
+    /// The watched folder at `m` left its parent (watched by `pp`): a move to another folder comes
+    /// as a removal record, or an old name with no new one (P11-M3). Its own handle, still open,
+    /// names where it is now, so the watch follows it there (`Moved`, a new parent watch on its new
+    /// parent); `Lost` with `lost` when the handle names no other folder (it was deleted).
+    fn moved_away(&mut self, m: *mut Watch, pp: *mut Watch, lost: &str) {
+        // SAFETY: a live main watch owned by this thread.
+        let mw = unsafe { &mut *m };
+        let Some(to) = final_path(mw.handle).filter(|to| !to.as_os_str().eq_ignore_ascii_case(mw.path.as_os_str()) && to.is_dir()) else {
+            return self.lose(m, lost.into());
+        };
+        let from = std::mem::replace(&mut mw.path, to.clone());
+        eprintln!("[watch] pane={} tab={} folder moved: {} -> {}", mw.pane, mw.tab_id, from.display(), to.display());
+        mw.parent = std::ptr::null_mut();
+        self.retire(pp);
+        self.open_parent(m);
+        // SAFETY: as above; `open_parent` keeps the watch.
+        let mw = unsafe { &*m };
+        self.send(Event::Moved { pane: mw.pane, tab_id: mw.tab_id, from, to });
     }
 
     /// The live main watch at `p` failed: take it out of its slot, retire it (and its parent),
@@ -1705,7 +1787,8 @@ mod tests {
     }
 
     #[test]
-    fn moving_the_watched_folder_away_loses_it() {
+    fn moving_the_watched_folder_to_another_parent_follows_it() {
+        // P11-M3: before it the watch was lost; the folder's own handle names its new place.
         let dir = Scratch::new("moved-away");
         let (from, to) = (dir.0.join("a"), dir.0.join("b"));
         std::fs::create_dir_all(from.join("watched")).unwrap();
@@ -1715,10 +1798,16 @@ mod tests {
         w.sync();
         std::fs::rename(from.join("watched"), to.join("watched")).unwrap();
         let events = collect(&rx, Duration::from_secs(1));
-        let lost: Vec<_> = events.iter().filter_map(|e| if let Event::Lost { tab_id: 6, error, .. } = e { Some(error.as_str()) } else { None }).collect();
-        eprintln!("moved away: {lost:?}");
-        assert_eq!(lost.len(), 1, "{events:?}");
-        assert!(!events.iter().any(|e| matches!(e, Event::Moved { .. })), "{events:?}");
+        let moved: Vec<_> = events.iter().filter_map(|e| if let Event::Moved { tab_id: 6, to, .. } = e { Some(to.clone()) } else { None }).collect();
+        assert_eq!(moved.len(), 1, "{events:?}");
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(canon(&moved[0]), canon(&to.join("watched")));
+        assert!(!events.iter().any(|e| matches!(e, Event::Lost { tab_id: 6, .. })), "{events:?}");
+        // The watch goes on in the new place: a file made there is a change of this tab.
+        std::fs::write(to.join(r"watched\x.txt"), b"x").unwrap();
+        let (pane, tab, changes, _) = next_changed(&rx);
+        assert_eq!((pane, tab), (0, 6));
+        assert_eq!(changes, vec![Change::Added(s("x.txt"))]);
     }
 
     #[test]
@@ -1902,5 +1991,24 @@ mod tests {
         assert_eq!((pane, tab), (0, 4));
         // NTFS may also report "sub" modified, lazily, after the deep write.
         assert!(changes.contains(&Change::Added(s("top2.txt"))), "{changes:?}");
+    }
+
+    #[test]
+    fn a_subtree_watch_past_the_record_cap_gives_no_edits() {
+        // P11-M3: a burst of more than `MAX_RECORDS` records in the folder itself under a subtree
+        // watch is a window with no edits (`raw_over`), so the UI lists the folder again instead of
+        // folding them. (The buffer's own overflow, `overflow: true`, could not be forced here: the
+        // watcher kept up with 3,200 records of over 400 bytes from eight threads.)
+        let dir = Scratch::new("subtree-overflow");
+        std::fs::create_dir_all(dir.0.join("sub")).unwrap();
+        let (w, rx) = watcher();
+        w.watch(0, 7, dir.0.clone(), true, false);
+        w.sync();
+        for i in 0..(2 * MAX_RECORDS) {
+            std::fs::write(dir.0.join(format!("burst-{i:05}.txt")), b"x").unwrap();
+        }
+        let events = collect(&rx, Duration::from_secs(4));
+        let capped = events.iter().filter(|e| matches!(e, Event::Subtree { tab_id: 7, top: true, overflow: false, edits: None, records, .. } if *records > MAX_RECORDS)).count();
+        assert!(capped >= 1, "expected a window past the cap with no edits, got {events:?}");
     }
 }

@@ -385,6 +385,10 @@ enum Step {
     /// Set the pane's filter box to `text` (opening it, without the focus) and call its `edited`
     /// callback, as typing does.
     Filter { pane: usize, text: String },
+    /// The pane's history menu, as Alt+Down opens it (P11-M3).
+    HistMenu(usize),
+    /// The open history menu's entry at that position (0: the top), as a click picks it.
+    HistPick(usize),
     /// Ctrl+Shift+F's callback on the pane.
     Search(usize),
     /// Return in the pane's search box, with the box's text (P10-M2).
@@ -479,6 +483,8 @@ fn parse(script: &str) -> Vec<Step> {
                 "menuopen" => Step::MenuOpen(a[1..].join(" ")),
                 "menukey" => Step::MenuKey(a.get(1).unwrap_or(&"").to_string()),
                 "menupick" => Step::MenuPick(a[1..].join(" ")),
+                "histmenu" => Step::HistMenu(num(1) as usize),
+                "histpick" => Step::HistPick(num(1) as usize),
                 "menuclose" => Step::MenuClose,
                 "dragrow" => Step::DragRow {
                     pane: num(1) as usize,
@@ -531,6 +537,8 @@ fn parse(script: &str) -> Vec<Step> {
                         Some("tab") => (HoverAt::At(DropAt::Tab(num(2) as usize, num(3) as usize)), 4),
                         Some("crumb") => (HoverAt::At(DropAt::Crumb(num(2) as usize, num(3) as i32)), 4),
                         Some("strip") => (HoverAt::Strip(num(2) as usize, a.get(3) == Some(&"right")), 4),
+                        // `side <row>` (P11-M3): a sidebar row's centre, as `dropfiles side <row>`.
+                        Some("side") if a.get(2).is_some_and(|v| v.parse::<i32>().is_ok()) => (HoverAt::At(DropAt::Side(num(2) as i32)), 3),
                         Some("side") => (HoverAt::Side(a.get(2) == Some(&"top")), 3),
                         _ => (HoverAt::Edge(num(1) as usize, a.get(2) == Some(&"top")), 3),
                     };
@@ -1523,6 +1531,15 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         Step::SearchReturn(pane) => {
             let text = if pane == 0 { app.get_left_filter_text() } else { app.get_right_filter_text() };
             app.invoke_filter_return(pane as i32, text);
+            schedule(runner, 1);
+        }
+        Step::HistMenu(pane) => {
+            app.invoke_command(pane as i32, "histmenu".into());
+            schedule(runner, 1);
+        }
+        Step::HistPick(i) => {
+            eprintln!("[auto] histpick {i}");
+            crate::winmenu_picked(crate::winmenu::Cmd::History(i).id());
             schedule(runner, 1);
         }
         Step::SearchButton(pane) => {

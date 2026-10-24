@@ -122,6 +122,9 @@
 # through the settings dialog's "Reset column widths" (`settings set cols_reset`, OK); the report
 # counts the resets (two lines per cycle, one per pane), and the widths-back lines are two per
 # cycle since (the P9-M1 cycle's and the reset's).
+# P11-M3: each cycle also takes the left pane from src into src\tree, opens its history menu
+# (`histmenu 0`, Alt+Down's command) and picks the place before (`histpick 1`, src); the report
+# counts the history jumps (one per cycle).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -488,7 +491,9 @@ $cycle = @(
     "nav 0 $src", 'sleep 500', 'csearch 0 scratch file 3/7', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
     'contentmode 0 off', 'filter 0', 'sleep 300',
     # P11-M2: the widths reset through the dialog (see the header).
-    "nav 0 $src\tree", 'sleep 500', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300'
+    "nav 0 $src\tree", 'sleep 500', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300',
+    # P11-M3: the history menu (see the header).
+    "nav 0 $src", 'sleep 400', "nav 0 $src\tree", 'sleep 400', 'histmenu 0', 'waitmenu 2000', 'histpick 1', 'sleep 600'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -666,6 +671,7 @@ $contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Va
 $colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 60 px (drag)').Count
 $colFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit modified: ').Count
 $colResets = @($log | Select-String -SimpleMatch '[cols] pane=0 widths reset to 120, 90, 140').Count + @($log | Select-String -SimpleMatch '[cols] pane=1 widths reset to 120, 90, 140').Count
+$histJumps = @($log | Select-String -SimpleMatch '[nav] pane=0 history jump -1:').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 # P11-M4: the zoom and "Copy text".
@@ -710,5 +716,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (two per cycle and one at start), resets through the dialog $colResets (two per cycle)"
 "thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
 "search box: Return searches $boxReturns (one per cycle), button searches $boxButtons (one per cycle), blank Returns $boxEmpty (one per cycle)"
+"history menu: jumps back one place $histJumps (one per cycle)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

@@ -42,7 +42,7 @@ kickoff decisions, § Calls made lists the lead's, § Open questions what each b
 them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (297 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (300 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -233,9 +233,10 @@ them before changing the list.
   strip <pane> <left|right> ...` 6 px inside a tab strip's end (shown with two tabs or more).
   Spring-loaded folders: a drag held `dnd::SPRING_MS` (1000 ms) over a folder row or tile, or a
   tab other than the active one, opens it in that pane (a navigation, or the tab switch, run from
-  the event loop), for drags from anywhere; once per spot until the pointer leaves it; never a
-  sidebar row, a crumb, a file row, empty space, a search tab, This PC's tab or an archive level,
-  nor a spot that refuses the drop. Lines: `spring armed: pane N row R (<folder>)` or `pane N tab
+  the event loop), for drags from anywhere; once per spot until the pointer leaves it; since P11-M3
+  a sidebar row (opened in the active pane) and a crumb other than the folder shown spring-load too;
+  never a file row, empty space, a search tab, This PC's tab, an archive level or anything inside an
+  archive, nor a spot that refuses the drop. Lines: `spring armed: pane N row R (<folder>)` or `pane N tab
   I (<folder>)`, `spring-loaded: pane N opens <folder> after T ms` or `pane N shows tab I after T
   ms`, `spring disarmed (moved away | DragLeave | Drop)` (an armed spring only, one that had not
   fired). The spot `pane N crumb I (<folder>)` (the crumb's folder; This PC's crumb and a search
@@ -374,6 +375,36 @@ them before changing the list.
   the Type column switch; staged, applied on OK): `settings set cols_reset`, `[settings] dialog:
   cols_reset`, `[cols] pane=N widths reset to 120, 90, 140` per pane, then the `(reset)` change lines;
   it counts as one change in the dialog's closed line.
+  Since P11-M3, the edge-case bundle: **Ctrl+Z is window-level** beside Ctrl+Y (`app.slint`'s outer
+  scope, not the list's), so it works from the sidebar, the tab strip and the crumbs; text boxes keep
+  their own undo. **A partial Recycle Bin restore** (some items failed) records the items it brought
+  back (`undo::record_for`). **A copy or move that replaced a file** is not undone: the file worker
+  notes the destination paths there before the job (`fileops::Done::existed`) and an item landing on
+  one makes the record `CANNOT_UNDO_REPLACED` (`undo::forbid_if_replaced`; Ctrl+Z: "Cannot undo: it
+  replaced a file, which cannot be brought back"). **A folder moved to another parent is followed**:
+  the parent watch sees it removed (or an old name with no new one), and the folder's own open handle
+  names its new place (`GetFinalPathNameByHandleW`, `watch.rs` `moved_away`): `[watch] pane=N tab=T
+  folder moved: <from> -> <to>`, then the `Moved` event's `[nav] ... path follows the rename`; a
+  deleted folder still goes `Lost`. **A fixed drive whose disk is hot-pluggable** (a USB hard disk;
+  here also Google Drive's `G:`) registers its watches for device events as a removable drive does
+  (`IOCTL_STORAGE_GET_HOTPLUG_INFO`): `[devices] <letter>: fixed, removable media: registered | not
+  removable` once per drive. `waitsize` also waits while a stale size waits for its re-walk. **The
+  history menu**: Alt+Down in a list (`command "histmenu"`) or a right click on the path bar's
+  background opens the pane's places in the Windows 11 menu (`open_history_menu`; forward places
+  first, the current one checked, back places after it; each labelled by its name, then where it
+  is, `Place::label`); a pick goes that many steps in one move (`History::jump`): `[nav] pane=N
+  history menu: K entries (B back, F forward)`, `[nav] pane=N history jump S: <from> -> <to> (B back,
+  F forward left)`. **History is saved with restored tabs** (`SavedTab::back` / `forward`, at most
+  50 places each, `SavedPlace` with a search's pattern and `content`; an entry equal to the restored
+  tab's own place is dropped, `History::restored`). **The settings dialog's Browse buttons** beside
+  the start folders run the shell's folder picker on the verb worker (`shellmenu::pick_folder`,
+  `verbs::Work::PickFolder`): `[settings] browse <field>: the folder picker queued on the verb
+  worker`, `[settings] browse <field>: <path> | cancelled | failed: <why>`; a start folder staged
+  that is not a folder shows "Left|Right start folder not found: <path>" in the dialog's footer
+  (`start_folder_check`; never asked for a network path): `[settings] dialog: <field> "<path>" is not
+  a folder`. Driver: `histmenu <pane>` (Alt+Down's command), `histpick <index>` (the open history
+  menu's entry at that position, 0 the top), `dragover side <row>` (a sidebar row's centre, as
+  `dropfiles side <row>` aims).
   Since P3-M3, folder sizes: `sizeall <pane>` focuses the pane's list and presses Alt+Shift+Return
   (key name `AltShiftReturn`, Alt+Return until P7-M2: size every folder of the listing, at most 500, nearest the cursor first);
   `waitsize <ms>` waits until no folder size is queued or walking and the last reply has landed (at
@@ -1049,6 +1080,8 @@ them before changing the list.
   closed, the toggle off again); it reports content searches done, files read and files found (one).
   Since P11-M2 each cycle also narrows the left pane's Type column and resets both panes through the
   settings dialog (`settings set cols_reset`, OK); it reports the resets (two per cycle).
+  Since P11-M3 each cycle also takes the left pane from `src` into `src\tree` and back through the
+  history menu (`histmenu 0`, `histpick 1`); it reports the jumps (one per cycle).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
@@ -1144,7 +1177,11 @@ them before changing the list.
   a tree with a junction to its root and a file marked offline in `%TEMP%\twinfm-p11m1-test-<pid>\`.
   Since P11-M2 `shellmenu::tests::a_menu_for_results_in_two_folders` builds a shell menu over files
   in two folders of `%TEMP%\twinfm-p11m2-menu-<pid>\`, and `dnd::tests::shell_data_object_offers_hdrop`
-  also makes a data object over two subfolders of its scratch folder. All remove their folders.
+  also makes a data object over two subfolders of its scratch folder. Since P11-M3
+  `fs::watch::tests::moving_the_watched_folder_to_another_parent_follows_it` and
+  `a_subtree_watch_past_the_record_cap_gives_no_edits` (2,000 files) use the `fs::watch` scratch
+  folder, and `worker_runs_real_shell_operations` also copies a file over itself (a replace). All
+  remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

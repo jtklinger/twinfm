@@ -154,6 +154,36 @@ pub struct Done {
     pub outcome: Outcome,
     /// The job's own items as the sink reported them, in the order the shell finished them.
     pub results: Vec<ItemResult>,
+    /// A copy's or move's destination paths that were there before it ran (P11-M3): an item that
+    /// landed on one replaced that file (`undo::forbid_if_replaced`).
+    pub existed: Vec<PathBuf>,
+}
+
+/// The destination paths a copy or move would land on that are there already (P11-M3), looked at
+/// on the worker just before the job runs.
+fn existing_dests(job: &Job) -> Vec<PathBuf> {
+    let (dest_dir, names): (&Path, Vec<std::ffi::OsString>) = match job {
+        Job::Copy { sources, dest_dir } | Job::Move { sources, dest_dir } => (dest_dir, sources.iter().filter_map(|s| s.file_name().map(|n| n.to_os_string())).collect()),
+        Job::MoveAs { items, dest_dir } => (dest_dir, items.iter().map(|(_, n)| n.into()).collect()),
+        _ => return Vec::new(),
+    };
+    // In their long form, as the sink names the items it made: a folder reached through an 8.3 name
+    // (`C:\Users\RUNNER~1`) would otherwise never match.
+    names.into_iter().map(|n| dest_dir.join(n)).filter(|p| std::fs::symlink_metadata(p).is_ok()).map(|p| long_path(&p)).collect()
+}
+
+/// `path` with every 8.3 component in its long form (`GetLongPathNameW`, which follows no link);
+/// as it is when that fails.
+fn long_path(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::OsStringExt;
+    let w = wide(path.as_os_str());
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: NUL-terminated input; `buf` holds its length in u16s.
+    let n = unsafe { windows_sys::Win32::Storage::FileSystem::GetLongPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() {
+        return path.to_path_buf();
+    }
+    PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]))
 }
 
 /// The name the shell really gave a renamed item, a new folder or a new file ("New folder (2)"),
@@ -408,6 +438,7 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
         }
         if msg.hwnd.is_null() && msg.message == WM_RUN {
             while let Ok(req) = rx.try_recv() {
+                let existed = existing_dests(&req.job);
                 let (outcome, results) = if req.id <= cancel_upto.load(std::sync::atomic::Ordering::Acquire) {
                     (Outcome::Cancelled, Vec::new()) // cancelled while queued: never started
                 } else if com >= 0 {
@@ -415,7 +446,7 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
                 } else {
                     (Outcome::Failed(com), Vec::new())
                 };
-                done(Done { id: req.id, job: req.job, outcome, results });
+                done(Done { id: req.id, job: req.job, outcome, results, existed });
             }
             continue;
         }
@@ -1364,6 +1395,23 @@ mod tests {
         assert_eq!(std::fs::read(root.join("made").join("a.txt")).unwrap(), b"hello");
         assert!(root.join("a.txt").exists(), "a copy keeps the source");
         assert_eq!(dest(&r), [canon(&root.join("made").join("a.txt"))]);
+        // P11-M3: the same copy again replaces it (no confirmation asked): the worker saw the path
+        // before the job, the sink reports the item landing on it, so the record cannot be undone.
+        // Through the folder's 8.3 name when the volume has one (the CI runner's %TEMP% is one): the
+        // sink names the item by its long path all the same.
+        let short = {
+            let w = wide(root.join("made").as_os_str());
+            let mut buf = vec![0u16; 1024];
+            // SAFETY: NUL-terminated input; `buf` holds its length in u16s.
+            let n = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+            if n == 0 || n >= buf.len() { root.join("made") } else { PathBuf::from(String::from_utf16_lossy(&buf[..n])) }
+        };
+        assert!(worker.submit(Request { id: 900, job: Job::Copy { sources: vec![root.join("a.txt")], dest_dir: short }, hwnd: 0, no_confirm: true }));
+        let r = rx.recv_timeout(Duration::from_secs(30)).expect("job finishes within 30 s");
+        assert_eq!((r.id, r.outcome.clone(), r.existed.len()), (900, Outcome::Done, 1));
+        assert_eq!(canon(&r.existed[0]), canon(&root.join("made").join("a.txt")));
+        let rec = undo::forbid_if_replaced(undo::record_for(&r.job, &r.outcome, &r.results, "Copied"), &r.existed, &r.results).unwrap();
+        assert_eq!((rec.undo, rec.cannot), (None, undo::CANNOT_UNDO_REPLACED), "{:?}", r.results);
 
         let r = run(Job::Rename { source: root.join("made").join("a.txt"), new_name: "b.txt".into() });
         assert!(root.join("made").join("b.txt").exists());
