@@ -1149,9 +1149,31 @@ search 4 / 806 / 4, P11-M5's files coloured 8; working set 136 to 246 MB (P11-M3
 
 ### Gate
 
-Pending: the defaults triplet (the setting off: no file, nothing per row or frame), `target-p11m7`
-(7469487) against `target-p11m3`, tag ab53; then one in-app run with the setting on (`TWINFM_CONFIG`
-naming a read-only file with `log = true`), its numbers read from the log.
+The defaults triplet (the setting off: no file, nothing per row or frame), `target-p11m7` (7469487)
+against `target-p11m3`; then one in-app run with the setting on (`TWINFM_CONFIG` naming a read-only file
+with `log = true`), its numbers read from the log.
+
+- **ab53: a gap by the rule, sent for an order-swapped rerun.** Run by Jeremy, finished 2026-10-23
+  22:18, 8 min, `C:\traces\gate-ab53-summary.txt`; every run passed the wrapper's checks, no build
+  overlapping (the coordinating session's word).
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11m3-1 / 2 / 3 | 18.3 / 18.6 / 18.4 | 19.4 / 19.5 / 18.4 | 2.30 / 2.19 / 2.22 |
+| p11m7-1 / 2 / 3 | 18.8 / 18.8 / 18.8 | 18.0 / 17.3 / 18.4 | 2.16 / 2.34 / 2.37 |
+
+  Medians 18.4 / 18.8 (0.4 points), every reference run below every candidate run: a gap that counts
+  by the rule, though under a point; render p50 even (2.16 to 2.37 ms); every candidate run under 20%.
+  The candidate always ran in the second slot, which reads high (the P7-M4 rule: a fixed-order gap is
+  checked with the order swapped); the in-app figures go the other way (the candidate's all at or
+  below the reference's). **The code read for the coordinating session**: with `log` off nothing of
+  P11-M7 runs per frame or per `eprintln!` (no wrapper, no lock, no setting checked per line; Rust's
+  stderr looks its handle up on every write as before; the stderr lock is taken only when the log is
+  switched); the only recurring work is the once-a-minute cut timer (a mutex, the log found off, a
+  return; it also formats the first-line string every minute, a clean-up for later), which first
+  fires at 60 s, after the gate's 10 s window. So in the measured window P11-M7 runs nothing.
+- **ab54**: the defaults again, the candidate first in each round (`tools/gate-p11m7-ab54.ps1`),
+  same head and reference.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
