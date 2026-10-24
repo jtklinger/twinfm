@@ -945,7 +945,19 @@ reference is `target-p11m5` (530bd8e), the last merged milestone's gate build. N
 
 ### Scripted checks
 
-Waiting for the coordinating session's clearance (the lists stream has TwinFM windows open).
+On `target-p11m6` (the coordinating session's go): a.pdf (AES-256) showed "Password-protected PDF" and
+the "Enter password…" button (screenshot); `pdfpassword nope` was refused (`wrong`, the message kept),
+`pdfpassword twinfm` opened it (`right`, opened in 21 ms) and drew the red box; b.pdf (RC4-128) the
+same (`right`, 1 ms); c.pdf (owner-only) opened with no question.
+
+### Soak (2026-10-23, `target-p11m6`)
+
+`tools/soak-p5m3.ps1 -Minutes 10`: 10.1 min, exit 0, no panic, 256 jobs done (none failed or
+cancelled); passwords right 4 (one per cycle), wrong or refused 0, password PDFs opened 4; copy
+failures 0 (#105's retry held), chunks refused 0, picture failures 0, waitpreview timeouts 0, worker
+panics 0; PDFs opened 12 (three per cycle now, with p-locked.pdf; the report's "two per cycle" note
+predates it). Working set 160.7 to 263.3 MB (its peak), private 156.2 to 232 MB: the band of the
+P11-M1, P11-M4 and P11-M5 soaks.
 
 ### Gate
 
@@ -961,10 +973,19 @@ run in the costlier state (render p50 2.9 to 3.6 ms). The preview half is void: 
 24.2 against p11m6 27.4, 28.0, 23.3, the reference's own spread wider than any gap. The cause, found
 by the coordinating session: the Claude desktop app spinning about 36% of a core, with Task Manager
 and the Files app open; no build overlapped (the last fingerprint 16:51). Jeremy closed them and
-restarted the Claude app. **ab52**: the preview triplet alone, `tools/gate-p11m6-ab52.ps1`, the same
-head (0dcac60) and reference (`target-p11m5`).
+restarted the Claude app. **ab52** (18:53, 8 min): the preview triplet alone,
+`tools/gate-p11m6-ab52.ps1`, the same head (0dcac60) and reference (`target-p11m5`), passed: p11m5
+17.5, 17.6, 17.4 against p11m6 18.0, 17.4, 17.6, medians 17.5 / 17.6, every candidate run under
+20%, render p50 1.98 to 2.04 ms (a quiet session). **P11-M6's gate is ab51's defaults half and
+ab52's preview half; no gap that counts in either.**
 
-### Console checks (for Jeremy, unelevated, after the gate)
+### Console checks (Jeremy, 2026-10-23, unelevated, `target-p11m6` on `C:\traces\p11m6-console`)
+
+Jeremy: "all good." The three test PDFs (AES-256 and RC4-128 with the password "twinfm", an AES-256
+owner-only file) and his own: the button, a wrong password asked again, Cancel leaving the message,
+the right password drawing the page, the owner-only file opening unasked.
+
+The list as handed to Jeremy:
 
 - His own password PDFs beside Edge: the button, the right password, a wrong one (asked again),
   Cancel (the message stays).
