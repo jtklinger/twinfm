@@ -1,4 +1,4 @@
-# P11-M7 gate, tag TAGNN: target-p11m7 from the P11-M7 PR at 9dd0cad (logging as a setting: the `log`
+# P11-M7 gate, tag ab53: target-p11m7 from the P11-M7 PR at 9dd0cad (logging as a setting: the `log`
 # setting, off by default, points stderr at twinfm.log; the wrapper's own commit follows it) against
 # target-p11m3 (ff0d120, P11-M3's gate build, the last merged milestone's), the defaults only (the
 # setting off: no file, nothing per row or frame; a scripted run reads no settings), three runs each
@@ -8,14 +8,14 @@
 #   powershell -ExecutionPolicy Bypass -File C:\traces\gate-p11m7.ps1
 # (a copy of tools\gate-p11m7.ps1 on the P11-M7 branch; the scripts it calls are the gate checkout's
 # tools\wpr-triplet.ps1, which calls wpr-gate.ps1 beside it, and tools\analyze-trace.py).
-# Writes C:\traces\twinfm-TAGNN-*.etl (+ .stderr.txt), C:\traces\export\TAGNN-*.txt and
-# C:\traces\gate-TAGNN-summary.txt.
+# Writes C:\traces\twinfm-ab53-*.etl (+ .stderr.txt), C:\traces\export\ab53-*.txt and
+# C:\traces\gate-ab53-summary.txt.
 # The gate build is already made (Claude built it, --locked, from the detached checkout); the build
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 $Head = '9dd0cad'
-$Tag = 'TAGNN'
+$Tag = 'ab53'
 $Ref = 'p11m3'
 $Cand = 'p11m7'
 $Gate = "$Root\.claude\worktrees\gate-p11m7"
