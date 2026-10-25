@@ -27,5 +27,6 @@ Copy-Item src\ui\icons\LICENSE "$stage\licenses\Lucide-icons.txt"
 $zip = Join-Path $root "dist\$name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path $stage -DestinationPath $zip
-Get-FileHash -Algorithm SHA256 $zip | ForEach-Object { "$($_.Hash.ToLower())  $name.zip" } | Set-Content -Encoding ascii "$zip.sha256"
+# A LF line end: `sha256sum -c` reads a CRLF line's `\r` as part of the file name.
+Get-FileHash -Algorithm SHA256 $zip | ForEach-Object { "$($_.Hash.ToLower())  $name.zip`n" } | Set-Content -NoNewline -Encoding ascii "$zip.sha256"
 Write-Host "Wrote $zip"
