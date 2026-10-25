@@ -1,5 +1,5 @@
 import { ScrollView, ListView } from "std-widgets.slint";
-import { Theme, Btn } from "theme.slint";
+import { Theme, Btn, VScrollBar, HScrollBar } from "theme.slint";
 
 // One page of the previewed PDF (preview.rs `layout`): its top and height in the scroll's content,
 // laid out from the page sizes before any page is drawn, its picture once the worker has rendered
@@ -257,6 +257,8 @@ export component Preview inherits Rectangle {
                 // A page's width at the zoom (Rust lays the pages out at the same width).
                 property <length> page-w: (self.visible-width - 16px) * root.zoom / 100;
                 visible: root.message == "" && root.mode == 0;
+                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
                 content-width: max(self.visible-width, self.page-w + 16px);
                 content-height: root.content-h;
                 init => { root.resized(self.visible-width - 16px); }
@@ -311,11 +313,36 @@ export component Preview inherits Rectangle {
             }
             md := ListView {
                 visible: root.message == "" && root.mode == 1;
+                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
                 for b[k] in root.blocks: MdItem {
                     b: b;
                     link(u) => { root.link(u); }
                     menu(x, y) => { root.menu(k, x, y); }
                 }
+            }
+            // The scrollbars, TwinFM's own (P12-M2; the views' Fluent bars are off): the pages up and
+            // down and, past 100%, sideways (each bar short of the corner when both show); the
+            // Markdown list up and down.
+            if root.message == "" && root.mode == 0: VScrollBar {
+                x: parent.width - self.width;
+                height: parent.height - (body.content-width > body.visible-width ? 14px : 0px);
+                content-y <=> body.content-y;
+                content-height: body.content-height;
+                visible-height: body.visible-height;
+            }
+            if root.message == "" && root.mode == 0: HScrollBar {
+                y: parent.height - self.height;
+                width: parent.width - (body.content-height > body.visible-height ? 14px : 0px);
+                content-x <=> body.content-x;
+                content-width: body.content-width;
+                visible-width: body.visible-width;
+            }
+            if root.message == "" && root.mode == 1: VScrollBar {
+                x: parent.width - self.width;
+                height: parent.height;
+                content-y <=> md.content-y;
+                content-height: md.content-height;
+                visible-height: md.visible-height;
             }
             // The look's empty state (P12-M1): the message's Lucide icon on a muted tile, the muted
             // text under it, and the button when there is one.

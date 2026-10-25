@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, Field, TipCard, Badge } from "theme.slint";
+import { Theme, Field, TipCard, Badge, VScrollBar } from "theme.slint";
 
 // kind: 0 directory, 1 file, 2 drive, 3 other reparse point, 4 junction, 5 symbolic link,
 // 6 cloud placeholder, 7 app execution alias (model::Kind)
@@ -771,7 +771,8 @@ component FileListHost inherits Rectangle {
     // The pane is active: a list created now takes the focus.
     in property <bool> active;
     in-out property <length> content-y;
-    // A ListView's visible size is its own (Fluent's scrollbar overlays the content).
+    // A ListView's visible size is its own (the scrollbar, the host's own since P12-M2, overlays the
+    // content).
     out property <length> visible-width: self.width;
     out property <length> visible-height: self.height;
     callback open-row(int);
@@ -988,6 +989,7 @@ component FileListHost inherits Rectangle {
         rows: root.rows;
         current-row: root.current-row;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
@@ -1002,6 +1004,7 @@ component FileListHost inherits Rectangle {
         rows: root.rows;
         current-row: root.current-row;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
@@ -1017,6 +1020,7 @@ component FileListHost inherits Rectangle {
         rows: root.rows;
         current-row: root.current-row;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
@@ -1031,6 +1035,7 @@ component FileListHost inherits Rectangle {
         rows: root.rows;
         current-row: root.current-row;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
@@ -1044,6 +1049,7 @@ component FileListHost inherits Rectangle {
         cols: root.cols;
         current-row: root.current-row;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
@@ -1057,11 +1063,22 @@ component FileListHost inherits Rectangle {
         cols: root.cols;
         current-row: root.current-row;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
+    }
+    // TwinFM's own scrollbar over whichever list shows (P12-M2), the lists' Fluent bars off: the
+    // host owns the scroll and knows the content's height (rows of row-h, or grid rows of tile-h).
+    VScrollBar {
+        x: root.width - self.width;
+        y: 0px;
+        height: root.height;
+        content-y <=> root.content-y;
+        content-height: root.grid ? root.grid-rows.length * root.tile-h : root.rows.length * root.row-h;
+        visible-height: root.visible-height;
     }
 }
 

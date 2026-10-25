@@ -1,6 +1,6 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
 import { ListView, AboutSlint } from "std-widgets.slint";
-import { Theme, Btn, Switch, Field, Choice } from "theme.slint";
+import { Theme, Btn, Switch, Field, Choice, VScrollBar } from "theme.slint";
 // Inter (SIL Open Font License 1.1, src/ui/fonts/OFL.txt), the face of the look (P10-M1 task 4):
 // the three static weights the window uses, embedded in the exe.
 import "fonts/Inter-Regular.ttf";
@@ -826,6 +826,7 @@ export component App inherits Window {
                 padding-top: 3px;
                 side-list := ListView {
                     accessible-label: "Places";
+                    vertical-scrollbar-policy: ScrollBarPolicy.always-off;
                     for item[i] in root.side-items: SideRow {
                         item: item;
                         editing: i == root.side-edit;
@@ -903,6 +904,15 @@ export component App inherits Window {
                     border-width: 2px;
                     border-color: Theme.cursor;
                 }
+            }
+            // The list's scrollbar, TwinFM's own (P12-M2; the ListView's Fluent bar is off).
+            VScrollBar {
+                x: side-list.x + side-list.width - self.width;
+                y: side-list.y;
+                height: side-list.height;
+                content-y <=> side-list.content-y;
+                content-height: side-list.content-height;
+                visible-height: side-list.visible-height;
             }
         }
         // Drag the sidebar's right edge to resize it.
@@ -1260,6 +1270,7 @@ export component App inherits Window {
                 padding: 4px;
                 crumb-list := ListView {
                     accessible-label: "Folders";
+                    vertical-scrollbar-policy: ScrollBarPolicy.always-off;
                     for name[i] in root.crumb-menu-items: Rectangle {
                         height: 22px;
                         accessible-role: list-item;
@@ -1282,6 +1293,15 @@ export component App inherits Window {
                     vertical-alignment: center;
                     color: Theme.fg-muted;
                 }
+            }
+            // The list's scrollbar, TwinFM's own (P12-M2).
+            VScrollBar {
+                x: crumb-list.x + crumb-list.width - self.width;
+                y: crumb-list.y;
+                height: crumb-list.height;
+                content-y <=> crumb-list.content-y;
+                content-height: crumb-list.content-height;
+                visible-height: crumb-list.visible-height;
             }
         }
     }
