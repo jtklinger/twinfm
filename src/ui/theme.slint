@@ -103,6 +103,24 @@ export component TipCard inherits Rectangle {
     }
 }
 
+// A badge in the look (P12-M1, the status bar's selection): 22 px tall in its layout, 6 px
+// corners, 12 px text at weight 500; the muted fill, or with `outline` a hairline and no fill.
+// It never stretches, so a layout's text beside it gives way first.
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <bool> outline: false;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius;
+    background: root.outline ? transparent : Theme.muted;
+    border-width: root.outline ? 1px : 0px;
+    border-color: Theme.border;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text { text: root.text; font-size: 12px; font-weight: 500; vertical-alignment: center; color: Theme.fg; }
+    }
+}
+
 // A switch for a boolean setting (P10-M1), in place of a check box: a 36 x 20 track with a 16 px
 // knob, the label beside it. A click flips `checked` and calls toggled(), as the std CheckBox did.
 export component Switch inherits Rectangle {
