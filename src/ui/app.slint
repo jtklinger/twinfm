@@ -305,6 +305,8 @@ export component App inherits Window {
     in-out property <float> preview-width: 0.35;
     in property <string> preview-title;
     in property <string> preview-message;
+    // Since P12-M1: the icon above the message (preview.rs `message_icon`: file, lock, cloud, alert).
+    in property <string> preview-icon;
     // Since P11-M6: the button under the message ("Enter password…"), and its press.
     in property <string> preview-action;
     callback preview-password();
@@ -1107,6 +1109,7 @@ export component App inherits Window {
             width: max(0px, parent.width - self.x); height: parent.height - root.top-h;
             title: root.preview-title;
             message: root.preview-message;
+            icon: root.preview-icon;
             action: root.preview-action;
             action-clicked => { root.preview-password(); }
             pages: root.preview-pages;

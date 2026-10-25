@@ -34,6 +34,10 @@ export global Theme {
     out property <brush> primary-fg: dark ? #171717 : #FAFAFA;
     // The 1 px shadow line under a lifted segment or an outline control (never drop-shadow).
     out property <brush> shadow: dark ? #00000066 : #0000001A;
+    // A PDF page in the preview is paper, white in both schemes, and a note drawn on it in place
+    // of the page ("Page N took too long") takes the light scheme's muted text (P12-M1).
+    out property <brush> paper: #FFFFFF;
+    out property <brush> paper-fg: #737373;
     // Links in the preview's text (shadcn's prose links; the grey scale has no colour for them).
     out property <brush> link: dark ? #60A5FA : #2563EB;
     // Jeremy's console check (2026-10-22): the cursor and the selection were hard to see in grey.
