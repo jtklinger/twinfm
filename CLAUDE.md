@@ -43,7 +43,7 @@ settles first, and § Phase 11 close holds the gates, the long soak, lessons, wh
 Phase 12 list). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (302 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (303 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
