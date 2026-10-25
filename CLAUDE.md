@@ -43,7 +43,7 @@ settles first, and § Phase 11 close holds the gates, the long soak, lessons, wh
 Phase 12 list). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (302 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (303 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -981,6 +981,26 @@ Phase 12 list). Read them before changing the list.
   ready after 4 answers: <key> keeps its type icon`. No new driver step. A test video made by Windows
   itself (no ffmpeg here): WinRT `MediaComposition` with `MediaClip.CreateFromImageFileAsync` and
   `RenderToFileAsync` from Windows PowerShell (the plan's record has the script's shape).
+  Since P12-M6, **a classic-menu command whose id moved runs**: Microsoft Defender's handler adds "Scan
+  with Microsoft Defender..." only to a menu built with an owner window, and the verb worker builds its
+  menu with none (P7-M1), so every command numbered after Defender's sits one id lower there (Google
+  Drive's on `G:`, OneDrive's "Move to OneDrive" on any file). A classic pick hands the worker its
+  **label path** (`VerbRequest::label`: its submenus' labels and its own joined by `>`, "Offline
+  access>Available offline", `shellmenu::label_path`; the `[menu] verb ... queued` and `InvokeCommand
+  ... label=` lines and the pane's "was not run" note show it); `choose` checks the item at the id by the
+  path's last label, and when that refuses, `find_moved` takes the one command **without a verb** at the
+  whole label path in the rebuilt menu (none, or several: refused as before, so a wrong command is never
+  run); `fill_until` stops as soon as either is found. Defender's own item is in no rebuilt menu, so it is
+  refused (`..., and none at its label path`). `[menu] "<label path>" moved from offset A to B in the
+  rebuilt menu: by offset B`; a refusal ends `, and none at its label path` or `, and N at its label
+  path`. Driver: `menuverb <pane> try:<label path>`, the dry test verb: the command at that path in the
+  menu `show` would show for the cursor row's selection (`shellmenu::find_shown`, built as `show`
+  builds it and never shown; of two at one path, the one without a verb), handed to the worker as a pick
+  would be (`verbs::Work::Try`), resolved there and **never invoked** (`run_verb`'s `dry`): `[auto]
+  menuverb try: "<label path>" at offset A in the menu shown, verb "<verb>"` or `[auto] menuverb try: no
+  "<label path>" in the menu`, `[menu] verb ... queued on the verb worker (the test verb: resolved, not
+  invoked)`, `[menu] InvokeCommand ... resolved: by offset | by verb (the test verb: not invoked) |
+  refused: <why>`. Safe on `G:` and OneDrive files (reading menus only); `waitops` covers it.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
