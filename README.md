@@ -7,14 +7,15 @@ without stalling, where Windows' own Files app struggles.
 TwinFM uses the Windows shell for the things Explorer users rely on, so copies, moves, the Recycle
 Bin, the context menu, drag and drop, the clipboard and file icons behave as they do in Explorer.
 
-**Status: 0.1.0, the first public release.** TwinFM is used daily by its author, but it is young:
-expect rough edges, and keep backups as you would with any file manager.
+**Status: 0.2.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
+keep backups as you would with any file manager.
 
 ## Features
 
 - **Two panes, each with tabs.** Every tab keeps its own folder, sort, hidden-files setting,
   selection, scroll position and Back/Forward history (Alt+Left, Alt+Right, the mouse's side
-  buttons). Tabs, the split and the window are restored at the next start.
+  buttons; Alt+Down lists the places to jump to). Tabs with their history, the split and the
+  window are restored at the next start.
 - **Fast listings.** Folders are read on a worker thread and streamed in; icons and thumbnails are
   fetched only for the rows on screen. Folders are watched, so changes made elsewhere appear
   without a refresh.
@@ -30,20 +31,25 @@ expect rough edges, and keep backups as you would with any file manager.
 - **Archives as folders:** zip (read and written), and 7z, RAR, tar, tar.gz and the other formats
   Windows can open (read-only), including archives inside archives.
 - **Filter and search:** the search box filters the listing as you type; Return searches the
-  folder tree by name in a new tab.
+  folder tree by name in a new tab. With the box's "Search inside files" button on, Return searches
+  the text of the files instead, and each result shows its matching line.
 - **Folder sizes** on demand (Alt+Shift+Enter, or by selecting folders).
-- **Preview pane** (Alt+P): PDF, Markdown, text, pictures, HTML, and Word, Excel and PowerPoint
-  documents, all rendered by TwinFM itself (no Office or browser needed).
+- **Preview pane** (Alt+P): PDF (with zoom, and password-protected files on request), Markdown,
+  text and source code (coloured for about 20 languages), pictures (HEIC and AVIF too), HTML, and
+  Word, Excel and PowerPoint documents, all rendered by TwinFM itself (no Office or browser
+  needed). Right-click a block to copy its text.
 - **Sidebar** with drives, the usual places and your bookmarks; a toolbar; light and dark themes
   that follow Windows.
 
 ## Install
 
-Download `twinfm-0.1.0-x86_64-windows.zip` from the
-[Releases](https://github.com/jtklinger/twinfm/releases) page, unzip it anywhere, and run
+Download `twinfm-0.2.0-x86_64-windows.zip` from the
+[latest release](https://github.com/jtklinger/twinfm/releases/latest), unzip it anywhere, and run
 `twinfm.exe`. There is no installer; settings are kept in `%APPDATA%\twinfm`.
 
-Requirements: Windows 11 on x64. (Windows 10 may work but is not tested.)
+Requirements: Windows 11 on x64. (Windows 10 may work but is not tested.) HEIC and AVIF pictures
+are decoded by Windows itself, so their preview needs Microsoft's HEIF Image Extensions (with the
+HEVC extension for HEIC, the AV1 extension for AVIF) from the Microsoft Store.
 
 The executable is not code-signed, so Windows SmartScreen may warn the first time you run it;
 choose "More info", then "Run anyway".
@@ -70,9 +76,10 @@ accessibility patches (see [License](#license)); Cargo fetches it, so no manual 
 | Return, double-click | Open a folder or archive; open a file with its default program |
 | Backspace, Alt+Up | Up one folder |
 | Alt+Left, Alt+Right | Back, forward |
+| Alt+Down | History menu: jump back or forward several places |
 | Ctrl+L | Type a path |
 | Ctrl+F | Filter the listing (the search box); Return there searches subfolders |
-| Ctrl+Shift+F | Search subfolders by name in a new tab |
+| Ctrl+Shift+F | Search subfolders in a new tab, by name or (with the box's button on) inside files |
 | F5, Ctrl+R | Refresh |
 | Ctrl+H | Show or hide hidden files |
 | Ctrl+A, Space, Shift+arrows | Select all, toggle the cursor row, extend the selection |
@@ -88,6 +95,7 @@ accessibility patches (see [License](#license)); Cargo fetches it, so no manual 
 | Shift+F10, Menu key | Context menu (Shift+right-click: the classic shell menu) |
 | Ctrl+Shift+1, 2, 3 | Details, large icons, medium icons |
 | Alt+P | Preview pane |
+| Ctrl+wheel, Ctrl+plus, Ctrl+minus, Ctrl+0 | Zoom a PDF in the preview (pointer over it) |
 | Ctrl+T, Ctrl+W | New tab, close tab |
 | Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+1 to 9 | Next, previous, numbered tab |
 | Ctrl+Shift+PageUp, PageDown | Move the tab left, right |
@@ -102,6 +110,9 @@ Settings live in `%APPDATA%\twinfm\config.toml` and are saved automatically: the
 split, the window placement, bookmarks, views, column widths, the theme and the choices in the
 settings dialog (Ctrl+,). The file is plain TOML and can be edited while TwinFM is closed; a file
 that does not parse is kept as `config.toml.bad` and TwinFM starts with the defaults.
+
+For troubleshooting, the dialog's Log switch writes TwinFM's log to `twinfm.log` in the same folder
+(the previous run's is kept as `twinfm.previous.log`), and "Open log folder" shows it.
 
 ## How it stays fast
 
