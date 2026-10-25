@@ -21,6 +21,7 @@ What Jeremy decided at the kickoff (2026-10-25), his words:
   button", "The memory check". Not taken: the rubber band in the details list.
 - **The "+" with one tab**: "Always show the tab strip".
 - **The sidebar's group**: "Recent".
+- **A bookmark made with the mouse**, his own roadmap item of the same day: "Include it with m5".
 
 The starting point is main at a64b537 (0.2.0 and the checksum fix). Three read-only surveys of the code
 (2026-10-25) and the Phase 10 canvas (https://claude.ai/artifact/CeGZSFc6YSVEwqSydHqHc4, its Parts and
@@ -190,14 +191,30 @@ Seven milestones in two streams, with a coordinating session, as Phase 11 ran (t
    both heights. Soak: one cycle each way. Gate: the defaults triplet and a settings triplet
    (`C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`). Console checks: both
    heights beside Explorer, a drop onto a row, a rename, PageDown.
-5. **P12-M5, the sidebar and the new-tab button.** **An icons-only rail**: collapsed, the sidebar shows
+5. **P12-M5, the sidebar, bookmarks by mouse and the new-tab button.** **An icons-only rail**: collapsed, the sidebar shows
    each row's icon in a rail about 48 px wide (headers as hairlines, the row's name as a tooltip; a click
    and a drop work as on the full row), settled first whether the rail replaces today's 12 px strip or is
    a third state (full, rail, hidden), with the saved settings still loading. **Bookmarks reordered by
    dragging**: a pointer drag on a bookmark row past the drag threshold carries it, an insertion line
    shows where it lands, the release moves it through `sidebar::move_bookmark`'s path; inside the sidebar
    this is Slint's pointer, not an OLE drag, and OLE drops onto rows are as today. Driver `bookmark drag
-   <from> <to>`; `[sidebar] bookmark moved <from> -> <to> (drag)`. **A Recent group** (Jeremy's pick):
+   <from> <to>`; `[sidebar] bookmark moved <from> -> <to> (drag)`. **A bookmark made with the mouse**
+   (Jeremy's roadmap item of 2026-10-25, "add a way to create a bookmark using the mouse (click/drag?)",
+   put in P12-M5 by his word; today a bookmark takes Ctrl+D, `bookmark_add` in main.rs, which appends the
+   active tab's folder): **a folder dropped between two bookmark rows or on the Bookmarks header** is
+   added there, at that place, under the same insertion line the reorder draws, from TwinFM's own lists
+   and grids or from another program; a drop onto a bookmark row still copies or moves files into that
+   folder, as today, so the gap is a spot of its own in `dnd::hit_all` (settled first: how many pixels at
+   a row's top and bottom edge count as the gap, against a drop onto the row, in the full sidebar and the
+   rail). Only folders and drives are added (a drag of files alone is refused there, a mixed one adds its
+   folders); nothing is copied or moved (the effect a link, the drop description "Bookmark"); a folder
+   already bookmarked stays where it is, with the note Ctrl+D gives. **"Add to bookmarks" in the Windows
+   11 menu**: on a folder's row or tile (each selected folder) and on a list's background (the folder
+   shown, as Ctrl+D); settled first whether the Bookmarks header's own menu gets "Bookmark this folder"
+   too. `sidebar::add_bookmark` takes the place to insert at; Ctrl+D still appends. Driver `dropfiles
+   sidegap <index> <paths>` (the gap above bookmark `<index>`, the count for below the last) and `menupick
+   Add to bookmarks`; `[sidebar] bookmark added <path> at K (drop | menu)`, `[dnd] spot: sidebar bookmarks
+   gap K`. **A Recent group** (Jeremy's pick):
    the last eight folders shown in either pane (not archive levels, search tabs or This PC), newest first,
    under Places, saved as `recent` in the settings, "Clear recent" in its header's menu; `[sidebar]
    recent: <path> (K kept)`. **The new-tab button** (Jeremy's request of 2026-10-23, taken 2026-10-25):
@@ -206,10 +223,14 @@ Seven milestones in two streams, with a coordinating session, as Phase 11 ran (t
    list starts 32 px lower than today with one tab: `TAB_STRIP` is always in `list_top`, and the driver's
    aims, the drop hit test (`dnd::hit_all`), the soaks' row aims and the gate scenario's geometry move in
    the same commit (the Phase 10 rule for a change that moves a box). Driver `tab plus <pane>`; `[tab]
-   pane=N + button: new tab`. Tests: the rail's hit test, the drag's landing index, the recent list's
-   rules, the layout with one tab. Soak: a bookmark drag per cycle, and the new tab button. Gate: the
-   defaults triplet, and the full soak, since every aim moves. Console checks: the rail with drives and
-   bookmarks, a drop onto a rail row, a drag of a bookmark, the "+" with one tab and with several.
+   pane=N + button: new tab`. Tests: the rail's hit test, the drag's landing index, the gap against the
+   row at each edge, the insert place and a folder bookmarked already, the recent list's rules, the
+   layout with one tab. Soak: per cycle a bookmark drag, a folder dropped into the Bookmarks gap and the
+   bookmark removed again, and the new tab button. Gate: the defaults triplet, and the full soak, since
+   every aim moves. Console checks: the rail with drives and bookmarks, a drop onto a rail row, a drag of a
+   bookmark, a folder dragged from TwinFM and from Explorer onto the Bookmarks header and between two
+   bookmarks, a file dragged there (refused), a drop onto a bookmark row (still a copy into it), "Add to
+   bookmarks" on a folder and on a background, the "+" with one tab and with several.
 
 **The cloud stream** (one session; touches `src/cloud.rs`, `src/icons.rs`'s marks, `src/fs/enumerate.rs`,
 the icon paths in `src/main.rs`, `src/shellmenu.rs`'s verb path, `src/fs/watch.rs`'s device registration,
@@ -352,6 +373,9 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 - One question dialog for all four questions, a queue of one at a time, and Cancel at quit; Windows' own
   dialogs from the shell's file operations stay Windows'.
 - Comfortable rows apply to the 22 px lists only; icons stay 16 px.
+- A bookmark by mouse is a drop into the gap between bookmark rows or onto the Bookmarks header (a drop
+  onto a row keeps copying files into that folder) and "Add to bookmarks" in the Windows 11 menu; a
+  folder already bookmarked stays where it is.
 - OneDrive's cheapest way in is tried first, and the per-file read for every row only as the last resort.
 - The memory trace measures 0.2.0's build, before any Phase 12 change.
 - From the builder check, settled here: a OneDrive file's mark follows its state on its own, as

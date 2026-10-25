@@ -16,7 +16,7 @@ its record carries them from here:
   as a setting (P12-M4); the sidebar's icons-only rail, bookmarks reordered by dragging, a Recent group
   (P12-M5).
 - **From daily use**: scrollbars easier to see (P12-M2); a new tab by mouse, a "+" with the tab strip
-  always shown (P12-M5).
+  always shown, and a bookmark made with the mouse (Jeremy: "Include it with m5") (P12-M5).
 - **Google Drive**: its own commands in the classic menu are refused (Jeremy: "Files can't be marked
   available for offline use."), and its volume is found by its label alone (P12-M6).
 - **OneDrive's syncing and error icons on files** (P12-M7).
@@ -34,12 +34,6 @@ its record carries them from here:
   custom tab"). Settled first, with Jeremy: whether the query is kept (re-run when opened, as Windows'
   saved searches do) or the results as found; where it lives (a sidebar row, a restored tab, or
   both); its name; whether content searches are saved the same way.
-- **A bookmark made with the mouse** (Jeremy, 2026-10-25: "add a way to create a bookmark using the
-  mouse (click/drag?)"). Today a bookmark takes Ctrl+D. Settled first: dragging a folder (a row, a
-  tile, a crumb or the tab) onto the sidebar's Bookmarks group adds it (a drop onto a bookmark row
-  copies or moves files into that folder today, so the drop spot between rows or on the header must
-  differ from a drop onto a row); and/or "Add to bookmarks" in a folder's menu, the path bar's menu or
-  the Bookmarks header's menu.
 - **A TreeSize-style view** (Jeremy, 2026-10-25: "add a treesize viewer so we can see what folders
   are the largest consumers of capacity"). Folders listed largest first, opened down level by level,
   each with its share of the whole. Builds on the folder sizes TwinFM already walks (Alt+Shift+Enter,
