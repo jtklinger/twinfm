@@ -73,6 +73,36 @@ export component Btn inherits Rectangle {
     ta := TouchArea { clicked => { root.clicked(); } }
 }
 
+// A tooltip's face in the look (P12-M1): the card colour, a hairline, 6 px corners, 12 px text,
+// a soft shadow. Used as the one child of Slint's `Tooltip`, which wraps any content in its own
+// frame (ToolTipImpl: the fluent alternate background, a 1 px border, 4 px corners, colours the
+// app cannot set); the face is painted 1 px past that frame on every side, where a 6 px corner
+// covers a 4 px one whole, so none of the frame shows. Placed by x and y, the face does not count
+// toward the tooltip's size: the text's layout sizes it.
+export component TipCard inherits Rectangle {
+    in property <string> text;
+    Rectangle {
+        x: -1px;
+        y: -1px;
+        width: parent.width + 2px;
+        height: parent.height + 2px;
+        background: Theme.card;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: #00000033;
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        Text { text: root.text; font-size: 12px; vertical-alignment: center; color: Theme.fg; }
+    }
+}
+
 // A switch for a boolean setting (P10-M1), in place of a check box: a 36 x 20 track with a 16 px
 // knob, the label beside it. A click flips `checked` and calls toggled(), as the std CheckBox did.
 export component Switch inherits Rectangle {
