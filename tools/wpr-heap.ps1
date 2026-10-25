@@ -3,8 +3,11 @@
 # Phase 11 close's 60-minute soak is. The soak runs target-p11close (a99f2f2, 0.2.0's code) from the
 # gate-p11close checkout's own tools\soak-p5m3.ps1; WPR records the HeapSnapshot profile, with heap
 # stack tracking switched on for twinfm.exe through IFEO before the soak starts, and takes two
-# snapshots: one after the caches have filled, one near the end. Nothing is compared here: the trace
-# is read afterwards without elevation (xperf -a heapsnapshot -data with twinfm's symbols).
+# snapshots: one after the caches have filled, one near the end. It records the VirtualAllocation
+# profile beside it, since the 5-minute dry run (heapdry) found the heap only about 96 MB of 289 MB
+# private: the rest is memory committed outside the heap (VirtualAlloc, by the graphics driver among
+# others). Nothing is compared here: the trace is read afterwards without elevation by
+# tools\analyze-heap.py (xperf's heapsnapshot and virtualalloc actions, with twinfm's symbols).
 # Elevated PowerShell at the physical console, every TwinFM window closed, Narrator off:
 #   powershell -ExecutionPolicy Bypass -File C:\traces\wpr-heap.ps1 -Minutes 5 -Tag heapdry
 #   powershell -ExecutionPolicy Bypass -File C:\traces\wpr-heap.ps1 -Minutes 60 -Tag heap1
@@ -52,10 +55,10 @@ try {
     # --- Heap stack tracking for new twinfm.exe processes, then the trace ---------------------------
     wpr -snapshotconfig heap -name twinfm.exe enable
     if ($LASTEXITCODE) { throw "wpr -snapshotconfig enable failed ($LASTEXITCODE)" }
-    wpr -start HeapSnapshot -filemode
-    if ($LASTEXITCODE) { throw "wpr -start HeapSnapshot failed ($LASTEXITCODE)" }
+    wpr -start HeapSnapshot -start VirtualAllocation -filemode
+    if ($LASTEXITCODE) { throw "wpr -start HeapSnapshot VirtualAllocation failed ($LASTEXITCODE)" }
     $recording = $true
-    Say 'WPR recording HeapSnapshot; heap stack tracking on for twinfm.exe'
+    Say 'WPR recording HeapSnapshot and VirtualAllocation; heap stack tracking on for twinfm.exe'
 
     # --- The soak, in its own PowerShell so its report lands in a file ---------------------------
     $t0 = Get-Date
