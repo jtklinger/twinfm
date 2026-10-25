@@ -403,7 +403,10 @@ Phase 12 list). Read them before changing the list.
   deleted folder still goes `Lost`. **A fixed drive whose disk is hot-pluggable** (a USB hard disk;
   here also Google Drive's `G:`) registers its watches for device events as a removable drive does
   (`IOCTL_STORAGE_GET_HOTPLUG_INFO`): `[devices] <letter>: fixed, removable media: registered | not
-  removable` once per drive. `waitsize` also waits while a stale size waits for its re-walk. **The
+  removable` once per drive. Since P12-M6 a volume that refuses the registration (Google Drive's `G:`,
+  os error 1066) is noted by its GUID path (`watch::volume_of`) and not asked again while TwinFM runs:
+  `[watch] pane=N tab=T no device notification for <path>: <error>: not asked again on
+  \\?\Volume{...}\`, once per volume. `waitsize` also waits while a stale size waits for its re-walk. **The
   history menu**: Alt+Down in a list (`command "histmenu"`) or a right click on the path bar's
   background opens the pane's places in the Windows 11 menu (`open_history_menu`; forward places
   first, the current one checked, back places after it; each labelled by its name, then where it
