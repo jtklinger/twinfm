@@ -6,13 +6,14 @@
 use crate::model::{Entry, Kind};
 use crossbeam_channel::Sender;
 use slint::SharedString;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, FILETIME, GetLastError, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_UNPINNED, FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic,
     FindExSearchNameMatch, FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives,
     GetVolumeInformationW, WIN32_FIND_DATAW,
 };
@@ -95,14 +96,24 @@ fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, cloud: cra
     if let Some((zip, inner)) = crate::fs::archive::split(&path) {
         return run_archive(&zip, &inner, pane, generation, tx, wake, t0);
     }
+    // A sync root is listed with its placeholders shown, for each file's own state (P12-M7).
+    let sync_root = cloud == crate::icons::Cloud::SyncRoot;
+    if sync_root {
+        expose_placeholders("listing");
+    }
     let mut types = TypeNames::default();
     let mut icon_keys = crate::icons::IconKeys::new(path.clone(), thumbnails).with_cloud(cloud);
     let zone = crate::model::LocalZone::current();
     let mut batch: Vec<Entry> = Vec::with_capacity(BATCH_SIZE);
     let mut total = 0usize;
     let mut reparse = ReparseCounts::default();
+    let (mut files, mut unsynced) = (0usize, 0usize);
     let listed = list_dir(&path, &mut types, &mut icon_keys, &zone, |e| {
         reparse.add(e.kind);
+        if sync_root && e.attrs & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            files += 1;
+            unsynced += usize::from(e.icon_key.starts_with("look:"));
+        }
         batch.push(e);
         if batch.len() >= BATCH_SIZE {
             total += batch.len();
@@ -124,6 +135,9 @@ fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, cloud: cra
         }
         Ok(false) => return,
         Ok(true) => {}
+    }
+    if sync_root {
+        eprintln!("[cloud] pane={pane} not in sync: {unsynced} of {files} files");
     }
     if !batch.is_empty() {
         total += batch.len();
@@ -607,6 +621,10 @@ fn entry_of(
     let name = String::from_utf16_lossy(wname);
     let attrs = d.dwFileAttributes;
     let tag = if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 { d.dwReserved0 } else { 0 };
+    // Only an entry that is a reparse point or unpinned can ask (no cldapi call for a plain file).
+    let state = if attrs & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_UNPINNED) != 0 { crate::icons::placeholder_state(attrs, tag) } else { 0 };
+    let shown = EXPOSED.with(Cell::get);
+    let (attrs, tag) = as_listed(attrs, tag, shown);
     let kind = Kind::from_attrs(attrs, tag);
     let size = (d.nFileSizeHigh as u64) << 32 | d.nFileSizeLow as u64;
     // A cloud placeholder keeps its type's text (Explorer shows "Microsoft Word Document").
@@ -617,11 +635,46 @@ fn entry_of(
         _ => types.for_entry(&name, attrs & FILE_ATTRIBUTE_DIRECTORY != 0),
     };
     let modified = unix_secs(d.ftLastWriteTime);
-    // Only an entry that is a reparse point or unpinned can ask (no cldapi call for a plain file).
-    let synced = attrs & (FILE_ATTRIBUTE_REPARSE_POINT | windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_UNPINNED) == 0
-        || !crate::icons::needs_state_read(crate::icons::placeholder_state(attrs, tag), attrs);
+    let synced = !crate::icons::needs_state_read(state, attrs, shown);
     let icon_key = icon_keys.for_entry_synced(&name, attrs, kind, modified, size, synced);
     Some(Entry::with_zone(name.into(), size, modified, attrs, kind, type_text, icon_key, zone))
+}
+
+thread_local! {
+    /// This thread lists with the cloud files' placeholders shown (`expose_placeholders`).
+    static EXPOSED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `PHCM_EXPOSE_PLACEHOLDERS` (ntifs.h; windows-sys declares the call, not its modes).
+const PHCM_EXPOSE_PLACEHOLDERS: i8 = 2;
+
+/// Show this thread the cloud files' placeholders (P12-M7). Windows hides them from TwinFM's
+/// process: a OneDrive file lists as a plain file whose placeholder state reads 0, so a file
+/// syncing, waiting or in error could not be told from one in sync (P9-M4). Shown, each lists as a
+/// reparse point with its cloud tag and its real state, at no cost to the listing (40,023 OneDrive
+/// entries, 6.1 s against 6.2 s), and `entry_of` takes the state and lists it as before
+/// (`as_listed`). For the threads that build a sync root's entries: a listing's own and the watch's
+/// edit worker. `who` names the thread in the line logged when Windows refuses.
+pub fn expose_placeholders(who: &str) {
+    // SAFETY: sets this thread's own placeholder mode; no pointers.
+    let previous = unsafe { windows_sys::Wdk::Storage::FileSystem::RtlSetThreadPlaceholderCompatibilityMode(PHCM_EXPOSE_PLACEHOLDERS) };
+    // A negative answer is an error (PHCM_ERROR_INVALID_PARAMETER, PHCM_ERROR_NO_TEB): the mode stays.
+    EXPOSED.with(|e| e.set(previous >= 0));
+    if previous < 0 {
+        eprintln!("[cloud] {who}: placeholders not shown (RtlSetThreadPlaceholderCompatibilityMode = {previous})");
+    }
+}
+
+/// An entry's attributes and reparse tag as a thread in Windows' default mode sees them (P12-M7):
+/// with placeholders shown (`exposed`), a cloud placeholder is a reparse point with a cloud tag;
+/// listed as the plain file or folder it is by default, its kind, keys, thumbnail, counts and the
+/// walkers' rules stay as they were. Any other entry, and every entry on another thread, as given.
+fn as_listed(attrs: u32, tag: u32, exposed: bool) -> (u32, u32) {
+    if exposed && attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 && Kind::from_tag(tag) == Kind::Cloud {
+        (attrs & !FILE_ATTRIBUTE_REPARSE_POINT, 0)
+    } else {
+        (attrs, tag)
+    }
 }
 
 // GetDriveTypeW results (WinBase.h). Declared here rather than enabling windows-sys's large
@@ -755,6 +808,54 @@ mod tests {
     use crate::model::Kind;
     use crossbeam_channel::unbounded;
     use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM, SetFileAttributesW};
+
+    #[test]
+    fn a_shown_placeholder_lists_as_before_with_its_own_state() {
+        // P12-M7: on a thread with placeholders shown, a OneDrive file is a reparse point with a
+        // cloud tag; it lists as the plain file it is in Windows' default mode, and only its state is
+        // new. Reads nothing: cldapi's state is a function of the attributes and the tag.
+        use crate::icons::{Cloud, IconKeys, placeholder_state};
+        use windows_sys::Win32::Storage::CloudFilters::{CF_PLACEHOLDER_STATE_IN_SYNC, CF_PLACEHOLDER_STATE_PLACEHOLDER};
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_ARCHIVE;
+        let data = |name: &str, attrs: u32, tag: u32| {
+            let mut d = WIN32_FIND_DATAW { dwFileAttributes: attrs, dwReserved0: tag, ..Default::default() };
+            let w: Vec<u16> = name.encode_utf16().collect();
+            d.cFileName[..w.len()].copy_from_slice(&w);
+            d
+        };
+        let (zone, mut types) = (crate::model::LocalZone::current(), TypeNames::default());
+        let mut keys = IconKeys::new(PathBuf::from(r"C:\OneDrive"), true).with_cloud(Cloud::SyncRoot);
+        let reparse = FILE_ATTRIBUTE_REPARSE_POINT;
+        let (file, dir) = (FILE_ATTRIBUTE_ARCHIVE | reparse, FILE_ATTRIBUTE_DIRECTORY | reparse);
+        let in_sync = 0x9000_601A; // state 0x9 on Jeremy's OneDrive (the P12-M7 probe)
+        let state = placeholder_state(file, in_sync);
+        assert_eq!(state & (CF_PLACEHOLDER_STATE_PLACEHOLDER | CF_PLACEHOLDER_STATE_IN_SYNC), CF_PLACEHOLDER_STATE_PLACEHOLDER | CF_PLACEHOLDER_STATE_IN_SYNC);
+        let out = (0..16u32)
+            .map(|x| 0x9000_001A | x << 12)
+            .find(|&t| placeholder_state(file, t) & (CF_PLACEHOLDER_STATE_PLACEHOLDER | CF_PLACEHOLDER_STATE_IN_SYNC) == CF_PLACEHOLDER_STATE_PLACEHOLDER)
+            .expect("a cloud tag cldapi reads as a placeholder not in sync");
+        EXPOSED.with(|e| e.set(true));
+        let a = entry_of(&data("a.jpg", file, in_sync), &mut types, &mut keys, &zone).unwrap();
+        let b = entry_of(&data("b.txt", file, out), &mut types, &mut keys, &zone).unwrap();
+        let d = entry_of(&data("sub", dir, in_sync), &mut types, &mut keys, &zone).unwrap();
+        let new = entry_of(&data("new.txt", FILE_ATTRIBUTE_ARCHIVE, 0), &mut types, &mut keys, &zone).unwrap();
+        EXPOSED.with(|e| e.set(false));
+        let old = entry_of(&data("old.txt", FILE_ATTRIBUTE_ARCHIVE, 0), &mut types, &mut keys, &zone).unwrap();
+        assert_eq!(new.icon_key.as_str(), r"look:s:ext:.txt|C:\OneDrive\new.txt", "no placeholder yet (uploading): its own state is looked up");
+        assert_eq!(old.icon_key.as_str(), "ext:s2:.txt", "a thread not shown placeholders keeps the attribute mark, as before");
+        assert_eq!((a.kind, a.attrs), (Kind::File, FILE_ATTRIBUTE_ARCHIVE), "listed as the plain file");
+        assert!(a.icon_key.starts_with(r"thumb:s2:C:\OneDrive\a.jpg|"), "in sync: its thumbnail and the attribute mark, as before: {}", a.icon_key);
+        assert_eq!(b.kind, Kind::File);
+        assert_eq!(b.icon_key.as_str(), r"look:s:ext:.txt|C:\OneDrive\b.txt", "not in sync: its own state is looked up");
+        assert_eq!((d.kind, d.attrs), (Kind::Directory, FILE_ATTRIBUTE_DIRECTORY));
+        // A thread that never showed placeholders lists a cloud reparse point as it always did.
+        let c = entry_of(&data("c.txt", file, in_sync), &mut types, &mut keys, &zone).unwrap();
+        assert_eq!(c.kind, Kind::Cloud);
+        assert_eq!(as_listed(file, in_sync, true), (FILE_ATTRIBUTE_ARCHIVE, 0));
+        assert_eq!(as_listed(file, in_sync, false), (file, in_sync));
+        assert_eq!(as_listed(dir, 0xA000_0003, true), (dir, 0xA000_0003), "a junction is no placeholder");
+        assert_eq!(as_listed(FILE_ATTRIBUTE_ARCHIVE, 0, true), (FILE_ATTRIBUTE_ARCHIVE, 0));
+    }
 
     fn set_attrs(path: &std::path::Path, attrs: u32) {
         let w: Vec<u16> = path.as_os_str().to_string_lossy().encode_utf16().chain([0]).collect();
