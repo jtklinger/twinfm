@@ -1,9 +1,10 @@
 //! Cloud locations (P6-M1): which folders carry cloud marks over their icons. Decided once per
 //! listing on the UI thread, never per file: a folder under a registered sync root (the cloud
 //! files API's providers, OneDrive among them: `HKLM\...\Explorer\SyncRootManager\*\UserSyncRoots`,
-//! read once per process and again when the volumes change) is `Cloud::SyncRoot`; a folder on a
-//! volume named "Google Drive" (Google Drive for desktop's virtual drive, FAT32, no sync root) is
-//! `Cloud::Overlays`; everything else is `Cloud::None` and keeps today's keys and cost.
+//! read once per process and again when the volumes change) is `Cloud::SyncRoot`; a folder on
+//! Google Drive for desktop's virtual drive (FAT32, no sync root; since P12-M6 known by the folder
+//! it keeps at its root, else by its label "Google Drive") is `Cloud::Overlays`; everything else is
+//! `Cloud::None` and keeps today's keys and cost.
 
 use crate::icons::Cloud;
 use std::collections::HashMap;
@@ -15,9 +16,15 @@ use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ, RegCloseKey, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW,
 };
 
-/// The volume name Google Drive for desktop gives its drive. A user who renames the drive loses the
-/// marks (kickoff, open question): the mount's owner cannot be read from the volume.
+/// The volume name Google Drive for desktop gives its drive: the fallback since P12-M6, for a
+/// drive without `GOOGLE_DRIVE_ROOT_FOLDER`.
 pub const GOOGLE_DRIVE_VOLUME: &str = "Google Drive";
+
+/// The folder Google Drive for desktop keeps at its drive's root for shortcuts' targets (beside "My
+/// Drive", whose name is translated): its fingerprint (P12-M6). The volume's device name is a plain
+/// `\Device\Volume{...}`, its file system reads FAT32, and the registry's mount point is an
+/// undocumented binary value, so none of those names it.
+const GOOGLE_DRIVE_ROOT_FOLDER: &str = ".shortcut-targets-by-id";
 
 const SYNC_ROOT_MANAGER: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager";
 
@@ -57,9 +64,13 @@ impl Locations {
         let key = crate::dnd::volume_key(folder);
         let google = *self.volumes.entry(key).or_insert_with_key(|key| {
             let name = volume_name(key);
-            let google = name.as_deref() == Some(GOOGLE_DRIVE_VOLUME);
-            eprintln!("[cloud] volume {key} {} ({})", name.as_deref().map_or("has no name".into(), |n| format!("named \"{n}\"")), if google { "google drive" } else { "not cloud" });
-            google
+            let by = google_by(has_root_folder(key), name.as_deref());
+            eprintln!(
+                "[cloud] volume {key} {}: {}",
+                name.as_deref().map_or("has no name".into(), |n| format!("named \"{n}\"")),
+                by.map_or("not cloud".into(), |how| format!("google drive (by {how})"))
+            );
+            by.is_some()
         });
         if google { Cloud::Overlays } else { Cloud::None }
     }
@@ -139,6 +150,27 @@ fn open(parent: HKEY, sub: &str) -> Option<HKEY> {
     (r == ERROR_SUCCESS).then_some(key)
 }
 
+/// How a volume is known for Google Drive's (P12-M6), or None: by the folder at its root, else by
+/// its label.
+fn google_by(root_folder: bool, label: Option<&str>) -> Option<&'static str> {
+    if root_folder {
+        Some("its root's .shortcut-targets-by-id")
+    } else if label == Some(GOOGLE_DRIVE_VOLUME) {
+        Some("its label")
+    } else {
+        None
+    }
+}
+
+/// Whether the volume of a `dnd::volume_key` holds `GOOGLE_DRIVE_ROOT_FOLDER` at its root: one
+/// attribute read, once per volume.
+fn has_root_folder(key: &str) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
+    // SAFETY: a NUL-terminated path for the duration of the call.
+    let a = unsafe { GetFileAttributesW(wide(&format!("{key}\\{GOOGLE_DRIVE_ROOT_FOLDER}")).as_ptr()) };
+    a != INVALID_FILE_ATTRIBUTES && a & FILE_ATTRIBUTE_DIRECTORY != 0
+}
+
 /// The volume's name (its label) for a `dnd::volume_key` (`g:`, `c:\mnt\data`), or None.
 fn volume_name(key: &str) -> Option<String> {
     let root = wide(&format!("{key}\\"));
@@ -182,6 +214,18 @@ mod tests {
     }
 
     #[test]
+    fn google_drive_is_known_by_its_root_folder_then_its_label() {
+        // P12-M6: the folder at the root first, the label as the fallback.
+        assert_eq!(google_by(true, Some(GOOGLE_DRIVE_VOLUME)), Some("its root's .shortcut-targets-by-id"));
+        assert_eq!(google_by(true, Some("My USB disk")), Some("its root's .shortcut-targets-by-id"), "a renamed drive");
+        assert_eq!(google_by(true, None), Some("its root's .shortcut-targets-by-id"));
+        assert_eq!(google_by(false, Some(GOOGLE_DRIVE_VOLUME)), Some("its label"));
+        assert_eq!(google_by(false, Some("google drive")), None, "the label is matched exactly");
+        assert_eq!(google_by(false, Some("Data")), None);
+        assert_eq!(google_by(false, None), None);
+    }
+
+    #[test]
     fn reads_this_machines_sync_roots_and_volume_names() {
         // Reads only: the registry and the system drive's label. Whatever is registered here
         // (none on a machine without OneDrive) must come back as absolute paths.
@@ -190,6 +234,7 @@ mod tests {
         }
         let sys = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_lowercase();
         assert_ne!(volume_name(&sys).as_deref(), Some(GOOGLE_DRIVE_VOLUME));
+        assert!(!has_root_folder(&sys), "the system drive is not Google Drive's");
         let mut l = Locations::default();
         assert_eq!(l.of(&Path::new(&sys).join("Windows")), Cloud::None);
         assert_eq!(l.volumes.len(), 1, "one name lookup per volume");

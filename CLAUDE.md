@@ -43,7 +43,7 @@ settles first, and § Phase 11 close holds the gates, the long soak, lessons, wh
 Phase 12 list). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (303 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (304 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -605,8 +605,9 @@ Phase 12 list). Read them before changing the list.
   Since P6-M1, cloud marks (`src/cloud.rs`, `icons::Cloud`, `icons::Mark`): no new driver step (a
   `nav` to a OneDrive folder or to `G:\My Drive` is the check). A listing is a cloud location when its
   folder is under a registered sync root (`HKLM\...\Explorer\SyncRootManager\*\UserSyncRoots`, read
-  at start and on every device change; OneDrive and Phone Link's CrossDevice here) or on a volume
-  named "Google Drive"; This PC, archive levels and search tabs never are. Keys there:
+  at start and on every device change; OneDrive and Phone Link's CrossDevice here) or on Google Drive's
+  volume (since P12-M6 the one holding `.shortcut-targets-by-id` at its root, else the one named
+  "Google Drive"); This PC, archive levels and search tabs never are. Keys there:
   `ext:<mark>:.txt`, `folder:<mark>`, `thumb:<mark>:<path>|<modified>|<size>`, `cloud:<mark>:<path>`
   (a full-path key), the mark `s<N>` (a sync root's `System.StorageProviderState`, drawn with the
   imageres.dll glyph Explorer's Status column uses) or `o<N>` (the shell's overlay index, Google
@@ -616,8 +617,9 @@ Phase 12 list). Read them before changing the list.
   `SHGFI_OVERLAYINDEX` call, about 5 ms), after which the row takes the marked key. Links and reparse
   points keep their own keys and arrow. A thumbnail for a cloud-only file (state 1) and for any
   Google Drive file is asked with `WTS_INCACHEONLY`. `[cloud]` lines: `sync roots: N (<roots>)` at
-  start and after a device change, `volume <key> named "<name>" (google drive|not cloud)` or `volume
-  <key> has no name (not cloud)` once per volume, `pane=N <folder>: sync root|google drive` per
+  start and after a device change, `volume <key> named "<name>": google drive (by its root's
+  .shortcut-targets-by-id | by its label) | not cloud` or `volume <key> has no name: ...` once per
+  volume (P12-M6; before it `volume <key> named "<name>" (google drive|not cloud)`), `pane=N <folder>: sync root|google drive` per
   listing of a cloud location. `[icons]` adds `status glyph state S (imageres -R) fetched at G px over
   P px` once per state and size, `slow cloud lookup <ms> ms: <path>` (100 ms or more, counted in
   `slow`), and the once-a-second line's `cloud N` (lookups made in the period, after `dropped D`);
