@@ -49,6 +49,8 @@ export global Theme {
 
 // A button in the look (P10-M1): outline (a hairline, the card colour, the muted fill on hover)
 // or primary (near-black, one per dialog). 32 px high, 13 px text at weight 500, 6 px corners.
+// Its hover fill fades in and out over 100 ms, as every chrome control's does (P12-M1); rows and
+// anything else that scrolls never animate.
 export component Btn inherits Rectangle {
     in property <string> text;
     in property <bool> primary: false;
@@ -59,6 +61,7 @@ export component Btn inherits Rectangle {
     border-width: root.primary ? 0px : 1px;
     border-color: Theme.border;
     background: root.primary ? (ta.has-hover ? Theme.primary.transparentize(10%) : Theme.primary) : (ta.has-hover ? Theme.muted : Theme.card);
+    animate background { duration: 100ms; }
     accessible-role: button;
     accessible-label: root.text;
     accessible-action-default => { root.clicked(); }
@@ -168,6 +171,7 @@ export component Choice inherits Rectangle {
     min-width: 120px;
     border-width: 1px;
     border-color: fs.has-focus ? Theme.cursor : (ta.has-hover ? Theme.ring : Theme.border);
+    animate border-color { duration: 100ms; }
     border-radius: Theme.radius;
     background: Theme.card;
     accessible-role: combobox;
@@ -218,6 +222,7 @@ export component Choice inherits Rectangle {
                     height: 32px;
                     border-radius: Theme.radius;
                     background: i == root.current-index ? Theme.selection : (ota.has-hover ? Theme.muted : transparent);
+                    animate background { duration: 100ms; }
                     accessible-role: button;
                     accessible-label: opt;
                     Text { x: 8px; width: parent.width - 16px; height: parent.height; text: opt; vertical-alignment: center; overflow: elide; font-size: 13px; color: Theme.fg; }
