@@ -401,3 +401,145 @@ first ones are his, the rest each brief settles first.
 - **The clean-up of the two old worktrees** (Jeremy's word before they go).
 - **Why Google Drive's menu ids move, the tooltip, the scrollbar, the rows and OneDrive's way in**: each
   milestone's Settled first.
+
+## P12-M6: Google Drive's commands, and its volume
+
+Started 2026-10-25 from main at 76b5d35 (the Phase 12 plan), branch `feat/p12-m6-gdrive-commands`, the
+cloud stream's first milestone. Three items, each settled first, each a commit of its own.
+
+### Settled first (2026-10-25)
+
+**Why the ids differ.** Settled by a probe in TwinFM's own process (the release exe, a scripted run;
+the probe code was never committed): the classic menu `show` builds on the UI thread, dumped command by
+command with its id and verb before and after the menu ran, then the same menu built again on the UI
+thread (with the main window as owner and with none), and the verb worker's rebuild (`menuverb 0
+sleep:10`, so nothing ran), all on Jeremy's PDF in `G:\My Drive\Automobiles\2020 Audi A3`, reading
+menus only. `QueryContextMenu` returns 0xED on the UI thread and 0xEC on the worker, one id fewer;
+compared command by command (Open with's apps left aside, a submenu the shown menu never opened),
+**the one missing is "Scan with Microsoft Defender..."** (id 200 in the shown menu, offset 100);
+every command numbered after it sits
+one id lower on the worker, and Google Drive's are all after it: "Available offline" 208 shown, 207
+rebuilt (so 208 holds "Online only" there, Jeremy's refusal), "Manage versions with Google Drive" 210
+shown, 209 rebuilt (and no 210 at all, his other refusal). **The doubled "Move to OneDrive" is not the
+cause**: both menus list both (the packaged command, verb `{1FA0E654-...B01}`, and OneDrive's classic
+one with no verb). "Manage versions with Google Drive" is in the rebuilt menu, one id lower. A local
+file in `%TEMP%` shows the same: Defender's item at 216 shown, absent on the worker
+(`QueryContextMenu` 0x102 against 0x101), and "Move to OneDrive" (no verb) at 300 shown, 299 rebuilt.
+
+**Why Defender's item is missing.** Not the apartment: the worker initialised with `OleInitialize` in
+place of `CoInitializeEx` still had no Defender item. The owner window: the same worker, given a
+hidden window of its own as the owner (`parse_items` and `GetUIObjectOf`), built a menu identical to
+the shown one (0x102, Defender at 216); the UI thread with no owner had it too, its own window being
+active. So Defender's handler adds its item only when the menu has an owner window it can use, and
+the worker has none by P7-M1's decision (a dialog a verb shows is unowned, so the two threads' input
+queues are never attached; console-checked then). A throwaway test listed every command without a
+verb whose id differs between a menu with an owner and one without, over 24 local file kinds and a
+folder: always Defender's item missing and every later command one lower; on local files the moved
+commands without a verb are "Move to OneDrive" (all), "Sync or Backup this folder" (a folder),
+"Cast to Device" (pictures and video, its device list racing), "Install" for fonts and "Edit in
+IDLE" for `.py` files.
+
+**The fix**, as the plan has it, and not the owner window: a pick hands the worker its label path, and
+when the item at the picked id has another label, the one command without a verb at that path in the
+rebuilt menu is invoked. Giving the worker an owner window would make the ids match (and bring
+Defender's scan back), but changes P7-M1's checked rule for every verb's dialog; left as an option
+(§ For Jeremy below). Commands with a verb never moved anything: they are invoked by their verb.
+
+**Google Drive's volume.** On this machine: `QueryDosDeviceW("G:")` is `\Device\Volume{f5ae2bcb-...}`,
+no driver's name; `GetVolumeInformationW` reads label "Google Drive", file system FAT32, flags 0x106;
+the driver `googledrivefs31931` is a file system driver service whose name carries Google's build
+number, so asking for it in the volume's path would mean finding the current name first;
+`HKCU\Software\Google\DriveFS\Share\SyncTargets` holds the mount point in an undocumented protobuf
+(`...12 02 "G:"`); the root holds `$RECYCLE.BIN`, `.Encrypted`, `.shortcut-targets-by-id`, `My Drive`
+(a translated name) and `Other computers`. Taken: **`.shortcut-targets-by-id` at the volume's root**,
+one attribute read once per volume, language-independent, with the label as the fallback.
+
+**The device notification.** `RegisterDeviceNotificationW` on a `G:` handle fails with os error 1066
+at every watch (P11-M3 registers hot-pluggable fixed drives, and `G:` reports hot-pluggable). The
+volume is remembered by its GUID path (`GetVolumeNameForVolumeMountPointW`, `\\?\Volume{4ec70a0a-...}\`
+for `G:` here), so another disk later given the same letter is asked again.
+
+### What landed
+
+1. **A moved command is found by its label path: done** (f3f3422). `show` hands on the picked
+   command's label path (`label_path` over `command_tree`: "Offline access>Available offline"); the
+   worker's `choose` checks the item at the id by the path's last label, and when that refuses,
+   `find_moved` takes the one command without a verb at the whole path in the rebuilt menu (none or
+   several: refused, the reason ending `, and none at its label path` or `, and N at its label path`);
+   `fill_until` stops as soon as either is found, so a moved command no longer waits 3 s. `[menu]
+   "<label path>" moved from offset A to B in the rebuilt menu: by offset B`. It mends every handler's
+   commands numbered after Defender's, not only Google Drive's; the Windows 11 menu's packaged commands
+   are unaffected. **The driver's dry test verb** `menuverb <pane> try:<label path>`: the command at
+   that path in the menu `show` would show (`find_shown`, built by the same `build` as `show`, never
+   shown; of two at one path, the one without a verb), handed to the worker as a pick hands it
+   (`verbs::Work::Try`), resolved there, and never invoked (`run_verb`'s `dry` returns before the
+   invoke is built). Tests: `choose` with a label path, `find_moved` (one match, none, two, the
+   owner-drawn empty label, a command with a verb, a lone label against a path) and `label_path`.
+2. **Google Drive's volume by its root folder: done** (0d150f6). `cloud::google_by`: the root's
+   `.shortcut-targets-by-id`, else the label; `[cloud] volume g: named "Google Drive": google drive (by
+   its root's .shortcut-targets-by-id)` (the line's shape changed: a colon, then `not cloud` or `google
+   drive (by <how>)`). Tests: the order (the folder first, a renamed drive, the label exactly, neither)
+   and the system drive has no such folder.
+3. **The refused device notification noted once per volume: done** (77c4280). `register` skips a
+   volume in the watcher's `no_notify` set; the first refusal reads `[watch] pane=N tab=T no device
+   notification for <path>: <error>: not asked again on \\?\Volume{...}\`.
+
+Also: `CLAUDE.md` § Measuring (the moved command, the label path in the lines, the dry test verb, the
+volume line, the watcher's line, 304 tests), the driver's doc line in `src/auto.rs`,
+`tools/gate-p12m6.ps1`.
+
+### Scripted checks (2026-10-25, the branch's release build, `TWINFM_SCRIPT`, no settings file)
+
+- **The moved path on a local file** (`%TEMP%\twinfm-p12m6-probe\a.txt`, the dry test verb):
+  `try:Move to OneDrive` reads `"Move to OneDrive" at offset 200 in the menu shown, verb ""`, then
+  `"Move to OneDrive" moved from offset 200 to 199 in the rebuilt menu: by offset 199` and `resolved: by
+  offset (the test verb: not invoked)`; `a.txt` stayed where it was and nothing reached OneDrive.
+  `try:Scan with Microsoft Defender...`: `refused: the rebuilt menu has no item at that id ("Scan with
+  Microsoft Defender..."), and none at its label path` after 3 s (Defender's item is in no rebuilt
+  menu). `try:Open`: `resolved: by verb`. `try:No such command`: `no "No such command" in the menu`.
+  No local command without a verb that moves also changes nothing (the list above), so the moved path
+  is shown by the dry test verb rather than by a real invoke.
+- **The real case on `G:`, read-only** (the same PDF, the dry test verb, nothing invoked): "Offline
+  access>Available offline" 108 to 107, "Offline access>Online only" 109 to 108, "Manage versions with
+  Google Drive" 110 to 109, "Share with Google Drive" 104 to 103, each `resolved: by offset (the test
+  verb: not invoked)`.
+- **The volume and the device notification** (`G:\`, `My Drive`, two folders down, F5, a new tab,
+  then `C:\Windows`): one `[cloud] volume g: ... (by its root's .shortcut-targets-by-id)`, one `no
+  device notification for G:\: ... (os error 1066): not asked again on \\?\Volume{4ec70a0a-...}\`, and
+  no refusal for the four watches of `G:` after it; `C:` reads `has no name: not cloud`.
+- `cargo test --release`: 304 passed.
+
+One thing seen, not changed: `fill_until`'s `found after T ms (a submenu filled late)` line appears at
+51 to 60 ms for commands in no late submenu, because the first check's own time (filling every
+submenu on `G:`, Open with among them) passes its 50 ms threshold; the line is P7-M3's.
+
+### Soak
+
+Unchanged, not run: the soak never touches `G:` or a classic-menu pick without a verb, and the device
+registration skips only a volume that refused.
+
+### Gate
+
+The defaults triplet, `target-p12m6` against `target-p11close` (a99f2f2), `tools/gate-p12m6.ps1 -Tag
+<tag> -Head <commit>`, the tag and the gate build from the coordinating session. The scenario never
+opens a menu or a cloud folder and its drives are never hot-pluggable: it proves only that the rest is
+untouched.
+
+### Console checks (for Jeremy, unelevated, `target-p12m6`, beside Explorer)
+
+1. On a file in `G:\My Drive`: Show more options > Offline access > Available offline, then Online
+   only; Google's mark changes as in Explorer, and no "was not run" note.
+2. Show more options > Manage versions with Google Drive, and Share with Google Drive: Google's windows
+   open.
+3. Another program's moved command on a local file (the plan named one "below the doubled Move to
+   OneDrive"; the cause is Defender's item instead): on a `.py` file in a scratch folder, Show more
+   options > Edit in IDLE > Python 3.13 (64-bit) opens IDLE with the file.
+4. Show more options > Scan with Microsoft Defender... on any file: refused with the note "... was not
+   run: ..., and none at its label path" (as before, with the longer reason).
+
+### For Jeremy
+
+- **Defender's scan from TwinFM's classic menu** stays refused: its handler adds the item only to a
+  menu with an owner window, and the verb worker has none. A hidden window of the worker's own as the
+  owner brings it back (and makes every id match), but every dialog a verb shows would then be owned by
+  that hidden window, so P7-M1's console checks would be owed again. Not done; a roadmap item if wanted.
