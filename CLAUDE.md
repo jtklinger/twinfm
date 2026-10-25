@@ -1258,7 +1258,15 @@ Phase 12 list). Read them before changing the list.
   serializes the machine: every session reports before a gate build, a soak or a hand-over and waits
   for its reply; one soak at a time (the soaks share `%TEMP%\twinfm-m5` and the fence); nothing
   builds, soaks or opens a TwinFM window from "gate running" to "machine free" (`docs/phase-9-plan.md`
-  § Phase 9 close). Console checks run AFTER the triplet, never before: a recursive
+  § Phase 9 close). The coordinator hands a gate over only after every stream has replied "holding":
+  a session waiting on Jeremy cannot receive a hold, and one answered mid-gate ran cargo under ab46
+  and voided it (`docs/phase-11-plan.md` § Phase 11 close). Before handing a gate over, sample every
+  process's CPU over 5 s: a spinning claude.exe (ab33, ab34, ab51), Task Manager, the Files app or a
+  busy browser (ab55) put whole triplets in the costlier state; restart the Claude app and close the
+  rest first. The second slot reads high in console triplets too (ab53 against ab54): a fixed-order
+  gap the code cannot explain gets an order-swapped rerun before anything else. A PR in conflict
+  with main gets no CI run at all: merge main in before reading CI's silence. Console checks run
+  AFTER the triplet, never before: a recursive
   search of `C:\` before the P3-M2 gate left Defender busy and lifted the whole machine five
   points for the run, while sessions with the checks after were the quietest yet. A running
   TwinFM locks its exe, so a rebuild into `target-<name>` fails with "Access is denied" while
