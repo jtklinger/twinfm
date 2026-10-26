@@ -1204,3 +1204,6 @@ not work, items still shown." and "Dragging to bookmarks still doesn't work."
 No gate rerun for these fixes or P12-M3's Tab stop (the coordinating session, 2026-10-26): a call order
 in a popup, the drop description over the sidebar and one Slint focus property, none of them in the
 rows or the gate scenario (it opens no question, no sidebar menu and drags nothing).
+
+Jeremy's re-checks (2026-10-26, on `target-p12m5` rebuilt from 3d5e162), his words: the folder dragged
+to the Bookmarks, "4. Works good!"; Clear recent and Bookmark this folder, "5. Works as expected."
