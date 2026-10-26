@@ -4029,6 +4029,7 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
         Cmd::OpenOther => own_item(pane, shellmenu::OwnItem::OpenOther, m.ctx),
         Cmd::Terminal => own_item(pane, shellmenu::OwnItem::Terminal, m.ctx),
         Cmd::CopyPath => own_item(pane, shellmenu::OwnItem::CopyPath, m.ctx),
+        Cmd::Bookmark => menu_bookmarks(pane, &m.req.folder, &m.req.names),
         Cmd::Share => queue_verb(pane, verb_request(&m.req, "", "Share", true), None),
         Cmd::Zip => queue_verb(pane, verb_request(&m.req, "", ZIP_LABEL, true), None),
         Cmd::SevenZ | Cmd::Tar => {
@@ -5290,6 +5291,37 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
     app.set_drop_side_h(side_h);
     app.set_drop_side_row(side_row);
     dnd::repaint_during_own_drag();
+}
+
+/// The Windows 11 menu's "Add to bookmarks" (P12-M5): each folder or drive among `names` in `folder`
+/// (a file is left out), or with no names the folder itself, appended to the bookmarks; one
+/// bookmarked already stays where it is, noted as Ctrl+D notes it.
+fn menu_bookmarks(pane: usize, folder: &Path, names: &[String]) {
+    let paths: Vec<PathBuf> = if names.is_empty() { vec![folder.to_path_buf()] } else { names.iter().map(|n| folder.join(n)).filter(|p| p.is_dir()).collect() };
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let mut added = false;
+        let mut noted = String::new();
+        for p in &paths {
+            let f = p.to_string_lossy().to_string();
+            let at = st.config.bookmarks.len();
+            if sidebar::insert_bookmark(&mut st.config.bookmarks, &f, at) {
+                eprintln!("[sidebar] bookmark added {f} at {at} (menu)");
+                noted = format!("Bookmarked {f}");
+                added = true;
+            } else {
+                eprintln!("[sidebar] {f} is bookmarked already");
+                noted = format!("{f} is bookmarked already");
+            }
+        }
+        if added {
+            rebuild_sidebar(st);
+            schedule_save(st);
+        }
+        if !noted.is_empty() {
+            note(st, &app, pane, noted);
+        }
+    });
 }
 
 /// Folders dropped into the Bookmarks gap (P12-M5): each folder bookmarked at gap `at` in order (a
