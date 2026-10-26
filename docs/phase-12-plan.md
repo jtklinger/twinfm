@@ -704,6 +704,23 @@ on the thumb against the date's last digit, his decision, "Add padding".
   grid with thumbnails, the preview column) re-run against `target-p12m1`; no aim moves, so no soak for
   this change by itself.
 
+ab63, passed (2026-10-26, Jeremy at the console, done 18:20, 25 min): the padding's re-gate,
+`target-p12m2` rebuilt from c35133d against `target-p12m1` (e0c9a28), ab58's settings
+(`C:\traces\gate-p12m2-ab63.ps1`: `tools/gate-p12m2.ps1` with its head and tag changed).
+
+| Setting | p12m1 (WPR) | p12m2 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 22.3, 21.6, 21.4 | 21.5, 21.0, 21.2 | 21.6 / 21.2 | 2.86 to 3.10 ms |
+| grid-thumbs | 12.3, 12.0, 12.1 | 11.8, 11.9, 11.7 | 12.1 / 11.8 | 1.45 to 1.54 ms |
+| preview | 20.8, 21.1, 20.7 | 20.7, 20.7, 21.0 | 20.8 / 20.7 | 2.69 to 2.91 ms |
+
+No gap that counts in any setting; the candidate's medians under the reference's in all three; no panic.
+Both builds again in the costlier state (render p50 2.86 to 3.10 ms in the defaults runs), read like for
+like.
+
+Jeremy's re-checks (2026-10-26, on `target-p12m5` rebuilt from 3d5e162, which holds the padding), his
+words: the padding, "1. looks fine."; the PDF zoom's bars, "2. look good".
+
 ## P12-M3: TwinFM's own questions in the look
 
 The look stream's third milestone, opened 2026-10-25 on the P12-M2 branch's head (fee789f; P12-M1 and
@@ -846,6 +863,12 @@ is the field, Cancel, OK, back to the field; Jeremy's console check. The driver 
 
 - **bc63834**: the question card's key handler takes no Tab stop (`focus-on-tab-navigation: false`); driver
   key names `Tab`, `ShiftTab`.
+
+Jeremy's re-check (2026-10-26, on `target-p12m5` rebuilt from 3d5e162), his words: "3. Tab moves, but
+it's tough to determine exactly which icon or pane is the active tab. On some tabs, it doesn't even show
+a row or icon that's highlighted with the tab." "Which icon or pane" reads like Tab in the main window
+rather than in a question; the coordinating session asked him which he meant, and the look stream
+surveys every Tab stop of both meanwhile.
 
 ## P12-M4: comfortable rows
 
