@@ -986,7 +986,9 @@ Phase 12 list). Read them before changing the list.
   file lists' one in `FileListHost` (it owns `content-y` and reckons the content's height from the rows
   or grid rows), the sidebar's, the crumb dropdown's and the preview's pages and Markdown list. A 14 px
   strip at the view's edge, the thumb 6 px 1 px from the edge (10 px under the pointer or while
-  dragged, over a faint track), at least 24 px long; a press on the thumb drags it, a press on the track
+  dragged, over a faint track), at least 24 px long, clear of the last column at rest (the details rows'
+  right padding 10 px, `dnd::ROW_PAD_RIGHT`, and 10 px kept at the grid's right: Jeremy's "Add
+  padding"); a press on the thumb drags it, a press on the track
   pages a screenful towards the pointer, the wheel over it scrolls the view. `drag <pane> <dy> <ms>`
   presses its thumb at the same aim as before (`thumb()`: 10 px in from the pane's edge, 17 px below the
   list's top). No new driver step or stderr line.

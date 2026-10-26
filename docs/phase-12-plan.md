@@ -678,6 +678,32 @@ grid with thumbnails is far under it in both); read like for like.
   the list's own height estimate, unchanged).
 - Whether the thumb meeting the date's last digit at rest bothers you (§ Calls made).
 
+Jeremy's results (2026-10-26, on `target-p12m5`, which holds this milestone's code): his words for the
+zoom item, "#8-There's no ability to zoom so I couldn't test scroll. others looked good." (the PDF zoom
+is Ctrl+wheel or Ctrl+plus over the column, P11-M4; the coordinating session told him, no change); and
+on the thumb against the date's last digit, his decision, "Add padding".
+
+- **c35133d**, the padding. The four details row components (with and without the Type column, 22 and
+  32 px rows) end 10 px from the list's right edge, 6 before (`dnd::ROW_PAD_RIGHT`, in place of
+  `name_cell`'s 6.0); the grid keeps 10 px at its right too (`cols`: `floor((width - 10px) / tile-w)`),
+  so a last tile never sits under the thumb. The scripted check (`C:\Windows\System32`, both schemes,
+  the details list, 32 px thumbnail rows and the large grid): the date's last digit ends 4 px left of
+  the thumb at rest (x 1203 against 1208 at 100%), the grid's last tile well clear; under the pointer
+  the 10 px thumb still covers the last pixel of the text, as the 6 px padding let it cover five.
+
+  **What moves**: the Type, Size and Modified columns and the name cell's right end, 4 px left in every
+  details row; `dnd::name_cell` (the drop target's name cell and the column drags' name floor,
+  `main.rs` `name_px`) and its test (each width 4 px less). A grid pane whose width left under 10 px past
+  its last tile shows one tile fewer to a row (the tile count is Slint's, which Rust and the driver read,
+  so their aims follow; the gate's panes and the soak's left 20 px or more, so their counts stay).
+  **What does not**: the header (its cells were already flush with the list's right edge, 6 px right of
+  the rows' columns, now 10; the labels sit at the cells' left and the values at the rows' right, so the
+  offset does not show), the column grips and `coldrag`'s aims (on the header's boundaries), the rename
+  editor (it already ended 6 px short of the Type column; now 2), the driver's row aims (the list's
+  middle), `drag`'s thumb aim, every hit test (whole rows). Needs: ab58's settings (the defaults, the
+  grid with thumbnails, the preview column) re-run against `target-p12m1`; no aim moves, so no soak for
+  this change by itself.
+
 ## P12-M3: TwinFM's own questions in the look
 
 The look stream's third milestone, opened 2026-10-25 on the P12-M2 branch's head (fee789f; P12-M1 and

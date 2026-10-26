@@ -360,9 +360,11 @@ component FileRows inherits ListView {
         border-color: Theme.cursor;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
-            // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip.
+            // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip. 10 px
+            // on the right keep the last column clear of the scrollbar's thumb at rest (6 px wide, 1 px
+            // from the edge; Jeremy's "Add padding", 2026-10-26; dnd.rs ROW_PAD_RIGHT).
             padding-left: 28px;
-            padding-right: 6px;
+            padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
@@ -406,7 +408,7 @@ component FileRowsNoType inherits ListView {
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             padding-left: 28px;
-            padding-right: 6px;
+            padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
@@ -495,9 +497,10 @@ component FileRows32 inherits ListView {
         border-color: Theme.cursor;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
-            // 6 px padding plus the 32 px icon column; the icons are drawn by the pane's strip.
+            // 6 px padding plus the 32 px icon column; the icons are drawn by the pane's strip. 10 px
+            // on the right: clear of the scrollbar's thumb, as above.
             padding-left: 42px;
-            padding-right: 6px;
+            padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
@@ -539,7 +542,7 @@ component FileRowsNoType32 inherits ListView {
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             padding-left: 42px;
-            padding-right: 6px;
+            padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
@@ -758,7 +761,9 @@ component FileListHost inherits Rectangle {
     out property <length> tile-h: root.medium ? 107px : 136px;
     // The tile's name box: two lines of large tiles, three of medium (P8-L1).
     out property <length> name-h: root.medium ? 57px : 38px;
-    out property <int> cols: max(1, floor(self.width / root.tile-w));
+    // 10 px kept at the right, so the last tile stays clear of the scrollbar's thumb at rest (as the
+    // details rows' right padding).
+    out property <int> cols: max(1, floor((self.width - 10px) / root.tile-w));
     callback grid-cols(int);
     callback grid-cursor(int);
     changed cols => { if (root.grid) { root.grid-cols(root.cols); } }
