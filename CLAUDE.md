@@ -43,7 +43,7 @@ settles first, and § Phase 11 close holds the gates, the long soak, lessons, wh
 Phase 12 list). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (304 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (305 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1006,6 +1006,14 @@ Phase 12 list). Read them before changing the list.
   "<label path>" in the menu`, `[menu] verb ... queued on the verb worker (the test verb: resolved, not
   invoked)`, `[menu] InvokeCommand ... resolved: by offset | by verb (the test verb: not invoked) |
   refused: <why>`. Safe on `G:` and OneDrive files (reading menus only); `waitops` covers it.
+  After P12-M6's console check: **a verb is read as `GCS_VERBA` when `GCS_VERBW` gives no plain ASCII**
+  (`verb_of`, `verb_text`; OneDrive's classic handler writes "MakeAvailableOnline" as ANSI bytes into the
+  wide buffer, so Free up space and Always keep on this device failed by verb, 0x80070483), and none when
+  neither does: `[menu] GCS_VERBW gave "<text>" at offset N: GCS_VERBA "<verb>" taken | dropped (none in
+  GCS_VERBA either)`, once per text per process. **A command whose invoke by verb fails** is invoked by
+  offset only where the rebuilt menu's item at its id has its label, or where the one command with its
+  verb at its label path is (`find_moved`'s `verb`), never at a bare id that holds another: `[menu]
+  InvokeCommand by verb "<verb>" = 0x...: by offset N instead`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
