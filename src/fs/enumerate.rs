@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, FILETIME, GetLastError, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_UNPINNED, FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SPARSE_FILE,
+    FILE_ATTRIBUTE_UNPINNED, FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic,
     FindExSearchNameMatch, FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives,
     GetVolumeInformationW, WIN32_FIND_DATAW,
 };
@@ -666,12 +667,14 @@ pub fn expose_placeholders(who: &str) {
 }
 
 /// An entry's attributes and reparse tag as a thread in Windows' default mode sees them (P12-M7):
-/// with placeholders shown (`exposed`), a cloud placeholder is a reparse point with a cloud tag;
-/// listed as the plain file or folder it is by default, its kind, keys, thumbnail, counts and the
-/// walkers' rules stay as they were. Any other entry, and every entry on another thread, as given.
+/// with placeholders shown (`exposed`), a cloud placeholder is a reparse point with a cloud tag,
+/// and one whose data is not all here is also offline and sparse (OneDrive's 34,401 such files:
+/// `0x00400020` by default, `0x00401620` shown); listed as the plain file or folder it is by
+/// default, its kind, keys, thumbnail, counts and the walkers' rules stay as they were. Any other
+/// entry, and every entry on another thread, as given.
 fn as_listed(attrs: u32, tag: u32, exposed: bool) -> (u32, u32) {
     if exposed && attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 && Kind::from_tag(tag) == Kind::Cloud {
-        (attrs & !FILE_ATTRIBUTE_REPARSE_POINT, 0)
+        (attrs & !(FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_SPARSE_FILE), 0)
     } else {
         (attrs, tag)
     }
@@ -855,6 +858,10 @@ mod tests {
         assert_eq!(as_listed(file, in_sync, false), (file, in_sync));
         assert_eq!(as_listed(dir, 0xA000_0003, true), (dir, 0xA000_0003), "a junction is no placeholder");
         assert_eq!(as_listed(FILE_ATTRIBUTE_ARCHIVE, 0, true), (FILE_ATTRIBUTE_ARCHIVE, 0));
+        // Not all its data here: offline and sparse as well when shown, neither by default.
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+        let away = FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+        assert_eq!(as_listed(away | FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_SPARSE_FILE | reparse, in_sync, true), (away, 0));
     }
 
     fn set_attrs(path: &std::path::Path, attrs: u32) {

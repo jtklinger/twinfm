@@ -988,10 +988,12 @@ Phase 12 list). Read them before changing the list.
   windows-sys's `Wdk_Storage_FileSystem` feature; no other thread, so the search and size walkers list as
   before). There each placeholder is a reparse point with its cloud tag, and `CfGetPlaceholderStateFromAttributeTag`
   gives its real state; `entry_of` takes the state and lists the entry as the plain file or folder it is by
-  default (`as_listed`: the reparse bit and the tag dropped), so kinds, keys, thumbnails and the `[enum]`
-  reparse counts are as before. A file not in sync (syncing, waiting, in error, with a warning), or no
-  placeholder at all there (a file just copied in, a plain file until OneDrive has uploaded it; a
-  `desktop.ini`, which it never syncs: `needs_state_read`'s `shown`), is keyed `look:s:` as P9-M4 built it,
+  default (`as_listed`: the reparse bit and the tag dropped, and the offline and sparse bits a placeholder
+  whose data is not all here gains), so kinds, attributes, keys, thumbnails and the `[enum]` reparse counts
+  are as before (all 40,023 OneDrive entries the P12-M7 check listed both ways). A file not in sync
+  (syncing, waiting, in error, with a warning), or no placeholder at all there (a file just copied in, a
+  plain file until OneDrive has uploaded it; not one OneDrive excludes, pinned and unpinned both like
+  `desktop.ini`: `needs_state_read`'s `shown`), is keyed `look:s:` as P9-M4 built it,
   the icon worker reads its `System.StorageProviderState` (`[cloud] state read <path>: S in T ms`) and draws
   the provider's glyph (`STATE_GLYPHS`: 4, 5, 6 and 10 the arrows, 7 the red cross, 8 the warning). OneDrive's
   switch of a file to an in-sync placeholder reaches the watch as a record (the P12-M7 probe: 0.2 s after it),

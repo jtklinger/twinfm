@@ -432,13 +432,17 @@ pub fn placeholder_state(attrs: u32, tag: u32) -> u32 {
 /// entry was listed on a thread shown placeholders (`fs::enumerate::expose_placeholders`), where a
 /// file that is no placeholder is one the provider has not taken in yet (copied there and uploading,
 /// Explorer's arrows: the P12-M7 probe's file was a plain file for 5.7 s, then an in-sync
-/// placeholder) or one it never syncs (`desktop.ini`).
+/// placeholder), unless it is pinned and unpinned both, OneDrive's own "excluded" files
+/// (`desktop.ini`), which keep no mark as before.
 pub fn needs_state_read(state: u32, attrs: u32, shown: bool) -> bool {
     use windows_sys::Win32::Storage::CloudFilters::{CF_PLACEHOLDER_STATE_IN_SYNC, CF_PLACEHOLDER_STATE_PLACEHOLDER};
     let releasing = attrs & FILE_ATTRIBUTE_UNPINNED != 0
         && attrs & (FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE) == 0;
     let placeholder = state & CF_PLACEHOLDER_STATE_PLACEHOLDER != 0;
-    releasing || (placeholder && state & CF_PLACEHOLDER_STATE_IN_SYNC == 0) || (shown && !placeholder && attrs & FILE_ATTRIBUTE_DIRECTORY == 0)
+    let excluded = attrs & (FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED) == FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED;
+    releasing
+        || (placeholder && state & CF_PLACEHOLDER_STATE_IN_SYNC == 0)
+        || (shown && !placeholder && !excluded && attrs & FILE_ATTRIBUTE_DIRECTORY == 0)
 }
 
 const LOOK_PREFIX: &str = "look:";
@@ -2854,8 +2858,10 @@ mod tests {
         assert!(!needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE, false));
         assert!(!needs_state_read(0, FILE_ATTRIBUTE_UNPINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE, false));
         // P12-M7, placeholders shown: in sync keeps its attribute mark; a file that is no placeholder
-        // yet (just copied in, uploading) or never one (desktop.ini) is looked up; a folder never by
-        // this rule (folders are looked up anyway).
+        // yet (just copied in, uploading) is looked up, OneDrive's excluded desktop.ini (pinned and
+        // unpinned, hidden, system: 0x00180026 on Jeremy's OneDrive) is not; a folder never by this
+        // rule (folders are looked up anyway).
+        assert!(!needs_state_read(0, 0x0018_0026, true), "excluded: no mark, as before");
         assert!(!needs_state_read(0x9, FILE_ATTRIBUTE_ARCHIVE, true) && !needs_state_read(0x39, FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, true));
         assert!(needs_state_read(0x1, FILE_ATTRIBUTE_ARCHIVE, true), "a placeholder out of sync");
         assert!(needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE, true), "no placeholder yet: uploading");
