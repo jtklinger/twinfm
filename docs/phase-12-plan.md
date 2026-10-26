@@ -302,8 +302,10 @@ word and keeps `docs/roadmap.md`, and does three tasks of its own:
 - **The dead network share check**, owed since P5-M1, if Jeremy has a share that can be switched off
   during the check (§ Open questions): a share name that does not resolve, then one that resolves but
   does not answer (`stalled: no watch`, the 30 s cool-down, F5).
-- **Clean-up**: the worktrees `festive-driscoll-27496a` (Phase 10's) and `twinfm-public-release-9e4613`
-  (0.1.0's), their sessions archived, removed on Jeremy's word; `gate-p11close` stays as the reference.
+- **Clean-up**: the worktree `festive-driscoll-27496a` (Phase 10's), its session archived, removed on
+  Jeremy's word; `gate-p11close` stays as the reference. (`twinfm-public-release-9e4613`, 0.1.0's, was
+  named here too, but the harness gave it to the look stream when that session started: it stays for the
+  phase.)
 
 Not in Phase 12, unless Jeremy says otherwise: **the Slint fork's whole-row snap patch and upstreaming
 the two accessibility patches** (deferred to Phase 12 at the Phase 11 kickoff, but not named in this
@@ -398,6 +400,58 @@ first ones are his, the rest each brief settles first.
 - **A share that can be switched off** for the dead share check (Jeremy's).
 - **The roadmap's upkeep** (Jeremy's): an item leaves `docs/roadmap.md` when a phase picks it up, and each
   phase close adds its deferred items back; written into `CLAUDE.md` only on his word.
-- **The clean-up of the two old worktrees** (Jeremy's word before they go).
+- **The clean-up of the old Phase 10 worktree** (Jeremy's word before it goes).
 - **Why Google Drive's menu ids move, the tooltip, the scrollbar, the rows and OneDrive's way in**: each
   milestone's Settled first.
+
+## The memory check (the coordinating session, 2026-10-25)
+
+Jeremy's word at the kickoff: "The memory check". The question, from the Phase 11 close's 60-minute soak: what
+the slow growth of private bytes after the first five minutes is (about 0.6 MB a minute), with the "187 MB
+first run" of ab20 and ab21.
+
+**The tools** (branch `ops/p12-heap-check`): `tools/wpr-heap.ps1` switches WPR's heap stack tracking on for
+`twinfm.exe` (`wpr -snapshotconfig heap -name twinfm.exe enable`, through IFEO, off again at the end), records
+the HeapSnapshot and VirtualAllocation profiles, runs the `gate-p11close` checkout's `soak-p5m3.ps1` on
+`target-p11close` (a99f2f2, 0.2.0's code) and takes `wpr -singlesnapshot heap <pid>` twice, after the caches
+have filled and as long before the end. `tools/analyze-heap.py` reads the trace without elevation: xperf's
+`heapsnapshot -data` with TwinFM's symbols, every live allocation's stack totalled per snapshot and ranked by
+growth (by the deepest frame in `twinfm.exe` outside the allocator, by the deepest `twinfm::` frame, by
+stack), then xperf's `virtualalloc` summary between the two snapshot times (committed and still outstanding,
+by image and by stack). UMDH and gflags are not installed here; WPR and xperf were enough. Jeremy ran both
+elevated at the console.
+
+**The dry run** (`heapdry`, 5 minutes, snapshots at 1 and 4 minutes): exit 0, 4 cycles, the trace 90 MB, the
+dump 175 MB of text in 43 s. The live heap was 91.4 then 96.4 MB while private bytes went 177 to 289 MB: most
+of the growth was outside the live allocations, so VirtualAllocation was added to the recording before the
+long run (Jeremy skipped a second trial).
+
+**The long run** (`heap1`, 60.4 minutes, snapshots at 5 and 55): exit 0, no panics, 55 cycles (76 in the
+Phase 11 run without tracking), 1,192 jobs, none failed or cancelled, every must-be-0 count 0; the trace 1.3
+GB. Private bytes 289 MB at 5 minutes, 853 at 55 (working set 334, 889): far steeper than the Phase 11 run's
+157 to 300, because stack tracking adds its own record to every allocation. The numbers below compare the
+two snapshots of this one run.
+
+- **What TwinFM holds barely grows.** Live heap allocations: 196,037 (96.90 MB) at 5 minutes, 323,295
+  (110.54 MB) at 55. The growth is the 40,000-entry `C:\traces\bigdir` listing, open at the second snapshot
+  and not at the first: `PaneModel::append` 4.9 MB, Slint's shared strings for its rows 4.1 MB (120,008
+  allocations, three per entry), `request_pass` 3.1 MB, `LocalZone::format` 1.6, `entry_of` 1.5,
+  `Entry::with_zone` 1.1. The Recycle Bin enumeration in `fileops::perform_inner` (the shell's `CBitBucket`
+  folder cache, found in the dry run) grew 0.5 MB over the 50 minutes. **No leak of TwinFM's own data.**
+- **The growth is memory committed and not held.** Committed through `VirtualAlloc` between the snapshots and
+  still committed at the end: 943 MB, 534 of it on stacks in `twinfm.exe`. The largest of those run through
+  the preview worker's `StyledText::from_markdown` (`twinfm::preview::styled`, then Slint's
+  `styled_text::parse_interpolated`), the styled text of the soak's 2 MB Markdown file `g-big.md` each cycle:
+  the process heap grows its segments for those large temporary allocations and keeps them committed after
+  they are freed. (Frame names like `Vec<winmenu::Entry>::grow_one` in those stacks are the linker's folded
+  copies of the same code, not menus.) The graphics stack adds its own: `dxgmms2.sys` 69 MB and the AMD driver
+  `atio6axx.dll` 66 MB still committed.
+- **Reading**: the private-bytes creep is the heap's retained commit after the preview's large temporary
+  allocations, and the graphics driver's, not data TwinFM keeps. Stack tracking magnifies the heap's share
+  (its per-allocation record), so this run's 853 MB is not a figure for 0.2.0 without it. The "187 MB first
+  run" was not measured on its own.
+
+**Follow-up candidates** (not done; Jeremy decides): the segment heap for `twinfm.exe` (its manifest's
+`<heapType>SegmentHeap</heapType>`, which returns freed memory to the system more readily), measured by the
+same 60-minute soak without tracking against `target-p11close`; fewer large temporary allocations in the
+preview's styled text for a big file (built per chunk); the Recycle Bin enumeration's shell cache (small).
