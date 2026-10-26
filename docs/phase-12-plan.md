@@ -1136,11 +1136,22 @@ not work, items still shown." and "Dragging to bookmarks still doesn't work."
   Both now act first, then close: the same clicks gave `[sidebar] recent cleared (3 removed)` and the
   group gone from the sidebar, then `[sidebar] Bookmarked C:\Users` from the Bookmarks header's menu.
   The scripted checks before had called the callbacks directly (`bookmark add`), never through the menu.
-- **A folder dragged to the Bookmarks**: under investigation. The coordinating session is asking Jeremy
-  where he dragged from and to. Reading the code found no fault in the gap's path (the hit test, the
-  effect, the drop), which the scripted `dropfiles sidegap` checks pass through; those never call
-  DragOver nor move the real cursor, so a real drag over the sidebar is the check left (it moves the
-  desk's cursor, so it waits for the coordinating session's word). Two things a person could meet: the
-  sidebar's own rows (Recent, Places, Drives) are not drag sources, so a Recent folder dragged down into
-  Bookmarks does nothing; and between two bookmarks the gap is 6 px each side of the line, a drop on a
-  row's middle copying into that folder instead (the Bookmarks header, a whole row, is the easy target).
+- **A folder dragged to the Bookmarks** (16de542). Jeremy's own run (2026-10-26, his words: "screenshot
+  of drag within twinfm pane to bookmarks. logging was on, build p12-m6";
+  `C:\traces\jeremy-bookmark-drag-2026-10-26.log` and `.webp`) was on a build without this milestone,
+  but showed the gesture: the folder row `Reagyn_Download` dragged from the right pane and let go in the
+  empty sidebar area below the only bookmark, from TwinFM's own drag, which allows copy and move
+  (`allowed=0x3`, no link); that build read the spot as `over nowhere`. This milestone's code takes it:
+  through the real hit test at window points well below the last row (the driver's new `dropfiles point
+  <x> <y>`), a folder dropped there with copy and move allowed gave `over sidebar bookmarks gap 1 ...
+  allowed=0x3 -> effect copy` and `bookmark added ... at 1 (drop)`, the same in the rail (`... at 2`),
+  and a file alone was refused (`effect none`), in both schemes. One fault found on the way: over the
+  gap the drop description ("Bookmark") always carried the link image, while TwinFM's own drag gets a
+  copy, and the shell draws a description only with the effect's image, so its "Bookmark" could not
+  show for that drag. It now takes the effect's image (`dnd::gap_description`, tested). Not checked by
+  a script: the shell drawing that text (the driver's data object refuses descriptions); Jeremy's
+  console check, on a build with this milestone.
+
+No gate rerun for these fixes or P12-M3's Tab stop (the coordinating session, 2026-10-26): a call order
+in a popup, the drop description over the sidebar and one Slint focus property, none of them in the
+rows or the gate scenario (it opens no question, no sidebar menu and drags nothing).

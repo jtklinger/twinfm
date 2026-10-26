@@ -1013,11 +1013,13 @@ Phase 12 list). Read them before changing the list.
   where the source allows no link, never a move: `bookmark_effect`) and the drop description
   "Bookmark", and the drop bookmarks its folders there in order (files left out; a folder bookmarked
   already stays, with Ctrl+D's note; `sidebar::insert_bookmark`); a drop onto a bookmark row's middle
-  still copies or moves files into it. Driver `dropfiles sidegap <index> <copy|move|auto> <paths>`
+  still copies or moves files into it. Driver `dropfiles sidegap <index> <copy|move|auto> <paths>` and
+  `dropfiles point <x> <y> <mode> <paths>` (any window point, logical px, through the real hit test)
   (the line before bookmark `<index>`, the count below the last; the sidebar scrolled to its end
   first); `[dnd] over sidebar bookmarks gap K ... -> effect link|copy|none`, `[dnd] drop description:
-  Bookmark`, `[sidebar] bookmark added <path> at K (drop | menu)`, `[sidebar] <path> is bookmarked
-  already`. **"Add to bookmarks"** in the Windows 11 menu on folders and drives (each selected one,
+  Bookmark` (the effect's image: a copy for TwinFM's own drag, which allows no link,
+  `gap_description`), `[sidebar] bookmark added <path> at K (drop | menu)`, `[sidebar] <path> is
+  bookmarked already`. **"Add to bookmarks"** in the Windows 11 menu on folders and drives (each selected one,
   never inside an archive) and on a folder's background (the folder shown), appended (`Cmd::Bookmark`,
   `menupick Add to bookmarks`; `[winmenu] pane=N runs Bookmark`); the Bookmarks header's right-click
   menu "Bookmark this folder" (Ctrl+D's). The headers' menus run their item before they close (the
