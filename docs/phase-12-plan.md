@@ -401,3 +401,134 @@ first ones are his, the rest each brief settles first.
 - **The clean-up of the two old worktrees** (Jeremy's word before they go).
 - **Why Google Drive's menu ids move, the tooltip, the scrollbar, the rows and OneDrive's way in**: each
   milestone's Settled first.
+
+## P12-M7: OneDrive's syncing and error icons
+
+Started 2026-10-25 from main at 76b5d35, branch `feat/p12-m7-onedrive-icons`, the cloud stream's second
+milestone, its Settled first begun while P12-M6 waited for its gate. Jeremy's word on the one write into
+OneDrive the brief needed (2026-10-25, through the coordinating session): "Yes: the cloud session may copy
+one 1 KB test file into a OneDrive probe folder and delete it afterwards, after the memory check and the
+two gates."
+
+### Settled first (2026-10-25)
+
+**The way in: (a), the placeholder mode per thread.** Settled by a probe in TwinFM's own process (the
+release exe, a scripted run; the probe code was never committed): one thread walked
+`C:\Users\jtkli\OneDrive` through `entry_of` three times, in Windows' default placeholder mode, with
+`RtlSetThreadPlaceholderCompatibilityMode(PHCM_EXPOSE_PLACEHOLDERS)` on that thread only, and in the
+default mode again; the walk stopped at 40,023 entries in 3,984 folders. Nothing was opened or
+downloaded.
+
+| Mode | Time | Placeholder states | Kinds | Thumbnail keys | `look:` keys |
+|---|---|---|---|---|---|
+| default | 8.4 s (cold), 6.2 s | all 0 | Directory 4,012, File 36,011 | 20,520 | 4,012 |
+| shown | 6.1 s | 0: 13, 0x9: 5,266, 0xD: 343, 0x39: 34,401 | Cloud 40,010, File 13 | 0 | 4,012 |
+
+Shown, every placeholder carries its real state at no cost to the listing; every one of them is in sync
+today (`CF_PLACEHOLDER_STATE_IN_SYNC`, 0x8, set: 0x9 a placeholder in sync, 0xD with its essential
+properties too, 0x39 with its data not all on this disk, `PARTIAL` and `PARTIALLY_ON_DISK`), so
+the steady state adds no property read. The 13 that are no placeholder are the `desktop.ini` files and
+one hidden system file (as P9-M4 found). The three entries both modes flag as needing a read are P9-M4's
+releasing rule on unpinned folders (`Documents\Stack`, two folders under `Archive Docs_Online_only`),
+which are looked up as folders anyway. **What the mode changes**, kept as today: each placeholder gains
+`FILE_ATTRIBUTE_REPARSE_POINT` (0x400: `0x20` and `0x420` for the same PDF, `0x10` and `0x410` for a
+folder, `0x00100031` and `0x00100431` for `Stack`; a file whose data is not all here is also offline
+and sparse when shown, 0x1200 more, which the entry-by-entry check below found) and a cloud tag
+(`0x9000601A`, `0x9000E01A`), so it becomes `Kind::Cloud` (folders too), and a `Kind::Cloud` file gets no
+thumbnail key (20,520 to 0). So `entry_of` takes the state and lists the entry as the plain file or
+folder it is by default (`as_listed`), and only the threads that build a sync root's entries show
+placeholders: each listing's own (when its folder is under a sync root) and the watch's edit worker. The
+search walker, the size walker and a search tab's re-stat keep Windows' default (a search tab is no
+cloud location: its keys carry no marks). Ways (b), the folder's own state first, and (c), the property
+read for every file on screen, are not needed.
+
+**Whether OneDrive's switch to in sync reaches the watch: it does.** The probe Jeremy allowed (the
+coordinating session's probe slot, 2026-10-25): TwinFM (this branch's build with one timed log line in
+`land_edits`, never committed) showed `C:\Users\jtkli\OneDrive\twinfm-p12m7-probe\`, and a PowerShell
+poller wrote one 1,022-byte file there and logged its attributes and reparse tag every 250 ms. The file
+was written at 0.0 s; its creation reached the watch 0.25 s later (`records 2, changes 1`, the edit
+`probe.txt attrs 0x20`). For 5.7 s OneDrive left it a plain file, no placeholder at all (attributes
+`Archive`, no tag); at 5.7 s it became an in-sync placeholder (`Archive, ReparsePoint`, tag
+`0x9000601A`), and one record reached the watch 0.2 s after that (`records 1, changes 1`, re-statted on
+the edit worker, `applied: +0 -0 ~1`). So the mark follows the file through the watch, with no timed
+re-read (the plan's fallback, per-row work on the icon workers, is not needed). The file and the folder
+were deleted afterwards; nothing else was written. **What the probe also showed**: while it uploads, the
+new file is not a placeholder, so the rule "a placeholder not in sync" missed it, and the row drew the
+"on this device" tick where Explorer draws the syncing arrows. Hence the second half of the rule below.
+**P9-M4's console check 4** ("shows the syncing or pending mark while it uploads", answered "as
+expected") must have been the folder's mark: in TwinFM's process the file was a plain file then, keyed
+by its attributes (the tick).
+
+**How to make an error for the console check**: OneDrive does not sync a file whose name contains
+`_vti_` (a name SharePoint reserves), which Explorer shows with the error mark; if Explorer shows none for
+it on Jeremy's OneDrive, the error glyph's check stays open (the glyph table's test covers the drawing).
+
+### What landed
+
+1. **Placeholders shown on the threads that build a sync root's entries: done** (5dfc704).
+   `fs::enumerate::expose_placeholders` (`RtlSetThreadPlaceholderCompatibilityMode(PHCM_EXPOSE_PLACEHOLDERS)`,
+   windows-sys's `Wdk_Storage_FileSystem` feature, no new crate; `PHCM_EXPOSE_PLACEHOLDERS` declared
+   locally, windows-sys has the call but not its modes) runs on a listing's own thread when its folder
+   is a sync root, and once on the watch's edit worker; a thread-local says the thread is shown them.
+   `entry_of` takes the Cloud Files state from the shown attributes and tag (`placeholder_state`, a
+   pure cldapi call, made only for a reparse point or an unpinned entry as before) and lists the entry
+   as the plain file or folder it is by default (`as_listed`). `needs_state_read` gains `shown`: a file
+   there that is no placeholder (just copied in, uploading) is looked up too. `[cloud] pane=N not in
+   sync: K of M files` per sync-root listing; `[cloud] <listing | watch edits>: placeholders not shown
+   (RtlSetThreadPlaceholderCompatibilityMode = R)` if Windows refuses the mode.
+2. **Listed exactly as before: done** (0c7e516), after the check below found two differences: a
+   placeholder whose data is not all here is offline and sparse as well when shown (0x1200), now dropped
+   with the reparse bit; and OneDrive's own excluded files (pinned and unpinned both: the `desktop.ini`
+   files and one hidden system file at the root, `0x00180026`), which no placeholder rule should look up,
+   keep no mark as before.
+
+Tests: `a_shown_placeholder_lists_as_before_with_its_own_state` (a shown in-sync file lists as the plain
+file with its thumbnail key and attribute mark, a placeholder out of sync and a file not uploaded yet
+are looked up, a shown folder is a folder, a thread not shown keeps today's kinds and marks, `as_listed`
+for each case; the out-of-sync tag is the first of the sixteen cloud tags that cldapi reads so), the rule
+(`placeholders_out_of_sync_are_looked_up`: the shown cases, the excluded file), and the glyph table
+(`status_glyphs_come_from_imageres`: the pending states draw the syncing arrows, and syncing, error,
+warning and the tick are four different glyphs). 303 tests.
+
+Also: `CLAUDE.md` § Measuring's P12-M7 paragraph and the test count, `tools/gate-p12m7.ps1`,
+`tools/check-p12m7-onedrive.ps1` (the plan's in-app comparison on OneDrive).
+
+### Scripted checks (2026-10-25, the branch's release build, `TWINFM_SCRIPT`, no settings file)
+
+- **Every OneDrive entry lists as before**: the probe again, walking the same 40,023 entries through
+  `entry_of` in the default mode and shown, comparing each entry's kind, attributes and icon key. First
+  run (5dfc704): 5,614 the same, 34,409 different: the 34,401 files whose data is not all here (offline
+  and sparse when shown; their keys the same) and the 8 excluded files (looked up). Second run (with
+  both fixed, 0c7e516): **40,023 the same, 0 different**; thumbnail keys 20,520 and `look:` keys 4,012 in
+  both modes; kinds Directory 4,012 and File 36,011 in both.
+- **The real build on OneDrive** (the root, `Documents`, F5, then `C:\Windows`): `[cloud] pane=0 not in
+  sync: 0 of 5 files`, `0 of 6 files` twice; the `[enum]` reparse counts as before (no cloud); the
+  folders' `state read` lines as before; no refusal line, no panic.
+- **The in-app comparison, a trial on a busy machine** (`tools/check-p12m7-onedrive.ps1`, the look
+  stream building beside it, so not the gate's measurement): the root, `Documents` with F5, `Pictures\Camera
+  Roll` scrolled and F5; `target-p11close` against this branch, in both orders. Property reads (`cloud N`)
+  41 in all eight runs, `state read` lines 3 in all eight; `slow N` 0, 1, 1, 0 in the first order (this
+  branch in the middle slots, both times `Personal Vault.lnk`'s icon at 135 to 143 ms, a key both builds
+  share) and 1, 16, 0, 0 swapped (this branch in the outer slots): noise of the machine, not the change.
+- `cargo test --release`: 303 passed.
+
+### Soak
+
+Unchanged, not run: the OneDrive soak folder is not approved, and the soak lists no sync root.
+
+### Gate
+
+The defaults triplet, `target-p12m7` against the last merged milestone's gate build,
+`tools/gate-p12m7.ps1 -Tag <tag> -Head <commit> -Ref <name>`, the tag and the build from the
+coordinating session. The scenario never lists a cloud folder: it proves only that the rest is untouched.
+And the plan's in-app run on OneDrive on a quiet machine, `tools/check-p12m7-onedrive.ps1 -Reference
+<exe> -Candidate <exe>`, comparing `cloud N` and `slow N`.
+
+### Console checks (for Jeremy, unelevated, `target-p12m7`, beside Explorer)
+
+1. Copy a large file (a few hundred MB, so the upload lasts) into a OneDrive folder TwinFM shows: the
+   syncing arrows while it uploads, then the tick, with no F5, as Explorer.
+2. A file OneDrive refuses (a name with `_vti_` in it): the error mark Explorer shows (the red cross),
+   in TwinFM too; if Explorer shows none, say so.
+3. Free up space and Always keep on this device on a file, as in P9-M4: the marks as Explorer's.
+4. A OneDrive folder with thumbnails on (the settings dialog): the pictures as before.
