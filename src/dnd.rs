@@ -69,7 +69,7 @@ use windows_sys::Win32::System::Com::{
 use windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows_sys::Win32::System::Ole::{
-    CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE, DoDragDrop, MK_ALT, RegisterDragDrop, ReleaseStgMedium,
+    CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE, DROPEFFECT_NONE, DoDragDrop, MK_ALT, RegisterDragDrop, ReleaseStgMedium,
     RevokeDragDrop,
 };
 use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MK_RBUTTON, MK_SHIFT};
@@ -77,7 +77,7 @@ use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
 use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows_sys::Win32::UI::Shell::{
     CFSTR_DROPDESCRIPTION, CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORA, CFSTR_FILEDESCRIPTORW, CFSTR_SHELLIDLIST, DROPIMAGE_COPY,
-    DROPIMAGE_INVALID, DROPIMAGE_MOVE, DROPIMAGE_NONE, ILCombine, ILFree, SHGetNameFromIDList,
+    DROPIMAGE_INVALID, DROPIMAGE_LINK, DROPIMAGE_MOVE, DROPIMAGE_NONE, ILCombine, ILFree, SHGetNameFromIDList,
     SIGDN_DESKTOPABSOLUTEPARSING, CFSTR_LOGICALPERFORMEDDROPEFFECT, CFSTR_PERFORMEDDROPEFFECT, DefSubclassProc,
     FD_ATTRIBUTES, FD_FILESIZE, FD_PROGRESSUI, RemoveWindowSubclass, SHCreateDataObject, SHCreateMemStream, SHDRAGIMAGE,
     SetWindowSubclass,
@@ -91,6 +91,21 @@ use windows_sys::core::{BOOL, GUID, HRESULT, PCWSTR};
 pub const NONE: u32 = DROPEFFECT_NONE;
 pub const COPY: u32 = DROPEFFECT_COPY;
 pub const MOVE: u32 = DROPEFFECT_MOVE;
+/// A folder bookmarked by a drop (P12-M5): nothing is copied or moved.
+pub const LINK: u32 = DROPEFFECT_LINK;
+
+/// The effect of a drop into the Bookmarks gap: a link, or a copy where the source allows no link
+/// (the source then does nothing either way); never a move, which a source could take as leave to
+/// delete its files.
+pub fn bookmark_effect(allowed: u32) -> u32 {
+    if allowed & LINK != 0 {
+        LINK
+    } else if allowed & COPY != 0 {
+        COPY
+    } else {
+        NONE
+    }
+}
 
 /// Posted to the main window by `crate::drag_start`; the permanent subclass (`devices`) runs the
 /// drag (`crate::run_pending_drag`) when it is dispatched, outside winit's event handler.
@@ -397,8 +412,12 @@ pub enum Spot {
     Pane(usize),
     /// Over row `.1` of pane `.0`.
     Row(usize, usize),
-    /// Over sidebar row `.0` (a drive, a place or a bookmark).
+    /// Over sidebar row `.0` (a drive, a place, a recent folder or the middle of a bookmark).
     Side(usize),
+    /// In the gap a folder is bookmarked into (P12-M5): before bookmark `.0` (the Bookmarks header
+    /// and a bookmark row's top `GAP_PX`), after bookmark `.0 - 1` (its bottom `GAP_PX`), or after the
+    /// last (`.0` the bookmark count: below the last row).
+    SideGap(usize),
     /// Over tab `.1` in pane `.0`'s tab strip.
     Tab(usize, usize),
     /// Over breadcrumb button `.1` of pane `.0`'s path bar.
@@ -409,6 +428,9 @@ pub enum Spot {
 /// "About TwinFM" row); a pane's tab strip is 30 px tall under the pane's 3 px padding.
 pub const SIDE_TOP: f32 = 3.0;
 pub const SIDE_FOOTER: f32 = 32.0;
+/// A bookmark row's top and bottom this many px are the gap a folder is bookmarked into, not the
+/// row (P12-M5).
+pub const GAP_PX: f32 = 6.0;
 pub const TAB_TOP: f32 = 3.0;
 pub const TAB_H: f32 = 30.0;
 /// The breadcrumb buttons (pane.slint `crumb-row`): 3 px padding inside the 36 px path bar, which
@@ -431,6 +453,9 @@ pub struct Strips<'a> {
     pub side_w: f32,
     pub side_scroll: f32,
     pub side_rows: &'a [(f32, bool)],
+    /// The first bookmark row and the bookmark count (the Bookmarks header is the row before it;
+    /// P12-M5's gaps).
+    pub side_bookmarks: (usize, usize),
     /// Each pane's tab strip: tab count, tab width and the strip's scroll offset (`Layout::tabs`
     /// says whether it shows).
     pub tabs: [(usize, f32, f32); 2],
@@ -457,14 +482,29 @@ pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len:
             return Spot::Outside;
         }
         let ly = y - side_top(l) - s.side_scroll;
+        let (first, n) = s.side_bookmarks;
         let mut top = 0.0;
         for (i, &(h, target)) in s.side_rows.iter().enumerate() {
             if ly >= top && ly < top + h {
+                // The Bookmarks header and a bookmark row's edges are the gaps a folder is
+                // bookmarked into (P12-M5); the middle of a row is its folder, as before.
+                if i + 1 == first {
+                    return Spot::SideGap(0);
+                }
+                if i >= first && i < first + n {
+                    if ly < top + GAP_PX {
+                        return Spot::SideGap(i - first);
+                    }
+                    if ly >= top + h - GAP_PX {
+                        return Spot::SideGap(i - first + 1);
+                    }
+                }
                 return if target { Spot::Side(i) } else { Spot::Outside };
             }
             top += h;
         }
-        return Spot::Outside;
+        // Below the last row: after the last bookmark.
+        return if ly >= top && first > 0 { Spot::SideGap(n) } else { Spot::Outside };
     }
     let panes = if l.split { 2 } else { 1 };
     for pane in 0..panes {
@@ -1678,6 +1718,8 @@ pub enum Mark {
     Tab(usize),
     Side(usize),
     Crumb(usize),
+    /// The Bookmarks gap (P12-M5): an insertion line, and a drop bookmarks the folders.
+    Gap(usize),
 }
 
 /// Where a drop at a window point goes, as the app decides it (`crate::drop_spot`).
@@ -1772,6 +1814,9 @@ struct DropTarget {
     /// last destination's, looked up once per distinct folder.
     src_volume: RefCell<Option<String>>,
     dest_volume: RefCell<VolumeCache>,
+    /// The drag carries a folder (P12-M5's Bookmarks gap), looked up once per drag, when it
+    /// first hovers the gap.
+    has_folder: RefCell<Option<bool>>,
 }
 
 static DROP_TARGET_VTBL: DropTargetVtbl = DropTargetVtbl {
@@ -1817,6 +1862,11 @@ impl DropTarget {
         // are refused.
         let into_archive = spot.as_ref().is_some_and(|s| crate::fs::archive::inside(&s.dest));
         let effect = match (&*self.offered.borrow(), &spot) {
+            // Into the Bookmarks gap (P12-M5): only a drag that carries a folder.
+            (Offer::Files(s), Some(DropSpot { mark: Mark::Gap(_), .. })) => {
+                if *self.has_folder.borrow_mut().get_or_insert_with(|| s.iter().any(|p| p.is_dir())) { bookmark_effect(allowed) } else { NONE }
+            }
+            (_, Some(DropSpot { mark: Mark::Gap(_), .. })) => NONE,
             (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed, !into_archive && self.same_volume(&spot.dest)),
             (Offer::Virtual(_) | Offer::Archive(_), Some(_)) if !into_archive => virtual_effect(allowed),
             _ => NONE,
@@ -1854,6 +1904,7 @@ impl DropTarget {
         match d.kind {
             DROPIMAGE_MOVE => eprintln!("[dnd] drop description: Move to \"{}\"", d.insert),
             DROPIMAGE_COPY => eprintln!("[dnd] drop description: Copy to \"{}\"", d.insert),
+            DROPIMAGE_LINK => eprintln!("[dnd] drop description: Bookmark"),
             DROPIMAGE_INVALID => eprintln!("[dnd] drop description: cleared"),
             _ => eprintln!("[dnd] drop description: none"),
         }
@@ -1881,8 +1932,14 @@ impl DropTarget {
         let (spot, e) = self.evaluate(keys, pt, allowed);
         let highlight = spot.as_ref().filter(|_| e != NONE).map(|s| (s.pane, s.mark));
         crate::drop_highlight(highlight);
-        // Before the target helper's DragEnter/DragOver, which read it.
-        self.describe(description(e, spot.as_ref().map(|s| s.dest.as_path())));
+        // Before the target helper's DragEnter/DragOver, which read it. The Bookmarks gap's reads
+        // "Bookmark" (P12-M5).
+        let gap = spot.as_ref().is_some_and(|s| matches!(s.mark, Mark::Gap(_)));
+        self.describe(if gap && e != NONE {
+            Description { kind: DROPIMAGE_LINK, message: "Bookmark", insert: String::new() }
+        } else {
+            description(e, spot.as_ref().map(|s| s.dest.as_path()))
+        });
         let changed = self.last.borrow().as_ref() != Some(&(spot.clone(), e));
         if changed {
             eprintln!("[dnd] over {} keys=0x{keys:x} allowed=0x{allowed:x} -> effect {}", describe(&spot), effect_name(e));
@@ -1949,6 +2006,7 @@ fn describe(spot: &Option<DropSpot>) -> String {
             Mark::Tab(i) => format!("pane {} tab {i} ({})", s.pane, s.dest.display()),
             Mark::Side(i) => format!("sidebar row {i} ({}), noted in pane {}", s.dest.display(), s.pane),
             Mark::Crumb(i) => format!("pane {} crumb {i} ({})", s.pane, s.dest.display()),
+            Mark::Gap(k) => format!("sidebar bookmarks gap {k}"),
         },
     }
 }
@@ -1958,6 +2016,7 @@ pub fn effect_name(e: u32) -> &'static str {
         NONE => "none",
         COPY => "copy",
         MOVE => "move",
+        LINK => "link",
         _ => "other",
     }
 }
@@ -1986,6 +2045,7 @@ unsafe extern "system" fn dt_drag_enter(this: *mut c_void, data: *mut c_void, ke
     }
     *t.src_volume.borrow_mut() = src;
     *t.offered.borrow_mut() = offered;
+    *t.has_folder.borrow_mut() = None;
     *t.last.borrow_mut() = None;
     // Keep the data object for DragOver's drop descriptions (a DragEnter without a DragLeave
     // before it gives the old one back first).
@@ -2173,7 +2233,8 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
     t.end_drag();
     // The shell takes its drag image down (before the menu, as Explorer does).
     target_helper_call(HelperCall::Drop(data), pt, e);
-    if right && e != NONE && spot.is_some() {
+    let gap = spot.as_ref().and_then(|s| if let Mark::Gap(k) = s.mark { Some(k) } else { None });
+    if right && e != NONE && spot.is_some() && gap.is_none() {
         // A right-button drop asks: Move here, Copy here or Cancel, the default in bold. A modal
         // loop inside Drop (itself inside the source's DoDragDrop): nothing is borrowed here,
         // `drop_spot`'s borrow ended inside `evaluate` and the target's own cells are free.
@@ -2200,6 +2261,16 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
         effect_name(e),
         effect_name(reported)
     );
+    // Into the Bookmarks gap (P12-M5): the folders are bookmarked there, from the event loop.
+    if let (Some(k), true, Offer::Files(sources)) = (gap, e != NONE, &fresh) {
+        let sources = sources.clone();
+        let _ = slint::invoke_from_event_loop(move || crate::drop_bookmarks(k, sources));
+        // SAFETY: COM contract: a valid in/out pointer (checked for null).
+        if !effect.is_null() {
+            unsafe { *effect = reported };
+        }
+        return S_OK;
+    }
     if let (Some(spot), true) = (spot, e != NONE) {
         match fresh {
             // The job (and every app-state change) runs from the event loop: after our own
@@ -2328,6 +2399,7 @@ pub fn register(hwnd: isize) -> (HRESULT, HRESULT) {
         describe_failed: Cell::new(false),
         src_volume: RefCell::new(None),
         dest_volume: RefCell::new(VolumeCache::default()),
+        has_folder: RefCell::new(None),
     });
     let ptr = Box::into_raw(obj) as *mut c_void;
     // SAFETY: plain OLE calls on our own window, on its thread. RegisterDragDrop takes its own
@@ -3426,6 +3498,7 @@ mod tests {
             side_w: 180.0,
             side_scroll: 0.0,
             side_rows: &rows,
+            side_bookmarks: (6, 1),
             tabs: [(1, 160.0, 0.0), (3, 120.0, 0.0)],
             crumb_row: [(0.0, 0.0); 2],
             crumbs: [&[], &[]],
@@ -3440,9 +3513,18 @@ mod tests {
         assert_eq!(hit(90.0, 53.0), Spot::Side(2));
         assert_eq!(hit(90.0, 80.0), Spot::Outside, "the Places header");
         assert_eq!(hit(90.0, 103.0), Spot::Side(4), "a place");
-        assert_eq!(hit(90.0, 130.0), Spot::Outside, "the Bookmarks header");
-        assert_eq!(hit(90.0, 160.0), Spot::Side(6), "a bookmark, 30 px while renamed");
-        assert_eq!(hit(90.0, 184.0), Spot::Outside, "below the last row");
+        // The Bookmarks header, a bookmark row's top and bottom 6 px and the space below the last row
+        // are the gaps a folder is bookmarked into (P12-M5); the row's middle is its folder.
+        assert_eq!(hit(90.0, 130.0), Spot::SideGap(0), "the Bookmarks header");
+        assert_eq!(hit(90.0, 155.0), Spot::SideGap(0), "the bookmark's top 6 px");
+        assert_eq!(hit(90.0, 159.0), Spot::Side(6), "a bookmark, 30 px while renamed");
+        assert_eq!(hit(90.0, 160.0), Spot::Side(6));
+        assert_eq!(hit(90.0, 176.9), Spot::Side(6));
+        assert_eq!(hit(90.0, 177.0), Spot::SideGap(1), "its bottom 6 px: after it");
+        assert_eq!(hit(90.0, 184.0), Spot::SideGap(1), "below the last row: after the last");
+        assert_eq!(bookmark_effect(COPY | MOVE | LINK), LINK);
+        assert_eq!(bookmark_effect(COPY | MOVE), COPY, "no link allowed: a copy, never a move");
+        assert_eq!(bookmark_effect(MOVE), NONE);
         assert_eq!(hit(90.0, 580.0), Spot::Outside, "the About row (footer)");
         assert_eq!(hit(181.0, 29.0), Spot::Outside, "the sidebar's resize edge");
         assert_eq!(side_row_top(&rows, 0), 0.0);
@@ -3519,6 +3601,7 @@ mod tests {
             side_w: 180.0,
             side_scroll: 0.0,
             side_rows: &rows,
+            side_bookmarks: (0, 0),
             tabs: [(1, 160.0, 0.0), (6, 120.0, 0.0)],
             crumb_row: [(0.0, 0.0); 2],
             crumbs: [&[], &[]],
@@ -3569,7 +3652,7 @@ mod tests {
         // 900 px of it shown; crumbs "This PC", "C:", "Users" at 0, 70 and 110 in the row.
         let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
         let crumbs = [(0.0, 54.0), (70.0, 24.0), (110.0, 60.0)];
-        let s = Strips { side_w: 0.0, side_scroll: 0.0, side_rows: &[], tabs: [(1, 160.0, 0.0); 2], crumb_row: [(0.0, 900.0), (0.0, 0.0)], crumbs: [&crumbs, &[]] };
+        let s = Strips { side_w: 0.0, side_scroll: 0.0, side_rows: &[], side_bookmarks: (0, 0), tabs: [(1, 160.0, 0.0); 2], crumb_row: [(0.0, 900.0), (0.0, 0.0)], crumbs: [&crumbs, &[]] };
         let none = [0.0, 0.0];
         let hit = |s: &Strips, x: f32, y: f32| hit_all(&l, s, x, y, none, [5, 0]);
         // The labels run from y 6 to 32, from x 3 (the pane's padding) plus their x in the row.

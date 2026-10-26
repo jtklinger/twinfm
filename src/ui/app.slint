@@ -28,8 +28,8 @@ component SideRow inherits Rectangle {
     in property <bool> current;
     // clicked(middle): the left or the middle button released over the row.
     callback clicked(bool);
-    // menu(x, y): the right button released over a bookmark, or the Recent header (P12-M5), at window
-    // coordinates.
+    // menu(x, y): the right button released over a bookmark, or the Recent or Bookmarks header
+    // (P12-M5), at window coordinates.
     callback menu(length, length);
     // renamed(title): Return in the editor. edit-cancelled(refocus): Escape (true) or focus loss.
     callback renamed(string);
@@ -85,8 +85,8 @@ component SideRow inherits Rectangle {
         }
     }
     ta := TouchArea {
-        // A header takes the right button only, for its menu (the Recent header's, P12-M5).
-        enabled: (item.kind != 0 || item.index == 2) && !root.editing;
+        // A header takes the right button only, for its menu (the Recent and Bookmarks headers', P12-M5).
+        enabled: (item.kind != 0 || item.index >= 2) && !root.editing;
         moved => {
             if (root.dragging) {
                 root.drag(1, self.absolute-position.y + self.mouse-y);
@@ -482,6 +482,9 @@ export component App inherits Window {
     callback bookmark-drag(int, int);
     private property <int> side-drag-from: -1;
     private property <int> side-drag-gap: -1;
+    // A folder dragged over the Bookmarks gap from TwinFM's lists or another program (P12-M5, the drop
+    // target's): the gap its drop bookmarks it at, the same line as a bookmark's drag (-1: none).
+    in property <int> drop-side-gap: -1;
     function bookmark-gap(y: length) -> int {
         let top = side-list.absolute-position.y + side-list.content-y + (root.side-items.length - root.bookmark-count) * 32px;
         return max(0, min(root.bookmark-count, round((y - top) / 32px)));
@@ -986,9 +989,9 @@ export component App inherits Window {
             }
             // Where a dragged bookmark lands (P12-M5): a 2 px line in the accent on the line between two
             // rows, in the list's content (the bookmarks are its last rows, 32 px each).
-            if root.side-drag-gap >= 0: Rectangle {
+            if root.side-drag-gap >= 0 || root.drop-side-gap >= 0: Rectangle {
                 x: 8px;
-                y: side-list.y + side-list.content-y + (root.side-items.length - root.bookmark-count + root.side-drag-gap) * 32px - 1px;
+                y: side-list.y + side-list.content-y + (root.side-items.length - root.bookmark-count + (root.side-drag-gap >= 0 ? root.side-drag-gap : root.drop-side-gap)) * 32px - 1px;
                 width: side-list.width - 16px;
                 height: 2px;
                 background: Theme.cursor;
@@ -1317,7 +1320,8 @@ export component App inherits Window {
         }
     }
 
-    // A sidebar header's menu (P12-M5): the Recent header's "Clear recent".
+    // A sidebar header's menu (P12-M5): the Recent header's "Clear recent", the Bookmarks header's
+    // "Bookmark this folder" (Ctrl+D's: the active pane's folder, at the end).
     header-menu := PopupWindow {
         x: root.menu-x;
         y: root.menu-y;
@@ -1329,11 +1333,18 @@ export component App inherits Window {
             border-color: Theme.border;
             VerticalLayout {
                 padding: 3px;
-                MenuItem {
+                if root.menu-index == 2: MenuItem {
                     text: "Clear recent";
                     activated => {
                         header-menu.close();
                         root.recent-clear();
+                    }
+                }
+                if root.menu-index == 3: MenuItem {
+                    text: "Bookmark this folder";
+                    activated => {
+                        header-menu.close();
+                        root.bookmark-add();
                     }
                 }
             }

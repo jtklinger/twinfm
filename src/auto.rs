@@ -103,7 +103,9 @@
 //!                                    (or, with row -1, the pane's header: its folder). In place of
 //!                                    `<pane> <row>`, `side <row>` aims at sidebar row <row> (headers
 //!                                    count; 0 is "Drives"; -1 the last row, the newest bookmark) and
-//!                                    `tab <pane> <index>` at tab <index>
+//!                                    `tab <pane> <index>` at tab <index>; `sidegap <index>` (P12-M5) at
+//!                                    the line before bookmark <index> (the count: below the last), the
+//!                                    Bookmarks gap, where a drop bookmarks the folders
 //!                                    of the pane's strip (shown with two tabs or more), `crumb
 //!                                    <pane> <index>` at the label of crumb <index> of the pane's
 //!                                    breadcrumb (0 is This PC; -1 the folder itself, -2 its
@@ -302,6 +304,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, PostMessag
 enum DropAt {
     Row(usize, i32),
     Side(i32),
+    /// The Bookmarks gap before bookmark `.0` (the count: after the last), P12-M5.
+    SideGap(usize),
     Tab(usize, usize),
     Crumb(usize, i32),
 }
@@ -514,12 +518,14 @@ fn parse(script: &str) -> Vec<Step> {
                     // `tab <pane> <index>` and `crumb <pane> <index>` take one word more than
                     // `<pane> <row>` and `side <row>`.
                     let m = if matches!(a.get(1), Some(&"tab" | &"crumb")) { 4 } else { 3 };
+                    // `sidegap <index>` (P12-M5) takes the side row's place.
                     let mode = a.get(m).unwrap_or(&"auto").to_string();
                     // `menu <copy|move|cancel>` takes one more word before the paths.
                     let (pick, first) = if mode == "menu" { (a.get(m + 1).unwrap_or(&"cancel").to_string(), m + 2) } else { (String::new(), m + 1) };
                     // The spot: `<pane> <row>`, `side <row>`, `tab <pane> <index>` or `crumb <pane> <index>`.
                     let at = match a.get(1).copied() {
                         Some("side") => DropAt::Side(num(2) as i32),
+                        Some("sidegap") => DropAt::SideGap(num(2) as usize),
                         Some("tab") => DropAt::Tab(num(2) as usize, num(3) as usize),
                         Some("crumb") => DropAt::Crumb(num(2) as usize, num(3) as i32),
                         _ => DropAt::Row(num(1) as usize, num(2) as i32),
@@ -908,6 +914,7 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
             })
         }
         DropAt::Side(row) => Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_row_centre(row)?)),
+        DropAt::SideGap(k) => Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_gap_y(k)?)),
         DropAt::Tab(pane, index) => {
             let l = crate::window_layout(app);
             if !l.tabs[pane] {

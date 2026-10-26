@@ -4763,6 +4763,10 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             dnd::Spot::Outside => return None,
             dnd::Spot::Pane(p) => (p, None),
             dnd::Spot::Row(p, r) => (p, Some(r)),
+            // The Bookmarks gap (P12-M5): the folders dropped are bookmarked there, nothing copied.
+            dnd::Spot::SideGap(k) => {
+                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Gap(k), dest: PathBuf::new(), springs: false });
+            }
             // A sidebar row's folder (a drive's root, a place, a bookmark), noted in the active pane.
             dnd::Spot::Side(i) => {
                 let dest = st.side.get(i)?.path.clone()?;
@@ -4854,6 +4858,7 @@ fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)], crumb_row: [(
         side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { 0.0 },
         side_scroll: app.invoke_side_scroll(),
         side_rows,
+        side_bookmarks: (st.side.len() - st.config.bookmarks.len(), st.config.bookmarks.len()),
         tabs: [tab(0), tab(1)],
         crumb_row,
         crumbs: [&crumbs[0], &crumbs[1]],
@@ -4953,6 +4958,17 @@ pub fn side_row_centre(i: i32) -> Option<f32> {
         let i = if i < 0 { rows.len().checked_sub(i.unsigned_abs() as usize)? } else { i as usize };
         let h = rows.get(i)?.0;
         Some(dnd::side_top(&window_layout(&app)) + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
+    })
+}
+
+/// The window y of the line before bookmark `k` in the sidebar (the count: after the last), the
+/// driver's `dropfiles sidegap` (P12-M5).
+pub fn side_gap_y(k: usize) -> Option<f32> {
+    with_state(|st| {
+        let app = st.app.upgrade()?;
+        let rows = side_rows(st, &app);
+        let first = st.side.len().checked_sub(st.config.bookmarks.len())?;
+        Some(dnd::side_top(&window_layout(&app)) + app.invoke_side_scroll() + dnd::side_row_top(&rows, first + k.min(st.config.bookmarks.len())))
     })
 }
 
@@ -5251,6 +5267,12 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
         _ => (-1, -1, -1, -1, -1, -1),
     };
     let (side_row, side_y, side_h) = side.unwrap_or((-1, 0.0, 0.0));
+    // The Bookmarks gap's insertion line (P12-M5).
+    let gap = if let Some((_, dnd::Mark::Gap(k))) = at { k as i32 } else { -1 };
+    if app.get_drop_side_gap() != gap {
+        app.set_drop_side_gap(gap);
+        dnd::repaint_during_own_drag();
+    }
     let now = (
         (app.get_drop_pane(), app.get_drop_row(), app.get_drop_tab_pane(), app.get_drop_tab(), app.get_drop_side_row()),
         (app.get_drop_crumb_pane(), app.get_drop_crumb()),
@@ -5268,6 +5290,35 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
     app.set_drop_side_h(side_h);
     app.set_drop_side_row(side_row);
     dnd::repaint_during_own_drag();
+}
+
+/// Folders dropped into the Bookmarks gap (P12-M5): each folder bookmarked at gap `at` in order (a
+/// file is left out; a folder bookmarked already stays where it is, noted as Ctrl+D notes it).
+pub fn drop_bookmarks(at: usize, sources: Vec<PathBuf>) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let pane = active_pane(&app);
+        let mut k = at;
+        let mut noted = String::new();
+        for p in sources.iter().filter(|p| p.is_dir()) {
+            let folder = p.to_string_lossy().to_string();
+            if sidebar::insert_bookmark(&mut st.config.bookmarks, &folder, k) {
+                eprintln!("[sidebar] bookmark added {folder} at {k} (drop)");
+                noted = format!("Bookmarked {folder}");
+                k += 1;
+            } else {
+                eprintln!("[sidebar] {folder} is bookmarked already");
+                noted = format!("{folder} is bookmarked already");
+            }
+        }
+        if k > at {
+            rebuild_sidebar(st);
+            schedule_save(st);
+        }
+        if !noted.is_empty() {
+            note(st, &app, pane, noted);
+        }
+    });
 }
 
 /// A drop landed (posted by the drop target through the event loop): copy or move the files

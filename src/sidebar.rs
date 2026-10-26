@@ -150,12 +150,19 @@ pub fn note_recent(list: &mut Vec<String>, folder: &str) -> bool {
     true
 }
 
-/// Add `folder` at the end unless it is there already. Returns whether it was added.
+/// Add `folder` at the end unless it is there already (Ctrl+D). Returns whether it was added.
 pub fn add_bookmark(list: &mut Vec<Bookmark>, folder: &str) -> bool {
+    let at = list.len();
+    insert_bookmark(list, folder, at)
+}
+
+/// Add `folder` at index `at` (at most the end) unless it is bookmarked already, which leaves it
+/// where it is (P12-M5: a folder dropped into the Bookmarks gap). Returns whether it was added.
+pub fn insert_bookmark(list: &mut Vec<Bookmark>, folder: &str, at: usize) -> bool {
     if folder.trim().is_empty() || list.iter().any(|b| same_folder(&b.path, folder)) {
         return false;
     }
-    list.push(Bookmark::new(folder));
+    list.insert(at.min(list.len()), Bookmark::new(folder));
     true
 }
 
@@ -241,6 +248,17 @@ mod tests {
         assert_eq!(remove_bookmark(&mut b, 1).map(|b| b.path).as_deref(), Some(r"C:\"));
         assert_eq!(remove_bookmark(&mut b, 5), None);
         assert_eq!(paths(&b), [r"C:\Users\x", r"\\server\share"]);
+    }
+
+    #[test]
+    fn a_dropped_folder_is_bookmarked_at_its_gap() {
+        let mut b = vec![Bookmark::new(r"C:\a"), Bookmark::new(r"C:\c")];
+        assert!(insert_bookmark(&mut b, r"C:\b", 1), "between a and c");
+        assert!(insert_bookmark(&mut b, r"C:\z", 0), "on the Bookmarks header: first");
+        assert!(insert_bookmark(&mut b, r"C:\end", 99), "past the last: at the end");
+        assert!(!insert_bookmark(&mut b, r"c:\A\", 0), "bookmarked already: it stays where it is");
+        let paths: Vec<&str> = b.iter().map(|x| x.path.as_str()).collect();
+        assert_eq!(paths, [r"C:\z", r"C:\a", r"C:\b", r"C:\c", r"C:\end"]);
     }
 
     #[test]
