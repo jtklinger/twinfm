@@ -515,12 +515,20 @@ None, by the plan: nothing new to drive (the tooltips, badges and messages are d
 
 ### Gate
 
-To run (the coordinating session builds `target-p12m1` from the code head e0c9a28 and hands it to
-Jeremy): `tools/gate-p12m1.ps1`, `target-p12m1` against `target-p11close` (a99f2f2), the defaults and the
-preview column (`C:\traces\preview.toml`), the wrapper's tag ab56 unless the coordinating session
-allocates another. Expected flat: the scenario hovers nothing, so no fade runs and no tooltip shows; nothing
-is selected in the scenario, so the status line shows no badge; the preview column shows its empty
-frame. Nothing per row or per frame changed.
+ab56, passed (2026-10-25, Jeremy at the console; the six Phase 12 gates of both streams, ab56 to ab61,
+ran in one elevated script from 22:10 to 23:33, this one 22:10 to 22:26): `tools/gate-p12m1.ps1`,
+`target-p12m1` (e0c9a28) against `target-p11close` (a99f2f2), the defaults and the preview column
+(`C:\traces\preview.toml`).
+
+| Setting | p11close (WPR) | p12m1 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 21.3, 21.7, 21.4 | 21.5, 21.0, 21.0 | 21.4 / 21.0 | 2.86 to 3.07 ms |
+| preview | 20.1, 19.8, 20.0 | 20.0, 20.3, 20.3 | 20.0 / 20.3 | 2.65 to 2.75 ms |
+
+No gap that counts in either (no setting has every reference run below every candidate run, and the
+medians differ by 0.4 and 0.3 of a point); no panic, every settings file read. The whole session ran in
+the costlier state (render p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2
+normally; as ab42 in Phase 10), so the 20% bar was met by neither build; read like for like.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m1`, light and dark)
 
