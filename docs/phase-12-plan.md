@@ -1081,10 +1081,18 @@ counting, left for a later look.
 
 ### Gate
 
-To run (the coordinating session builds `target-p12m5` from the code head a853e52): `tools/gate-p12m5.ps1`,
-the defaults, against `target-p12m4`, the wrapper's tag ab62 unless the coordinating session allocates
-another. The candidate draws a tab strip and a list 32 px shorter in both panes, and the Recent group in
-the sidebar, against a reference with no strip at one tab: a real change in what each frame draws.
+ab62, passed (2026-10-26, Jeremy at the console, 06:53 to 07:01): `tools/gate-p12m5.ps1`, `target-p12m5`
+(a853e52) against `target-p12m4` (24e8425, its base), the defaults.
+
+| Setting | p12m4 (WPR) | p12m5 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 21.8, 21.0, 21.1 | 21.2, 20.7, 20.6 | 21.1 / 20.7 | 2.93 to 2.97 / 2.83 to 2.88 ms |
+
+No gap that counts: the candidate's median 0.4 of a point under the reference's, and not every reference
+run below every candidate run. The tab strip drawn in both panes costs nothing the triplet sees: the
+lists 32 px shorter leave fewer rows to draw per frame (render p50 2.83 to 2.88 ms against 2.93 to 2.97).
+No panic. The session ran in the same costlier state as the night's gates (ab56 to ab61), so neither
+build came under the 20% bar; read like for like.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m5`, light and dark)
 
