@@ -914,11 +914,11 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
                 Err(_) => LogicalPosition::new(mid.x, list_top(app, pane) - 14.0),
             })
         }
-        DropAt::Side(row) => Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_row_centre(row)?)),
+        DropAt::Side(row) => Some(LogicalPosition::new(side_x(app), crate::side_row_centre(row)?)),
         DropAt::SideGap(k) => {
             // The bookmarks are the sidebar's last rows: scrolled into view first.
             app.invoke_side_scroll_end();
-            Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_gap_y(k)?))
+            Some(LogicalPosition::new(side_x(app), crate::side_gap_y(k)?))
         }
         DropAt::Tab(pane, index) => {
             let l = crate::window_layout(app);
@@ -946,7 +946,7 @@ fn hover_point(app: &App, at: HoverAt) -> Option<LogicalPosition> {
         HoverAt::At(spot) => drop_point(app, spot),
         HoverAt::Side(top) => {
             let y = if top { crate::dnd::side_top(&l) + 6.0 } else { l.height - crate::dnd::SIDE_FOOTER - 6.0 };
-            app.get_sidebar_visible().then(|| LogicalPosition::new(app.get_sidebar_width() / 2.0, y))
+            Some(LogicalPosition::new(side_x(app), y))
         }
         HoverAt::Strip(pane, right) => {
             let (a, b) = crate::dnd::pane_x(&l, pane);
@@ -954,6 +954,11 @@ fn hover_point(app: &App, at: HoverAt) -> Option<LogicalPosition> {
             l.tabs[pane].then(|| LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
     }
+}
+
+/// The middle of the sidebar, or of the icons-only rail when it is collapsed (P12-M5).
+fn side_x(app: &App) -> f32 {
+    if app.get_sidebar_visible() { app.get_sidebar_width() / 2.0 } else { crate::dnd::RAIL_W / 2.0 }
 }
 
 /// The main window's HWND (0 before the window exists).
@@ -1504,7 +1509,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             let first = slint::Model::row_count(&app.get_side_items()).saturating_sub(n);
             let top = crate::dnd::side_top(&crate::window_layout(&app)) + app.invoke_side_scroll();
             let row_y = |r: usize| top + app.invoke_side_row_top(r as i32);
-            let x = app.get_sidebar_width() / 2.0;
+            let x = side_x(&app);
             let gap = if to > from { to + 1 } else { to };
             let (y0, y1) = (row_y(first + from) + 16.0, row_y(first + gap.min(n)));
             let win = app.window();

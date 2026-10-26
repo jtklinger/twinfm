@@ -339,8 +339,8 @@ pub struct Layout {
     /// Whether each pane shows its tab strip, which moves its list down (always since P12-M5; with
     /// two tabs or more before).
     pub tabs: [bool; 2],
-    /// Where the panes start: right of the sidebar and its 4 px resize edge, or of the 12 px
-    /// strip of a collapsed sidebar.
+    /// Where the panes start: right of the sidebar and its 4 px resize edge, or of the collapsed
+    /// sidebar's icons-only rail (`RAIL_W`, P12-M5; a 12 px strip before).
     pub left: f32,
     /// The lists' row height (`icons::ListGeom`: 22 px, or 32 px with thumbnails on).
     pub row_px: f32,
@@ -428,6 +428,9 @@ pub enum Spot {
 /// "About TwinFM" row); a pane's tab strip is 30 px tall under the pane's 3 px padding.
 pub const SIDE_TOP: f32 = 3.0;
 pub const SIDE_FOOTER: f32 = 32.0;
+/// The collapsed sidebar's icons-only rail (P12-M5; app.slint's 48 px): its rows are the full
+/// sidebar's, so it hits as the sidebar does.
+pub const RAIL_W: f32 = 48.0;
 /// A bookmark row's top and bottom this many px are the gap a folder is bookmarked into, not the
 /// row (P12-M5).
 pub const GAP_PX: f32 = 6.0;
@@ -3537,6 +3540,13 @@ mod tests {
         let collapsed = Strips { side_w: 0.0, ..s };
         let lc = Layout { left: 12.0, ..l };
         assert_eq!(hit_all(&lc, &collapsed, 5.0, 29.0, none, [5, 7]), Spot::Outside);
+        // The icons-only rail (P12-M5): the same rows, 48 px wide; the panes start right of it.
+        let rail = Strips { side_w: RAIL_W, ..s };
+        let lr = Layout { left: RAIL_W, ..l };
+        assert_eq!(hit_all(&lr, &rail, 24.0, 29.0, none, [5, 7]), Spot::Side(1), "a drive's icon");
+        assert_eq!(hit_all(&lr, &rail, 24.0, 130.0, none, [5, 7]), Spot::SideGap(0), "the Bookmarks hairline");
+        assert_eq!(hit_all(&lr, &rail, 24.0, 159.0, none, [5, 7]), Spot::Side(6), "a bookmark's icon");
+        assert_eq!(hit_all(&lr, &rail, 49.0, 29.0, none, [5, 7]), Spot::Pane(0), "right of the rail: the pane");
         // Tabs: only the right pane shows a strip (3 tabs of 120 px from x 598, y 3..33).
         assert_eq!(hit(600.0, 10.0), Spot::Tab(1, 0));
         assert_eq!(hit(717.9, 10.0), Spot::Tab(1, 0));

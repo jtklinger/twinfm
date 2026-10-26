@@ -4677,7 +4677,7 @@ fn register_dnd() {
 /// the window and its properties, so it needs no app-state borrow.
 pub fn window_layout(app: &App) -> dnd::Layout {
     let size = app.window().size().to_logical(app.window().scale_factor());
-    let left = if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 };
+    let left = if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { dnd::RAIL_W };
     dnd::Layout {
         width: size.width,
         height: size.height,
@@ -4856,7 +4856,7 @@ fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
 fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)], crumb_row: [(f32, f32); 2], crumbs: &'a [Vec<(f32, f32)>; 2]) -> dnd::Strips<'a> {
     let tab = |p: usize| (st.panes[p].len(), app.invoke_tab_width(p as i32), app.invoke_tab_offset(p as i32));
     dnd::Strips {
-        side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { 0.0 },
+        side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { dnd::RAIL_W },
         side_scroll: app.invoke_side_scroll(),
         side_rows,
         side_bookmarks: (st.side.len() - st.config.bookmarks.len(), st.config.bookmarks.len()),

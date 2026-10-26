@@ -1,6 +1,6 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
 import { ListView, AboutSlint } from "std-widgets.slint";
-import { Theme, Btn, Switch, Field, Choice, VScrollBar } from "theme.slint";
+import { Theme, Btn, Switch, Field, Choice, VScrollBar, TipCard } from "theme.slint";
 // Inter (SIL Open Font License 1.1, src/ui/fonts/OFL.txt), the face of the look (P10-M1 task 4):
 // the three static weights the window uses, embedded in the exe.
 import "fonts/Inter-Regular.ttf";
@@ -26,6 +26,11 @@ component SideRow inherits Rectangle {
     in property <bool> editing;
     // The row was clicked last and the sidebar has the keys (F2 renames a bookmark row).
     in property <bool> current;
+    // The collapsed sidebar, the icons-only rail (P12-M5): the icon centred, the name its tooltip, a
+    // header a hairline.
+    in property <bool> rail;
+    // The row's icon (P10-M1): drives, bookmarks, and the known places by their label.
+    property <image> icon: item.kind == 1 ? @image-url("icons/hard-drive.svg") : item.kind == 3 ? @image-url("icons/star.svg") : item.label == "Home" ? @image-url("icons/house.svg") : item.label == "Desktop" ? @image-url("icons/monitor.svg") : item.label == "Downloads" ? @image-url("icons/download.svg") : item.label == "Pictures" ? @image-url("icons/image.svg") : item.label == "Music" ? @image-url("icons/music.svg") : item.label == "Videos" ? @image-url("icons/film.svg") : item.label == "OneDrive" ? @image-url("icons/cloud.svg") : @image-url("icons/folder.svg");
     // clicked(middle): the left or the middle button released over the row.
     callback clicked(bool);
     // menu(x, y): the right button released over a bookmark, or the Recent or Bookmarks header
@@ -46,14 +51,14 @@ component SideRow inherits Rectangle {
     // The fill, inset 4 px and rounded, inside the row's slot (P10-M1).
     Rectangle { x: 4px; width: parent.width - 8px; border-radius: Theme.radius; background: root.current ? Theme.selection : item.kind != 0 && ta.has-hover ? Theme.muted-half : transparent; }
     HorizontalLayout {
-        visible: !root.editing;
+        visible: !root.editing && !root.rail;
         padding-left: item.kind == 0 ? 8px : 10px;
         padding-right: 6px;
         spacing: 8px;
         // The row's icon (P10-M1): drives, bookmarks, and the known places by their label.
         if item.kind != 0: Rectangle {
             width: 16px;
-            Image { y: (parent.height - 16px) / 2; width: 16px; height: 16px; colorize: Theme.fg-muted; source: item.kind == 1 ? @image-url("icons/hard-drive.svg") : item.kind == 3 ? @image-url("icons/star.svg") : item.label == "Home" ? @image-url("icons/house.svg") : item.label == "Desktop" ? @image-url("icons/monitor.svg") : item.label == "Downloads" ? @image-url("icons/download.svg") : item.label == "Pictures" ? @image-url("icons/image.svg") : item.label == "Music" ? @image-url("icons/music.svg") : item.label == "Videos" ? @image-url("icons/film.svg") : item.label == "OneDrive" ? @image-url("icons/cloud.svg") : @image-url("icons/folder.svg"); }
+            Image { y: (parent.height - 16px) / 2; width: 16px; height: 16px; colorize: Theme.fg-muted; source: root.icon; }
         }
         Text {
             text: item.label;
@@ -63,6 +68,24 @@ component SideRow inherits Rectangle {
             font-size: item.kind == 0 ? 12px : 13px;
             color: item.kind == 0 ? Theme.fg-muted : Theme.fg;
         }
+    }
+    if root.rail && item.kind != 0: Image {
+        x: (parent.width - 16px) / 2;
+        y: (parent.height - 16px) / 2;
+        width: 16px;
+        height: 16px;
+        colorize: Theme.fg-muted;
+        source: root.icon;
+    }
+    if root.rail && item.kind == 0: Rectangle {
+        x: 12px;
+        y: parent.height / 2;
+        width: parent.width - 24px;
+        height: 1px;
+        background: Theme.border;
+    }
+    if root.rail && item.kind != 0: Tooltip {
+        TipCard { text: item.label; }
     }
     // Exists only while the row is being renamed; takes the focus with the title selected.
     if root.editing: Field {
@@ -860,9 +883,10 @@ export component App inherits Window {
             }
             Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         }
+        // The sidebar, or collapsed (F9, its chevron) the icons-only rail, 48 px (P12-M5, Jeremy's choice;
+        // dnd.rs RAIL_W): the same rows, so drops, drags and the keys work on it as on the full one.
         sidebar := Rectangle {
-            visible: sidebar-visible;
-            x: 0; y: root.top-h; width: sidebar-width; height: parent.height - root.top-h;
+            x: 0; y: root.top-h; width: sidebar-visible ? sidebar-width : 48px; height: parent.height - root.top-h;
             background: Theme.sidebar;
             // The renderer draws the whole window every frame; cached as one texture, the sidebar
             // costs a blit while the panes scroll and is redrawn only when its own properties change.
@@ -904,6 +928,7 @@ export component App inherits Window {
                     vertical-scrollbar-policy: ScrollBarPolicy.always-off;
                     for item[i] in root.side-items: SideRow {
                         item: item;
+                        rail: !root.sidebar-visible;
                         editing: i == root.side-edit;
                         current: i == root.side-current && side-keys.has-focus;
                         clicked(middle) => {
@@ -938,10 +963,10 @@ export component App inherits Window {
                 }
                 HorizontalLayout {
                     height: 32px;
-                    padding-left: 8px;
+                    padding-left: root.sidebar-visible ? 8px : 12px;
                     padding-right: 4px;
                     spacing: 10px;
-                    settings-ta := TouchArea {
+                    if root.sidebar-visible: settings-ta := TouchArea {
                         width: 48px;
                         clicked => { if (!root.settings-shown) { root.settings-requested(); } }
                         Text {
@@ -952,7 +977,7 @@ export component App inherits Window {
                             animate color { duration: 100ms; }
                         }
                     }
-                    about-ta := TouchArea {
+                    if root.sidebar-visible: about-ta := TouchArea {
                         clicked => { root.show-about(); }
                         Text {
                             text: "About TwinFM";
@@ -965,7 +990,7 @@ export component App inherits Window {
                     hide-ta := TouchArea {
                         width: 24px;
                         clicked => { root.toggle-sidebar(); }
-                        Image { x: 5px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: @image-url("icons/chevrons-left.svg"); colorize: hide-ta.has-hover ? Theme.fg : Theme.fg-muted; animate colorize { duration: 100ms; } }
+                        Image { x: 5px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: root.sidebar-visible ? @image-url("icons/chevrons-left.svg") : @image-url("icons/chevron-right.svg"); colorize: hide-ta.has-hover ? Theme.fg : Theme.fg-muted; animate colorize { duration: 100ms; } }
                     }
                 }
             }
@@ -1024,20 +1049,11 @@ export component App inherits Window {
                 }
             }
         }
-        // The collapsed sidebar: a strip that brings it back.
-        Rectangle {
-            visible: !sidebar-visible;
-            x: 0; y: root.top-h; width: 12px; height: parent.height - root.top-h;
-            background: show-ta.has-hover ? Theme.muted : Theme.sidebar;
-            animate background { duration: 100ms; }
-            Text { y: 6px; text: "\u{00bb}"; horizontal-alignment: center; }
-            show-ta := TouchArea { clicked => { root.toggle-sidebar(); } }
-        }
         // The two panes and the split line, right of the sidebar (dnd.rs Layout.left), narrowed by
         // the preview column when it shows (dnd.rs Layout.preview: its share of the space right of
         // the sidebar, plus 3 px, half its handle).
         panes := Rectangle {
-            x: sidebar-visible ? sidebar-width + 4px : 12px; y: root.top-h;
+            x: sidebar-visible ? sidebar-width + 4px : 48px; y: root.top-h;
             width: root.preview ? (parent.width - self.x) * (1 - root.preview-width) - 3px : parent.width - self.x;
             height: parent.height - root.top-h;
             left := Pane {
@@ -1712,9 +1728,9 @@ export component App inherits Window {
                         Row {
                             Text { text: "Sidebar"; vertical-alignment: center; }
                             Switch {
-                                text: "Show the sidebar";
+                                text: "Names (off: the icons-only rail)";
                                 checked: root.dlg-sidebar;
-                                accessible-label: "Show the sidebar";
+                                accessible-label: "Show the sidebar with names";
                                 toggled => { root.settings-stage("sidebar", self.checked ? "true" : "false"); }
                             }
                         }
