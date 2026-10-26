@@ -1690,7 +1690,7 @@ export component App inherits Window {
                         Row {
                             Text { text: "Rows"; vertical-alignment: center; }
                             Choice {
-                                model: ["Compact (22 px)", "Comfortable (30 px)"];
+                                model: ["Compact", "Comfortable"];
                                 current-index: root.dlg-row-height;
                                 label: "Row height in the details list";
                                 selected => { root.settings-stage("row_height", self.current-index == 1 ? "comfortable" : "compact"); }

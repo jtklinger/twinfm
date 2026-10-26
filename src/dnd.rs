@@ -3386,6 +3386,9 @@ mod tests {
         // Comfortable 30 px rows (P12-M4): the 16 px icons' 28 px, as the 22 px rows.
         let comfy = Layout { row_px: 30.0, ..one };
         assert_eq!(name_cell(&comfy, 0, DEFAULT.shown(true)), (31.0, 606.0));
+        // Comfortable thumbnail rows, 44 px: the thumbnails' 42 px, as the 32 px rows.
+        let comfy_thumbs = Layout { row_px: 44.0, ..one };
+        assert_eq!(name_cell(&comfy_thumbs, 0, DEFAULT.shown(true)), (45.0, 592.0));
         // The right pane of a split, narrower than its columns: clamped at zero.
         let two = Layout { split: true, width: 600.0, ..one };
         let (x, w) = name_cell(&two, 1, wide.shown(true));

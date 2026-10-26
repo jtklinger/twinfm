@@ -935,7 +935,8 @@ Tests 309 (308, the setting's new one; the geometry's and the name cell's extend
   density could join it later.
 - Turning it on or off keeps each list's first row at the top (the list scrolls in pixels, so without
   that the view would jump).
-- With thumbnails on, the rows stay 32 px whatever this setting says (the plan's).
+- With thumbnails on, the rows stay 32 px whatever this setting says (the plan's). Superseded
+  2026-10-26 by Jeremy's decision (below): 44 px.
 
 ### Scripted checks (2026-10-25, the branch's build, `C:\traces\bigdir`)
 
@@ -988,6 +989,41 @@ rows to draw); read like for like.
 - In 30 px rows: a drop onto a row (it lights the row it lands on), a rename (F2: the editor centred in
   the row), PageDown and PageUp, a right-click and Shift+F10 (the menu under the row).
 - Thumbnails on with comfortable rows set: the rows stay 32 px.
+
+Jeremy's result (2026-10-26, on `target-p12m5`, which holds this milestone's code), his words for this
+milestone's item: "#12, I don't see any difference between compact and comfortable rows on details or
+large icons." Comfortable changed only the 22 px lists, so with thumbnails on (32 px rows) and in the
+grids nothing moved. Asked whether comfortable should make the thumbnail rows taller or be greyed out
+while thumbnails are on, his decision, in his words: "comfortable should make rows taller". The grids
+are tiles, not rows, and stay as they are.
+
+- **fbc17fe**: comfortable rows with thumbnails are 44 px (compact keeps 32). The value: the canvas
+  Jeremy chose in Phase 10 draws its compact density as a 16 px icon in a 30 px row, which is what
+  comfortable makes of TwinFM's 22 px rows, 30/22 of the height; the same proportion on the 32 px
+  thumbnail rows is 43.6 px, rounded to 44, which leaves 6 px above and below the 32 px picture (the
+  canvas leaves 7 around its 16 px icon). The two 32 px row components' height is bound to the host's
+  `row-h`, as the 22 px ones' has been since this milestone's spike (a height read when a row is made);
+  `FileListHost`'s `row-h` is 44 px for them with comfortable on, `ListGeom::new(true, true)` 44 px
+  rows with 32 px icons (`of_row(44)` the same, for dnd's layout), so the strip centres the pictures 6
+  px down, the name stays at 42 px, and the line reads `[icons] list geometry: 44 px rows, 32 px icons`;
+  the driver's aims, the hit tests, paging and the menu point read the height from that geometry and
+  follow. Settings > Rows reads "Compact" and "Comfortable" (the pixel heights in the labels were the 22
+  px lists' only). Found on the way: the rename editor was placed from the row height (`row-h + 2 px`),
+  so in comfortable 30 px rows it stood 8 px right of where it stands in 22 px rows, and would have
+  stood 12 px off in 44 px rows; it now follows the icon column (24 px, or 38 with thumbnails, whatever
+  the row height), as in the 22 and 32 px rows before. Tests: the geometry at 44 px (the strip's places
+  at 1 and 1.25 times, every icon inside its row band at five scales, the name's x, `of_row`), the name
+  cell at 44 px; 309 tests.
+
+  Scripted check (the branch's build, `%TEMP%\twinfm-p3m5-thumbs`, both schemes): thumbnails on, `[icons]
+  list geometry: 32 px rows, 32 px icons`; comfortable on, `[settings] dialog: row_height compact ->
+  comfortable` and `[icons] list geometry: 44 px rows, 32 px icons`; the pictures centred in the taller
+  rows; PageDown from row 2 went to row 13, the last row wholly on screen at 44 px; F2's editor over the
+  name, its text where the name's is; thumbnails off with comfortable on, 30 px rows, the editor over the
+  name there too. The soak's P12-M4 cycle turns thumbnails on between (a click and PageDown in the 44 px
+  rows), then compact and thumbnails off, and its report adds the 44 px geometry lines (one per cycle).
+  The gate is one with P12-M5's Tab follow-up (P12-M5's record), with a read-only
+  `C:\traces\rows-comfortable-thumbs.toml` (`thumbnails = true`, `row_height = "comfortable"`).
 
 ## P12-M5: the sidebar, bookmarks by mouse and the new-tab button
 

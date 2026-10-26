@@ -548,7 +548,8 @@ Phase 12 list). Read them before changing the list.
   `TWINFM_CONFIG=<a read-only file with thumbnails = true>`) switches both panes to the 32 px lists
   and lists them again; no new driver step. `[settings] dialog: thumbnails <old> -> <new>`; `[icons]
   list geometry: 32 px rows, 32 px icons` (or `22 px rows, 16 px icons`, or since P12-M4 `30 px rows,
-  16 px icons` for comfortable rows) once per change and at a start with thumbnails or comfortable rows on; `[icons] thumbnail <ms> ms: <path>` for a thumbnail of 100 ms or more
+  16 px icons` for comfortable rows, and since 2026-10-26 `44 px rows, 32 px icons` for comfortable
+  rows with thumbnails) once per change and at a start with thumbnails or comfortable rows on; `[icons] thumbnail <ms> ms: <path>` for a thumbnail of 100 ms or more
   (counted in `slow`, as `slow icon` lines are); `[icons] thumbnail cap reached: N thumbnails held,
   new ones get their type's icon` once (20,000). The once-a-second `[icons]` line carries `thumbs N
   avg M ms dropped D` after `slow N`: thumbnail requests rendered in the period (from the shell's
@@ -1094,12 +1095,14 @@ Phase 12 list). Read them before changing the list.
   0.35, its handle's drag), since P11-M4 `preview_zoom` (a PDF's zoom, percent, 50 to 400, default
   100), since P11-M5 `syntax_colours` (default true, in the dialog), since P11-M7 `log` (default
   false, in the dialog, `logfile`), since P12-M4 `row_height` (`"compact"`, the default, 22 px rows, or
-  `"comfortable"`, 30 px rows with the 16 px icons centred and the names where they were, for the
-  details lists without thumbnails; the dialog's Rows row, applied on OK: the 22 px row components'
-  height is bound to the host's `row-h`, `icons::ListGeom::new(thumbnails, comfortable)` keeps the icon
+  `"comfortable"`, 30 px rows with the 16 px icons centred and the names where they were, and with
+  thumbnails since 2026-10-26 44 px rows (32 compact) with the pictures centred (Jeremy: "comfortable
+  should make rows taller"); the grids are unchanged; the dialog's Rows row, applied on OK: the 22 and
+  32 px row components' height is bound to the host's `row-h`, `icons::ListGeom::new(thumbnails, comfortable)` keeps the icon
   column apart from the row, the strips are composed again at the new pitch and each list keeps its
-  first row at the top; a gate run with it takes `TWINFM_CONFIG=C:\traces\rows-comfortable.toml`,
-  read-only, `row_height = "comfortable"`), since P12-M5 `recent` (the sidebar's Recent group, at most
+  first row at the top; the rename editor follows the icon column, not the row; a gate run with it
+  takes `TWINFM_CONFIG=C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`, and
+  with thumbnails `C:\traces\rows-comfortable-thumbs.toml`, read-only, `thumbnails = true` as well), since P12-M5 `recent` (the sidebar's Recent group, at most
   eight paths, newest first; "Clear recent" empties it) and `sidebar_visible = false` the icons-only
   rail (the 12 px strip before); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
   `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
@@ -1198,7 +1201,9 @@ Phase 12 list). Read them before changing the list.
   history menu (`histmenu 0`, `histpick 1`); it reports the jumps (one per cycle).
   Since P12-M4 each cycle also turns comfortable rows on through the settings dialog in `src\tree`,
   clicks a row and pages down, and turns them off again; it reports the switches each way and the 30
-  px geometry lines (one each per cycle).
+  px geometry lines (one each per cycle); since 2026-10-26 thumbnails go on between (a click and
+  PageDown in 44 px rows), then compact and thumbnails off, and it reports the 44 px geometry lines (one
+  per cycle).
   Since P12-M5 each cycle also drops `src` into the Bookmarks gap above `bm` (`dropfiles sidegap 0`),
   drags it below `bm` (`bookmark drag 0 1`), removes it again (`bookmark remove 1`), and opens a tab with
   the "+" (`tab plus 0`) and closes it; it reports the bookmarks added by the drop, the drags, the
