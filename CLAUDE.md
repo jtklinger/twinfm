@@ -40,7 +40,14 @@ bundle with the owed checks, the preview gaps bundle, syntax colours, password P
 as a setting; two streams and a coordinating session; opened 2026-10-22, closed 2026-10-24; its first
 section quotes Jeremy's kickoff decisions, § Calls made lists the lead's, § Open questions what each brief
 settles first, and § Phase 11 close holds the gates, the long soak, lessons, what is deferred and the
-Phase 12 list). Read them before changing the list.
+Phase 12 list). Read them before changing the list. `docs/phase-12-plan.md` is the Phase 12 record (opened
+2026-10-25: the Phase 10 later list, Google Drive's commands, OneDrive's syncing and error icons, the
+memory check).
+
+`docs/roadmap.md` is the one list of known bugs and wanted features not built yet (since 2026-10-25).
+Its upkeep, Jeremy's rule (2026-10-26, "add the roadmap rule"): an item leaves the roadmap when a phase's
+plan takes it, and that phase's record carries it from there; each phase close adds back what the phase
+put off, with where it came from.
 
 ## Gates (run before every commit)
 - `cargo test --release` (305 tests; nine touch the real shell and clipboard, one of them the Recycle
