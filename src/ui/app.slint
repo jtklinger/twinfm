@@ -84,9 +84,6 @@ component SideRow inherits Rectangle {
         height: 1px;
         background: Theme.border;
     }
-    if root.rail && item.kind != 0: Tooltip {
-        TipCard { text: item.label; }
-    }
     // Exists only while the row is being renamed; takes the focus with the title selected.
     if root.editing: Field {
         x: 8px;
@@ -135,6 +132,10 @@ component SideRow inherits Rectangle {
                 root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
         }
+    }
+    // After the TouchArea, so the tooltip's area is on top and sees the hover (it passes the pointer on).
+    if root.rail && item.kind != 0: Tooltip {
+        TipCard { text: item.label; }
     }
 }
 
@@ -926,6 +927,8 @@ export component App inherits Window {
                 side-list := ListView {
                     accessible-label: "Places";
                     vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                    // The rows' minimum width is wider than the rail: never scrolled sideways.
+                    content-width: self.visible-width;
                     for item[i] in root.side-items: SideRow {
                         item: item;
                         rail: !root.sidebar-visible;
