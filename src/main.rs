@@ -4641,7 +4641,8 @@ pub fn window_layout(app: &App) -> dnd::Layout {
         height: size.height,
         split: app.get_split(),
         ratio: app.get_split_ratio(),
-        tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
+        // Every pane shows its tab strip, one tab too (P12-M5).
+        tabs: [true; 2],
         left,
         preview: if app.get_preview() { dnd::preview_w(size.width, left, app.get_preview_width()) } else { 0.0 },
         row_px: icons::ListGeom::new(app.get_thumbnails(), app.get_comfortable()).row_px,
@@ -5489,6 +5490,14 @@ fn move_tab(pane: usize, from: usize, to: usize) {
 fn tab_key(pane: usize, what: &str) {
     match what {
         "new" => open_tab(pane, None),
+        // The "+" after a pane's tab strip (P12-M5): that pane becomes active, then Ctrl+T's tab.
+        "plus" => {
+            eprintln!("[tab] pane={pane} + button: new tab");
+            if let Some(app) = with_state(|st| st.app.upgrade()) {
+                app.invoke_focus_pane(pane as i32);
+            }
+            open_tab(pane, None);
+        }
         "close" => {
             let i = with_state(|st| st.panes[pane].active_index());
             close_tab(pane, i);

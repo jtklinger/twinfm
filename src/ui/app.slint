@@ -989,6 +989,7 @@ export component App inherits Window {
                 drop-crumb: root.drop-crumb-pane == 0 ? root.drop-crumb : -1;
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
+                tab-plus => { root.tab-key(0, "plus"); }
                 tab-move(f, t) => { root.tab-move(0, f, t); }
                 strip-resized => { root.strip-resized(0); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
@@ -1056,6 +1057,7 @@ export component App inherits Window {
                 drop-crumb: root.drop-crumb-pane == 1 ? root.drop-crumb : -1;
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
+                tab-plus => { root.tab-key(1, "plus"); }
                 tab-move(f, t) => { root.tab-move(1, f, t); }
                 strip-resized => { root.strip-resized(1); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }

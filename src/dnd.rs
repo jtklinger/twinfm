@@ -321,7 +321,8 @@ pub struct Layout {
     pub height: f32,
     pub split: bool,
     pub ratio: f32,
-    /// Whether each pane shows its tab strip (it has more than one tab), which moves its list down.
+    /// Whether each pane shows its tab strip, which moves its list down (always since P12-M5; with
+    /// two tabs or more before).
     pub tabs: [bool; 2],
     /// Where the panes start: right of the sidebar and its 4 px resize edge, or of the 12 px
     /// strip of a collapsed sidebar.
@@ -357,9 +358,12 @@ impl Layout {
 pub const LIST_TOP: f32 = 75.0;
 pub const LIST_BOTTOM_GAP: f32 = 33.0;
 pub const PANE_PAD: f32 = 3.0;
-/// The tab strip above the path bar (30 px) and the layout spacing under it (2 px), present only
-/// when the pane has more than one tab.
+/// The tab strip above the path bar (30 px) and the layout spacing under it (2 px), shown always
+/// since P12-M5 (with two tabs or more before).
 pub const TAB_STRIP: f32 = 32.0;
+/// The "+" after a pane's tab strip (P12-M5): 32 px and the 2 px gap before it, taken from the room
+/// the tabs have at the strip's right end. Not a drop target (the pane, as the strip past its tabs).
+pub const TAB_PLUS: f32 = 34.0;
 
 /// The toolbar across the window (app.slint, `toolbar = "top"`): 44 px over the sidebar and the
 /// panes (36 before P10-M1 task 5). The toolbar in each pane (`toolbar = "pane"`): 28 px at the pane's top, above the tab
@@ -427,8 +431,8 @@ pub struct Strips<'a> {
     pub side_w: f32,
     pub side_scroll: f32,
     pub side_rows: &'a [(f32, bool)],
-    /// Each pane's tab strip: tab count, tab width and the strip's scroll offset. The strip shows
-    /// only when the pane has more than one tab (`Layout::tabs`).
+    /// Each pane's tab strip: tab count, tab width and the strip's scroll offset (`Layout::tabs`
+    /// says whether it shows).
     pub tabs: [(usize, f32, f32); 2],
     /// Each pane's breadcrumb as Slint reported it: the crumb row's offset in the bar (zero or
     /// negative: right-aligned when it is wider) and the width the bar shows of it, then each
@@ -468,7 +472,9 @@ pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len:
         if l.tabs[pane] && x >= a + PANE_PAD && x < b - PANE_PAD && y >= tab_top(l) && y < tab_top(l) + TAB_H {
             let (n, w, off) = s.tabs[pane];
             let i = ((x - a - PANE_PAD - off) / w).floor();
-            return if w > 0.0 && i >= 0.0 && (i as usize) < n { Spot::Tab(pane, i as usize) } else { Spot::Pane(pane) };
+            // The "+" covers the strip's right end: a tab scrolled under it is not there.
+            let in_tabs = x < b - PANE_PAD - TAB_PLUS;
+            return if in_tabs && w > 0.0 && i >= 0.0 && (i as usize) < n { Spot::Tab(pane, i as usize) } else { Spot::Pane(pane) };
         }
         // A crumb's label (its chevron, the bar past the crumbs and a crumb clipped off the bar's
         // left end are the pane).
@@ -621,9 +627,11 @@ pub fn edge_scroll_all(l: &Layout, s: &Strips, x: f32, y: f32) -> Option<Edge> {
         let (a, b) = pane_x(l, pane);
         let (left, right) = (a + PANE_PAD, b - PANE_PAD);
         if l.tabs[pane] && x >= left && x < right && y >= tab_top(l) && y < tab_top(l) + TAB_H {
+            // The strip's right end is left of the "+" (P12-M5); over the "+" nothing scrolls.
+            let end = right - TAB_PLUS;
             return if x < left + EDGE_PX {
                 Some(Edge::Strip(pane, -1))
-            } else if x >= right - EDGE_PX {
+            } else if x >= end - EDGE_PX && x < end {
                 Some(Edge::Strip(pane, 1))
             } else {
                 None
@@ -3459,6 +3467,11 @@ mod tests {
         // A strip scrolled left by 130 px: x 600 is 132 px into the content, tab 1.
         let s2 = Strips { tabs: [(1, 160.0, 0.0), (4, 120.0, -130.0)], ..s };
         assert_eq!(hit_all(&l, &s2, 600.0, 10.0, none, [5, 7]), Spot::Tab(1, 1));
+        // The "+" covers the strip's last 34 px (P12-M5): of six tabs from x 598, the fourth (958 on)
+        // is hit left of x 963, not over the "+".
+        let s3 = Strips { tabs: [(1, 160.0, 0.0), (6, 120.0, 0.0)], ..s };
+        assert_eq!(hit_all(&l, &s3, 960.0, 10.0, none, [5, 7]), Spot::Tab(1, 3), "left of the \"+\"");
+        assert_eq!(hit_all(&l, &s3, 970.0, 10.0, none, [5, 7]), Spot::Pane(1), "the \"+\" over the fourth tab");
         // The lists still hit as before.
         assert_eq!(hit(300.0, 80.0), Spot::Row(0, 0));
         assert_eq!(hit(700.0, 110.0), Spot::Row(1, 0));
@@ -3522,8 +3535,10 @@ mod tests {
         assert_eq!(edge_scroll_all(&l, &s, 598.0, 10.0), Some(Edge::Strip(1, -1)), "the strip's left end");
         assert_eq!(edge_scroll_all(&l, &s, 621.9, 32.9), Some(Edge::Strip(1, -1)));
         assert_eq!(edge_scroll_all(&l, &s, 622.0, 10.0), None, "inside the strip");
-        assert_eq!(edge_scroll_all(&l, &s, 973.0, 10.0), Some(Edge::Strip(1, 1)), "the strip's right end");
-        assert_eq!(edge_scroll_all(&l, &s, 996.9, 10.0), Some(Edge::Strip(1, 1)));
+        // Its right end is left of the "+" (34 px, P12-M5): 939 to 963.
+        assert_eq!(edge_scroll_all(&l, &s, 939.0, 10.0), Some(Edge::Strip(1, 1)), "the strip's right end");
+        assert_eq!(edge_scroll_all(&l, &s, 962.9, 10.0), Some(Edge::Strip(1, 1)));
+        assert_eq!(edge_scroll_all(&l, &s, 963.0, 10.0), None, "the \"+\"");
         assert_eq!(edge_scroll_all(&l, &s, 997.0, 10.0), None, "the pane's padding");
         assert_eq!(edge_scroll_all(&l, &s, 598.0, 33.0), None, "under the strip: the path bar");
         assert_eq!(edge_scroll_all(&l, &s, 190.0, 10.0), None, "the left pane shows no strip");

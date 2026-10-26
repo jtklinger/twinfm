@@ -426,6 +426,8 @@ enum Step {
     PreviewCopy(Option<usize>),
     /// Wait until a question shows (at most `ms`), then 100 ms (P12-M3).
     WaitQuestion(u64),
+    /// The "+" after the pane's tab strip, as its click (P12-M5).
+    TabPlus(usize),
     /// Press the shown question's button with this label (P12-M3).
     Answer(String),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
@@ -557,6 +559,7 @@ fn parse(script: &str) -> Vec<Step> {
                         paths: a.get(m + 1..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                     }
                 }
+                "tab" if a.get(1) == Some(&"plus") => Step::TabPlus(num(2) as usize),
                 "tab" => Step::Key(match a.get(1).copied().unwrap_or("") {
                     "new" => "CtrlT".into(),
                     "close" => "CtrlW".into(),
@@ -929,7 +932,7 @@ fn hover_point(app: &App, at: HoverAt) -> Option<LogicalPosition> {
         }
         HoverAt::Strip(pane, right) => {
             let (a, b) = crate::dnd::pane_x(&l, pane);
-            let x = if right { b - crate::dnd::PANE_PAD - 6.0 } else { a + crate::dnd::PANE_PAD + 6.0 };
+            let x = if right { b - crate::dnd::PANE_PAD - crate::dnd::TAB_PLUS - 6.0 } else { a + crate::dnd::PANE_PAD + 6.0 };
             l.tabs[pane].then(|| LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
     }
@@ -1649,6 +1652,10 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     schedule(r2.clone(), 100);
                 }
             });
+        }
+        Step::TabPlus(pane) => {
+            app.invoke_tab_key(pane as i32, "plus".into());
+            schedule(runner, 1);
         }
         Step::Answer(label) => {
             if !crate::ask::answer_label(&label) {
