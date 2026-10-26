@@ -1,4 +1,4 @@
-# P12-M3 gate, tag ab59: target-p12m3 from the P12-M3 PR's code head 541bdf9 (TwinFM's own questions in
+# P12-M3 gate, tag ab60: target-p12m3 from the P12-M3 PR's code head 541bdf9 (TwinFM's own questions in
 # the look: src/ask.rs, app.slint's question dialog, the zip's replace, delete and password questions,
 # the PDF password, "Open N items at once?"; the docs and this wrapper follow it) against target-p12m2
 # (P12-M2's gate build, 472ceae, its base), the defaults only (the scenario asks no question: it
@@ -17,7 +17,7 @@
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 $Head = '541bdf9'
-$Tag = 'ab59'
+$Tag = 'ab60'
 $Ref = 'p12m2'
 $Cand = 'p12m3'
 $Gate = "$Root\.claude\worktrees\gate-p12m3"

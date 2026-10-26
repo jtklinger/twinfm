@@ -761,8 +761,8 @@ unchanged.
 ### Gate
 
 To run (the coordinating session builds `target-p12m3` from the code head 541bdf9): `tools/gate-p12m3.ps1`,
-the defaults, against `target-p12m2` (its base), the wrapper's tag ab59 unless the coordinating session
-allocates another. The scenario asks no question, so it proves only that the rest is untouched.
+the defaults, against `target-p12m2` (its base), tag ab60 (the coordinating session's allocation; ab59
+went to P12-M7). The scenario asks no question, so it proves only that the rest is untouched.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m3`, light and dark)
 
