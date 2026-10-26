@@ -284,6 +284,14 @@ impl Description {
     }
 }
 
+/// The description over the Bookmarks gap (P12-M5): "Bookmark", its image the effect's (a link, or
+/// the copy a source without links gets, TwinFM's own among them), since the shell draws a
+/// description only with the effect's image.
+pub fn gap_description(effect: u32) -> Description {
+    let kind = if effect == LINK { DROPIMAGE_LINK } else { DROPIMAGE_COPY };
+    Description { kind, message: "Bookmark", insert: String::new() }
+}
+
 /// The description for a drop with `effect` into `dest`: "Move to %1" or "Copy to %1" with the
 /// folder's name; for none (or no folder), `DROPIMAGE_NONE` with no text, so the shell shows its
 /// own "not allowed" image.
@@ -1905,9 +1913,9 @@ impl DropTarget {
             return;
         }
         match d.kind {
+            _ if d.message == "Bookmark" => eprintln!("[dnd] drop description: Bookmark"),
             DROPIMAGE_MOVE => eprintln!("[dnd] drop description: Move to \"{}\"", d.insert),
             DROPIMAGE_COPY => eprintln!("[dnd] drop description: Copy to \"{}\"", d.insert),
-            DROPIMAGE_LINK => eprintln!("[dnd] drop description: Bookmark"),
             DROPIMAGE_INVALID => eprintln!("[dnd] drop description: cleared"),
             _ => eprintln!("[dnd] drop description: none"),
         }
@@ -1939,7 +1947,7 @@ impl DropTarget {
         // "Bookmark" (P12-M5).
         let gap = spot.as_ref().is_some_and(|s| matches!(s.mark, Mark::Gap(_)));
         self.describe(if gap && e != NONE {
-            Description { kind: DROPIMAGE_LINK, message: "Bookmark", insert: String::new() }
+            gap_description(e)
         } else {
             description(e, spot.as_ref().map(|s| s.dest.as_path()))
         });
@@ -3528,6 +3536,11 @@ mod tests {
         assert_eq!(bookmark_effect(COPY | MOVE | LINK), LINK);
         assert_eq!(bookmark_effect(COPY | MOVE), COPY, "no link allowed: a copy, never a move");
         assert_eq!(bookmark_effect(MOVE), NONE);
+        // The description's image is the effect's: TwinFM's own drag (copy and move only) shows
+        // "Bookmark" over a copy image.
+        assert_eq!(gap_description(LINK).kind, DROPIMAGE_LINK);
+        assert_eq!(gap_description(COPY).kind, DROPIMAGE_COPY);
+        assert_eq!(gap_description(COPY).message, "Bookmark");
         assert_eq!(hit(90.0, 580.0), Spot::Outside, "the About row (footer)");
         assert_eq!(hit(181.0, 29.0), Spot::Outside, "the sidebar's resize edge");
         assert_eq!(side_row_top(&rows, 0), 0.0);

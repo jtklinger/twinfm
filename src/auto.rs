@@ -106,13 +106,13 @@
 //!                                    (or, with row -1, the pane's header: its folder). In place of
 //!                                    `<pane> <row>`, `side <row>` aims at sidebar row <row> (headers
 //!                                    count; 0 is "Drives"; -1 the last row, the newest bookmark) and
-//!                                    `tab <pane> <index>` at tab <index>; `sidegap <index>` (P12-M5) at
-//!                                    the line before bookmark <index> (the count: below the last), the
-//!                                    Bookmarks gap, where a drop bookmarks the folders
-//!                                    of the pane's strip (shown with two tabs or more), `crumb
+//!                                    `tab <pane> <index>` at tab <index> of the pane's strip, `crumb
 //!                                    <pane> <index>` at the label of crumb <index> of the pane's
 //!                                    breadcrumb (0 is This PC; -1 the folder itself, -2 its
-//!                                    parent). copy holds
+//!                                    parent); `sidegap <index>` (P12-M5) at the line before bookmark
+//!                                    <index> (the count: below the last), the Bookmarks gap, where a
+//!                                    drop bookmarks the folders; `point <x> <y>` at that window point
+//!                                    (logical px), whatever the hit test finds there. copy holds
 //!                                    Ctrl, move Shift, auto neither; menu holds the right button,
 //!                                    so Drop opens the drop menu, and picks "Copy here", "Move
 //!                                    here" or "Cancel" from the in-menu timer. Paths are separated
@@ -312,6 +312,8 @@ enum DropAt {
     SideGap(usize),
     Tab(usize, usize),
     Crumb(usize, i32),
+    /// A window point, logical px: whatever the hit test finds there.
+    Point(f32, f32),
 }
 
 /// Where a `dragover` hovers: 6 px inside a pane list's top (true) or bottom edge, a `dropfiles`
@@ -528,7 +530,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "dropfiles" => {
                     // `tab <pane> <index>` and `crumb <pane> <index>` take one word more than
                     // `<pane> <row>` and `side <row>`.
-                    let m = if matches!(a.get(1), Some(&"tab" | &"crumb")) { 4 } else { 3 };
+                    let m = if matches!(a.get(1), Some(&"tab" | &"crumb" | &"point")) { 4 } else { 3 };
                     // `sidegap <index>` (P12-M5) takes the side row's place.
                     let mode = a.get(m).unwrap_or(&"auto").to_string();
                     // `menu <copy|move|cancel>` takes one more word before the paths.
@@ -539,6 +541,7 @@ fn parse(script: &str) -> Vec<Step> {
                         Some("sidegap") => DropAt::SideGap(num(2) as usize),
                         Some("tab") => DropAt::Tab(num(2) as usize, num(3) as usize),
                         Some("crumb") => DropAt::Crumb(num(2) as usize, num(3) as i32),
+                        Some("point") => DropAt::Point(num(2) as f32, num(3) as f32),
                         _ => DropAt::Row(num(1) as usize, num(2) as i32),
                     };
                     Step::DropFiles {
@@ -941,6 +944,7 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
             Some(LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
         DropAt::Crumb(pane, index) => crate::crumb_centre(app, pane, index),
+        DropAt::Point(x, y) => Some(LogicalPosition::new(x, y)),
     }
 }
 
