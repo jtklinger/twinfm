@@ -703,3 +703,20 @@ on the thumb against the date's last digit, his decision, "Add padding".
   middle), `drag`'s thumb aim, every hit test (whole rows). Needs: ab58's settings (the defaults, the
   grid with thumbnails, the preview column) re-run against `target-p12m1`; no aim moves, so no soak for
   this change by itself.
+
+ab63, passed (2026-10-26, Jeremy at the console, done 18:20, 25 min): the padding's re-gate,
+`target-p12m2` rebuilt from c35133d against `target-p12m1` (e0c9a28), ab58's settings
+(`C:\traces\gate-p12m2-ab63.ps1`: `tools/gate-p12m2.ps1` with its head and tag changed).
+
+| Setting | p12m1 (WPR) | p12m2 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 22.3, 21.6, 21.4 | 21.5, 21.0, 21.2 | 21.6 / 21.2 | 2.86 to 3.10 ms |
+| grid-thumbs | 12.3, 12.0, 12.1 | 11.8, 11.9, 11.7 | 12.1 / 11.8 | 1.45 to 1.54 ms |
+| preview | 20.8, 21.1, 20.7 | 20.7, 20.7, 21.0 | 20.8 / 20.7 | 2.69 to 2.91 ms |
+
+No gap that counts in any setting; the candidate's medians under the reference's in all three; no panic.
+Both builds again in the costlier state (render p50 2.86 to 3.10 ms in the defaults runs), read like for
+like.
+
+Jeremy's re-checks (2026-10-26, on `target-p12m5` rebuilt from 3d5e162, which holds the padding), his
+words: the padding, "1. looks fine."; the PDF zoom's bars, "2. look good".
