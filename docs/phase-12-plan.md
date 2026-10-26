@@ -525,6 +525,21 @@ The defaults triplet, `target-p12m6` against `target-p11close` (a99f2f2), `tools
 opens a menu or a cloud folder and its drives are never hot-pluggable: it proves only that the rest is
 untouched.
 
+- **ab57: passed** (no gap that counts, no panics). Run by Jeremy at the console with ab56 to ab61,
+  2026-10-25 22:10 to 23:33, `target-p12m6` (578bf25, built `--locked` from a detached checkout by the
+  coordinating session) against `target-p11close` (a99f2f2; nothing in Phase 12 had merged),
+  `C:\traces\gate-ab57-summary.txt`.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11close-1 / 2 / 3 | 20.8 / 21.1 / 21.1 | 21.7 / 22.0 / 24.4 | 2.89 / 2.89 / 2.98 |
+| p12m6-1 / 2 / 3 | 21.0 / 21.4 / 21.2 | 24.1 / 24.1 / 22.5 | 2.93 / 2.88 / 2.88 |
+
+  Medians 21.1 (reference) / 21.2 (candidate), 0.1 points, and not every reference run below every
+  candidate run (21.1 above 21.0): **no gap**. The whole session ran in the costlier state (render p50
+  about 2.9 ms for every binary, against about 2.2 normally), so neither build is under the 20% bar; read
+  like for like.
+
 ### Console checks (for Jeremy, unelevated, `target-p12m6`, beside Explorer)
 
 1. On a file in `G:\My Drive`: Show more options > Offline access > Available offline, then Online
