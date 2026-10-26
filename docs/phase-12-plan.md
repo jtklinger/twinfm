@@ -803,3 +803,20 @@ proves only that the rest is untouched; no panic. The whole session ran in the c
 - A question while a copy runs: a large copy started, then a file pasted into a zip that holds it: the
   zip's job waits behind the copy, and its question shows when the job starts, not hidden behind the
   shell's progress window.
+
+Jeremy's result (2026-10-26, on `target-p12m5`, which holds this milestone's code), his words for this
+item: "#10, tabs do not flow smoothly." A scripted check then pressed Tab four times and Shift+Tab twice
+in each question a script can show (open-many, the zip delete, the replace), a screenshot after each
+key: after the last button, Tab moved to an invisible stop (no ring anywhere), and only the next Tab
+reached Cancel; Shift+Tab from Cancel stopped there too. The stop was the card's own `FocusScope`, the
+one that takes Escape and Return from the buttons, which Slint makes a Tab stop by default
+(`focus-on-tab-navigation`); the hidden password field was skipped, and Tab never left the card. The fix
+(below) sets `focus-on-tab-navigation: false` on it: the same check in both schemes then went Replace,
+Cancel, Skip, Replace (open-many: Open, Cancel, Open; the zip delete: Delete, Cancel, Delete), Shift+Tab
+the other way, every stop a button with its ring; Escape still answered Cancel in each. The password
+questions cannot be shown in a script (`zippassword` and `pdfpassword` answer them unseen): their order
+is the field, Cancel, OK, back to the field; Jeremy's console check. The driver gained the key names
+`Tab` and `ShiftTab` for it.
+
+- **bc63834**: the question card's key handler takes no Tab stop (`focus-on-tab-navigation: false`); driver
+  key names `Tab`, `ShiftTab`.
