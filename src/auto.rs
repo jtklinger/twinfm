@@ -15,7 +15,7 @@
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
 //!                                    CtrlV, CtrlZ, CtrlY, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
 //!                                    the Windows 11 menu under the cursor row, as rclick does); CtrlT,
-//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
+//!                                    CtrlW, Tab, ShiftTab, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
 //!                                    CtrlShiftPageUp, CtrlShiftPageDown, AltLeft, AltRight (back
 //!                                    and forward in the tab's history), CtrlComma (settings),
 //!                                    CtrlF (the filter box), CtrlShiftF (search), AltReturn
@@ -1104,6 +1104,8 @@ fn chord(name: &str) -> Vec<SharedString> {
         "F9" => vec![k(Key::F9)],
         "CtrlW" => vec![k(Key::Control), "w".into()],
         "CtrlL" => vec![k(Key::Control), "l".into()],
+        "Tab" => vec![k(Key::Tab)],
+        "ShiftTab" => vec![k(Key::Shift), k(Key::Tab)],
         "CtrlTab" => vec![k(Key::Control), k(Key::Tab)],
         "CtrlShiftTab" => vec![k(Key::Control), k(Key::Shift), k(Key::Tab)],
         "CtrlShiftPageUp" => vec![k(Key::Control), k(Key::Shift), k(Key::PageUp)],
