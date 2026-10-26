@@ -653,3 +653,12 @@ taken` and the same for "MakeAvailableOffline" at 151, once each; both commands 
 **What it needs**: no triplet (the classic menu's verb path only, nothing per row or frame); the real
 invoke is Jeremy's console check, which he has already allowed: Free up space on several OneDrive files
 from Show more options, then Always keep on this device, beside Explorer.
+
+**Jeremy's re-check** (2026-10-26, `target-p12m6` rebuilt from 99cb871 by the coordinating session, the
+log on), his words: "Free up space is now working correctly. I had the log on if you need to review it."
+His log (`C:\traces\jeremy-freeup-recheck-2026-10-26.log`): the two repairs, `GCS_VERBW gave
+"慍敫癁楡慬汢佥汮湩e" at offset 173: GCS_VERBA "MakeAvailableOnline" taken` and "MakeAvailableOffline" at
+174, once each; `InvokeCommand verb="MakeAvailableOnline" offset=173 label="Free up space" by verb =
+0x00000000`; the freed files (the `bigdir` archives, a PDF in the OneDrive root) reading state 10, sync
+pending, while OneDrive released them (P9-M4's rule); and Always keep on this device twice, `by verb =
+0x00000000` (offsets 122 and 178).
