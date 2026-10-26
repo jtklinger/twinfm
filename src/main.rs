@@ -14,6 +14,7 @@ mod fs {
     pub mod watch;
     pub mod zipraw;
 }
+mod ask;
 mod auto;
 mod band;
 mod cloud;
@@ -4168,11 +4169,32 @@ fn open_rows(pane: usize, rows: Vec<usize>) {
     let (dirs, files): (Vec<_>, Vec<_>) = items.into_iter().partition(|(enter, _)| *enter);
     let n = dirs.len() + files.len();
     eprintln!("[open] pane={pane} {n} items: {} folder(s) to tabs, {} file(s)", dirs.len(), files.len());
-    // No state borrow across the question: a message box runs a modal loop.
-    if n > model::OPEN_ASK_ABOVE && !soak && !ask_open_many(hwnd, n) {
-        eprintln!("[open] pane={pane} {n} items: not opened (the question was declined)");
+    // "Open N items at once?", as Explorer asks before opening many: one of TwinFM's own questions
+    // (P12-M3), answered later, so the items wait in its reply.
+    if n > model::OPEN_ASK_ABOVE && !soak {
+        let q = ask::Question {
+            kind: "open many",
+            title: format!("Open {n} items at once?"),
+            text: "Each folder opens in a new tab, and each file in its program.".into(),
+            password: false,
+            buttons: vec!["Cancel", "Open"],
+            primary: 1,
+            cancel: 0,
+        };
+        ask::ask_here(q, "the UI thread", move |a| {
+            if a.button == 1 {
+                open_items(pane, hwnd, &folder, archive, dirs, files);
+            } else {
+                eprintln!("[open] pane={pane} {n} items: not opened (the question was declined)");
+            }
+        });
         return;
     }
+    open_items(pane, hwnd, &folder, archive, dirs, files);
+}
+
+/// The items `open_rows` gathered, opened: the folders in new tabs, the files as below.
+fn open_items(pane: usize, hwnd: isize, folder: &Path, archive: bool, dirs: Vec<(bool, String)>, files: Vec<(bool, String)>) {
     for (_, name) in &dirs {
         open_tab(pane, Some(folder.join(name)));
     }
@@ -4191,7 +4213,7 @@ fn open_rows(pane: usize, rows: Vec<usize>) {
     let mut by_dir: Vec<(PathBuf, Vec<String>)> = Vec::new();
     for (_, name) in files {
         let path = folder.join(&name);
-        let (dir, leaf) = (path.parent().map_or_else(|| folder.clone(), Path::to_path_buf), path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name));
+        let (dir, leaf) = (path.parent().map_or_else(|| folder.to_path_buf(), Path::to_path_buf), path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name));
         match by_dir.iter_mut().find(|(d, _)| *d == dir) {
             Some((_, names)) => names.push(leaf),
             None => by_dir.push((dir, vec![leaf])),
@@ -4212,16 +4234,6 @@ fn open_rows(pane: usize, rows: Vec<usize>) {
         };
         queue_verb(pane, request, None);
     }
-}
-
-/// "Open N items?", as Explorer asks before opening many at once. True to go on.
-fn ask_open_many(hwnd: isize, n: usize) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
-    let t: Vec<u16> = format!("Open {n} items at once?").encode_utf16().chain([0]).collect();
-    let c: Vec<u16> = "TwinFM".encode_utf16().chain([0]).collect();
-    // MODAL LOOP: no app state is borrowed here.
-    // SAFETY: NUL-terminated strings that outlive the call; the owner is the app's window.
-    unsafe { MessageBoxW(hwnd as _, t.as_ptr(), c.as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
 }
 
 /// One row: enter its directory (also a reparse directory or a drive) or zip archive, or open the
@@ -7058,11 +7070,14 @@ fn main() -> Result<(), slint::PlatformError> {
     if config.preview {
         preview::set_visible(true);
     }
+    ask::init(&app);
     auto::start(&app);
     // The drop target goes on the window once it exists (winit creates it lazily, in `run`).
     with_state(|st| st.dnd_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), register_dnd));
 
     let res = app.run();
+    // A worker still waiting on a question gets Cancel, so it never waits for ever (P12-M3).
+    ask::quit();
     // The copies of archives inside archives (P8-L3).
     fs::archive::clear_nested();
     // A change still waiting for its debounce (a scripted quit, say) is written now.

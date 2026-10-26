@@ -328,9 +328,9 @@ pub struct Target {
 enum Req {
     /// `sheet`: the Excel sheet to show (P9-M3; 0, the first, for any other file).
     /// `palette`: the syntax colours for a text file (P11-M5), None with the setting off. `ask`: a
-    /// password-protected PDF's password is asked (the "Enter password…" button, P11-M6), in a
-    /// dialog owned by this window.
-    Open { seq: u64, pane: usize, path: PathBuf, attrs: u32, is_dir: bool, sheet: usize, palette: Option<[u32; 5]>, ask: Option<isize> },
+    /// password-protected PDF's password is asked (the "Enter password…" button, P11-M6), as one of
+    /// TwinFM's own questions (P12-M3).
+    Open { seq: u64, pane: usize, path: PathBuf, attrs: u32, is_dir: bool, sheet: usize, palette: Option<[u32; 5]>, ask: bool },
     /// Render page `page` (0-based) at `width_px`.
     Page { seq: u64, page: usize, width_px: u32 },
     /// Close the document (the column was hidden, or the cursor is on no file).
@@ -448,7 +448,7 @@ fn serve(
     is_dir: bool,
     sheet: usize,
     palette: Option<[u32; 5]>,
-    ask: Option<isize>,
+    ask: bool,
 ) -> Option<Req> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let class = classify(&name, attrs, is_dir, || crate::fs::archive::within(path));
@@ -479,8 +479,8 @@ fn serve(
         let first = open_pdf(&data, "", path);
         (data, first)
     });
-    if let (Some(hwnd), Ok((data, first @ Err(None)))) = (ask, &mut opened) {
-        *first = pdf_password(data, path, pane, seq, hwnd);
+    if let (true, Ok((data, first @ Err(None)))) = (ask, &mut opened) {
+        *first = pdf_password(data, path, pane, seq);
     }
     let opened = opened.and_then(|(_, o)| o);
     let (pdf, sizes) = match opened {
@@ -593,12 +593,12 @@ pub fn script_password(password: &str) {
     *SCRIPT_PASSWORD.lock().unwrap_or_else(|e| e.into_inner()) = Some(password.to_string());
 }
 
-/// A password-protected PDF's password, asked on this worker (TwinFM's masked dialog, owned by
-/// `hwnd`; or the script's), asked again while it is wrong, until it opens the file or the question
+/// A password-protected PDF's password, asked from this worker (one of TwinFM's own questions,
+/// P12-M3; or the script's), asked again while it is wrong, until it opens the file or the question
 /// is cancelled (Err(None): the message stays). The password lives only in this call and the open
 /// document; it is never written anywhere. A scripted run without a password of the script's is
 /// refused, never shown the dialog.
-fn pdf_password(data: &[u8], path: &Path, pane: usize, seq: u64, hwnd: isize) -> Result<(hayro::hayro_syntax::Pdf, Vec<(f32, f32)>), Option<String>> {
+fn pdf_password(data: &[u8], path: &Path, pane: usize, seq: u64) -> Result<(hayro::hayro_syntax::Pdf, Vec<(f32, f32)>), Option<String>> {
     let head = format!("[preview] pane={pane} gen={seq} {}: pdf password", path.display());
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let scripted = std::env::var_os("TWINFM_SCRIPT").is_some();
@@ -621,7 +621,7 @@ fn pdf_password(data: &[u8], path: &Path, pane: usize, seq: u64, hwnd: isize) ->
                 } else {
                     format!("{name} is password-protected. Its password, to preview it:")
                 };
-                match crate::fileops::archive::ask_password(hwnd, &prompt) {
+                match crate::fileops::archive::ask_password(&format!("Password for {name}"), &prompt) {
                     Some(p) => (p, false),
                     None => {
                         eprintln!("{head} cancelled");
@@ -1236,8 +1236,8 @@ struct Ui {
     width_px: u32,
     pages: Rc<VecModel<PreviewPage>>,
     blocks: Rc<VecModel<MdBlock>>,
-    /// The next open asks a protected PDF's password, in a dialog owned by this window (P11-M6).
-    asking: Option<isize>,
+    /// The next open asks a protected PDF's password (P11-M6).
+    asking: bool,
 }
 
 thread_local! {
@@ -1293,7 +1293,7 @@ pub fn init(app: &App) {
             width_px: 0,
             pages,
             blocks,
-            asking: None,
+            asking: false,
         })
     });
 }
@@ -1474,12 +1474,11 @@ fn over_column() -> bool {
 /// The column's "Enter password…" button (P11-M6), or the driver's `pdfpassword`: the file shown
 /// is opened again, its password asked on the worker.
 pub fn password() {
-    let hwnd = crate::preview_hwnd();
     with_ui(|u| {
         if u.visible && u.target.is_some() {
             eprintln!("[preview] password button");
             let target = u.target.clone();
-            u.asking = Some(hwnd);
+            u.asking = true;
             u.show(target, 0);
         }
     });
@@ -1758,7 +1757,7 @@ impl Ui {
             app.invoke_preview_set_scroll(0.0);
         }
         let _ = self.tx.send(match target {
-            Some(t) => Req::Open { seq: self.seq, pane: t.pane, path: t.path, attrs: t.attrs, is_dir: t.is_dir, sheet, palette: self.palette(), ask: self.asking.take() },
+            Some(t) => Req::Open { seq: self.seq, pane: t.pane, path: t.path, attrs: t.attrs, is_dir: t.is_dir, sheet, palette: self.palette(), ask: std::mem::take(&mut self.asking) },
             None => Req::Close,
         });
     }
@@ -2082,7 +2081,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask: None };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask: false };
 
         tx.send(open(1, &md)).unwrap();
         match recv() {
@@ -2252,15 +2251,15 @@ mod tests {
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
         let open = |seq, path: &Path, ask| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask };
-        tx.send(open(1, &f6, None)).unwrap();
+        tx.send(open(1, &f6, false)).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 1, text: PASSWORD }), "not asked until the button");
         keep.lock().unwrap().seq = 2;
         script_password("nope");
-        tx.send(open(2, &f6, Some(0))).unwrap();
+        tx.send(open(2, &f6, true)).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 2, text: PASSWORD }), "a wrong password from the script");
         keep.lock().unwrap().seq = 3;
         script_password("twinfm");
-        tx.send(open(3, &f6, Some(0))).unwrap();
+        tx.send(open(3, &f6, true)).unwrap();
         assert!(matches!(recv(), Reply::Pdf { seq: 3, ref sizes } if *sizes == vec![(200.0, 300.0)]));
         {
             let mut k = keep.lock().unwrap();
@@ -2275,7 +2274,7 @@ mod tests {
             _ => panic!("page 1"),
         }
         keep.lock().unwrap().seq = 4;
-        tx.send(open(4, &fo, None)).unwrap();
+        tx.send(open(4, &fo, false)).unwrap();
         assert!(matches!(recv(), Reply::Pdf { seq: 4, .. }), "an owner password alone is never asked");
         drop(tx);
         w.join().unwrap();
@@ -2301,7 +2300,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: Some(crate::syntax::LIGHT), ask: None };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: Some(crate::syntax::LIGHT), ask: false };
 
         tx.send(open(1, &rs)).unwrap();
         assert!(matches!(recv(), Reply::Blocks { seq: 1, pictures: 2, ref blocks, .. } if blocks.len() == 2), "two chunks, two answers to follow");
@@ -2345,7 +2344,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask: None };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask: false };
 
         // Text: code blocks of 40 lines, tabs as spaces, no pictures.
         tx.send(open(1, &txt)).unwrap();
@@ -2437,7 +2436,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path, sheet| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet, palette: None, ask: None };
+        let open = |seq, path: &Path, sheet| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet, palette: None, ask: false };
 
         // Word: its blocks, then its picture from the zip.
         tx.send(open(1, &docx, 0)).unwrap();
@@ -2577,7 +2576,7 @@ mod tests {
         let rtx = Mutex::new(rtx);
         let w = std::thread::spawn(move || worker(rx, k2, move |r| rtx.lock().unwrap().send(r).unwrap()));
         let recv = || rrx.recv_timeout(Duration::from_secs(30)).expect("a reply");
-        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask: None };
+        let open = |seq, path: &Path| Req::Open { seq, pane: 0, path: path.to_path_buf(), attrs: 0, is_dir: false, sheet: 0, palette: None, ask: false };
 
         tx.send(open(1, &pdf)).unwrap();
         match recv() {
@@ -2606,7 +2605,7 @@ mod tests {
         assert!(matches!(recv(), Reply::Message { seq: 2, text: DAMAGED }));
         tx.send(open(3, &txt)).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 3, text: NO_PREVIEW }));
-        tx.send(Req::Open { seq: 4, pane: 0, path: dir.clone(), attrs: 0x10, is_dir: true, sheet: 0, palette: None, ask: None }).unwrap();
+        tx.send(Req::Open { seq: 4, pane: 0, path: dir.clone(), attrs: 0x10, is_dir: true, sheet: 0, palette: None, ask: false }).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 4, text: NO_PREVIEW }));
         tx.send(open(5, &dir.join("missing.pdf"))).unwrap();
         assert!(matches!(recv(), Reply::Message { seq: 5, text: DAMAGED }), "a file that cannot be read");
