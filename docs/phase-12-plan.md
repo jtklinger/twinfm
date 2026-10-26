@@ -558,3 +558,11 @@ untouched. The plan's in-app run on OneDrive, `cloud N` and `slow N` compared: d
    in TwinFM too; if Explorer shows none, say so.
 3. Free up space and Always keep on this device on a file, as in P9-M4: the marks as Explorer's.
 4. A OneDrive folder with thumbnails on (the settings dialog): the pictures as before.
+
+**Jeremy's results** (2026-10-26, `target-p12m7` at 6441b31, through the coordinating session, whose
+numbering for him was 3 = check 1 above, 4 = check 2 and 5 = check 4), his words: "3 works correctly.
+... 5. works as expected." So the large file showed the syncing arrows while it uploaded and then the
+tick, with no F5 (check 1), and the thumbnails in `OneDrive\Pictures` are as before (check 4). Check 2,
+the error mark, is still open: the coordinating session has asked him what Explorer showed. Check 3 is
+open too: this branch does not have P12-M6's fix to Free up space from Show more options (P12-M6's
+record, After the console check), so it waits until main, with #116, is merged in here.
