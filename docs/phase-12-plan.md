@@ -530,10 +530,25 @@ Unchanged, not run: the OneDrive soak folder is not approved, and the soak lists
 
 The defaults triplet, `target-p12m7` against the last merged milestone's gate build,
 `tools/gate-p12m7.ps1 -Tag <tag> -Head <commit> -Ref <name>`, the tag and the build from the
-coordinating session; ab59, queued with ab56 to ab58 for Jeremy's return to the console, against
-`target-p11close` (nothing merged yet). The scenario never lists a cloud folder: it proves only that the
-rest is untouched. The plan's in-app run on OneDrive, `cloud N` and `slow N` compared: done in the quiet
-slot (§ Scripted checks: no difference the change makes).
+coordinating session. The scenario never lists a cloud folder: it proves only that the rest is
+untouched. The plan's in-app run on OneDrive, `cloud N` and `slow N` compared: done in the quiet slot
+(§ Scripted checks: no difference the change makes).
+
+- **ab59: passed** (no gap that counts, no panics). Run by Jeremy at the console with ab56 to ab61,
+  2026-10-25 22:10 to 23:33, `target-p12m7` (6441b31, built `--locked` from a detached checkout by the
+  coordinating session) against `target-p11close` (a99f2f2; nothing in Phase 12 had merged),
+  `C:\traces\gate-ab59-summary.txt`.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11close-1 / 2 / 3 | 20.8 / 21.4 / 21.1 | 23.4 / 21.7 / 20.9 | 2.88 / 2.96 / 2.86 |
+| p12m7-1 / 2 / 3 | 21.1 / 21.2 / 21.2 | 20.9 / 23.4 / 20.2 | 3.14 / 3.00 / 2.91 |
+
+  Medians 21.1 (reference) / 21.2 (candidate), 0.1 points, and not every reference run below every
+  candidate run (21.4 above 21.2): **no gap**. The whole session ran in the costlier state (render p50
+  about 2.9 ms for every binary, against about 2.2 normally), so neither build is under the 20% bar; read
+  like for like. The candidate's first run read a higher render p50 (3.14 against 2.86 to 3.00), on the
+  render path, which P12-M7 does not touch; its WPR figure (21.1) is the reference's median.
 
 ### Console checks (for Jeremy, unelevated, `target-p12m7`, beside Explorer)
 
