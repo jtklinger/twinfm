@@ -559,3 +559,43 @@ untouched.
   owner brings it back (and makes every id match), but every dialog a verb shows would then be owned by
   that hidden window, so P7-M1's console checks would be owed again. Jeremy's answer (2026-10-26,
   through the coordinating session): "keep it refused". Not done, and not on the roadmap.
+
+### After the console check: OneDrive's Free up space (2026-10-26)
+
+Jeremy, checking P12-M7 (#26, Free up space, then Always keep on this device, on a OneDrive file): "p12-m7,
+free up space does not work, files still show green checks." He ran it again himself with logging on,
+his words: "Using the target-p12m6\release\twinfm.exe, I turned on logging and ran the free up space on
+several files in one drive." His log (`C:\traces\jeremy-freeup-2026-10-26.log`), Show more options over
+five OneDrive files: `[menu] verb "慍敫癁楡慬汢佥汮湩e" ("Free up space") queued on the verb worker`, then
+`InvokeCommand ... by verb = 0x80070483` (no association) and the pane's note `"Free up space" failed:
+0x80070483`.
+
+**Cause.** Settled by a probe in TwinFM's own process (P12-M6's build, never committed: every command's
+`GetCommandString` answers dumped raw, on the UI thread's menu and the worker's, on one OneDrive file
+and on four). OneDrive puts Free up space and Always keep on this device in the classic menu twice: in
+the block of the packaged commands' bridge, whose `GCS_VERBW` answers are right ("MakeAvailableOnline",
+"MakeAvailableOffline"), and in its classic handler's block next to Defender's item, whose `GCS_VERBW`
+answers are the same verbs as **ANSI bytes in the wide buffer** (`614D 656B 7641 ...`, "Ma", "ke",
+"Av" read as UTF-16, with no wide terminator after them) while its `GCS_VERBA` answers are right.
+Jeremy picked the classic handler's item, so TwinFM queued the garbled verb, which no handler takes; the
+fallback by offset then met Defender's shift (that handler's items sit after Defender's: offset 168 in
+the menu shown, 167 on the worker) and, being the bare-id check, refused. P12-M6's earlier dry check had
+resolved the bridge's twin, the first at that label path, which is why it read the verb right.
+
+**The fixes** (one commit): `verb_of` takes a `GCS_VERBW` answer only when it is plain ASCII (canonical
+verbs and the packaged commands' CLSIDs all are), else reads `GCS_VERBA` and takes it when that is,
+else no verb, so the label path decides (`verb_text`, logged once per text per process); and when
+invoking by verb fails, the fallback by offset uses the label path as a command without a verb does
+(`find_moved` with the command's verb), never a bare id holding another item. Tests: the exact garbled
+text from the log read again as "MakeAvailableOnline", nothing usable in `GCS_VERBA`, a plain verb and a
+CLSID never asking it, no verb; `find_moved` with a verb (one match, OneDrive's two twins refused).
+305 tests.
+
+**Scripted** (the dry test verb, four OneDrive files in `Documents`, nothing invoked; the files' attributes
+unchanged): `[menu] GCS_VERBW gave "慍敫癁楡慬汢佥汮湩e" at offset 150: GCS_VERBA "MakeAvailableOnline"
+taken` and the same for "MakeAvailableOffline" at 151, once each; both commands `resolved: by verb`
+("MakeAvailableOnline", "MakeAvailableOffline").
+
+**What it needs**: no triplet (the classic menu's verb path only, nothing per row or frame); the real
+invoke is Jeremy's console check, which he has already allowed: Free up space on several OneDrive files
+from Show more options, then Always keep on this device, beside Explorer.
