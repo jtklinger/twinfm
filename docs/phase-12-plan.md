@@ -504,12 +504,22 @@ Also: `CLAUDE.md` § Measuring's P12-M7 paragraph and the test count, `tools/gat
 - **The real build on OneDrive** (the root, `Documents`, F5, then `C:\Windows`): `[cloud] pane=0 not in
   sync: 0 of 5 files`, `0 of 6 files` twice; the `[enum]` reparse counts as before (no cloud); the
   folders' `state read` lines as before; no refusal line, no panic.
-- **The in-app comparison, a trial on a busy machine** (`tools/check-p12m7-onedrive.ps1`, the look
-  stream building beside it, so not the gate's measurement): the root, `Documents` with F5, `Pictures\Camera
-  Roll` scrolled and F5; `target-p11close` against this branch, in both orders. Property reads (`cloud N`)
-  41 in all eight runs, `state read` lines 3 in all eight; `slow N` 0, 1, 1, 0 in the first order (this
-  branch in the middle slots, both times `Personal Vault.lnk`'s icon at 135 to 143 ms, a key both builds
-  share) and 1, 16, 0, 0 swapped (this branch in the outer slots): noise of the machine, not the change.
+- **The in-app comparison on OneDrive** (`tools/check-p12m7-onedrive.ps1`: the root, `Documents` with F5,
+  `Pictures\Camera Roll` scrolled and F5; reference, candidate, candidate, reference). Two trials on a busy
+  machine (the look stream building), this branch against `target-p11close` in both orders, then the
+  coordinating session's quiet slot (2026-10-25, nobody at the console, about 21 Hz presentation), the gate
+  builds `target-p11close` and `target-p12m7` (6441b31). **Property reads (`cloud N`) 41 and `state read`
+  lines 3 in every one of the 16 runs**, `not in sync` 0 in every OneDrive listing, no panic. `slow N`: the
+  trials 0, 1, 1, 0 and 1, 16, 0, 0 (the 16 a busy run, both builds slow), the quiet run 0, 2, 1, 0; the
+  candidate's slow renders were `Personal Vault.lnk`'s icon (135 to 155 ms, a key both builds share) and
+  once the `Pictures` folder's lookup at 104 ms. So far 5 of 6 candidate runs against 1 of 6 reference
+  runs, so the slot continued for a probe: the same build with the listing thread's mode on and off by an
+  environment variable (never committed), on, off, off, on: `slow N` 0 in all four, the shortcut never
+  slow, the root's first 14 icons averaging 29.6 and 27.5 ms on against 27.5 and 29.8 ms off; and the gate
+  builds again, reference, candidate, candidate, reference: `slow N` 0, 0, 1, 1, the shortcut slow once in
+  each build (138 ms in the candidate's second run, 137 ms in the reference's), the root averages 27.7 and
+  31.1 ms (reference) against 27.5 and 31.5 ms (candidate). **No difference the change makes**: that one
+  shortcut's first render varies from run to run in both builds.
 - `cargo test --release`: 303 passed.
 
 ### Soak
@@ -520,9 +530,10 @@ Unchanged, not run: the OneDrive soak folder is not approved, and the soak lists
 
 The defaults triplet, `target-p12m7` against the last merged milestone's gate build,
 `tools/gate-p12m7.ps1 -Tag <tag> -Head <commit> -Ref <name>`, the tag and the build from the
-coordinating session. The scenario never lists a cloud folder: it proves only that the rest is untouched.
-And the plan's in-app run on OneDrive on a quiet machine, `tools/check-p12m7-onedrive.ps1 -Reference
-<exe> -Candidate <exe>`, comparing `cloud N` and `slow N`.
+coordinating session; ab59, queued with ab56 to ab58 for Jeremy's return to the console, against
+`target-p11close` (nothing merged yet). The scenario never lists a cloud folder: it proves only that the
+rest is untouched. The plan's in-app run on OneDrive, `cloud N` and `slow N` compared: done in the quiet
+slot (§ Scripted checks: no difference the change makes).
 
 ### Console checks (for Jeremy, unelevated, `target-p12m7`, beside Explorer)
 
