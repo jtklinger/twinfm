@@ -675,8 +675,9 @@ Phase 12 list). Read them before changing the list.
   always shown (`model::Show`, `shows`). `backclick <pane> path|edit` posts the Back button over the
   path bar's middle or over row 0's name cell: ignored over the text entry and the rename editor.
   `sidebar click <row>` is a left click (a negative row counts from the end): the sidebar takes the
-  keys, `key F2` opens a bookmark row's title editor, `key Escape` (or Tab) gives the keys back to
-  the list. In the breadcrumb dropdown (`crumbmenu`) `key Down` / `key Up` move a highlight and
+  keys, `key F2` opens a bookmark row's title editor, `key Escape` (or Tab, or Shift+Tab) gives the
+  keys back to the active pane's list; since 2026-10-26 the sidebar is no Tab stop (only a click gives
+  it the keys). In the breadcrumb dropdown (`crumbmenu`) `key Down` / `key Up` move a highlight and
   `key Return` picks it. `[tab] pane=N strip resized: scrolled to X (tab I of N in view)` when the
   pane's width changes moved its strip. Search results' rows read `file.txt  (sub\dir)`
   (`model::search_label`; the entries, the sort and the commands keep `sub\dir\file.txt`). A tab sent
@@ -1035,6 +1036,18 @@ Phase 12 list). Read them before changing the list.
   icon centred with its name as a tooltip, a header a hairline, the footer's chevron widening it; a
   click, a drop, a gap, a bookmark's drag and the keys work on it as on the full sidebar; the panes
   start right of it (`Layout.left` 48). `sidebar_visible = false` loads as the rail.
+  **Tab switches panes** (Jeremy's console-check follow-up, 2026-10-26: "tab switches panes"): Tab and
+  Shift+Tab in a list give the keys to the other pane's list (the same list with one pane; app.slint
+  `tab-panes`, the list's key handler, Ctrl+Tab still the tabs'), which becomes the active pane (its
+  ring, the title, the toolbar); a list with no cursor then gets one on its first row wholly on screen
+  (`cursor-to-first`: row 0 unless it was scrolled without a click), and a list the keys reach by Tab
+  from its own search box or path entry does the same (`tabbed-in`, its key layer's `focus-gained` with
+  `tab-navigation`). The window's own key handler (`outer`) and the sidebar's take no Tab stop
+  (`focus-on-tab-navigation: false`; neither drew anything there). Every list's and tile's cursor outline
+  takes its colour from the host (`cursor-color`): the accent in the active pane, the grey ring
+  (`Theme.ring`) in the other, the cursor tile's whole-name overlay too, so one accent outline shows
+  where the keys are. Driver key names `Tab`, `ShiftTab` (P12-M3's). `[focus] pane=N has the keys by
+  Tab, cursor R`.
   Since P12-M3, TwinFM's own questions are drawn in the look (`src/ask.rs`, app.slint's
   `question-popup`): the zip's replace question (Cancel, Skip, Replace) and permanent delete (Cancel,
   Delete), a zip's or a PDF's password (a masked field, Cancel, OK), "Open N items at once?" (Cancel,
@@ -1208,7 +1221,8 @@ Phase 12 list). Read them before changing the list.
   drags it below `bm` (`bookmark drag 0 1`), removes it again (`bookmark remove 1`), and opens a tab with
   the "+" (`tab plus 0`) and closes it; it reports the bookmarks added by the drop, the drags, the
   removals and the "+" tabs (one each per cycle). Every list starts 32 px lower since P12-M5 (the tab
-  strip always shown), and the driver's aims follow.
+  strip always shown), and the driver's aims follow. Since 2026-10-26 the cycle ends with a click in the
+  left list, Tab and Shift+Tab; it reports the `[focus]` lines each way (one each per cycle).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per

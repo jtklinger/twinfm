@@ -136,7 +136,10 @@
 # bm the sidebar's last row as before), and opens a tab with the "+" (`tab plus 0`) and closes it; the
 # report counts the bookmarks added by the drop, the drags, the removals and the "+" tabs (one each per
 # cycle). Every pane shows its tab strip since P12-M5, so every list starts 32 px lower (the driver
-# aims follow).
+# aims follow). Since 2026-10-26 (Jeremy: "tab switches panes") the cycle ends with Tab and Shift+Tab
+# from the left list, the keys to the right pane's list and back (the next cycle's scroll scenario
+# lists both panes again, so the cursor Tab may have put on a row goes); the report counts the
+# `[focus]` lines each way (one each per cycle).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -513,7 +516,8 @@ $cycle = @(
     'settings open', 'settings set thumbnails false', 'settings ok', 'sleep 800',
     # P12-M5: a bookmark by a drop, dragged, removed; a tab by the "+" (see the header).
     "dropfiles sidegap 0 auto $src", 'sleep 400', 'bookmark drag 0 1', 'sleep 300', 'bookmark remove 1', 'sleep 300',
-    'tab plus 0', 'sleep 400', 'tab close', 'sleep 300'
+    'tab plus 0', 'sleep 400', 'tab close', 'sleep 300',
+    'click 0 0', 'sleep 200', 'key Tab', 'sleep 300', 'key ShiftTab', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -702,6 +706,8 @@ $bmDropped = @($log | Select-String -SimpleMatch "[sidebar] bookmark added $src 
 $bmDragged = @($log | Select-String -SimpleMatch '[sidebar] bookmark moved 0 -> 1 (drag)').Count
 $bmRemoved = @($log | Select-String -SimpleMatch '[sidebar] removed bookmark 1: ').Count
 $plusTabs = @($log | Select-String -SimpleMatch '[tab] pane=0 + button: new tab').Count
+$tabRight = @($log | Select-String -SimpleMatch '[focus] pane=1 has the keys by Tab').Count
+$tabLeft = @($log | Select-String -SimpleMatch '[focus] pane=0 has the keys by Tab').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 # P11-M4: the zoom and "Copy text".
@@ -749,5 +755,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "history menu: jumps back one place $histJumps (one per cycle)"
 "comfortable rows: on $rowsOn, off $rowsOff, 30 px geometry lines $rows30, 44 px (thumbnails) $rows44 (one each per cycle)"
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
+"Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

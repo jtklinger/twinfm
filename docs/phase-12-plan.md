@@ -1243,3 +1243,70 @@ rows or the gate scenario (it opens no question, no sidebar menu and drags nothi
 
 Jeremy's re-checks (2026-10-26, on `target-p12m5` rebuilt from 3d5e162), his words: the folder dragged
 to the Bookmarks, "4. Works good!"; Clear recent and Bookmark this folder, "5. Works as expected."
+
+### Jeremy's console-check follow-up: Tab switches panes (2026-10-26)
+
+His re-check of P12-M3's item, in his words: "3. Tab moves, but it's tough to determine exactly which
+icon or pane is the active tab. On some tabs, it doesn't even show a row or icon that's highlighted with
+the tab." A survey of every Tab stop (the look stream's scripted runs on `target-p12m5`'s code, both
+schemes, a screenshot and UI Automation's focused element after each key, consecutive shots
+pixel-diffed; the notes and shots in the coordinating session's notes folder, `p12-tab-stops.md`) found
+the questions sound (every stop a button with its ring) and the main window not: only the search boxes
+and the path entry drew anything when they took the keys; the window's own key handler, the sidebar's
+and both lists drew nothing (the cursor's outline showed in both panes whether or not the list had the
+keys); the sidebar's handler sent Tab back to the active list, so with the right pane active Tab cycled
+three stops of which none changed a pixel; and a list that took the keys by Tab did not become the
+active pane (Down moved the right list's cursor while the title, the ring and the toolbar stayed with
+the left). Jeremy's decision, his words: "tab switches panes" (the dual-pane alternative in the
+report).
+
+- **2b41100**: Tab and Shift+Tab in a list give the keys to the other pane's list (the same list with
+  one pane; app.slint `tab-panes` through `focus-pane`, as Ctrl+Shift+Right does), which becomes the
+  active pane; a list with no cursor gets one on its first row wholly on screen (`cursor-to-first`); a
+  list the keys reach by Tab from its own search box or path entry makes its pane active the same way
+  (`tabbed-in`: the six list variants' key layers report a `focus-gained` with `tab-navigation`). The
+  window's own key handler and the sidebar's take no Tab stop (`focus-on-tab-navigation: false`; the
+  sidebar keeps its keys after a click, and Escape, Tab and now Shift+Tab give them back). Every list's
+  and tile's cursor outline reads its colour from the host (`cursor-color`, a property of the four
+  details row components and both grids): the accent in the active pane, `Theme.ring` in the other; the
+  cursor tile's whole-name overlay the same. `[focus] pane=N has the keys by Tab, cursor R`. No pure part
+  to test (the change is Slint's and one log line); 313 tests.
+
+Calls made, for Jeremy to check:
+
+- The cursor a Tab gives a list with none goes on its first row wholly on screen, not row 0 whatever the
+  scroll: they are the same unless the list was scrolled without a click, and scrolling it back to the
+  top would lose the place. It moves the cursor only; nothing is selected (Explorer's focus rectangle).
+- From the search box and the path entry Tab goes to their own pane's list (Slint's order), and
+  Shift+Tab from the left search box to the right list; only a list's Tab jumps to the other pane.
+- The inactive pane's cursor outline is the grey ring colour (#A3A3A3 light, #737373 dark), drawn as
+  before (2 px), so it still shows where that pane's cursor is.
+
+Scripted check (the branch's build, both schemes, `C:\Windows` and `C:\Windows\Web` side by side, the
+cursor on the left only; 14 shots, consecutive pixel diffs, UI Automation's focused element): Tab gave
+`[focus] pane=1 has the keys by Tab, cursor 0` (the right list's cursor on its first row, the ring and
+title on the right, the left cursor's outline grey), Tab back `pane=0 ... cursor 2`, Shift+Tab twice the
+same, Down after each moved the cursor of the pane that had the keys; in a scrolled `System32` with no
+cursor, Tab put it on row 219, the first row wholly on screen; Ctrl+L, Tab and Tab went path entry,
+search box, list (`[focus] pane=1 ... cursor 219` from the search box); the sidebar after a click took
+Down (`[sidebar] key Down: row 4 (Home)`) and Tab gave the keys back to the active list; in the large
+grid the inactive pane's cursor tile was outlined grey; with one pane Tab stayed in the list. Every Tab
+and Shift+Tab changed pixels; no panic.
+
+Together with P12-M4's comfortable thumbnail rows, merged forward (d1d6068), one gate on this branch's
+code head: `tools/gate-p12m5b.ps1`, tag ab64 (the coordinating session's to set), `target-p12m5b`
+(2b41100) against `target-p12m5` (3d5e162), four pairs: the defaults, `C:\traces\rows-comfortable.toml`,
+`C:\traces\rows-comfortable-thumbs.toml` (new, read-only: `thumbnails = true`, `row_height =
+"comfortable"`; the reference draws 32 px rows with it, the candidate 44) and `C:\traces\grid-thumbs.toml`
+(every tile now reads its cursor colour). The soak: P12-M4's cycle adds the 44 px thumbnail rows, and
+P12-M5's ends with a click in the left list, Tab and Shift+Tab (`[focus]` lines, one each per cycle).
+
+Console checks (for Jeremy, unelevated, after the gate, `target-p12m5b`, light and dark):
+
+- Two panes: Tab and Shift+Tab from either list; the keys, the ring, the title and the one accent
+  outline go together; Down, Return and Delete act in the pane that has them.
+- A pane with no cursor (just navigated): Tab puts one on its first row on screen.
+- The search box and Ctrl+L's path entry: Tab to their own list.
+- The sidebar after a click: its keys, then Tab or Escape back to the list.
+- Settings > Rows > Comfortable with thumbnails on: the 44 px rows beside Explorer; a rename (F2) in
+  them and in 30 px rows: the editor over the name.
