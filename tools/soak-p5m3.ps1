@@ -125,6 +125,9 @@
 # P11-M3: each cycle also takes the left pane from src into src\tree, opens its history menu
 # (`histmenu 0`, Alt+Down's command) and picks the place before (`histpick 1`, src); the report
 # counts the history jumps (one per cycle).
+# P12-M4: each cycle also turns comfortable rows on through the settings dialog in src\tree (`settings
+# set row_height comfortable`, OK), clicks a row and pages down, and turns them off again; the report
+# counts the switches each way and the 30 px geometry lines (one each per cycle).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -493,7 +496,10 @@ $cycle = @(
     # P11-M2: the widths reset through the dialog (see the header).
     "nav 0 $src\tree", 'sleep 500', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300',
     # P11-M3: the history menu (see the header).
-    "nav 0 $src", 'sleep 400', "nav 0 $src\tree", 'sleep 400', 'histmenu 0', 'waitmenu 2000', 'histpick 1', 'sleep 600'
+    "nav 0 $src", 'sleep 400', "nav 0 $src\tree", 'sleep 400', 'histmenu 0', 'waitmenu 2000', 'histpick 1', 'sleep 600',
+    # P12-M4: comfortable rows on and off (see the header).
+    "nav 0 $src\tree", 'sleep 400', 'settings open', 'settings set row_height comfortable', 'settings ok', 'sleep 400',
+    'click 0 2', 'key PageDown', 'sleep 300', 'settings open', 'settings set row_height compact', 'settings ok', 'sleep 400'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -672,6 +678,10 @@ $colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 60 px 
 $colFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit modified: ').Count
 $colResets = @($log | Select-String -SimpleMatch '[cols] pane=0 widths reset to 120, 90, 140').Count + @($log | Select-String -SimpleMatch '[cols] pane=1 widths reset to 120, 90, 140').Count
 $histJumps = @($log | Select-String -SimpleMatch '[nav] pane=0 history jump -1:').Count
+# P12-M4: comfortable rows.
+$rowsOn = @($log | Select-String -SimpleMatch '[settings] dialog: row_height compact -> comfortable').Count
+$rowsOff = @($log | Select-String -SimpleMatch '[settings] dialog: row_height comfortable -> compact').Count
+$rows30 = @($log | Select-String -SimpleMatch '[icons] list geometry: 30 px rows, 16 px icons').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 # P11-M4: the zoom and "Copy text".
@@ -717,5 +727,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
 "search box: Return searches $boxReturns (one per cycle), button searches $boxButtons (one per cycle), blank Returns $boxEmpty (one per cycle)"
 "history menu: jumps back one place $histJumps (one per cycle)"
+"comfortable rows: on $rowsOn, off $rowsOff, 30 px geometry lines $rows30 (one each per cycle)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
