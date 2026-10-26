@@ -606,6 +606,12 @@ untouched.
 4. Show more options > Scan with Microsoft Defender... on any file: refused with the note "... was not
    run: ..., and none at its label path" (as before, with the longer reason).
 
+**Jeremy's results** (2026-10-26, `target-p12m6` at 99cb871, through the coordinating session, whose
+numbering for him was 1 = check 3 above and 2 = check 4), his words: "Cloud checks-1 & 2 work
+correctly." So Edit in IDLE opens the `.py` file in IDLE (check 3), and Defender's scan is still refused
+(check 4). Checks 1 and 2, Google Drive's Offline access, Manage versions and Share, are not confirmed
+yet: the coordinating session has asked him.
+
 ### For Jeremy, answered
 
 - **Defender's scan from TwinFM's classic menu** stays refused: its handler adds the item only to a
