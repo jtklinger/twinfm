@@ -1124,3 +1124,23 @@ build came under the 20% bar; read like for like.
   Recent filling as folders are shown, and "Clear recent".
 - The "+" with one tab and with several (it stays after the last tab, and the strip scrolls left of it
   when the tabs overflow).
+
+Jeremy's results (2026-10-26, on `target-p12m5`), his words for the two that failed: "Clear recent does
+not work, items still shown." and "Dragging to bookmarks still doesn't work."
+
+- **Clear recent**, found and fixed (eb36468). A new driver step, `clickat <x> <y> [right]`, gave the
+  mouse's path: a right click on the Recent header showed the menu, a click on "Clear recent" closed it,
+  and nothing was cleared (no `[sidebar] recent cleared` line). The header menu's items are `if`s inside
+  the popup (one item per header), and each closed the popup before calling its action: the close drops
+  those items, so the call after it never reached the window. "Bookmark this folder" had the same fault.
+  Both now act first, then close: the same clicks gave `[sidebar] recent cleared (3 removed)` and the
+  group gone from the sidebar, then `[sidebar] Bookmarked C:\Users` from the Bookmarks header's menu.
+  The scripted checks before had called the callbacks directly (`bookmark add`), never through the menu.
+- **A folder dragged to the Bookmarks**: under investigation. The coordinating session is asking Jeremy
+  where he dragged from and to. Reading the code found no fault in the gap's path (the hit test, the
+  effect, the drop), which the scripted `dropfiles sidegap` checks pass through; those never call
+  DragOver nor move the real cursor, so a real drag over the sidebar is the check left (it moves the
+  desk's cursor, so it waits for the coordinating session's word). Two things a person could meet: the
+  sidebar's own rows (Recent, Places, Drives) are not drag sources, so a Recent folder dragged down into
+  Bookmarks does nothing; and between two bookmarks the gap is 6 px each side of the line, a drop on a
+  row's middle copying into that folder instead (the Bookmarks header, a whole row, is the easy target).

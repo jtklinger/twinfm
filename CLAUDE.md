@@ -1020,7 +1020,10 @@ Phase 12 list). Read them before changing the list.
   already`. **"Add to bookmarks"** in the Windows 11 menu on folders and drives (each selected one,
   never inside an archive) and on a folder's background (the folder shown), appended (`Cmd::Bookmark`,
   `menupick Add to bookmarks`; `[winmenu] pane=N runs Bookmark`); the Bookmarks header's right-click
-  menu "Bookmark this folder" (Ctrl+D's). **The icons-only rail**: collapsed (F9, the chevron, the
+  menu "Bookmark this folder" (Ctrl+D's). The headers' menus run their item before they close (the
+  items are `if`s inside the popup, and a call after the close never reached the window). Driver
+  `clickat <x> <y> [right]` presses and releases a button at a window point through Slint's pointer
+  path (TwinFM's own popups, such as these menus). **The icons-only rail**: collapsed (F9, the chevron, the
   dialog's sidebar switch, now "Names (off: the icons-only rail)") the sidebar is a 48 px rail
   (`dnd::RAIL_W`; the 12 px strip until P12-M5; Jeremy: "Collapsing the sidebar gives the icons-only
   rail instead of today's thin strip; no fully hidden state."): the same rows and heights, each row's
