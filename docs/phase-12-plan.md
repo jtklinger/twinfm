@@ -515,12 +515,20 @@ None, by the plan: nothing new to drive (the tooltips, badges and messages are d
 
 ### Gate
 
-To run (the coordinating session builds `target-p12m1` from the code head e0c9a28 and hands it to
-Jeremy): `tools/gate-p12m1.ps1`, `target-p12m1` against `target-p11close` (a99f2f2), the defaults and the
-preview column (`C:\traces\preview.toml`), the wrapper's tag ab56 unless the coordinating session
-allocates another. Expected flat: the scenario hovers nothing, so no fade runs and no tooltip shows; nothing
-is selected in the scenario, so the status line shows no badge; the preview column shows its empty
-frame. Nothing per row or per frame changed.
+ab56, passed (2026-10-25, Jeremy at the console; the six Phase 12 gates of both streams, ab56 to ab61,
+ran in one elevated script from 22:10 to 23:33, this one 22:10 to 22:26): `tools/gate-p12m1.ps1`,
+`target-p12m1` (e0c9a28) against `target-p11close` (a99f2f2), the defaults and the preview column
+(`C:\traces\preview.toml`).
+
+| Setting | p11close (WPR) | p12m1 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 21.3, 21.7, 21.4 | 21.5, 21.0, 21.0 | 21.4 / 21.0 | 2.86 to 3.07 ms |
+| preview | 20.1, 19.8, 20.0 | 20.0, 20.3, 20.3 | 20.0 / 20.3 | 2.65 to 2.75 ms |
+
+No gap that counts in either (no setting has every reference run below every candidate run, and the
+medians differ by 0.4 and 0.3 of a point); no panic, every settings file read. The whole session ran in
+the costlier state (render p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2
+normally; as ab42 in Phase 10), so the 20% bar was met by neither build; read like for like.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m1`, light and dark)
 
@@ -643,11 +651,21 @@ its own (the scripted check used `band`'s press and release); `tools/soak-p5m3.p
 
 ### Gate
 
-To run (the coordinating session builds `target-p12m2` from the code head 472ceae and hands it to
-Jeremy): `tools/gate-p12m2.ps1`, the defaults, `C:\traces\grid-thumbs.toml` and `C:\traces\preview.toml`,
-against `target-p12m1` once P12-M1 has merged (`target-p11close` before), the wrapper's tag ab58 unless
-the coordinating session allocates another. The scenario drags both panes' thumbs, so the new bar is
-drawn and dragged in every run; the spike read no cost in-app.
+ab58, passed (2026-10-25, Jeremy at the console, 22:35 to 22:59 in the six-gate script):
+`tools/gate-p12m2.ps1`, `target-p12m2` (472ceae) against `target-p12m1` (e0c9a28, its base), the
+defaults, the grid with thumbnails and the preview column.
+
+| Setting | p12m1 (WPR) | p12m2 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 21.3, 22.0, 21.1 | 21.2, 20.7, 21.1 | 21.3 / 21.1 | 2.86 to 2.90 ms |
+| grid-thumbs | 11.8, 11.8, 11.8 | 11.9, 11.8, 11.8 | 11.8 / 11.8 | 1.46 to 1.55 ms |
+| preview | 20.3, 20.2, 20.0 | 19.7, 20.3, 20.0 | 20.2 / 20.0 | 2.68 to 2.73 ms |
+
+No gap that counts in any setting; the candidate's medians at or under the reference's, as the spike read
+in-app (the scenario drags both panes' thumbs in every run); no panic. The whole session ran in the
+costlier state (render p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally;
+as ab42 in Phase 10), so neither build came under the 20% bar in the defaults or the preview column (the
+grid with thumbnails is far under it in both); read like for like.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m2`, light and dark)
 
@@ -760,9 +778,19 @@ unchanged.
 
 ### Gate
 
-To run (the coordinating session builds `target-p12m3` from the code head 541bdf9): `tools/gate-p12m3.ps1`,
-the defaults, against `target-p12m2` (its base), tag ab60 (the coordinating session's allocation; ab59
-went to P12-M7). The scenario asks no question, so it proves only that the rest is untouched.
+ab60, passed (2026-10-25, Jeremy at the console, 23:08 to 23:16 in the six-gate script):
+`tools/gate-p12m3.ps1`, `target-p12m3` (541bdf9) against `target-p12m2` (472ceae, its base), the
+defaults.
+
+| Setting | p12m2 (WPR) | p12m3 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.6, 20.7, 20.7 | 21.1, 21.2, 20.6 | 20.7 / 21.1 | 2.86 to 2.97 ms |
+
+No gap that counts: not every reference run sits below every candidate run (the candidate's 20.6 under
+the reference's 20.7), and the medians differ by 0.4 of a point. The scenario asks no question, so it
+proves only that the rest is untouched; no panic. The whole session ran in the costlier state (render p50
+2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally; as ab42 in Phase 10), so the
+20% bar was met by neither build; read like for like.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m3`, light and dark)
 
@@ -856,17 +884,36 @@ centred, the names at the same x as in 22 px rows, the selection and cursor ring
 
 `tools/soak-p5m3.ps1` gains a cycle: comfortable rows on through the dialog in `src\tree`, a click and
 PageDown, and off again; the report counts the switches each way and the 30 px geometry lines (one each
-per cycle). Not run by this stream: the coordinating session schedules soaks.
+per cycle).
+
+Run by the coordinating session, 2026-10-25 23:34 to 23:44 (10.1 minutes), `tools/soak-p5m3.ps1` from
+the `gate-p12m4` checkout (24e8425) on `target-p12m4`: exit code 0, the window closed by the script, no
+panicked line; 274 jobs done (none failed or cancelled); every count that must be 0 was 0 (dropped
+drags, refused menupicks and presses, zip jobs not done, picture and Office failures, alt text,
+waitpreview timeouts, worker panics, copy failures, wrong passwords); comfortable rows on 4, off 4, and
+4 lines of the 30 px geometry (one each per cycle); working set 138.2 MB at 5 s, 231.6 MB at the end
+(at most 252.2), private bytes 163.9 to 239.2 MB.
 
 ### Gate
 
-To run (the coordinating session builds `target-p12m4` from the code head 24e8425):
-`tools/gate-p12m4.ps1`, the defaults and comfortable rows (`C:\traces\rows-comfortable.toml`, read-only,
-holding the one line `row_height = "comfortable"`; the coordinating session makes it), against
-`target-p12m3`, the wrapper's tag ab61 unless the coordinating session allocates another. The reference
-reads the file too (it ignores the key it does not know) and runs its 22 px rows, so the comfortable
-pair compares 30 px rows with 22 px ones over the same scenario; the wrapper checks the 30 px geometry
-line in the candidate's runs only. The defaults pair is the spike's question at the console.
+ab61, passed (2026-10-25, Jeremy at the console, 23:16 to 23:32 in the six-gate script):
+`tools/gate-p12m4.ps1`, `target-p12m4` (24e8425) against `target-p12m3` (541bdf9, its base), the defaults
+and comfortable rows (`C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`, made by
+the coordinating session).
+
+| Setting | p12m3 (WPR) | p12m4 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.9, 20.7, 21.2 | 21.4, 21.0, 21.1 | 20.9 / 21.1 | 2.87 to 2.93 ms |
+| rows-comfortable | 21.0, 20.6, 21.1 | 17.5, 17.8, 17.4 | 21.0 / 17.5 | 2.84 to 2.88 / 2.35 to 2.41 ms |
+
+No gap that counts. The defaults pair is the spike's question at the console: the 22 px rows through the
+bound height, 0.2 of a point above by the medians, not every reference run below. In the comfortable pair
+the reference ignores the key and draws 22 px rows, the candidate 30 px ones: fewer rows on screen, so
+less to draw (render p50 2.35 to 2.41 ms against 2.84 to 2.88) and 3.5 points less busy; the 30 px
+geometry line was in every candidate run; no panic. The whole session ran in the costlier state (render
+p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally; as ab42 in Phase 10), so
+neither build came under the 20% bar in the defaults (the candidate's comfortable rows did, with fewer
+rows to draw); read like for like.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m4`, light and dark)
 
