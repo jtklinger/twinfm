@@ -740,6 +740,18 @@ export component App inherits Window {
         if (p == 0) { left.focus-list(); } else { right.focus-list(); }
     }
 
+    // Tab and Shift+Tab in a list (Jeremy, 2026-10-26: "tab switches panes"): the keys go to the
+    // other pane's list (the same one with one pane), which becomes the active pane, its cursor on
+    // its first row on screen when it has none (Pane.cursor-to-first). keys-by-tab logs where the
+    // keys went, for this and for a list reached by Tab from its own search box or path entry.
+    callback keys-by-tab(int, int);
+    public function tab-panes(from: int) {
+        let to = root.split ? 1 - from : from;
+        if (to == 0) { left.cursor-to-first(); } else { right.cursor-to-first(); }
+        root.focus-pane(to);
+        root.keys-by-tab(to, to == 0 ? root.left-current-row : root.right-current-row);
+    }
+
     public function reset-scroll(p: int) {
         if (p == 0) { left.reset-scroll(); } else { right.reset-scroll(); }
     }
@@ -800,6 +812,9 @@ export component App inherits Window {
     forward-focus: outer;
 
     outer := FocusScope {
+        // The window's keys, reached by bubbling from whatever has the focus: no Tab stop of its own,
+        // where it showed nothing (Tab goes between the lists, tab-panes).
+        focus-on-tab-navigation: false;
         key-pressed(e) => {
             // While a question shows (P12-M3) the window's keys do nothing; the question's own
             // take Return, Escape and Tab.
@@ -895,6 +910,9 @@ export component App inherits Window {
             side-keys := FocusScope {
                 width: 0px;
                 height: 0px;
+                // A click gives the sidebar the keys, never Tab (tab-panes); Tab, Shift+Tab and
+                // Escape give them back to the active pane's list.
+                focus-on-tab-navigation: false;
                 key-pressed(e) => {
                     if (e.text == Key.F2) {
                         if (root.side-current >= 0 && root.side-current < root.side-items.length && root.side-items[root.side-current].kind == 3) {
@@ -902,7 +920,7 @@ export component App inherits Window {
                         }
                         return accept;
                     }
-                    if (e.text == Key.Escape || e.text == Key.Tab) {
+                    if (e.text == Key.Escape || e.text == Key.Tab || e.text == Key.Backtab) {
                         root.focus-pane(root.active-pane);
                         return accept;
                     }
@@ -1111,6 +1129,8 @@ export component App inherits Window {
                 thumbnails: root.thumbnails;
                 comfortable: root.comfortable;
                 focus-requested => { active-pane = 0; }
+                tab-key => { root.tab-panes(0); }
+                tabbed-in => { root.keys-by-tab(0, root.left-current-row); }
                 filter-open <=> root.left-filter-open;
                 filter-text <=> root.left-filter-text;
                 filter-edited(t) => { root.filter-edited(0, t); }
@@ -1179,6 +1199,8 @@ export component App inherits Window {
                 thumbnails: root.thumbnails;
                 comfortable: root.comfortable;
                 focus-requested => { active-pane = 1; }
+                tab-key => { root.tab-panes(1); }
+                tabbed-in => { root.keys-by-tab(1, root.right-current-row); }
                 filter-open <=> root.right-filter-open;
                 filter-text <=> root.right-filter-text;
                 filter-edited(t) => { root.filter-edited(1, t); }

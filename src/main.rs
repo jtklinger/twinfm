@@ -7170,6 +7170,8 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     app.on_tab_key(|pane, what| tab_key(pane as usize, what.as_str()));
+    // Tab and Shift+Tab between the lists (Jeremy, 2026-10-26: "tab switches panes").
+    app.on_keys_by_tab(|pane, row| eprintln!("[focus] pane={pane} has the keys by Tab, cursor {row}"));
     app.on_crumb_clicked(|pane, i| {
         if let Ok(i) = usize::try_from(i) {
             crumb_clicked(pane as usize, i);
