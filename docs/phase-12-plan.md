@@ -1068,8 +1068,16 @@ menu's and the rail's extend existing ones).
 dragged below it (`bookmark drag 0 1`), removed again (`bookmark remove 1`, so `bm` is the sidebar's last
 row as before), and a tab opened by the "+" and closed; the report counts the bookmarks added by the drop,
 the drags, the removals and the "+" tabs (one each per cycle). Every list starts 32 px lower, so this
-milestone takes the full soak (every aim moved). Not run by this stream: the coordinating session
-schedules soaks.
+milestone takes the full soak (every aim moved).
+
+Run by the coordinating session, 2026-10-26 from about 00:25 (10.1 minutes), `tools/soak-p5m3.ps1` from
+the `gate-p12m5` checkout (a853e52) on `target-p12m5`: exit code 0, the window closed by the script, no
+panicked line; 271 jobs done (none failed or cancelled); every count that must be 0 was 0; bookmarks
+added by a drop 4, dragged 4, removed 4, and tabs by the "+" 4 (one each per cycle); comfortable rows
+on 4, off 4; working set 141.1 MB at 5 s, 262.7 MB at the end (at most 273.5), private bytes 164.8 to
+252.3 MB. One count reads oddly and is older than Phase 12: "tabs they opened 14 (two per cycle)" for 4
+several-item opens, as P12-M4's soak read and as the 0.2.0 memory run did (70 for 18): the report's
+counting, left for a later look.
 
 ### Gate
 
