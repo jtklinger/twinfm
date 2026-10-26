@@ -664,7 +664,8 @@ defaults, the grid with thumbnails and the preview column.
 No gap that counts in any setting; the candidate's medians at or under the reference's, as the spike read
 in-app (the scenario drags both panes' thumbs in every run); no panic. The whole session ran in the
 costlier state (render p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally;
-as ab42 in Phase 10), so the 20% bar was met by neither build; read like for like.
+as ab42 in Phase 10), so neither build came under the 20% bar in the defaults or the preview column (the
+grid with thumbnails is far under it in both); read like for like.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m2`, light and dark)
 
