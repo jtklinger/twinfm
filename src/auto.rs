@@ -191,6 +191,9 @@
 //!   bookmark rename <index> <title>  what the bookmark row's title editor commits (an empty title
 //!                                    goes back to the folder's name)
 //!   bookmark move <index> <up|down>  the bookmark menu's "Move up" / "Move down"
+//!   bookmark drag <from> <to>        drag bookmark <from> so it lands at index <to> (P12-M5): a press
+//!                                    on its row, moves in 4 px steps to the line where it lands and a
+//!                                    release, through Slint's pointer path (the list unscrolled)
 //!   about open | about close         F1 opens the About dialog; close closes it
 //!   settings open                    Ctrl+, opens the settings dialog (key name CtrlComma)
 //!   settings set <field> <value>     stage a value in the open dialog through the function its control
@@ -376,6 +379,8 @@ enum Step {
     BookmarkRename(i32, String),
     /// Bookmark index, and up (true) or down.
     BookmarkMove(i32, bool),
+    /// Drag bookmark `from` so it lands at index `to` (P12-M5).
+    BookmarkDrag(usize, usize),
     AboutClose,
     /// The settings dialog's OK (true) or Cancel button.
     SettingsClose(bool),
@@ -600,6 +605,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "bookmark" if a.get(1) == Some(&"remove") => Step::BookmarkRemove(num(2) as i32),
                 "bookmark" if a.get(1) == Some(&"rename") => Step::BookmarkRename(num(2) as i32, a.get(3..).unwrap_or(&[]).join(" ")),
                 "bookmark" if a.get(1) == Some(&"move") => Step::BookmarkMove(num(2) as i32, a.get(3) == Some(&"up")),
+                "bookmark" if a.get(1) == Some(&"drag") => Step::BookmarkDrag(num(2) as usize, num(3) as usize),
                 "bookmark" => Step::Key("CtrlD".into()),
                 "about" if a.get(1) == Some(&"close") => Step::AboutClose,
                 "about" => Step::Key("F1".into()),
@@ -1476,6 +1482,27 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::BookmarkRename(i, title) => {
             app.invoke_bookmark_rename(i, title.as_str().into());
+            schedule(runner, 1);
+        }
+        Step::BookmarkDrag(from, to) => {
+            // Rows from the sidebar list's top (unscrolled): the bookmarks are the last rows.
+            let n = app.get_bookmark_count().max(0) as usize;
+            let first = slint::Model::row_count(&app.get_side_items()).saturating_sub(n);
+            let top = crate::dnd::side_top(&crate::window_layout(&app));
+            let row_y = |r: usize| top + app.invoke_side_row_top(r as i32);
+            let x = app.get_sidebar_width() / 2.0;
+            let gap = if to > from { to + 1 } else { to };
+            let (y0, y1) = (row_y(first + from) + 16.0, row_y(first + gap.min(n)));
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: LogicalPosition::new(x, y0) }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: LogicalPosition::new(x, y0), button: PointerEventButton::Left }).ok();
+            let steps = ((y1 - y0).abs() / 4.0).ceil().max(2.0) as i32;
+            for k in 1..=steps {
+                let y = y0 + (y1 - y0) * k as f32 / steps as f32;
+                win.dispatch_event_with_result(WindowEvent::PointerMoved { position: LogicalPosition::new(x, y) }).ok();
+            }
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: LogicalPosition::new(x, y1), button: PointerEventButton::Left }).ok();
+            eprintln!("[auto] bookmark drag {from} -> {to}: pressed at y {y0:.0}, released at y {y1:.0}");
             schedule(runner, 1);
         }
         Step::BookmarkMove(i, up) => {

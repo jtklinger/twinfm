@@ -34,6 +34,11 @@ component SideRow inherits Rectangle {
     // renamed(title): Return in the editor. edit-cancelled(refocus): Escape (true) or focus loss.
     callback renamed(string);
     callback edit-cancelled(bool);
+    // A bookmark carried by a drag (P12-M5): drag(phase, y), phase 0 the press dragged past 4 px, 1 a
+    // move, 2 the release, 3 the grab lost; y the pointer's, in window px. A drag's release opens
+    // nothing.
+    callback drag(int, length);
+    property <bool> dragging: false;
     height: 32px;
     background: transparent;
     accessible-role: list-item;
@@ -82,7 +87,25 @@ component SideRow inherits Rectangle {
     ta := TouchArea {
         // A header takes the right button only, for its menu (the Recent header's, P12-M5).
         enabled: (item.kind != 0 || item.index == 2) && !root.editing;
+        moved => {
+            if (root.dragging) {
+                root.drag(1, self.absolute-position.y + self.mouse-y);
+            } else if (self.pressed && item.kind == 3 && abs(self.mouse-y - self.pressed-y) > 4px) {
+                root.dragging = true;
+                root.drag(0, self.absolute-position.y + self.mouse-y);
+            }
+        }
         pointer-event(ev) => {
+            if (root.dragging && ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+                root.dragging = false;
+                root.drag(2, self.absolute-position.y + self.mouse-y);
+                return;
+            }
+            if (root.dragging && ev.kind == PointerEventKind.cancel) {
+                root.dragging = false;
+                root.drag(3, 0px);
+                return;
+            }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left && item.kind != 0) { root.clicked(false); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle && item.kind != 0) { root.clicked(true); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right && (item.kind == 3 || item.kind == 0)) {
@@ -453,6 +476,16 @@ export component App inherits Window {
     callback bookmark-move(int, bool);
     // The Recent header's "Clear recent" (P12-M5).
     callback recent-clear();
+    // A bookmark dragged in the sidebar (P12-M5): bookmark-drag(from, gap) on the release, gap 0
+    // above the first bookmark to bookmark-count below the last; side-drag-from and side-drag-gap
+    // while it is carried (-1: none), the gap by the row line nearest the pointer.
+    callback bookmark-drag(int, int);
+    private property <int> side-drag-from: -1;
+    private property <int> side-drag-gap: -1;
+    function bookmark-gap(y: length) -> int {
+        let top = side-list.absolute-position.y + side-list.content-y + (root.side-items.length - root.bookmark-count) * 32px;
+        return max(0, min(root.bookmark-count, round((y - top) / 32px)));
+    }
     // How many bookmarks there are (for the menu's move items), and the sidebar row whose title
     // editor is open (-1: none).
     in property <int> bookmark-count;
@@ -887,6 +920,15 @@ export component App inherits Window {
                             root.side-edit = -1;
                             if (refocus) { root.focus-pane(root.active-pane); }
                         }
+                        drag(phase, y) => {
+                            if (phase == 0) { root.side-drag-from = item.index; }
+                            if (phase <= 1) { root.side-drag-gap = root.bookmark-gap(y); }
+                            if (phase == 2) { root.bookmark-drag(root.side-drag-from, root.side-drag-gap); }
+                            if (phase >= 2) {
+                                root.side-drag-from = -1;
+                                root.side-drag-gap = -1;
+                            }
+                        }
                     }
                 }
                 HorizontalLayout {
@@ -941,6 +983,15 @@ export component App inherits Window {
                     border-width: 2px;
                     border-color: Theme.cursor;
                 }
+            }
+            // Where a dragged bookmark lands (P12-M5): a 2 px line in the accent on the line between two
+            // rows, in the list's content (the bookmarks are its last rows, 32 px each).
+            if root.side-drag-gap >= 0: Rectangle {
+                x: 8px;
+                y: side-list.y + side-list.content-y + (root.side-items.length - root.bookmark-count + root.side-drag-gap) * 32px - 1px;
+                width: side-list.width - 16px;
+                height: 2px;
+                background: Theme.cursor;
             }
             // The list's scrollbar, TwinFM's own (P12-M2; the ListView's Fluent bar is off).
             VScrollBar {

@@ -173,6 +173,23 @@ pub fn rename_bookmark(list: &mut [Bookmark], i: usize, title: &str) -> bool {
     true
 }
 
+/// Where bookmark `from` lands when it is dropped in gap `gap` (P12-M5's drag: gap 0 is above the
+/// first bookmark, gap N below the last of N): the gaps on either side of it leave it where it is.
+pub fn drag_target(from: usize, gap: usize) -> usize {
+    if gap > from { gap - 1 } else { gap }
+}
+
+/// Move bookmark `from` to index `to` (P12-M5's drag), the others closing up behind it. False when
+/// it would not move (the same place, or no such bookmark or place).
+pub fn move_bookmark_to(list: &mut Vec<Bookmark>, from: usize, to: usize) -> bool {
+    if from == to || from >= list.len() || to >= list.len() {
+        return false;
+    }
+    let b = list.remove(from);
+    list.insert(to, b);
+    true
+}
+
 /// Move bookmark `i` one place up or down; its new index, or None at the edge (or no such
 /// bookmark).
 pub fn move_bookmark(list: &mut [Bookmark], i: usize, up: bool) -> Option<usize> {
@@ -224,6 +241,21 @@ mod tests {
         assert_eq!(remove_bookmark(&mut b, 1).map(|b| b.path).as_deref(), Some(r"C:\"));
         assert_eq!(remove_bookmark(&mut b, 5), None);
         assert_eq!(paths(&b), [r"C:\Users\x", r"\\server\share"]);
+    }
+
+    #[test]
+    fn a_dragged_bookmark_lands_in_its_gap() {
+        // Four bookmarks; the gaps 0 to 4. The gaps either side of bookmark 1 leave it there.
+        assert_eq!([0, 1, 2, 3, 4].map(|g| drag_target(1, g)), [0, 1, 1, 2, 3]);
+        let mut b: Vec<Bookmark> = ["a", "b", "c", "d"].iter().map(|n| Bookmark::new(&format!(r"C:\{n}"))).collect();
+        let names = |b: &[Bookmark]| b.iter().map(|x| x.path.trim_start_matches(r"C:\").to_string()).collect::<Vec<_>>().join("");
+        assert!(move_bookmark_to(&mut b, 0, drag_target(0, 3)), "a below c");
+        assert_eq!(names(&b), "bcad");
+        assert!(move_bookmark_to(&mut b, 3, drag_target(3, 0)), "d to the top");
+        assert_eq!(names(&b), "dbca");
+        assert!(!move_bookmark_to(&mut b, 2, drag_target(2, 2)), "its own gap: not moved");
+        assert!(!move_bookmark_to(&mut b, 9, 0));
+        assert_eq!(names(&b), "dbca");
     }
 
     #[test]

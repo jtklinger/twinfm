@@ -1172,6 +1172,19 @@ fn bookmark_move(i: usize, up: bool) {
     });
 }
 
+/// A bookmark dragged in the sidebar (P12-M5) and dropped in gap `gap`.
+fn bookmark_drag(from: usize, gap: usize) {
+    with_state(|st| {
+        let to = sidebar::drag_target(from, gap);
+        if !sidebar::move_bookmark_to(&mut st.config.bookmarks, from, to) {
+            return eprintln!("[sidebar] bookmark {from} dragged to its own place: not moved");
+        }
+        rebuild_sidebar(st);
+        schedule_save(st);
+        eprintln!("[sidebar] bookmark moved {from} -> {to} (drag)");
+    });
+}
+
 fn drain() {
     // Panes whose active tab refreshes once the state borrow is released.
     let again = with_state(|st| {
@@ -6985,6 +6998,11 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_bookmark_add(bookmark_add);
     app.on_recent_clear(recent_clear);
+    app.on_bookmark_drag(|from, gap| {
+        if let (Ok(from), Ok(gap)) = (usize::try_from(from), usize::try_from(gap)) {
+            bookmark_drag(from, gap);
+        }
+    });
     app.on_bookmark_remove(|i| {
         if let Ok(i) = usize::try_from(i) {
             bookmark_remove(i);
