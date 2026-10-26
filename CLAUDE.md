@@ -1032,8 +1032,10 @@ Phase 12 list). Read them before changing the list.
   Delete), a zip's or a PDF's password (a masked field, Cancel, OK), "Open N items at once?" (Cancel,
   Open). A popup over the whole window on a scrim, the card centred; the primary button filled and
   focused (the password field when there is one), Tab between the buttons (`Btn` takes the focus
-  since), Return the primary (a focused button presses itself), Escape the Cancel; the window's keys
-  do nothing while one shows. A worker calls `ask::ask`, which hands the question to the UI thread
+  since; the card's own key handler is no Tab stop, `focus-on-tab-navigation: false`, since Jeremy's
+  console check; driver key names `Tab` and `ShiftTab`), Return the primary (a focused button presses
+  itself), Escape the Cancel; the window's keys do nothing while one shows. A worker calls `ask::ask`,
+  which hands the question to the UI thread
   and waits on a one-slot channel; the UI thread calls `ask::ask_here` and goes on in the reply (the
   open-many question, whose items wait in it). One shows at a time, the rest in the order asked;
   quitting answers Cancel to all; a scripted run's question left 30 s (`ask::SCRIPT_CANCEL`) is
