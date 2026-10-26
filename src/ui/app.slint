@@ -1354,18 +1354,20 @@ export component App inherits Window {
             border-color: Theme.border;
             VerticalLayout {
                 padding: 3px;
+                // The action before the close: closing drops these `if` items, and a call after it
+                // never reached the window ("Clear recent" did nothing, Jeremy's console check).
                 if root.menu-index == 2: MenuItem {
                     text: "Clear recent";
                     activated => {
-                        header-menu.close();
                         root.recent-clear();
+                        header-menu.close();
                     }
                 }
                 if root.menu-index == 3: MenuItem {
                     text: "Bookmark this folder";
                     activated => {
-                        header-menu.close();
                         root.bookmark-add();
+                        header-menu.close();
                     }
                 }
             }

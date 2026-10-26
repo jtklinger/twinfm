@@ -54,6 +54,9 @@
 //!   hover <x> <y>                    move the pointer to (x, y), logical px of the window, through
 //!                                    Slint's pointer path (a toolbar button's tooltip shows after
 //!                                    500 ms: `[toolbar] top|pane=N tooltip "<name> (<key>)"`)
+//!   clickat <x> <y> [right]          press and release the left (or right) button at (x, y), logical
+//!                                    px of the window, through Slint's pointer path (P12-M5: TwinFM's
+//!                                    own popups, such as the sidebar headers' menus)
 //!   history <back|forward>           Alt+Left / Alt+Right through the Slint key path, on the active pane
 //!   view <details|icons>             Ctrl+Shift+1 / Ctrl+Shift+2 (key names CtrlShift1, CtrlShift2): the
 //!                                    active pane's view, the details list or the large-icon grid
@@ -341,6 +344,8 @@ enum Step {
     /// `at`: None the list's middle; "path" the path bar's middle; "edit" row 0's name cell.
     XButton { pane: usize, forward: bool, at: Option<String> },
     Hover { x: f32, y: f32 },
+    /// A press and release of the left (or right) button at (x, y), logical px of the window.
+    ClickAt { x: f32, y: f32, right: bool },
     WheelAt { x: f32, y: f32, dy: f32, shift: bool },
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
@@ -468,6 +473,11 @@ fn parse(script: &str) -> Vec<Step> {
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
                 "hover" => Step::Hover { x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0), y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0) },
+                "clickat" => Step::ClickAt {
+                    x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    right: a.get(3) == Some(&"right"),
+                },
                 "wheelat" => Step::WheelAt {
                     x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0),
                     y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0),
@@ -1293,6 +1303,16 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             let pos = slint::LogicalPosition::new(x, y);
             app.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerMoved { position: pos }).ok();
             eprintln!("[auto] hover at ({x:.0}, {y:.0})");
+            schedule(runner, 50);
+        }
+        Step::ClickAt { x, y, right } => {
+            let pos = slint::LogicalPosition::new(x, y);
+            let button = if right { PointerEventButton::Right } else { PointerEventButton::Left };
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button }).ok();
+            eprintln!("[auto] clickat ({x:.0}, {y:.0}){}", if right { " right" } else { "" });
             schedule(runner, 50);
         }
         Step::WheelAt { x, y, dy, shift } => {
