@@ -537,3 +537,125 @@ frame. Nothing per row or per frame changed.
   (the note shortens before the badges move).
 - **Each preview message**: a file of no previewed type, a password PDF (the lock, the button), a file
   in OneDrive that is online only (the cloud), a damaged PDF (the triangle), a file inside a zip.
+
+## P12-M2: scrollbars easier to see
+
+The look stream's second milestone, Jeremy's request of 2026-10-23 ("the scroll bars are too transparent
+and need to be more visible"), opened 2026-10-25 on the P12-M1 branch's head (46c6385; P12-M1 not yet
+merged), branch `feat/p12-m2-scrollbars`. One change, every list's scrollbar, inside today's boxes: no
+geometry constant, driver aim or soak row moved.
+
+### Settled first (2026-10-25: the fork's source at c1d3a8d, then the spike in the coordinating session's slot)
+
+- **What the Fluent bar is** (`fluent/scrollview.slint`): `ScrollBar`, not exported, a 14 px overlay at
+  the view's edge with `clip: true`; its thumb `FluentPalette.border`, 2 px wide at rest and 6 px on hover
+  (`states [hover]`, `animate size 150ms`), 4 px from the edge, 16 px from each end for the arrow buttons
+  that show on hover. The app sets only the policy. Its thumb's place binds to the Flickable's content-y,
+  so it is laid out again every frame a list scrolls, as any bar's would be.
+- **One bar for the file lists**: `FileListHost` owns `content-y` (two-way into whichever of its six list
+  components shows) and can reckon the content's height (rows × row-h, grid rows × tile-h, as the pane's
+  `rows-h` already does), so one `VScrollBar` after the six `if`s covers the details lists with and
+  without the Type column, the 32 px lists, both grids; each list sets `vertical-scrollbar-policy:
+  always-off`. The sidebar, the crumb dropdown and the preview's views take the same component bound to
+  the view's own `content-y`, `content-height` and `visible-height`; the preview's pages past 100% take
+  `HScrollBar`, the same on its side.
+- **The driver**: `thumb()` aims 10 px in from the pane's edge and 17 px below the list's top; the gate
+  scenario drags both panes' thumbs there. A thumb that starts 2 px below the list's top and is at least
+  24 px long sits under that aim, so the aim, the gate scenario and the soaks stay as they are.
+- **The text beside it**: the rows end their right-aligned Modified text 6 px from the list's edge
+  (`dnd::name_cell`'s 6.0). An overlay bar keeps every geometry constant; a 6 px thumb 1 px from the edge
+  then meets the last digit with no gap (the scripted check, below). Padding the rows 4 px more would
+  move the columns, the header's offset, `name_cell` and its tests: not done, put to Jeremy (§ Calls
+  made).
+- **Contrast** (3:1 asked, on the card): light needs a thumb at or darker than about `#949494` (`ring`
+  `#A3A3A3` is 2.5:1), dark at or lighter than about `#636363`. The tokens: `scroll-thumb` `#8A8A8A` light
+  (3.4:1 on white) and `#737373` dark (3.8:1 on `#171717`), `scroll-thumb-hover` one step stronger (`#737373`
+  light, `#A3A3A3` dark), `scroll-track` black or white at 5%, shown only under the pointer.
+- **The spike** (the plan's: own bar against a fork patch, decided by a trace): three builds were planned,
+  the fork patch only if the own bar cost anything. Base, the P12-M1 build (e0c9a28's code, the Fluent
+  bar), against own, `VScrollBar` over every file list; twelve in-app runs of the gate scenario on
+  `C:\traces\bigdir` back to back, base, own, own, base three times, unelevated, no WPR, in the
+  coordinating session's slot with the machine otherwise idle (2026-10-25). Nobody was at the console:
+  every run presented at a frame interval p50 of 46.3 to 47.8 ms (about 21 Hz, not the 60 Hz of gate
+  days), so `[busy]` reads near 11 rather than 19; the state never changed across the twelve (render p50
+  within 0.1 ms), so they compare like for like.
+
+| Build | `[busy] 10 s after split` | Median | Render p50 (ms) | Frames |
+|---|---|---|---|---|
+| base (Fluent bar) | 11.1 / 12.0 / 11.4 / 9.1 / 9.2 / 13.9 | 11.3 | 2.71 to 2.77 | 384 to 385 |
+| own (`VScrollBar`) | 10.0 / 12.1 / 13.4 / 9.3 / 11.1 / 8.4 | 10.6 | 2.67 to 2.71 | 382 |
+
+  No cost: the own bar's median is lower, its spread the same, its time per frame no higher. **TwinFM's own
+  scrollbar is taken; no fork patch was built**, so `docs/patches/`, the `rev` and the snap patch stay as
+  they are (the snap patch rides only with a fork change, Jeremy's rule of 2026-10-13). The console
+  triplets at the gate decide as usual. A scripted drag under the unchanged aim moved both lists as the
+  Fluent thumb did: `drag 0 400 1000` to content-y −567,314 (the base −586,234; the own track is 28 px
+  longer and its thumb 24 px at least, so the same drag moves 3% less), `drag 1 200` to −283,646
+  (−293,106).
+
+### What landed (2026-10-25)
+
+- **c36ae6a**: `VScrollBar` and `HScrollBar` in theme.slint: a 14 px strip at the view's right (bottom)
+  edge, shown only when the content overflows; the thumb 6 px, 1 px from the edge, 2 px from the strip's
+  ends, at least 24 px long, round-ended, `Theme.scroll-thumb`; under the pointer or while dragged 10 px
+  and `scroll-thumb-hover` over the faint track (`scroll-track`), the width and colour fading over 100 ms.
+  A press on the thumb drags it (the thumb keeps the point it was taken by); a press on the track pages a
+  screenful towards the pointer (once per press: Explorer repeats while held, TwinFM does not); the wheel
+  over the strip goes on to the view. Placed: one in `FileListHost` over the six list components, one over
+  the sidebar's list, one in the crumb dropdown, and in the preview one over the pages (with the
+  horizontal one past 100%, each short of the corner when both show) and one over the Markdown list; every
+  one of those views `always-off`.
+- **472ceae**: `thumb()`'s comment (the aim lands on the new thumb; no aim changed).
+
+No new driver step, no new stderr line, no pure part to test (the bar is all Slint; its arithmetic is
+checked by the scripted drags and track clicks below). Tests 303, as before.
+
+### Calls made in this milestone, for Jeremy to check
+
+- At rest the thumb meets the last digit of the Modified column with no gap (it never covers it); under
+  the pointer it widens over the last few pixels of the text. The alternative is 4 px more right padding
+  in the rows, which moves the columns.
+- A press on the track pages once; holding it does not repeat.
+- The faint track shows only under the pointer; at rest there is the thumb alone.
+- No arrow buttons (Fluent's showed on hover).
+
+### Scripted checks (2026-10-25, the branch's build at c36ae6a, `SLINT_BACKEND=winit-software`)
+
+- **`C:\traces\bigdir` in the details list, both schemes**: at rest the 6 px thumb at the list's top
+  right; `hover` over the strip widened it with the track behind; `drag 0 400 1000` to content-y
+  −567,314; a press on the track below the thumb (`band 0 1003 600 1003 600`, a press and release at that
+  point of the list) paged down 648 px, one screenful (−567,962), and above it back up (−567,314);
+  `wheelat` over the strip scrolled the list 120 px (−567,434), so the wheel passes through.
+- **The grid with thumbnails** (`TWINFM_CONFIG=C:\traces\grid-thumbs.toml`, `[view] pane=0 starts as
+  large icons`): `drag 0 200 600` to −175,168, the thumb inside the grid's 12 px right margin.
+- **The sidebar** with fourteen bookmarks (`bookmark add` in fourteen folders of `C:\Windows`; a scripted
+  run saves none) and **the crumb dropdown** of `C:\Windows` (79 folders): each shows the thumb, both
+  schemes.
+- **The preview**: a four-page PDF at 250% (`previewzoom in` six times) shows both bars, the horizontal
+  one along the bottom short of the corner; this repository's `CLAUDE.md` as Markdown shows the list's
+  thumb clear of the text.
+- No `panicked` line in any run.
+
+### Soak
+
+None added: the gate scenario already drags both panes' thumbs, and a track press has no driver step of
+its own (the scripted check used `band`'s press and release); `tools/soak-p5m3.ps1` is unchanged.
+
+### Gate
+
+To run (the coordinating session builds `target-p12m2` from the code head 472ceae and hands it to
+Jeremy): `tools/gate-p12m2.ps1`, the defaults, `C:\traces\grid-thumbs.toml` and `C:\traces\preview.toml`,
+against `target-p12m1` once P12-M1 has merged (`target-p11close` before), the wrapper's tag ab58 unless
+the coordinating session allocates another. The scenario drags both panes' thumbs, so the new bar is
+drawn and dragged in every run; the spike read no cost in-app.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m2`, light and dark)
+
+- `C:\traces\bigdir` beside Explorer: the thumb easy to find at rest; dragged top to bottom; a click on
+  the track above and below it (a screenful each); the wheel over it.
+- The grid at large and medium tiles with thumbnails: the thumb in the right margin, a drag, a track
+  click.
+- The sidebar with enough bookmarks to scroll, and a crumb dropdown of a big folder (`C:\Windows`).
+- A PDF at 400%: both bars, each dragged; a long Markdown file's bar (the drift recorded since Phase 8 is
+  the list's own height estimate, unchanged).
+- Whether the thumb meeting the date's last digit at rest bothers you (§ Calls made).

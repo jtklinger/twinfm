@@ -981,6 +981,15 @@ Phase 12 list). Read them before changing the list.
   ready after 4 answers: <key> keeps its type icon`. No new driver step. A test video made by Windows
   itself (no ffmpeg here): WinRT `MediaComposition` with `MediaClip.CreateFromImageFileAsync` and
   `RenderToFileAsync` from Windows PowerShell (the plan's record has the script's shape).
+  Since P12-M2, every list's scrollbar is TwinFM's own (`theme.slint` `VScrollBar`, and `HScrollBar`
+  for the preview's pages past 100%), laid over the view with the view's Fluent bar `always-off`: the
+  file lists' one in `FileListHost` (it owns `content-y` and reckons the content's height from the rows
+  or grid rows), the sidebar's, the crumb dropdown's and the preview's pages and Markdown list. A 14 px
+  strip at the view's edge, the thumb 6 px 1 px from the edge (10 px under the pointer or while
+  dragged, over a faint track), at least 24 px long; a press on the thumb drags it, a press on the track
+  pages a screenful towards the pointer, the wheel over it scrolls the view. `drag <pane> <dy> <ms>`
+  presses its thumb at the same aim as before (`thumb()`: 10 px in from the pane's edge, 17 px below the
+  list's top). No new driver step or stderr line.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
