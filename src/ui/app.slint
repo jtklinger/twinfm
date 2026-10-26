@@ -11,8 +11,9 @@ export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Pa
 // The fluent Palette, for main.rs's TWINFM_SCHEME override (a scripted screenshot of the other scheme).
 export { Palette } from "std-widgets.slint";
 
-// One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
-// the bookmark's index in the bookmark list.
+// One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark, 4 a recent
+// folder (P12-M5); index is the bookmark's index in the bookmark list (a recent folder's in the Recent
+// list; a header's section: 0 Drives, 1 Places, 2 Recent, 3 Bookmarks).
 export struct SideItem {
     label: string,
     kind: int,
@@ -27,7 +28,8 @@ component SideRow inherits Rectangle {
     in property <bool> current;
     // clicked(middle): the left or the middle button released over the row.
     callback clicked(bool);
-    // menu(x, y): the right button released over a bookmark, at window coordinates.
+    // menu(x, y): the right button released over a bookmark, or the Recent header (P12-M5), at window
+    // coordinates.
     callback menu(length, length);
     // renamed(title): Return in the editor. edit-cancelled(refocus): Escape (true) or focus loss.
     callback renamed(string);
@@ -78,11 +80,12 @@ component SideRow inherits Rectangle {
         }
     }
     ta := TouchArea {
-        enabled: item.kind != 0 && !root.editing;
+        // A header takes the right button only, for its menu (the Recent header's, P12-M5).
+        enabled: (item.kind != 0 || item.index == 2) && !root.editing;
         pointer-event(ev) => {
-            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) { root.clicked(false); }
-            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) { root.clicked(true); }
-            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right && item.kind == 3) {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left && item.kind != 0) { root.clicked(false); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle && item.kind != 0) { root.clicked(true); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right && (item.kind == 3 || item.kind == 0)) {
                 root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
         }
@@ -448,6 +451,8 @@ export component App inherits Window {
     callback bookmark-remove(int);
     callback bookmark-rename(int, string);
     callback bookmark-move(int, bool);
+    // The Recent header's "Clear recent" (P12-M5).
+    callback recent-clear();
     // How many bookmarks there are (for the menu's move items), and the sidebar row whose title
     // editor is open (-1: none).
     in property <int> bookmark-count;
@@ -871,7 +876,7 @@ export component App inherits Window {
                             root.menu-row = i;
                             root.menu-x = x;
                             root.menu-y = y;
-                            bookmark-menu.show();
+                            if (item.kind == 0) { header-menu.show(); } else { bookmark-menu.show(); }
                         }
                         renamed(t) => {
                             root.side-edit = -1;
@@ -1255,6 +1260,29 @@ export component App inherits Window {
                     activated => {
                         bookmark-menu.close();
                         root.bookmark-remove(root.menu-index);
+                    }
+                }
+            }
+        }
+    }
+
+    // A sidebar header's menu (P12-M5): the Recent header's "Clear recent".
+    header-menu := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 160px;
+        height: 26px + 6px;
+        Rectangle {
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 3px;
+                MenuItem {
+                    text: "Clear recent";
+                    activated => {
+                        header-menu.close();
+                        root.recent-clear();
                     }
                 }
             }

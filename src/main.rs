@@ -632,6 +632,7 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         hide_strip(st, &app, pane);
         let shown = path.to_string_lossy().to_string();
         set_path(st, &app, pane);
+        note_recent(st, &app, pane);
         update_tabs(st, pane);
         update_status(st, &app, pane);
         app.invoke_reset_scroll(pane as i32);
@@ -1028,9 +1029,36 @@ fn save_now() {
     }
 }
 
+/// A pane showed its active tab's folder (P12-M5, a navigation or a tab put on screen): the folder
+/// goes to the top of the sidebar's Recent group, unless it is This PC, an archive level, a search tab
+/// or the hidden right pane's; the sidebar is rebuilt only when the list changed.
+fn note_recent(st: &mut State, app: &App, pane: usize) {
+    let t = st.tab(pane);
+    let path = t.path.to_string_lossy().to_string();
+    if (pane == 1 && !app.get_split()) || t.search.is_some() || is_this_pc(&path) || fs::archive::split(&t.path).is_some() {
+        return;
+    }
+    if sidebar::note_recent(&mut st.config.recent, &path) {
+        eprintln!("[sidebar] recent: {path} ({} kept)", st.config.recent.len());
+        rebuild_sidebar(st);
+        schedule_save(st);
+    }
+}
+
+/// The Recent header's "Clear recent" (P12-M5).
+fn recent_clear() {
+    with_state(|st| {
+        let n = st.config.recent.len();
+        st.config.recent.clear();
+        eprintln!("[sidebar] recent cleared ({n} removed)");
+        rebuild_sidebar(st);
+        schedule_save(st);
+    });
+}
+
 /// Rebuild the sidebar's rows from its sections (on a change only).
 fn rebuild_sidebar(st: &mut State) {
-    st.side = sidebar::compose(&st.drives, &st.places, &st.config.bookmarks);
+    st.side = sidebar::compose(&st.drives, &st.places, &st.config.recent, &st.config.bookmarks);
     let items: Vec<SideItem> =
         st.side.iter().map(|r| SideItem { label: r.label.as_str().into(), kind: r.kind as i32, index: r.index as i32 }).collect();
     st.side_model.set_vec(items);
@@ -5336,6 +5364,7 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
         app.set_right_sort_asc(asc);
     }
     set_path(st, app, pane);
+    note_recent(st, app, pane);
     set_filter_box(app, pane, &model.filter.borrow().pattern);
     set_current_row(app, pane, usize::try_from(cursor).ok());
     app.invoke_set_scroll(pane as i32, scroll);
@@ -6955,6 +6984,7 @@ fn main() -> Result<(), slint::PlatformError> {
         .unwrap_or(0.0)
     });
     app.on_bookmark_add(bookmark_add);
+    app.on_recent_clear(recent_clear);
     app.on_bookmark_remove(|i| {
         if let Ok(i) = usize::try_from(i) {
             bookmark_remove(i);

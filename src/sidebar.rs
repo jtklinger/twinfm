@@ -21,10 +21,16 @@ pub enum RowKind {
     Drive = 1,
     Place = 2,
     Bookmark = 3,
+    /// A folder a pane showed lately (P12-M5).
+    Recent = 4,
 }
 
+/// The Recent group's length (P12-M5).
+pub const RECENT_MAX: usize = 8;
+
 /// One sidebar row: its text, kind, the folder a click opens (none for a header) and, for a
-/// bookmark, its index in the bookmark list.
+/// bookmark, its index in the bookmark list (a recent folder's in the Recent list; a header's
+/// section: 0 Drives, 1 Places, 2 Recent, 3 Bookmarks).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub label: String,
@@ -78,13 +84,18 @@ pub fn drive_label(e: &Entry) -> String {
 
 /// The whole list: a header per section, then its rows. The Bookmarks header is always there,
 /// so Ctrl+D has a visible place to land.
-pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], bookmarks: &[Bookmark]) -> Vec<Row> {
-    let header = |label: &str| Row { label: label.into(), kind: RowKind::Header, path: None, index: 0 };
-    let mut out = vec![header("Drives")];
+pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], recent: &[String], bookmarks: &[Bookmark]) -> Vec<Row> {
+    let header = |label: &str, index| Row { label: label.into(), kind: RowKind::Header, path: None, index };
+    let mut out = vec![header("Drives", 0)];
     out.extend(drives.iter().enumerate().map(|(i, (l, p))| Row { label: l.clone(), kind: RowKind::Drive, path: Some(p.clone()), index: i }));
-    out.push(header("Places"));
+    out.push(header("Places", 1));
     out.extend(places.iter().enumerate().map(|(i, (l, p))| Row { label: l.clone(), kind: RowKind::Place, path: Some(p.clone()), index: i }));
-    out.push(header("Bookmarks"));
+    // Recent (P12-M5), under Places, only when it holds a folder.
+    if !recent.is_empty() {
+        out.push(header("Recent", 2));
+        out.extend(recent.iter().enumerate().map(|(i, p)| Row { label: crate::pathbar::title(p), kind: RowKind::Recent, path: Some(PathBuf::from(p)), index: i }));
+    }
+    out.push(header("Bookmarks", 3));
     out.extend(bookmarks.iter().enumerate().map(|(i, b)| Row {
         label: b.title.clone().unwrap_or_else(|| crate::pathbar::title(&b.path)),
         kind: RowKind::Bookmark,
@@ -124,6 +135,19 @@ fn same_folder(a: &str, b: &str) -> bool {
         t.to_lowercase()
     };
     n(a) == n(b)
+}
+
+/// A pane showed `folder` (P12-M5): it goes to the top of the Recent list (moved there when the list
+/// holds it already, by the folder test bookmarks use), which keeps `RECENT_MAX`. False when it was
+/// at the top already: nothing changed.
+pub fn note_recent(list: &mut Vec<String>, folder: &str) -> bool {
+    if folder.trim().is_empty() || list.first().is_some_and(|f| same_folder(f, folder)) {
+        return false;
+    }
+    list.retain(|f| !same_folder(f, folder));
+    list.insert(0, folder.to_string());
+    list.truncate(RECENT_MAX);
+    true
 }
 
 /// Add `folder` at the end unless it is there already. Returns whether it was added.
@@ -203,6 +227,23 @@ mod tests {
     }
 
     #[test]
+    fn recent_keeps_the_last_eight_newest_first() {
+        let mut r: Vec<String> = Vec::new();
+        assert!(note_recent(&mut r, r"C:\a"));
+        assert!(note_recent(&mut r, r"C:\b"));
+        assert_eq!(r, [r"C:\b", r"C:\a"], "newest first");
+        assert!(!note_recent(&mut r, r"c:\B\"), "the same folder at the top: no change");
+        assert!(note_recent(&mut r, r"c:\A"), "a folder further down moves to the top");
+        assert_eq!(r, [r"c:\A", r"C:\b"], "once, as last written");
+        assert!(!note_recent(&mut r, "  "));
+        for i in 0..10 {
+            note_recent(&mut r, &format!(r"C:\f{i}"));
+        }
+        assert_eq!(r.len(), RECENT_MAX);
+        assert_eq!((r[0].as_str(), r[7].as_str()), (r"C:\f9", r"C:\f2"), "the oldest dropped");
+    }
+
+    #[test]
     fn bookmarks_rename_and_move() {
         let mut b = vec![Bookmark::new(r"C:\a"), Bookmark::new(r"C:\b"), Bookmark::new(r"C:\c")];
         assert!(rename_bookmark(&mut b, 1, "  Bee  "));
@@ -213,7 +254,7 @@ mod tests {
         assert_eq!(b[2].title, None);
         assert!(!rename_bookmark(&mut b, 3, "x"));
         rename_bookmark(&mut b, 0, "Alpha");
-        let labels = |b: &[Bookmark]| compose(&[], &[], b).into_iter().skip(3).map(|r| (r.label, r.index)).collect::<Vec<_>>();
+        let labels = |b: &[Bookmark]| compose(&[], &[], &[], b).into_iter().skip(3).map(|r| (r.label, r.index)).collect::<Vec<_>>();
         assert_eq!(labels(&b), [("Alpha".to_string(), 0), ("b".to_string(), 1), ("c".to_string(), 2)]);
         // Move down, then up; nothing past either end.
         assert_eq!(move_bookmark(&mut b, 0, false), Some(1));
@@ -230,24 +271,30 @@ mod tests {
     fn known_folder_list_composition() {
         let drives = vec![("Local Disk (C:)".to_string(), PathBuf::from(r"C:\"))];
         let places = vec![("Home".to_string(), PathBuf::from(r"C:\Users\x")), ("Documents".to_string(), PathBuf::from(r"C:\Users\x\Documents"))];
-        let rows = compose(&drives, &places, &[Bookmark::new(r"C:\work\proj")]);
+        let rows = compose(&drives, &places, &[], &[Bookmark::new(r"C:\work\proj")]);
         let shown: Vec<(&str, RowKind, usize)> = rows.iter().map(|r| (r.label.as_str(), r.kind, r.index)).collect();
         assert_eq!(
             shown,
             [
                 ("Drives", RowKind::Header, 0),
                 ("Local Disk (C:)", RowKind::Drive, 0),
-                ("Places", RowKind::Header, 0),
+                ("Places", RowKind::Header, 1),
                 ("Home", RowKind::Place, 0),
                 ("Documents", RowKind::Place, 1),
-                ("Bookmarks", RowKind::Header, 0),
+                ("Bookmarks", RowKind::Header, 3),
                 ("proj", RowKind::Bookmark, 0),
             ]
         );
         assert_eq!(rows[6].path.as_deref(), Some(std::path::Path::new(r"C:\work\proj")));
         assert!(rows.iter().filter(|r| r.kind == RowKind::Header).all(|r| r.path.is_none()));
-        // No bookmarks: the header stays.
-        assert_eq!(compose(&[], &[], &[]).len(), 3);
+        // No bookmarks: the header stays. No recent folder: no Recent header.
+        assert_eq!(compose(&[], &[], &[], &[]).len(), 3);
+        // Recent folders (P12-M5): under Places, newest first, by their folder's name.
+        let recent = vec![r"C:\work\proj".to_string(), r"D:\".to_string()];
+        let rows = compose(&drives, &places, &recent, &[]);
+        let shown: Vec<(&str, RowKind, usize)> = rows.iter().skip(4).map(|r| (r.label.as_str(), r.kind, r.index)).collect();
+        assert_eq!(shown, [("Documents", RowKind::Place, 1), ("Recent", RowKind::Header, 2), ("proj", RowKind::Recent, 0), ("D:", RowKind::Recent, 1), ("Bookmarks", RowKind::Header, 3)]);
+        assert_eq!(rows[6].path.as_deref(), Some(std::path::Path::new(r"C:\work\proj")));
         // The real known folders: every one this machine resolves is an existing folder.
         let known = known_folders();
         assert!(known.iter().any(|(l, _)| l == "Documents"));
