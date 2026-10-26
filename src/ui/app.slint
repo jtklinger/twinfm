@@ -1721,6 +1721,9 @@ export component App inherits Window {
                 else { question-b2.focus(); }
             }
             FocusScope {
+                // Escape and Return from the buttons and the field, never a Tab stop of its own (one
+                // was, an invisible stop after the last button: Jeremy's "tabs do not flow smoothly").
+                focus-on-tab-navigation: false;
                 key-pressed(e) => {
                     if (e.text == Key.Escape) { root.question-answered(root.question-cancel); return accept; }
                     if (e.text == Key.Return) { root.question-answered(root.question-primary); return accept; }
