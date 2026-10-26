@@ -43,7 +43,7 @@ settles first, and § Phase 11 close holds the gates, the long soak, lessons, wh
 Phase 12 list). Read them before changing the list.
 
 ## Gates (run before every commit)
-- `cargo test --release` (302 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (303 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -82,6 +82,11 @@ Phase 12 list). Read them before changing the list.
   is blank on that path. The renderer stays femtovg.
 
 ## Measuring
+- The exe's manifest (`assets/twinfm.exe.manifest`, embedded with the icon by `build.rs` through
+  winresource; the Phase 12 memory follow-up, an experiment until its soaks are compared) asks only for
+  the segment heap; before it the exe had none. The test binaries are linked with it too. At start:
+  `[mem] process heap: segment heap | NT heap | unknown (signature 0x...)` (`perf::process_heap`, the
+  default heap's header signature, which Rust's allocator uses).
 - Since 0.1.0 the exe is a windowed program (`#![windows_subsystem = "windows"]`): no console window,
   and stderr's lines reach a file only through a redirect (`Start-Process -RedirectStandardError`, as
   every tool here does, or PowerShell's `2>`); run by hand in a terminal it prints nothing there.

@@ -24,6 +24,23 @@ thread_local! {
     pub static PERF: RefCell<Perf> = RefCell::new(Perf::default());
 }
 
+/// Which heap the process's default heap is (Rust's allocator uses it): the segment heap the
+/// manifest asks for (`assets/twinfm.exe.manifest`, the Phase 12 memory follow-up), or the NT heap
+/// Windows gives a program that does not ask. Read from the heap's header: both kinds keep a
+/// signature at offset 0x10 (`_SEGMENT_HEAP.Signature`, `_HEAP.SegmentSignature`).
+pub fn process_heap() -> String {
+    // SAFETY: the process heap's header stays mapped and readable for the life of the process.
+    let signature = unsafe {
+        let heap = windows_sys::Win32::System::Memory::GetProcessHeap() as *const u8;
+        std::ptr::read_volatile(heap.add(0x10) as *const u32)
+    };
+    match signature {
+        0xDDEE_DDEE => "segment heap".into(),
+        0xFFEE_FFEE => "NT heap".into(),
+        s => format!("unknown (signature 0x{s:08X})"),
+    }
+}
+
 pub fn before_rendering() {
     PERF.with(|p| {
         let mut p = p.borrow_mut();
@@ -147,5 +164,15 @@ impl BusyWindow {
         let cpu = thread_cpu_secs() - self.cpu0;
         let wall = self.wall0.elapsed().as_secs_f64();
         eprintln!("[busy] {}: UI thread {:.1}% busy over {:.1} s (cpu {:.3} s)", self.label, cpu / wall * 100.0, wall, cpu);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_process_runs_on_the_segment_heap() {
+        // The manifest is linked into the test binaries too (winresource's link argument), so this
+        // process asks for the segment heap as twinfm.exe does.
+        assert_eq!(super::process_heap(), "segment heap");
     }
 }

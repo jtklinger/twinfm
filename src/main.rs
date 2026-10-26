@@ -6602,6 +6602,7 @@ fn main() -> Result<(), slint::PlatformError> {
             log_start(dir);
         }
     }
+    eprintln!("[mem] process heap: {}", perf::process_heap());
     // With the Type column off, a header click cannot reach a Type sort, so none is restored.
     if !config.show_type && settings::sort_from_name(&config.sort_column) == SortCol::Type {
         eprintln!("[settings] the Type column is off: sorting by name instead of the saved type sort");
