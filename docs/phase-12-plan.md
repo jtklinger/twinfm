@@ -883,17 +883,36 @@ centred, the names at the same x as in 22 px rows, the selection and cursor ring
 
 `tools/soak-p5m3.ps1` gains a cycle: comfortable rows on through the dialog in `src\tree`, a click and
 PageDown, and off again; the report counts the switches each way and the 30 px geometry lines (one each
-per cycle). Not run by this stream: the coordinating session schedules soaks.
+per cycle).
+
+Run by the coordinating session, 2026-10-25 23:34 to 23:44 (10.1 minutes), `tools/soak-p5m3.ps1` from
+the `gate-p12m4` checkout (24e8425) on `target-p12m4`: exit code 0, the window closed by the script, no
+panicked line; 274 jobs done (none failed or cancelled); every count that must be 0 was 0 (dropped
+drags, refused menupicks and presses, zip jobs not done, picture and Office failures, alt text,
+waitpreview timeouts, worker panics, copy failures, wrong passwords); comfortable rows on 4, off 4, and
+4 lines of the 30 px geometry (one each per cycle); working set 138.2 MB at 5 s, 231.6 MB at the end
+(at most 252.2), private bytes 163.9 to 239.2 MB.
 
 ### Gate
 
-To run (the coordinating session builds `target-p12m4` from the code head 24e8425):
-`tools/gate-p12m4.ps1`, the defaults and comfortable rows (`C:\traces\rows-comfortable.toml`, read-only,
-holding the one line `row_height = "comfortable"`; the coordinating session makes it), against
-`target-p12m3`, the wrapper's tag ab61 unless the coordinating session allocates another. The reference
-reads the file too (it ignores the key it does not know) and runs its 22 px rows, so the comfortable
-pair compares 30 px rows with 22 px ones over the same scenario; the wrapper checks the 30 px geometry
-line in the candidate's runs only. The defaults pair is the spike's question at the console.
+ab61, passed (2026-10-25, Jeremy at the console, 23:16 to 23:32 in the six-gate script):
+`tools/gate-p12m4.ps1`, `target-p12m4` (24e8425) against `target-p12m3` (541bdf9, its base), the defaults
+and comfortable rows (`C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`, made by
+the coordinating session).
+
+| Setting | p12m3 (WPR) | p12m4 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.9, 20.7, 21.2 | 21.4, 21.0, 21.1 | 20.9 / 21.1 | 2.87 to 2.93 ms |
+| rows-comfortable | 21.0, 20.6, 21.1 | 17.5, 17.8, 17.4 | 21.0 / 17.5 | 2.84 to 2.88 / 2.35 to 2.41 ms |
+
+No gap that counts. The defaults pair is the spike's question at the console: the 22 px rows through the
+bound height, 0.2 of a point above by the medians, not every reference run below. In the comfortable pair
+the reference ignores the key and draws 22 px rows, the candidate 30 px ones: fewer rows on screen, so
+less to draw (render p50 2.35 to 2.41 ms against 2.84 to 2.88) and 3.5 points less busy; the 30 px
+geometry line was in every candidate run; no panic. The whole session ran in the costlier state (render
+p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally; as ab42 in Phase 10), so
+neither build came under the 20% bar in the defaults (the candidate's comfortable rows did, with fewer
+rows to draw); read like for like.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m4`, light and dark)
 
