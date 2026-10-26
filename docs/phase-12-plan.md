@@ -777,9 +777,19 @@ unchanged.
 
 ### Gate
 
-To run (the coordinating session builds `target-p12m3` from the code head 541bdf9): `tools/gate-p12m3.ps1`,
-the defaults, against `target-p12m2` (its base), tag ab60 (the coordinating session's allocation; ab59
-went to P12-M7). The scenario asks no question, so it proves only that the rest is untouched.
+ab60, passed (2026-10-25, Jeremy at the console, 23:08 to 23:16 in the six-gate script):
+`tools/gate-p12m3.ps1`, `target-p12m3` (541bdf9) against `target-p12m2` (472ceae, its base), the
+defaults.
+
+| Setting | p12m2 (WPR) | p12m3 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.6, 20.7, 20.7 | 21.1, 21.2, 20.6 | 20.7 / 21.1 | 2.86 to 2.97 ms |
+
+No gap that counts: not every reference run sits below every candidate run (the candidate's 20.6 under
+the reference's 20.7), and the medians differ by 0.4 of a point. The scenario asks no question, so it
+proves only that the rest is untouched; no panic. The whole session ran in the costlier state (render p50
+2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally; as ab42 in Phase 10), so the
+20% bar was met by neither build; read like for like.
 
 ### Console checks (for Jeremy, unelevated, after the gate, `target-p12m3`, light and dark)
 
