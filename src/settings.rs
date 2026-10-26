@@ -109,9 +109,9 @@ pub struct Config {
     /// Thumbnails for image, video and document files, in 32 px rows with 32 px icons, in both
     /// panes (the settings dialog sets it). Missing in an older file: off (22 px rows).
     pub thumbnails: bool,
-    /// The details list's rows without thumbnails (P12-M4): "compact" (22 px) or "comfortable" (30
-    /// px, the 16 px icons centred in them; the dialog sets it). Missing in an older file, or anything
-    /// else: compact. The thumbnail lists and the grids are unchanged.
+    /// The details list's rows (P12-M4): "compact" (22 px, 32 px with thumbnails) or "comfortable"
+    /// (30 px, the 16 px icons centred in them; 44 px with thumbnails since 2026-10-26; the dialog sets
+    /// it). Missing in an older file, or anything else: compact. The grids are unchanged.
     pub row_height: String,
     /// Each pane's view: "details" (the list) or "icons" (the icon grid, Ctrl+Shift+2 and
     /// Ctrl+Shift+3, or the settings dialog). Missing in an older file: details. Anything else

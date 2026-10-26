@@ -53,7 +53,9 @@ pub const PLACEHOLDERS: u16 = 3;
 
 /// The details list's row height and icon size in logical px (pane.slint): 22 px rows with 16 px
 /// icons, or with thumbnails on (settings `thumbnails`) 32 px rows with 32 px icons; since P12-M4
-/// comfortable rows (settings `row_height`) are 30 px with the 16 px icons centred in them. The
+/// comfortable rows (settings `row_height`) are 30 px with the 16 px icons centred in them, and with
+/// thumbnails 44 px with the 32 px pictures centred (Jeremy's "comfortable should make rows taller",
+/// 2026-10-26: the 30/22 the canvas's compact density gives the 22 px rows, 43.6 px, rounded). The
 /// icon buffer is the icon size times the window scale factor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ListGeom {
@@ -64,7 +66,7 @@ pub struct ListGeom {
 impl ListGeom {
     pub const fn new(thumbnails: bool, comfortable: bool) -> ListGeom {
         if thumbnails {
-            ListGeom { row_px: 32.0, icon_px: 32.0 }
+            ListGeom { row_px: if comfortable { 44.0 } else { 32.0 }, icon_px: 32.0 }
         } else if comfortable {
             ListGeom { row_px: 30.0, icon_px: 16.0 }
         } else {
@@ -73,9 +75,9 @@ impl ListGeom {
     }
 
     /// The geometry of a list whose rows are `row_px` tall (dnd's `Layout` carries the height alone):
-    /// 32 px rows are the thumbnails', any other the 16 px icons'.
+    /// 32 and 44 px rows are the thumbnails', 22 and 30 px the 16 px icons'.
     pub const fn of_row(row_px: f32) -> ListGeom {
-        ListGeom::new(row_px >= 32.0, row_px > 22.0)
+        ListGeom::new(row_px >= 32.0, row_px > 32.0 || (row_px > 22.0 && row_px < 32.0))
     }
 
     /// The name column's left edge in a row: 6 px padding plus the icon column, 22 px for the 16 px
@@ -2173,7 +2175,7 @@ mod tests {
         assert_eq!((t175.icon_px, t175.icon_y(1), t175.height(3)), (56, 56, 168));
         assert_eq!(StripGeom::new(2.0, ListGeom::new(true, false)).icon_px, 64);
         // Every icon lies inside its own row band at any of these scales, in every geometry.
-        for (thumbs, comfy) in [(false, false), (false, true), (true, false)] {
+        for (thumbs, comfy) in [(false, false), (false, true), (true, false), (true, true)] {
             for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
                 let g = StripGeom::new(scale, ListGeom::new(thumbs, comfy));
                 for k in 0..200 {
@@ -2184,16 +2186,24 @@ mod tests {
         }
         assert_eq!((ListGeom::new(false, false).name_x(), ListGeom::new(true, false).name_x()), (28.0, 42.0), "the rows' padding-left");
         // Comfortable rows (P12-M4): 30 px, the 16 px icons centred 7 px down, the name where it was;
-        // thumbnails keep their 32 px rows whatever the setting.
+        // with thumbnails 44 px, the 32 px pictures 6 px down, the name where it was.
         assert_eq!(ListGeom::new(false, true), ListGeom { row_px: 30.0, icon_px: 16.0 });
         assert_eq!(ListGeom::new(false, true).name_x(), 28.0, "the name's x does not move");
-        assert_eq!(ListGeom::new(true, true), ListGeom::new(true, false));
+        assert_eq!(ListGeom::new(true, true), ListGeom { row_px: 44.0, icon_px: 32.0 });
+        assert_eq!(ListGeom::new(true, true).name_x(), 42.0, "the name's x does not move");
+        let ct1 = StripGeom::new(1.0, ListGeom::new(true, true));
+        assert_eq!((ct1.icon_px, ct1.icon_y(0), ct1.icon_y(1), ct1.height(2)), (32, 6, 50, 88));
+        let ct125 = StripGeom::new(1.25, ListGeom::new(true, true));
+        assert_eq!((ct125.icon_px, ct125.icon_y(0), ct125.height(3)), (40, 8, 165)); // 7.5 rounds to 8
         let c1 = StripGeom::new(1.0, ListGeom::new(false, true));
         assert_eq!((c1.icon_px, c1.icon_y(0), c1.icon_y(1), c1.height(2)), (16, 7, 37, 60));
         let c15 = StripGeom::new(1.5, ListGeom::new(false, true));
         assert_eq!((c15.icon_px, c15.icon_y(1), c15.height(3)), (24, 56, 135));
         // The geometry from the row height alone, as dnd's layout has it.
-        assert_eq!([ListGeom::of_row(22.0), ListGeom::of_row(30.0), ListGeom::of_row(32.0)], [ListGeom::new(false, false), ListGeom::new(false, true), ListGeom::new(true, false)]);
+        assert_eq!(
+            [ListGeom::of_row(22.0), ListGeom::of_row(30.0), ListGeom::of_row(32.0), ListGeom::of_row(44.0)],
+            [ListGeom::new(false, false), ListGeom::new(false, true), ListGeom::new(true, false), ListGeom::new(true, true)]
+        );
         // Range: the visible rows plus the margin, clamped to the list.
         let m = STRIP_MARGIN_ROWS;
         assert_eq!(strip_range((10, 40), 1000), (10 - m, 40 + m));
