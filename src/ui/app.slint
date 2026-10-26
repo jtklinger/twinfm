@@ -736,6 +736,8 @@ export component App inherits Window {
 
     // The sidebar list's scroll offset (zero or negative), for the drop target's hit test.
     public function side-scroll() -> length { return side-list.content-y; }
+    // The sidebar list scrolled to its end, where the bookmarks are (the driver's bookmark steps, P12-M5).
+    public function side-scroll-end() { side-list.content-y = min(0px, side-list.visible-height - side-list.content-height); }
     // A drag hovering the sidebar list's top or bottom scrolls it (main.rs `drop_autoscroll`).
     public function set-side-scroll(y: length) { side-list.content-y = y; }
     // Its rows' height and its viewport's, as the ListView has them (its rows differ in height,

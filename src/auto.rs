@@ -195,7 +195,8 @@
 //!   bookmark move <index> <up|down>  the bookmark menu's "Move up" / "Move down"
 //!   bookmark drag <from> <to>        drag bookmark <from> so it lands at index <to> (P12-M5): a press
 //!                                    on its row, moves in 4 px steps to the line where it lands and a
-//!                                    release, through Slint's pointer path (the list unscrolled)
+//!                                    release, through Slint's pointer path (the sidebar scrolled to its
+//!                                    end first, where the bookmarks are)
 //!   about open | about close         F1 opens the About dialog; close closes it
 //!   settings open                    Ctrl+, opens the settings dialog (key name CtrlComma)
 //!   settings set <field> <value>     stage a value in the open dialog through the function its control
@@ -914,7 +915,11 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
             })
         }
         DropAt::Side(row) => Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_row_centre(row)?)),
-        DropAt::SideGap(k) => Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_gap_y(k)?)),
+        DropAt::SideGap(k) => {
+            // The bookmarks are the sidebar's last rows: scrolled into view first.
+            app.invoke_side_scroll_end();
+            Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_gap_y(k)?))
+        }
         DropAt::Tab(pane, index) => {
             let l = crate::window_layout(app);
             if !l.tabs[pane] {
@@ -1492,10 +1497,12 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             schedule(runner, 1);
         }
         Step::BookmarkDrag(from, to) => {
-            // Rows from the sidebar list's top (unscrolled): the bookmarks are the last rows.
+            // The bookmarks are the sidebar's last rows: the list scrolled to its end, then rows
+            // aimed with its scroll.
+            app.invoke_side_scroll_end();
             let n = app.get_bookmark_count().max(0) as usize;
             let first = slint::Model::row_count(&app.get_side_items()).saturating_sub(n);
-            let top = crate::dnd::side_top(&crate::window_layout(&app));
+            let top = crate::dnd::side_top(&crate::window_layout(&app)) + app.invoke_side_scroll();
             let row_y = |r: usize| top + app.invoke_side_row_top(r as i32);
             let x = app.get_sidebar_width() / 2.0;
             let gap = if to > from { to + 1 } else { to };
