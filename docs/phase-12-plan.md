@@ -552,9 +552,10 @@ untouched.
 4. Show more options > Scan with Microsoft Defender... on any file: refused with the note "... was not
    run: ..., and none at its label path" (as before, with the longer reason).
 
-### For Jeremy
+### For Jeremy, answered
 
 - **Defender's scan from TwinFM's classic menu** stays refused: its handler adds the item only to a
   menu with an owner window, and the verb worker has none. A hidden window of the worker's own as the
   owner brings it back (and makes every id match), but every dialog a verb shows would then be owned by
-  that hidden window, so P7-M1's console checks would be owed again. Not done; a roadmap item if wanted.
+  that hidden window, so P7-M1's console checks would be owed again. Jeremy's answer (2026-10-26,
+  through the coordinating session): "keep it refused". Not done, and not on the roadmap.
