@@ -609,8 +609,13 @@ untouched.
 **Jeremy's results** (2026-10-26, `target-p12m6` at 99cb871, through the coordinating session, whose
 numbering for him was 1 = check 3 above and 2 = check 4), his words: "Cloud checks-1 & 2 work
 correctly." So Edit in IDLE opens the `.py` file in IDLE (check 3), and Defender's scan is still refused
-(check 4). Checks 1 and 2, Google Drive's Offline access, Manage versions and Share, are not confirmed
-yet: the coordinating session has asked him.
+(check 4).
+
+**Checks 1 and 2, Google Drive's commands: passed** (2026-10-26, the same build, the log on), his words:
+"Cloud checks all ran as expected, no errors". On a `G:\My Drive` file that was online only, Show more
+options > Offline access > Available offline ran with no note and the mark changed as in Explorer, then
+Online only took it back to the cloud (check 1); Manage versions with Google Drive and Share with Google
+Drive opened Google's windows (check 2). Every console check of P12-M6 has now passed.
 
 ### For Jeremy, answered
 
