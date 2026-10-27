@@ -3,26 +3,10 @@
 The one list of known bugs and wanted features that are not built yet. Started 2026-10-25, after
 0.2.0, from the deferred lists of the Phase 3 to Phase 11 closes and Jeremy's requests from daily use.
 Each item says where it came from; the phase records (`docs/phase-N-plan.md`) hold the detail. An item
-leaves this list when a phase picks it up, and the phase's own record carries it from there.
-
-## Phase 12 (planned 2026-10-25, `docs/phase-12-plan.md`)
-
-Jeremy, 2026-10-25: "Plan phase 12 by starting with the "later" list from phase 10, then add in the
-onedrive sync icons and improving the look of google drive." These items are in Phase 12's plan, and
-its record carries them from here:
-
-- **The Phase 10 later list**: a fade on hover, tooltips in the look, the status bar's badges, the
-  preview column's frame (P12-M1); TwinFM's own questions in the look (P12-M3); comfortable 30 px rows
-  as a setting (P12-M4); the sidebar's icons-only rail, bookmarks reordered by dragging, a Recent group
-  (P12-M5).
-- **From daily use**: scrollbars easier to see (P12-M2); a new tab by mouse, a "+" with the tab strip
-  always shown, and a bookmark made with the mouse (Jeremy: "Include it with m5") (P12-M5).
-- **Google Drive**: its own commands in the classic menu are refused (Jeremy: "Files can't be marked
-  available for offline use."), and its volume is found by its label alone (P12-M6).
-- **OneDrive's syncing and error icons on files** (P12-M7).
-- **The memory check**: heap snapshots of a 60-minute soak of 0.2.0 (the coordinating session).
-- **Carried, on conditions the plan names**: a OneDrive folder for the soak, the dead network share
-  check, the stale worktrees.
+leaves this list when a phase picks it up, and the phase's own record carries it from there; each phase
+close adds back what the phase put off (Jeremy's rule, 2026-10-26). Phase 12 took its items at its
+kickoff (2026-10-25) and closed 2026-10-27 (`phase-12-plan.md` § Phase 12 close); what it put off is
+below, marked P12.
 
 ## Asked for in daily use, not scheduled
 
@@ -47,7 +31,17 @@ its record carries them from here:
   dialog's OK or a restart; a switch back to System at runtime keeps Windows' mode of that moment
   (`phase-10-plan.md` § Phase 10 close).
 - **Corners still in the Fluent style**: the list and scroll areas, the About dialog's text (P10 close;
-  the tooltip and the scrollbars are Phase 12's).
+  Phase 12 did the tooltips and the scrollbars).
+- **Hover**: no fade on file rows, tiles, or the sidebar's and the crumb dropdown's rows (they scroll);
+  Slint's tooltip keeps its 500 ms delay and sits under the pointer, not under its control (P12-M1).
+- **Scrollbars**: a press on the track pages once and does not repeat while held; no arrow buttons; the
+  hovered thumb covers the last pixel of the Modified column; a grid pane with under 10 px past its last
+  tile shows one tile fewer; a long Markdown file's bar is the list's own estimate, since Phase 8 (P12-M2).
+- **TwinFM's questions**: the dialog has no icon; a drop from another program while a question shows
+  starts a job that waits behind it (P12-M3).
+- **Rows and the sidebar**: a third row density (P12-M4 left room for one); the rail's footer has only
+  the chevron, with Settings and About on the full sidebar only; a drop into the bookmarks gap from a
+  program that allows no link shows the copy cursor and adds nothing (P12-M5).
 - **Symbols outside the UI font draw as empty boxes** in the preview (rare entities such as ∳); the
   characters are right when copied. Font fallback is a Slint question (P11-M4 console check).
 
@@ -85,6 +79,23 @@ its record carries them from here:
 
 - **Accessibility**: a Narrator pass over everything since Phase 2 and the grid's tiles as nodes of
   their own; deferred for much later (Jeremy, 2026-10-15).
+- **The dead network share check**, owed since P5-M1: a share name that does not resolve, then one that
+  resolves and does not answer (`stalled: no watch`, the 30 s cool-down, F5). Needs a share that can be
+  switched off; none came up in Phase 12.
+- **Console checks owed from Phase 12**: the password questions' Tab order (P12-M3); Tab between the
+  panes with the active pane's accent cursor, and the 44 px comfortable thumbnail rows (ab64, merged on
+  the gate); whether the shell draws the "Bookmark" drop text (P12-M5).
+- **A long soak of the merged code on the segment heap**: Phase 12's two 60-minute soaks ran the code from
+  before its milestones (P12 memory manager trial).
+- **Memory**: the preview's styled text for a big file built per chunk, so fewer large temporary
+  allocations; the Recycle Bin enumeration's shell cache, small (P12 memory check).
+- **A OneDrive folder for the soak**: not approved, since it would upload every cycle's files (P12
+  kickoff).
+- **OneDrive's error mark** has been drawn only by its test: no file here has reached the error state; a
+  refused `_vti_` name stays "sync pending" (P12-M7).
+- **Small log and soak clean-ups**: `[menu] "<label>" found after T ms (a submenu filled late)` also shows
+  for commands in no late submenu (P12-M6); the soak report's "tabs they opened" reads about twice what
+  its label expects (98 for 25 opens in an hour's soak; older than Phase 12, noted in P12-M5).
 
 ## The Slint fork
 
