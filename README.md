@@ -7,20 +7,22 @@ without stalling, where Windows' own Files app struggles.
 TwinFM uses the Windows shell for the things Explorer users rely on, so copies, moves, the Recycle
 Bin, the context menu, drag and drop, the clipboard and file icons behave as they do in Explorer.
 
-**Status: 0.2.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
+**Status: 0.3.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
 keep backups as you would with any file manager.
 
 ## Features
 
 - **Two panes, each with tabs.** Every tab keeps its own folder, sort, hidden-files setting,
   selection, scroll position and Back/Forward history (Alt+Left, Alt+Right, the mouse's side
-  buttons; Alt+Down lists the places to jump to). Tabs with their history, the split and the
-  window are restored at the next start.
+  buttons; Alt+Down lists the places to jump to). The "+" after the tabs opens a new one, and Tab
+  moves the keyboard to the other pane. Tabs with their history, the split and the window are
+  restored at the next start.
 - **Fast listings.** Folders are read on a worker thread and streamed in; icons and thumbnails are
   fetched only for the rows on screen. Folders are watched, so changes made elsewhere appear
   without a refresh.
-- **Views:** details (with adjustable column widths), large icons and medium icons, with
-  thumbnails, cloud status marks for OneDrive and Google Drive, and a rubber-band selection.
+- **Views:** details (with adjustable column widths, and compact or comfortable rows), large icons
+  and medium icons, with thumbnails, cloud status marks for OneDrive (syncing and errors too) and
+  Google Drive, and a rubber-band selection.
 - **File operations through the shell** (`IFileOperation`): copy, move, rename, new folder, new
   file, delete to the Recycle Bin or permanently, with Explorer's progress and conflict dialogs,
   and **undo and redo** (Ctrl+Z, Ctrl+Y), including restoring from the Recycle Bin.
@@ -38,12 +40,13 @@ keep backups as you would with any file manager.
   text and source code (coloured for about 20 languages), pictures (HEIC and AVIF too), HTML, and
   Word, Excel and PowerPoint documents, all rendered by TwinFM itself (no Office or browser
   needed). Right-click a block to copy its text.
-- **Sidebar** with drives, the usual places and your bookmarks; a toolbar; light and dark themes
-  that follow Windows.
+- **Sidebar** with drives, the usual places, recent folders and your bookmarks (drop a folder on
+  Bookmarks to add one, drag bookmarks to reorder them); it collapses to a rail of icons. A
+  toolbar; light and dark themes that follow Windows.
 
 ## Install
 
-Download `twinfm-0.2.0-x86_64-windows.zip` from the
+Download `twinfm-0.3.0-x86_64-windows.zip` from the
 [latest release](https://github.com/jtklinger/twinfm/releases/latest), unzip it anywhere, and run
 `twinfm.exe`. There is no installer; settings are kept in `%APPDATA%\twinfm`.
 
@@ -72,7 +75,7 @@ accessibility patches (see [License](#license)); Cargo fetches it, so no manual 
 | Key | Action |
 |---|---|
 | F3 | Show or hide the second pane |
-| Ctrl+Shift+Right | Focus the other pane |
+| Tab, Shift+Tab, Ctrl+Shift+Right | Focus the other pane |
 | Return, double-click | Open a folder or archive; open a file with its default program |
 | Backspace, Alt+Up | Up one folder |
 | Alt+Left, Alt+Right | Back, forward |
@@ -100,14 +103,14 @@ accessibility patches (see [License](#license)); Cargo fetches it, so no manual 
 | Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+1 to 9 | Next, previous, numbered tab |
 | Ctrl+Shift+PageUp, PageDown | Move the tab left, right |
 | Ctrl+D | Bookmark the folder |
-| F9 | Show or hide the sidebar |
+| F9 | Sidebar: full, or a rail of icons |
 | Ctrl+, | Settings |
 | F1 | About TwinFM |
 
 ## Settings
 
 Settings live in `%APPDATA%\twinfm\config.toml` and are saved automatically: the open tabs, the
-split, the window placement, bookmarks, views, column widths, the theme and the choices in the
+split, the window placement, bookmarks, recent folders, views, column widths, the theme and the choices in the
 settings dialog (Ctrl+,). The file is plain TOML and can be edited while TwinFM is closed; a file
 that does not parse is kept as `config.toml.bad` and TwinFM starts with the defaults.
 

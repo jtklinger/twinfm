@@ -8,8 +8,8 @@ close adds back what the phase put off (Jeremy's rule, 2026-10-26). Phase 12 too
 kickoff (2026-10-25) and closed 2026-10-27 (`phase-12-plan.md` § Phase 12 close); what it put off is
 below, marked P12. Phase 13 took its items at its kickoff (2026-10-27, `phase-13-plan.md`): the details
 view's click-and-drag selection, the TreeSize-style view with size on disk, the owed checks (the dead
-share, Phase 12's console checks, the long soak), the styled-text memory follow-up and the two small log
-and soak clean-ups.
+share, Phase 12's console checks; the long soak was run after the Phase 12 close), the styled-text
+memory follow-up and the two small log and soak clean-ups.
 
 ## Asked for in daily use, not scheduled
 

@@ -1,6 +1,6 @@
 # Phase 13: the mouse, the name's room, and the sizes view
 
-Written 2026-10-27, the day Phase 12 closed and 0.3.0 was released (`phase-12-plan.md` § Phase 12 close).
+Written 2026-10-27, the day Phase 12 closed and 0.3.0 was released (#126) (`phase-12-plan.md` § Phase 12 close).
 Phase 13's goal, from Jeremy's kickoff on 2026-10-27: **make everything TwinFM does reachable with the
 mouse, give the file name the room it needs in the details view, and add a TreeSize-style view for
 freeing space; then the checks still owed.** The items this phase takes leave `docs/roadmap.md` when
@@ -231,8 +231,10 @@ word, keeps `docs/roadmap.md`, and does P13-M4:
      Phase 13 milestone: the password questions' Tab order (P12-M3); Tab between the panes with the
      active pane's accent cursor, and the 44 px comfortable thumbnail rows (ab64); whether the shell draws
      the "Bookmark" drop text (P12-M5).
-   - **A long soak** of the merged code on the segment heap (60 minutes of `soak-p5m3.ps1`), at the
-     phase's end, so it covers Phase 13's code too.
+   - **A long soak** of Phase 13's merged code (60 minutes of `soak-p5m3.ps1`), at the phase's end. The
+     one owed from Phase 12 was run after its close on `target-p12seg` (`phase-12-plan.md` § The long
+     soak of the merged code: 60.6 minutes, no panics, about 259 MB private, flat), so this one compares
+     against it.
    - **Memory**: the preview's styled text for a big file built per chunk (fewer large temporary
      allocations, the Phase 12 memory check's finding); its own branch and a preview triplet.
    - **Clean-ups**: the `[menu] "<label>" found after T ms (a submenu filled late)` line only for commands
