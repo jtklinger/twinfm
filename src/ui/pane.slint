@@ -141,7 +141,8 @@ component ToolSeparator inherits Rectangle {
 }
 
 // The toolbar (P6-M3), in its three groups: New file, New folder; Cut, Copy, Paste; Rename, Delete;
-// and since P8-M1 the Preview toggle at its end, always enabled, drawn as on while the column shows.
+// and since P8-M1 the Preview toggle at its end, always enabled, drawn as on while the column shows;
+// since P13-M1 Two panes before it (F3's toggle, drawn as on while both panes show).
 // tool(name) names the button (toolbar.rs `command` maps it to its key's command; "preview" toggles
 // the column); tip(text) a tooltip shown; back() and forward() the mouse's side buttons over a
 // button (P7-M4).
@@ -149,6 +150,7 @@ export component Toolbar inherits HorizontalLayout {
     in property <ToolState> tools;
     in property <bool> labelled;
     in property <bool> preview-on;
+    in property <bool> split-on;
     callback tool(string);
     callback tip(string);
     callback back();
@@ -166,6 +168,7 @@ export component Toolbar inherits HorizontalLayout {
     ToolButton { icon: @image-url("icons/pencil.svg"); text: "Rename"; key: "F2"; labelled: root.labelled; enabled: root.tools.rename; clicked => { root.tool("rename"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
     ToolButton { icon: @image-url("icons/trash.svg"); text: "Delete"; key: "Delete"; labelled: root.labelled; enabled: root.tools.delete; clicked => { root.tool("delete"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
     ToolSeparator { }
+    ToolButton { icon: @image-url("icons/columns-2.svg"); text: "Two panes"; key: "F3"; labelled: root.labelled; checked: root.split-on; clicked => { root.tool("split"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
     ToolButton { icon: @image-url("icons/panel-right.svg"); text: "Preview pane"; key: "Alt+P"; labelled: root.labelled; checked: root.preview-on; clicked => { root.tool("preview"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
 }
 
@@ -1216,8 +1219,9 @@ export component Pane inherits Rectangle {
     // list, created only with the setting (dnd.rs PANE_BAR).
     in property <bool> toolbar: false;
     in property <ToolState> tools;
-    // The column shows (the Preview button drawn as on, P8-M1).
+    // The column shows (the Preview button drawn as on, P8-M1); both panes show (Two panes, P13-M1).
     in property <bool> preview-on;
+    in property <bool> split-on;
     callback tool(string);
     // tool-tip(text): a button of the in-pane toolbar showed its tooltip (P7-M4).
     callback tool-tip(string);
@@ -1476,6 +1480,7 @@ export component Pane inherits Rectangle {
             tools: root.tools;
             labelled: false;
             preview-on: root.preview-on;
+            split-on: root.split-on;
             tool(c) => { root.tool(c); }
             tip(t) => { root.tool-tip(t); }
             back => { root.back-button(); }

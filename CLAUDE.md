@@ -1151,7 +1151,9 @@ put off, with where it came from.
   `grip_x`, `left_of`: Modified's grip beside a hidden Size is Name | Modified), the rename editor,
   `dnd::name_cell` (`Widths::taken`) and the driver follow the shown columns; `colwidth`, `coldrag` and
   `colfit` on a hidden column log `no such grip`. `[cols] pane=N shows <name, type, size, modified> at W
-  px` (W the list's width) when the set changes. Driver `splitter
+  px` (W the list's width) when the set changes. **Two panes** on the toolbar (Lucide `columns-2`, before
+  Preview, drawn as on while both panes show; in the in-pane toolbar on each pane's bar) calls F3's
+  `toggle-split`: driver `toolbar <pane> split`, `[toolbar] pane=N split -> toggle`. Driver `splitter
   <ratio>` drags the split line from where it is to that share of the panes' room through Slint's pointer
   path (8 px steps; the splitter clamps 0.15 to 0.85): `[auto] splitter A -> B`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run

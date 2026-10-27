@@ -299,3 +299,78 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 Each brief settles first: how hidden columns reach the rows (P13-M1), the bar's overflow (P13-M2), how to
 read size on disk without a call per file and how hard links count (P13-M3), and the share's switches
 (P13-M4, from the Homelab session).
+
+## P13-M1: the name gets its room, and the second pane by mouse
+
+The mouse stream (one session, worktree `p13-mouse-c54e0b`), from 2026-10-27.
+
+### Settled first: how a hidden column reaches the rows (2026-10-27)
+
+Route (b), the lead's recommendation, agreed with the coordinating session before any code ran. **No row
+component changes and no row gains a binding.** The details rows already read the pane's three widths for
+their Type, Size and Modified cells (P9-M1). The pane now hands them a width of 0 for a hidden column
+(pane.slint's `eff-type`, `eff-size` and `eff-modified`), and Slint draws nothing for a Text 0 px wide:
+`sharedparley::draw_text` returns before laying out any glyph when the item's width is 0 or less
+(`internal/core/textlayout/sharedparley.rs:144` in the fork at c1d3a8d, the same path for femtovg and the
+software renderer). The rows' cells sit in a HorizontalLayout with no spacing, so a 0-wide cell takes no
+room and Name stretches into it. The rows re-read their widths only when the shown set changes: a resize,
+never a frame or a scroll. Options (a) (more components) and (c) (cells drawn and clipped) were not needed.
+The gate triplet is the trace that settles it (below).
+
+For the sizes stream (P13-M3), agreed through the coordinating session: its Size on disk column would be a
+fourth width each row reads, 0 while off or hidden, dropped first (Size on disk, Type, Size, Modified).
+That is one more width binding per row, so it needs its own trace. `cols::shown` and `Widths` are shaped
+for it (`ALL`, `taken`), and P13-M3 builds the column itself.
+
+### What landed
+
+- **Columns that make way** (commit 1): `cols::shown(widths, show_type, room)` is the rule, pure and
+  tested at each boundary both ways. `room` is the list's width less the rows' paddings (`ListGeom::name_x`
+  and `ROW_PAD_RIGHT`). Columns go Type first, then Size, then Modified, until Name keeps 120 px; they come
+  back in the reverse order, each when it fits at its set width, which hiding never changes. Each pane
+  reports its list's width (the host's `init` and `changed width`, `list-width`), and `update_shown` sets
+  the window's `left-shows-*` and `right-shows-*` on change, with the line `[cols] pane=N shows <columns> at
+  W px`. The hidden right pane is skipped (it is laid out at the list's 50 px minimum). The header is one
+  layout with a conditional cell per column (it was two, by `show_type`). The grips follow the shown
+  columns: `cols::grips(shown)`, `grip_x` and `left_of`, so Modified's grip beside a hidden Size is Name |
+  Modified and its drag moves against Name. The rename editor follows, and so does `dnd::name_cell` through
+  `Widths::taken`. The driver's `colwidth`, `coldrag` and `colfit` on a hidden column log `no such grip`. A
+  new driver step, `splitter <ratio>`, is a real drag of the split line through Slint's pointer path, for
+  the soak.
+- **Two panes** (commit 2): a toolbar button (Lucide `columns-2`, before Preview pane, tooltip "Two panes
+  (F3)", drawn as on while both panes show; on each pane's bar in the in-pane toolbar), calling F3's
+  `toggle-split`. `toolbar <pane> split`, and `[toolbar] pane=N split -> toggle`.
+
+### Scripted checks (2026-10-27, the branch's release build, `SLINT_BACKEND=winit-software`, no settings file, 1200 px window at 100%)
+
+- At start the panes report a first-layout width (`shows name at 210 px`), then the real one (`name, type,
+  size, modified at 1010 px`).
+- **Split at 0.5, each list 499 px: Type is hidden in both panes** (`shows name, size, modified at 499
+  px`), since 499 less 38 px of padding is 461 px of room, under the 470 that Type, Size, Modified and
+  Name's 120 need. So the default window split in two already drops Type. The gate's own window is larger
+  (the plan's estimate: panes about 590 px), so the triplet's stderr records what its panes show.
+- Splitter to 0.30: the left list at 382 px shows name and Modified, at 296 px name only; the right list
+  at 515 px shows all four. Back to 0.50: name and Modified at 304 px, then name, Size and Modified at
+  390 px. Each line lands once, at its boundary.
+- Splitter to 0.35 (the soak's): name and Modified at 385 px; back at 0.50, Size returns at 392 px.
+- `colfit 0 type`, `colfit 0 size` and `coldrag 0 modified -30` with only Name shown: `no such grip` each.
+- Two panes off: the left list at 1010 px shows all four. On again: back to 499 px and name, Size and
+  Modified. The right pane logs nothing while hidden.
+- Screenshots (both panes at 499 px; the left pane at 0.30 with Name alone beside the right's four):
+  hidden cells draw nothing, the header shows only the shown columns, and the grips sit on their edges.
+
+### Soak
+
+Per cycle in `tools/soak-p5m3.ps1`:
+
+- Two panes off and on by the toolbar (`toolbar 0 split` twice).
+- The split line to 0.35 and back to 0.5 (`splitter`).
+- Reported: Two panes presses (two per cycle), the left pane narrowed to the name and Modified (one per
+  cycle), and name, Size and Modified (two per cycle at 100%).
+
+Run: to come, on the coordinating session's word.
+
+### Gate
+
+To come: the defaults triplet and the cols triplet (`C:\traces\cols.toml`), with what the scenario's
+panes show before and after, from each run's stderr.

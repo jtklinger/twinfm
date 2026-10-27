@@ -902,6 +902,7 @@ export component App inherits Window {
                 tools: root.split && root.active-pane == 1 ? root.right-tools : root.left-tools;
                 labelled: true;
                 preview-on: root.preview;
+                split-on: root.split;
                 tool(c) => { root.toolbar-clicked(root.split && root.active-pane == 1 ? 1 : 0, c); }
                 tip(t) => { root.toolbar-tip(-1, t); }
                 back => { root.pane-back(root.split && root.active-pane == 1 ? 1 : 0); }
@@ -1157,6 +1158,7 @@ export component App inherits Window {
                 toolbar: root.toolbar == 2;
                 tools: root.left-tools;
                 preview-on: root.preview;
+                split-on: root.split;
                 tool(c) => { root.toolbar-clicked(0, c); }
                 tool-tip(t) => { root.toolbar-tip(0, t); }
             }
@@ -1231,6 +1233,7 @@ export component App inherits Window {
                 toolbar: root.toolbar == 2;
                 tools: root.right-tools;
                 preview-on: root.preview;
+                split-on: root.split;
                 tool(c) => { root.toolbar-clicked(1, c); }
                 tool-tip(t) => { root.toolbar-tip(1, t); }
             }

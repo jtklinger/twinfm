@@ -790,6 +790,14 @@ fn toolbar_clicked(pane: usize, button: &str) {
         eprintln!("[toolbar] pane={pane} preview -> toggle");
         return toggle_preview();
     }
+    // Two panes (P13-M1) is F3's toggle, for the window.
+    if button == "split" {
+        eprintln!("[toolbar] pane={pane} split -> toggle");
+        if let Some(app) = with_state(|st| st.app.upgrade()) {
+            app.invoke_toggle_split();
+        }
+        return;
+    }
     let Some(cmd) = toolbar::command(button) else {
         return eprintln!("[toolbar] pane={pane} no button {button}");
     };
