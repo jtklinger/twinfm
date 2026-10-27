@@ -444,12 +444,21 @@ pub fn placeholder_state(attrs: u32, tag: u32) -> u32 {
 /// yet (unpinned, its data still here: `attrs`): OneDrive can leave it so for minutes, its state
 /// "sync pending", while its attributes alone would read as on this device (the console check).
 /// TwinFM's own process is not shown placeholders (Windows hides them from most programs: no
-/// reparse point, state 0), so the second test is the one that works there.
-pub fn needs_state_read(state: u32, attrs: u32) -> bool {
+/// reparse point, state 0), so the second test is the one that works there. `shown` (P12-M7): the
+/// entry was listed on a thread shown placeholders (`fs::enumerate::expose_placeholders`), where a
+/// file that is no placeholder is one the provider has not taken in yet (copied there and uploading,
+/// Explorer's arrows: the P12-M7 probe's file was a plain file for 5.7 s, then an in-sync
+/// placeholder), unless it is pinned and unpinned both, OneDrive's own "excluded" files
+/// (`desktop.ini`), which keep no mark as before.
+pub fn needs_state_read(state: u32, attrs: u32, shown: bool) -> bool {
     use windows_sys::Win32::Storage::CloudFilters::{CF_PLACEHOLDER_STATE_IN_SYNC, CF_PLACEHOLDER_STATE_PLACEHOLDER};
     let releasing = attrs & FILE_ATTRIBUTE_UNPINNED != 0
         && attrs & (FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE) == 0;
-    releasing || (state & CF_PLACEHOLDER_STATE_PLACEHOLDER != 0 && state & CF_PLACEHOLDER_STATE_IN_SYNC == 0)
+    let placeholder = state & CF_PLACEHOLDER_STATE_PLACEHOLDER != 0;
+    let excluded = attrs & (FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED) == FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED;
+    releasing
+        || (placeholder && state & CF_PLACEHOLDER_STATE_IN_SYNC == 0)
+        || (shown && !placeholder && !excluded && attrs & FILE_ATTRIBUTE_DIRECTORY == 0)
 }
 
 const LOOK_PREFIX: &str = "look:";
@@ -2868,19 +2877,28 @@ mod tests {
         // for the provider's own state; in sync (OneDrive's 0x9 and 0xD) and not a placeholder (0x0,
         // desktop.ini) keep their attribute mark.
         let local = FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT;
-        assert!(!needs_state_read(0x9, local) && !needs_state_read(0xD, local) && !needs_state_read(0x0, local));
-        assert!(needs_state_read(0x1, local) && needs_state_read(0x1 | 0x10, local), "a placeholder, partial or not, out of sync");
+        assert!(!needs_state_read(0x9, local, false) && !needs_state_read(0xD, local, false) && !needs_state_read(0x0, local, false));
+        assert!(needs_state_read(0x1, local, false) && needs_state_read(0x1 | 0x10, local, false), "a placeholder, partial or not, out of sync");
         // Freed up but not released yet (Jeremy's console check: 0x00100420, the provider's state
         // 10, sync pending, for minutes): looked up, so the row shows what Explorer shows.
-        assert!(needs_state_read(0x9, local | FILE_ATTRIBUTE_UNPINNED));
+        assert!(needs_state_read(0x9, local | FILE_ATTRIBUTE_UNPINNED, false));
         // Released (recall on access) or always kept (pinned): the attributes tell it.
-        assert!(!needs_state_read(0x39, local | FILE_ATTRIBUTE_UNPINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE));
-        assert!(!needs_state_read(0x9, local | FILE_ATTRIBUTE_PINNED));
+        assert!(!needs_state_read(0x39, local | FILE_ATTRIBUTE_UNPINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE, false));
+        assert!(!needs_state_read(0x9, local | FILE_ATTRIBUTE_PINNED, false));
         // TwinFM's own process does not see placeholders (no reparse point, state 0): the
         // attributes alone tell a file being freed (AMD.pdf read 0x00100020 there).
-        assert!(needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_UNPINNED));
-        assert!(!needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE));
-        assert!(!needs_state_read(0, FILE_ATTRIBUTE_UNPINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE));
+        assert!(needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_UNPINNED, false));
+        assert!(!needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE, false));
+        assert!(!needs_state_read(0, FILE_ATTRIBUTE_UNPINNED | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE, false));
+        // P12-M7, placeholders shown: in sync keeps its attribute mark; a file that is no placeholder
+        // yet (just copied in, uploading) is looked up, OneDrive's excluded desktop.ini (pinned and
+        // unpinned, hidden, system: 0x00180026 on Jeremy's OneDrive) is not; a folder never by this
+        // rule (folders are looked up anyway).
+        assert!(!needs_state_read(0, 0x0018_0026, true), "excluded: no mark, as before");
+        assert!(!needs_state_read(0x9, FILE_ATTRIBUTE_ARCHIVE, true) && !needs_state_read(0x39, FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, true));
+        assert!(needs_state_read(0x1, FILE_ATTRIBUTE_ARCHIVE, true), "a placeholder out of sync");
+        assert!(needs_state_read(0, FILE_ATTRIBUTE_ARCHIVE, true), "no placeholder yet: uploading");
+        assert!(!needs_state_read(0, FILE_ATTRIBUTE_DIRECTORY, true));
         let f = Path::new(r"C:\OneDrive\dir");
         let mut sync = IconKeys::new(f.to_path_buf(), true).with_cloud(Cloud::SyncRoot);
         let (file, cloud) = (Kind::File, Kind::Cloud);
@@ -2965,6 +2983,14 @@ mod tests {
         }
         // The cloud and the tick differ.
         assert_ne!(state_glyph(1404, 16).unwrap().as_slice(), state_glyph(1400, 16).unwrap().as_slice());
+        // P12-M7: a file waiting (4, 5, 10) or syncing (6) shows the arrows; in error (7), the red
+        // cross; with a warning (8), the warning; each unlike the others and unlike the tick.
+        let res = |state: u8| STATE_GLYPHS.iter().find(|(s, _)| *s == state).map(|&(_, r)| r).unwrap();
+        assert!([4, 5, 10].iter().all(|&s| res(s) == res(6)), "pending states draw the syncing arrows");
+        let px = |state: u8| state_glyph(res(state), 16).unwrap().as_slice().to_vec();
+        for (a, b) in [(6, 7), (6, 8), (7, 8), (6, 2), (7, 2), (8, 2)] {
+            assert_ne!(px(a), px(b), "states {a} and {b} share a glyph");
+        }
     }
 
     #[test]
