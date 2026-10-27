@@ -718,7 +718,7 @@ fn cloud_of(st: &mut State, pane: usize, path: &Path) -> icons::Cloud {
 }
 
 /// The pane's status bar from its active tab: items, hidden, note and error on the left, the
-/// selection in the middle, free space on the right. Called on navigation, enumeration
+/// selection's count and size as badges after them, free space on the right. Called on navigation, enumeration
 /// progress, pass swaps, selection changes and notes; never from a scroll or render path.
 fn update_status(st: &State, app: &App, pane: usize) {
     let t = st.tab(pane);
@@ -743,9 +743,11 @@ fn update_status(st: &State, app: &App, pane: usize) {
     };
     let (n, bytes, any_file) = m.selection_summary();
     let dirs = if t.sizable() { t.sizes.summary(&m.selected_folders()) } else { fs::sizes::DirTotals::default() };
+    let (count, size) = statusbar::selection_text(n, bytes, any_file, dirs);
     let s = StatusInfo {
         left: left.into(),
-        mid: statusbar::mid_text(n, bytes, any_file, dirs).into(),
+        count: count.into(),
+        size: size.into(),
         right: statusbar::free_text(t.free).into(),
     };
     if pane == 0 { app.set_left_status(s) } else { app.set_right_status(s) }

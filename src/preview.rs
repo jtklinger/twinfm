@@ -66,6 +66,18 @@ pub const PICTURE_UNREADABLE: &str = "This picture could not be read";
 pub const NO_DECODER: &str = "No decoder for this format is installed";
 pub const OFFICE_UNREADABLE: &str = "This document could not be read";
 pub const OFFICE_PASSWORD: &str = "Password-protected document: not previewed";
+
+/// The icon above a message (P12-M1, the look's empty state; preview.slint draws it by this
+/// name): a lock for a password, a cloud for a file not downloaded, a warning triangle for a file
+/// that could not be read, a plain file for whatever is not previewed.
+pub fn message_icon(text: &str) -> &'static str {
+    match text {
+        PASSWORD | OFFICE_PASSWORD => "lock",
+        CLOUD => "cloud",
+        DAMAGED | UNREADABLE | PICTURE_UNREADABLE | OFFICE_UNREADABLE => "alert",
+        _ => "file",
+    }
+}
 /// A Markdown file's pictures share this many bytes of decoded pixels (RGBA); one past it shows
 /// its alt text. A picture file shown alone is scaled down to fit it (`fit_px`).
 pub const PIXEL_BUDGET: u64 = 64 << 20;
@@ -1557,6 +1569,7 @@ fn on_reply(r: Reply) {
             Reply::Message { text, .. } => {
                 u.opening = false;
                 app.set_preview_message(text.into());
+                app.set_preview_icon(message_icon(text).into());
                 app.set_preview_action(if text == PASSWORD { PASSWORD_ACTION } else { "" }.into());
             }
             Reply::Pdf { sizes, .. } => {
@@ -1856,6 +1869,25 @@ mod tests {
             t += 30;
         }
         assert_eq!(s.check(t - 30 + SETTLE_MS), Due::Now);
+    }
+
+    #[test]
+    fn every_message_has_its_icon() {
+        // P12-M1: the empty state's icon for each message the column can show.
+        for (text, icon) in [
+            (NO_PREVIEW, "file"),
+            (ARCHIVE, "file"),
+            (NO_DECODER, "file"),
+            (PASSWORD, "lock"),
+            (OFFICE_PASSWORD, "lock"),
+            (CLOUD, "cloud"),
+            (DAMAGED, "alert"),
+            (UNREADABLE, "alert"),
+            (PICTURE_UNREADABLE, "alert"),
+            (OFFICE_UNREADABLE, "alert"),
+        ] {
+            assert_eq!(message_icon(text), icon, "{text}");
+        }
     }
 
     #[test]

@@ -214,6 +214,8 @@ component MdItem inherits Rectangle {
 export component Preview inherits Rectangle {
     in property <string> title;
     in property <string> message;
+    // The message's icon (P12-M1): "file", "lock", "cloud" or "alert".
+    in property <string> icon;
     in property <[PreviewPage]> pages;
     in property <length> content-h;
     in property <int> mode;
@@ -243,7 +245,8 @@ export component Preview inherits Rectangle {
                 x: 10px;
                 width: parent.width - 20px;
                 text: root.title;
-                font-weight: 600;
+                font-weight: 500;
+                color: Theme.fg;
                 vertical-alignment: center;
                 overflow: elide;
             }
@@ -280,7 +283,7 @@ export component Preview inherits Rectangle {
                     y: p.y;
                     width: body.page-w;
                     height: p.h;
-                    background: #FFFFFF;
+                    background: Theme.paper;
                     border-width: 1px;
                     border-color: Theme.border;
                     Image {
@@ -291,7 +294,7 @@ export component Preview inherits Rectangle {
                     }
                     if p.note != "": Text {
                         text: p.note;
-                        color: #444;
+                        color: Theme.paper-fg;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                         wrap: word-wrap;
@@ -314,10 +317,29 @@ export component Preview inherits Rectangle {
                     menu(x, y) => { root.menu(k, x, y); }
                 }
             }
+            // The look's empty state (P12-M1): the message's Lucide icon on a muted tile, the muted
+            // text under it, and the button when there is one.
             if root.message != "": VerticalLayout {
                 alignment: center;
                 padding: 16px;
                 spacing: 12px;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 40px;
+                        height: 40px;
+                        border-radius: Theme.radius-lg;
+                        background: Theme.muted;
+                        Image {
+                            x: 10px;
+                            y: 10px;
+                            width: 20px;
+                            height: 20px;
+                            source: root.icon == "lock" ? @image-url("icons/lock.svg") : root.icon == "cloud" ? @image-url("icons/cloud.svg") : root.icon == "alert" ? @image-url("icons/triangle-alert.svg") : @image-url("icons/file.svg");
+                            colorize: Theme.fg;
+                        }
+                    }
+                }
                 Text {
                     text: root.message;
                     horizontal-alignment: center;

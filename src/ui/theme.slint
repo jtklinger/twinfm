@@ -34,6 +34,10 @@ export global Theme {
     out property <brush> primary-fg: dark ? #171717 : #FAFAFA;
     // The 1 px shadow line under a lifted segment or an outline control (never drop-shadow).
     out property <brush> shadow: dark ? #00000066 : #0000001A;
+    // A PDF page in the preview is paper, white in both schemes, and a note drawn on it in place
+    // of the page ("Page N took too long") takes the light scheme's muted text (P12-M1).
+    out property <brush> paper: #FFFFFF;
+    out property <brush> paper-fg: #737373;
     // Links in the preview's text (shadcn's prose links; the grey scale has no colour for them).
     out property <brush> link: dark ? #60A5FA : #2563EB;
     // Jeremy's console check (2026-10-22): the cursor and the selection were hard to see in grey.
@@ -49,6 +53,8 @@ export global Theme {
 
 // A button in the look (P10-M1): outline (a hairline, the card colour, the muted fill on hover)
 // or primary (near-black, one per dialog). 32 px high, 13 px text at weight 500, 6 px corners.
+// Its hover fill fades in and out over 100 ms, as every chrome control's does (P12-M1); rows and
+// anything else that scrolls never animate.
 export component Btn inherits Rectangle {
     in property <string> text;
     in property <bool> primary: false;
@@ -59,6 +65,7 @@ export component Btn inherits Rectangle {
     border-width: root.primary ? 0px : 1px;
     border-color: Theme.border;
     background: root.primary ? (ta.has-hover ? Theme.primary.transparentize(10%) : Theme.primary) : (ta.has-hover ? Theme.muted : Theme.card);
+    animate background { duration: 100ms; }
     accessible-role: button;
     accessible-label: root.text;
     accessible-action-default => { root.clicked(); }
@@ -68,6 +75,54 @@ export component Btn inherits Rectangle {
         Text { text: root.text; vertical-alignment: center; font-weight: 500; color: root.primary ? Theme.primary-fg : Theme.fg; }
     }
     ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+// A tooltip's face in the look (P12-M1): the card colour, a hairline, 6 px corners, 12 px text,
+// a soft shadow. Used as the one child of Slint's `Tooltip`, which wraps any content in its own
+// frame (ToolTipImpl: the fluent alternate background, a 1 px border, 4 px corners, colours the
+// app cannot set); the face is painted 1 px past that frame on every side, where a 6 px corner
+// covers a 4 px one whole, so none of the frame shows. Placed by x and y, the face does not count
+// toward the tooltip's size: the text's layout sizes it.
+export component TipCard inherits Rectangle {
+    in property <string> text;
+    Rectangle {
+        x: -1px;
+        y: -1px;
+        width: parent.width + 2px;
+        height: parent.height + 2px;
+        background: Theme.card;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: #00000033;
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        Text { text: root.text; font-size: 12px; vertical-alignment: center; color: Theme.fg; }
+    }
+}
+
+// A badge in the look (P12-M1, the status bar's selection): 22 px tall in its layout, 6 px
+// corners, 12 px text at weight 500; the muted fill, or with `outline` a hairline and no fill.
+// It never stretches, so a layout's text beside it gives way first.
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <bool> outline: false;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius;
+    background: root.outline ? transparent : Theme.muted;
+    border-width: root.outline ? 1px : 0px;
+    border-color: Theme.border;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text { text: root.text; font-size: 12px; font-weight: 500; vertical-alignment: center; color: Theme.fg; }
+    }
 }
 
 // A switch for a boolean setting (P10-M1), in place of a check box: a 36 x 20 track with a 16 px
@@ -168,6 +223,7 @@ export component Choice inherits Rectangle {
     min-width: 120px;
     border-width: 1px;
     border-color: fs.has-focus ? Theme.cursor : (ta.has-hover ? Theme.ring : Theme.border);
+    animate border-color { duration: 100ms; }
     border-radius: Theme.radius;
     background: Theme.card;
     accessible-role: combobox;
@@ -218,6 +274,7 @@ export component Choice inherits Rectangle {
                     height: 32px;
                     border-radius: Theme.radius;
                     background: i == root.current-index ? Theme.selection : (ota.has-hover ? Theme.muted : transparent);
+                    animate background { duration: 100ms; }
                     accessible-role: button;
                     accessible-label: opt;
                     Text { x: 8px; width: parent.width - 16px; height: parent.height; text: opt; vertical-alignment: center; overflow: elide; font-size: 13px; color: Theme.fg; }

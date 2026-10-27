@@ -404,6 +404,150 @@ first ones are his, the rest each brief settles first.
 - **Why Google Drive's menu ids move, the tooltip, the scrollbar, the rows and OneDrive's way in**: each
   milestone's Settled first.
 
+## P12-M1: the look's small pieces
+
+The look stream's first milestone, opened 2026-10-25 on main at 76b5d35 (this plan merged), branch
+`feat/p12-m1-look-pieces`. Four pieces, a commit each, all inside today's boxes: no height, width or
+position the driver, the drop target or the soaks read changed.
+
+### Settled first (2026-10-25, before any code; the Slint fork's source at the pinned rev c1d3a8d)
+
+- **Tooltips: painted over Slint's frame, not a tooltip of TwinFM's own.** The compiler's tooltip pass
+  (`lower_tooltips.rs`) puts any custom content inside a `ToolTipImpl` (`common/tooltip-base.slint`: the
+  fluent alternate background, a 1 px `Palette.border`, 4 px corners, its own empty `StyledText` padded 9
+  and 6 px), sizes the popup from that element's preferred size, and places it at the pointer plus the
+  8 px offset. Two facts made painting over it whole: Slint's layout leaves a child placed by `x` or `y`
+  out of its parent's size (`default_geometry.rs` `gen_layout_info_prop`), so a face drawn 1 px outside
+  the frame on every side changes nothing in the tooltip's size; and a 6 px corner 1 px further out
+  covers a 4 px corner wholly (every point of the 4 px arc lies within 5.4 px of the 6 px arc's centre).
+  The popup is not clipped to its bounds: the face's hairline, 1 px outside them, draws in the capture.
+  So the look's tooltip is three lines at each use (`TipCard` in theme.slint), with no timer, overlay or
+  hover reporting of TwinFM's own; the plan's alternative would have needed all three. Slint's stay: the
+  500 ms delay, the place under the pointer (not under the control), the popup's size from the content.
+- **The fade's colours**: Slint animates a brush through `Color::mix`, Sass's mix, which weights the
+  channels by alpha (`color.rs`): from `transparent` to the muted fill only the alpha moves, so a ghost
+  button never darkens on its way in light mode. No token needed for the "off" end.
+- **Which controls fade**: the plan's list, read against every `has-hover` in the three UI files: `Btn`,
+  `Choice`'s border and its options' fill (theme.slint); the toolbar's buttons, the tab segment and its
+  close button, the crumb labels and chevrons, the header cells, the search box's clear, content and
+  search buttons and the path-mode button (pane.slint); TwinFM's own menu items, the Windows 11 menu's
+  rows and icon-row buttons, the sidebar footer's Settings and About text and its hide chevron (colour
+  and colorize, the hover changing those), the splitter and the preview handle (app.slint); and two the
+  survey did not name, the sidebar's resize edge and the collapsed sidebar's strip (chrome, never
+  scrolled). Not faded, as the plan says: the sidebar rows and the crumb dropdown's rows (in ListViews
+  that scroll); rows and tiles have no hover.
+- **The badges' line**: the 28 px status line keeps its height, so `LIST_BOTTOM_GAP` (33) stands. The
+  badges sit in a start-aligned inner layout padded 3 px top and bottom, so they are 22 px; in the fork's
+  box layout (`layout.rs` `solve_box_layout`, `adjust_items`) a start-aligned layout gives spare width to
+  nothing, and when the line is short it shrinks only the items with a stretch, so the left text elides
+  before a badge loses a pixel (the badges and the free space never stretch). `statusbar::selection_text`
+  returns the count and the size apart; nothing read the joined text (the soaks read `[band]` lines, not
+  the status bar).
+- **The preview's icons**: the message text is the identity of each state (every message is a constant in
+  preview.rs), so a pure `message_icon` maps it to an icon name the column draws, with no change to the
+  worker's replies. The plan names four kinds; the two other "not previewed" messages, inside an archive
+  and no HEIF decoder, take the file icon. Lucide's `lock` and `triangle-alert` were added to
+  `src/ui/icons/` (ISC, as the folder's licence and README's notice already cover); `file` and `cloud`
+  were there.
+
+### What landed (2026-10-25)
+
+Four code commits, each built and tested before it was made (302, 302, 302 and 303 tests), then the docs
+and the gate wrapper. Per item:
+
+- **A fade on hover**: done (02a5f64). `animate background { duration: 100ms; }` (and `border-color`,
+  `color`, `colorize` where the hover changes those) on the controls listed above; the Switch knob's
+  100 ms was the one animation before.
+- **Tooltips in the look**: done (84acac3). `TipCard` in theme.slint: the card colour, a hairline, 6 px
+  corners, 12 px text in `Theme.fg` with shadcn's 12 and 6 px padding (28 px tall), a soft shadow (blur
+  8 px, 2 px down, black at 20%); the toolbar's buttons, the content toggle and the search button use it.
+  The `[toolbar] top|pane=N tooltip "<name> (<key>)"` line is unchanged (the card's `init`).
+- **The status bar's badges**: done (b196b77). The item count muted, then "M selected" on the muted fill
+  and the size in an outline badge (the folder-size variants, "so far...", "(updating...)", inside it), 22
+  px tall, 6 px corners, 12 px at weight 500, 8 px apart, right after the items as the Parts board draws
+  them; the free space stays on the right. `Badge` in theme.slint; `StatusInfo` is `{ left, count, size,
+  right }`; `statusbar::mid_text` became `selection_text`, its tests the split
+  (`folder_sizes_in_the_size_badge` renamed from `folder_sizes_in_the_middle_text`).
+- **The preview column's frame**: done (e0c9a28). The title in `Theme.fg` at weight 500 (fluent's default
+  colour at 600 before); each message under its Lucide icon, 20 px in `Theme.fg` on a 40 px muted tile
+  with 10 px corners (shadcn's empty state): file for "No preview", inside an archive and no decoder, lock
+  for both password messages, cloud for a cloud-only file, the warning triangle for the four "could not
+  be read" messages (`preview::message_icon`, tested for every message; `preview-icon` beside
+  `preview-message`); the page note's `#444` is `Theme.paper-fg` and the page's `#FFFFFF`
+  `Theme.paper`, both the same in either scheme since the paper stays white.
+
+No new driver step and no new stderr line.
+
+### Calls made in this milestone, for Jeremy to check
+
+- The tooltip stays where Slint puts it, under the pointer; a tooltip under its control would have been
+  TwinFM's own overlay, which painting over the frame made unneeded.
+- The tooltip's text is 12 px with shadcn's padding, so it is 28 px tall, a little taller than before.
+- The preview's messages sit under an icon on a small muted tile (shadcn's empty state) rather than a bare
+  icon.
+- The PDF page note ("Page N took too long") is the light scheme's muted grey, `#737373`, on the white
+  page, a little lighter than the `#444` before.
+- The sidebar's resize edge and the collapsed sidebar's strip fade too, though the plan's list did not
+  name them.
+
+### Scripted checks (2026-10-25, the worktree's own build at e0c9a28, not a gate build)
+
+Runs of the branch's build with `SLINT_BACKEND=winit-software` and `TWINFM_SCHEME=dark`, then `light`,
+captured by `PrintWindow` of that process's own window, over a scratch folder
+(`%TEMP%\twinfm-p12m1-check`: a folder of 1.4 MB, a file of no previewed type, a damaged PDF, a text file
+marked offline, the P11-M6 test's revision 3 password PDF, a text file and a 1.3 MB file):
+
+- **Tooltip**: `hover 300 22` over Copy logged `[toolbar] top tooltip "Copy (Ctrl+C)"`; at eight times
+  zoom the card is `#171717` with the hairline in dark and white with `#E5E5E5` in light, 6 px corners,
+  and no pixel of Slint's frame anywhere; the Copy button behind it in its hover fill. The shadow does not
+  show in these captures (dark ground, and the software renderer); femtovg's is the console check's.
+- **Badges**: two files selected, "7 items", then "2 selected" on the muted fill and "1.3 MB" in the
+  outline; then the folder (sized, `[size] done ... 1403000 bytes`) and a file, "2 selected" and "2.6 MB";
+  both schemes, the free space on the right, the texts centred in the line.
+- **The preview's messages**: `preview toggle` and the cursor through the four files gave `no preview for
+  this type`, `password`, `cloud-only` and `damaged: Invalid` lines, and the file, lock (with the "Enter
+  password…" button under it), cloud and triangle tiles over their messages, the titles in the
+  foreground, both schemes.
+- No `panicked` line in any run.
+
+### Soak
+
+None, by the plan: nothing new to drive (the tooltips, badges and messages are drawn, not driven), and
+`tools/soak-p5m3.ps1` is unchanged.
+
+### Gate
+
+ab56, passed (2026-10-25, Jeremy at the console; the six Phase 12 gates of both streams, ab56 to ab61,
+ran in one elevated script from 22:10 to 23:33, this one 22:10 to 22:26): `tools/gate-p12m1.ps1`,
+`target-p12m1` (e0c9a28) against `target-p11close` (a99f2f2), the defaults and the preview column
+(`C:\traces\preview.toml`).
+
+| Setting | p11close (WPR) | p12m1 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 21.3, 21.7, 21.4 | 21.5, 21.0, 21.0 | 21.4 / 21.0 | 2.86 to 3.07 ms |
+| preview | 20.1, 19.8, 20.0 | 20.0, 20.3, 20.3 | 20.0 / 20.3 | 2.65 to 2.75 ms |
+
+No gap that counts in either (no setting has every reference run below every candidate run, and the
+medians differ by 0.4 and 0.3 of a point); no panic, every settings file read. The whole session ran in
+the costlier state (render p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2
+normally; as ab42 in Phase 10), so the 20% bar was met by neither build; read like for like.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m1`, light and dark)
+
+- **The fade**: the pointer slowly across the toolbar's buttons, a tab and its close cross, the crumbs
+  and their chevrons, the column headers, the search box's three buttons and the path-mode button, the
+  Settings dialog's buttons and choices, a right-click menu's rows and its icon row, the sidebar's
+  Settings and About and its hide chevron, the splitter, the preview handle and the sidebar's edge: each
+  fill fades in and out quickly, never flickers dark; the sidebar's rows still light at once.
+- **The three tooltips**: a toolbar button (both toolbar placements), the search box's content toggle (on
+  and off) and its search button: the card colour, the hairline and the soft shadow, no grey frame
+  around it.
+- **The badges**: files selected ("2 selected" and the size), folders sized with Alt+Shift+Enter (the
+  size "so far..." while they are walked, then the total), a long note on the left with a narrow pane
+  (the note shortens before the badges move).
+- **Each preview message**: a file of no previewed type, a password PDF (the lock, the button), a file
+  in OneDrive that is online only (the cloud), a damaged PDF (the triangle), a file inside a zip.
+
 ## The memory check (the coordinating session, 2026-10-25)
 
 Jeremy's word at the kickoff: "The memory check". The question, from the Phase 11 close's 60-minute soak: what

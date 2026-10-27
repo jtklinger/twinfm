@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, Field } from "theme.slint";
+import { Theme, Field, TipCard, Badge } from "theme.slint";
 
 // kind: 0 directory, 1 file, 2 drive, 3 other reparse point, 4 junction, 5 symbolic link,
 // 6 cloud placeholder, 7 app execution alias (model::Kind)
@@ -51,10 +51,12 @@ export struct Crumb {
     label: string,
 }
 
-// The pane's status bar: items and hidden count, the selection, the volume's free space.
+// The pane's status bar: items and hidden count, the selection's count and size (each "" for no
+// badge; statusbar.rs `selection_text`), the volume's free space.
 export struct StatusInfo {
     left: string,
-    mid: string,
+    count: string,
+    size: string,
     right: string,
 }
 
@@ -82,7 +84,8 @@ export struct ToolState {
 // One toolbar button: a Segoe Fluent Icons glyph (the font of Explorer's own command bar, part of
 // Windows 11), with its label beside it in the toolbar across the window. A disabled button is
 // dimmed and takes no clicks. Its tooltip (P7-M4, Slint's built-in `Tooltip`, after 500 ms under
-// the pointer) gives its name and key, disabled or not; tip(text) when it shows. The mouse's Back
+// the pointer; its face the look's TipCard since P12-M1) gives its name and key, disabled or not;
+// tip(text) when it shows. The mouse's Back
 // and Forward buttons over it go back and forward (back(), forward()), so its TouchArea stays
 // enabled and only the click is refused.
 component ToolButton inherits Rectangle {
@@ -101,6 +104,7 @@ component ToolButton inherits Rectangle {
     accessible-label: root.text;
     border-radius: Theme.radius;
     background: !root.enabled ? transparent : ta.pressed || root.checked ? Theme.muted : ta.has-hover ? Theme.muted : transparent;
+    animate background { duration: 100ms; }
     HorizontalLayout {
         padding-left: root.labelled ? 8px : 6px;
         padding-right: root.labelled ? 10px : 6px;
@@ -124,15 +128,9 @@ component ToolButton inherits Rectangle {
         }
     }
     Tooltip {
-        Rectangle {
+        TipCard {
+            text: root.text + " (" + root.key + ")";
             init => { root.tip(root.text + " (" + root.key + ")"); }
-            HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                padding-top: 4px;
-                padding-bottom: 4px;
-                Text { text: root.text + " (" + root.key + ")"; }
-            }
         }
     }
 }
@@ -182,7 +180,7 @@ component TabButton inherits Rectangle {
     callback close();
     background: transparent;
     // The segment, 2 px inside the slot the strip and dnd.rs TAB_H give the tab (P10-M1).
-    Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: Theme.radius; background: root.active ? Theme.tab-active : (ta.has-hover ? Theme.ring-soft : transparent); }
+    Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: Theme.radius; background: root.active ? Theme.tab-active : (ta.has-hover ? Theme.ring-soft : transparent); animate background { duration: 100ms; } }
     if root.active: Rectangle { x: 2px; y: parent.height - 2px; width: parent.width - 4px; height: 1px; background: Theme.shadow; }
     ta := TouchArea {
         pointer-event(ev) => {
@@ -203,6 +201,7 @@ component TabButton inherits Rectangle {
             width: 18px;
             border-radius: 4px;
             background: close-ta.has-hover ? Theme.muted : transparent;
+            animate background { duration: 100ms; }
             Image { x: 3px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("icons/x.svg"); colorize: Theme.fg-muted; }
             close-ta := TouchArea { clicked => { root.close(); } }
         }
@@ -233,6 +232,7 @@ component CrumbButton inherits HorizontalLayout {
     label-box := Rectangle {
         border-radius: Theme.radius;
         background: root.drop-here ? Theme.selection : ta.has-hover ? Theme.muted : transparent;
+        animate background { duration: 100ms; }
         border-width: root.drop-here ? 2px : 0px;
         border-color: Theme.cursor;
         changed width => { root.geometry(root.x, self.width); }
@@ -252,6 +252,7 @@ component CrumbButton inherits HorizontalLayout {
     Rectangle {
         width: 16px;
         background: chevron-ta.has-hover ? Theme.muted : transparent;
+        animate background { duration: 100ms; }
         Image { x: 2px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("icons/chevron-right.svg"); colorize: Theme.fg-muted; }
         chevron-ta := TouchArea {
             clicked => { root.menu(self.absolute-position.x, self.absolute-position.y + self.height); }
@@ -272,6 +273,7 @@ component HeaderCell inherits Rectangle {
     callback back();
     callback forward();
     background: ta.has-hover ? Theme.muted : transparent;
+    animate background { duration: 100ms; }
     Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
     HorizontalLayout {
         padding-left: 6px;
@@ -1569,6 +1571,7 @@ export component Pane inherits Rectangle {
                     width: 20px;
                     border-radius: 4px;
                     background: clear-ta.has-hover ? Theme.muted : transparent;
+                    animate background { duration: 100ms; }
                     accessible-role: button;
                     accessible-label: "Clear";
                     Image { x: 4px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("icons/x.svg"); colorize: Theme.fg-muted; }
@@ -1580,6 +1583,7 @@ export component Pane inherits Rectangle {
                     width: 26px;
                     border-radius: Theme.radius;
                     background: root.content-mode || content-ta.has-hover ? Theme.muted : transparent;
+                    animate background { duration: 100ms; }
                     accessible-role: button;
                     accessible-label: "Search inside files";
                     Image { x: 5px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: @image-url("icons/file-text.svg"); colorize: root.content-mode ? Theme.accent : Theme.fg-muted; }
@@ -1590,15 +1594,7 @@ export component Pane inherits Rectangle {
                         }
                     }
                     Tooltip {
-                        Rectangle {
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                padding-top: 4px;
-                                padding-bottom: 4px;
-                                Text { text: root.content-mode ? "Searching inside files: click for names" : "Search inside files"; }
-                            }
-                        }
+                        TipCard { text: root.content-mode ? "Searching inside files: click for names" : "Search inside files"; }
                     }
                 }
                 // The search button: this folder and everything under it, for the box's text
@@ -1607,20 +1603,13 @@ export component Pane inherits Rectangle {
                     width: 26px;
                     border-radius: Theme.radius;
                     background: search-ta.has-hover ? Theme.muted : transparent;
+                    animate background { duration: 100ms; }
                     accessible-role: button;
                     accessible-label: "Search this folder and below";
                     Image { x: 5px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: @image-url("icons/search.svg"); colorize: Theme.fg; }
                     search-ta := TouchArea { clicked => { root.search-pressed(); } }
                     Tooltip {
-                        Rectangle {
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                padding-top: 4px;
-                                padding-bottom: 4px;
-                                Text { text: "Search this folder and below (Ctrl+Shift+F)"; }
-                            }
-                        }
+                        TipCard { text: "Search this folder and below (Ctrl+Shift+F)"; }
                     }
                 }
             }
@@ -1629,6 +1618,7 @@ export component Pane inherits Rectangle {
                 x: parent.width - 24px;
                 width: 24px;
                 background: mode-ta.has-hover ? Theme.muted : transparent;
+                animate background { duration: 100ms; }
                 // The ellipsis edits the path as text; the chevron goes back to the breadcrumb.
                 Image { x: 5px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: root.entry-sticky ? @image-url("icons/chevron-right.svg") : @image-url("icons/ellipsis.svg"); colorize: Theme.fg-muted; }
                 mode-ta := TouchArea {
@@ -1688,12 +1678,23 @@ export component Pane inherits Rectangle {
             drag-dx: root.drag-dx;
             drag-dy: root.drag-dy;
         }
+        // The status line (P12-M1, the canvas's Parts board): the items muted, the selection after
+        // them as two badges 22 px tall inside the 28 px line (dnd.rs LIST_BOTTOM_GAP stands), the
+        // free space on the right. Packed at the start, so the badges follow the text; when the
+        // line is short, the left text elides first (the only part that stretches).
         HorizontalLayout {
             height: 28px;
             spacing: 12px;
-            Text { text: root.status.left; font-size: 12px; color: Theme.fg-muted; overflow: elide; horizontal-stretch: 1; }
-            Text { text: root.status.mid; font-size: 12px; color: Theme.fg; horizontal-alignment: center; }
-            Text { text: root.status.right; font-size: 12px; color: Theme.fg-muted; horizontal-alignment: right; }
+            HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+                padding-top: 3px;
+                padding-bottom: 3px;
+                Text { text: root.status.left; font-size: 12px; color: Theme.fg-muted; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                if root.status.count != "": Badge { text: root.status.count; }
+                if root.status.size != "": Badge { text: root.status.size; outline: true; }
+            }
+            Text { text: root.status.right; font-size: 12px; color: Theme.fg-muted; vertical-alignment: center; horizontal-alignment: right; horizontal-stretch: 0; }
         }
     }
 

@@ -96,6 +96,7 @@ component MenuItem inherits Rectangle {
     callback activated();
     height: 26px;
     background: ta.has-hover && root.enabled ? Theme.muted : transparent;
+    animate background { duration: 100ms; }
     accessible-role: button;
     accessible-label: root.text;
     Text {
@@ -146,6 +147,7 @@ component MenuRow inherits Rectangle {
     if !root.entry.sep: Rectangle {
         border-radius: Theme.radius;
         background: (root.hl || ta.has-hover) && root.entry.enabled ? Theme.muted : transparent;
+        animate background { duration: 100ms; }
         accessible-role: button;
         accessible-label: root.entry.text;
         if root.entry.has-icon: Image {
@@ -195,6 +197,7 @@ component MenuToolButton inherits Rectangle {
     height: 36px;
     border-radius: Theme.radius;
     background: ta.has-hover ? Theme.muted : transparent;
+    animate background { duration: 100ms; }
     accessible-role: button;
     accessible-label: root.tool.text;
     // The Lucide set by the button's name (P10-M3); winmenu.rs's glyph is left as it is.
@@ -302,6 +305,8 @@ export component App inherits Window {
     in-out property <float> preview-width: 0.35;
     in property <string> preview-title;
     in property <string> preview-message;
+    // Since P12-M1: the icon above the message (preview.rs `message_icon`: file, lock, cloud, alert).
+    in property <string> preview-icon;
     // Since P11-M6: the button under the message ("Enter password…"), and its press.
     in property <string> preview-action;
     callback preview-password();
@@ -859,6 +864,7 @@ export component App inherits Window {
                             font-size: 11px;
                             vertical-alignment: center;
                             color: settings-ta.has-hover ? Theme.fg : Theme.fg-muted;
+                            animate color { duration: 100ms; }
                         }
                     }
                     about-ta := TouchArea {
@@ -868,12 +874,13 @@ export component App inherits Window {
                             font-size: 11px;
                             vertical-alignment: center;
                             color: about-ta.has-hover ? Theme.fg : Theme.fg-muted;
+                            animate color { duration: 100ms; }
                         }
                     }
                     hide-ta := TouchArea {
                         width: 24px;
                         clicked => { root.toggle-sidebar(); }
-                        Image { x: 5px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: @image-url("icons/chevrons-left.svg"); colorize: hide-ta.has-hover ? Theme.fg : Theme.fg-muted; }
+                        Image { x: 5px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: @image-url("icons/chevrons-left.svg"); colorize: hide-ta.has-hover ? Theme.fg : Theme.fg-muted; animate colorize { duration: 100ms; } }
                     }
                 }
             }
@@ -903,6 +910,7 @@ export component App inherits Window {
             visible: sidebar-visible;
             x: sidebar-width; y: root.top-h; width: 4px; height: parent.height - root.top-h;
             background: side-ta.has-hover || side-ta.pressed ? Theme.ring : Theme.border;
+            animate background { duration: 100ms; }
             side-ta := TouchArea {
                 mouse-cursor: col-resize;
                 moved => {
@@ -918,6 +926,7 @@ export component App inherits Window {
             visible: !sidebar-visible;
             x: 0; y: root.top-h; width: 12px; height: parent.height - root.top-h;
             background: show-ta.has-hover ? Theme.muted : Theme.sidebar;
+            animate background { duration: 100ms; }
             Text { y: 6px; text: "\u{00bb}"; horizontal-alignment: center; }
             show-ta := TouchArea { clicked => { root.toggle-sidebar(); } }
         }
@@ -1063,6 +1072,7 @@ export component App inherits Window {
                 visible: split;
                 x: parent.width * split-ratio - 3px; y: 0; width: 6px; height: parent.height;
                 background: splitter-ta.has-hover || splitter-ta.pressed ? Theme.ring : Theme.border;
+                animate background { duration: 100ms; }
                 splitter-ta := TouchArea {
                     mouse-cursor: col-resize;
                     moved => {
@@ -1080,6 +1090,7 @@ export component App inherits Window {
             visible: root.preview;
             x: panes.x + panes.width; y: root.top-h; width: 6px; height: parent.height - root.top-h;
             background: preview-ta.has-hover || preview-ta.pressed ? Theme.ring : Theme.border;
+            animate background { duration: 100ms; }
             preview-ta := TouchArea {
                 mouse-cursor: col-resize;
                 moved => {
@@ -1098,6 +1109,7 @@ export component App inherits Window {
             width: max(0px, parent.width - self.x); height: parent.height - root.top-h;
             title: root.preview-title;
             message: root.preview-message;
+            icon: root.preview-icon;
             action: root.preview-action;
             action-clicked => { root.preview-password(); }
             pages: root.preview-pages;
