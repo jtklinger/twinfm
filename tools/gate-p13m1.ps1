@@ -1,6 +1,6 @@
-# P13-M1 gate, tag ab66: target-p13m1 from the P13-M1 PR's code head 33f673a (columns that make way for
+# P13-M1 gate, tag ab66: target-p13m1 from the P13-M1 PR's code head 936336a (columns that make way for
 # the name in a narrow pane, hidden ones through widths set to 0 that the rows read already; Two panes on
-# the toolbar; the docs and this wrapper follow it) against target-p12seg (3698cd2, main's code at the
+# the toolbar; the shown set held while a grip is dragged; the docs, the soak and this wrapper follow it) against target-p12seg (3698cd2, main's code at the
 # Phase 12 close), two settings interleaved in one session under the one tag: the defaults (the scenario
 # splits the window, so its panes may hide columns themselves: the summary lists what each candidate run's
 # panes showed, from its `[cols] pane=N shows` lines) and other column widths (C:\traces\cols.toml,
@@ -19,7 +19,7 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = '33f673a'
+$Head = '936336a'
 $Tag = 'ab66'
 $Ref = 'p12seg'
 $Cand = 'p13m1'
