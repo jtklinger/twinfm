@@ -726,7 +726,8 @@ fn list_top(app: &App, pane: usize) -> f32 {
 }
 
 /// Where the pane's vertical scrollbar thumb sits with content-y = 0 (right edge of the list,
-/// just under the path bar and column header).
+/// just under the path bar and column header). Since P12-M2 the thumb is TwinFM's own
+/// (`VScrollBar`, 2 px below the list's top, at least 24 px long): the same aim lands on it.
 fn thumb(app: &App, pane: usize) -> LogicalPosition {
     let (_, right_edge) = crate::dnd::pane_x(&crate::window_layout(app), pane);
     LogicalPosition::new(right_edge - 10.0, list_top(app, pane) + 17.0)

@@ -993,6 +993,17 @@ put off, with where it came from.
   ready after 4 answers: <key> keeps its type icon`. No new driver step. A test video made by Windows
   itself (no ffmpeg here): WinRT `MediaComposition` with `MediaClip.CreateFromImageFileAsync` and
   `RenderToFileAsync` from Windows PowerShell (the plan's record has the script's shape).
+  Since P12-M2, every list's scrollbar is TwinFM's own (`theme.slint` `VScrollBar`, and `HScrollBar`
+  for the preview's pages past 100%), laid over the view with the view's Fluent bar `always-off`: the
+  file lists' one in `FileListHost` (it owns `content-y` and reckons the content's height from the rows
+  or grid rows), the sidebar's, the crumb dropdown's and the preview's pages and Markdown list. A 14 px
+  strip at the view's edge, the thumb 6 px 1 px from the edge (10 px under the pointer or while
+  dragged, over a faint track), at least 24 px long, clear of the last column at rest (the details rows'
+  right padding 10 px, `dnd::ROW_PAD_RIGHT`, and 10 px kept at the grid's right: Jeremy's "Add
+  padding"); a press on the thumb drags it, a press on the track
+  pages a screenful towards the pointer, the wheel over it scrolls the view. `drag <pane> <dy> <ms>`
+  presses its thumb at the same aim as before (`thumb()`: 10 px in from the pane's edge, 17 px below the
+  list's top). No new driver step or stderr line.
   Since P12-M6, **a classic-menu command whose id moved runs**: Microsoft Defender's handler adds "Scan
   with Microsoft Defender..." only to a menu built with an owner window, and the verb worker builds its
   menu with none (P7-M1), so every command numbered after Defender's sits one id lower there (Google
