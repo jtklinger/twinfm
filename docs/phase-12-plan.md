@@ -1301,6 +1301,19 @@ code head: `tools/gate-p12m5b.ps1`, tag ab64 (the coordinating session's to set)
 (every tile now reads its cursor colour). The soak: P12-M4's cycle adds the 44 px thumbnail rows, and
 P12-M5's ends with a click in the left list, Tab and Shift+Tab (`[focus]` lines, one each per cycle).
 
+The soak, run by the coordinating session on `target-p12m5b` (2b41100), 2026-10-26, twice, 10.1 minutes
+each, both exit code 0, the window closed by the script, no panicked line, every count that must be 0 at
+0:
+
+- **The follow-up's soak**: 024d3f0's `tools/soak-p5m3.ps1` (the PR head's, with the Tab pair): 257 jobs
+  done; comfortable rows on 4, off 4, 30 px geometry lines 4, 44 px (thumbnails) 4; bookmarks added by a
+  drop 4, dragged 4, removed 4, tabs by the "+" 4; "Tab between the panes: to the right 4, back 4 (one
+  each per cycle)"; working set 142.9 MB at the start, 243.7 MB at the end, private bytes 165.6 to 242.0
+  MB.
+- **The rows cycle confirmed** in a first run of 2b41100's own `tools/soak-p5m3.ps1`, which has the 44 px
+  rows cycle but not the Tab pair (the coordinating session took the code head's script): 258 jobs done;
+  the same rows and bookmark counts (30 px lines 4, 44 px 4); private bytes 165.2 to 242.2 MB.
+
 Console checks (for Jeremy, unelevated, after the gate, `target-p12m5b`, light and dark):
 
 - Two panes: Tab and Shift+Tab from either list; the keys, the ring, the title and the one accent
