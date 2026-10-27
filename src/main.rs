@@ -1371,6 +1371,9 @@ fn edit_worker() -> Sender<StatJob> {
     std::thread::Builder::new()
         .name("watch-edits".into())
         .spawn(move || {
+            // A sync root's changed files are statted with their placeholders shown (P12-M7), as
+            // its listing is, so their marks follow their states; nothing else lists differently.
+            fs::enumerate::expose_placeholders("watch edits");
             for mut job in rx {
                 let t0 = Instant::now();
                 let dir = stat_dir(&job.path);
@@ -3345,6 +3348,30 @@ pub fn script_menu_verb(pane: usize, verb: &str) {
     let Some(row) = with_state(|st| st.app.upgrade().map(|app| current_row(&app, pane))) else { return };
     let Some((req, ctx)) = menu_request(pane, row, 0.0, 0.0, false) else { return };
     eprintln!("[auto] menuverb pane={pane} \"{verb}\" for {} item(s)", req.names.len());
+    if let Some(path) = verb.strip_prefix(TEST_TRY_VERB) {
+        // The dry test verb (P12-M6): the command at that label path in the classic menu, handed
+        // on as a pick there hands it, resolved on the verb worker and never invoked.
+        match shellmenu::find_shown(&req, path) {
+            Ok((verb, offset, label)) => {
+                eprintln!("[auto] menuverb try: \"{label}\" at offset {offset} in the menu shown, verb \"{verb}\"");
+                let request = shellmenu::VerbRequest {
+                    folder: req.folder.clone(),
+                    names: req.names.clone(),
+                    verb,
+                    offset,
+                    label,
+                    x: req.x,
+                    y: req.y,
+                    extended: req.extended,
+                    find: false,
+                    default_item: false,
+                };
+                queue_verb(pane, request, Some(TestVerb::Try));
+            }
+            Err(e) => eprintln!("[auto] menuverb try: {e}"),
+        }
+        return;
+    }
     let picked = match shellmenu::route(verb) {
         Some("rename") => shellmenu::Picked::Rename,
         Some(cmd) => shellmenu::Picked::Route(cmd),
@@ -3379,13 +3406,13 @@ fn menu_picked(pane: usize, picked: shellmenu::Picked, req: &shellmenu::Request,
                 find: false,
                 default_item: false,
             };
-            queue_verb(pane, request, sleep_ms);
+            queue_verb(pane, request, sleep_ms.map(TestVerb::Sleep));
         }
     }
 }
 
-/// Queue a shell command on the verb worker (the test verb when `sleep_ms` is given).
-fn queue_verb(pane: usize, request: shellmenu::VerbRequest, sleep_ms: Option<u64>) {
+/// Queue a shell command on the verb worker (a test verb when `test` is given).
+fn queue_verb(pane: usize, request: shellmenu::VerbRequest, test: Option<TestVerb>) {
     with_state(|st| {
         st.next_verb += 1;
         let id = st.next_verb;
@@ -3397,12 +3424,15 @@ fn queue_verb(pane: usize, request: shellmenu::VerbRequest, sleep_ms: Option<u64
                 " (found there by its label)"
             } else if request.default_item {
                 " (the default command)"
+            } else if matches!(test, Some(TestVerb::Try)) {
+                " (the test verb: resolved, not invoked)"
             } else {
                 ""
             }
         );
-        let work = match sleep_ms {
-            Some(ms) => verbs::Work::Sleep(request, ms),
+        let work = match test {
+            Some(TestVerb::Sleep(ms)) => verbs::Work::Sleep(request, ms),
+            Some(TestVerb::Try) => verbs::Work::Try(request),
             None => verbs::Work::Verb(request),
         };
         if !st.verbs.submit(verbs::Job { id, pane, work }) {
@@ -3440,6 +3470,15 @@ fn verb_request(req: &shellmenu::Request, verb: &str, label: &str, find: bool) -
 
 /// The driver's test verb: `menuverb <pane> sleep:<ms>` sleeps on the verb worker.
 const TEST_SLEEP_VERB: &str = "sleep:";
+/// The driver's dry test verb (P12-M6): `menuverb <pane> try:<label path>` resolves a classic-menu
+/// command on the verb worker as a pick would, and invokes nothing.
+const TEST_TRY_VERB: &str = "try:";
+
+/// The driver's test verbs on the verb worker.
+enum TestVerb {
+    Sleep(u64),
+    Try,
+}
 
 /// A verb job finished on the verb worker (on the UI thread).
 fn verb_done(d: verbs::Done) {

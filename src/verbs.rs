@@ -48,6 +48,9 @@ pub enum Work {
     /// The driver's test verb (`menuverb <pane> sleep:<ms>`): sleep on the worker this long, run
     /// nothing. The request is what the menu was for.
     Sleep(VerbRequest, u64),
+    /// The driver's dry test verb (`menuverb <pane> try:<label path>`, P12-M6): the menu built
+    /// again and the command chosen as for a pick, then nothing invoked.
+    Try(VerbRequest),
     /// The Windows 11 menu's packaged commands and Open with apps for a selection (P7-M2).
     Query(explorercmd::Query),
     /// A pick among them.
@@ -168,9 +171,10 @@ fn run_loop(rx: Receiver<Job>, done: impl Fn(Reply)) {
 
 fn run(job: Job, com: HRESULT) -> Reply {
     let t0 = std::time::Instant::now();
-    let (req, sleep_ms) = match job.work {
-        Work::Verb(req) => (req, None),
-        Work::Sleep(req, ms) => (req, Some(ms)),
+    let (req, sleep_ms, dry) = match job.work {
+        Work::Verb(req) => (req, None, false),
+        Work::Sleep(req, ms) => (req, Some(ms), false),
+        Work::Try(req) => (req, None, true),
         Work::Query(q) if com >= 0 => return Reply::Answer(explorercmd::query(&q)),
         Work::Query(q) => return Reply::Answer(explorercmd::Answer { seq: q.seq, ..Default::default() }),
         Work::PickFolder { hwnd, start, field } => {
@@ -208,7 +212,7 @@ fn run(job: Job, com: HRESULT) -> Reply {
     } else if com < 0 {
         d.error = Some(format!("CoInitializeEx failed: 0x{:08X}", com as u32));
     } else {
-        match crate::shellmenu::run_verb(&req) {
+        match crate::shellmenu::run_verb(&req, dry) {
             Ok((how, hr)) => {
                 d.how = Some(how);
                 d.hr = hr;
@@ -219,6 +223,8 @@ fn run(job: Job, com: HRESULT) -> Reply {
     d.ms = crate::perf::elapsed_ms(t0);
     let what = match (&d.how, &d.error) {
         (_, Some(e)) => format!("failed: {e}"),
+        (Some(Invoke::Verb), _) if dry => "resolved: by verb (the test verb: not invoked)".into(),
+        (Some(Invoke::Offset), _) if dry => "resolved: by offset (the test verb: not invoked)".into(),
         (Some(Invoke::Verb), _) => format!("by verb = 0x{:08X}", d.hr as u32),
         (Some(Invoke::Offset), _) => format!("by offset = 0x{:08X}", d.hr as u32),
         (Some(Invoke::Refuse(why)), _) => format!("refused: {why}"),
