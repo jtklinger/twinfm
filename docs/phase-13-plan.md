@@ -397,7 +397,16 @@ Per cycle in `tools/soak-p5m3.ps1`:
 - **Soak changed again** (commit 5): that cycle runs at the 0.6 split too. The name, Size and Modified
   count is now five per cycle.
 
-**Third run**, with that cycle: to come.
+**Third run** (2026-10-27, 936336a's build with 6665c2c's script):
+- It ran beside the `target-p13m1` gate build, on the coordinating session's word: a soak checks
+  correctness, not speed.
+- 10.1 minutes, exit 0, no panics. 10 cycles started, 3 complete.
+- 237 jobs, none failed. Every must-be-0 count was 0.
+- Memory: working set 139 to 206 MB, private bytes 177 to 245 MB.
+- Column widths: drags read back as Size 90 -> 60, 3. Fits, 3. **Widths back at 120, 90, 140, 7** (two
+  per cycle and one at start). Resets through the dialog, 6.
+- Columns making way: Two panes presses 6. Narrowed to the name and Modified 9 (three per cycle). Name,
+  Size and Modified 16 (five per cycle, and the start's split).
 
 ### Gate
 
