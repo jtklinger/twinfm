@@ -402,7 +402,17 @@ takes it as the first to drop (Size on disk, then Type, Size, Modified). It is f
 the folder (`fs::dirinfo::read`) only while the setting `size_on_disk` is on. The extra binding per row
 needs its own triplet before it merges.
 
-### Soak, gate, the in-app `C:\` run
+### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
+
+`tools/soak-p5m3.ps1 -Minutes 10`, on the coordinating session's go (the mouse stream editing only): 10.1
+minutes, closed by the script, exit code 0, 0 panicked lines, 259 jobs done (0 failed, 0 cancelled), 0
+waitops timeouts, 0 soak refusals; 13 cycles started, 3 whole. Every count is one per cycle or as its line
+says, and every "must be 0" is 0. **Sizes view: 3 walks done, 6 levels opened in place, 3 removals of
+`sz.txt` off three totals**, each one per cycle; no `could not list` or `cancelled` line. Working set 167 MB
+at 5 s, 239 MB at 601 s (at most 321); private 193 to 273 MB. The 60-minute soak at the phase's end is the
+memory check.
+
+### Gate, the in-app `C:\` run
 
 To be handed over through the coordinating session: the soak (`tools/soak-p5m3.ps1`, with this branch's
 cycle: a view of `src`, two levels opened, `sz.txt` deleted from the view, off three totals), the defaults
