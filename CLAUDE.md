@@ -51,7 +51,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (318 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (327 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -66,7 +66,9 @@ put off, with where it came from.
   one more writes a HEIC with Windows' HEIF encoder into one, since P11-M2 one more writes two
   folders of files for a shell menu over both, since P11-M5 one more writes source files into
   one, since P11-M6 one more writes encrypted PDFs into one, and since P11-M7 one more writes log
-  files into one (and points the process's stderr at them while it runs), see below)
+  files into one (and points the process's stderr at them while it runs), and since P13-M3 two
+  more write a compressed and a sparse file, and a small tree with a hard link, into scratch folders,
+  see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -1138,6 +1140,48 @@ put off, with where it came from.
   so the mark follows without F5. `[cloud] pane=N not in sync: K of M files` once per sync-root listing (K the
   files looked up); `[cloud] <listing | watch edits>: placeholders not shown
   (RtlSetThreadPlaceholderCompatibilityMode = R)` if Windows refuses the mode. No new driver step.
+  Since P13-M3, **the sizes view** (`src/sizeview.rs`, `src/fs/dirinfo.rs`; Jeremy's option A, for
+  freeing space): a tab of its own kind (`Tab::sizeview`, titled `Sizes: <folder>`, a "Sizes" crumb after
+  the root's), opened by the Windows 11 menu's **"Show sizes"** (`winmenu::Cmd::Sizes`, after "Add to
+  bookmarks"): on folders and drives (a tab each) and on a folder's or This PC's background. On This PC it
+  sizes every fixed drive (`sizeview::fixed_drives`) but Google Drive's volume; inside an archive and on
+  Google Drive's volume it is refused with a note (`[sizeview] pane=N <path>: refused (<why>)`); OneDrive is
+  walked, a cloud-only file at 0. The walk runs on a `sizeview` thread of its own per view (not the `sizes`
+  worker, so Alt+Shift+Enter is never held up) and reads each folder through the **directory information**
+  (`fs::dirinfo::read`: `GetFileInformationByHandleEx` with `FileIdBothDirectoryInfo`, 64 KB of entries per
+  call, each with its `AllocationSize`, its size on disk, and its file ID); it keeps **every folder** in a
+  `Tree` (no file entries; a linked list of children, no Vec per folder) with its totals (on disk, logical,
+  files, folders, skipped). Sizes are sizes on disk: a compressed or sparse file counts what it holds (the
+  directory's answer equals `GetCompressedFileSizeW`'s, tested), a cloud-only file 0 (`content::cloud_only`), a
+  hard-linked file once per walk (by its file ID, `dirinfo::HardLinks`: the first name met counts), a
+  reparse point other than a WOF compact file (tag 0x80000017, counted) 0, a junction or directory link
+  counted as a folder and not entered, deeper than 64 levels not entered. Rows are the pane's entries
+  (`PaneModel::set_rows`, no pass sorts them), named by their path under the root as search results are,
+  so the menu, Delete, Shift+Delete, drag out and Return work unchanged; `sizeview::SizeModel` adds what each
+  row draws (pane.slint `SizeList`, chosen by `FileListHost.sizes`; the pane's header reads Name, Share, Size
+  on disk, Files): its depth (the chevron and the name indented 16 px a level; the icon column stays the
+  strip's), a share bar (its size on disk against the root's), the size on disk, the file count. Each level
+  is sorted biggest first, then by name (`sizeview::rows`); the chevron (row gesture 8), Right and Left
+  (`command "sizeopen" | "sizeclose"`) open a folder in place (its subfolders at once from the tree, its
+  files when its listing lands, `sizeview::level_files` on a thread) or close it; Left on a file or a closed
+  folder goes to its parent's row. Return or a double-click on a folder opens it in a normal tab. The rows
+  are built again every 250 ms while the walk runs, the cursor and selection kept by path. A delete or a
+  move out of the root (`job_done` -> `sizes_removed`) takes each item off every total above it at once,
+  with no new walk; a move within the root and changes from elsewhere are not followed (F5 walks again). A
+  sizes tab is never watched, has no New, Paste, rename or drop, shows as a list in a pane set to icons
+  (`sync_grid`; Ctrl+Shift+1/2/3 there set the view for the pane's other tabs), and is saved with its tabs
+  (`SavedTab::sizes`) and walked again when restored. The status line: `Walking… F files, S so far`, then `S
+  on disk in F files, D folders, in T s`, `, K folders could not be read`. Driver: `sizeview <pane>
+  [<path>]` (the view on the path, the rest of the step, or on the cursor row's folder, or the pane's),
+  `sizeopen <row>` (the chevron of that row in the active pane), `waitsizeview <ms>` (until no walk or
+  level listing is out, then 300 ms). `[sizeview]` lines: `pane=N gen=G start <root>`, `partial: F files, S
+  bytes on disk` (at most four a second), `done: S bytes on disk (L logical), F files, D folders, K
+  skipped, in T ms; working set W MB (+X MB since the start), private P MB, N folders and I file IDs kept`, `cancelled
+  (a new walk | navigated away | tab closed)`, `pane=N opened <folder> in place (K children)`, `pane=N
+  closed <folder> in place`, `pane=N listed <folder>: K files in T ms`, `pane=N could not list <folder>: os
+  error E`, `pane=N removed <path>: S bytes off K totals`; `[view] pane=N shows a list (the sizes view) |
+  <view>`, `[watch] pane=N no watch for <root>: sizes view`, `[refresh] pane=N sizes view: walked again`.
+  `perf::memory_mb` reads the process's working set and private bytes.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -1389,7 +1433,10 @@ put off, with where it came from.
   folder, and `worker_runs_real_shell_operations` also copies a file over itself (a replace). Since
   P11-M7 `logfile::tests::the_log_takes_stderr_rotates_and_cuts` writes `twinfm.log` and
   `twinfm.previous.log` in `%TEMP%\twinfm-p11m7-log-<pid>\` and points the test process's stderr at
-  them while it runs. All remove their folders.
+  them while it runs. Since P13-M3 `fs::dirinfo::tests::compressed_and_sparse_files_take_less_on_disk`
+  writes a plain, an NTFS-compressed and a sparse file in `%TEMP%\twinfm-p13m3-test-<pid>\`, and
+  `sizeview::tests::a_walk_reads_folders_into_the_tree` a small tree with a hard link in
+  `%TEMP%\twinfm-p13m3-walk-<pid>\`. All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols
