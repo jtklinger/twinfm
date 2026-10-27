@@ -140,6 +140,12 @@
 # from the left list, the keys to the right pane's list and back (the next cycle's scroll scenario
 # lists both panes again, so the cursor Tab may have put on a row goes); the report counts the
 # `[focus]` lines each way (one each per cycle).
+# P13-M3: each cycle also makes an empty sz.txt in src\tree\d01 (`touch`), opens the sizes view of src
+# (`sizeview 0 <src>`, `waitsizeview`), opens tree and d01 in place (`sizeopen 0`, `sizeopen 1`), and
+# deletes sz.txt from the view permanently (row 22: tree, d01, its twenty files, then sz.txt, the
+# last of its level at 0 bytes); the report counts the walks done, the levels opened in place (two per
+# cycle) and the removals taken off three totals (d01, tree and the root; one per cycle), then the tab
+# is closed.
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -517,6 +523,10 @@ $cycle = @(
     # P12-M5: a bookmark by a drop, dragged, removed; a tab by the "+" (see the header).
     "dropfiles sidegap 0 auto $src", 'sleep 400', 'bookmark drag 0 1', 'sleep 300', 'bookmark remove 1', 'sleep 300',
     'tab plus 0', 'sleep 400', 'tab close', 'sleep 300',
+    # P13-M3: the sizes view, a level opened, a file deleted from it (see the header).
+    "nav 0 $src\tree\d01", 'sleep 400', 'touch 0 sz.txt', 'sleep 300', "nav 0 $src", 'sleep 400',
+    "sizeview 0 $src", 'waitsizeview 5000', 'sizeopen 0', 'sleep 200', 'sizeopen 1', 'waitsizeview 3000',
+    'click 0 22', 'sdelete', $wait, 'sleep 300', 'tab close', 'sleep 300',
     'click 0 0', 'sleep 200', 'key Tab', 'sleep 300', 'key ShiftTab', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
@@ -708,6 +718,10 @@ $bmRemoved = @($log | Select-String -SimpleMatch '[sidebar] removed bookmark 1: 
 $plusTabs = @($log | Select-String -SimpleMatch '[tab] pane=0 + button: new tab').Count
 $tabRight = @($log | Select-String -SimpleMatch '[focus] pane=1 has the keys by Tab').Count
 $tabLeft = @($log | Select-String -SimpleMatch '[focus] pane=0 has the keys by Tab').Count
+# P13-M3: the sizes view.
+$svDone = @($log | Select-String -Pattern '\[sizeview\] pane=0 gen=\d+ done: ').Count
+$svOpened = @($log | Select-String -Pattern '\[sizeview\] pane=0 opened .* in place').Count
+$svRemoved = @($log | Select-String -Pattern '\[sizeview\] pane=0 removed .*sz\.txt: \d+ bytes off 3 totals').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 # P11-M4: the zoom and "Copy text".
@@ -756,5 +770,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "comfortable rows: on $rowsOn, off $rowsOff, 30 px geometry lines $rows30, 44 px (thumbnails) $rows44 (one each per cycle)"
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
+"sizes view: walks done $svDone, levels opened in place $svOpened (two per cycle), sz.txt taken off three totals $svRemoved (one per cycle)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
