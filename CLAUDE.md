@@ -50,7 +50,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (307 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (312 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -484,8 +484,8 @@ put off, with where it came from.
   beside it and swaps it in with `ReplaceFileW`, existing entries copied as bytes (`fs::zipraw` since
   P8-L2: the local record, data and descriptor and the central record kept whole, only the name and
   offset patched). Files that would
-  replace files in the zip are asked about once per job (a message box: Yes replace, No skip, Cancel;
-  replace under `TWINFM_SOAK`). A move into a zip recycles the originals afterwards. No write into a
+  replace files in the zip are asked about once per job (Replace, Skip, Cancel; a message box until
+  P12-M3, TwinFM's own question since; replace under `TWINFM_SOAK`). A move into a zip recycles the originals afterwards. No write into a
   zip is undone (Ctrl+Z: "Cannot undo: changes to a zip archive cannot be undone"). Since P8-L2 items
   go from one zip into another or within one (`Plan::FromZip`, `archivewrite::copy_from_zip`: entries
   copied as bytes, an encrypted one keeping its own password, a plain file into a password zip
@@ -533,8 +533,8 @@ put off, with where it came from.
   Ok(files) | Err("<why>") in T ms`. `[fileops] done` reads `Failed: <why>` for an archive job's
   error; a refused drop notes `drop: <why>` in the pane under the pointer. A password-protected zip
   is written since P8-L2 (refused in P7-M3): a job that adds files, a new file, or plain files from
-  another zip asks for the password (a dialog of TwinFM's own on the file operation worker,
-  `ask_password`, masked; or the driver's `zippassword <text>`, the answer to the next question; a
+  another zip asks for the password (`ask_password`, masked, from the file operation worker: a
+  dialog of TwinFM's own until P12-M3, a question of `crate::ask` since; or the driver's `zippassword <text>`, the answer to the next question; a
   scripted job without one, or with a wrong one, is refused, never shown the dialog), checks it by
   reading the zip's smallest encrypted file whole (`archivewrite::check_password`), asks again while
   it is wrong, and encrypts the new files with the zip's own method (`Protection`: ZipCrypto, or
@@ -865,8 +865,8 @@ put off, with where it came from.
   in a new tab of the pane (placed after the active tab, in order, the last one shown), files with
   the shell's default command for all of them at once on the verb worker
   (`VerbRequest::default_item`, `GetMenuDefaultItem`, one job per folder for a search tab's files),
-  files inside an archive each through its PIDL; above 15 items (`model::OPEN_ASK_ABOVE`) a message
-  box asks first (none under `TWINFM_SOAK`). `[open] pane=N K items: D folder(s) to tabs, F
+  files inside an archive each through its PIDL; above 15 items (`model::OPEN_ASK_ABOVE`) a question
+  asks first (a message box until P12-M3; none under `TWINFM_SOAK`). `[open] pane=N K items: D folder(s) to tabs, F
   file(s)`, `[open] pane=N K items: not opened (the question was declined)`, and `[menu] verb ""
   ("Open") queued on the verb worker (the default command), id N`. A script never opens several
   files (they would start their apps on the desktop); several folders are safe. The menu shows Open
@@ -971,9 +971,9 @@ put off, with where it came from.
   refused, plain kept: <err>`, `recolour: the file is previewed again`.
   Since P11-M6, password PDFs through hayro (no new crate): a PDF hayro cannot open with the empty
   password shows "Password-protected PDF" and an "Enter password…" button (Jeremy's choice: never asked
-  as the cursor passes); the button opens the file again with `Req::Open`'s `ask` (the window's handle),
-  and the worker asks in TwinFM's masked dialog (`fileops::archive::ask_password`, the zip password's,
-  now taking its prompt), asks again while the password is wrong, and on Cancel leaves the message.
+  as the cursor passes); the button opens the file again with `Req::Open`'s `ask`,
+  and the worker asks for it (`fileops::archive::ask_password`, the zip password's question, since
+  P12-M3 one of `crate::ask`'s), asks again while the password is wrong, and on Cancel leaves the message.
   hayro takes the user password of revisions 2 to 4 (RC4-40, RC4-128, AES-128) and the user or owner
   password of 5 and 6 (AES-256); an owner-password-only file opens with no question. The password lives
   in the open document only, never written anywhere. Driver: `pdfpassword <text>` (the answer to the next
@@ -1004,6 +1004,31 @@ put off, with where it came from.
   pages a screenful towards the pointer, the wheel over it scrolls the view. `drag <pane> <dy> <ms>`
   presses its thumb at the same aim as before (`thumb()`: 10 px in from the pane's edge, 17 px below the
   list's top). No new driver step or stderr line.
+  Since P12-M3, TwinFM's own questions are drawn in the look (`src/ask.rs`, app.slint's
+  `question-popup`): the zip's replace question (Cancel, Skip, Replace) and permanent delete (Cancel,
+  Delete), a zip's or a PDF's password (a masked field, Cancel, OK), "Open N items at once?" (Cancel,
+  Open). A popup over the whole window on a scrim, the card centred; the primary button filled and
+  focused (the password field when there is one), Tab between the buttons (`Btn` takes the focus
+  since; the card's own key handler is no Tab stop, `focus-on-tab-navigation: false`, since Jeremy's
+  console check; driver key names `Tab` and `ShiftTab`), Return the primary (a focused button presses
+  itself), Escape the Cancel; the window's keys do nothing while one shows. A worker calls `ask::ask`,
+  which hands the question to the UI thread
+  and waits on a one-slot channel; the UI thread calls `ask::ask_here` and goes on in the reply (the
+  open-many question, whose items wait in it). One shows at a time, the rest in the order asked;
+  quitting answers Cancel to all; a scripted run's question left 30 s (`ask::SCRIPT_CANCEL`) is
+  answered Cancel. **A worker may wait for the UI thread only through `ask`, and the UI thread never
+  waits for a thread that can call it.** Unchanged: `TWINFM_SOAK`'s answers (the replace, zip delete
+  and open-many questions are never asked there), and the password questions' script rule
+  (`zippassword`, `pdfpassword`; a script that gave none is refused, never shown the question). A
+  question asked while the UI thread is in a modal loop (the classic menu, a drag) shows when the loop
+  ends. Driver: `waitquestion <ms>` (until a question shows, at most `<ms>`, then 100 ms; `[auto]
+  waitquestion: no question after <ms> ms`), `answer <button>` (presses the shown question's button by
+  its label, any case; `[auto] answer <button>: no question shows a button reading so`). `[ask]` lines:
+  `shown <kind> "<title>" (from <thread>, K waiting)` (kind `replace`, `zip delete`, `password`, `open
+  many`; thread `fileops`, `preview`, `the UI thread`), `<kind> answered <button> after T ms`, `<kind>
+  unanswered after 30 s: Cancel (scripted run)`, `quit: K question(s) answered Cancel`, `<kind> asked
+  on the UI thread: Cancel` (a mistake that would hang it). The password typed is cleared when the
+  question closes and never written to a line.
   Since P12-M6, **a classic-menu command whose id moved runs**: Microsoft Defender's handler adds "Scan
   with Microsoft Defender..." only to a menu built with an owner window, and the verb worker builds its
   menu with none (P7-M1), so every command numbered after Defender's sits one id lower there (Google

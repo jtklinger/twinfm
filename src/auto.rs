@@ -15,7 +15,7 @@
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
 //!                                    CtrlV, CtrlZ, CtrlY, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
 //!                                    the Windows 11 menu under the cursor row, as rclick does); CtrlT,
-//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
+//!                                    CtrlW, Tab, ShiftTab, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
 //!                                    CtrlShiftPageUp, CtrlShiftPageDown, AltLeft, AltRight (back
 //!                                    and forward in the tab's history), CtrlComma (settings),
 //!                                    CtrlF (the filter box), CtrlShiftF (search), AltReturn
@@ -248,6 +248,11 @@
 //!   pdfpassword <text>               the answer to the next PDF password question, then the column's
 //!                                    "Enter password…" button pressed (P11-M6); a scripted run never
 //!                                    shows the dialog, so a question without it is refused
+//!   waitquestion <ms>                wait until one of TwinFM's own questions shows (P12-M3: a zip's
+//!                                    replace or delete question, "Open N items at once?"), at most
+//!                                    <ms>, then 100 ms; a scripted run's question left 30 s is
+//!                                    answered Cancel
+//!   answer <button>                  press the shown question's button reading <button> (any case)
 //!   previewcopy <block|all>          the "Copy text" menu's pick: block <block> (0-based, a code
 //!                                    block or table whole) or every block onto the clipboard (P11-M4)
 //!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
@@ -422,6 +427,10 @@ enum Step {
     PdfPassword(String),
     /// "Copy text": a block, or None for all.
     PreviewCopy(Option<usize>),
+    /// Wait until a question shows (at most `ms`), then 100 ms (P12-M3).
+    WaitQuestion(u64),
+    /// Press the shown question's button with this label (P12-M3).
+    Answer(String),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
     /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
     Window(String),
@@ -637,6 +646,8 @@ fn parse(script: &str) -> Vec<Step> {
                 }),
                 "pdfpassword" => Step::PdfPassword(s.trim_start()["pdfpassword".len()..].trim().to_string()),
                 "previewcopy" => Step::PreviewCopy(a.get(1).and_then(|v| v.parse().ok())),
+                "waitquestion" => Step::WaitQuestion(num(1).max(1) as u64),
+                "answer" => Step::Answer(a.get(1..).unwrap_or(&[]).join(" ")),
                 "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
@@ -1096,6 +1107,8 @@ fn chord(name: &str) -> Vec<SharedString> {
         "F9" => vec![k(Key::F9)],
         "CtrlW" => vec![k(Key::Control), "w".into()],
         "CtrlL" => vec![k(Key::Control), "l".into()],
+        "Tab" => vec![k(Key::Tab)],
+        "ShiftTab" => vec![k(Key::Shift), k(Key::Tab)],
         "CtrlTab" => vec![k(Key::Control), k(Key::Tab)],
         "CtrlShiftTab" => vec![k(Key::Control), k(Key::Shift), k(Key::Tab)],
         "CtrlShiftPageUp" => vec![k(Key::Control), k(Key::Shift), k(Key::PageUp)],
@@ -1626,6 +1639,26 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::PreviewCopy(one) => {
             crate::preview::copy(one);
+            schedule(runner, 1);
+        }
+        Step::WaitQuestion(max_ms) => {
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                let shown = crate::ask::shown();
+                if shown || std::time::Instant::now() >= deadline {
+                    if !shown {
+                        eprintln!("[auto] waitquestion: no question after {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 100);
+                }
+            });
+        }
+        Step::Answer(label) => {
+            if !crate::ask::answer_label(&label) {
+                eprintln!("[auto] answer {label}: no question shows a button reading so");
+            }
             schedule(runner, 1);
         }
         Step::WaitPreview(max_ms) => {

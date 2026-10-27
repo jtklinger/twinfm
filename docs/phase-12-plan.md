@@ -723,6 +723,155 @@ like.
 Jeremy's re-checks (2026-10-26, on `target-p12m5` rebuilt from 3d5e162, which holds the padding), his
 words: the padding, "1. looks fine."; the PDF zoom's bars, "2. look good".
 
+## P12-M3: TwinFM's own questions in the look
+
+The look stream's third milestone, opened 2026-10-25 on the P12-M2 branch's head (fee789f; P12-M1 and
+P12-M2 not yet merged), branch `feat/p12-m3-questions`. Windows' three message boxes and the hand-built
+password dialog become one question dialog of TwinFM's own.
+
+### Settled first (2026-10-25, reading the code before any)
+
+- **Who asks, and on which thread**: the file operation worker (`fileops`, an STA thread with a message
+  loop) asks the zip's replace question (the conflict closure `archivewrite::add`, `copy_from_zip` and
+  `from_shell` call), the permanent delete inside a zip (`confirm_delete`) and a zip's password
+  (`key_for`); the preview worker (`preview`) asks a PDF's password (`pdf_password`, after the "Enter
+  password…" button); the UI thread asks "Open N items at once?" (`open_rows`). Each was a modal loop
+  on its own thread (`MessageBoxW`, `DialogBoxIndirectParamW`), owned by the app's window.
+- **The plan's rule holds in the code as it is**: nothing on the UI thread waits for the file operation
+  or preview worker (their replies come through `invoke_from_event_loop`; the driver's `waitops` and
+  `waitpreview` poll on timers); at exit the UI thread posts the workers' loops `WM_QUIT` and joins
+  neither (the watcher's stop is its one wait, and the watcher never asks). So a worker waiting in
+  `ask` cannot deadlock with the UI thread, and `ask::quit`, right after `app.run()` returns, answers
+  Cancel to anything still waiting. While it waits, the file operation worker owns no window (it asks
+  before or between its shell operations), so blocking on a channel instead of pumping a message box's
+  loop leaves no sent message waiting on it.
+- **Slint, at the pinned rev**: showing a popup takes the focus and gives it to nothing, so the focus is
+  set by a token bumped after `show()` (the settings dialog's way); an element inside a `for` cannot be
+  named from outside it, so the buttons are three fixed slots, right-aligned (the buttons in the last
+  ones, an empty slot's button not visible), focused by id; a layout keeps the space of an element that
+  is not visible, so the password field's row has a height only when asked for; `TextInput` has
+  `input-type: password` (masked, not copyable), which `Field` now passes on.
+- **`Btn` took no keyboard focus** (a Rectangle and a TouchArea), so Tab could not move between a
+  question's buttons: it gains a `FocusScope` (Space or Return presses it, a 2 px accent ring shows it,
+  `enabled` only while visible). The settings dialog's and About's buttons take the focus too.
+- **The PDF's window handle**: `Req::Open`'s `ask` carried the window handle only to own the dialog; it
+  becomes a flag, and `pdf_password` and `ask_password` lose their handle (`ask_password(title, prompt)`).
+
+### What landed (2026-10-25)
+
+- **541bdf9**: `src/ask.rs` (new): `Question` (a kind for the lines, title, text, a password field or
+  not, one to three buttons with the primary and the Cancel), `ask` for a worker (the question handed to
+  the UI thread, the answer awaited on a one-slot channel; Cancel when the UI thread is gone, and a
+  refusal with a line if it is ever called on the UI thread, which would hang it), `ask_here` for the UI
+  thread (the reply runs on the answer), `Queue` (one shown, the rest in order), the scripted run's tick
+  (`overdue`, `SCRIPT_CANCEL` 30 s), `quit`, and the driver's `shown` and `answer_label`; five tests. In
+  app.slint `question-popup`: a popup over the whole window on `Theme.scrim` (black at 40%), the card
+  centred (420 px, the look's 10 px corners and the dialogs' shadow), the title at 16 px weight 600, the
+  text muted, the masked field when asked, the three slots of `Btn`s; Escape presses the Cancel slot,
+  Return the primary (a focused button presses itself), the window's keys do nothing while it shows.
+  The four questions: the zip's replace ("Replace files in z.zip?", the names, Cancel, Skip, Replace),
+  the zip delete ("Permanently delete N items?", "From z.zip. A zip archive has no Recycle Bin, and this
+  cannot be undone.", Cancel, Delete), the password ("Password for <name>", the prompt as before, a
+  masked field, Cancel, OK; the zip's and the PDF's), open-many ("Open N items at once?", "Each folder
+  opens in a new tab, and each file in its program.", Cancel, Open), its items kept in the reply
+  (`open_rows` then `open_items`). Driver `waitquestion <ms>` and `answer <button>`; `[ask]` lines
+  (CLAUDE.md § Measuring). Unchanged: `TWINFM_SOAK`'s answers and the password questions' script rule.
+
+Tests 308 (303 and the five of `ask.rs`).
+
+### Calls made in this milestone, for Jeremy to check
+
+- The buttons read left to right Cancel, then the others, the primary last and filled (the settings
+  dialog's order); the replace question's are Cancel, Skip, Replace, Replace the default as the message
+  box's Yes was; the zip delete's default is Delete, as before.
+- The window is dimmed behind a question (black at 40%); the dialog has no icon (the message boxes
+  had a warning or question mark).
+- Return on a focused button presses that button (Windows' rule); in the password field, or with the
+  focus on the primary, it presses the primary.
+- Buttons everywhere now show a ring when Tab reaches them (the settings dialog's too).
+- A file dropped onto the window from another program while a question shows is not refused (the
+  scrim stops TwinFM's own pointer, not OLE's drop target); the job it starts waits behind the question.
+
+### Scripted checks (2026-10-25, the branch's build at 541bdf9, `TWINFM_SCRIPT` without `TWINFM_SOAK`)
+
+A scratch folder, `%TEMP%\twinfm-p12m3-check` (sixteen folders, `a.txt`, and `z.zip` holding `a.txt`
+and `b.txt`), made afresh for each run:
+
+- **Replace**: `copy` of `a.txt` into the zip in the right pane: `[ask] shown replace "Replace files in
+  z.zip?" (from fileops, 0 waiting)`, `answer Replace`, `[archive] 1 file(s) already in ...: replace`,
+  the job Done.
+- **Zip delete**: `delete` of `a.txt` inside the zip: `[ask] shown zip delete "Permanently delete 1
+  item?" (from fileops, 0 waiting)`, `answer Delete`, the job Done (the zip left holding `b.txt`).
+- **Open many**: sixteen folders and Return: `[ask] shown open many "Open 16 items at once?" (from the
+  UI thread, 0 waiting)`; `answer Cancel` gave `[open] ... not opened (the question was declined)`; again
+  with `answer Open`, sixteen `[tab] pane=0 opened tab` lines.
+- **30 s**: the open-many question left alone: `[ask] open many unanswered after 30 s: Cancel (scripted
+  run)`, answered after 30,013 ms, nothing opened.
+- **Quit**: `quit` with the question shown: `[ask] quit: 1 question(s) answered Cancel`, nothing opened.
+- **The queue**: the open-many question shown, then a file dropped into the zip (`dropfiles 1 -1 copy`):
+  the worker's replace question waited; after `answer Cancel` it showed (`from fileops, 0 waiting`),
+  `answer Skip`, the job Done 2.7 s after it started (its wait included).
+- Screenshots of the replace, zip delete and open-many questions in both schemes (the scrim, the card,
+  the primary focused with its ring). No `panicked` line in any run. The password questions are the
+  console's: a scripted run never shows them (the script's rule).
+
+### Soak
+
+None: as the plan says, the soak never meets a question (`TWINFM_SOAK` answers the replace, zip delete
+and open-many questions itself, and its passwords come from `zippassword`); `tools/soak-p5m3.ps1` is
+unchanged.
+
+### Gate
+
+ab60, passed (2026-10-25, Jeremy at the console, 23:08 to 23:16 in the six-gate script):
+`tools/gate-p12m3.ps1`, `target-p12m3` (541bdf9) against `target-p12m2` (472ceae, its base), the
+defaults.
+
+| Setting | p12m2 (WPR) | p12m3 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.6, 20.7, 20.7 | 21.1, 21.2, 20.6 | 20.7 / 21.1 | 2.86 to 2.97 ms |
+
+No gap that counts: not every reference run sits below every candidate run (the candidate's 20.6 under
+the reference's 20.7), and the medians differ by 0.4 of a point. The scenario asks no question, so it
+proves only that the rest is untouched; no panic. The whole session ran in the costlier state (render p50
+2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally; as ab42 in Phase 10), so the
+20% bar was met by neither build; read like for like.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m3`, light and dark)
+
+- Each question: a file pasted into a zip that holds one of the same name (Replace, Skip, Cancel); a file
+  deleted inside a zip; a zip with a password (`C:\traces\password-twinfm.zip`, password `twinfm`) given a
+  file, with a wrong password first (asked again), then the right one; a password PDF's "Enter
+  password…", wrong then right; more than fifteen items opened at once.
+- In each: Tab between the buttons (the ring), Return, Escape (Cancel), a click outside the card (nothing
+  happens).
+- A question while a copy runs: a large copy started, then a file pasted into a zip that holds it: the
+  zip's job waits behind the copy, and its question shows when the job starts, not hidden behind the
+  shell's progress window.
+
+Jeremy's result (2026-10-26, on `target-p12m5`, which holds this milestone's code), his words for this
+item: "#10, tabs do not flow smoothly." A scripted check then pressed Tab four times and Shift+Tab twice
+in each question a script can show (open-many, the zip delete, the replace), a screenshot after each
+key: after the last button, Tab moved to an invisible stop (no ring anywhere), and only the next Tab
+reached Cancel; Shift+Tab from Cancel stopped there too. The stop was the card's own `FocusScope`, the
+one that takes Escape and Return from the buttons, which Slint makes a Tab stop by default
+(`focus-on-tab-navigation`); the hidden password field was skipped, and Tab never left the card. The fix
+(below) sets `focus-on-tab-navigation: false` on it: the same check in both schemes then went Replace,
+Cancel, Skip, Replace (open-many: Open, Cancel, Open; the zip delete: Delete, Cancel, Delete), Shift+Tab
+the other way, every stop a button with its ring; Escape still answered Cancel in each. The password
+questions cannot be shown in a script (`zippassword` and `pdfpassword` answer them unseen): their order
+is the field, Cancel, OK, back to the field; Jeremy's console check. The driver gained the key names
+`Tab` and `ShiftTab` for it.
+
+- **bc63834**: the question card's key handler takes no Tab stop (`focus-on-tab-navigation: false`); driver
+  key names `Tab`, `ShiftTab`.
+
+Jeremy's re-check (2026-10-26, on `target-p12m5` rebuilt from 3d5e162), his words: "3. Tab moves, but
+it's tough to determine exactly which icon or pane is the active tab. On some tabs, it doesn't even show
+a row or icon that's highlighted with the tab." "Which icon or pane" reads like Tab in the main window
+rather than in a question; the coordinating session asked him which he meant, and the look stream
+surveys every Tab stop of both meanwhile.
+
 ## The memory check (the coordinating session, 2026-10-25)
 
 Jeremy's word at the kickoff: "The memory check". The question, from the Phase 11 close's 60-minute soak: what
