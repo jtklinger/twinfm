@@ -1397,6 +1397,46 @@ two snapshots of this one run.
 same 60-minute soak without tracking against `target-p11close`; fewer large temporary allocations in the
 preview's styled text for a big file (built per chunk); the Recycle Bin enumeration's shell cache (small).
 
+## The memory manager trial (the coordinating session, 2026-10-26)
+
+Jeremy's word, 2026-10-26: "Try the windows newer memory manager" (the first follow-up above).
+
+**The change** (branch `feat/segment-heap`): `assets/twinfm.exe.manifest` asks for the segment heap
+(`<heapType>SegmentHeap</heapType>`, Windows 10 2004 and later) and nothing else; `build.rs` embeds it with
+the icon through winresource, which links it into the test binaries too. Before it the exe had no manifest.
+At start TwinFM logs `[mem] process heap: segment heap` (`perf::process_heap`, the default heap's header
+signature, which Rust's allocator uses), and `perf::tests::the_process_runs_on_the_segment_heap` checks it.
+
+**The trial**: two 60-minute P5-M3 soaks without heap tracking, one after the other in the same evening, both
+with the `gate-segbase` checkout's `soak-p5m3.ps1`: first `target-segbase` (7ec499a, main before the change,
+the NT heap), then `target-segheap` (b5e985f, the same code with the manifest). Records in
+`C:\traces\segtrial-*` (the reports, the memory samples every 30 s, the stderr).
+
+| | NT heap (segbase) | Segment heap (segheap) |
+|---|---|---|
+| Soak | exit 0, no panics, 76 cycles, 1,664 jobs, every must-be-0 count 0 | the same |
+| Private bytes at 5 s | 139.4 MB | 137.3 MB |
+| Median, minutes 10 to 20 | 222.7 MB | 202.2 MB |
+| Median, the last 10 minutes | 250.7 MB | 210.8 MB |
+| At the end (the report's figure) | 302.9 MB | 211.0 MB |
+| Trend after 10 minutes (least squares) | 55 MB an hour | 14 MB an hour (about 10 without its one spike) |
+| Working set, largest | 311.7 MB | 305.9 MB |
+
+- **Both builds spike and fall back** (about 290 MB for one sample, back within a minute: the cycle's large
+  temporary allocations, the 2 MB Markdown's styled text among them), but only the NT heap's floor rises: from
+  about 220 MB to about 245 within the hour, and three spikes in the last 7 minutes (one at the very end, which
+  is why the report's end figure reads 303). The segment heap's floor stays at 200 to 212 MB from minute 8 on,
+  and its one spike (295 MB at 1,926 s) is back at 208 by 1,986 s: freed memory goes back to Windows.
+- **No cost showed in the soak's frames** (the `[perf]` render lines read alike); the soak is not the measure
+  of that, the gate below is.
+- **Caveats**: one run each, in a fixed order (the NT heap first); the gap is too wide and too steady for the
+  order to explain.
+
+**Tests**: 318 passed on 3698cd2 (main merged in), the heap's test among them; the release build clean.
+
+**Gate** (`tools/gate-segheap.ps1`, tag ab65): `target-p12seg` from 3698cd2 against `target-p12main`
+(1163257, main with every Phase 12 milestone), the defaults and the grid with thumbnails. Pending Jeremy.
+
 ## P12-M6: Google Drive's commands, and its volume
 
 Started 2026-10-25 from main at 76b5d35 (the Phase 12 plan), branch `feat/p12-m6-gdrive-commands`, the
