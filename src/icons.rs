@@ -52,8 +52,11 @@ pub const PLACEHOLDER_DRIVE: u16 = 2;
 pub const PLACEHOLDERS: u16 = 3;
 
 /// The details list's row height and icon size in logical px (pane.slint): 22 px rows with 16 px
-/// icons, or with thumbnails on (settings `thumbnails`) 32 px rows with 32 px icons. The icon
-/// buffer is the icon size times the window scale factor.
+/// icons, or with thumbnails on (settings `thumbnails`) 32 px rows with 32 px icons; since P12-M4
+/// comfortable rows (settings `row_height`) are 30 px with the 16 px icons centred in them, and with
+/// thumbnails 44 px with the 32 px pictures centred (Jeremy's "comfortable should make rows taller",
+/// 2026-10-26: the 30/22 the canvas's compact density gives the 22 px rows, 43.6 px, rounded). The
+/// icon buffer is the icon size times the window scale factor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ListGeom {
     pub row_px: f32,
@@ -61,14 +64,27 @@ pub struct ListGeom {
 }
 
 impl ListGeom {
-    pub const fn new(thumbnails: bool) -> ListGeom {
-        if thumbnails { ListGeom { row_px: 32.0, icon_px: 32.0 } } else { ListGeom { row_px: 22.0, icon_px: 16.0 } }
+    pub const fn new(thumbnails: bool, comfortable: bool) -> ListGeom {
+        if thumbnails {
+            ListGeom { row_px: if comfortable { 44.0 } else { 32.0 }, icon_px: 32.0 }
+        } else if comfortable {
+            ListGeom { row_px: 30.0, icon_px: 16.0 }
+        } else {
+            ListGeom { row_px: 22.0, icon_px: 16.0 }
+        }
     }
 
-    /// The name column's left edge in a row: 6 px padding plus the icon column, one row high,
-    /// plus a 4 px gap after a thumbnail (the rows' `padding-left`, 28 or 42 px).
+    /// The geometry of a list whose rows are `row_px` tall (dnd's `Layout` carries the height alone):
+    /// 32 and 44 px rows are the thumbnails', 22 and 30 px the 16 px icons'.
+    pub const fn of_row(row_px: f32) -> ListGeom {
+        ListGeom::new(row_px >= 32.0, row_px > 32.0 || (row_px > 22.0 && row_px < 32.0))
+    }
+
+    /// The name column's left edge in a row: 6 px padding plus the icon column, 22 px for the 16 px
+    /// icons (in either row height) or 32 px plus a 4 px gap for a thumbnail (the rows'
+    /// `padding-left`, 28 or 42 px).
     pub fn name_x(&self) -> f32 {
-        6.0 + self.row_px + if self.row_px > 22.0 { 4.0 } else { 0.0 }
+        6.0 + if self.icon_px > 16.0 { self.icon_px + 4.0 } else { 22.0 }
     }
 }
 
@@ -588,15 +604,13 @@ pub struct StripGeom {
 }
 
 impl StripGeom {
-    /// The strip for the details list with thumbnails off (22 px rows, 16 px icons) or on (32 px
-    /// rows, 32 px icons) at window scale `scale`.
-    pub fn new(scale: f32, thumbnails: bool) -> StripGeom {
-        let list = ListGeom::new(thumbnails);
+    /// The strip for the details list's geometry (`ListGeom`) at window scale `scale`.
+    pub fn new(scale: f32, list: ListGeom) -> StripGeom {
         StripGeom { icon_px: ((list.icon_px * scale).round() as u32).max(1), scale, list }
     }
 
     /// Physical y of the icon of the k-th row of the strip: the row's top plus the centering
-    /// offset of the icon in its row (3 px of a 22 px row, none in a 32 px one).
+    /// offset of the icon in its row (3 px of a 22 px row, 7 of a 30 px one, none in a 32 px one).
     pub fn icon_y(&self, k: usize) -> u32 {
         let ListGeom { row_px, icon_px } = self.list;
         ((k as f32 * row_px + (row_px - icon_px) / 2.0) * self.scale).round() as u32
@@ -2143,43 +2157,62 @@ mod tests {
 
     #[test]
     fn strip_layout_arithmetic() {
-        let g1 = StripGeom::new(1.0, false);
+        let g1 = StripGeom::new(1.0, ListGeom::new(false, false));
         assert_eq!(g1.icon_px, 16);
         assert_eq!((g1.icon_y(0), g1.icon_y(1), g1.icon_y(10)), (3, 25, 223), "row top plus (22 - 16) / 2");
         assert_eq!((g1.height(0), g1.height(1), g1.height(50)), (0, 22, 1100));
-        let g15 = StripGeom::new(1.5, false);
+        let g15 = StripGeom::new(1.5, ListGeom::new(false, false));
         assert_eq!(g15.icon_px, 24);
         assert_eq!((g15.icon_y(0), g15.icon_y(1), g15.icon_y(3)), (5, 38, 104)); // 4.5 rounds to 5
         assert_eq!(g15.height(3), 99);
-        let g125 = StripGeom::new(1.25, false);
+        let g125 = StripGeom::new(1.25, ListGeom::new(false, false));
         assert_eq!(g125.icon_px, 20);
         assert_eq!(g125.height(3), 83); // 82.5, rounded once for the whole strip
         // Thumbnails on: 32 px icons filling 32 px rows.
-        let t1 = StripGeom::new(1.0, true);
+        let t1 = StripGeom::new(1.0, ListGeom::new(true, false));
         assert_eq!(t1.icon_px, 32);
         assert_eq!((t1.icon_y(0), t1.icon_y(1), t1.icon_y(10)), (0, 32, 320), "row top plus (32 - 32) / 2");
         assert_eq!((t1.height(0), t1.height(1), t1.height(50)), (0, 32, 1600));
-        let t15 = StripGeom::new(1.5, true);
+        let t15 = StripGeom::new(1.5, ListGeom::new(true, false));
         assert_eq!(t15.icon_px, 48);
         assert_eq!((t15.icon_y(0), t15.icon_y(1), t15.icon_y(3)), (0, 48, 144));
         assert_eq!(t15.height(3), 144);
-        let t125 = StripGeom::new(1.25, true);
+        let t125 = StripGeom::new(1.25, ListGeom::new(true, false));
         assert_eq!(t125.icon_px, 40);
         assert_eq!((t125.icon_y(1), t125.height(3)), (40, 120));
-        let t175 = StripGeom::new(1.75, true);
+        let t175 = StripGeom::new(1.75, ListGeom::new(true, false));
         assert_eq!((t175.icon_px, t175.icon_y(1), t175.height(3)), (56, 56, 168));
-        assert_eq!(StripGeom::new(2.0, true).icon_px, 64);
-        // Every icon lies inside its own row band at any of these scales, in both geometries.
-        for thumbs in [false, true] {
+        assert_eq!(StripGeom::new(2.0, ListGeom::new(true, false)).icon_px, 64);
+        // Every icon lies inside its own row band at any of these scales, in every geometry.
+        for (thumbs, comfy) in [(false, false), (false, true), (true, false), (true, true)] {
             for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
-                let g = StripGeom::new(scale, thumbs);
+                let g = StripGeom::new(scale, ListGeom::new(thumbs, comfy));
                 for k in 0..200 {
                     assert!(g.icon_y(k) >= g.height(k), "scale {scale} thumbnails {thumbs} row {k}");
                     assert!(g.icon_y(k) + g.icon_px <= g.height(k + 1), "scale {scale} thumbnails {thumbs} row {k}");
                 }
             }
         }
-        assert_eq!((ListGeom::new(false).name_x(), ListGeom::new(true).name_x()), (28.0, 42.0), "the rows' padding-left");
+        assert_eq!((ListGeom::new(false, false).name_x(), ListGeom::new(true, false).name_x()), (28.0, 42.0), "the rows' padding-left");
+        // Comfortable rows (P12-M4): 30 px, the 16 px icons centred 7 px down, the name where it was;
+        // with thumbnails 44 px, the 32 px pictures 6 px down, the name where it was.
+        assert_eq!(ListGeom::new(false, true), ListGeom { row_px: 30.0, icon_px: 16.0 });
+        assert_eq!(ListGeom::new(false, true).name_x(), 28.0, "the name's x does not move");
+        assert_eq!(ListGeom::new(true, true), ListGeom { row_px: 44.0, icon_px: 32.0 });
+        assert_eq!(ListGeom::new(true, true).name_x(), 42.0, "the name's x does not move");
+        let ct1 = StripGeom::new(1.0, ListGeom::new(true, true));
+        assert_eq!((ct1.icon_px, ct1.icon_y(0), ct1.icon_y(1), ct1.height(2)), (32, 6, 50, 88));
+        let ct125 = StripGeom::new(1.25, ListGeom::new(true, true));
+        assert_eq!((ct125.icon_px, ct125.icon_y(0), ct125.height(3)), (40, 8, 165)); // 7.5 rounds to 8
+        let c1 = StripGeom::new(1.0, ListGeom::new(false, true));
+        assert_eq!((c1.icon_px, c1.icon_y(0), c1.icon_y(1), c1.height(2)), (16, 7, 37, 60));
+        let c15 = StripGeom::new(1.5, ListGeom::new(false, true));
+        assert_eq!((c15.icon_px, c15.icon_y(1), c15.height(3)), (24, 56, 135));
+        // The geometry from the row height alone, as dnd's layout has it.
+        assert_eq!(
+            [ListGeom::of_row(22.0), ListGeom::of_row(30.0), ListGeom::of_row(32.0), ListGeom::of_row(44.0)],
+            [ListGeom::new(false, false), ListGeom::new(false, true), ListGeom::new(true, false), ListGeom::new(true, true)]
+        );
         // Range: the visible rows plus the margin, clamped to the list.
         let m = STRIP_MARGIN_ROWS;
         assert_eq!(strip_range((10, 40), 1000), (10 - m, 40 + m));
@@ -2217,7 +2250,7 @@ mod tests {
         t.complete("a".into(), 2, Outcome::Pixels(solid(10)));
         t.complete("b".into(), 2, Outcome::Pixels(solid(20)));
         // Three rows: key a, a row with no icon yet (the file placeholder), key b.
-        let g = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(false) };
+        let g = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(false, false) };
         let icons: Vec<_> = [PLACEHOLDERS, PLACEHOLDER_FILE, PLACEHOLDERS + 1].iter().map(|&i| t.fitted(i, 2)).collect();
         let strip = compose(&icons, &[], &g);
         assert_eq!((strip.width(), strip.height()), (2, 66));
@@ -2240,7 +2273,7 @@ mod tests {
         assert_eq!(compose(&[], &[], &g).height(), 0);
         assert!(compose(&[solid(1)], &[], &StripGeom { icon_px: 4, scale: 1.0, ..g }).as_slice().iter().all(|p| p.a == 0));
         // 32 px rows with 32 px icons: each icon at its row's top, rows 32 px apart.
-        let g32 = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(true) };
+        let g32 = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(true, false) };
         let strip = compose(&icons, &[], &g32);
         assert_eq!((strip.width(), strip.height()), (2, 96));
         let px = strip.as_slice();
@@ -2375,7 +2408,7 @@ mod tests {
         let full = Rgba8Pixel { r: 200, g: 200, b: 200, a: 255 };
         let dimmed = Rgba8Pixel { r: 90, g: 90, b: 90, a: 115 };
         // The strip: entry 1 of three dimmed; a `dim` shorter than the icons leaves entry 2 alone.
-        let g = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(false) };
+        let g = StripGeom { icon_px: 2, scale: 1.0, list: ListGeom::new(false, false) };
         let icons = vec![solid(2, 200); 3];
         let strip = compose(&icons, &[false, true], &g);
         let px = strip.as_slice();

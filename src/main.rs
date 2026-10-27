@@ -2107,7 +2107,7 @@ fn line_of(st: &State, pane: usize, row: usize) -> (usize, f32) {
     if st.grid[pane] {
         (row / st.model(pane).grid_n(), st.tile[pane].h)
     } else {
-        (row, icons::ListGeom::new(st.config.thumbnails).row_px)
+        (row, list_geom(st).row_px)
     }
 }
 
@@ -2121,7 +2121,7 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let model = t.model.clone();
     let (y, h) = st.view[pane];
     let scale = app.window().scale_factor();
-    let geom = icons::StripGeom::new(scale, st.config.thumbnails);
+    let geom = icons::StripGeom::new(scale, list_geom(st));
     // The grid: visible GRID rows of the tile's height, `n` entries each, icons at the tile's size;
     // the strip covers whole grid rows. The details list: its rows, as before.
     let grid = st.grid[pane];
@@ -2358,7 +2358,7 @@ fn set_view(pane: usize, view: settings::View) {
         }
         let model = st.panes[pane].active().model.clone();
         let y = st.view[pane].0;
-        let list_px = icons::ListGeom::new(st.config.thumbnails).row_px;
+        let list_px = list_geom(st).row_px;
         let (old_px, old_n) = if old.is_grid() { (st.tile[pane].h, model.grid_n()) } else { (list_px, 1) };
         let first_entry = ((-y).max(0.0) / old_px).floor() as usize * old_n;
         let grid = view.is_grid();
@@ -3510,7 +3510,7 @@ fn verb_done(d: verbs::Done) {
 /// that row (already scrolled into view), or the background menu when there is no cursor row.
 fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, visible_h: f32) {
     let (len, g, grid) = with_state(|st| {
-        (st.model(pane).len(), icons::ListGeom::new(st.config.thumbnails), st.grid[pane].then(|| (st.model(pane).grid_n(), st.tile[pane])))
+        (st.model(pane).len(), list_geom(st), st.grid[pane].then(|| (st.model(pane).grid_n(), st.tile[pane])))
     });
     match usize::try_from(row).ok().filter(|&r| r < len) {
         Some(r) => {
@@ -4683,7 +4683,7 @@ pub fn window_layout(app: &App) -> dnd::Layout {
         tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
         left,
         preview: if app.get_preview() { dnd::preview_w(size.width, left, app.get_preview_width()) } else { 0.0 },
-        row_px: icons::ListGeom::new(app.get_thumbnails()).row_px,
+        row_px: icons::ListGeom::new(app.get_thumbnails(), app.get_comfortable()).row_px,
         grid: [
             app.get_left_grid().then(|| app.get_left_grid_cols().max(1) as usize),
             app.get_right_grid().then(|| app.get_right_grid_cols().max(1) as usize),
@@ -6026,7 +6026,7 @@ fn visible_rows(st: &State, app: &App, pane: usize) -> Option<(usize, usize)> {
     let (lines, line_px) = if st.grid[pane] {
         (model.grid_len(), icons::GridGeom::new(app.window().scale_factor(), n, st.tile[pane]).tile.h)
     } else {
-        (model.len(), icons::StripGeom::new(app.window().scale_factor(), st.config.thumbnails).list.row_px)
+        (model.len(), list_geom(st).row_px)
     };
     let visible = icons::visible_range(y, h, lines, line_px)?;
     Some((visible.0 * n, ((visible.1 + 1) * n - 1).min(model.len().checked_sub(1)?)))
@@ -6202,7 +6202,7 @@ fn set_show_type(st: &mut State, app: &App, on: bool) {
 fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
     st.config.thumbnails = on;
     app.set_thumbnails(on);
-    log_list_geom(on);
+    log_list_geom(list_geom(st));
     for pane in 0..2 {
         hide_strip(st, app, pane);
     }
@@ -6211,8 +6211,32 @@ fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
     if app.get_split() { vec![0, 1] } else { vec![0] }
 }
 
-fn log_list_geom(thumbnails: bool) {
-    let g = icons::ListGeom::new(thumbnails);
+/// Comfortable rows on or off (P12-M4): the details lists without thumbnails become 30 px (or 22
+/// px) rows. The icons stay 16 px, so their keys stand: the strips are composed again at the new
+/// pitch, and each list keeps its first row at the top.
+fn set_row_height(st: &mut State, app: &App, comfortable: bool) {
+    let old = list_geom(st).row_px;
+    st.config.row_height = if comfortable { "comfortable" } else { "compact" }.into();
+    app.set_comfortable(comfortable);
+    let g = list_geom(st);
+    log_list_geom(g);
+    for pane in 0..2 {
+        hide_strip(st, app, pane);
+        if !st.grid[pane] && g.row_px != old {
+            let y = st.view[pane].0 * g.row_px / old;
+            st.view[pane].0 = y;
+            app.invoke_set_scroll(pane as i32, y);
+        }
+        resolve_view(st, app, pane);
+    }
+}
+
+/// The details lists' geometry from the settings: thumbnails, comfortable or compact rows.
+fn list_geom(st: &State) -> icons::ListGeom {
+    icons::ListGeom::new(st.config.thumbnails, st.config.comfortable())
+}
+
+fn log_list_geom(g: icons::ListGeom) {
     eprintln!("[icons] list geometry: {} px rows, {} px icons", g.row_px, g.icon_px);
 }
 
@@ -6234,6 +6258,7 @@ fn settings_open() {
             view_right: view_of(st, 1).name().into(),
             show_type: st.config.show_type,
             thumbnails: st.config.thumbnails,
+            row_height: if st.config.comfortable() { "comfortable" } else { "compact" }.into(),
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
             toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
@@ -6261,6 +6286,7 @@ fn settings_open() {
     app.set_dlg_view_right(settings::View::from_name(&d.view_right).index());
     app.set_dlg_type_column(d.show_type);
     app.set_dlg_thumbnails(d.thumbnails);
+    app.set_dlg_row_height(i32::from(d.row_height == "comfortable"));
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
@@ -6378,6 +6404,7 @@ fn settings_closed(ok: bool) {
         view_right: settings::View::from_index(app.get_dlg_view_right()).name().into(),
         show_type: app.get_dlg_type_column(),
         thumbnails: app.get_dlg_thumbnails(),
+        row_height: if app.get_dlg_row_height() == 1 { "comfortable" } else { "compact" }.into(),
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
         toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
@@ -6427,6 +6454,7 @@ fn settings_closed(ok: bool) {
                     refresh(pane);
                 }
             }
+            "row_height" => with_state(|st| set_row_height(st, &app, staged.row_height == "comfortable")),
             "sidebar_visible" => {
                 if app.get_sidebar_visible() != staged.sidebar_visible {
                     app.invoke_toggle_sidebar();
@@ -6746,8 +6774,9 @@ fn main() -> Result<(), slint::PlatformError> {
     preview::init(&app);
     app.set_show_type(config.show_type);
     app.set_thumbnails(config.thumbnails);
-    if config.thumbnails {
-        log_list_geom(true);
+    app.set_comfortable(config.comfortable());
+    if config.thumbnails || config.comfortable() {
+        log_list_geom(icons::ListGeom::new(config.thumbnails, config.comfortable()));
     }
     for pane in 0..2 {
         set_cols(&app, pane, config.cols(pane));

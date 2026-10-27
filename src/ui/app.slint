@@ -286,6 +286,8 @@ export component App inherits Window {
     callback col-fit(int, int);
     // Thumbnails and 32 px rows in both panes (settings `thumbnails`; set at start and by the dialog).
     in property <bool> thumbnails: false;
+    // Comfortable 30 px rows in the details lists without thumbnails (settings `row_height`, P12-M4).
+    in property <bool> comfortable: false;
     in property <int> left-sort-col;
     in property <bool> left-sort-asc;
     in property <int> right-sort-col;
@@ -517,6 +519,8 @@ export component App inherits Window {
     in-out property <int> dlg-view-right;
     in-out property <bool> dlg-type-column;
     in-out property <bool> dlg-thumbnails;
+    // The rows (P12-M4): 0 compact, 1 comfortable.
+    in-out property <int> dlg-row-height;
     in-out property <bool> dlg-sidebar;
     in-out property <bool> dlg-crumbs;
     // The toolbar's place in the dialog: 0 none, 1 top, 2 in each pane (ComboBox index).
@@ -592,6 +596,7 @@ export component App inherits Window {
         if (field == "protected_right") { dlg-protected-right = value == "true"; }
         if (field == "type_column") { dlg-type-column = value == "true"; }
         if (field == "thumbnails") { dlg-thumbnails = value == "true"; }
+        if (field == "row_height") { dlg-row-height = value == "comfortable" ? 1 : 0; }
         if (field == "sidebar") { dlg-sidebar = value == "true"; }
         if (field == "path_bar") { dlg-crumbs = value != "entry"; }
         if (field == "view_left") { dlg-view-left = value == "medium" ? 2 : value == "large" ? 1 : 0; }
@@ -1023,6 +1028,7 @@ export component App inherits Window {
                 col-drag(c, dx, ph) => { root.col-drag(0, c, dx, ph); }
                 col-fit(c) => { root.col-fit(0, c); }
                 thumbnails: root.thumbnails;
+                comfortable: root.comfortable;
                 focus-requested => { active-pane = 0; }
                 filter-open <=> root.left-filter-open;
                 filter-text <=> root.left-filter-text;
@@ -1089,6 +1095,7 @@ export component App inherits Window {
                 col-drag(c, dx, ph) => { root.col-drag(1, c, dx, ph); }
                 col-fit(c) => { root.col-fit(1, c); }
                 thumbnails: root.thumbnails;
+                comfortable: root.comfortable;
                 focus-requested => { active-pane = 1; }
                 filter-open <=> root.right-filter-open;
                 filter-text <=> root.right-filter-text;
@@ -1451,9 +1458,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 670px) / 2);
+        y: max(10px, (root.height - 710px) / 2);
         width: 480px;
-        height: 670px;
+        height: 710px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Theme.card;
@@ -1563,6 +1570,15 @@ export component App inherits Window {
                                     label: "View in the right pane";
                                     selected => { root.settings-stage("view_right", self.current-index == 2 ? "medium" : self.current-index == 1 ? "large" : "details"); }
                                 }
+                            }
+                        }
+                        Row {
+                            Text { text: "Rows"; vertical-alignment: center; }
+                            Choice {
+                                model: ["Compact", "Comfortable"];
+                                current-index: root.dlg-row-height;
+                                label: "Row height in the details list";
+                                selected => { root.settings-stage("row_height", self.current-index == 1 ? "comfortable" : "compact"); }
                             }
                         }
                         Row {

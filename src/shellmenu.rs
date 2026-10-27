@@ -1536,7 +1536,7 @@ mod tests {
 
     #[test]
     fn keyboard_menu_point_sits_under_the_row_inside_the_viewport() {
-        let g = ListGeom::new(false);
+        let g = ListGeom::new(false, false);
         // List at (10, 63), not scrolled, 400 px tall: row 0's bottom is 22 px down.
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 0, g), (38.0, 85.0));
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 3, g), (38.0, 63.0 + 88.0));
@@ -1547,7 +1547,7 @@ mod tests {
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 500, g).1, 463.0);
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, -5.0, 2, g).1, 63.0, "a collapsed list");
         // 32 px rows (thumbnails on): the name column starts 42 px in (a 4 px gap after the thumbnail).
-        let t = ListGeom::new(true);
+        let t = ListGeom::new(true, false);
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 0, t), (52.0, 95.0));
         assert_eq!(row_menu_point(10.0, 63.0, -3200.0, 400.0, 105, t), (52.0, 63.0 + 6.0 * 32.0));
     }

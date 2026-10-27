@@ -109,6 +109,10 @@ pub struct Config {
     /// Thumbnails for image, video and document files, in 32 px rows with 32 px icons, in both
     /// panes (the settings dialog sets it). Missing in an older file: off (22 px rows).
     pub thumbnails: bool,
+    /// The details list's rows (P12-M4): "compact" (22 px, 32 px with thumbnails) or "comfortable"
+    /// (30 px, the 16 px icons centred in them; 44 px with thumbnails since 2026-10-26; the dialog sets
+    /// it). Missing in an older file, or anything else: compact. The grids are unchanged.
+    pub row_height: String,
     /// Each pane's view: "details" (the list) or "icons" (the icon grid, Ctrl+Shift+2 and
     /// Ctrl+Shift+3, or the settings dialog). Missing in an older file: details. Anything else
     /// reads as details.
@@ -278,6 +282,7 @@ impl Default for Config {
             sort_ascending: true,
             show_type: true,
             thumbnails: false,
+            row_height: "compact".into(),
             view_left: "details".into(),
             view_right: "details".into(),
             tile_left: "large".into(),
@@ -553,6 +558,8 @@ pub struct Dialog {
     pub view_right: String,
     pub show_type: bool,
     pub thumbnails: bool,
+    /// "compact" or "comfortable", as in `Config::row_height` (P12-M4).
+    pub row_height: String,
     pub sidebar_visible: bool,
     /// "breadcrumb" or "entry", as in `Config::path_bar`.
     pub path_bar: String,
@@ -580,7 +587,7 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 17] {
+    fn fields(&self) -> [(&'static str, String); 18] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
@@ -592,6 +599,7 @@ impl Dialog {
             ("view_right", self.view_right.clone()),
             ("show_type", self.show_type.to_string()),
             ("thumbnails", self.thumbnails.to_string()),
+            ("row_height", self.row_height.clone()),
             ("sidebar_visible", self.sidebar_visible.to_string()),
             ("path_bar", self.path_bar.clone()),
             ("toolbar", self.toolbar.clone()),
@@ -629,6 +637,11 @@ pub const SIDEBAR_MIN: f32 = 120.0;
 pub const SIDEBAR_MAX: f32 = 400.0;
 
 impl Config {
+    /// Comfortable rows (`row_height`, P12-M4).
+    pub fn comfortable(&self) -> bool {
+        self.row_height == "comfortable"
+    }
+
     /// Parse a file's text; malformed TOML (or a value of the wrong type) gives the defaults and
     /// the reason.
     pub fn parse(text: &str) -> Result<Config, String> {
@@ -959,6 +972,7 @@ show_type = false
             view_right: "large".into(),
             show_type: true,
             thumbnails: false,
+            row_height: "compact".into(),
             sidebar_visible: true,
             path_bar: "breadcrumb".into(),
             toolbar: "top".into(),
@@ -968,7 +982,7 @@ show_type = false
             log: false,
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, path_bar: "entry".into(), toolbar: "pane".into(), theme: "dark".into(), preview: true, syntax_colours: false, log: true, ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, row_height: "comfortable".into(), path_bar: "entry".into(), toolbar: "pane".into(), theme: "dark".into(), preview: true, syntax_colours: false, log: true, ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
@@ -977,6 +991,7 @@ show_type = false
                 ("view_right", "large".into(), "medium".into()),
                 ("show_type", "true".into(), "false".into()),
                 ("thumbnails", "false".into(), "true".into()),
+                ("row_height", "compact".into(), "comfortable".into()),
                 ("path_bar", "breadcrumb".into(), "entry".into()),
                 ("toolbar", "top".into(), "pane".into()),
                 ("theme", "system".into(), "dark".into()),
@@ -992,6 +1007,17 @@ show_type = false
         // A folder that does not exist is accepted as typed.
         let missing = Dialog { start_left: r"Q:\nowhere".into(), ..open.clone() }.normalized();
         assert_eq!(open.changes(&missing), vec![("start_left", r"C:\".into(), r"Q:\nowhere".into())]);
+    }
+
+    #[test]
+    fn row_height_defaults_to_compact_and_round_trips() {
+        assert!(!Config::default().comfortable());
+        // A file from before P12-M4 has no key: compact.
+        assert!(!Config::parse("split = true\n").unwrap().comfortable());
+        let c = Config::parse("row_height = \"comfortable\"\n").unwrap();
+        assert!(c.comfortable());
+        assert!(Config::parse(&c.to_toml()).unwrap().comfortable(), "written and read back");
+        assert!(!Config::parse("row_height = \"tall\"\n").unwrap().comfortable(), "anything else: compact");
     }
 
     #[test]

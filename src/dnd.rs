@@ -512,7 +512,7 @@ pub fn preview_w(width: f32, left: f32, ratio: f32) -> f32 {
 /// as the row clips them. `hit` keeps the whole row: a drop on the Type cell lands on the row.
 pub fn name_cell(l: &Layout, pane: usize, shown: f32) -> (f32, f32) {
     let (a, b) = pane_x(l, pane);
-    let x = a + PANE_PAD + crate::icons::ListGeom::new(l.row_px > 22.0).name_x();
+    let x = a + PANE_PAD + crate::icons::ListGeom::of_row(l.row_px).name_x();
     (x, (b - PANE_PAD - ROW_PAD_RIGHT - shown - x).max(0.0))
 }
 
@@ -3292,6 +3292,12 @@ mod tests {
         // 32 px rows: 42 px of row padding.
         let tall = Layout { row_px: 32.0, ..one };
         assert_eq!(name_cell(&tall, 0, DEFAULT.shown(true)), (45.0, 592.0));
+        // Comfortable 30 px rows (P12-M4): the 16 px icons' 28 px, as the 22 px rows.
+        let comfy = Layout { row_px: 30.0, ..one };
+        assert_eq!(name_cell(&comfy, 0, DEFAULT.shown(true)), (31.0, 606.0));
+        // Comfortable thumbnail rows, 44 px: the thumbnails' 42 px, as the 32 px rows.
+        let comfy_thumbs = Layout { row_px: 44.0, ..one };
+        assert_eq!(name_cell(&comfy_thumbs, 0, DEFAULT.shown(true)), (45.0, 592.0));
         // The right pane of a split, narrower than its columns: clamped at zero.
         let two = Layout { split: true, width: 600.0, ..one };
         let (x, w) = name_cell(&two, 1, wide.shown(true));

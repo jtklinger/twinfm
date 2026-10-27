@@ -872,6 +872,161 @@ a row or icon that's highlighted with the tab." "Which icon or pane" reads like 
 rather than in a question; the coordinating session asked him which he meant, and the look stream
 surveys every Tab stop of both meanwhile.
 
+## P12-M4: comfortable rows
+
+The look stream's fourth milestone, opened 2026-10-25 on the P12-M3 branch's head (1a11a6e), branch
+`feat/p12-m4-rows`. A setting for 30 px rows in the details list, the canvas's compact density.
+
+### Settled first (2026-10-25: reading, then the spike in the coordinating session's slot)
+
+- **Where the row height lives**: `FileRows` and `FileRowsNoType` (and their focus layers) each set the
+  row's 22 px as a constant, and their `init` sets `content-height` to rows × 22 px; `FileListHost`
+  chooses one of six components per pane and keeps `row-h` for its own arithmetic and the pane's
+  overlays (the rename editor, the drop highlight, paging, the empty space all read `list.row-h`).
+- **Rust read "taller than 22 px" as "thumbnails"**: `icons::ListGeom` was `new(thumbnails)` and its
+  `name_x` was `6 + row_px (+ 4)`, and `dnd::name_cell` rebuilt the geometry from `row_px > 22`. A 30
+  px row would have moved the name to 36 px and the drop target's name cell with it. So `ListGeom`
+  keeps the icon column apart from the row: `new(thumbnails, comfortable)`, `name_x` from the icon
+  size (28 px for the 16 px icons in either row height, 42 with a thumbnail), and `of_row(row_px)` for
+  dnd's layout, which carries the height alone (32 px rows are the thumbnails'). The strip overlay
+  already centres an icon in its row (`(row_px - icon_px) / 2`, 7 px of a 30 px row).
+- **The spike: a height binding or four more components** (the plan's: a binding only if it costs
+  nothing the in-app runs see). Base, P12-M3's build (541bdf9's code), against binding, the two 22 px
+  row components' height bound to `row-h` (22 px in the run); the four-component shape costs nothing by
+  construction at 22 px (today's components unchanged), so it was not built. Two batches of twelve
+  in-app runs of the gate scenario on `C:\traces\bigdir` in the coordinating session's slot, the first
+  base, binding, binding, base three times, the second swapped, unelevated, no WPR. Nobody was at the
+  console: every run presented at a frame interval p50 of 47.0 to 47.5 ms (about 21 Hz), render p50
+  2.72 to 2.95 ms, one state throughout.
+
+| Batch | base `[busy]` | median | binding `[busy]` | median |
+|---|---|---|---|---|
+| 1 | 8.9 / 9.8 / 12.5 / 10.2 / 13.9 / 8.4 | 10.0 | 12.2 / 8.3 / 12.0 / 7.6 / 11.6 / 12.8 | 11.8 |
+| 2 (swapped) | 11.1 / 10.3 / 10.8 / 9.0 / 7.5 / 7.8 | 9.65 | 11.7 / 9.8 / 9.5 / 8.9 / 11.7 / 10.0 | 9.9 |
+| all 24 | 7.5 to 13.9, mean 10.0 | 10.0 | 7.6 to 12.8, mean 10.5 | 10.8 |
+
+  Render p50 per frame the same (base 2.73 to 2.95 ms, binding 2.72 to 2.84). The first batch's 1.8-point
+  median gap is the binding's runs falling in two clusters (about 8 and about 12; means 10.6 / 10.75);
+  swapped, the medians are 0.25 apart; over all 24 the means differ by half a point inside each build's
+  own spread of five to six. **The binding is taken**, as P9-M1's width binding was: the 22 px
+  components' rows are `row-h` tall. The console triplets at the gate decide as usual; the four-component
+  shape is the fallback if they read a gap.
+
+### What landed (2026-10-25)
+
+- **24e8425**: the setting `row_height` (`"compact"`, the default, or `"comfortable"`; anything else and
+  a file without the key read as compact; `Config::comfortable`), the dialog's Rows row under View (a
+  choice, Compact (22 px) or Comfortable (30 px); the dialog 710 px tall, 670 before), `settings set
+  row_height compact|comfortable` through the dialog's stage function, `[settings] dialog: row_height
+  compact -> comfortable` and `[icons] list geometry: 30 px rows, 16 px icons`. On OK
+  (`set_row_height`): the window's `comfortable` property (the host's `row-h` 30 px for the 22 px lists;
+  the 32 px thumbnail lists and the grids unchanged), the strips composed again at the new pitch (the
+  icons stay 16 px, so their keys stand and nothing is listed again), and each list scrolled so its
+  first row stays at the top. `ListGeom::new(thumbnails, comfortable)`, `of_row`, `name_x` from the icon
+  column; `StripGeom::new(scale, list)`; `main.rs` `list_geom` for every reader of the geometry;
+  `dnd::name_cell` through `of_row`. Tests: the geometry for both heights (the strip's icon places at 1
+  and 1.5 times, the name's x, thumbnails winning, `of_row`), the name cell at 30 px, the setting's
+  default and round trip, the dialog's change; two lines of `shellmenu.rs`'s menu-point test take the
+  new `ListGeom::new`. The soak cycle (below).
+
+Tests 309 (308, the setting's new one; the geometry's and the name cell's extend existing tests).
+
+### Calls made in this milestone, for Jeremy to check
+
+- The setting is a choice of two in the dialog's View section ("Rows"), not a switch, so a third
+  density could join it later.
+- Turning it on or off keeps each list's first row at the top (the list scrolls in pixels, so without
+  that the view would jump).
+- With thumbnails on, the rows stay 32 px whatever this setting says (the plan's). Superseded
+  2026-10-26 by Jeremy's decision (below): 44 px.
+
+### Scripted checks (2026-10-25, the branch's build, `C:\traces\bigdir`)
+
+Through the dialog (`settings open`, `settings set row_height comfortable`, `settings ok`):
+`[settings] dialog: row_height compact -> comfortable` and `[icons] list geometry: 30 px rows, 16 px
+icons`; `click 0 5` put the cursor on row 5; PageDown went to row 20, the last row wholly on screen at
+30 px (648 px of list); back to compact, `[icons] list geometry: 22 px rows, 16 px icons`, and `click 0
+5` on row 5 again. Screenshots in both schemes: the 30 px rows with their hairlines, the 16 px icons
+centred, the names at the same x as in 22 px rows, the selection and cursor ring on the taller row.
+
+### Soak
+
+`tools/soak-p5m3.ps1` gains a cycle: comfortable rows on through the dialog in `src\tree`, a click and
+PageDown, and off again; the report counts the switches each way and the 30 px geometry lines (one each
+per cycle).
+
+Run by the coordinating session, 2026-10-25 23:34 to 23:44 (10.1 minutes), `tools/soak-p5m3.ps1` from
+the `gate-p12m4` checkout (24e8425) on `target-p12m4`: exit code 0, the window closed by the script, no
+panicked line; 274 jobs done (none failed or cancelled); every count that must be 0 was 0 (dropped
+drags, refused menupicks and presses, zip jobs not done, picture and Office failures, alt text,
+waitpreview timeouts, worker panics, copy failures, wrong passwords); comfortable rows on 4, off 4, and
+4 lines of the 30 px geometry (one each per cycle); working set 138.2 MB at 5 s, 231.6 MB at the end
+(at most 252.2), private bytes 163.9 to 239.2 MB.
+
+### Gate
+
+ab61, passed (2026-10-25, Jeremy at the console, 23:16 to 23:32 in the six-gate script):
+`tools/gate-p12m4.ps1`, `target-p12m4` (24e8425) against `target-p12m3` (541bdf9, its base), the defaults
+and comfortable rows (`C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`, made by
+the coordinating session).
+
+| Setting | p12m3 (WPR) | p12m4 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.9, 20.7, 21.2 | 21.4, 21.0, 21.1 | 20.9 / 21.1 | 2.87 to 2.93 ms |
+| rows-comfortable | 21.0, 20.6, 21.1 | 17.5, 17.8, 17.4 | 21.0 / 17.5 | 2.84 to 2.88 / 2.35 to 2.41 ms |
+
+No gap that counts. The defaults pair is the spike's question at the console: the 22 px rows through the
+bound height, 0.2 of a point above by the medians, not every reference run below. In the comfortable pair
+the reference ignores the key and draws 22 px rows, the candidate 30 px ones: fewer rows on screen, so
+less to draw (render p50 2.35 to 2.41 ms against 2.84 to 2.88) and 3.5 points less busy; the 30 px
+geometry line was in every candidate run; no panic. The whole session ran in the costlier state (render
+p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally; as ab42 in Phase 10), so
+neither build came under the 20% bar in the defaults (the candidate's comfortable rows did, with fewer
+rows to draw); read like for like.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m4`, light and dark)
+
+- Both heights beside Explorer's details view, switched in Settings > Rows; the first row stays at the
+  top across the switch.
+- In 30 px rows: a drop onto a row (it lights the row it lands on), a rename (F2: the editor centred in
+  the row), PageDown and PageUp, a right-click and Shift+F10 (the menu under the row).
+- Thumbnails on with comfortable rows set: the rows stay 32 px.
+
+Jeremy's result (2026-10-26, on `target-p12m5`, which holds this milestone's code), his words for this
+milestone's item: "#12, I don't see any difference between compact and comfortable rows on details or
+large icons." Comfortable changed only the 22 px lists, so with thumbnails on (32 px rows) and in the
+grids nothing moved. Asked whether comfortable should make the thumbnail rows taller or be greyed out
+while thumbnails are on, his decision, in his words: "comfortable should make rows taller". The grids
+are tiles, not rows, and stay as they are.
+
+- **fbc17fe**: comfortable rows with thumbnails are 44 px (compact keeps 32). The value: the canvas
+  Jeremy chose in Phase 10 draws its compact density as a 16 px icon in a 30 px row, which is what
+  comfortable makes of TwinFM's 22 px rows, 30/22 of the height; the same proportion on the 32 px
+  thumbnail rows is 43.6 px, rounded to 44, which leaves 6 px above and below the 32 px picture (the
+  canvas leaves 7 around its 16 px icon). The two 32 px row components' height is bound to the host's
+  `row-h`, as the 22 px ones' has been since this milestone's spike (a height read when a row is made);
+  `FileListHost`'s `row-h` is 44 px for them with comfortable on, `ListGeom::new(true, true)` 44 px
+  rows with 32 px icons (`of_row(44)` the same, for dnd's layout), so the strip centres the pictures 6
+  px down, the name stays at 42 px, and the line reads `[icons] list geometry: 44 px rows, 32 px icons`;
+  the driver's aims, the hit tests, paging and the menu point read the height from that geometry and
+  follow. Settings > Rows reads "Compact" and "Comfortable" (the pixel heights in the labels were the 22
+  px lists' only). Found on the way: the rename editor was placed from the row height (`row-h + 2 px`),
+  so in comfortable 30 px rows it stood 8 px right of where it stands in 22 px rows, and would have
+  stood 12 px off in 44 px rows; it now follows the icon column (24 px, or 38 with thumbnails, whatever
+  the row height), as in the 22 and 32 px rows before. Tests: the geometry at 44 px (the strip's places
+  at 1 and 1.25 times, every icon inside its row band at five scales, the name's x, `of_row`), the name
+  cell at 44 px; 309 tests.
+
+  Scripted check (the branch's build, `%TEMP%\twinfm-p3m5-thumbs`, both schemes): thumbnails on, `[icons]
+  list geometry: 32 px rows, 32 px icons`; comfortable on, `[settings] dialog: row_height compact ->
+  comfortable` and `[icons] list geometry: 44 px rows, 32 px icons`; the pictures centred in the taller
+  rows; PageDown from row 2 went to row 13, the last row wholly on screen at 44 px; F2's editor over the
+  name, its text where the name's is; thumbnails off with comfortable on, 30 px rows, the editor over the
+  name there too. The soak's P12-M4 cycle turns thumbnails on between (a click and PageDown in the 44 px
+  rows), then compact and thumbnails off, and its report adds the 44 px geometry lines (one per cycle).
+  The gate is one with P12-M5's Tab follow-up (P12-M5's record), with a read-only
+  `C:\traces\rows-comfortable-thumbs.toml` (`thumbnails = true`, `row_height = "comfortable"`).
+
 ## The memory check (the coordinating session, 2026-10-25)
 
 Jeremy's word at the kickoff: "The memory check". The question, from the Phase 11 close's 60-minute soak: what

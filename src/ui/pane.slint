@@ -325,10 +325,14 @@ component ColGrip inherits TouchArea {
 // FileListNoType); FileListHost shows one per pane, so no row binds to the switch (a binding on
 // it per row cost 0.7 of a point on the gate, a conditional cell per row 1.5). The rows and the
 // focus layer are all each variant holds; the state and the logic live in the host, once. Each
-// has a 32 px copy for thumbnails (FileRows32 and the rest, below).
+// has a 32 px copy for thumbnails (FileRows32 and the rest, below). Since P12-M4 their rows are
+// row-h tall, 22 px or 30 px for comfortable rows (a height read when a row is made; the spike's
+// in-app runs measured no cost, docs/phase-12-plan.md § P12-M4).
 component FileRows inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The row height (P12-M4): 22 px, or 30 px for comfortable rows; read when a row is made.
+    in property <length> row-h: 22px;
     // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> type-w: 120px;
@@ -344,7 +348,7 @@ component FileRows inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 22px;
+        height: root.row-h;
         accessible-role: AccessibleRole.list-item;
         // Files of every kind (plain, cloud placeholder, link, alias) have a size and a time;
         // folders have no size, drives no time. The type text names a junction or a link.
@@ -382,6 +386,8 @@ component FileRows inherits ListView {
 component FileRowsNoType inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The row height (P12-M4), as FileRows'.
+    in property <length> row-h: 22px;
     // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> size-w: 90px;
@@ -394,7 +400,7 @@ component FileRowsNoType inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 22px;
+        height: root.row-h;
         accessible-role: AccessibleRole.list-item;
         accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
             : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
@@ -425,14 +431,14 @@ component FileRowsNoType inherits ListView {
 // the list that had the focus, or the pane split) takes the focus itself.
 // A new list starts at the host's content-y, but the Flickable checks its bounds on the next turn
 // of the event loop, before the ListView's first layout has set content-height, and would scroll
-// it back to the top; so init sets content-height to what that layout will (22 px rows).
+// it back to the top; so init sets content-height to what that layout will (rows of row-h).
 component FileList inherits FileRows {
     in property <int> focus-request;
     in property <bool> focus-on-init;
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 22px;
+        root.content-height = root.rows.length * root.row-h;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -449,7 +455,7 @@ component FileListNoType inherits FileRowsNoType {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 22px;
+        root.content-height = root.rows.length * root.row-h;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -461,11 +467,13 @@ component FileListNoType inherits FileRowsNoType {
 }
 
 // The four components above with 32 px rows and a 32 px icon column and a 4 px gap (42 px of left padding), for
-// thumbnails (settings `thumbnails`). Copies, not a row height bound to a property: the height of
-// a row is a constant of its component, and FileListHost chooses the component once per pane.
+// thumbnails (settings `thumbnails`). Copies; FileListHost chooses the component once per pane. Their
+// rows are row-h tall, 32 px or 44 px for comfortable rows (Jeremy, 2026-10-26: "comfortable should
+// make rows taller"; the height read when a row is made, as the 22 px components' since P12-M4).
 component FileRows32 inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    in property <length> row-h: 32px;
     // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> type-w: 120px;
@@ -481,7 +489,7 @@ component FileRows32 inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 32px;
+        height: root.row-h;
         accessible-role: AccessibleRole.list-item;
         // Files of every kind (plain, cloud placeholder, link, alias) have a size and a time;
         // folders have no size, drives no time. The type text names a junction or a link.
@@ -516,6 +524,7 @@ component FileRows32 inherits ListView {
 component FileRowsNoType32 inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    in property <length> row-h: 32px;
     // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> size-w: 90px;
@@ -528,7 +537,7 @@ component FileRowsNoType32 inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 32px;
+        height: root.row-h;
         accessible-role: AccessibleRole.list-item;
         accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
             : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
@@ -560,7 +569,7 @@ component FileList32 inherits FileRows32 {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 32px;
+        root.content-height = root.rows.length * root.row-h;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -577,7 +586,7 @@ component FileListNoType32 inherits FileRowsNoType32 {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 32px;
+        root.content-height = root.rows.length * root.row-h;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
@@ -772,7 +781,10 @@ component FileListHost inherits Rectangle {
     pure public function col-of(i: int) -> int { return root.grid ? mod(i, root.cols) : 0; }
     // Entries a vertical arrow key moves by: one row, or one grid row of tiles.
     private property <int> step: root.grid ? root.cols : 1;
-    out property <length> row-h: root.grid ? root.tile-h : (root.thumbnails ? 32px : 22px);
+    // Comfortable rows (settings `row_height`, P12-M4): the 22 px lists' rows 30 px tall, the 32 px
+    // lists' 44 px (icons.rs ListGeom).
+    in property <bool> comfortable: false;
+    out property <length> row-h: root.grid ? root.tile-h : (root.thumbnails ? (root.comfortable ? 44px : 32px) : (root.comfortable ? 30px : 22px));
     // The pane is active: a list created now takes the focus.
     in property <bool> active;
     in-out property <length> content-y;
@@ -986,6 +998,7 @@ component FileListHost inherits Rectangle {
     }
 
     if root.show-type && !root.thumbnails && !root.grid: FileList {
+        row-h: root.row-h;
         type-w: root.type-w;
         size-w: root.size-w;
         modified-w: root.modified-w;
@@ -1002,6 +1015,7 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
     }
     if !root.show-type && !root.thumbnails && !root.grid: FileListNoType {
+        row-h: root.row-h;
         size-w: root.size-w;
         modified-w: root.modified-w;
         width: root.width;
@@ -1017,6 +1031,7 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
     }
     if root.show-type && root.thumbnails && !root.grid: FileList32 {
+        row-h: root.row-h;
         type-w: root.type-w;
         size-w: root.size-w;
         modified-w: root.modified-w;
@@ -1033,6 +1048,7 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
     }
     if !root.show-type && root.thumbnails && !root.grid: FileListNoType32 {
+        row-h: root.row-h;
         size-w: root.size-w;
         modified-w: root.modified-w;
         width: root.width;
@@ -1116,6 +1132,8 @@ export component Pane inherits Rectangle {
     // Thumbnails (settings `thumbnails`): the 32 px lists (FileListHost); the overlays below read
     // the row height from list.row-h.
     in property <bool> thumbnails: false;
+    // Comfortable 30 px rows (P12-M4), for FileListHost.
+    in property <bool> comfortable: false;
     // The large-icon grid (settings `view_left` / `view_right`): FileListHost shows the grid over
     // grid-rows (model.rs GridModel); tiles-per-row is its tile count per grid row (main.rs reads it
     // for hit testing); the two callbacks are the host's.
@@ -1681,6 +1699,7 @@ export component Pane inherits Rectangle {
             size-w: root.col-size;
             modified-w: root.col-modified;
             thumbnails: root.thumbnails;
+            comfortable: root.comfortable;
             grid: root.grid;
             grid-rows: root.grid-rows;
             medium: root.medium;
@@ -1912,16 +1931,17 @@ export component Pane inherits Rectangle {
     }
 
     // Return commits, Escape cancels, focus loss cancels. Over the name cell: 6 px row padding
-    // plus the icon slot (one row high, 22 or 32 px) from the left, the columns shown (P9-M1: the
+    // plus the icon column (22 px, or 32 px and a 4 px gap with thumbnails, whatever the row height)
+    // less the editor's own 4 px from the left, the columns shown (P9-M1: the
     // pane's widths) and 12 px from the right, centred on the row. In the grid, over the tile's name (2 px
     // in, the tile's width less 4 px, centred on the name's first line, which starts 38 px above
     // the tile's bottom: 94 px down a large tile, 46 px down a medium one, P7-M4).
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
-        x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + 2px : list.row-h + 2px + (root.thumbnails ? 4px : 0px));
+        x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + 2px : (root.thumbnails ? 38px : 24px));
         y: list.y + (root.grid ? list.tile-h - 42px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
-        width: root.grid ? list.tile-w - 4px : max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - ((root.show-type ? root.col-type : 0px) + root.col-size + root.col-modified) - 12px);
+        width: root.grid ? list.tile-w - 4px : max(160px, list.width - (root.thumbnails ? 38px : 24px) - ((root.show-type ? root.col-type : 0px) + root.col-size + root.col-modified) - 12px);
         height: 28px;
         background: Theme.card;
         // As behind the path entry: Back or Forward over the editor is ignored, not taken by the

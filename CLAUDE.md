@@ -50,7 +50,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (312 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (313 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -298,7 +298,7 @@ put off, with where it came from.
   `settings set <field> <value>` (stages a value through the function the dialog's control calls:
   `start_left`, `start_right` take a path, `hidden_left`, `hidden_right`, `type_column`,
   `thumbnails`, `sidebar` take `true|false`, `path_bar` takes `entry|crumb`, since P6-M2 `view_left`,
-  `view_right` take `details|large|medium`, since P10-M1 `theme` takes `system|light|dark`), `settings ok` and `settings close` (the OK
+  `view_right` take `details|large|medium`, since P10-M1 `theme` takes `system|light|dark`, since P12-M4 `row_height` takes `compact|comfortable`), `settings ok` and `settings close` (the OK
   and Cancel buttons; `key Escape` cancels through the key path); `window max|restore|close` maximises or restores
   the window, or closes it through `WM_CLOSE` (the close button's path, which saves the settings;
   `quit` does not); `[sidebar]` and `[settings]` lines on stderr, the dialog's among them:
@@ -557,8 +557,9 @@ put off, with where it came from.
   Since P3-M5, thumbnails: `settings set thumbnails true|false` then `settings ok` (or
   `TWINFM_CONFIG=<a read-only file with thumbnails = true>`) switches both panes to the 32 px lists
   and lists them again; no new driver step. `[settings] dialog: thumbnails <old> -> <new>`; `[icons]
-  list geometry: 32 px rows, 32 px icons` (or `22 px rows, 16 px icons`) once per change and at a
-  start with thumbnails on; `[icons] thumbnail <ms> ms: <path>` for a thumbnail of 100 ms or more
+  list geometry: 32 px rows, 32 px icons` (or `22 px rows, 16 px icons`, or since P12-M4 `30 px rows,
+  16 px icons` for comfortable rows, and since 2026-10-26 `44 px rows, 32 px icons` for comfortable
+  rows with thumbnails) once per change and at a start with thumbnails or comfortable rows on; `[icons] thumbnail <ms> ms: <path>` for a thumbnail of 100 ms or more
   (counted in `slow`, as `slow icon` lines are); `[icons] thumbnail cap reached: N thumbnails held,
   new ones get their type's icon` once (20,000). The once-a-second `[icons]` line carries `thumbs N
   avg M ms dropped D` after `slow N`: thumbnail requests rendered in the period (from the shell's
@@ -1110,7 +1111,15 @@ put off, with where it came from.
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
   0.35, its handle's drag), since P11-M4 `preview_zoom` (a PDF's zoom, percent, 50 to 400, default
   100), since P11-M5 `syntax_colours` (default true, in the dialog), since P11-M7 `log` (default
-  false, in the dialog, `logfile`); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
+  false, in the dialog, `logfile`), since P12-M4 `row_height` (`"compact"`, the default, 22 px rows, or
+  `"comfortable"`, 30 px rows with the 16 px icons centred and the names where they were, and with
+  thumbnails since 2026-10-26 44 px rows (32 compact) with the pictures centred (Jeremy: "comfortable
+  should make rows taller"); the grids are unchanged; the dialog's Rows row, applied on OK: the 22 and
+  32 px row components' height is bound to the host's `row-h`, `icons::ListGeom::new(thumbnails, comfortable)` keeps the icon
+  column apart from the row, the strips are composed again at the new pitch and each list keeps its
+  first row at the top; the rename editor follows the icon column, not the row; a gate run with it
+  takes `TWINFM_CONFIG=C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`, and
+  with thumbnails `C:\traces\rows-comfortable-thumbs.toml`, read-only, `thumbnails = true` as well); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
   `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
   `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme; since P10-M3 the
   native title bar follows it through `DWMWA_USE_IMMERSIVE_DARK_MODE`, set when the window's handle is
@@ -1205,6 +1214,11 @@ put off, with where it came from.
   settings dialog (`settings set cols_reset`, OK); it reports the resets (two per cycle).
   Since P11-M3 each cycle also takes the left pane from `src` into `src\tree` and back through the
   history menu (`histmenu 0`, `histpick 1`); it reports the jumps (one per cycle).
+  Since P12-M4 each cycle also turns comfortable rows on through the settings dialog in `src\tree`,
+  clicks a row and pages down, and turns them off again; it reports the switches each way and the 30
+  px geometry lines (one each per cycle); since 2026-10-26 thumbnails go on between (a click and
+  PageDown in 44 px rows), then compact and thumbnails off, and it reports the 44 px geometry lines (one
+  per cycle).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per
