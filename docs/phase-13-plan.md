@@ -391,9 +391,12 @@ them.
 
 ### Size on disk in the normal list
 
-Waits for P13-M1's merge, as agreed with the coordinating session: the column is a fourth cell, bound to a
-width the host sets to 0 when hidden (P13-M1's route), first to drop, filled by a second read of the folder
-(`fs::dirinfo::read`) only while the setting `size_on_disk` is on. It needs a gate of its own.
+Waits for P13-M1's merge, as agreed with the coordinating session (2026-10-27): the column is a fourth
+cell in each details row component, reading a fourth width property, `ondisk-w`, as the other three are
+read (P13-M1's route: a hidden column's width is 0, and a zero-width Text draws nothing). `cols::shown`
+takes it as the first to drop (Size on disk, then Type, Size, Modified). It is filled by a second read of
+the folder (`fs::dirinfo::read`) only while the setting `size_on_disk` is on. The extra binding per row
+needs its own triplet before it merges.
 
 ### Soak, gate, the in-app `C:\` run
 
