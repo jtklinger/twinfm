@@ -562,7 +562,18 @@ untouched. The plan's in-app run on OneDrive, `cloud N` and `slow N` compared: d
 **Jeremy's results** (2026-10-26, `target-p12m7` at 6441b31, through the coordinating session, whose
 numbering for him was 3 = check 1 above, 4 = check 2 and 5 = check 4), his words: "3 works correctly.
 ... 5. works as expected." So the large file showed the syncing arrows while it uploaded and then the
-tick, with no F5 (check 1), and the thumbnails in `OneDrive\Pictures` are as before (check 4). Check 2,
-the error mark, is still open: the coordinating session has asked him what Explorer showed. Check 3 is
-open too: this branch does not have P12-M6's fix to Free up space from Show more options (P12-M6's
-record, After the console check), so it waits until main, with #116, is merged in here.
+tick, with no F5 (check 1), and the thumbnails in `OneDrive\Pictures` are as before (check 4). Check 3 is
+open: this branch does not have P12-M6's fix to Free up space from Show more options (P12-M6's record,
+After the console check), so it waits until main, with #116, is merged in here.
+
+**Check 2, the `_vti_` file: passed against Explorer.** His words: "The icon itself doesn't show red X
+but the onedrive sync icon in the taskbar does show red x and prompts to rename the file", and asked
+whether Explorer showed it on the file, "The file did not show a red X." His log (`%APPDATA%\twinfm\twinfm.log`,
+this build, 2026-10-26 19:23; nothing written into OneDrive to read it) shows why: he made
+`Documents\test_vti_.txt` with TwinFM's New file, OneDrive never made it a placeholder (`[cloud] pane=0 not
+in sync: 2 of 8 files`, then `1 of 8` once the large file was in sync), and both reads of its state gave
+4, sync pending, never 7, error (`[cloud] state read ...\test_vti_.txt: 4 in 43 ms`, then `4 in 22 ms`),
+so TwinFM drew the syncing arrows (imageres -1401) until he deleted it. OneDrive reports the refused name
+through its own taskbar icon and its rename prompt, not through the file's state, so neither Explorer nor
+TwinFM draws the red cross. The error glyph itself stays covered by the glyph table's test only; no file
+in an error state has been seen here.
