@@ -1434,8 +1434,19 @@ the NT heap), then `target-segheap` (b5e985f, the same code with the manifest). 
 
 **Tests**: 318 passed on 3698cd2 (main merged in), the heap's test among them; the release build clean.
 
-**Gate** (`tools/gate-segheap.ps1`, tag ab65): `target-p12seg` from 3698cd2 against `target-p12main`
-(1163257, main with every Phase 12 milestone), the defaults and the grid with thumbnails. Pending Jeremy.
+**Gate** (`tools/gate-segheap.ps1`, tag ab65, 2026-10-27 09:13 to 09:30, Jeremy at the console):
+`target-p12seg` from 3698cd2 against `target-p12main` (1163257, main with every Phase 12 milestone).
+**Passed, no gap**, no panics, every check ok (the candidate's six runs each logged `[mem] process heap:
+segment heap`):
+
+| Setting | p12seg runs (WPR % busy) | p12main runs | Medians |
+|---|---|---|---|
+| Defaults | 20.6, 20.3, 20.5 | 20.9, 21.2, 21.0 | 20.5 against 21.0 |
+| Grid with thumbnails | 12.2, 12.0, 11.9 | 11.8, 11.6, 14.4 | 12.0 against 11.8 |
+
+The render p50s read alike across the session (2.82 to 2.92 ms on the defaults, 1.45 to 1.63 in the grid), so
+no run changed state; the defaults sit over 20% for both builds, as every Phase 12 gate did in this costlier
+state. The segment heap costs the UI thread nothing measurable.
 
 ## P12-M6: Google Drive's commands, and its volume
 
