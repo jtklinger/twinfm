@@ -369,11 +369,15 @@ links to files elsewhere under the root reads small, and the files show under on
 
 ### Calls made in this milestone, for Jeremy to check
 
+- **A call changed (accepted by the coordinating session, 2026-10-27): the walk runs on a thread of its
+  own per view**, as a search's does, not on the shared `sizes` worker the plan named. A long walk of `C:\`
+  never holds up Alt+Shift+Enter.
 - **Changes from elsewhere are not followed**: the plan had the subtree watch re-walk a changed folder, as
   folder sizes do. The watch only names which child of the root changed. On `C:\`, `Windows` and `Users`
   change every few seconds (logs, caches), so the view would keep walking tens of GB. Instead the numbers
   stand as of the walk, and F5 walks again. A move within the root is not followed either, since the root's
-  own total does not change.
+  own total does not change. **Open with Jeremy**: the coordinating session puts this to him before the
+  merge; the branch keeps F5 until he answers.
 - **Hard links count once per walk** (above), so `C:\` reads 752 GB rather than Explorer's 768 GB.
 - **The icon column stays at the left**, and the chevron and the name are indented 16 px per level. The pane's
   icon strip stays one image, so nothing per row was added for it.
