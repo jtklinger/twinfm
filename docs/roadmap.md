@@ -6,24 +6,17 @@ Each item says where it came from; the phase records (`docs/phase-N-plan.md`) ho
 leaves this list when a phase picks it up, and the phase's own record carries it from there; each phase
 close adds back what the phase put off (Jeremy's rule, 2026-10-26). Phase 12 took its items at its
 kickoff (2026-10-25) and closed 2026-10-27 (`phase-12-plan.md` § Phase 12 close); what it put off is
-below, marked P12.
+below, marked P12. Phase 13 took its items at its kickoff (2026-10-27, `phase-13-plan.md`): the details
+view's click-and-drag selection, the TreeSize-style view with size on disk, the owed checks (the dead
+share, Phase 12's console checks, the long soak), the styled-text memory follow-up and the two small log
+and soak clean-ups.
 
 ## Asked for in daily use, not scheduled
 
-- **Click-and-drag selection in the details view** (Jeremy, P10-M1 console check: "On folders that
-  are configured with details view, I cannot click-and-drag the mouse cursor to highlight multiple
-  items"). The band (`src/band.rs`) works in the icon grids only; a press on a row starts a drag, so
-  where the band starts (empty space, or past a threshold on a row) is settled first.
 - **Save a search results tab** (Jeremy, 2026-10-23: "be able to save a search results tab as a
   custom tab"). Settled first, with Jeremy: whether the query is kept (re-run when opened, as Windows'
   saved searches do) or the results as found; where it lives (a sidebar row, a restored tab, or
   both); its name; whether content searches are saved the same way.
-- **A TreeSize-style view** (Jeremy, 2026-10-25: "add a treesize viewer so we can see what folders
-  are the largest consumers of capacity"). Folders listed largest first, opened down level by level,
-  each with its share of the whole. Builds on the folder sizes TwinFM already walks (Alt+Shift+Enter,
-  `src/fs/sizes.rs`). Settled first: a sorted tree or a map of boxes; a whole drive or the folder
-  shown; size or size on disk (below); where the view lives (a tab, the preview column, its own
-  window).
 
 ## Look and feel
 
@@ -64,7 +57,6 @@ below, marked P12.
 
 ## Files, folders and watching
 
-- **Size on disk** beside size (P3-M3); pairs with the TreeSize view.
 - **The mouse's Back and Forward over a text box, the tab strip or the list's scrollbar** do nothing
   (P2-M3, P3-M1).
 - **Thumbnails inside archives**: Windows has no thumbnail provider there; carried since Phase 9.
@@ -79,23 +71,11 @@ below, marked P12.
 
 - **Accessibility**: a Narrator pass over everything since Phase 2 and the grid's tiles as nodes of
   their own; deferred for much later (Jeremy, 2026-10-15).
-- **The dead network share check**, owed since P5-M1: a share name that does not resolve, then one that
-  resolves and does not answer (`stalled: no watch`, the 30 s cool-down, F5). Needs a share that can be
-  switched off; none came up in Phase 12.
-- **Console checks owed from Phase 12**: the password questions' Tab order (P12-M3); Tab between the
-  panes with the active pane's accent cursor, and the 44 px comfortable thumbnail rows (ab64, merged on
-  the gate); whether the shell draws the "Bookmark" drop text (P12-M5).
-- **A long soak of the merged code on the segment heap**: Phase 12's two 60-minute soaks ran the code from
-  before its milestones (P12 memory manager trial).
-- **Memory**: the preview's styled text for a big file built per chunk, so fewer large temporary
-  allocations; the Recycle Bin enumeration's shell cache, small (P12 memory check).
+- **Memory**: the Recycle Bin enumeration's shell cache, small (P12 memory check).
 - **A OneDrive folder for the soak**: not approved, since it would upload every cycle's files (P12
   kickoff).
 - **OneDrive's error mark** has been drawn only by its test: no file here has reached the error state; a
   refused `_vti_` name stays "sync pending" (P12-M7).
-- **Small log and soak clean-ups**: `[menu] "<label>" found after T ms (a submenu filled late)` also shows
-  for commands in no late submenu (P12-M6); the soak report's "tabs they opened" reads about twice what
-  its label expects (98 for 25 opens in an hour's soak; older than Phase 12, noted in P12-M5).
 
 ## The Slint fork
 
