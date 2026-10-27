@@ -384,7 +384,20 @@ Per cycle in `tools/soak-p5m3.ps1`:
 - **The soak changed too:** the P9-M1 cycle moved to the 0.6 split, and the `[cols] shows` counts were
   relabelled by what makes each line.
 
-**Second run**, on the new head: to come.
+**Second run** (2026-10-27, 936336a):
+- 10.1 minutes, exit 0, no panics. 256 jobs, none failed. Every must-be-0 count was 0.
+- Memory: working set 143 to 213 MB, private bytes 178 to 248 MB.
+- The fix held. At the 0.6 split the Size grip drag read Type 120 -> 150 and Size 90 -> 60 (P9-M1's
+  boundary, as written), and the widths came back to 120, 90, 140.
+- Every `[cols] pane=0 shows` line came from the preview column, the splitter, the split or the start;
+  none from the drag.
+- "Widths back at 120, 90, 140" still read 4, not 7, for the same interaction in another cycle. P11-M2's
+  reset cycle narrows Type with `colwidth 0 type 100` first. At 499 px Type is hidden, so the step was
+  refused (`no such grip`, three times) and the reset had nothing to undo.
+- **Soak changed again** (commit 5): that cycle runs at the 0.6 split too. The name, Size and Modified
+  count is now five per cycle.
+
+**Third run**, with that cycle: to come.
 
 ### Gate
 

@@ -147,10 +147,11 @@
 # presses (two per cycle) and the `[cols] pane=0 shows` lines, which every width change of the left list
 # makes at the soak's 1200 px window and 100% (its panes at 0.5 are 499 px, where Type is hidden):
 # narrowed to the name and Modified three per cycle (the preview cycle's Alt+P and its width set back to
-# 0.35, and the splitter to 0.35), and name, Size and Modified four per cycle (the preview hidden, the
-# re-split, the splitter back to 0.5 here and after the P9-M1 cycle). The P9-M1 cycle runs with the split
-# line at 0.6, where all four columns show, so its drag moves the Type | Size boundary as it was written
-# to (at 499 px Type is hidden and the grip is Name | Size).
+# 0.35, and the splitter to 0.35), and name, Size and Modified five per cycle (the preview hidden, the
+# re-split, the splitter back to 0.5 here and after the P9-M1 and P11-M2 cycles). The P9-M1 and P11-M2
+# cycles run with the split line at 0.6, where all four columns show, so the drag moves the Type | Size
+# boundary and the reset has Type's width to undo, as they were written to (at 499 px Type is hidden: the
+# grip is Name | Size and `colwidth 0 type` is refused).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -516,8 +517,9 @@ $cycle = @(
     # P11-M1: a content search in src (see the header).
     "nav 0 $src", 'sleep 500', 'csearch 0 scratch file 3/7', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
     'contentmode 0 off', 'filter 0', 'sleep 300',
-    # P11-M2: the widths reset through the dialog (see the header).
-    "nav 0 $src\tree", 'sleep 500', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300',
+    # P11-M2: the widths reset through the dialog (see the header), at the 0.6 split since P13-M1, where
+    # Type shows (at 0.5 it is hidden, and `colwidth 0 type` is refused).
+    "nav 0 $src\tree", 'sleep 500', 'splitter 0.6', 'sleep 300', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300', 'splitter 0.5', 'sleep 300',
     # P11-M3: the history menu (see the header).
     "nav 0 $src", 'sleep 400', "nav 0 $src\tree", 'sleep 400', 'histmenu 0', 'waitmenu 2000', 'histpick 1', 'sleep 600',
     # P12-M4: comfortable rows on and off (see the header).
@@ -773,6 +775,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "comfortable rows: on $rowsOn, off $rowsOff, 30 px geometry lines $rows30, 44 px (thumbnails) $rows44 (one each per cycle)"
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
-"columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (four per cycle; both at 100%)"
+"columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (five per cycle; both at 100%)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
