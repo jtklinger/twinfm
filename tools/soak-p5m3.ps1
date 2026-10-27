@@ -140,6 +140,12 @@
 # from the left list, the keys to the right pane's list and back (the next cycle's scroll scenario
 # lists both panes again, so the cursor Tab may have put on a row goes); the report counts the
 # `[focus]` lines each way (one each per cycle).
+# P13-M1: each cycle then hides the second pane and shows it again (`split` twice: the right pane
+# comes back on the left's folder, which the next cycle's `nav 1` replaces), drags the split line to 0.35 of the room, where the left pane is too narrow for
+# Type and Size (only Modified stays beside the name), and back to 0.5; the report counts the
+# `[cols] pane=0 shows` lines: narrowed to the name and Modified (one per
+# cycle), and name, Size and Modified (two per cycle at the soak's 1200 px window and 100%: the
+# re-split and the widening; the whole window shows Type too between them).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -517,7 +523,9 @@ $cycle = @(
     # P12-M5: a bookmark by a drop, dragged, removed; a tab by the "+" (see the header).
     "dropfiles sidegap 0 auto $src", 'sleep 400', 'bookmark drag 0 1', 'sleep 300', 'bookmark remove 1', 'sleep 300',
     'tab plus 0', 'sleep 400', 'tab close', 'sleep 300',
-    'click 0 0', 'sleep 200', 'key Tab', 'sleep 300', 'key ShiftTab', 'sleep 300'
+    'click 0 0', 'sleep 200', 'key Tab', 'sleep 300', 'key ShiftTab', 'sleep 300',
+    # P13-M1: the second pane off and on, the split line narrowed and widened (see the header).
+    'split', 'sleep 500', 'split', 'sleep 1000', 'splitter 0.35', 'sleep 400', 'splitter 0.5', 'sleep 400'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -708,6 +716,9 @@ $bmRemoved = @($log | Select-String -SimpleMatch '[sidebar] removed bookmark 1: 
 $plusTabs = @($log | Select-String -SimpleMatch '[tab] pane=0 + button: new tab').Count
 $tabRight = @($log | Select-String -SimpleMatch '[focus] pane=1 has the keys by Tab').Count
 $tabLeft = @($log | Select-String -SimpleMatch '[focus] pane=0 has the keys by Tab').Count
+# P13-M1: the columns making way.
+$colsNarrow = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, modified at ').Count
+$colsWide = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, size, modified at ').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 # P11-M4: the zoom and "Copy text".
@@ -756,5 +767,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "comfortable rows: on $rowsOn, off $rowsOff, 30 px geometry lines $rows30, 44 px (thumbnails) $rows44 (one each per cycle)"
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
+"columns making way: left pane narrowed to name and Modified $colsNarrow (one per cycle), name, Size and Modified $colsWide (two per cycle at 100%)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

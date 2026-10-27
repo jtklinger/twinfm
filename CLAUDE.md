@@ -51,7 +51,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (318 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (320 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1138,6 +1138,22 @@ put off, with where it came from.
   so the mark follows without F5. `[cloud] pane=N not in sync: K of M files` once per sync-root listing (K the
   files looked up); `[cloud] <listing | watch edits>: placeholders not shown
   (RtlSetThreadPlaceholderCompatibilityMode = R)` if Windows refuses the mode. No new driver step.
+  Since P13-M1, **columns make way for the name**: a details list too narrow to give the name cell
+  `cols::NAME_FLOOR` (120 px) beside its columns at their set widths hides them, **Type first, then
+  Size, then Modified** (Name never), and they come back in the reverse order as the pane widens, each
+  when it fits at its set width (`cols::shown(widths, show_type, room)`, `room` the list's width less
+  the rows' paddings, `ListGeom::name_x` and `ROW_PAD_RIGHT`). A hidden column keeps its width; `show_type`
+  off still hides Type at any width. Each pane reports its list's width (pane.slint `list-width`, the
+  host's `init` and `changed width`, never per frame; main.rs `list_width`, `LIST_W`), and `update_shown`
+  sets the window's `left-shows-type` / `-size` / `-modified` (and `right-`); a hidden column's cells get
+  width 0 through the widths the rows already read (pane.slint `eff-type` and the rest: no row gains a
+  binding, and Slint draws nothing for a Text 0 px wide), and the header, the grips (`cols::grips(shown)`,
+  `grip_x`, `left_of`: Modified's grip beside a hidden Size is Name | Modified), the rename editor,
+  `dnd::name_cell` (`Widths::taken`) and the driver follow the shown columns; `colwidth`, `coldrag` and
+  `colfit` on a hidden column log `no such grip`. `[cols] pane=N shows <name, type, size, modified> at W
+  px` (W the list's width) when the set changes. Driver `splitter
+  <ratio>` drags the split line from where it is to that share of the panes' room through Slint's pointer
+  path (8 px steps; the splitter clamps 0.15 to 0.85): `[auto] splitter A -> B`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

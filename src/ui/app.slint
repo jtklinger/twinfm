@@ -334,6 +334,16 @@ export component App inherits Window {
     // col-drag(pane, col, dx, phase) and col-fit(pane, col): a header grip (pane.slint ColGrip).
     callback col-drag(int, int, length, int);
     callback col-fit(int, int);
+    // The columns each pane shows (P13-M1, main.rs `update_shown` from cols::shown): a column the
+    // pane is too narrow for is hidden, its width kept. list-width(pane, width): a pane's list was
+    // laid out at a new width.
+    in property <bool> left-shows-type: true;
+    in property <bool> left-shows-size: true;
+    in property <bool> left-shows-modified: true;
+    in property <bool> right-shows-type: true;
+    in property <bool> right-shows-size: true;
+    in property <bool> right-shows-modified: true;
+    callback list-width(int, length);
     // Thumbnails and 32 px rows in both panes (settings `thumbnails`; set at start and by the dialog).
     in property <bool> thumbnails: false;
     // Comfortable 30 px rows in the details lists without thumbnails (settings `row_height`, P12-M4).
@@ -1126,6 +1136,10 @@ export component App inherits Window {
                 col-modified: root.left-col-modified;
                 col-drag(c, dx, ph) => { root.col-drag(0, c, dx, ph); }
                 col-fit(c) => { root.col-fit(0, c); }
+                shows-type: root.left-shows-type;
+                shows-size: root.left-shows-size;
+                shows-modified: root.left-shows-modified;
+                list-width(w) => { root.list-width(0, w); }
                 thumbnails: root.thumbnails;
                 comfortable: root.comfortable;
                 focus-requested => { active-pane = 0; }
@@ -1196,6 +1210,10 @@ export component App inherits Window {
                 col-modified: root.right-col-modified;
                 col-drag(c, dx, ph) => { root.col-drag(1, c, dx, ph); }
                 col-fit(c) => { root.col-fit(1, c); }
+                shows-type: root.right-shows-type;
+                shows-size: root.right-shows-size;
+                shows-modified: root.right-shows-modified;
+                list-width(w) => { root.list-width(1, w); }
                 thumbnails: root.thumbnails;
                 comfortable: root.comfortable;
                 focus-requested => { active-pane = 1; }

@@ -1185,6 +1185,18 @@ export component Pane inherits Rectangle {
     in property <length> col-modified: 140px;
     callback col-drag(int, length, int);
     callback col-fit(int);
+    // The columns shown (P13-M1, main.rs `update_shown`): a pane too narrow to give Name 120 px
+    // beside them hides Type, then Size, then Modified. A hidden column's cells get width 0 (the
+    // rows read these widths already, so no row gains a binding; a Text 0 px wide draws nothing),
+    // the header and the grips leave it out, and its set width is kept for its return.
+    // list-width(w): the list was laid out at a new width.
+    in property <bool> shows-type: true;
+    in property <bool> shows-size: true;
+    in property <bool> shows-modified: true;
+    callback list-width(length);
+    private property <length> eff-type: root.show-type && root.shows-type ? root.col-type : 0px;
+    private property <length> eff-size: root.shows-size ? root.col-size : 0px;
+    private property <length> eff-modified: root.shows-modified ? root.col-modified : 0px;
     // Thumbnails (settings `thumbnails`): the 32 px lists (FileListHost); the overlays below read
     // the row height from list.row-h.
     in property <bool> thumbnails: false;
@@ -1762,34 +1774,26 @@ export component Pane inherits Rectangle {
                 }
             }
         }
-        // One header per Type column state, chosen per pane like the list below: on, it is the
-        // header as it was before the switch; off, the Type cell does not exist, so a header click
-        // cannot sort by it. The grid has no columns: its header keeps only Name (the sort), and
-        // its 32 px keep the list's top where dnd.rs LIST_TOP and the driver (auto.rs) expect it.
-        if root.grid: HorizontalLayout {
+        // The header: Name, then each column shown (the Type setting off, or a column hidden in a
+        // narrow pane, P13-M1: its cell does not exist, so a header click cannot sort by it). The
+        // grid has no columns: its header keeps only Name (the sort), and its 32 px keep the list's
+        // top where dnd.rs LIST_TOP and the driver (auto.rs) expect it.
+        HorizontalLayout {
             height: 32px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
-        }
-        if root.show-type && !root.grid: HorizontalLayout {
-            height: 32px;
-            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Type"; width: root.col-type; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
-        }
-        if !root.show-type && !root.grid: HorizontalLayout {
-            height: 32px;
-            HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            if !root.grid && root.show-type && root.shows-type: HeaderCell { label: "Type"; width: root.col-type; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            if !root.grid && root.shows-size: HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            if !root.grid && root.shows-modified: HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
         list := FileListHost {
             rows: root.rows;
             current-row <=> root.current-row;
             show-type: root.show-type;
-            type-w: root.col-type;
-            size-w: root.col-size;
-            modified-w: root.col-modified;
+            type-w: root.eff-type;
+            size-w: root.eff-size;
+            modified-w: root.eff-modified;
+            init => { root.list-width(self.width); }
+            changed width => { root.list-width(self.width); }
             thumbnails: root.thumbnails;
             comfortable: root.comfortable;
             grid: root.grid;
@@ -1997,27 +2001,28 @@ export component Pane inherits Rectangle {
     }
 
     // The column grips (P9-M1) over the details header, which sits 34 px above the list (32 px and
-    // the layout's 2 px spacing): one at each boundary, the list's right edge pinned. Siblings of
+    // the layout's 2 px spacing): one at the left edge of each column shown, the list's right edge
+    // pinned. Siblings of
     // the list, never in the rows.
     if !root.grid: Rectangle {
         x: list.x;
         y: list.y - 34px;
         width: list.width;
         height: 32px;
-        if root.show-type: ColGrip {
-            x: parent.width - root.col-modified - root.col-size - root.col-type - 3px;
+        if root.show-type && root.shows-type: ColGrip {
+            x: parent.width - root.eff-modified - root.eff-size - root.eff-type - 3px;
             which: 0;
             drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
             fit(c) => { root.col-fit(c); }
         }
-        ColGrip {
-            x: parent.width - root.col-modified - root.col-size - 3px;
+        if root.shows-size: ColGrip {
+            x: parent.width - root.eff-modified - root.eff-size - 3px;
             which: 1;
             drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
             fit(c) => { root.col-fit(c); }
         }
-        ColGrip {
-            x: parent.width - root.col-modified - 3px;
+        if root.shows-modified: ColGrip {
+            x: parent.width - root.eff-modified - 3px;
             which: 2;
             drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
             fit(c) => { root.col-fit(c); }
@@ -2035,7 +2040,7 @@ export component Pane inherits Rectangle {
         visible: root.edit-mode != 0;
         x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + 2px : (root.thumbnails ? 38px : 24px));
         y: list.y + (root.grid ? list.tile-h - 42px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
-        width: root.grid ? list.tile-w - 4px : max(160px, list.width - (root.thumbnails ? 38px : 24px) - ((root.show-type ? root.col-type : 0px) + root.col-size + root.col-modified) - 12px);
+        width: root.grid ? list.tile-w - 4px : max(160px, list.width - (root.thumbnails ? 38px : 24px) - (root.eff-type + root.eff-size + root.eff-modified) - 12px);
         height: 28px;
         background: Theme.card;
         // As behind the path entry: Back or Forward over the editor is ignored, not taken by the
