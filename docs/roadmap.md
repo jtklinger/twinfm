@@ -85,8 +85,6 @@ below, marked P12.
 - **Console checks owed from Phase 12**: the password questions' Tab order (P12-M3); Tab between the
   panes with the active pane's accent cursor, and the 44 px comfortable thumbnail rows (ab64, merged on
   the gate); whether the shell draws the "Bookmark" drop text (P12-M5).
-- **A long soak of the merged code on the segment heap**: Phase 12's two 60-minute soaks ran the code from
-  before its milestones (P12 memory manager trial).
 - **Memory**: the preview's styled text for a big file built per chunk, so fewer large temporary
   allocations; the Recycle Bin enumeration's shell cache, small (P12 memory check).
 - **A OneDrive folder for the soak**: not approved, since it would upload every cycle's files (P12
