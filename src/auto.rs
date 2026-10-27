@@ -178,7 +178,10 @@
 //!                                    and rename go to TwinFM's own commands, any other verb to the
 //!                                    verb worker by its verb (`copy` never does: use a handler verb
 //!                                    such as `link`, Create shortcut); `sleep:<ms>` is a test verb that sleeps
-//!                                    on the worker; `waitops` waits for the worker too
+//!                                    on the worker; `try:<label path>` (P12-M6) is a dry test verb: the
+//!                                    classic menu's command at that path (`Offline access>Available
+//!                                    offline`), handed to the worker as a pick would be, resolved there
+//!                                    and never invoked; `waitops` waits for the worker too
 //!   zippassword <text>               the answer to the next password question of a job writing
 //!                                    into a password-protected zip (P8-L2), in place of the
 //!                                    dialog; a scripted job with none is refused, never shown it
