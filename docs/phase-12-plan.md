@@ -1991,3 +1991,29 @@ names `gate-p11close` and `target-p11close` in its body, so a rerun points its `
 build. The two stream
 worktrees stay until Jeremy archives their sessions. `target\release` was rebuilt from 932202d on
 2026-10-27.
+
+### The long soak of the merged code (2026-10-27, after the close)
+
+Jeremy, after the close: "Run the long soak of the merged code first, then prepare the 0.3.0 release for my
+go-ahead." `tools/soak-p5m3.ps1 -Minutes 60` on `target-p12seg` (3698cd2, main's code: every milestone and
+the segment heap; `[mem] process heap: segment heap` at start), 2026-10-27 from 12:15, by the coordinating
+session, the session at 125% (`[dnd] drag threshold 4 x 4 px (scale 1.25)`), Jeremy's everyday window open
+beside it. 60.6 minutes, exit code 0, no panics, 70 cycles, 1,487 jobs (none failed or cancelled), every
+must-be-0 count 0 (dropped drags, refused menupicks, disabled toolbar presses, zip jobs not done, picture and
+Office failures, alt text, waitpreview timeouts, worker panics, copy failures, refused colour chunks, wrong
+passwords). The report's "128 px drag images" and "80 px drag images" read 0 because they match the 100%
+strings: at 125% the 115 drag images set were logged as 160 px (46, the large tiles), 100 px (23, the medium
+tiles) and 120 px (46, the details list). "Tabs they opened" read 90 for 23 opens, the roadmap's known
+clean-up. Memory (working set / private bytes, MB, every 300 s):
+
+| s | 5 | 306 | 606 | 906 | 1205 | 1505 | 1805 | 2105 | 2406 | 2706 | 3006 | 3306 | 3601 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| WS | 140 | 258 | 263 | 271 | 214 | 228 | 233 | 219 | 221 | 222 | 220 | 243 | 222 |
+| private | 178 | 269 | 282 | 292 | 251 | 264 | 274 | 256 | 258 | 259 | 257 | 282 | 259 |
+
+Read: the caches fill in the first quarter hour (private bytes to 292 MB at 15 minutes), then the segment
+heap gives memory back (251 MB at 20 minutes) and the line holds: over the last 10 minutes a median of 259 MB
+private (222 MB working set), a trend of about 2 MB an hour from 10 to 60 minutes (9 from 20 to 60), under
+spikes (341 MB at the highest 30 s sample). Phase 11's long soak on the NT heap crept to 300 MB by its end.
+The merged code sits above the trial's 211 MB (7ec499a, before the milestones) and does not climb. The owed
+long soak is done; it leaves the roadmap.
