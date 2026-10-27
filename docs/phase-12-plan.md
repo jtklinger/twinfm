@@ -1842,3 +1842,152 @@ so TwinFM drew the syncing arrows (imageres -1401) until he deleted it. OneDrive
 through its own taskbar icon and its rename prompt, not through the file's state, so neither Explorer nor
 TwinFM draws the red cross. The error glyph itself stays covered by the glyph table's test only; no file
 in an error state has been seen here.
+
+**Check 3, re-checked on both fixes** (2026-10-26, `target-p12m7` rebuilt by the coordinating session from
+2502760, #119's head with main and #116 merged in, smoke-run first): Jeremy's words before it, "I'll
+re-check Free up space and Always keep on the combined target-p12m7 build first, then merge #119.", and
+after it, "Recheck had no issues. proceed with merge". Check 3 is closed; #119 merged as 9a88fe6.
+
+## Phase 12 close
+
+Written 2026-10-27 by the coordinating session, two days after the kickoff. All seven milestones are in,
+with the memory check and its follow-up, each squash-merged on Jeremy's word. The look stream (one session)
+built P12-M1 to P12-M5 as a stack of PRs, each on the one before, retargeted to main before its merge; the
+cloud stream (one session) built P12-M6 and P12-M7; the coordinating session ran the memory check and the
+memory manager trial, serialised the machine, allocated the tags, verified every gate's inputs and handed
+each gate to Jeremy.
+
+| Item | PR, merge | Gate build | Tag | Reference | Medians (WPR, reference / candidate) |
+|---|---|---|---|---|---|
+| P12-M1 the look's small pieces | #115, d202ca3 | `target-p12m1` e0c9a28 | ab56 | `target-p11close` | defaults 21.4 / 21.0, preview 20.0 / 20.3 |
+| P12-M6 Google Drive's commands and volume | #116, 929556e | `target-p12m6` 578bf25 | ab57 | `target-p11close` | defaults 21.1 / 21.2 |
+| P12-M2 scrollbars | #118, de1b8b2 | `target-p12m2` 472ceae | ab58 | `target-p12m1` | defaults 21.3 / 21.1, grid with thumbnails 11.8 / 11.8, preview 20.2 / 20.0 |
+| P12-M7 OneDrive's marks | #119, 9a88fe6 | `target-p12m7` 6441b31 | ab59 | `target-p11close` | defaults 21.1 / 21.2 |
+| P12-M3 TwinFM's own questions | #120, 57adfc9 | `target-p12m3` 541bdf9 | ab60 | `target-p12m2` | defaults 20.7 / 21.1 |
+| P12-M4 comfortable rows | #121, 3b3979d | `target-p12m4` 24e8425 | ab61 | `target-p12m3` | defaults 20.9 / 21.1, comfortable rows 21.0 / 17.5 |
+| P12-M5 the sidebar, bookmarks by mouse, the "+" | #122, 1163257 | `target-p12m5` a853e52 | ab62 | `target-p12m4` | defaults 21.1 / 20.7 |
+| P12-M2's padding (Jeremy's "Add padding") | in #118 | `target-p12m2` c35133d | ab63 | `target-p12m1` | defaults 21.6 / 21.2, grid with thumbnails 12.1 / 11.8, preview 20.8 / 20.7 |
+| Tab switches panes, 44 px comfortable thumbnail rows | in #122 | `target-p12m5b` 2b41100 | ab64 | `target-p12m5` 3d5e162 | defaults 20.7 / 21.0, comfortable rows 17.6 / 17.4, with thumbnails 16.8 / 14.5, grid with thumbnails 11.8 / 12.0 |
+| The segment heap | #124, 932202d | `target-p12seg` 3698cd2 | ab65 | `target-p12main` 1163257 | defaults 21.0 / 20.5, grid with thumbnails 11.8 / 12.0 |
+
+Outside the milestones, on main in the same days: the kickoff and `docs/roadmap.md` (#114, 76b5d35), the
+memory check's tools and record (#117, 7ec499a), and the roadmap's upkeep rule in `CLAUDE.md` (#123,
+92eff3a). No gap counted in any setting. Every gate session ran in the costlier state (render p50 about 2.8
+to 3.1 ms), so every build, the references included, read just over the 20% bar on the defaults; each was
+read like for like. The comfortable-rows settings read lower for the candidate because taller rows put
+fewer rows on screen, not because anything got cheaper.
+
+Jeremy's decisions through the phase beyond the kickoff's, his words: "Hold it" and "Merge it" (the
+kickoff, #114) / "Proceed as the coordinator for those suggested sessions." / "start the phase 12
+sessions" / "Skip the second trial; pause the sessions and I'll run the 60-minute memory check." / "Yes:
+the cloud session may copy one 1 KB test file into a OneDrive probe folder and delete it afterwards, after
+the memory check and the two gates." / "Release the other sessions" / "Go with the extra quiet slot"
+(P12-M7's in-app comparison, after its gate build) / "Collapsing the sidebar gives the icons-only rail
+instead of today's thin strip; no fully hidden state." / "Decisions: 1. keep it refused 2. Add padding 3.
+Try the windows newer memory manager 4. merge the memory check, 117 5. add the roadmap rule 6. remove the
+old phase 10 working copy 7. remove the stray toml file." / "tab switches panes and comfortable should make
+rows taller" / "Merge PR #123." / "Merge PR #116, then PR #119 once main is merged into it and its CI is
+green." / "Recheck had no issues. proceed with merge" (#119) / "gate is running, check it every 15 minutes
+for completion. merge when it's complete. Then start the memory manager trial." (ab64, then #115, #118,
+#120, #121 and #122 in order) / "Yes: open the PR for the segment heap and queue its gate for me to run at
+the console." / "Merge PR #124, then rebuild my everyday build." / "Start the Phase 12 close: the write-up,
+the roadmap upkeep and the clean-up of old working copies and test builds." His console-check answers are
+quoted in each milestone's record.
+
+**Memory** (the question Phase 11 carried here): the heap trace of a 60-minute soak of 0.2.0 found no leak
+of TwinFM's own data; the creep was memory the NT heap kept committed after the preview's large temporary
+allocations, plus the graphics driver's (§ The memory check). TwinFM now runs on the segment heap, which
+gives that memory back: over the last 10 minutes of an hour's soak, 211 MB of private bytes against 251, a
+trend of about 14 MB an hour against 55, at no cost in the gate (§ The memory manager trial). The two soaks
+ran 7ec499a's code (before the milestones); the merged code (every milestone plus the segment heap) has had
+the milestones' 10-minute soaks on the NT heap and ab65's six gate runs on the segment heap, but no long
+soak of its own. The "187 MB first run" of ab20 and ab21 was not measured on its own; the trial's runs
+started at 137 to 139 MB.
+
+What Phase 12 answered, against the kickoff's open questions:
+
+- **The two streams**: Phase 11's shape again; the look stream's five milestones went as a stack, each
+  branch on the one before, and merged in order after ab64, each retargeted to main and main merged into
+  the next.
+- **The OneDrive soak folder**: not approved and not used; P12-M7's console checks covered the sync root,
+  with one 1 KB probe file Jeremy allowed (written and deleted).
+- **A share that can be switched off**: none came up; the dead share check is still owed.
+- **The roadmap's upkeep**: Jeremy's rule, now in `CLAUDE.md` (#123).
+- **The old Phase 10 worktree**: `festive-driscoll-27496a` became the cloud stream's working copy when that
+  session started, so it stays until that session is archived (Jeremy's word), with the look stream's
+  `twinfm-public-release-9e4613`.
+- **Why Google Drive's menu ids moved**: Defender's "Scan with Microsoft Defender..." joins a classic menu
+  only when the menu has an owner window, so the verb worker's rebuilt menu (no owner) had every later id one
+  lower; commands are now found by their label path (P12-M6). OneDrive's "Free up space" failed for another
+  reason: its handler answers `GCS_VERBW` in ANSI, garbling the verb (fixed in #116, P12-M6's record, After
+  the console check).
+- **The tooltip, the scrollbar, the rows and OneDrive's way in**: each milestone's Settled first.
+
+Lessons of the phase:
+
+- **Drive a fix through the path a person takes**: the scripted checks called the sidebar's callbacks
+  directly, so they missed that Clear recent and Bookmark this folder ran after their popup had closed;
+  Jeremy found it at the console. A menu's check goes through the menu (`menupick`, a click), not its
+  callback.
+- **A console re-check needs a build with every fix it depends on**: Jeremy's first Free up space re-check
+  ran on `target-p12m6`, which lacks P12-M7's placeholder mode, and his bookmark-drag report came from a
+  build without P12-M5. The coordinator rebuilt `target-p12m7` from the branch with both streams' fixes
+  before the re-check that closed it.
+- **Run a milestone's soak with the PR head's script**: ab64's first soak ran 2b41100's
+  `soak-p5m3.ps1`, which lacked the Tab pair, and was redone with 024d3f0's.
+- **A dry check can resolve the wrong twin**: P12-M6's dry run invoked a bridged copy of the command, so it
+  never met OneDrive's garbled verb; the real invoke at the console did.
+- **A heap trace says what grows; a pair of untracked soaks says whether a fix helps**: stack tracking
+  inflated the traced run (853 MB), so the segment heap was judged by two 60-minute soaks without it, then
+  gated for its cost.
+- **Stacked PRs merge cleanly when each is retargeted to main before the one below it merges**, and main
+  (the squash) is merged into the next branch, keeping the branch's side in the stacked regions.
+- **CI before a merge**: #118, #120 and #122 were merged while CI still ran, on the strength of the same
+  `cargo test --release` and `cargo build --release` run locally on the merged tree; each run finished
+  green afterwards. Wait for CI unless Jeremy says otherwise.
+- **A gate whose scenario never meets the change proves only that the rest is untouched** (P12-M3's
+  questions, P12-M6's menus, P12-M7's cloud folders), as in Phase 11; each record says so.
+
+Deferred, from the milestones and their console checks (each in its section with the reason):
+
+- **The look**: no hover fade on rows, tiles or the sidebar's and crumb dropdown's rows (they scroll);
+  Slint's tooltip keeps its 500 ms delay and sits under the pointer; a press on a scrollbar's track pages
+  once and does not repeat while held, and there are no arrow buttons; the hovered thumb covers the last
+  pixel of the Modified column; a grid pane with under 10 px past its last tile shows one tile fewer; the
+  long Markdown file's scrollbar is the list's own estimate (since Phase 8); TwinFM's question dialog has no
+  icon, and a drop from another program while a question shows waits behind it; only two row densities; the
+  rail's footer has only the chevron (Settings and About on the full sidebar); a drop into the bookmarks gap
+  from a source that allows no link shows the copy cursor and adds nothing.
+- **Memory**: the preview's styled text for a big file built per chunk (fewer large temporary
+  allocations); the Recycle Bin enumeration's shell cache (small).
+- **The cloud**: Defender's scan from TwinFM's classic menu stays refused (Jeremy: "keep it refused"; not on
+  the roadmap); the "found after T ms (a submenu filled late)" line shows for commands in no late submenu (a
+  log clean-up); OneDrive's error glyph has been drawn only by the glyph table's test, since no file here
+  has reached the error state.
+- **Owed checks**: the dead network share (since P5-M1); at the console, the password questions' Tab order
+  (P12-M3), and ab64's two changes (Tab between the panes with the active pane's accent cursor, the 44 px
+  comfortable thumbnail rows), which were merged on the gate; whether the shell draws the "Bookmark" drop
+  text (Jeremy's "4. Works good!" covers the drag); a long soak of the merged code on the segment heap; the
+  soak report's "tabs they opened", which reads about twice what its label expects (older than Phase 12).
+- **Not taken at the kickoff**: the rubber band in the details list, saving a search tab, the Slint fork's
+  whole-row snap and upstreaming its two accessibility patches (no fork change was made); all on the
+  roadmap.
+
+**Phase 13** (Jeremy chooses; nothing is planned yet), from `docs/roadmap.md`:
+
+- Asked for in daily use: click-and-drag selection in the details view; save a search results tab; a
+  TreeSize-style view (with size on disk).
+- The owed checks above, and the memory follow-up (the styled text per chunk).
+- The Slint fork: the whole-row snap patch and upstreaming the accessibility patches (Jeremy decides
+  when).
+- Accessibility stays deferred for much later.
+
+The fleet at the close: the reference for the next gate is **`target-p12seg`** (3698cd2, the code of main
+at this close: 932202d and this close add documents only), built `--locked` from the detached `gate-p12seg`
+worktree; tags continue from **ab66**. Every other gate build (`target-p11close`, `target-p12m1` to
+`target-p12m7`, `target-p12m5b`, `target-p12main`, `target-segbase`, `target-segheap`) has served and was
+removed with its `gate-*` worktree at this close (about 22 GB), with the merged branches; `tools/wpr-heap.ps1`
+names `gate-p11close` and `target-p11close` in its body, so a rerun points its `$Gate` and `$Exe` at another
+build. The two stream
+worktrees stay until Jeremy archives their sessions. `target\release` was rebuilt from 932202d on
+2026-10-27.
