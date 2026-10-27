@@ -144,9 +144,13 @@
 # (`toolbar 0 split` twice: the right pane comes back on the left's folder, which the next cycle's
 # `nav 1` replaces), drags the split line to 0.35 of the room, where the left pane is too narrow for
 # Type and Size (only Modified stays beside the name), and back to 0.5; the report counts the Two panes
-# presses (two per cycle) and the `[cols] pane=0 shows` lines: narrowed to the name and Modified (one per
-# cycle), and name, Size and Modified (two per cycle at the soak's 1200 px window and 100%: the
-# re-split and the widening; the whole window shows Type too between them).
+# presses (two per cycle) and the `[cols] pane=0 shows` lines, which every width change of the left list
+# makes at the soak's 1200 px window and 100% (its panes at 0.5 are 499 px, where Type is hidden):
+# narrowed to the name and Modified three per cycle (the preview cycle's Alt+P and its width set back to
+# 0.35, and the splitter to 0.35), and name, Size and Modified four per cycle (the preview hidden, the
+# re-split, the splitter back to 0.5 here and after the P9-M1 cycle). The P9-M1 cycle runs with the split
+# line at 0.6, where all four columns show, so its drag moves the Type | Size boundary as it was written
+# to (at 499 px Type is hidden and the grip is Name | Size).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -499,7 +503,7 @@ $cycle = @(
     'view details', 'sleep 300', 'click 0 0', 'shiftclick 0 1', 'key Return', 'sleep 800', 'tab 2', 'sleep 200', 'tab close', 'sleep 300', 'tab 2', 'sleep 200', 'tab close', 'sleep 300',
     'tab 1', 'sleep 300',
     # P9-M1: a grip drag, a fit, and the widths set back (see the header).
-    "nav 0 $src\tree", 'sleep 500', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200',
+    "nav 0 $src\tree", 'sleep 500', 'splitter 0.6', 'sleep 300', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200', 'splitter 0.5', 'sleep 300',
     # P9-M4: a thumbnail drag and a search tab with thumbnails (see the header).
     'settings open', 'settings set thumbnails true', 'settings ok', 'sleep 300', "nav 0 $prev", 'sleep 1500', 'click 0 8', 'sleep 800',
     'dragrow 0 8 40 0', 'sleep 400', 'dragcancel', 'sleep 300', 'filter 0 photo', 'sleep 300', 'search 0', 'waitsearch 5000', 'sleep 1500',
@@ -748,7 +752,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "menus opened and closed: $menus; in-menu ticks: $($ticks.Count), with state or driver busy: $ticksBusy"
 "grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (two per cycle: large and medium); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
 "medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
-"toolbar: presses $toolPresses (eight per cycle), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
+"toolbar: presses $toolPresses (ten per cycle: P6-M3's eight and P13-M1's two Two panes), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
 "toolbar tooltips shown $tooltips (three per cycle); Back over the toolbar $toolBack, Forward $toolForward (one each per cycle); sidebar keys $sideKeys (five per cycle), Return $sideReturns (one per cycle)"
 "several-item opens $openMany (one per cycle), tabs they opened $openTabs (two per cycle)"
 "verbs: jobs queued $verbJobs (three per cycle: two of P7-M1's, P7-M2's ZIP), slept $verbSlept, link by verb with S_OK $verbOk; routed deletes $routedDeletes, restored $restores; cuts cancelled by Escape $cutsCancelled"
@@ -769,6 +773,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "comfortable rows: on $rowsOn, off $rowsOff, 30 px geometry lines $rows30, 44 px (thumbnails) $rows44 (one each per cycle)"
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
-"columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (one per cycle), name, Size and Modified $colsWide (two per cycle at 100%)"
+"columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (four per cycle; both at 100%)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

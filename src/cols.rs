@@ -284,6 +284,19 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_keeps_its_neighbour_while_a_column_could_come_back() {
+        // The soak's case: a 499 px list, 461 px of room, Type hidden, so Size's grip is Name | Size.
+        let frozen = shown(DEFAULT, true, 461.0);
+        assert_eq!(frozen, NO_TYPE);
+        let dragged = drag(DEFAULT, Col::Size, 30.0, frozen, 231.0);
+        assert_eq!((dragged.ty, dragged.size), (120.0, 60.0), "Name takes what Size gives up; Type untouched");
+        // The narrower Size lets Type back in: the release applies that (main.rs `update_shown` waits
+        // while the grip is held), so the drag never switches to Type | Size under the pointer.
+        assert_eq!(shown(dragged, true, 461.0), ALL3);
+        assert_eq!(drag(DEFAULT, Col::Size, 30.0, ALL3, 231.0).ty, 150.0, "with Type shown the same drag widens Type");
+    }
+
+    #[test]
     fn a_grip_beside_a_hidden_column_moves_against_name() {
         // Size hidden: Modified's grip is Name | Modified, so Name gives what Modified takes.
         let only_mod = [false, false, true];

@@ -6234,11 +6234,13 @@ fn list_width(app: &App, pane: usize, w: f32) {
 
 /// The columns pane `pane` shows, from its widths, the Type setting and its list's width
 /// (`cols::shown`), set on the pane when they change: `[cols] pane=N shows <columns> at W px`. A
-/// pane with no width yet (or the right pane hidden) keeps what it has.
+/// pane with no width yet (or the right pane hidden) keeps what it has, and so does a pane whose
+/// grip is held (the set waits for the release: a column coming back mid-drag would change the
+/// grip's neighbour under the pointer, the P13-M1 soak's finding).
 fn update_shown(app: &App, pane: usize) {
     let w = LIST_W.with(|c| c.get())[pane];
     // The hidden right pane is laid out at its list's minimum width: nothing to show there.
-    if w <= 0.0 || (pane == 1 && !app.get_split()) {
+    if w <= 0.0 || (pane == 1 && !app.get_split()) || COL_DRAG.with(|d| d.get()).is_some_and(|d| d.0 == pane) {
         return;
     }
     let geom = icons::ListGeom::new(app.get_thumbnails(), app.get_comfortable());
@@ -6314,10 +6316,12 @@ fn col_drag(pane: usize, col: i32, dx: f32, phase: i32) {
     if (p, c0) != (pane, c) {
         return;
     }
+    // The columns shown stay as they were at the press until the release (`update_shown`).
     let w = cols::drag(start, c, dx, shown_of(&app, pane), name);
     set_cols(&app, pane, w);
     if phase == 2 {
         COL_DRAG.with(|d| d.set(None));
+        update_shown(&app, pane);
         with_state(|st| cols_changed(st, &app, pane, start, w, "drag"));
     }
 }

@@ -365,10 +365,26 @@ Per cycle in `tools/soak-p5m3.ps1`:
 
 - Two panes off and on by the toolbar (`toolbar 0 split` twice).
 - The split line to 0.35 and back to 0.5 (`splitter`).
-- Reported: Two panes presses (two per cycle), the left pane narrowed to the name and Modified (one per
-  cycle), and name, Size and Modified (two per cycle at 100%).
+- Reported: Two panes presses (two per cycle), the left pane narrowed to the name and Modified (three per
+  cycle), and name, Size and Modified (four per cycle at 100%). Every width change of the left list makes
+  a line: the preview cycle's two, the split and the splitter.
+- The P9-M1 cycle runs with the split line at 0.6, where all four columns show, so its drag moves the Type
+  | Size boundary as it was written to.
 
-Run: to come, on the coordinating session's word.
+**First run** (2026-10-27, 534a711, the worktree's own build):
+- 10.1 minutes, exit 0, no panics. 10 cycles started, 3 complete.
+- 256 jobs, none failed. Every must-be-0 count was 0.
+- Memory: working set 167 to 239 MB, private bytes 193 to 273 MB.
+- Two panes presses: 6.
+- **It found a bug.** At 499 px the P9-M1 cycle's Size grip drag shrank Size, so Type fitted again and came
+  back mid-drag. The grip's neighbour then switched from Name to Type under the pointer: Type flickered
+  in and out, and the drag ended at Type 120 -> 150 instead of Name growing.
+- **Fixed in commit 4:** the shown set waits while a grip is held and is applied on the release. The new
+  test `a_drag_keeps_its_neighbour_while_a_column_could_come_back` pins the case.
+- **The soak changed too:** the P9-M1 cycle moved to the 0.6 split, and the `[cols] shows` counts were
+  relabelled by what makes each line.
+
+**Second run**, on the new head: to come.
 
 ### Gate
 
