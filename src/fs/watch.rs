@@ -32,7 +32,7 @@
 //! the old watch, never a new one at a recycled address.
 
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf, Prefix};
@@ -45,8 +45,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES,
     FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, GetFinalPathNameByHandleW, OPEN_EXISTING,
-    ReadDirectoryChangesW,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, GetFinalPathNameByHandleW,
+    GetVolumeNameForVolumeMountPointW, OPEN_EXISTING, ReadDirectoryChangesW,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
 use windows_sys::Win32::System::IO::{
@@ -192,6 +192,7 @@ impl Watcher {
                     opening: HashMap::new(),
                     next_req: 0,
                     stalled: HashMap::new(),
+                    no_notify: HashSet::new(),
                     cmds: cmd_rx,
                     events: tx,
                     wake,
@@ -466,6 +467,8 @@ struct Dirwatch<W: Fn()> {
     next_req: u64,
     /// Network roots whose open stalled, and when.
     stalled: HashMap<std::ffi::OsString, Instant>,
+    /// Volumes that refused a device notification (`volume_of`), not asked again (P12-M6).
+    no_notify: HashSet<String>,
     cmds: Receiver<Cmd>,
     events: Sender<Event>,
     wake: W,
@@ -601,8 +604,14 @@ fn open_dir(path: &Path) -> Result<HANDLE, String> {
     open_now(path).map(|h| h as HANDLE)
 }
 
-/// Register for the device events of the drive under `handle`: the HDEVNOTIFY, or 0.
-fn register(hwnd: isize, handle: HANDLE, w: &Watch) -> isize {
+/// Register for the device events of the drive under `handle`: the HDEVNOTIFY, or 0. A volume that
+/// refused once is noted in `refused` and not asked again (P12-M6: Google Drive's `G:` refuses
+/// every watch with os error 1066).
+fn register(hwnd: isize, handle: HANDLE, w: &Watch, refused: &mut HashSet<String>) -> isize {
+    let volume = volume_of(&w.path);
+    if refused.contains(&volume) {
+        return 0;
+    }
     let filter = DEV_BROADCAST_HANDLE {
         dbch_size: std::mem::size_of::<DEV_BROADCAST_HANDLE>() as u32,
         dbch_devicetype: DBT_DEVTYP_HANDLE,
@@ -614,9 +623,23 @@ fn register(hwnd: isize, handle: HANDLE, w: &Watch) -> isize {
         RegisterDeviceNotificationW(hwnd as HANDLE, &filter as *const _ as *const c_void, DEVICE_NOTIFY_WINDOW_HANDLE)
     } as isize;
     if n == 0 {
-        eprintln!("[watch] pane={} tab={} no device notification for {}: {}", w.pane, w.tab_id, w.path.display(), last_error());
+        eprintln!("[watch] pane={} tab={} no device notification for {}: {}: not asked again on {volume}", w.pane, w.tab_id, w.path.display(), last_error());
+        refused.insert(volume);
     }
     n
+}
+
+/// The volume under `path` by its GUID path (`\\?\Volume{...}\`), so a disk given the same letter
+/// later is asked again; its mount point (`dnd::volume_key`) when it has none.
+fn volume_of(path: &Path) -> String {
+    let mount = crate::dnd::volume_key(path);
+    let mut buf = [0u16; 64];
+    let root: Vec<u16> = format!("{mount}\\").encode_utf16().chain([0]).collect();
+    // SAFETY: a NUL-terminated mount point; `buf` is writable for its length (a GUID path is 49
+    // characters and its NUL).
+    let ok = unsafe { GetVolumeNameForVolumeMountPointW(root.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } != 0;
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(0);
+    if ok && n > 0 { String::from_utf16_lossy(&buf[..n]) } else { mount }
 }
 
 fn unregister(notify: isize) {
@@ -736,7 +759,7 @@ impl<W: Fn()> Dirwatch<W> {
                         // SAFETY: a live watch owned by this thread.
                         let w = unsafe { &mut *p };
                         if w.removable && w.notify == 0 && !w.suspended {
-                            w.notify = register(hwnd, w.handle, w);
+                            w.notify = register(hwnd, w.handle, w, &mut self.no_notify);
                         }
                     }
                 }
@@ -949,7 +972,7 @@ impl<W: Fn()> Dirwatch<W> {
             eprintln!("[watch] pane={pane} subtree on {}", w.path.display());
         }
         if w.removable && self.hwnd != 0 {
-            w.notify = register(self.hwnd, handle, w);
+            w.notify = register(self.hwnd, handle, w, &mut self.no_notify);
         }
         w.wants_parent = parent;
         self.slots.insert(tab_id, p);
@@ -1275,7 +1298,7 @@ impl<W: Fn()> Dirwatch<W> {
             return self.lose(p, why);
         }
         if self.hwnd != 0 {
-            w.notify = register(self.hwnd, handle, w);
+            w.notify = register(self.hwnd, handle, w, &mut self.no_notify);
         }
         eprintln!("[watch] pane={} tab={} resumed after a failed removal: {}", w.pane, w.tab_id, w.path.display());
         let (pane, tab_id) = (w.pane, w.tab_id);

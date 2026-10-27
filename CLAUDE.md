@@ -40,10 +40,17 @@ bundle with the owed checks, the preview gaps bundle, syntax colours, password P
 as a setting; two streams and a coordinating session; opened 2026-10-22, closed 2026-10-24; its first
 section quotes Jeremy's kickoff decisions, § Calls made lists the lead's, § Open questions what each brief
 settles first, and § Phase 11 close holds the gates, the long soak, lessons, what is deferred and the
-Phase 12 list). Read them before changing the list.
+Phase 12 list). Read them before changing the list. `docs/phase-12-plan.md` is the Phase 12 record (opened
+2026-10-25: the Phase 10 later list, Google Drive's commands, OneDrive's syncing and error icons, the
+memory check).
+
+`docs/roadmap.md` is the one list of known bugs and wanted features not built yet (since 2026-10-25).
+Its upkeep, Jeremy's rule (2026-10-26, "add the roadmap rule"): an item leaves the roadmap when a phase's
+plan takes it, and that phase's record carries it from there; each phase close adds back what the phase
+put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (303 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (306 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -403,7 +410,10 @@ Phase 12 list). Read them before changing the list.
   deleted folder still goes `Lost`. **A fixed drive whose disk is hot-pluggable** (a USB hard disk;
   here also Google Drive's `G:`) registers its watches for device events as a removable drive does
   (`IOCTL_STORAGE_GET_HOTPLUG_INFO`): `[devices] <letter>: fixed, removable media: registered | not
-  removable` once per drive. `waitsize` also waits while a stale size waits for its re-walk. **The
+  removable` once per drive. Since P12-M6 a volume that refuses the registration (Google Drive's `G:`,
+  os error 1066) is noted by its GUID path (`watch::volume_of`) and not asked again while TwinFM runs:
+  `[watch] pane=N tab=T no device notification for <path>: <error>: not asked again on
+  \\?\Volume{...}\`, once per volume. `waitsize` also waits while a stale size waits for its re-walk. **The
   history menu**: Alt+Down in a list (`command "histmenu"`) or a right click on the path bar's
   background opens the pane's places in the Windows 11 menu (`open_history_menu`; forward places
   first, the current one checked, back places after it; each labelled by its name, then where it
@@ -605,8 +615,9 @@ Phase 12 list). Read them before changing the list.
   Since P6-M1, cloud marks (`src/cloud.rs`, `icons::Cloud`, `icons::Mark`): no new driver step (a
   `nav` to a OneDrive folder or to `G:\My Drive` is the check). A listing is a cloud location when its
   folder is under a registered sync root (`HKLM\...\Explorer\SyncRootManager\*\UserSyncRoots`, read
-  at start and on every device change; OneDrive and Phone Link's CrossDevice here) or on a volume
-  named "Google Drive"; This PC, archive levels and search tabs never are. Keys there:
+  at start and on every device change; OneDrive and Phone Link's CrossDevice here) or on Google Drive's
+  volume (since P12-M6 the one holding `.shortcut-targets-by-id` at its root, else the one named
+  "Google Drive"); This PC, archive levels and search tabs never are. Keys there:
   `ext:<mark>:.txt`, `folder:<mark>`, `thumb:<mark>:<path>|<modified>|<size>`, `cloud:<mark>:<path>`
   (a full-path key), the mark `s<N>` (a sync root's `System.StorageProviderState`, drawn with the
   imageres.dll glyph Explorer's Status column uses) or `o<N>` (the shell's overlay index, Google
@@ -616,8 +627,9 @@ Phase 12 list). Read them before changing the list.
   `SHGFI_OVERLAYINDEX` call, about 5 ms), after which the row takes the marked key. Links and reparse
   points keep their own keys and arrow. A thumbnail for a cloud-only file (state 1) and for any
   Google Drive file is asked with `WTS_INCACHEONLY`. `[cloud]` lines: `sync roots: N (<roots>)` at
-  start and after a device change, `volume <key> named "<name>" (google drive|not cloud)` or `volume
-  <key> has no name (not cloud)` once per volume, `pane=N <folder>: sync root|google drive` per
+  start and after a device change, `volume <key> named "<name>": google drive (by its root's
+  .shortcut-targets-by-id | by its label) | not cloud` or `volume <key> has no name: ...` once per
+  volume (P12-M6; before it `volume <key> named "<name>" (google drive|not cloud)`), `pane=N <folder>: sync root|google drive` per
   listing of a cloud location. `[icons]` adds `status glyph state S (imageres -R) fetched at G px over
   P px` once per state and size, `slow cloud lookup <ms> ms: <path>` (100 ms or more, counted in
   `slow`), and the once-a-second line's `cloud N` (lookups made in the period, after `dropped D`);
@@ -981,6 +993,34 @@ Phase 12 list). Read them before changing the list.
   ready after 4 answers: <key> keeps its type icon`. No new driver step. A test video made by Windows
   itself (no ffmpeg here): WinRT `MediaComposition` with `MediaClip.CreateFromImageFileAsync` and
   `RenderToFileAsync` from Windows PowerShell (the plan's record has the script's shape).
+  Since P12-M6, **a classic-menu command whose id moved runs**: Microsoft Defender's handler adds "Scan
+  with Microsoft Defender..." only to a menu built with an owner window, and the verb worker builds its
+  menu with none (P7-M1), so every command numbered after Defender's sits one id lower there (Google
+  Drive's on `G:`, OneDrive's "Move to OneDrive" on any file). A classic pick hands the worker its
+  **label path** (`VerbRequest::label`: its submenus' labels and its own joined by `>`, "Offline
+  access>Available offline", `shellmenu::label_path`; the `[menu] verb ... queued` and `InvokeCommand
+  ... label=` lines and the pane's "was not run" note show it); `choose` checks the item at the id by the
+  path's last label, and when that refuses, `find_moved` takes the one command **without a verb** at the
+  whole label path in the rebuilt menu (none, or several: refused as before, so a wrong command is never
+  run); `fill_until` stops as soon as either is found. Defender's own item is in no rebuilt menu, so it is
+  refused (`..., and none at its label path`). `[menu] "<label path>" moved from offset A to B in the
+  rebuilt menu: by offset B`; a refusal ends `, and none at its label path` or `, and N at its label
+  path`. Driver: `menuverb <pane> try:<label path>`, the dry test verb: the command at that path in the
+  menu `show` would show for the cursor row's selection (`shellmenu::find_shown`, built as `show`
+  builds it and never shown; of two at one path, the one without a verb), handed to the worker as a pick
+  would be (`verbs::Work::Try`), resolved there and **never invoked** (`run_verb`'s `dry`): `[auto]
+  menuverb try: "<label path>" at offset A in the menu shown, verb "<verb>"` or `[auto] menuverb try: no
+  "<label path>" in the menu`, `[menu] verb ... queued on the verb worker (the test verb: resolved, not
+  invoked)`, `[menu] InvokeCommand ... resolved: by offset | by verb (the test verb: not invoked) |
+  refused: <why>`. Safe on `G:` and OneDrive files (reading menus only); `waitops` covers it.
+  After P12-M6's console check: **a verb is read as `GCS_VERBA` when `GCS_VERBW` gives no plain ASCII**
+  (`verb_of`, `verb_text`; OneDrive's classic handler writes "MakeAvailableOnline" as ANSI bytes into the
+  wide buffer, so Free up space and Always keep on this device failed by verb, 0x80070483), and none when
+  neither does: `[menu] GCS_VERBW gave "<text>" at offset N: GCS_VERBA "<verb>" taken | dropped (none in
+  GCS_VERBA either)`, once per text per process. **A command whose invoke by verb fails** is invoked by
+  offset only where the rebuilt menu's item at its id has its label, or where the one command with its
+  verb at its label path is (`find_moved`'s `verb`), never at a bare id that holds another: `[menu]
+  InvokeCommand by verb "<verb>" = 0x...: by offset N instead`.
   Since P12-M7, **OneDrive files show their own states**: Windows hides the cloud files'
   placeholders from TwinFM's process (a OneDrive file lists as a plain file, its placeholder state 0,
   P9-M4), so a sync root's listing thread and the watch's edit worker show them to themselves
