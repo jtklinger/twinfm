@@ -15,7 +15,7 @@
 //!                                    ShiftF5, ShiftF6, Delete, ShiftDelete, F2, F7, CtrlC, CtrlX,
 //!                                    CtrlV, CtrlZ, CtrlY, CtrlShiftN, Escape, ShiftF10, Menu (the last two open
 //!                                    the Windows 11 menu under the cursor row, as rclick does); CtrlT,
-//!                                    CtrlW, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
+//!                                    CtrlW, Tab, ShiftTab, CtrlTab, CtrlShiftTab, CtrlL, Ctrl1 to Ctrl9, CtrlD, F1, F9,
 //!                                    CtrlShiftPageUp, CtrlShiftPageDown, AltLeft, AltRight (back
 //!                                    and forward in the tab's history), CtrlComma (settings),
 //!                                    CtrlF (the filter box), CtrlShiftF (search), AltReturn
@@ -54,6 +54,9 @@
 //!   hover <x> <y>                    move the pointer to (x, y), logical px of the window, through
 //!                                    Slint's pointer path (a toolbar button's tooltip shows after
 //!                                    500 ms: `[toolbar] top|pane=N tooltip "<name> (<key>)"`)
+//!   clickat <x> <y> [right]          press and release the left (or right) button at (x, y), logical
+//!                                    px of the window, through Slint's pointer path (P12-M5: TwinFM's
+//!                                    own popups, such as the sidebar headers' menus)
 //!   history <back|forward>           Alt+Left / Alt+Right through the Slint key path, on the active pane
 //!   view <details|icons>             Ctrl+Shift+1 / Ctrl+Shift+2 (key names CtrlShift1, CtrlShift2): the
 //!                                    active pane's view, the details list or the large-icon grid
@@ -103,11 +106,13 @@
 //!                                    (or, with row -1, the pane's header: its folder). In place of
 //!                                    `<pane> <row>`, `side <row>` aims at sidebar row <row> (headers
 //!                                    count; 0 is "Drives"; -1 the last row, the newest bookmark) and
-//!                                    `tab <pane> <index>` at tab <index>
-//!                                    of the pane's strip (shown with two tabs or more), `crumb
+//!                                    `tab <pane> <index>` at tab <index> of the pane's strip, `crumb
 //!                                    <pane> <index>` at the label of crumb <index> of the pane's
 //!                                    breadcrumb (0 is This PC; -1 the folder itself, -2 its
-//!                                    parent). copy holds
+//!                                    parent); `sidegap <index>` (P12-M5) at the line before bookmark
+//!                                    <index> (the count: below the last), the Bookmarks gap, where a
+//!                                    drop bookmarks the folders; `point <x> <y>` at that window point
+//!                                    (logical px), whatever the hit test finds there. copy holds
 //!                                    Ctrl, move Shift, auto neither; menu holds the right button,
 //!                                    so Drop opens the drop menu, and picks "Copy here", "Move
 //!                                    here" or "Cancel" from the in-menu timer. Paths are separated
@@ -173,7 +178,10 @@
 //!                                    and rename go to TwinFM's own commands, any other verb to the
 //!                                    verb worker by its verb (`copy` never does: use a handler verb
 //!                                    such as `link`, Create shortcut); `sleep:<ms>` is a test verb that sleeps
-//!                                    on the worker; `waitops` waits for the worker too
+//!                                    on the worker; `try:<label path>` (P12-M6) is a dry test verb: the
+//!                                    classic menu's command at that path (`Offline access>Available
+//!                                    offline`), handed to the worker as a pick would be, resolved there
+//!                                    and never invoked; `waitops` waits for the worker too
 //!   zippassword <text>               the answer to the next password question of a job writing
 //!                                    into a password-protected zip (P8-L2), in place of the
 //!                                    dialog; a scripted job with none is refused, never shown it
@@ -191,6 +199,10 @@
 //!   bookmark rename <index> <title>  what the bookmark row's title editor commits (an empty title
 //!                                    goes back to the folder's name)
 //!   bookmark move <index> <up|down>  the bookmark menu's "Move up" / "Move down"
+//!   bookmark drag <from> <to>        drag bookmark <from> so it lands at index <to> (P12-M5): a press
+//!                                    on its row, moves in 4 px steps to the line where it lands and a
+//!                                    release, through Slint's pointer path (the sidebar scrolled to its
+//!                                    end first, where the bookmarks are)
 //!   about open | about close         F1 opens the About dialog; close closes it
 //!   settings open                    Ctrl+, opens the settings dialog (key name CtrlComma)
 //!   settings set <field> <value>     stage a value in the open dialog through the function its control
@@ -245,6 +257,11 @@
 //!   pdfpassword <text>               the answer to the next PDF password question, then the column's
 //!                                    "Enter password…" button pressed (P11-M6); a scripted run never
 //!                                    shows the dialog, so a question without it is refused
+//!   waitquestion <ms>                wait until one of TwinFM's own questions shows (P12-M3: a zip's
+//!                                    replace or delete question, "Open N items at once?"), at most
+//!                                    <ms>, then 100 ms; a scripted run's question left 30 s is
+//!                                    answered Cancel
+//!   answer <button>                  press the shown question's button reading <button> (any case)
 //!   previewcopy <block|all>          the "Copy text" menu's pick: block <block> (0-based, a code
 //!                                    block or table whole) or every block onto the clipboard (P11-M4)
 //!   window <max|restore|close>       maximise or restore the window (ShowWindow), or close it as
@@ -294,8 +311,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{EndMenu, KillTimer, PostMessag
 enum DropAt {
     Row(usize, i32),
     Side(i32),
+    /// The Bookmarks gap before bookmark `.0` (the count: after the last), P12-M5.
+    SideGap(usize),
     Tab(usize, usize),
     Crumb(usize, i32),
+    /// A window point, logical px: whatever the hit test finds there.
+    Point(f32, f32),
 }
 
 /// Where a `dragover` hovers: 6 px inside a pane list's top (true) or bottom edge, a `dropfiles`
@@ -328,6 +349,8 @@ enum Step {
     /// `at`: None the list's middle; "path" the path bar's middle; "edit" row 0's name cell.
     XButton { pane: usize, forward: bool, at: Option<String> },
     Hover { x: f32, y: f32 },
+    /// A press and release of the left (or right) button at (x, y), logical px of the window.
+    ClickAt { x: f32, y: f32, right: bool },
     WheelAt { x: f32, y: f32, dy: f32, shift: bool },
     /// Press `lead`, type `text` into whatever then has focus, press Return.
     Type { lead: String, text: String },
@@ -371,6 +394,8 @@ enum Step {
     BookmarkRename(i32, String),
     /// Bookmark index, and up (true) or down.
     BookmarkMove(i32, bool),
+    /// Drag bookmark `from` so it lands at index `to` (P12-M5).
+    BookmarkDrag(usize, usize),
     AboutClose,
     /// The settings dialog's OK (true) or Cancel button.
     SettingsClose(bool),
@@ -419,6 +444,12 @@ enum Step {
     PdfPassword(String),
     /// "Copy text": a block, or None for all.
     PreviewCopy(Option<usize>),
+    /// Wait until a question shows (at most `ms`), then 100 ms (P12-M3).
+    WaitQuestion(u64),
+    /// The "+" after the pane's tab strip, as its click (P12-M5).
+    TabPlus(usize),
+    /// Press the shown question's button with this label (P12-M3).
+    Answer(String),
     /// `window max` maximises the window, `window restore` restores it (ShowWindow), `window
     /// close` posts WM_CLOSE (the close button's path: settings saved, then the app exits).
     Window(String),
@@ -447,6 +478,11 @@ fn parse(script: &str) -> Vec<Step> {
                 "dblclick" => Step::DblClick { pane: num(1) as usize, row: num(2) as usize },
                 "midclick" => Step::MidClick { pane: num(1) as usize, row: num(2) as usize },
                 "hover" => Step::Hover { x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0), y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0) },
+                "clickat" => Step::ClickAt {
+                    x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    right: a.get(3) == Some(&"right"),
+                },
                 "wheelat" => Step::WheelAt {
                     x: a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0),
                     y: a.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0),
@@ -497,15 +533,18 @@ fn parse(script: &str) -> Vec<Step> {
                 "dropfiles" => {
                     // `tab <pane> <index>` and `crumb <pane> <index>` take one word more than
                     // `<pane> <row>` and `side <row>`.
-                    let m = if matches!(a.get(1), Some(&"tab" | &"crumb")) { 4 } else { 3 };
+                    let m = if matches!(a.get(1), Some(&"tab" | &"crumb" | &"point")) { 4 } else { 3 };
+                    // `sidegap <index>` (P12-M5) takes the side row's place.
                     let mode = a.get(m).unwrap_or(&"auto").to_string();
                     // `menu <copy|move|cancel>` takes one more word before the paths.
                     let (pick, first) = if mode == "menu" { (a.get(m + 1).unwrap_or(&"cancel").to_string(), m + 2) } else { (String::new(), m + 1) };
                     // The spot: `<pane> <row>`, `side <row>`, `tab <pane> <index>` or `crumb <pane> <index>`.
                     let at = match a.get(1).copied() {
                         Some("side") => DropAt::Side(num(2) as i32),
+                        Some("sidegap") => DropAt::SideGap(num(2) as usize),
                         Some("tab") => DropAt::Tab(num(2) as usize, num(3) as usize),
                         Some("crumb") => DropAt::Crumb(num(2) as usize, num(3) as i32),
+                        Some("point") => DropAt::Point(num(2) as f32, num(3) as f32),
                         _ => DropAt::Row(num(1) as usize, num(2) as i32),
                     };
                     Step::DropFiles {
@@ -548,6 +587,7 @@ fn parse(script: &str) -> Vec<Step> {
                         paths: a.get(m + 1..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                     }
                 }
+                "tab" if a.get(1) == Some(&"plus") => Step::TabPlus(num(2) as usize),
                 "tab" => Step::Key(match a.get(1).copied().unwrap_or("") {
                     "new" => "CtrlT".into(),
                     "close" => "CtrlW".into(),
@@ -588,6 +628,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "bookmark" if a.get(1) == Some(&"remove") => Step::BookmarkRemove(num(2) as i32),
                 "bookmark" if a.get(1) == Some(&"rename") => Step::BookmarkRename(num(2) as i32, a.get(3..).unwrap_or(&[]).join(" ")),
                 "bookmark" if a.get(1) == Some(&"move") => Step::BookmarkMove(num(2) as i32, a.get(3) == Some(&"up")),
+                "bookmark" if a.get(1) == Some(&"drag") => Step::BookmarkDrag(num(2) as usize, num(3) as usize),
                 "bookmark" => Step::Key("CtrlD".into()),
                 "about" if a.get(1) == Some(&"close") => Step::AboutClose,
                 "about" => Step::Key("F1".into()),
@@ -634,6 +675,8 @@ fn parse(script: &str) -> Vec<Step> {
                 }),
                 "pdfpassword" => Step::PdfPassword(s.trim_start()["pdfpassword".len()..].trim().to_string()),
                 "previewcopy" => Step::PreviewCopy(a.get(1).and_then(|v| v.parse().ok())),
+                "waitquestion" => Step::WaitQuestion(num(1).max(1) as u64),
+                "answer" => Step::Answer(a.get(1..).unwrap_or(&[]).join(" ")),
                 "window" => Step::Window(a.get(1).copied().unwrap_or("").to_string()),
                 "quit" => Step::Quit,
                 other => {
@@ -723,7 +766,8 @@ fn list_top(app: &App, pane: usize) -> f32 {
 }
 
 /// Where the pane's vertical scrollbar thumb sits with content-y = 0 (right edge of the list,
-/// just under the path bar and column header).
+/// just under the path bar and column header). Since P12-M2 the thumb is TwinFM's own
+/// (`VScrollBar`, 2 px below the list's top, at least 24 px long): the same aim lands on it.
 fn thumb(app: &App, pane: usize) -> LogicalPosition {
     let (_, right_edge) = crate::dnd::pane_x(&crate::window_layout(app), pane);
     LogicalPosition::new(right_edge - 10.0, list_top(app, pane) + 17.0)
@@ -886,7 +930,12 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
                 Err(_) => LogicalPosition::new(mid.x, list_top(app, pane) - 14.0),
             })
         }
-        DropAt::Side(row) => Some(LogicalPosition::new(app.get_sidebar_width() / 2.0, crate::side_row_centre(row)?)),
+        DropAt::Side(row) => Some(LogicalPosition::new(side_x(app), crate::side_row_centre(row)?)),
+        DropAt::SideGap(k) => {
+            // The bookmarks are the sidebar's last rows: scrolled into view first.
+            app.invoke_side_scroll_end();
+            Some(LogicalPosition::new(side_x(app), crate::side_gap_y(k)?))
+        }
         DropAt::Tab(pane, index) => {
             let l = crate::window_layout(app);
             if !l.tabs[pane] {
@@ -898,6 +947,7 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
             Some(LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
         DropAt::Crumb(pane, index) => crate::crumb_centre(app, pane, index),
+        DropAt::Point(x, y) => Some(LogicalPosition::new(x, y)),
     }
 }
 
@@ -913,14 +963,19 @@ fn hover_point(app: &App, at: HoverAt) -> Option<LogicalPosition> {
         HoverAt::At(spot) => drop_point(app, spot),
         HoverAt::Side(top) => {
             let y = if top { crate::dnd::side_top(&l) + 6.0 } else { l.height - crate::dnd::SIDE_FOOTER - 6.0 };
-            app.get_sidebar_visible().then(|| LogicalPosition::new(app.get_sidebar_width() / 2.0, y))
+            Some(LogicalPosition::new(side_x(app), y))
         }
         HoverAt::Strip(pane, right) => {
             let (a, b) = crate::dnd::pane_x(&l, pane);
-            let x = if right { b - crate::dnd::PANE_PAD - 6.0 } else { a + crate::dnd::PANE_PAD + 6.0 };
+            let x = if right { b - crate::dnd::PANE_PAD - crate::dnd::TAB_PLUS - 6.0 } else { a + crate::dnd::PANE_PAD + 6.0 };
             l.tabs[pane].then(|| LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
     }
+}
+
+/// The middle of the sidebar, or of the icons-only rail when it is collapsed (P12-M5).
+fn side_x(app: &App) -> f32 {
+    if app.get_sidebar_visible() { app.get_sidebar_width() / 2.0 } else { crate::dnd::RAIL_W / 2.0 }
 }
 
 /// The main window's HWND (0 before the window exists).
@@ -1092,6 +1147,8 @@ fn chord(name: &str) -> Vec<SharedString> {
         "F9" => vec![k(Key::F9)],
         "CtrlW" => vec![k(Key::Control), "w".into()],
         "CtrlL" => vec![k(Key::Control), "l".into()],
+        "Tab" => vec![k(Key::Tab)],
+        "ShiftTab" => vec![k(Key::Shift), k(Key::Tab)],
         "CtrlTab" => vec![k(Key::Control), k(Key::Tab)],
         "CtrlShiftTab" => vec![k(Key::Control), k(Key::Shift), k(Key::Tab)],
         "CtrlShiftPageUp" => vec![k(Key::Control), k(Key::Shift), k(Key::PageUp)],
@@ -1255,6 +1312,16 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             let pos = slint::LogicalPosition::new(x, y);
             app.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerMoved { position: pos }).ok();
             eprintln!("[auto] hover at ({x:.0}, {y:.0})");
+            schedule(runner, 50);
+        }
+        Step::ClickAt { x, y, right } => {
+            let pos = slint::LogicalPosition::new(x, y);
+            let button = if right { PointerEventButton::Right } else { PointerEventButton::Left };
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: pos, button }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: pos, button }).ok();
+            eprintln!("[auto] clickat ({x:.0}, {y:.0}){}", if right { " right" } else { "" });
             schedule(runner, 50);
         }
         Step::WheelAt { x, y, dy, shift } => {
@@ -1463,6 +1530,29 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             app.invoke_bookmark_rename(i, title.as_str().into());
             schedule(runner, 1);
         }
+        Step::BookmarkDrag(from, to) => {
+            // The bookmarks are the sidebar's last rows: the list scrolled to its end, then rows
+            // aimed with its scroll.
+            app.invoke_side_scroll_end();
+            let n = app.get_bookmark_count().max(0) as usize;
+            let first = slint::Model::row_count(&app.get_side_items()).saturating_sub(n);
+            let top = crate::dnd::side_top(&crate::window_layout(&app)) + app.invoke_side_scroll();
+            let row_y = |r: usize| top + app.invoke_side_row_top(r as i32);
+            let x = side_x(&app);
+            let gap = if to > from { to + 1 } else { to };
+            let (y0, y1) = (row_y(first + from) + 16.0, row_y(first + gap.min(n)));
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: LogicalPosition::new(x, y0) }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: LogicalPosition::new(x, y0), button: PointerEventButton::Left }).ok();
+            let steps = ((y1 - y0).abs() / 4.0).ceil().max(2.0) as i32;
+            for k in 1..=steps {
+                let y = y0 + (y1 - y0) * k as f32 / steps as f32;
+                win.dispatch_event_with_result(WindowEvent::PointerMoved { position: LogicalPosition::new(x, y) }).ok();
+            }
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: LogicalPosition::new(x, y1), button: PointerEventButton::Left }).ok();
+            eprintln!("[auto] bookmark drag {from} -> {to}: pressed at y {y0:.0}, released at y {y1:.0}");
+            schedule(runner, 1);
+        }
         Step::BookmarkMove(i, up) => {
             app.invoke_bookmark_move(i, up);
             schedule(runner, 1);
@@ -1622,6 +1712,30 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::PreviewCopy(one) => {
             crate::preview::copy(one);
+            schedule(runner, 1);
+        }
+        Step::WaitQuestion(max_ms) => {
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                let shown = crate::ask::shown();
+                if shown || std::time::Instant::now() >= deadline {
+                    if !shown {
+                        eprintln!("[auto] waitquestion: no question after {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 100);
+                }
+            });
+        }
+        Step::TabPlus(pane) => {
+            app.invoke_tab_key(pane as i32, "plus".into());
+            schedule(runner, 1);
+        }
+        Step::Answer(label) => {
+            if !crate::ask::answer_label(&label) {
+                eprintln!("[auto] answer {label}: no question shows a button reading so");
+            }
             schedule(runner, 1);
         }
         Step::WaitPreview(max_ms) => {

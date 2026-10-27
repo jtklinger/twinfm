@@ -40,7 +40,7 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows_sys::Win32::UI::Shell::{
     CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFOEX,
-    DefSubclassProc, GCS_VERBW, RemoveWindowSubclass, SHBindToObject, SHGetDesktopFolder, SHParseDisplayName, SetWindowSubclass,
+    DefSubclassProc, GCS_VERBA, GCS_VERBW, RemoveWindowSubclass, SHBindToObject, SHGetDesktopFolder, SHParseDisplayName, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyMenu, GetMenuDefaultItem, GetMenuItemCount, GetMenuItemInfoW, GetMenuStringW, GetSubMenu, HMENU, InsertMenuW,
@@ -803,25 +803,7 @@ pub fn show(req: &Request) -> Result<Picked, String> {
     let hwnd = req.hwnd as HWND;
     // Objects are declared in creation order so they drop in reverse: the menu interfaces
     // first, then the HMENU, the child PIDLs, the folder and its PIDL.
-    let (_folder_pidl, folder, children) = parse_items(hwnd, &req.folder, &req.names)?;
-    let cm = context_menu_of(hwnd, &folder, &children)?;
-    // SAFETY: `cm` is an IContextMenu.
-    let cv = unsafe { cm.vtbl::<ContextMenuVtbl>() };
-    let menu = Menu::new()?;
-    for (i, item) in req.own.iter().enumerate() {
-        let label = wide(std::ffi::OsStr::new(item.label()));
-        // SAFETY: inserting a string item into our own menu.
-        unsafe { InsertMenuW(menu.0, i as u32, MF_BYPOSITION | MF_STRING, item.id() as usize, label.as_ptr()) };
-    }
-    if !req.own.is_empty() {
-        // SAFETY: as above.
-        unsafe { InsertMenuW(menu.0, req.own.len() as u32, MF_BYPOSITION | MF_SEPARATOR, 0, std::ptr::null()) };
-    }
-    // The shell's items go after ours (indexMenu = our count), so ours stay on top.
-    // SAFETY: a live menu and IContextMenu.
-    let base = unsafe { GetMenuItemCount(menu.0) }.max(0) as u32;
-    let flags = CMF_NORMAL | CMF_EXPLORE | if req.extended { CMF_EXTENDEDVERBS } else { 0 };
-    check(unsafe { (cv.query_context_menu)(cm.0, menu.0, base, SHELL_FIRST, SHELL_LAST, flags) }, "QueryContextMenu")?;
+    let (_folder_pidl, _folder, _children, cm, menu) = build(req)?;
     eprintln!(
         "[menu] {} for {} in {}: {}",
         if req.names.is_empty() { "background menu" } else { "item menu" },
@@ -878,9 +860,10 @@ pub fn show(req: &Request) -> Result<Picked, String> {
         Pick::Own(o) => Ok(Picked::Own(o)),
         Pick::Shell(offset) => {
             // The verb and the label are read here, from the menu that was shown; the verb itself
-            // runs on the verb worker (`crate::verbs`), which builds the menu again (P7-M1).
+            // runs on the verb worker (`crate::verbs`), which builds the menu again (P7-M1). The
+            // label is its label path (P12-M6), so the worker can find it where its id moved.
             let verb = verb_of(&cm, offset);
-            let label = command_label(menu.0, SHELL_FIRST + offset);
+            let label = label_path(&command_tree(&cm, menu.0), SHELL_FIRST + offset).unwrap_or_else(|| command_label(menu.0, SHELL_FIRST + offset));
             if let Some(cmd) = route(&verb) {
                 eprintln!("[menu] shell verb \"{verb}\" routed to TwinFM's {cmd}");
                 return Ok(if cmd == "rename" { Picked::Rename } else { Picked::Route(cmd) });
@@ -888,6 +871,54 @@ pub fn show(req: &Request) -> Result<Picked, String> {
             Ok(Picked::Shell { verb, offset, label })
         }
     }
+}
+
+/// The menu `show` shows for `req`, filled by `QueryContextMenu` and not yet shown: TwinFM's own
+/// items on top, the shell's after them. Declare the result in this order (`parse_items`'s three,
+/// then the menu interface and the HMENU), so they drop in reverse.
+fn build(req: &Request) -> Result<(Pidl, Com, Vec<Pidl>, Com, Menu), String> {
+    let hwnd = req.hwnd as HWND;
+    let (folder_pidl, folder, children) = parse_items(hwnd, &req.folder, &req.names)?;
+    let cm = context_menu_of(hwnd, &folder, &children)?;
+    // SAFETY: `cm` is an IContextMenu.
+    let cv = unsafe { cm.vtbl::<ContextMenuVtbl>() };
+    let menu = Menu::new()?;
+    for (i, item) in req.own.iter().enumerate() {
+        let label = wide(std::ffi::OsStr::new(item.label()));
+        // SAFETY: inserting a string item into our own menu.
+        unsafe { InsertMenuW(menu.0, i as u32, MF_BYPOSITION | MF_STRING, item.id() as usize, label.as_ptr()) };
+    }
+    if !req.own.is_empty() {
+        // SAFETY: as above.
+        unsafe { InsertMenuW(menu.0, req.own.len() as u32, MF_BYPOSITION | MF_SEPARATOR, 0, std::ptr::null()) };
+    }
+    // The shell's items go after ours (indexMenu = our count), so ours stay on top.
+    // SAFETY: a live menu and IContextMenu.
+    let base = unsafe { GetMenuItemCount(menu.0) }.max(0) as u32;
+    let flags = CMF_NORMAL | CMF_EXPLORE | if req.extended { CMF_EXTENDEDVERBS } else { 0 };
+    check(unsafe { (cv.query_context_menu)(cm.0, menu.0, base, SHELL_FIRST, SHELL_LAST, flags) }, "QueryContextMenu")?;
+    Ok((folder_pidl, folder, children, cm, menu))
+}
+
+/// The driver's dry test verb (`menuverb <pane> try:<label path>`, P12-M6): the command at the
+/// label path `label` in the menu `show` would show for `req` (built the same way, its submenus
+/// filled, never shown), as a pick there hands it on: its verb, offset and label path. Of two at
+/// one label path (a packaged command, which has a verb, beside its classic twin), the one
+/// without a verb.
+pub fn find_shown(req: &Request, label: &str) -> Result<(String, u32, String), String> {
+    ensure_com()?;
+    let (_folder_pidl, _folder, _children, cm, menu) = build(req)?;
+    if !crate::fs::archive::inside(&req.folder) {
+        // The zip folder's menus crash in their own QueryInterface for IContextMenu2/3 (P3-M4).
+        fill_submenus(&cm, menu.0, 2);
+    }
+    let want = path_of(label);
+    let (path, id, verb) = command_tree(&cm, menu.0)
+        .into_iter()
+        .filter(|(path, _, _)| same_path(path, &want))
+        .min_by_key(|(_, _, verb)| !verb.is_empty())
+        .ok_or_else(|| format!("no \"{label}\" in the menu"))?;
+    Ok((verb, id - SHELL_FIRST, path.join(">")))
 }
 
 /// The shell verbs TwinFM runs as its own commands (P7-M1), by canonical verb: the command the
@@ -926,7 +957,8 @@ fn context_menu_of(hwnd: HWND, folder: &Com, children: &[Pidl]) -> Result<Com, S
     Ok(Com(p))
 }
 
-/// The canonical verb of the command at `offset` (`GCS_VERBW`), or empty when it has none.
+/// The canonical verb of the command at `offset` (`GCS_VERBW`), or empty when it has none. A wide
+/// answer that is not plain ASCII is read again as `GCS_VERBA` (`verb_text`), logged once per verb.
 fn verb_of(cm: &Com, offset: u32) -> String {
     let mut verb = [0u16; 64];
     // SAFETY: `cm` is an IContextMenu; GCS_VERBW writes at most `verb.len()` wide chars, and a
@@ -937,7 +969,38 @@ fn verb_of(cm: &Com, offset: u32) -> String {
     if hr < 0 {
         return String::new();
     }
-    String::from_utf16_lossy(&verb[..verb.iter().position(|&u| u == 0).unwrap_or(verb.len())])
+    let wide = &verb[..verb.iter().position(|&u| u == 0).unwrap_or(verb.len())];
+    let (text, garbled) = verb_text(wide, || {
+        let mut ansi = [0u8; 64];
+        // SAFETY: as above, GCS_VERBA writes at most `ansi.len()` bytes.
+        let hr = unsafe {
+            (cm.vtbl::<ContextMenuVtbl>().get_command_string)(cm.0, offset as usize, GCS_VERBA, std::ptr::null_mut(), ansi.as_mut_ptr(), ansi.len() as u32)
+        };
+        (hr >= 0).then(|| ansi[..ansi.iter().position(|&b| b == 0).unwrap_or(ansi.len())].to_vec())
+    });
+    if let Some(garbled) = garbled {
+        static LOGGED: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+        if LOGGED.lock().is_ok_and(|mut l| l.insert(garbled.clone())) {
+            let taken = if text.is_empty() { "dropped (none in GCS_VERBA either)".to_string() } else { format!("GCS_VERBA \"{text}\" taken") };
+            eprintln!("[menu] GCS_VERBW gave \"{garbled}\" at offset {offset}: {taken}");
+        }
+    }
+    text
+}
+
+/// A verb from `GetCommandString`: its wide text when that is plain ASCII, as canonical verbs and
+/// the packaged commands' CLSIDs are; else its `GCS_VERBA` text (`ansi`) when that is (P12-M6, after
+/// Jeremy's console check: OneDrive's classic handler writes ANSI bytes into the wide buffer, so
+/// "MakeAvailableOnline" read as "慍敫癁楡慬汢佥汮湩e" and Free up space failed by verb with
+/// 0x80070483); else none, so the command is found by its label path. The second value is the wide
+/// text, when it was not taken.
+fn verb_text(wide: &[u16], ansi: impl FnOnce() -> Option<Vec<u8>>) -> (String, Option<String>) {
+    if wide.iter().all(|&u| (0x20..0x7F).contains(&u)) {
+        return (String::from_utf16_lossy(wide), None);
+    }
+    let garbled = String::from_utf16_lossy(wide);
+    let text = ansi().filter(|a| !a.is_empty() && a.iter().all(|b| (0x20..0x7F).contains(b))).map(|a| String::from_utf8_lossy(&a).into_owned());
+    (text.unwrap_or_default(), Some(garbled))
 }
 
 /// The text of the item with command id `cmd` anywhere in `hmenu` (submenus included), without
@@ -959,7 +1022,8 @@ pub struct VerbRequest {
     pub verb: String,
     /// The command's offset from `SHELL_FIRST` in the menu that was shown.
     pub offset: u32,
-    /// Its label there, for the check when it has no verb.
+    /// Its label path there (its submenus' labels and its own, joined by `>`: "Offline
+    /// access>Available offline", P12-M6), for the check when it has no verb.
     pub label: String,
     pub x: i32,
     pub y: i32,
@@ -988,17 +1052,29 @@ pub enum Invoke {
 
 /// How to invoke a command picked in the shown menu from the menu the worker rebuilt: by `verb`
 /// when it has one, else by its offset only when `rebuilt` (the label at the same id in the
-/// rebuilt menu, None when there is no item there) matches `label`.
+/// rebuilt menu, None when there is no item there) matches the last of the label path `label`.
 pub fn choose(verb: &str, label: &str, rebuilt: Option<&str>) -> Invoke {
     if !verb.is_empty() {
         return Invoke::Verb;
     }
     let norm = |s: &str| s.replace('&', "").trim().to_string();
+    let own = norm(label.rsplit('>').next().unwrap_or(""));
     match rebuilt {
-        Some(r) if !norm(label).is_empty() && norm(r) == norm(label) => Invoke::Offset,
-        Some(r) => Invoke::Refuse(format!("the rebuilt menu has \"{}\" at that id, not \"{}\"", norm(r), norm(label))),
-        None => Invoke::Refuse(format!("the rebuilt menu has no item at that id (\"{}\")", norm(label))),
+        Some(r) if !own.is_empty() && norm(r) == own => Invoke::Offset,
+        Some(r) => Invoke::Refuse(format!("the rebuilt menu has \"{}\" at that id, not \"{own}\"", norm(r))),
+        None => Invoke::Refuse(format!("the rebuilt menu has no item at that id (\"{own}\")")),
     }
+}
+
+/// A label path (labels joined by `>`) as `same_path` compares it: each label without `&`,
+/// trimmed, lowercase.
+fn path_of(label: &str) -> Vec<String> {
+    label.split('>').map(|s| s.replace('&', "").trim().to_lowercase()).collect()
+}
+
+/// Whether a command's labels are the label path `want` (`path_of`'s form).
+fn same_path(path: &[String], want: &[String]) -> bool {
+    path.len() == want.len() && path.iter().zip(want).all(|(a, b)| a.replace('&', "").trim().to_lowercase() == *b)
 }
 
 /// The command in a built menu that `verb` names (when not empty), else the one at the label path
@@ -1008,9 +1084,31 @@ pub fn find_command(items: &[(Vec<String>, u32, String)], verb: &str, label: &st
     if !verb.is_empty() {
         return items.iter().find(|(_, _, v)| v.eq_ignore_ascii_case(verb)).map(|(_, id, _)| *id);
     }
-    let norm = |s: &str| s.replace('&', "").trim().to_lowercase();
-    let want: Vec<String> = label.split('>').map(norm).collect();
-    items.iter().find(|(path, _, _)| path.len() == want.len() && path.iter().zip(&want).all(|(a, b)| norm(a) == *b)).map(|(_, id, _)| *id)
+    let want = path_of(label);
+    items.iter().find(|(path, _, _)| same_path(path, &want)).map(|(_, id, _)| *id)
+}
+
+/// A command without a verb whose id holds another item in the rebuilt menu (P12-M6: Microsoft
+/// Defender's handler adds "Scan with Microsoft Defender..." only to a menu built with an owner
+/// window, and the verb worker's has none, so every command numbered after it sits one lower
+/// there): the id of the one command with the verb `verb` (empty: without one) at the label path
+/// `label` in `items`, else how many there are (none, or several: refused, so a wrong command is
+/// never run). A command with a verb is looked for so only when invoking it by its verb failed.
+pub fn find_moved(items: &[(Vec<String>, u32, String)], label: &str, verb: &str) -> Result<u32, usize> {
+    let want = path_of(label);
+    if want.iter().any(String::is_empty) {
+        return Err(0); // an owner-drawn item has no label to find it by
+    }
+    let found: Vec<u32> = items.iter().filter(|(path, _, v)| v == verb && same_path(path, &want)).map(|(_, id, _)| *id).collect();
+    match found[..] {
+        [id] => Ok(id),
+        _ => Err(found.len()),
+    }
+}
+
+/// The label path (labels joined by `>`) of the command with id `id` among `items`.
+fn label_path(items: &[(Vec<String>, u32, String)], id: u32) -> Option<String> {
+    items.iter().find(|(_, i, _)| *i == id).map(|(path, _, _)| path.join(">"))
 }
 
 /// Every command of a built menu with its label path, id and canonical verb, two levels deep.
@@ -1123,10 +1221,11 @@ fn fill_until(cm: &Com, hmenu: HMENU, what: &str, found: impl Fn() -> bool) -> b
 }
 
 /// On the verb worker (an STA with a message loop): build the menu for the request's items again,
-/// pick the command by `choose`, and invoke it with no owner window. Every COM object is made,
-/// used and released here. Returns how it was invoked and what `InvokeCommand` returned (0 when
-/// refused).
-pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
+/// pick the command by `choose` (or, moved, by `find_moved`), and invoke it with no owner window.
+/// Every COM object is made, used and released here. Returns how it was invoked and what
+/// `InvokeCommand` returned (0 when refused). `dry` (the driver's `try:` test verb, P12-M6): how
+/// it would be invoked, and nothing invoked.
+pub(crate) fn run_verb(req: &VerbRequest, dry: bool) -> Result<(Invoke, HRESULT), String> {
     // No owner window: a dialog owned by the main window from this thread would attach the two
     // threads' input queues while it is up (P7-M1 Decisions).
     let hwnd: HWND = std::ptr::null_mut();
@@ -1140,9 +1239,13 @@ pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
     check(unsafe { (cv.query_context_menu)(cm.0, menu.0, 0, SHELL_FIRST, SHELL_LAST, flags) }, "QueryContextMenu")?;
     let cmd = SHELL_FIRST + req.offset;
     let rebuilt = |cm: &Com| {
-        if req.verb.is_empty() && !crate::fs::archive::inside(&req.folder) {
+        if !crate::fs::archive::inside(&req.folder) {
             // The zip folder's menus crash in their own QueryInterface for IContextMenu2/3 (P3-M4).
-            fill_until(cm, menu.0, &req.label, || command_label(menu.0, cmd).replace('&', "").trim().eq_ignore_ascii_case(req.label.rsplit('>').next().unwrap_or("").replace('&', "").trim()));
+            // Filled until the item at its id has its label, or it is at its label path elsewhere.
+            fill_until(cm, menu.0, &req.label, || {
+                command_label(menu.0, cmd).replace('&', "").trim().eq_ignore_ascii_case(req.label.rsplit('>').next().unwrap_or("").replace('&', "").trim())
+                    || find_moved(&command_tree(cm, menu.0), &req.label, &req.verb) != Err(0)
+            });
         }
         let l = command_label(menu.0, cmd);
         (!l.is_empty()).then_some(l)
@@ -1164,12 +1267,27 @@ pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
             None => (Invoke::Refuse(format!("no \"{}\" in the menu", if req.verb.is_empty() { &req.label } else { &req.verb })), 0),
         }
     } else {
-        (choose(&req.verb, &req.label, if req.verb.is_empty() { rebuilt(&cm) } else { None }.as_deref()), req.offset)
+        match choose(&req.verb, &req.label, if req.verb.is_empty() { rebuilt(&cm) } else { None }.as_deref()) {
+            // Not at its id (only a command without a verb is refused): at its label path, once.
+            Invoke::Refuse(why) => match find_moved(&command_tree(&cm, menu.0), &req.label, "") {
+                Ok(id) => {
+                    let to = id - SHELL_FIRST;
+                    eprintln!("[menu] \"{}\" moved from offset {} to {to} in the rebuilt menu: by offset {to}", req.label, req.offset);
+                    (Invoke::Offset, to)
+                }
+                Err(0) => (Invoke::Refuse(format!("{why}, and none at its label path")), req.offset),
+                Err(n) => (Invoke::Refuse(format!("{why}, and {n} at its label path")), req.offset),
+            },
+            how => (how, req.offset),
+        }
     };
+    if dry {
+        return Ok((how, 0));
+    }
     let dir = wide(req.folder.as_os_str());
     let verb_w = wide(std::ffi::OsStr::new(&req.verb));
     let verb_a: Vec<u8> = req.verb.bytes().map(|b| if b.is_ascii() { b } else { b'?' }).chain([0]).collect();
-    let invoke = |by_verb: bool| {
+    let invoke = |by_verb: bool, offset: u32| {
         let mut ici: CMINVOKECOMMANDINFOEX = CMINVOKECOMMANDINFOEX::default();
         ici.cbSize = std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32;
         ici.fMask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
@@ -1194,20 +1312,25 @@ pub(crate) fn run_verb(req: &VerbRequest) -> Result<(Invoke, HRESULT), String> {
     };
     match how {
         Invoke::Refuse(_) | Invoke::Command => Ok((how, 0)),
-        Invoke::Offset => Ok((how, invoke(false))),
+        Invoke::Offset => Ok((how, invoke(false, offset))),
         Invoke::Verb => {
-            let hr = invoke(true);
+            let hr = invoke(true, offset);
             if hr >= 0 || hr == crate::fileops::HR_CANCELLED {
                 return Ok((Invoke::Verb, hr));
             }
-            // A handler that names its verb but takes only its id: by offset, when the rebuilt
-            // menu's item there is the one that was picked.
-            match choose("", &req.label, rebuilt(&cm).as_deref()) {
-                Invoke::Offset => {
-                    eprintln!("[menu] InvokeCommand by verb \"{}\" = 0x{:08X}: by offset instead", req.verb, hr as u32);
-                    Ok((Invoke::Offset, invoke(false)))
+            // A handler that names its verb but takes only its id: by offset, where the rebuilt
+            // menu's item at the id is the one that was picked, else where the one command with
+            // its verb at its label path is (P12-M6: never at a bare id that holds another).
+            let at = match choose("", &req.label, rebuilt(&cm).as_deref()) {
+                Invoke::Offset => Some(offset),
+                _ => find_moved(&command_tree(&cm, menu.0), &req.label, &req.verb).ok().map(|id| id - SHELL_FIRST),
+            };
+            match at {
+                Some(at) => {
+                    eprintln!("[menu] InvokeCommand by verb \"{}\" = 0x{:08X}: by offset {at} instead", req.verb, hr as u32);
+                    Ok((Invoke::Offset, invoke(false, at)))
                 }
-                _ => Ok((Invoke::Verb, hr)),
+                None => Ok((Invoke::Verb, hr)),
             }
         }
     }
@@ -1271,6 +1394,70 @@ mod tests {
         assert!(matches!(choose("", "Documents", Some("Desktop")), Invoke::Refuse(w) if w.contains("Desktop")));
         assert!(matches!(choose("", "Documents", None), Invoke::Refuse(w) if w.contains("no item")));
         assert!(matches!(choose("", "", Some("")), Invoke::Refuse(_)), "no verb and no label: nothing to match");
+        // P12-M6: the label is a label path; the item at the id is checked by its own label.
+        assert_eq!(choose("", "Offline access>Available offline", Some("Available offline")), Invoke::Offset);
+        assert!(matches!(
+            choose("", "Offline access>Available offline", Some("Online only")),
+            Invoke::Refuse(w) if w == "the rebuilt menu has \"Online only\" at that id, not \"Available offline\""
+        ));
+    }
+
+    #[test]
+    fn a_verb_written_as_ansi_into_the_wide_buffer_is_read_again() {
+        // Jeremy's log (2026-10-26): OneDrive's classic handler answered GCS_VERBW with
+        // "MakeAvailableOnline" as ANSI bytes, read as UTF-16.
+        let garbled = [0x614D, 0x656B, 0x7641, 0x6961, 0x616C, 0x6C62, 0x4F65, 0x6C6E, 0x6E69, 0x0065];
+        assert_eq!(String::from_utf16_lossy(&garbled), "慍敫癁楡慬汢佥汮湩e");
+        let (verb, seen) = verb_text(&garbled, || Some(b"MakeAvailableOnline".to_vec()));
+        assert_eq!(verb, "MakeAvailableOnline");
+        assert_eq!(seen.as_deref(), Some("慍敫癁楡慬汢佥汮湩e"), "the wide text, for the log");
+        // Nothing usable in GCS_VERBA either: no verb, so the label path decides.
+        assert_eq!(verb_text(&garbled, || None), (String::new(), Some("慍敫癁楡慬汢佥汮湩e".to_string())));
+        assert_eq!(verb_text(&garbled, || Some("Verfügbar".as_bytes().to_vec())).0, "", "not plain ASCII either");
+        // A plain wide verb is taken as it is, and GCS_VERBA is never asked.
+        let plain: Vec<u16> = "MakeAvailableOnline".encode_utf16().collect();
+        assert_eq!(verb_text(&plain, || panic!("asked GCS_VERBA")), ("MakeAvailableOnline".to_string(), None));
+        let clsid: Vec<u16> = "{1FA0E654-C9F2-4A1F-9800-B9A75D744B01}".encode_utf16().collect();
+        assert_eq!(verb_text(&clsid, || panic!("asked GCS_VERBA")).0, "{1FA0E654-C9F2-4A1F-9800-B9A75D744B01}");
+        assert_eq!(verb_text(&[], || panic!("asked GCS_VERBA")), (String::new(), None), "no verb");
+    }
+
+    #[test]
+    fn a_moved_command_is_found_by_its_label_path() {
+        // P12-M6, as on G: (Jeremy's log, 2026-10-25): the worker's menu lacks Defender's item, so
+        // Google Drive's commands sit one id lower there than in the menu shown.
+        let s = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<Vec<String>>();
+        let rebuilt = vec![
+            (s(&["Move to OneDrive"]), 283, String::new()),
+            (s(&["Move to OneDrive"]), 319, "{1FA0E654-C9F2-4A1F-9800-B9A75D744B01}".to_string()),
+            (s(&["Manage versions with Google Drive"]), 209, String::new()),
+            (s(&["Offline access", "Available offline"]), 207, String::new()),
+            (s(&["Offline access", "Online only"]), 208, String::new()),
+            (s(&["Unlock with File Locksmith"]), 179, String::new()),
+            (s(&["Tools", "Unlock with File Locksmith"]), 190, String::new()),
+            (s(&["Twice"]), 220, String::new()),
+            (s(&["Twice"]), 221, String::new()),
+            (s(&[""]), 230, String::new()),
+            (s(&["Copy as path"]), 180, "copyaspath".to_string()),
+        ];
+        assert_eq!(find_moved(&rebuilt, "Offline access>Available offline", ""), Ok(207), "one match");
+        assert_eq!(find_moved(&rebuilt, "Manage versions with Google Drive", ""), Ok(209));
+        assert_eq!(find_moved(&rebuilt, "offline ACCESS > &Available offline", ""), Ok(207), "& and case ignored");
+        assert_eq!(find_moved(&rebuilt, "Move to OneDrive", ""), Ok(283), "only commands without a verb count");
+        assert_eq!(find_moved(&rebuilt, "Unlock with File Locksmith", ""), Ok(179), "the path must be whole");
+        assert_eq!(find_moved(&rebuilt, "Scan with Microsoft Defender...", ""), Err(0), "none");
+        assert_eq!(find_moved(&rebuilt, "Available offline", ""), Err(0), "a label alone is not the path");
+        assert_eq!(find_moved(&rebuilt, "Twice", ""), Err(2), "two: refused");
+        assert_eq!(find_moved(&rebuilt, "", ""), Err(0), "an owner-drawn item is never matched");
+        assert_eq!(find_moved(&rebuilt, "Copy as path", ""), Err(0), "a command with a verb runs by its verb");
+        // After its verb failed, a command with a verb is looked for with that verb.
+        assert_eq!(find_moved(&rebuilt, "Copy as path", "copyaspath"), Ok(180));
+        assert_eq!(find_moved(&rebuilt, "Move to OneDrive", "{1FA0E654-C9F2-4A1F-9800-B9A75D744B01}"), Ok(319));
+        let twins = vec![(s(&["Free up space"]), 167, "MakeAvailableOnline".to_string()), (s(&["Free up space"]), 257, "MakeAvailableOnline".to_string())];
+        assert_eq!(find_moved(&twins, "Free up space", "MakeAvailableOnline"), Err(2), "OneDrive's two blocks: refused");
+        assert_eq!(label_path(&rebuilt, 208).as_deref(), Some("Offline access>Online only"));
+        assert_eq!(label_path(&rebuilt, 209).as_deref(), Some("Manage versions with Google Drive"));
+        assert_eq!(label_path(&rebuilt, 999), None);
     }
 
     #[test]
@@ -1349,7 +1536,7 @@ mod tests {
 
     #[test]
     fn keyboard_menu_point_sits_under_the_row_inside_the_viewport() {
-        let g = ListGeom::new(false);
+        let g = ListGeom::new(false, false);
         // List at (10, 63), not scrolled, 400 px tall: row 0's bottom is 22 px down.
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 0, g), (38.0, 85.0));
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 3, g), (38.0, 63.0 + 88.0));
@@ -1360,7 +1547,7 @@ mod tests {
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 500, g).1, 463.0);
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, -5.0, 2, g).1, 63.0, "a collapsed list");
         // 32 px rows (thumbnails on): the name column starts 42 px in (a 4 px gap after the thumbnail).
-        let t = ListGeom::new(true);
+        let t = ListGeom::new(true, false);
         assert_eq!(row_menu_point(10.0, 63.0, 0.0, 400.0, 0, t), (52.0, 95.0));
         assert_eq!(row_menu_point(10.0, 63.0, -3200.0, 400.0, 105, t), (52.0, 63.0 + 6.0 * 32.0));
     }

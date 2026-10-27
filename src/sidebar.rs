@@ -21,10 +21,16 @@ pub enum RowKind {
     Drive = 1,
     Place = 2,
     Bookmark = 3,
+    /// A folder a pane showed lately (P12-M5).
+    Recent = 4,
 }
 
+/// The Recent group's length (P12-M5).
+pub const RECENT_MAX: usize = 8;
+
 /// One sidebar row: its text, kind, the folder a click opens (none for a header) and, for a
-/// bookmark, its index in the bookmark list.
+/// bookmark, its index in the bookmark list (a recent folder's in the Recent list; a header's
+/// section: 0 Drives, 1 Places, 2 Recent, 3 Bookmarks).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub label: String,
@@ -78,13 +84,18 @@ pub fn drive_label(e: &Entry) -> String {
 
 /// The whole list: a header per section, then its rows. The Bookmarks header is always there,
 /// so Ctrl+D has a visible place to land.
-pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], bookmarks: &[Bookmark]) -> Vec<Row> {
-    let header = |label: &str| Row { label: label.into(), kind: RowKind::Header, path: None, index: 0 };
-    let mut out = vec![header("Drives")];
+pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], recent: &[String], bookmarks: &[Bookmark]) -> Vec<Row> {
+    let header = |label: &str, index| Row { label: label.into(), kind: RowKind::Header, path: None, index };
+    let mut out = vec![header("Drives", 0)];
     out.extend(drives.iter().enumerate().map(|(i, (l, p))| Row { label: l.clone(), kind: RowKind::Drive, path: Some(p.clone()), index: i }));
-    out.push(header("Places"));
+    out.push(header("Places", 1));
     out.extend(places.iter().enumerate().map(|(i, (l, p))| Row { label: l.clone(), kind: RowKind::Place, path: Some(p.clone()), index: i }));
-    out.push(header("Bookmarks"));
+    // Recent (P12-M5), under Places, only when it holds a folder.
+    if !recent.is_empty() {
+        out.push(header("Recent", 2));
+        out.extend(recent.iter().enumerate().map(|(i, p)| Row { label: crate::pathbar::title(p), kind: RowKind::Recent, path: Some(PathBuf::from(p)), index: i }));
+    }
+    out.push(header("Bookmarks", 3));
     out.extend(bookmarks.iter().enumerate().map(|(i, b)| Row {
         label: b.title.clone().unwrap_or_else(|| crate::pathbar::title(&b.path)),
         kind: RowKind::Bookmark,
@@ -126,12 +137,32 @@ fn same_folder(a: &str, b: &str) -> bool {
     n(a) == n(b)
 }
 
-/// Add `folder` at the end unless it is there already. Returns whether it was added.
+/// A pane showed `folder` (P12-M5): it goes to the top of the Recent list (moved there when the list
+/// holds it already, by the folder test bookmarks use), which keeps `RECENT_MAX`. False when it was
+/// at the top already: nothing changed.
+pub fn note_recent(list: &mut Vec<String>, folder: &str) -> bool {
+    if folder.trim().is_empty() || list.first().is_some_and(|f| same_folder(f, folder)) {
+        return false;
+    }
+    list.retain(|f| !same_folder(f, folder));
+    list.insert(0, folder.to_string());
+    list.truncate(RECENT_MAX);
+    true
+}
+
+/// Add `folder` at the end unless it is there already (Ctrl+D). Returns whether it was added.
 pub fn add_bookmark(list: &mut Vec<Bookmark>, folder: &str) -> bool {
+    let at = list.len();
+    insert_bookmark(list, folder, at)
+}
+
+/// Add `folder` at index `at` (at most the end) unless it is bookmarked already, which leaves it
+/// where it is (P12-M5: a folder dropped into the Bookmarks gap). Returns whether it was added.
+pub fn insert_bookmark(list: &mut Vec<Bookmark>, folder: &str, at: usize) -> bool {
     if folder.trim().is_empty() || list.iter().any(|b| same_folder(&b.path, folder)) {
         return false;
     }
-    list.push(Bookmark::new(folder));
+    list.insert(at.min(list.len()), Bookmark::new(folder));
     true
 }
 
@@ -146,6 +177,23 @@ pub fn rename_bookmark(list: &mut [Bookmark], i: usize, title: &str) -> bool {
     let Some(b) = list.get_mut(i) else { return false };
     let t = title.trim();
     b.title = (!t.is_empty() && t != crate::pathbar::title(&b.path)).then(|| t.to_string());
+    true
+}
+
+/// Where bookmark `from` lands when it is dropped in gap `gap` (P12-M5's drag: gap 0 is above the
+/// first bookmark, gap N below the last of N): the gaps on either side of it leave it where it is.
+pub fn drag_target(from: usize, gap: usize) -> usize {
+    if gap > from { gap - 1 } else { gap }
+}
+
+/// Move bookmark `from` to index `to` (P12-M5's drag), the others closing up behind it. False when
+/// it would not move (the same place, or no such bookmark or place).
+pub fn move_bookmark_to(list: &mut Vec<Bookmark>, from: usize, to: usize) -> bool {
+    if from == to || from >= list.len() || to >= list.len() {
+        return false;
+    }
+    let b = list.remove(from);
+    list.insert(to, b);
     true
 }
 
@@ -203,6 +251,49 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_folder_is_bookmarked_at_its_gap() {
+        let mut b = vec![Bookmark::new(r"C:\a"), Bookmark::new(r"C:\c")];
+        assert!(insert_bookmark(&mut b, r"C:\b", 1), "between a and c");
+        assert!(insert_bookmark(&mut b, r"C:\z", 0), "on the Bookmarks header: first");
+        assert!(insert_bookmark(&mut b, r"C:\end", 99), "past the last: at the end");
+        assert!(!insert_bookmark(&mut b, r"c:\A\", 0), "bookmarked already: it stays where it is");
+        let paths: Vec<&str> = b.iter().map(|x| x.path.as_str()).collect();
+        assert_eq!(paths, [r"C:\z", r"C:\a", r"C:\b", r"C:\c", r"C:\end"]);
+    }
+
+    #[test]
+    fn a_dragged_bookmark_lands_in_its_gap() {
+        // Four bookmarks; the gaps 0 to 4. The gaps either side of bookmark 1 leave it there.
+        assert_eq!([0, 1, 2, 3, 4].map(|g| drag_target(1, g)), [0, 1, 1, 2, 3]);
+        let mut b: Vec<Bookmark> = ["a", "b", "c", "d"].iter().map(|n| Bookmark::new(&format!(r"C:\{n}"))).collect();
+        let names = |b: &[Bookmark]| b.iter().map(|x| x.path.trim_start_matches(r"C:\").to_string()).collect::<Vec<_>>().join("");
+        assert!(move_bookmark_to(&mut b, 0, drag_target(0, 3)), "a below c");
+        assert_eq!(names(&b), "bcad");
+        assert!(move_bookmark_to(&mut b, 3, drag_target(3, 0)), "d to the top");
+        assert_eq!(names(&b), "dbca");
+        assert!(!move_bookmark_to(&mut b, 2, drag_target(2, 2)), "its own gap: not moved");
+        assert!(!move_bookmark_to(&mut b, 9, 0));
+        assert_eq!(names(&b), "dbca");
+    }
+
+    #[test]
+    fn recent_keeps_the_last_eight_newest_first() {
+        let mut r: Vec<String> = Vec::new();
+        assert!(note_recent(&mut r, r"C:\a"));
+        assert!(note_recent(&mut r, r"C:\b"));
+        assert_eq!(r, [r"C:\b", r"C:\a"], "newest first");
+        assert!(!note_recent(&mut r, r"c:\B\"), "the same folder at the top: no change");
+        assert!(note_recent(&mut r, r"c:\A"), "a folder further down moves to the top");
+        assert_eq!(r, [r"c:\A", r"C:\b"], "once, as last written");
+        assert!(!note_recent(&mut r, "  "));
+        for i in 0..10 {
+            note_recent(&mut r, &format!(r"C:\f{i}"));
+        }
+        assert_eq!(r.len(), RECENT_MAX);
+        assert_eq!((r[0].as_str(), r[7].as_str()), (r"C:\f9", r"C:\f2"), "the oldest dropped");
+    }
+
+    #[test]
     fn bookmarks_rename_and_move() {
         let mut b = vec![Bookmark::new(r"C:\a"), Bookmark::new(r"C:\b"), Bookmark::new(r"C:\c")];
         assert!(rename_bookmark(&mut b, 1, "  Bee  "));
@@ -213,7 +304,7 @@ mod tests {
         assert_eq!(b[2].title, None);
         assert!(!rename_bookmark(&mut b, 3, "x"));
         rename_bookmark(&mut b, 0, "Alpha");
-        let labels = |b: &[Bookmark]| compose(&[], &[], b).into_iter().skip(3).map(|r| (r.label, r.index)).collect::<Vec<_>>();
+        let labels = |b: &[Bookmark]| compose(&[], &[], &[], b).into_iter().skip(3).map(|r| (r.label, r.index)).collect::<Vec<_>>();
         assert_eq!(labels(&b), [("Alpha".to_string(), 0), ("b".to_string(), 1), ("c".to_string(), 2)]);
         // Move down, then up; nothing past either end.
         assert_eq!(move_bookmark(&mut b, 0, false), Some(1));
@@ -230,24 +321,30 @@ mod tests {
     fn known_folder_list_composition() {
         let drives = vec![("Local Disk (C:)".to_string(), PathBuf::from(r"C:\"))];
         let places = vec![("Home".to_string(), PathBuf::from(r"C:\Users\x")), ("Documents".to_string(), PathBuf::from(r"C:\Users\x\Documents"))];
-        let rows = compose(&drives, &places, &[Bookmark::new(r"C:\work\proj")]);
+        let rows = compose(&drives, &places, &[], &[Bookmark::new(r"C:\work\proj")]);
         let shown: Vec<(&str, RowKind, usize)> = rows.iter().map(|r| (r.label.as_str(), r.kind, r.index)).collect();
         assert_eq!(
             shown,
             [
                 ("Drives", RowKind::Header, 0),
                 ("Local Disk (C:)", RowKind::Drive, 0),
-                ("Places", RowKind::Header, 0),
+                ("Places", RowKind::Header, 1),
                 ("Home", RowKind::Place, 0),
                 ("Documents", RowKind::Place, 1),
-                ("Bookmarks", RowKind::Header, 0),
+                ("Bookmarks", RowKind::Header, 3),
                 ("proj", RowKind::Bookmark, 0),
             ]
         );
         assert_eq!(rows[6].path.as_deref(), Some(std::path::Path::new(r"C:\work\proj")));
         assert!(rows.iter().filter(|r| r.kind == RowKind::Header).all(|r| r.path.is_none()));
-        // No bookmarks: the header stays.
-        assert_eq!(compose(&[], &[], &[]).len(), 3);
+        // No bookmarks: the header stays. No recent folder: no Recent header.
+        assert_eq!(compose(&[], &[], &[], &[]).len(), 3);
+        // Recent folders (P12-M5): under Places, newest first, by their folder's name.
+        let recent = vec![r"C:\work\proj".to_string(), r"D:\".to_string()];
+        let rows = compose(&drives, &places, &recent, &[]);
+        let shown: Vec<(&str, RowKind, usize)> = rows.iter().skip(4).map(|r| (r.label.as_str(), r.kind, r.index)).collect();
+        assert_eq!(shown, [("Documents", RowKind::Place, 1), ("Recent", RowKind::Header, 2), ("proj", RowKind::Recent, 0), ("D:", RowKind::Recent, 1), ("Bookmarks", RowKind::Header, 3)]);
+        assert_eq!(rows[6].path.as_deref(), Some(std::path::Path::new(r"C:\work\proj")));
         // The real known folders: every one this machine resolves is an existing folder.
         let known = known_folders();
         assert!(known.iter().any(|(l, _)| l == "Documents"));

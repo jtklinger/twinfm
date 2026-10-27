@@ -1,6 +1,6 @@
 import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
 import { ListView, AboutSlint } from "std-widgets.slint";
-import { Theme, Btn, Switch, Field, Choice } from "theme.slint";
+import { Theme, Btn, Switch, Field, Choice, VScrollBar, TipCard } from "theme.slint";
 // Inter (SIL Open Font License 1.1, src/ui/fonts/OFL.txt), the face of the look (P10-M1 task 4):
 // the three static weights the window uses, embedded in the exe.
 import "fonts/Inter-Regular.ttf";
@@ -11,8 +11,9 @@ export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Pa
 // The fluent Palette, for main.rs's TWINFM_SCHEME override (a scripted screenshot of the other scheme).
 export { Palette } from "std-widgets.slint";
 
-// One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark; index is
-// the bookmark's index in the bookmark list.
+// One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark, 4 a recent
+// folder (P12-M5); index is the bookmark's index in the bookmark list (a recent folder's in the Recent
+// list; a header's section: 0 Drives, 1 Places, 2 Recent, 3 Bookmarks).
 export struct SideItem {
     label: string,
     kind: int,
@@ -25,13 +26,24 @@ component SideRow inherits Rectangle {
     in property <bool> editing;
     // The row was clicked last and the sidebar has the keys (F2 renames a bookmark row).
     in property <bool> current;
+    // The collapsed sidebar, the icons-only rail (P12-M5): the icon centred, the name its tooltip, a
+    // header a hairline.
+    in property <bool> rail;
+    // The row's icon (P10-M1): drives, bookmarks, and the known places by their label.
+    property <image> icon: item.kind == 1 ? @image-url("icons/hard-drive.svg") : item.kind == 3 ? @image-url("icons/star.svg") : item.label == "Home" ? @image-url("icons/house.svg") : item.label == "Desktop" ? @image-url("icons/monitor.svg") : item.label == "Downloads" ? @image-url("icons/download.svg") : item.label == "Pictures" ? @image-url("icons/image.svg") : item.label == "Music" ? @image-url("icons/music.svg") : item.label == "Videos" ? @image-url("icons/film.svg") : item.label == "OneDrive" ? @image-url("icons/cloud.svg") : @image-url("icons/folder.svg");
     // clicked(middle): the left or the middle button released over the row.
     callback clicked(bool);
-    // menu(x, y): the right button released over a bookmark, at window coordinates.
+    // menu(x, y): the right button released over a bookmark, or the Recent or Bookmarks header
+    // (P12-M5), at window coordinates.
     callback menu(length, length);
     // renamed(title): Return in the editor. edit-cancelled(refocus): Escape (true) or focus loss.
     callback renamed(string);
     callback edit-cancelled(bool);
+    // A bookmark carried by a drag (P12-M5): drag(phase, y), phase 0 the press dragged past 4 px, 1 a
+    // move, 2 the release, 3 the grab lost; y the pointer's, in window px. A drag's release opens
+    // nothing.
+    callback drag(int, length);
+    property <bool> dragging: false;
     height: 32px;
     background: transparent;
     accessible-role: list-item;
@@ -39,14 +51,14 @@ component SideRow inherits Rectangle {
     // The fill, inset 4 px and rounded, inside the row's slot (P10-M1).
     Rectangle { x: 4px; width: parent.width - 8px; border-radius: Theme.radius; background: root.current ? Theme.selection : item.kind != 0 && ta.has-hover ? Theme.muted-half : transparent; }
     HorizontalLayout {
-        visible: !root.editing;
+        visible: !root.editing && !root.rail;
         padding-left: item.kind == 0 ? 8px : 10px;
         padding-right: 6px;
         spacing: 8px;
         // The row's icon (P10-M1): drives, bookmarks, and the known places by their label.
         if item.kind != 0: Rectangle {
             width: 16px;
-            Image { y: (parent.height - 16px) / 2; width: 16px; height: 16px; colorize: Theme.fg-muted; source: item.kind == 1 ? @image-url("icons/hard-drive.svg") : item.kind == 3 ? @image-url("icons/star.svg") : item.label == "Home" ? @image-url("icons/house.svg") : item.label == "Desktop" ? @image-url("icons/monitor.svg") : item.label == "Downloads" ? @image-url("icons/download.svg") : item.label == "Pictures" ? @image-url("icons/image.svg") : item.label == "Music" ? @image-url("icons/music.svg") : item.label == "Videos" ? @image-url("icons/film.svg") : item.label == "OneDrive" ? @image-url("icons/cloud.svg") : @image-url("icons/folder.svg"); }
+            Image { y: (parent.height - 16px) / 2; width: 16px; height: 16px; colorize: Theme.fg-muted; source: root.icon; }
         }
         Text {
             text: item.label;
@@ -56,6 +68,21 @@ component SideRow inherits Rectangle {
             font-size: item.kind == 0 ? 12px : 13px;
             color: item.kind == 0 ? Theme.fg-muted : Theme.fg;
         }
+    }
+    if root.rail && item.kind != 0: Image {
+        x: (parent.width - 16px) / 2;
+        y: (parent.height - 16px) / 2;
+        width: 16px;
+        height: 16px;
+        colorize: Theme.fg-muted;
+        source: root.icon;
+    }
+    if root.rail && item.kind == 0: Rectangle {
+        x: 12px;
+        y: parent.height / 2;
+        width: parent.width - 24px;
+        height: 1px;
+        background: Theme.border;
     }
     // Exists only while the row is being renamed; takes the focus with the title selected.
     if root.editing: Field {
@@ -78,14 +105,37 @@ component SideRow inherits Rectangle {
         }
     }
     ta := TouchArea {
-        enabled: item.kind != 0 && !root.editing;
+        // A header takes the right button only, for its menu (the Recent and Bookmarks headers', P12-M5).
+        enabled: (item.kind != 0 || item.index >= 2) && !root.editing;
+        moved => {
+            if (root.dragging) {
+                root.drag(1, self.absolute-position.y + self.mouse-y);
+            } else if (self.pressed && item.kind == 3 && abs(self.mouse-y - self.pressed-y) > 4px) {
+                root.dragging = true;
+                root.drag(0, self.absolute-position.y + self.mouse-y);
+            }
+        }
         pointer-event(ev) => {
-            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) { root.clicked(false); }
-            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) { root.clicked(true); }
-            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right && item.kind == 3) {
+            if (root.dragging && ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+                root.dragging = false;
+                root.drag(2, self.absolute-position.y + self.mouse-y);
+                return;
+            }
+            if (root.dragging && ev.kind == PointerEventKind.cancel) {
+                root.dragging = false;
+                root.drag(3, 0px);
+                return;
+            }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left && item.kind != 0) { root.clicked(false); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle && item.kind != 0) { root.clicked(true); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right && (item.kind == 3 || item.kind == 0)) {
                 root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
         }
+    }
+    // After the TouchArea, so the tooltip's area is on top and sees the hover (it passes the pointer on).
+    if root.rail && item.kind != 0: Tooltip {
+        TipCard { text: item.label; }
     }
 }
 
@@ -96,6 +146,7 @@ component MenuItem inherits Rectangle {
     callback activated();
     height: 26px;
     background: ta.has-hover && root.enabled ? Theme.muted : transparent;
+    animate background { duration: 100ms; }
     accessible-role: button;
     accessible-label: root.text;
     Text {
@@ -146,6 +197,7 @@ component MenuRow inherits Rectangle {
     if !root.entry.sep: Rectangle {
         border-radius: Theme.radius;
         background: (root.hl || ta.has-hover) && root.entry.enabled ? Theme.muted : transparent;
+        animate background { duration: 100ms; }
         accessible-role: button;
         accessible-label: root.entry.text;
         if root.entry.has-icon: Image {
@@ -195,6 +247,7 @@ component MenuToolButton inherits Rectangle {
     height: 36px;
     border-radius: Theme.radius;
     background: ta.has-hover ? Theme.muted : transparent;
+    animate background { duration: 100ms; }
     accessible-role: button;
     accessible-label: root.tool.text;
     // The Lucide set by the button's name (P10-M3); winmenu.rs's glyph is left as it is.
@@ -283,6 +336,8 @@ export component App inherits Window {
     callback col-fit(int, int);
     // Thumbnails and 32 px rows in both panes (settings `thumbnails`; set at start and by the dialog).
     in property <bool> thumbnails: false;
+    // Comfortable 30 px rows in the details lists without thumbnails (settings `row_height`, P12-M4).
+    in property <bool> comfortable: false;
     in property <int> left-sort-col;
     in property <bool> left-sort-asc;
     in property <int> right-sort-col;
@@ -302,6 +357,8 @@ export component App inherits Window {
     in-out property <float> preview-width: 0.35;
     in property <string> preview-title;
     in property <string> preview-message;
+    // Since P12-M1: the icon above the message (preview.rs `message_icon`: file, lock, cloud, alert).
+    in property <string> preview-icon;
     // Since P11-M6: the button under the message ("Enter password…"), and its press.
     in property <string> preview-action;
     callback preview-password();
@@ -441,6 +498,21 @@ export component App inherits Window {
     callback bookmark-remove(int);
     callback bookmark-rename(int, string);
     callback bookmark-move(int, bool);
+    // The Recent header's "Clear recent" (P12-M5).
+    callback recent-clear();
+    // A bookmark dragged in the sidebar (P12-M5): bookmark-drag(from, gap) on the release, gap 0
+    // above the first bookmark to bookmark-count below the last; side-drag-from and side-drag-gap
+    // while it is carried (-1: none), the gap by the row line nearest the pointer.
+    callback bookmark-drag(int, int);
+    private property <int> side-drag-from: -1;
+    private property <int> side-drag-gap: -1;
+    // A folder dragged over the Bookmarks gap from TwinFM's lists or another program (P12-M5, the drop
+    // target's): the gap its drop bookmarks it at, the same line as a bookmark's drag (-1: none).
+    in property <int> drop-side-gap: -1;
+    function bookmark-gap(y: length) -> int {
+        let top = side-list.absolute-position.y + side-list.content-y + (root.side-items.length - root.bookmark-count) * 32px;
+        return max(0, min(root.bookmark-count, round((y - top) / 32px)));
+    }
     // How many bookmarks there are (for the menu's move items), and the sidebar row whose title
     // editor is open (-1: none).
     in property <int> bookmark-count;
@@ -512,6 +584,8 @@ export component App inherits Window {
     in-out property <int> dlg-view-right;
     in-out property <bool> dlg-type-column;
     in-out property <bool> dlg-thumbnails;
+    // The rows (P12-M4): 0 compact, 1 comfortable.
+    in-out property <int> dlg-row-height;
     in-out property <bool> dlg-sidebar;
     in-out property <bool> dlg-crumbs;
     // The toolbar's place in the dialog: 0 none, 1 top, 2 in each pane (ComboBox index).
@@ -550,6 +624,30 @@ export component App inherits Window {
     }
     public function settings-ok() { finish-settings(true); }
     public function settings-cancel() { finish-settings(false); }
+    // TwinFM's own questions (P12-M3, ask.rs): its title and text, a masked field when it asks for a
+    // password (question-secret, cleared by Rust when the question closes), and up to three buttons
+    // in slots right-aligned ("" an empty slot); question-primary is the filled one's slot (Return),
+    // question-cancel the one Escape presses. question-answered(slot) answers; Rust shows and closes.
+    in property <string> question-title;
+    in property <string> question-text;
+    in property <bool> question-password;
+    in-out property <string> question-secret;
+    in property <[string]> question-buttons: ["", "", ""];
+    in property <int> question-primary: 2;
+    in property <int> question-cancel: 1;
+    callback question-answered(int);
+    private property <bool> question-shown: false;
+    private property <int> question-focus-token: 0;
+    public function show-question() {
+        question-shown = true;
+        question-popup.show();
+        question-focus-token += 1;
+    }
+    public function close-question() {
+        question-popup.close();
+        question-shown = false;
+        root.focus-pane(root.active-pane);
+    }
     // What each control calls when the user changes it (and the driver's `settings set`): field
     // start_left, start_right (a path), hidden_left, hidden_right, protected_left, protected_right,
     // type_column, thumbnails, sidebar ("true" or "false"), path_bar ("entry" or "crumb"), view_left,
@@ -563,6 +661,7 @@ export component App inherits Window {
         if (field == "protected_right") { dlg-protected-right = value == "true"; }
         if (field == "type_column") { dlg-type-column = value == "true"; }
         if (field == "thumbnails") { dlg-thumbnails = value == "true"; }
+        if (field == "row_height") { dlg-row-height = value == "comfortable" ? 1 : 0; }
         if (field == "sidebar") { dlg-sidebar = value == "true"; }
         if (field == "path_bar") { dlg-crumbs = value != "entry"; }
         if (field == "view_left") { dlg-view-left = value == "medium" ? 2 : value == "large" ? 1 : 0; }
@@ -641,6 +740,18 @@ export component App inherits Window {
         if (p == 0) { left.focus-list(); } else { right.focus-list(); }
     }
 
+    // Tab and Shift+Tab in a list (Jeremy, 2026-10-26: "tab switches panes"): the keys go to the
+    // other pane's list (the same one with one pane), which becomes the active pane, its cursor on
+    // its first row on screen when it has none (Pane.cursor-to-first). keys-by-tab logs where the
+    // keys went, for this and for a list reached by Tab from its own search box or path entry.
+    callback keys-by-tab(int, int);
+    public function tab-panes(from: int) {
+        let to = root.split ? 1 - from : from;
+        if (to == 0) { left.cursor-to-first(); } else { right.cursor-to-first(); }
+        root.focus-pane(to);
+        root.keys-by-tab(to, to == 0 ? root.left-current-row : root.right-current-row);
+    }
+
     public function reset-scroll(p: int) {
         if (p == 0) { left.reset-scroll(); } else { right.reset-scroll(); }
     }
@@ -661,6 +772,8 @@ export component App inherits Window {
 
     // The sidebar list's scroll offset (zero or negative), for the drop target's hit test.
     public function side-scroll() -> length { return side-list.content-y; }
+    // The sidebar list scrolled to its end, where the bookmarks are (the driver's bookmark steps, P12-M5).
+    public function side-scroll-end() { side-list.content-y = min(0px, side-list.visible-height - side-list.content-height); }
     // A drag hovering the sidebar list's top or bottom scrolls it (main.rs `drop_autoscroll`).
     public function set-side-scroll(y: length) { side-list.content-y = y; }
     // Its rows' height and its viewport's, as the ListView has them (its rows differ in height,
@@ -699,7 +812,13 @@ export component App inherits Window {
     forward-focus: outer;
 
     outer := FocusScope {
+        // The window's keys, reached by bubbling from whatever has the focus: no Tab stop of its own,
+        // where it showed nothing (Tab goes between the lists, tab-panes).
+        focus-on-tab-navigation: false;
         key-pressed(e) => {
+            // While a question shows (P12-M3) the window's keys do nothing; the question's own
+            // take Return, Escape and Tab.
+            if (root.question-shown) { return reject; }
             // The list rejects Escape (it cancels queued jobs first); with the settings dialog
             // open it cancels the dialog, which closes on nothing else but OK and Cancel.
             if (e.text == Key.Escape && root.settings-shown) { root.settings-cancel(); return accept; }
@@ -780,9 +899,10 @@ export component App inherits Window {
             }
             Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         }
+        // The sidebar, or collapsed (F9, its chevron) the icons-only rail, 48 px (P12-M5, Jeremy's choice;
+        // dnd.rs RAIL_W): the same rows, so drops, drags and the keys work on it as on the full one.
         sidebar := Rectangle {
-            visible: sidebar-visible;
-            x: 0; y: root.top-h; width: sidebar-width; height: parent.height - root.top-h;
+            x: 0; y: root.top-h; width: sidebar-visible ? sidebar-width : 48px; height: parent.height - root.top-h;
             background: Theme.sidebar;
             // The renderer draws the whole window every frame; cached as one texture, the sidebar
             // costs a blit while the panes scroll and is redrawn only when its own properties change.
@@ -790,6 +910,9 @@ export component App inherits Window {
             side-keys := FocusScope {
                 width: 0px;
                 height: 0px;
+                // A click gives the sidebar the keys, never Tab (tab-panes); Tab, Shift+Tab and
+                // Escape give them back to the active pane's list.
+                focus-on-tab-navigation: false;
                 key-pressed(e) => {
                     if (e.text == Key.F2) {
                         if (root.side-current >= 0 && root.side-current < root.side-items.length && root.side-items[root.side-current].kind == 3) {
@@ -797,7 +920,7 @@ export component App inherits Window {
                         }
                         return accept;
                     }
-                    if (e.text == Key.Escape || e.text == Key.Tab) {
+                    if (e.text == Key.Escape || e.text == Key.Tab || e.text == Key.Backtab) {
                         root.focus-pane(root.active-pane);
                         return accept;
                     }
@@ -821,8 +944,12 @@ export component App inherits Window {
                 padding-top: 3px;
                 side-list := ListView {
                     accessible-label: "Places";
+                    vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                    // The rows' minimum width is wider than the rail: never scrolled sideways.
+                    content-width: self.visible-width;
                     for item[i] in root.side-items: SideRow {
                         item: item;
+                        rail: !root.sidebar-visible;
                         editing: i == root.side-edit;
                         current: i == root.side-current && side-keys.has-focus;
                         clicked(middle) => {
@@ -833,7 +960,7 @@ export component App inherits Window {
                             root.menu-row = i;
                             root.menu-x = x;
                             root.menu-y = y;
-                            bookmark-menu.show();
+                            if (item.kind == 0) { header-menu.show(); } else { bookmark-menu.show(); }
                         }
                         renamed(t) => {
                             root.side-edit = -1;
@@ -844,14 +971,23 @@ export component App inherits Window {
                             root.side-edit = -1;
                             if (refocus) { root.focus-pane(root.active-pane); }
                         }
+                        drag(phase, y) => {
+                            if (phase == 0) { root.side-drag-from = item.index; }
+                            if (phase <= 1) { root.side-drag-gap = root.bookmark-gap(y); }
+                            if (phase == 2) { root.bookmark-drag(root.side-drag-from, root.side-drag-gap); }
+                            if (phase >= 2) {
+                                root.side-drag-from = -1;
+                                root.side-drag-gap = -1;
+                            }
+                        }
                     }
                 }
                 HorizontalLayout {
                     height: 32px;
-                    padding-left: 8px;
+                    padding-left: root.sidebar-visible ? 8px : 12px;
                     padding-right: 4px;
                     spacing: 10px;
-                    settings-ta := TouchArea {
+                    if root.sidebar-visible: settings-ta := TouchArea {
                         width: 48px;
                         clicked => { if (!root.settings-shown) { root.settings-requested(); } }
                         Text {
@@ -859,21 +995,23 @@ export component App inherits Window {
                             font-size: 11px;
                             vertical-alignment: center;
                             color: settings-ta.has-hover ? Theme.fg : Theme.fg-muted;
+                            animate color { duration: 100ms; }
                         }
                     }
-                    about-ta := TouchArea {
+                    if root.sidebar-visible: about-ta := TouchArea {
                         clicked => { root.show-about(); }
                         Text {
                             text: "About TwinFM";
                             font-size: 11px;
                             vertical-alignment: center;
                             color: about-ta.has-hover ? Theme.fg : Theme.fg-muted;
+                            animate color { duration: 100ms; }
                         }
                     }
                     hide-ta := TouchArea {
                         width: 24px;
                         clicked => { root.toggle-sidebar(); }
-                        Image { x: 5px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: @image-url("icons/chevrons-left.svg"); colorize: hide-ta.has-hover ? Theme.fg : Theme.fg-muted; }
+                        Image { x: 5px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: root.sidebar-visible ? @image-url("icons/chevrons-left.svg") : @image-url("icons/chevron-right.svg"); colorize: hide-ta.has-hover ? Theme.fg : Theme.fg-muted; animate colorize { duration: 100ms; } }
                     }
                 }
             }
@@ -897,12 +1035,31 @@ export component App inherits Window {
                     border-color: Theme.cursor;
                 }
             }
+            // Where a dragged bookmark lands (P12-M5): a 2 px line in the accent on the line between two
+            // rows, in the list's content (the bookmarks are its last rows, 32 px each).
+            if root.side-drag-gap >= 0 || root.drop-side-gap >= 0: Rectangle {
+                x: 8px;
+                y: side-list.y + side-list.content-y + (root.side-items.length - root.bookmark-count + (root.side-drag-gap >= 0 ? root.side-drag-gap : root.drop-side-gap)) * 32px - 1px;
+                width: side-list.width - 16px;
+                height: 2px;
+                background: Theme.cursor;
+            }
+            // The list's scrollbar, TwinFM's own (P12-M2; the ListView's Fluent bar is off).
+            VScrollBar {
+                x: side-list.x + side-list.width - self.width;
+                y: side-list.y;
+                height: side-list.height;
+                content-y <=> side-list.content-y;
+                content-height: side-list.content-height;
+                visible-height: side-list.visible-height;
+            }
         }
         // Drag the sidebar's right edge to resize it.
         Rectangle {
             visible: sidebar-visible;
             x: sidebar-width; y: root.top-h; width: 4px; height: parent.height - root.top-h;
             background: side-ta.has-hover || side-ta.pressed ? Theme.ring : Theme.border;
+            animate background { duration: 100ms; }
             side-ta := TouchArea {
                 mouse-cursor: col-resize;
                 moved => {
@@ -913,19 +1070,11 @@ export component App inherits Window {
                 }
             }
         }
-        // The collapsed sidebar: a strip that brings it back.
-        Rectangle {
-            visible: !sidebar-visible;
-            x: 0; y: root.top-h; width: 12px; height: parent.height - root.top-h;
-            background: show-ta.has-hover ? Theme.muted : Theme.sidebar;
-            Text { y: 6px; text: "\u{00bb}"; horizontal-alignment: center; }
-            show-ta := TouchArea { clicked => { root.toggle-sidebar(); } }
-        }
         // The two panes and the split line, right of the sidebar (dnd.rs Layout.left), narrowed by
         // the preview column when it shows (dnd.rs Layout.preview: its share of the space right of
         // the sidebar, plus 3 px, half its handle).
         panes := Rectangle {
-            x: sidebar-visible ? sidebar-width + 4px : 12px; y: root.top-h;
+            x: sidebar-visible ? sidebar-width + 4px : 48px; y: root.top-h;
             width: root.preview ? (parent.width - self.x) * (1 - root.preview-width) - 3px : parent.width - self.x;
             height: parent.height - root.top-h;
             left := Pane {
@@ -938,6 +1087,7 @@ export component App inherits Window {
                 drop-crumb: root.drop-crumb-pane == 0 ? root.drop-crumb : -1;
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
+                tab-plus => { root.tab-key(0, "plus"); }
                 tab-move(f, t) => { root.tab-move(0, f, t); }
                 strip-resized => { root.strip-resized(0); }
                 crumb-clicked(i) => { root.crumb-clicked(0, i); }
@@ -977,7 +1127,10 @@ export component App inherits Window {
                 col-drag(c, dx, ph) => { root.col-drag(0, c, dx, ph); }
                 col-fit(c) => { root.col-fit(0, c); }
                 thumbnails: root.thumbnails;
+                comfortable: root.comfortable;
                 focus-requested => { active-pane = 0; }
+                tab-key => { root.tab-panes(0); }
+                tabbed-in => { root.keys-by-tab(0, root.left-current-row); }
                 filter-open <=> root.left-filter-open;
                 filter-text <=> root.left-filter-text;
                 filter-edited(t) => { root.filter-edited(0, t); }
@@ -1004,6 +1157,7 @@ export component App inherits Window {
                 drop-crumb: root.drop-crumb-pane == 1 ? root.drop-crumb : -1;
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
+                tab-plus => { root.tab-key(1, "plus"); }
                 tab-move(f, t) => { root.tab-move(1, f, t); }
                 strip-resized => { root.strip-resized(1); }
                 crumb-clicked(i) => { root.crumb-clicked(1, i); }
@@ -1043,7 +1197,10 @@ export component App inherits Window {
                 col-drag(c, dx, ph) => { root.col-drag(1, c, dx, ph); }
                 col-fit(c) => { root.col-fit(1, c); }
                 thumbnails: root.thumbnails;
+                comfortable: root.comfortable;
                 focus-requested => { active-pane = 1; }
+                tab-key => { root.tab-panes(1); }
+                tabbed-in => { root.keys-by-tab(1, root.right-current-row); }
                 filter-open <=> root.right-filter-open;
                 filter-text <=> root.right-filter-text;
                 filter-edited(t) => { root.filter-edited(1, t); }
@@ -1063,6 +1220,7 @@ export component App inherits Window {
                 visible: split;
                 x: parent.width * split-ratio - 3px; y: 0; width: 6px; height: parent.height;
                 background: splitter-ta.has-hover || splitter-ta.pressed ? Theme.ring : Theme.border;
+                animate background { duration: 100ms; }
                 splitter-ta := TouchArea {
                     mouse-cursor: col-resize;
                     moved => {
@@ -1080,6 +1238,7 @@ export component App inherits Window {
             visible: root.preview;
             x: panes.x + panes.width; y: root.top-h; width: 6px; height: parent.height - root.top-h;
             background: preview-ta.has-hover || preview-ta.pressed ? Theme.ring : Theme.border;
+            animate background { duration: 100ms; }
             preview-ta := TouchArea {
                 mouse-cursor: col-resize;
                 moved => {
@@ -1098,6 +1257,7 @@ export component App inherits Window {
             width: max(0px, parent.width - self.x); height: parent.height - root.top-h;
             title: root.preview-title;
             message: root.preview-message;
+            icon: root.preview-icon;
             action: root.preview-action;
             action-clicked => { root.preview-password(); }
             pages: root.preview-pages;
@@ -1203,6 +1363,39 @@ export component App inherits Window {
         }
     }
 
+    // A sidebar header's menu (P12-M5): the Recent header's "Clear recent", the Bookmarks header's
+    // "Bookmark this folder" (Ctrl+D's: the active pane's folder, at the end).
+    header-menu := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 160px;
+        height: 26px + 6px;
+        Rectangle {
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 3px;
+                // The action before the close: closing drops these `if` items, and a call after it
+                // never reached the window ("Clear recent" did nothing, Jeremy's console check).
+                if root.menu-index == 2: MenuItem {
+                    text: "Clear recent";
+                    activated => {
+                        root.recent-clear();
+                        header-menu.close();
+                    }
+                }
+                if root.menu-index == 3: MenuItem {
+                    text: "Bookmark this folder";
+                    activated => {
+                        root.bookmark-add();
+                        header-menu.close();
+                    }
+                }
+            }
+        }
+    }
+
     // The breadcrumb dropdown: the subfolders of the crumb whose chevron was clicked. A popup, so
     // its rows exist only while it is open; a click picks, Escape or a click outside closes it.
     crumb-menu := PopupWindow {
@@ -1248,6 +1441,7 @@ export component App inherits Window {
                 padding: 4px;
                 crumb-list := ListView {
                     accessible-label: "Folders";
+                    vertical-scrollbar-policy: ScrollBarPolicy.always-off;
                     for name[i] in root.crumb-menu-items: Rectangle {
                         height: 22px;
                         accessible-role: list-item;
@@ -1270,6 +1464,15 @@ export component App inherits Window {
                     vertical-alignment: center;
                     color: Theme.fg-muted;
                 }
+            }
+            // The list's scrollbar, TwinFM's own (P12-M2).
+            VScrollBar {
+                x: crumb-list.x + crumb-list.width - self.width;
+                y: crumb-list.y;
+                height: crumb-list.height;
+                content-y <=> crumb-list.content-y;
+                content-height: crumb-list.content-height;
+                visible-height: crumb-list.visible-height;
             }
         }
     }
@@ -1392,9 +1595,9 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 670px) / 2);
+        y: max(10px, (root.height - 710px) / 2);
         width: 480px;
-        height: 670px;
+        height: 710px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Theme.card;
@@ -1507,6 +1710,15 @@ export component App inherits Window {
                             }
                         }
                         Row {
+                            Text { text: "Rows"; vertical-alignment: center; }
+                            Choice {
+                                model: ["Compact", "Comfortable"];
+                                current-index: root.dlg-row-height;
+                                label: "Row height in the details list";
+                                selected => { root.settings-stage("row_height", self.current-index == 1 ? "comfortable" : "compact"); }
+                            }
+                        }
+                        Row {
                             Text { text: "Theme"; vertical-alignment: center; }
                             Choice {
                                 model: ["System", "Light", "Dark"];
@@ -1543,9 +1755,9 @@ export component App inherits Window {
                         Row {
                             Text { text: "Sidebar"; vertical-alignment: center; }
                             Switch {
-                                text: "Show the sidebar";
+                                text: "Names (off: the icons-only rail)";
                                 checked: root.dlg-sidebar;
-                                accessible-label: "Show the sidebar";
+                                accessible-label: "Show the sidebar with names";
                                 toggled => { root.settings-stage("sidebar", self.checked ? "true" : "false"); }
                             }
                         }
@@ -1621,6 +1833,96 @@ export component App inherits Window {
                         font-size: 11px;
                         overflow: elide;
                         color: root.dlg-start-warning != "" ? Theme.fg : Theme.fg-muted;
+                    }
+                }
+            }
+        }
+    }
+
+    // A question (P12-M3, ask.rs): a popup over the whole window, as the Windows 11 menu's, so the
+    // lists take no click while it shows, with the card centred on a scrim. Closes only through an
+    // answer. A focused button presses itself on Return; anywhere else in the card Return presses
+    // the primary and Escape the Cancel slot. Once shown, the token puts the focus in the password
+    // field or on the primary button (as the settings dialog's does).
+    question-popup := PopupWindow {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        close-policy: PopupClosePolicy.no-auto-close;
+        Rectangle {
+            background: Theme.scrim;
+            TouchArea { }
+        }
+        Rectangle {
+            width: min(420px, parent.width - 32px);
+            height: question-layout.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: Theme.radius-lg;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #00000040;
+            property <int> focus-token: root.question-focus-token;
+            changed focus-token => {
+                if (root.question-password) { question-field.focus(); }
+                else if (root.question-primary == 0) { question-b0.focus(); }
+                else if (root.question-primary == 1) { question-b1.focus(); }
+                else { question-b2.focus(); }
+            }
+            FocusScope {
+                // Escape and Return from the buttons and the field, never a Tab stop of its own (one
+                // was, an invisible stop after the last button: Jeremy's "tabs do not flow smoothly").
+                focus-on-tab-navigation: false;
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) { root.question-answered(root.question-cancel); return accept; }
+                    if (e.text == Key.Return) { root.question-answered(root.question-primary); return accept; }
+                    return reject;
+                }
+                question-layout := VerticalLayout {
+                    padding: 20px;
+                    Text { text: root.question-title; font-size: 16px; font-weight: 600; wrap: word-wrap; accessible-role: text; }
+                    Rectangle { height: 8px; }
+                    Text { text: root.question-text; wrap: word-wrap; color: Theme.fg-muted; accessible-role: text; }
+                    // The password field, its height only when asked for (a layout keeps the
+                    // space of an element that is not visible).
+                    Rectangle {
+                        height: root.question-password ? 44px : 0px;
+                        question-field := Field {
+                            y: 12px;
+                            width: parent.width;
+                            visible: root.question-password;
+                            input-type: InputType.password;
+                            label: "Password";
+                            text <=> root.question-secret;
+                            accepted => { root.question-answered(root.question-primary); }
+                        }
+                    }
+                    Rectangle { height: 20px; }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        question-b0 := Btn {
+                            visible: root.question-buttons[0] != "";
+                            text: root.question-buttons[0];
+                            primary: root.question-primary == 0;
+                            clicked => { root.question-answered(0); }
+                        }
+                        question-b1 := Btn {
+                            visible: root.question-buttons[1] != "";
+                            text: root.question-buttons[1];
+                            primary: root.question-primary == 1;
+                            clicked => { root.question-answered(1); }
+                        }
+                        question-b2 := Btn {
+                            visible: root.question-buttons[2] != "";
+                            text: root.question-buttons[2];
+                            primary: root.question-primary == 2;
+                            clicked => { root.question-answered(2); }
+                        }
                     }
                 }
             }

@@ -14,6 +14,7 @@ mod fs {
     pub mod watch;
     pub mod zipraw;
 }
+mod ask;
 mod auto;
 mod band;
 mod cloud;
@@ -631,6 +632,7 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         hide_strip(st, &app, pane);
         let shown = path.to_string_lossy().to_string();
         set_path(st, &app, pane);
+        note_recent(st, &app, pane);
         update_tabs(st, pane);
         update_status(st, &app, pane);
         app.invoke_reset_scroll(pane as i32);
@@ -718,7 +720,7 @@ fn cloud_of(st: &mut State, pane: usize, path: &Path) -> icons::Cloud {
 }
 
 /// The pane's status bar from its active tab: items, hidden, note and error on the left, the
-/// selection in the middle, free space on the right. Called on navigation, enumeration
+/// selection's count and size as badges after them, free space on the right. Called on navigation, enumeration
 /// progress, pass swaps, selection changes and notes; never from a scroll or render path.
 fn update_status(st: &State, app: &App, pane: usize) {
     let t = st.tab(pane);
@@ -743,9 +745,11 @@ fn update_status(st: &State, app: &App, pane: usize) {
     };
     let (n, bytes, any_file) = m.selection_summary();
     let dirs = if t.sizable() { t.sizes.summary(&m.selected_folders()) } else { fs::sizes::DirTotals::default() };
+    let (count, size) = statusbar::selection_text(n, bytes, any_file, dirs);
     let s = StatusInfo {
         left: left.into(),
-        mid: statusbar::mid_text(n, bytes, any_file, dirs).into(),
+        count: count.into(),
+        size: size.into(),
         right: statusbar::free_text(t.free).into(),
     };
     if pane == 0 { app.set_left_status(s) } else { app.set_right_status(s) }
@@ -1025,9 +1029,36 @@ fn save_now() {
     }
 }
 
+/// A pane showed its active tab's folder (P12-M5, a navigation or a tab put on screen): the folder
+/// goes to the top of the sidebar's Recent group, unless it is This PC, an archive level, a search tab
+/// or the hidden right pane's; the sidebar is rebuilt only when the list changed.
+fn note_recent(st: &mut State, app: &App, pane: usize) {
+    let t = st.tab(pane);
+    let path = t.path.to_string_lossy().to_string();
+    if (pane == 1 && !app.get_split()) || t.search.is_some() || is_this_pc(&path) || fs::archive::split(&t.path).is_some() {
+        return;
+    }
+    if sidebar::note_recent(&mut st.config.recent, &path) {
+        eprintln!("[sidebar] recent: {path} ({} kept)", st.config.recent.len());
+        rebuild_sidebar(st);
+        schedule_save(st);
+    }
+}
+
+/// The Recent header's "Clear recent" (P12-M5).
+fn recent_clear() {
+    with_state(|st| {
+        let n = st.config.recent.len();
+        st.config.recent.clear();
+        eprintln!("[sidebar] recent cleared ({n} removed)");
+        rebuild_sidebar(st);
+        schedule_save(st);
+    });
+}
+
 /// Rebuild the sidebar's rows from its sections (on a change only).
 fn rebuild_sidebar(st: &mut State) {
-    st.side = sidebar::compose(&st.drives, &st.places, &st.config.bookmarks);
+    st.side = sidebar::compose(&st.drives, &st.places, &st.config.recent, &st.config.bookmarks);
     let items: Vec<SideItem> =
         st.side.iter().map(|r| SideItem { label: r.label.as_str().into(), kind: r.kind as i32, index: r.index as i32 }).collect();
     st.side_model.set_vec(items);
@@ -1138,6 +1169,19 @@ fn bookmark_move(i: usize, up: bool) {
         rebuild_sidebar(st);
         schedule_save(st);
         eprintln!("[sidebar] moved bookmark {i} to {to}: {}", st.config.bookmarks[to].path);
+    });
+}
+
+/// A bookmark dragged in the sidebar (P12-M5) and dropped in gap `gap`.
+fn bookmark_drag(from: usize, gap: usize) {
+    with_state(|st| {
+        let to = sidebar::drag_target(from, gap);
+        if !sidebar::move_bookmark_to(&mut st.config.bookmarks, from, to) {
+            return eprintln!("[sidebar] bookmark {from} dragged to its own place: not moved");
+        }
+        rebuild_sidebar(st);
+        schedule_save(st);
+        eprintln!("[sidebar] bookmark moved {from} -> {to} (drag)");
     });
 }
 
@@ -1369,6 +1413,9 @@ fn edit_worker() -> Sender<StatJob> {
     std::thread::Builder::new()
         .name("watch-edits".into())
         .spawn(move || {
+            // A sync root's changed files are statted with their placeholders shown (P12-M7), as
+            // its listing is, so their marks follow their states; nothing else lists differently.
+            fs::enumerate::expose_placeholders("watch edits");
             for mut job in rx {
                 let t0 = Instant::now();
                 let dir = stat_dir(&job.path);
@@ -2101,7 +2148,7 @@ fn line_of(st: &State, pane: usize, row: usize) -> (usize, f32) {
     if st.grid[pane] {
         (row / st.model(pane).grid_n(), st.tile[pane].h)
     } else {
-        (row, icons::ListGeom::new(st.config.thumbnails).row_px)
+        (row, list_geom(st).row_px)
     }
 }
 
@@ -2115,7 +2162,7 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let model = t.model.clone();
     let (y, h) = st.view[pane];
     let scale = app.window().scale_factor();
-    let geom = icons::StripGeom::new(scale, st.config.thumbnails);
+    let geom = icons::StripGeom::new(scale, list_geom(st));
     // The grid: visible GRID rows of the tile's height, `n` entries each, icons at the tile's size;
     // the strip covers whole grid rows. The details list: its rows, as before.
     let grid = st.grid[pane];
@@ -2352,7 +2399,7 @@ fn set_view(pane: usize, view: settings::View) {
         }
         let model = st.panes[pane].active().model.clone();
         let y = st.view[pane].0;
-        let list_px = icons::ListGeom::new(st.config.thumbnails).row_px;
+        let list_px = list_geom(st).row_px;
         let (old_px, old_n) = if old.is_grid() { (st.tile[pane].h, model.grid_n()) } else { (list_px, 1) };
         let first_entry = ((-y).max(0.0) / old_px).floor() as usize * old_n;
         let grid = view.is_grid();
@@ -3343,6 +3390,30 @@ pub fn script_menu_verb(pane: usize, verb: &str) {
     let Some(row) = with_state(|st| st.app.upgrade().map(|app| current_row(&app, pane))) else { return };
     let Some((req, ctx)) = menu_request(pane, row, 0.0, 0.0, false) else { return };
     eprintln!("[auto] menuverb pane={pane} \"{verb}\" for {} item(s)", req.names.len());
+    if let Some(path) = verb.strip_prefix(TEST_TRY_VERB) {
+        // The dry test verb (P12-M6): the command at that label path in the classic menu, handed
+        // on as a pick there hands it, resolved on the verb worker and never invoked.
+        match shellmenu::find_shown(&req, path) {
+            Ok((verb, offset, label)) => {
+                eprintln!("[auto] menuverb try: \"{label}\" at offset {offset} in the menu shown, verb \"{verb}\"");
+                let request = shellmenu::VerbRequest {
+                    folder: req.folder.clone(),
+                    names: req.names.clone(),
+                    verb,
+                    offset,
+                    label,
+                    x: req.x,
+                    y: req.y,
+                    extended: req.extended,
+                    find: false,
+                    default_item: false,
+                };
+                queue_verb(pane, request, Some(TestVerb::Try));
+            }
+            Err(e) => eprintln!("[auto] menuverb try: {e}"),
+        }
+        return;
+    }
     let picked = match shellmenu::route(verb) {
         Some("rename") => shellmenu::Picked::Rename,
         Some(cmd) => shellmenu::Picked::Route(cmd),
@@ -3377,13 +3448,13 @@ fn menu_picked(pane: usize, picked: shellmenu::Picked, req: &shellmenu::Request,
                 find: false,
                 default_item: false,
             };
-            queue_verb(pane, request, sleep_ms);
+            queue_verb(pane, request, sleep_ms.map(TestVerb::Sleep));
         }
     }
 }
 
-/// Queue a shell command on the verb worker (the test verb when `sleep_ms` is given).
-fn queue_verb(pane: usize, request: shellmenu::VerbRequest, sleep_ms: Option<u64>) {
+/// Queue a shell command on the verb worker (a test verb when `test` is given).
+fn queue_verb(pane: usize, request: shellmenu::VerbRequest, test: Option<TestVerb>) {
     with_state(|st| {
         st.next_verb += 1;
         let id = st.next_verb;
@@ -3395,12 +3466,15 @@ fn queue_verb(pane: usize, request: shellmenu::VerbRequest, sleep_ms: Option<u64
                 " (found there by its label)"
             } else if request.default_item {
                 " (the default command)"
+            } else if matches!(test, Some(TestVerb::Try)) {
+                " (the test verb: resolved, not invoked)"
             } else {
                 ""
             }
         );
-        let work = match sleep_ms {
-            Some(ms) => verbs::Work::Sleep(request, ms),
+        let work = match test {
+            Some(TestVerb::Sleep(ms)) => verbs::Work::Sleep(request, ms),
+            Some(TestVerb::Try) => verbs::Work::Try(request),
             None => verbs::Work::Verb(request),
         };
         if !st.verbs.submit(verbs::Job { id, pane, work }) {
@@ -3438,6 +3512,15 @@ fn verb_request(req: &shellmenu::Request, verb: &str, label: &str, find: bool) -
 
 /// The driver's test verb: `menuverb <pane> sleep:<ms>` sleeps on the verb worker.
 const TEST_SLEEP_VERB: &str = "sleep:";
+/// The driver's dry test verb (P12-M6): `menuverb <pane> try:<label path>` resolves a classic-menu
+/// command on the verb worker as a pick would, and invokes nothing.
+const TEST_TRY_VERB: &str = "try:";
+
+/// The driver's test verbs on the verb worker.
+enum TestVerb {
+    Sleep(u64),
+    Try,
+}
 
 /// A verb job finished on the verb worker (on the UI thread).
 fn verb_done(d: verbs::Done) {
@@ -3468,7 +3551,7 @@ fn verb_done(d: verbs::Done) {
 /// that row (already scrolled into view), or the background menu when there is no cursor row.
 fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, visible_h: f32) {
     let (len, g, grid) = with_state(|st| {
-        (st.model(pane).len(), icons::ListGeom::new(st.config.thumbnails), st.grid[pane].then(|| (st.model(pane).grid_n(), st.tile[pane])))
+        (st.model(pane).len(), list_geom(st), st.grid[pane].then(|| (st.model(pane).grid_n(), st.tile[pane])))
     });
     match usize::try_from(row).ok().filter(|&r| r < len) {
         Some(r) => {
@@ -3985,6 +4068,7 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
         Cmd::OpenOther => own_item(pane, shellmenu::OwnItem::OpenOther, m.ctx),
         Cmd::Terminal => own_item(pane, shellmenu::OwnItem::Terminal, m.ctx),
         Cmd::CopyPath => own_item(pane, shellmenu::OwnItem::CopyPath, m.ctx),
+        Cmd::Bookmark => menu_bookmarks(pane, &m.req.folder, &m.req.names),
         Cmd::Share => queue_verb(pane, verb_request(&m.req, "", "Share", true), None),
         Cmd::Zip => queue_verb(pane, verb_request(&m.req, "", ZIP_LABEL, true), None),
         Cmd::SevenZ | Cmd::Tar => {
@@ -4166,11 +4250,32 @@ fn open_rows(pane: usize, rows: Vec<usize>) {
     let (dirs, files): (Vec<_>, Vec<_>) = items.into_iter().partition(|(enter, _)| *enter);
     let n = dirs.len() + files.len();
     eprintln!("[open] pane={pane} {n} items: {} folder(s) to tabs, {} file(s)", dirs.len(), files.len());
-    // No state borrow across the question: a message box runs a modal loop.
-    if n > model::OPEN_ASK_ABOVE && !soak && !ask_open_many(hwnd, n) {
-        eprintln!("[open] pane={pane} {n} items: not opened (the question was declined)");
+    // "Open N items at once?", as Explorer asks before opening many: one of TwinFM's own questions
+    // (P12-M3), answered later, so the items wait in its reply.
+    if n > model::OPEN_ASK_ABOVE && !soak {
+        let q = ask::Question {
+            kind: "open many",
+            title: format!("Open {n} items at once?"),
+            text: "Each folder opens in a new tab, and each file in its program.".into(),
+            password: false,
+            buttons: vec!["Cancel", "Open"],
+            primary: 1,
+            cancel: 0,
+        };
+        ask::ask_here(q, "the UI thread", move |a| {
+            if a.button == 1 {
+                open_items(pane, hwnd, &folder, archive, dirs, files);
+            } else {
+                eprintln!("[open] pane={pane} {n} items: not opened (the question was declined)");
+            }
+        });
         return;
     }
+    open_items(pane, hwnd, &folder, archive, dirs, files);
+}
+
+/// The items `open_rows` gathered, opened: the folders in new tabs, the files as below.
+fn open_items(pane: usize, hwnd: isize, folder: &Path, archive: bool, dirs: Vec<(bool, String)>, files: Vec<(bool, String)>) {
     for (_, name) in &dirs {
         open_tab(pane, Some(folder.join(name)));
     }
@@ -4189,7 +4294,7 @@ fn open_rows(pane: usize, rows: Vec<usize>) {
     let mut by_dir: Vec<(PathBuf, Vec<String>)> = Vec::new();
     for (_, name) in files {
         let path = folder.join(&name);
-        let (dir, leaf) = (path.parent().map_or_else(|| folder.clone(), Path::to_path_buf), path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name));
+        let (dir, leaf) = (path.parent().map_or_else(|| folder.to_path_buf(), Path::to_path_buf), path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name));
         match by_dir.iter_mut().find(|(d, _)| *d == dir) {
             Some((_, names)) => names.push(leaf),
             None => by_dir.push((dir, vec![leaf])),
@@ -4210,16 +4315,6 @@ fn open_rows(pane: usize, rows: Vec<usize>) {
         };
         queue_verb(pane, request, None);
     }
-}
-
-/// "Open N items?", as Explorer asks before opening many at once. True to go on.
-fn ask_open_many(hwnd: isize, n: usize) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
-    let t: Vec<u16> = format!("Open {n} items at once?").encode_utf16().chain([0]).collect();
-    let c: Vec<u16> = "TwinFM".encode_utf16().chain([0]).collect();
-    // MODAL LOOP: no app state is borrowed here.
-    // SAFETY: NUL-terminated strings that outlive the call; the owner is the app's window.
-    unsafe { MessageBoxW(hwnd as _, t.as_ptr(), c.as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
 }
 
 /// One row: enter its directory (also a reparse directory or a drive) or zip archive, or open the
@@ -4621,16 +4716,17 @@ fn register_dnd() {
 /// the window and its properties, so it needs no app-state borrow.
 pub fn window_layout(app: &App) -> dnd::Layout {
     let size = app.window().size().to_logical(app.window().scale_factor());
-    let left = if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 };
+    let left = if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { dnd::RAIL_W };
     dnd::Layout {
         width: size.width,
         height: size.height,
         split: app.get_split(),
         ratio: app.get_split_ratio(),
-        tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
+        // Every pane shows its tab strip, one tab too (P12-M5).
+        tabs: [true; 2],
         left,
         preview: if app.get_preview() { dnd::preview_w(size.width, left, app.get_preview_width()) } else { 0.0 },
-        row_px: icons::ListGeom::new(app.get_thumbnails()).row_px,
+        row_px: icons::ListGeom::new(app.get_thumbnails(), app.get_comfortable()).row_px,
         grid: [
             app.get_left_grid().then(|| app.get_left_grid_cols().max(1) as usize),
             app.get_right_grid().then(|| app.get_right_grid_cols().max(1) as usize),
@@ -4707,6 +4803,10 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             dnd::Spot::Outside => return None,
             dnd::Spot::Pane(p) => (p, None),
             dnd::Spot::Row(p, r) => (p, Some(r)),
+            // The Bookmarks gap (P12-M5): the folders dropped are bookmarked there, nothing copied.
+            dnd::Spot::SideGap(k) => {
+                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Gap(k), dest: PathBuf::new(), springs: false });
+            }
             // A sidebar row's folder (a drive's root, a place, a bookmark), noted in the active pane.
             dnd::Spot::Side(i) => {
                 let dest = st.side.get(i)?.path.clone()?;
@@ -4795,9 +4895,10 @@ fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
 fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)], crumb_row: [(f32, f32); 2], crumbs: &'a [Vec<(f32, f32)>; 2]) -> dnd::Strips<'a> {
     let tab = |p: usize| (st.panes[p].len(), app.invoke_tab_width(p as i32), app.invoke_tab_offset(p as i32));
     dnd::Strips {
-        side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { 0.0 },
+        side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { dnd::RAIL_W },
         side_scroll: app.invoke_side_scroll(),
         side_rows,
+        side_bookmarks: (st.side.len() - st.config.bookmarks.len(), st.config.bookmarks.len()),
         tabs: [tab(0), tab(1)],
         crumb_row,
         crumbs: [&crumbs[0], &crumbs[1]],
@@ -4897,6 +4998,17 @@ pub fn side_row_centre(i: i32) -> Option<f32> {
         let i = if i < 0 { rows.len().checked_sub(i.unsigned_abs() as usize)? } else { i as usize };
         let h = rows.get(i)?.0;
         Some(dnd::side_top(&window_layout(&app)) + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
+    })
+}
+
+/// The window y of the line before bookmark `k` in the sidebar (the count: after the last), the
+/// driver's `dropfiles sidegap` (P12-M5).
+pub fn side_gap_y(k: usize) -> Option<f32> {
+    with_state(|st| {
+        let app = st.app.upgrade()?;
+        let rows = side_rows(st, &app);
+        let first = st.side.len().checked_sub(st.config.bookmarks.len())?;
+        Some(dnd::side_top(&window_layout(&app)) + app.invoke_side_scroll() + dnd::side_row_top(&rows, first + k.min(st.config.bookmarks.len())))
     })
 }
 
@@ -5195,6 +5307,12 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
         _ => (-1, -1, -1, -1, -1, -1),
     };
     let (side_row, side_y, side_h) = side.unwrap_or((-1, 0.0, 0.0));
+    // The Bookmarks gap's insertion line (P12-M5).
+    let gap = if let Some((_, dnd::Mark::Gap(k))) = at { k as i32 } else { -1 };
+    if app.get_drop_side_gap() != gap {
+        app.set_drop_side_gap(gap);
+        dnd::repaint_during_own_drag();
+    }
     let now = (
         (app.get_drop_pane(), app.get_drop_row(), app.get_drop_tab_pane(), app.get_drop_tab(), app.get_drop_side_row()),
         (app.get_drop_crumb_pane(), app.get_drop_crumb()),
@@ -5212,6 +5330,66 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
     app.set_drop_side_h(side_h);
     app.set_drop_side_row(side_row);
     dnd::repaint_during_own_drag();
+}
+
+/// The Windows 11 menu's "Add to bookmarks" (P12-M5): each folder or drive among `names` in `folder`
+/// (a file is left out), or with no names the folder itself, appended to the bookmarks; one
+/// bookmarked already stays where it is, noted as Ctrl+D notes it.
+fn menu_bookmarks(pane: usize, folder: &Path, names: &[String]) {
+    let paths: Vec<PathBuf> = if names.is_empty() { vec![folder.to_path_buf()] } else { names.iter().map(|n| folder.join(n)).filter(|p| p.is_dir()).collect() };
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let mut added = false;
+        let mut noted = String::new();
+        for p in &paths {
+            let f = p.to_string_lossy().to_string();
+            let at = st.config.bookmarks.len();
+            if sidebar::insert_bookmark(&mut st.config.bookmarks, &f, at) {
+                eprintln!("[sidebar] bookmark added {f} at {at} (menu)");
+                noted = format!("Bookmarked {f}");
+                added = true;
+            } else {
+                eprintln!("[sidebar] {f} is bookmarked already");
+                noted = format!("{f} is bookmarked already");
+            }
+        }
+        if added {
+            rebuild_sidebar(st);
+            schedule_save(st);
+        }
+        if !noted.is_empty() {
+            note(st, &app, pane, noted);
+        }
+    });
+}
+
+/// Folders dropped into the Bookmarks gap (P12-M5): each folder bookmarked at gap `at` in order (a
+/// file is left out; a folder bookmarked already stays where it is, noted as Ctrl+D notes it).
+pub fn drop_bookmarks(at: usize, sources: Vec<PathBuf>) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let pane = active_pane(&app);
+        let mut k = at;
+        let mut noted = String::new();
+        for p in sources.iter().filter(|p| p.is_dir()) {
+            let folder = p.to_string_lossy().to_string();
+            if sidebar::insert_bookmark(&mut st.config.bookmarks, &folder, k) {
+                eprintln!("[sidebar] bookmark added {folder} at {k} (drop)");
+                noted = format!("Bookmarked {folder}");
+                k += 1;
+            } else {
+                eprintln!("[sidebar] {folder} is bookmarked already");
+                noted = format!("{folder} is bookmarked already");
+            }
+        }
+        if k > at {
+            rebuild_sidebar(st);
+            schedule_save(st);
+        }
+        if !noted.is_empty() {
+            note(st, &app, pane, noted);
+        }
+    });
 }
 
 /// A drop landed (posted by the drop target through the event loop): copy or move the files
@@ -5321,6 +5499,7 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
         app.set_right_sort_asc(asc);
     }
     set_path(st, app, pane);
+    note_recent(st, app, pane);
     set_filter_box(app, pane, &model.filter.borrow().pattern);
     set_current_row(app, pane, usize::try_from(cursor).ok());
     app.invoke_set_scroll(pane as i32, scroll);
@@ -5475,6 +5654,14 @@ fn move_tab(pane: usize, from: usize, to: usize) {
 fn tab_key(pane: usize, what: &str) {
     match what {
         "new" => open_tab(pane, None),
+        // The "+" after a pane's tab strip (P12-M5): that pane becomes active, then Ctrl+T's tab.
+        "plus" => {
+            eprintln!("[tab] pane={pane} + button: new tab");
+            if let Some(app) = with_state(|st| st.app.upgrade()) {
+                app.invoke_focus_pane(pane as i32);
+            }
+            open_tab(pane, None);
+        }
         "close" => {
             let i = with_state(|st| st.panes[pane].active_index());
             close_tab(pane, i);
@@ -5973,7 +6160,7 @@ fn visible_rows(st: &State, app: &App, pane: usize) -> Option<(usize, usize)> {
     let (lines, line_px) = if st.grid[pane] {
         (model.grid_len(), icons::GridGeom::new(app.window().scale_factor(), n, st.tile[pane]).tile.h)
     } else {
-        (model.len(), icons::StripGeom::new(app.window().scale_factor(), st.config.thumbnails).list.row_px)
+        (model.len(), list_geom(st).row_px)
     };
     let visible = icons::visible_range(y, h, lines, line_px)?;
     Some((visible.0 * n, ((visible.1 + 1) * n - 1).min(model.len().checked_sub(1)?)))
@@ -6149,7 +6336,7 @@ fn set_show_type(st: &mut State, app: &App, on: bool) {
 fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
     st.config.thumbnails = on;
     app.set_thumbnails(on);
-    log_list_geom(on);
+    log_list_geom(list_geom(st));
     for pane in 0..2 {
         hide_strip(st, app, pane);
     }
@@ -6158,8 +6345,32 @@ fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
     if app.get_split() { vec![0, 1] } else { vec![0] }
 }
 
-fn log_list_geom(thumbnails: bool) {
-    let g = icons::ListGeom::new(thumbnails);
+/// Comfortable rows on or off (P12-M4): the details lists without thumbnails become 30 px (or 22
+/// px) rows. The icons stay 16 px, so their keys stand: the strips are composed again at the new
+/// pitch, and each list keeps its first row at the top.
+fn set_row_height(st: &mut State, app: &App, comfortable: bool) {
+    let old = list_geom(st).row_px;
+    st.config.row_height = if comfortable { "comfortable" } else { "compact" }.into();
+    app.set_comfortable(comfortable);
+    let g = list_geom(st);
+    log_list_geom(g);
+    for pane in 0..2 {
+        hide_strip(st, app, pane);
+        if !st.grid[pane] && g.row_px != old {
+            let y = st.view[pane].0 * g.row_px / old;
+            st.view[pane].0 = y;
+            app.invoke_set_scroll(pane as i32, y);
+        }
+        resolve_view(st, app, pane);
+    }
+}
+
+/// The details lists' geometry from the settings: thumbnails, comfortable or compact rows.
+fn list_geom(st: &State) -> icons::ListGeom {
+    icons::ListGeom::new(st.config.thumbnails, st.config.comfortable())
+}
+
+fn log_list_geom(g: icons::ListGeom) {
     eprintln!("[icons] list geometry: {} px rows, {} px icons", g.row_px, g.icon_px);
 }
 
@@ -6181,6 +6392,7 @@ fn settings_open() {
             view_right: view_of(st, 1).name().into(),
             show_type: st.config.show_type,
             thumbnails: st.config.thumbnails,
+            row_height: if st.config.comfortable() { "comfortable" } else { "compact" }.into(),
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
             toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
@@ -6208,6 +6420,7 @@ fn settings_open() {
     app.set_dlg_view_right(settings::View::from_name(&d.view_right).index());
     app.set_dlg_type_column(d.show_type);
     app.set_dlg_thumbnails(d.thumbnails);
+    app.set_dlg_row_height(i32::from(d.row_height == "comfortable"));
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
@@ -6325,6 +6538,7 @@ fn settings_closed(ok: bool) {
         view_right: settings::View::from_index(app.get_dlg_view_right()).name().into(),
         show_type: app.get_dlg_type_column(),
         thumbnails: app.get_dlg_thumbnails(),
+        row_height: if app.get_dlg_row_height() == 1 { "comfortable" } else { "compact" }.into(),
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
         toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
@@ -6374,6 +6588,7 @@ fn settings_closed(ok: bool) {
                     refresh(pane);
                 }
             }
+            "row_height" => with_state(|st| set_row_height(st, &app, staged.row_height == "comfortable")),
             "sidebar_visible" => {
                 if app.get_sidebar_visible() != staged.sidebar_visible {
                     app.invoke_toggle_sidebar();
@@ -6694,8 +6909,9 @@ fn main() -> Result<(), slint::PlatformError> {
     preview::init(&app);
     app.set_show_type(config.show_type);
     app.set_thumbnails(config.thumbnails);
-    if config.thumbnails {
-        log_list_geom(true);
+    app.set_comfortable(config.comfortable());
+    if config.thumbnails || config.comfortable() {
+        log_list_geom(icons::ListGeom::new(config.thumbnails, config.comfortable()));
     }
     for pane in 0..2 {
         set_cols(&app, pane, config.cols(pane));
@@ -6904,6 +7120,12 @@ fn main() -> Result<(), slint::PlatformError> {
         .unwrap_or(0.0)
     });
     app.on_bookmark_add(bookmark_add);
+    app.on_recent_clear(recent_clear);
+    app.on_bookmark_drag(|from, gap| {
+        if let (Ok(from), Ok(gap)) = (usize::try_from(from), usize::try_from(gap)) {
+            bookmark_drag(from, gap);
+        }
+    });
     app.on_bookmark_remove(|i| {
         if let Ok(i) = usize::try_from(i) {
             bookmark_remove(i);
@@ -6988,6 +7210,8 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     app.on_tab_key(|pane, what| tab_key(pane as usize, what.as_str()));
+    // Tab and Shift+Tab between the lists (Jeremy, 2026-10-26: "tab switches panes").
+    app.on_keys_by_tab(|pane, row| eprintln!("[focus] pane={pane} has the keys by Tab, cursor {row}"));
     app.on_crumb_clicked(|pane, i| {
         if let Ok(i) = usize::try_from(i) {
             crumb_clicked(pane as usize, i);
@@ -7057,11 +7281,14 @@ fn main() -> Result<(), slint::PlatformError> {
     if config.preview {
         preview::set_visible(true);
     }
+    ask::init(&app);
     auto::start(&app);
     // The drop target goes on the window once it exists (winit creates it lazily, in `run`).
     with_state(|st| st.dnd_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), register_dnd));
 
     let res = app.run();
+    // A worker still waiting on a question gets Cancel, so it never waits for ever (P12-M3).
+    ask::quit();
     // The copies of archives inside archives (P8-L3).
     fs::archive::clear_nested();
     // A change still waiting for its debounce (a scripted quit, say) is written now.

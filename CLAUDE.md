@@ -40,10 +40,17 @@ bundle with the owed checks, the preview gaps bundle, syntax colours, password P
 as a setting; two streams and a coordinating session; opened 2026-10-22, closed 2026-10-24; its first
 section quotes Jeremy's kickoff decisions, § Calls made lists the lead's, § Open questions what each brief
 settles first, and § Phase 11 close holds the gates, the long soak, lessons, what is deferred and the
-Phase 12 list). Read them before changing the list.
+Phase 12 list). Read them before changing the list. `docs/phase-12-plan.md` is the Phase 12 record (opened
+2026-10-25: the Phase 10 later list, Google Drive's commands, OneDrive's syncing and error icons, the
+memory check).
+
+`docs/roadmap.md` is the one list of known bugs and wanted features not built yet (since 2026-10-25).
+Its upkeep, Jeremy's rule (2026-10-26, "add the roadmap rule"): an item leaves the roadmap when a phase's
+plan takes it, and that phase's record carries it from there; each phase close adds back what the phase
+put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (303 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (318 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -83,8 +90,8 @@ Phase 12 list). Read them before changing the list.
 
 ## Measuring
 - The exe's manifest (`assets/twinfm.exe.manifest`, embedded with the icon by `build.rs` through
-  winresource; the Phase 12 memory follow-up, an experiment until its soaks are compared) asks only for
-  the segment heap; before it the exe had none. The test binaries are linked with it too. At start:
+  winresource; the Phase 12 memory follow-up, `docs/phase-12-plan.md` § The memory manager trial) asks
+  only for the segment heap; before it the exe had none. The test binaries are linked with it too. At start:
   `[mem] process heap: segment heap | NT heap | unknown (signature 0x...)` (`perf::process_heap`, the
   default heap's header signature, which Rust's allocator uses).
 - Since 0.1.0 the exe is a windowed program (`#![windows_subsystem = "windows"]`): no console window,
@@ -217,7 +224,7 @@ Phase 12 list). Read them before changing the list.
   <path|path>` calls the drop target's DragEnter and Drop directly (no OLE loop; row -1 is the
   pane's folder; `|` separates paths); in place of `<pane> <row>`, `side <row>` aims at a sidebar
   row (headers count; -1 is the last row, the newest bookmark) and `tab <pane> <index>` at a tab
-  (shown with two tabs or more); the mode `menu <copy|move|cancel>` holds the right button, so
+  (shown always since P12-M5, with two tabs or more before); the mode `menu <copy|move|cancel>` holds the right button, so
   Drop opens the Move here / Copy here / Cancel menu and the in-menu timer picks the item.
   `dragover <pane> <top|bottom> <ms> <path|path>` hovers a drag 6 px inside a list's edge for
   `<ms>` (DragEnter, DragOver every 20 ms, DragLeave; never a drop): the auto-scroll. `dragrow
@@ -250,7 +257,7 @@ Phase 12 list). Read them before changing the list.
   tab <pane> <index> ...` and `dragover crumb <pane> <index> ...` at the centre of that spot (as
   `dropfiles` aims; the hover's DragOver every 20 ms is the spring-load's clock), `dragover side
   <top|bottom> ...` 6 px inside the sidebar list's top or its bottom above the footer, `dragover
-  strip <pane> <left|right> ...` 6 px inside a tab strip's end (shown with two tabs or more).
+  strip <pane> <left|right> ...` 6 px inside a tab strip's end (the right end left of the "+" since P12-M5).
   Spring-loaded folders: a drag held `dnd::SPRING_MS` (1000 ms) over a folder row or tile, or a
   tab other than the active one, opens it in that pane (a navigation, or the tab switch, run from
   the event loop), for drags from anywhere; once per spot until the pointer leaves it; since P11-M3
@@ -296,7 +303,7 @@ Phase 12 list). Read them before changing the list.
   `settings set <field> <value>` (stages a value through the function the dialog's control calls:
   `start_left`, `start_right` take a path, `hidden_left`, `hidden_right`, `type_column`,
   `thumbnails`, `sidebar` take `true|false`, `path_bar` takes `entry|crumb`, since P6-M2 `view_left`,
-  `view_right` take `details|large|medium`, since P10-M1 `theme` takes `system|light|dark`), `settings ok` and `settings close` (the OK
+  `view_right` take `details|large|medium`, since P10-M1 `theme` takes `system|light|dark`, since P12-M4 `row_height` takes `compact|comfortable`), `settings ok` and `settings close` (the OK
   and Cancel buttons; `key Escape` cancels through the key path); `window max|restore|close` maximises or restores
   the window, or closes it through `WM_CLOSE` (the close button's path, which saves the settings;
   `quit` does not); `[sidebar]` and `[settings]` lines on stderr, the dialog's among them:
@@ -408,7 +415,10 @@ Phase 12 list). Read them before changing the list.
   deleted folder still goes `Lost`. **A fixed drive whose disk is hot-pluggable** (a USB hard disk;
   here also Google Drive's `G:`) registers its watches for device events as a removable drive does
   (`IOCTL_STORAGE_GET_HOTPLUG_INFO`): `[devices] <letter>: fixed, removable media: registered | not
-  removable` once per drive. `waitsize` also waits while a stale size waits for its re-walk. **The
+  removable` once per drive. Since P12-M6 a volume that refuses the registration (Google Drive's `G:`,
+  os error 1066) is noted by its GUID path (`watch::volume_of`) and not asked again while TwinFM runs:
+  `[watch] pane=N tab=T no device notification for <path>: <error>: not asked again on
+  \\?\Volume{...}\`, once per volume. `waitsize` also waits while a stale size waits for its re-walk. **The
   history menu**: Alt+Down in a list (`command "histmenu"`) or a right click on the path bar's
   background opens the pane's places in the Windows 11 menu (`open_history_menu`; forward places
   first, the current one checked, back places after it; each labelled by its name, then where it
@@ -479,8 +489,8 @@ Phase 12 list). Read them before changing the list.
   beside it and swaps it in with `ReplaceFileW`, existing entries copied as bytes (`fs::zipraw` since
   P8-L2: the local record, data and descriptor and the central record kept whole, only the name and
   offset patched). Files that would
-  replace files in the zip are asked about once per job (a message box: Yes replace, No skip, Cancel;
-  replace under `TWINFM_SOAK`). A move into a zip recycles the originals afterwards. No write into a
+  replace files in the zip are asked about once per job (Replace, Skip, Cancel; a message box until
+  P12-M3, TwinFM's own question since; replace under `TWINFM_SOAK`). A move into a zip recycles the originals afterwards. No write into a
   zip is undone (Ctrl+Z: "Cannot undo: changes to a zip archive cannot be undone"). Since P8-L2 items
   go from one zip into another or within one (`Plan::FromZip`, `archivewrite::copy_from_zip`: entries
   copied as bytes, an encrypted one keeping its own password, a plain file into a password zip
@@ -528,8 +538,8 @@ Phase 12 list). Read them before changing the list.
   Ok(files) | Err("<why>") in T ms`. `[fileops] done` reads `Failed: <why>` for an archive job's
   error; a refused drop notes `drop: <why>` in the pane under the pointer. A password-protected zip
   is written since P8-L2 (refused in P7-M3): a job that adds files, a new file, or plain files from
-  another zip asks for the password (a dialog of TwinFM's own on the file operation worker,
-  `ask_password`, masked; or the driver's `zippassword <text>`, the answer to the next question; a
+  another zip asks for the password (`ask_password`, masked, from the file operation worker: a
+  dialog of TwinFM's own until P12-M3, a question of `crate::ask` since; or the driver's `zippassword <text>`, the answer to the next question; a
   scripted job without one, or with a wrong one, is refused, never shown the dialog), checks it by
   reading the zip's smallest encrypted file whole (`archivewrite::check_password`), asks again while
   it is wrong, and encrypts the new files with the zip's own method (`Protection`: ZipCrypto, or
@@ -552,8 +562,9 @@ Phase 12 list). Read them before changing the list.
   Since P3-M5, thumbnails: `settings set thumbnails true|false` then `settings ok` (or
   `TWINFM_CONFIG=<a read-only file with thumbnails = true>`) switches both panes to the 32 px lists
   and lists them again; no new driver step. `[settings] dialog: thumbnails <old> -> <new>`; `[icons]
-  list geometry: 32 px rows, 32 px icons` (or `22 px rows, 16 px icons`) once per change and at a
-  start with thumbnails on; `[icons] thumbnail <ms> ms: <path>` for a thumbnail of 100 ms or more
+  list geometry: 32 px rows, 32 px icons` (or `22 px rows, 16 px icons`, or since P12-M4 `30 px rows,
+  16 px icons` for comfortable rows, and since 2026-10-26 `44 px rows, 32 px icons` for comfortable
+  rows with thumbnails) once per change and at a start with thumbnails or comfortable rows on; `[icons] thumbnail <ms> ms: <path>` for a thumbnail of 100 ms or more
   (counted in `slow`, as `slow icon` lines are); `[icons] thumbnail cap reached: N thumbnails held,
   new ones get their type's icon` once (20,000). The once-a-second `[icons]` line carries `thumbs N
   avg M ms dropped D` after `slow N`: thumbnail requests rendered in the period (from the shell's
@@ -610,8 +621,9 @@ Phase 12 list). Read them before changing the list.
   Since P6-M1, cloud marks (`src/cloud.rs`, `icons::Cloud`, `icons::Mark`): no new driver step (a
   `nav` to a OneDrive folder or to `G:\My Drive` is the check). A listing is a cloud location when its
   folder is under a registered sync root (`HKLM\...\Explorer\SyncRootManager\*\UserSyncRoots`, read
-  at start and on every device change; OneDrive and Phone Link's CrossDevice here) or on a volume
-  named "Google Drive"; This PC, archive levels and search tabs never are. Keys there:
+  at start and on every device change; OneDrive and Phone Link's CrossDevice here) or on Google Drive's
+  volume (since P12-M6 the one holding `.shortcut-targets-by-id` at its root, else the one named
+  "Google Drive"); This PC, archive levels and search tabs never are. Keys there:
   `ext:<mark>:.txt`, `folder:<mark>`, `thumb:<mark>:<path>|<modified>|<size>`, `cloud:<mark>:<path>`
   (a full-path key), the mark `s<N>` (a sync root's `System.StorageProviderState`, drawn with the
   imageres.dll glyph Explorer's Status column uses) or `o<N>` (the shell's overlay index, Google
@@ -621,8 +633,9 @@ Phase 12 list). Read them before changing the list.
   `SHGFI_OVERLAYINDEX` call, about 5 ms), after which the row takes the marked key. Links and reparse
   points keep their own keys and arrow. A thumbnail for a cloud-only file (state 1) and for any
   Google Drive file is asked with `WTS_INCACHEONLY`. `[cloud]` lines: `sync roots: N (<roots>)` at
-  start and after a device change, `volume <key> named "<name>" (google drive|not cloud)` or `volume
-  <key> has no name (not cloud)` once per volume, `pane=N <folder>: sync root|google drive` per
+  start and after a device change, `volume <key> named "<name>": google drive (by its root's
+  .shortcut-targets-by-id | by its label) | not cloud` or `volume <key> has no name: ...` once per
+  volume (P12-M6; before it `volume <key> named "<name>" (google drive|not cloud)`), `pane=N <folder>: sync root|google drive` per
   listing of a cloud location. `[icons]` adds `status glyph state S (imageres -R) fetched at G px over
   P px` once per state and size, `slow cloud lookup <ms> ms: <path>` (100 ms or more, counted in
   `slow`), and the once-a-second line's `cloud N` (lookups made in the period, after `dropped D`);
@@ -679,8 +692,9 @@ Phase 12 list). Read them before changing the list.
   always shown (`model::Show`, `shows`). `backclick <pane> path|edit` posts the Back button over the
   path bar's middle or over row 0's name cell: ignored over the text entry and the rename editor.
   `sidebar click <row>` is a left click (a negative row counts from the end): the sidebar takes the
-  keys, `key F2` opens a bookmark row's title editor, `key Escape` (or Tab) gives the keys back to
-  the list. In the breadcrumb dropdown (`crumbmenu`) `key Down` / `key Up` move a highlight and
+  keys, `key F2` opens a bookmark row's title editor, `key Escape` (or Tab, or Shift+Tab) gives the
+  keys back to the active pane's list; since 2026-10-26 the sidebar is no Tab stop (only a click gives
+  it the keys). In the breadcrumb dropdown (`crumbmenu`) `key Down` / `key Up` move a highlight and
   `key Return` picks it. `[tab] pane=N strip resized: scrolled to X (tab I of N in view)` when the
   pane's width changes moved its strip. Search results' rows read `file.txt  (sub\dir)`
   (`model::search_label`; the entries, the sort and the commands keep `sub\dir\file.txt`). A tab sent
@@ -858,8 +872,8 @@ Phase 12 list). Read them before changing the list.
   in a new tab of the pane (placed after the active tab, in order, the last one shown), files with
   the shell's default command for all of them at once on the verb worker
   (`VerbRequest::default_item`, `GetMenuDefaultItem`, one job per folder for a search tab's files),
-  files inside an archive each through its PIDL; above 15 items (`model::OPEN_ASK_ABOVE`) a message
-  box asks first (none under `TWINFM_SOAK`). `[open] pane=N K items: D folder(s) to tabs, F
+  files inside an archive each through its PIDL; above 15 items (`model::OPEN_ASK_ABOVE`) a question
+  asks first (a message box until P12-M3; none under `TWINFM_SOAK`). `[open] pane=N K items: D folder(s) to tabs, F
   file(s)`, `[open] pane=N K items: not opened (the question was declined)`, and `[menu] verb ""
   ("Open") queued on the verb worker (the default command), id N`. A script never opens several
   files (they would start their apps on the desktop); several folders are safe. The menu shows Open
@@ -964,9 +978,9 @@ Phase 12 list). Read them before changing the list.
   refused, plain kept: <err>`, `recolour: the file is previewed again`.
   Since P11-M6, password PDFs through hayro (no new crate): a PDF hayro cannot open with the empty
   password shows "Password-protected PDF" and an "Enter password…" button (Jeremy's choice: never asked
-  as the cursor passes); the button opens the file again with `Req::Open`'s `ask` (the window's handle),
-  and the worker asks in TwinFM's masked dialog (`fileops::archive::ask_password`, the zip password's,
-  now taking its prompt), asks again while the password is wrong, and on Cancel leaves the message.
+  as the cursor passes); the button opens the file again with `Req::Open`'s `ask`,
+  and the worker asks for it (`fileops::archive::ask_password`, the zip password's question, since
+  P12-M3 one of `crate::ask`'s), asks again while the password is wrong, and on Cancel leaves the message.
   hayro takes the user password of revisions 2 to 4 (RC4-40, RC4-128, AES-128) and the user or owner
   password of 5 and 6 (AES-256); an owner-password-only file opens with no question. The password lives
   in the open document only, never written anywhere. Driver: `pdfpassword <text>` (the answer to the next
@@ -986,6 +1000,143 @@ Phase 12 list). Read them before changing the list.
   ready after 4 answers: <key> keeps its type icon`. No new driver step. A test video made by Windows
   itself (no ffmpeg here): WinRT `MediaComposition` with `MediaClip.CreateFromImageFileAsync` and
   `RenderToFileAsync` from Windows PowerShell (the plan's record has the script's shape).
+  Since P12-M2, every list's scrollbar is TwinFM's own (`theme.slint` `VScrollBar`, and `HScrollBar`
+  for the preview's pages past 100%), laid over the view with the view's Fluent bar `always-off`: the
+  file lists' one in `FileListHost` (it owns `content-y` and reckons the content's height from the rows
+  or grid rows), the sidebar's, the crumb dropdown's and the preview's pages and Markdown list. A 14 px
+  strip at the view's edge, the thumb 6 px 1 px from the edge (10 px under the pointer or while
+  dragged, over a faint track), at least 24 px long, clear of the last column at rest (the details rows'
+  right padding 10 px, `dnd::ROW_PAD_RIGHT`, and 10 px kept at the grid's right: Jeremy's "Add
+  padding"); a press on the thumb drags it, a press on the track
+  pages a screenful towards the pointer, the wheel over it scrolls the view. `drag <pane> <dy> <ms>`
+  presses its thumb at the same aim as before (`thumb()`: 10 px in from the pane's edge, 17 px below the
+  list's top). No new driver step or stderr line.
+  Since P12-M5, the sidebar and the tab strip. **Every pane shows its tab strip, one tab too**
+  (Jeremy: "Always show the tab strip"), so every list starts 32 px lower than with one tab before
+  (`TAB_STRIP` always in `list_top`; `window_layout` says `tabs: [true; 2]`); the strip is as wide as
+  its tabs up to the room they have, and the **"+"** (32 px and a 2 px gap, `dnd::TAB_PLUS`, taken
+  from the tabs' room at the right) right after it opens a tab of that pane's folder as Ctrl+T does,
+  making the pane active (tooltip "New tab (Ctrl+T)"; not a drop target: the pane). Driver `tab plus
+  <pane>`; `[tab] pane=N + button: new tab`. **Recent**: the sidebar's group under Places, the last
+  eight folders a pane showed (a navigation or a tab put on screen; not This PC, an archive level, a
+  search tab or the hidden right pane's), newest first, a folder already there moved to the top
+  (`sidebar::note_recent`, `RECENT_MAX`); saved as `recent` (paths) in the settings; its header's
+  right-click menu "Clear recent". `[sidebar] recent: <path> (K kept)`, `[sidebar] recent cleared (N
+  removed)`. **Bookmarks reordered by dragging**: a press on a bookmark dragged past 4 px carries it
+  (Slint's pointer, not OLE), a 2 px line in the accent shows where it lands, the release moves it
+  (`sidebar::drag_target`, `move_bookmark_to`). Driver `bookmark drag <from> <to>` (a press, 4 px
+  moves and a release through Slint's pointer path, the sidebar scrolled to its end first);
+  `[sidebar] bookmark moved F -> T (drag)`, `[sidebar] bookmark F dragged to its own place: not
+  moved`, `[auto] bookmark drag F -> T: pressed at y A, released at y B`. **A bookmark made with the
+  mouse**: the Bookmarks header, a bookmark row's top and bottom 6 px (`dnd::GAP_PX`) and the space
+  below the last row are a drop spot of their own (`Spot::SideGap(k)`, `Mark::Gap(k)`, the same
+  insertion line, the window's `drop-side-gap`); a drag carrying a folder gets the link effect (a copy
+  where the source allows no link, never a move: `bookmark_effect`) and the drop description
+  "Bookmark", and the drop bookmarks its folders there in order (files left out; a folder bookmarked
+  already stays, with Ctrl+D's note; `sidebar::insert_bookmark`); a drop onto a bookmark row's middle
+  still copies or moves files into it. Driver `dropfiles sidegap <index> <copy|move|auto> <paths>` and
+  `dropfiles point <x> <y> <mode> <paths>` (any window point, logical px, through the real hit test)
+  (the line before bookmark `<index>`, the count below the last; the sidebar scrolled to its end
+  first); `[dnd] over sidebar bookmarks gap K ... -> effect link|copy|none`, `[dnd] drop description:
+  Bookmark` (the effect's image: a copy for TwinFM's own drag, which allows no link,
+  `gap_description`), `[sidebar] bookmark added <path> at K (drop | menu)`, `[sidebar] <path> is
+  bookmarked already`. **"Add to bookmarks"** in the Windows 11 menu on folders and drives (each selected one,
+  never inside an archive) and on a folder's background (the folder shown), appended (`Cmd::Bookmark`,
+  `menupick Add to bookmarks`; `[winmenu] pane=N runs Bookmark`); the Bookmarks header's right-click
+  menu "Bookmark this folder" (Ctrl+D's). The headers' menus run their item before they close (the
+  items are `if`s inside the popup, and a call after the close never reached the window). Driver
+  `clickat <x> <y> [right]` presses and releases a button at a window point through Slint's pointer
+  path (TwinFM's own popups, such as these menus). **The icons-only rail**: collapsed (F9, the chevron, the
+  dialog's sidebar switch, now "Names (off: the icons-only rail)") the sidebar is a 48 px rail
+  (`dnd::RAIL_W`; the 12 px strip until P12-M5; Jeremy: "Collapsing the sidebar gives the icons-only
+  rail instead of today's thin strip; no fully hidden state."): the same rows and heights, each row's
+  icon centred with its name as a tooltip, a header a hairline, the footer's chevron widening it; a
+  click, a drop, a gap, a bookmark's drag and the keys work on it as on the full sidebar; the panes
+  start right of it (`Layout.left` 48). `sidebar_visible = false` loads as the rail.
+  **Tab switches panes** (Jeremy's console-check follow-up, 2026-10-26: "tab switches panes"): Tab and
+  Shift+Tab in a list give the keys to the other pane's list (the same list with one pane; app.slint
+  `tab-panes`, the list's key handler, Ctrl+Tab still the tabs'), which becomes the active pane (its
+  ring, the title, the toolbar); a list with no cursor then gets one on its first row wholly on screen
+  (`cursor-to-first`: row 0 unless it was scrolled without a click), and a list the keys reach by Tab
+  from its own search box or path entry does the same (`tabbed-in`, its key layer's `focus-gained` with
+  `tab-navigation`). The window's own key handler (`outer`) and the sidebar's take no Tab stop
+  (`focus-on-tab-navigation: false`; neither drew anything there). Every list's and tile's cursor outline
+  takes its colour from the host (`cursor-color`): the accent in the active pane, the grey ring
+  (`Theme.ring`) in the other, the cursor tile's whole-name overlay too, so one accent outline shows
+  where the keys are. Driver key names `Tab`, `ShiftTab` (P12-M3's). `[focus] pane=N has the keys by
+  Tab, cursor R`.
+  Since P12-M3, TwinFM's own questions are drawn in the look (`src/ask.rs`, app.slint's
+  `question-popup`): the zip's replace question (Cancel, Skip, Replace) and permanent delete (Cancel,
+  Delete), a zip's or a PDF's password (a masked field, Cancel, OK), "Open N items at once?" (Cancel,
+  Open). A popup over the whole window on a scrim, the card centred; the primary button filled and
+  focused (the password field when there is one), Tab between the buttons (`Btn` takes the focus
+  since; the card's own key handler is no Tab stop, `focus-on-tab-navigation: false`, since Jeremy's
+  console check; driver key names `Tab` and `ShiftTab`), Return the primary (a focused button presses
+  itself), Escape the Cancel; the window's keys do nothing while one shows. A worker calls `ask::ask`,
+  which hands the question to the UI thread
+  and waits on a one-slot channel; the UI thread calls `ask::ask_here` and goes on in the reply (the
+  open-many question, whose items wait in it). One shows at a time, the rest in the order asked;
+  quitting answers Cancel to all; a scripted run's question left 30 s (`ask::SCRIPT_CANCEL`) is
+  answered Cancel. **A worker may wait for the UI thread only through `ask`, and the UI thread never
+  waits for a thread that can call it.** Unchanged: `TWINFM_SOAK`'s answers (the replace, zip delete
+  and open-many questions are never asked there), and the password questions' script rule
+  (`zippassword`, `pdfpassword`; a script that gave none is refused, never shown the question). A
+  question asked while the UI thread is in a modal loop (the classic menu, a drag) shows when the loop
+  ends. Driver: `waitquestion <ms>` (until a question shows, at most `<ms>`, then 100 ms; `[auto]
+  waitquestion: no question after <ms> ms`), `answer <button>` (presses the shown question's button by
+  its label, any case; `[auto] answer <button>: no question shows a button reading so`). `[ask]` lines:
+  `shown <kind> "<title>" (from <thread>, K waiting)` (kind `replace`, `zip delete`, `password`, `open
+  many`; thread `fileops`, `preview`, `the UI thread`), `<kind> answered <button> after T ms`, `<kind>
+  unanswered after 30 s: Cancel (scripted run)`, `quit: K question(s) answered Cancel`, `<kind> asked
+  on the UI thread: Cancel` (a mistake that would hang it). The password typed is cleared when the
+  question closes and never written to a line.
+  Since P12-M6, **a classic-menu command whose id moved runs**: Microsoft Defender's handler adds "Scan
+  with Microsoft Defender..." only to a menu built with an owner window, and the verb worker builds its
+  menu with none (P7-M1), so every command numbered after Defender's sits one id lower there (Google
+  Drive's on `G:`, OneDrive's "Move to OneDrive" on any file). A classic pick hands the worker its
+  **label path** (`VerbRequest::label`: its submenus' labels and its own joined by `>`, "Offline
+  access>Available offline", `shellmenu::label_path`; the `[menu] verb ... queued` and `InvokeCommand
+  ... label=` lines and the pane's "was not run" note show it); `choose` checks the item at the id by the
+  path's last label, and when that refuses, `find_moved` takes the one command **without a verb** at the
+  whole label path in the rebuilt menu (none, or several: refused as before, so a wrong command is never
+  run); `fill_until` stops as soon as either is found. Defender's own item is in no rebuilt menu, so it is
+  refused (`..., and none at its label path`). `[menu] "<label path>" moved from offset A to B in the
+  rebuilt menu: by offset B`; a refusal ends `, and none at its label path` or `, and N at its label
+  path`. Driver: `menuverb <pane> try:<label path>`, the dry test verb: the command at that path in the
+  menu `show` would show for the cursor row's selection (`shellmenu::find_shown`, built as `show`
+  builds it and never shown; of two at one path, the one without a verb), handed to the worker as a pick
+  would be (`verbs::Work::Try`), resolved there and **never invoked** (`run_verb`'s `dry`): `[auto]
+  menuverb try: "<label path>" at offset A in the menu shown, verb "<verb>"` or `[auto] menuverb try: no
+  "<label path>" in the menu`, `[menu] verb ... queued on the verb worker (the test verb: resolved, not
+  invoked)`, `[menu] InvokeCommand ... resolved: by offset | by verb (the test verb: not invoked) |
+  refused: <why>`. Safe on `G:` and OneDrive files (reading menus only); `waitops` covers it.
+  After P12-M6's console check: **a verb is read as `GCS_VERBA` when `GCS_VERBW` gives no plain ASCII**
+  (`verb_of`, `verb_text`; OneDrive's classic handler writes "MakeAvailableOnline" as ANSI bytes into the
+  wide buffer, so Free up space and Always keep on this device failed by verb, 0x80070483), and none when
+  neither does: `[menu] GCS_VERBW gave "<text>" at offset N: GCS_VERBA "<verb>" taken | dropped (none in
+  GCS_VERBA either)`, once per text per process. **A command whose invoke by verb fails** is invoked by
+  offset only where the rebuilt menu's item at its id has its label, or where the one command with its
+  verb at its label path is (`find_moved`'s `verb`), never at a bare id that holds another: `[menu]
+  InvokeCommand by verb "<verb>" = 0x...: by offset N instead`.
+  Since P12-M7, **OneDrive files show their own states**: Windows hides the cloud files'
+  placeholders from TwinFM's process (a OneDrive file lists as a plain file, its placeholder state 0,
+  P9-M4), so a sync root's listing thread and the watch's edit worker show them to themselves
+  (`fs::enumerate::expose_placeholders`, `RtlSetThreadPlaceholderCompatibilityMode(PHCM_EXPOSE_PLACEHOLDERS)`,
+  windows-sys's `Wdk_Storage_FileSystem` feature; no other thread, so the search and size walkers list as
+  before). There each placeholder is a reparse point with its cloud tag, and `CfGetPlaceholderStateFromAttributeTag`
+  gives its real state; `entry_of` takes the state and lists the entry as the plain file or folder it is by
+  default (`as_listed`: the reparse bit and the tag dropped, and the offline and sparse bits a placeholder
+  whose data is not all here gains), so kinds, attributes, keys, thumbnails and the `[enum]` reparse counts
+  are as before (all 40,023 OneDrive entries the P12-M7 check listed both ways). A file not in sync
+  (syncing, waiting, in error, with a warning), or no placeholder at all there (a file just copied in, a
+  plain file until OneDrive has uploaded it; not one OneDrive excludes, pinned and unpinned both like
+  `desktop.ini`: `needs_state_read`'s `shown`), is keyed `look:s:` as P9-M4 built it,
+  the icon worker reads its `System.StorageProviderState` (`[cloud] state read <path>: S in T ms`) and draws
+  the provider's glyph (`STATE_GLYPHS`: 4, 5, 6 and 10 the arrows, 7 the red cross, 8 the warning). OneDrive's
+  switch of a file to an in-sync placeholder reaches the watch as a record (the P12-M7 probe: 0.2 s after it),
+  so the mark follows without F5. `[cloud] pane=N not in sync: K of M files` once per sync-root listing (K the
+  files looked up); `[cloud] <listing | watch edits>: placeholders not shown
+  (RtlSetThreadPlaceholderCompatibilityMode = R)` if Windows refuses the mode. No new driver step.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -1020,7 +1171,17 @@ Phase 12 list). Read them before changing the list.
   column, default false, Alt+P, in the dialog) and `preview_width` (its share, 0.2 to 0.6, default
   0.35, its handle's drag), since P11-M4 `preview_zoom` (a PDF's zoom, percent, 50 to 400, default
   100), since P11-M5 `syntax_colours` (default true, in the dialog), since P11-M7 `log` (default
-  false, in the dialog, `logfile`); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
+  false, in the dialog, `logfile`), since P12-M4 `row_height` (`"compact"`, the default, 22 px rows, or
+  `"comfortable"`, 30 px rows with the 16 px icons centred and the names where they were, and with
+  thumbnails since 2026-10-26 44 px rows (32 compact) with the pictures centred (Jeremy: "comfortable
+  should make rows taller"); the grids are unchanged; the dialog's Rows row, applied on OK: the 22 and
+  32 px row components' height is bound to the host's `row-h`, `icons::ListGeom::new(thumbnails, comfortable)` keeps the icon
+  column apart from the row, the strips are composed again at the new pitch and each list keeps its
+  first row at the top; the rename editor follows the icon column, not the row; a gate run with it
+  takes `TWINFM_CONFIG=C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`, and
+  with thumbnails `C:\traces\rows-comfortable-thumbs.toml`, read-only, `thumbnails = true` as well), since P12-M5 `recent` (the sidebar's Recent group, at most
+  eight paths, newest first; "Clear recent" empties it) and `sidebar_visible = false` the icons-only
+  rail (the 12 px strip before); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
   `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
   `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme; since P10-M3 the
   native title bar follows it through `DWMWA_USE_IMMERSIVE_DARK_MODE`, set when the window's handle is
@@ -1115,6 +1276,17 @@ Phase 12 list). Read them before changing the list.
   settings dialog (`settings set cols_reset`, OK); it reports the resets (two per cycle).
   Since P11-M3 each cycle also takes the left pane from `src` into `src\tree` and back through the
   history menu (`histmenu 0`, `histpick 1`); it reports the jumps (one per cycle).
+  Since P12-M4 each cycle also turns comfortable rows on through the settings dialog in `src\tree`,
+  clicks a row and pages down, and turns them off again; it reports the switches each way and the 30
+  px geometry lines (one each per cycle); since 2026-10-26 thumbnails go on between (a click and
+  PageDown in 44 px rows), then compact and thumbnails off, and it reports the 44 px geometry lines (one
+  per cycle).
+  Since P12-M5 each cycle also drops `src` into the Bookmarks gap above `bm` (`dropfiles sidegap 0`),
+  drags it below `bm` (`bookmark drag 0 1`), removes it again (`bookmark remove 1`), and opens a tab with
+  the "+" (`tab plus 0`) and closes it; it reports the bookmarks added by the drop, the drags, the
+  removals and the "+" tabs (one each per cycle). Every list starts 32 px lower since P12-M5 (the tab
+  strip always shown), and the driver's aims follow. Since 2026-10-26 the cycle ends with a click in the
+  left list, Tab and Shift+Tab; it reports the `[focus]` lines each way (one each per cycle).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per

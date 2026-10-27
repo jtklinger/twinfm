@@ -404,6 +404,947 @@ first ones are his, the rest each brief settles first.
 - **Why Google Drive's menu ids move, the tooltip, the scrollbar, the rows and OneDrive's way in**: each
   milestone's Settled first.
 
+## P12-M1: the look's small pieces
+
+The look stream's first milestone, opened 2026-10-25 on main at 76b5d35 (this plan merged), branch
+`feat/p12-m1-look-pieces`. Four pieces, a commit each, all inside today's boxes: no height, width or
+position the driver, the drop target or the soaks read changed.
+
+### Settled first (2026-10-25, before any code; the Slint fork's source at the pinned rev c1d3a8d)
+
+- **Tooltips: painted over Slint's frame, not a tooltip of TwinFM's own.** The compiler's tooltip pass
+  (`lower_tooltips.rs`) puts any custom content inside a `ToolTipImpl` (`common/tooltip-base.slint`: the
+  fluent alternate background, a 1 px `Palette.border`, 4 px corners, its own empty `StyledText` padded 9
+  and 6 px), sizes the popup from that element's preferred size, and places it at the pointer plus the
+  8 px offset. Two facts made painting over it whole: Slint's layout leaves a child placed by `x` or `y`
+  out of its parent's size (`default_geometry.rs` `gen_layout_info_prop`), so a face drawn 1 px outside
+  the frame on every side changes nothing in the tooltip's size; and a 6 px corner 1 px further out
+  covers a 4 px corner wholly (every point of the 4 px arc lies within 5.4 px of the 6 px arc's centre).
+  The popup is not clipped to its bounds: the face's hairline, 1 px outside them, draws in the capture.
+  So the look's tooltip is three lines at each use (`TipCard` in theme.slint), with no timer, overlay or
+  hover reporting of TwinFM's own; the plan's alternative would have needed all three. Slint's stay: the
+  500 ms delay, the place under the pointer (not under the control), the popup's size from the content.
+- **The fade's colours**: Slint animates a brush through `Color::mix`, Sass's mix, which weights the
+  channels by alpha (`color.rs`): from `transparent` to the muted fill only the alpha moves, so a ghost
+  button never darkens on its way in light mode. No token needed for the "off" end.
+- **Which controls fade**: the plan's list, read against every `has-hover` in the three UI files: `Btn`,
+  `Choice`'s border and its options' fill (theme.slint); the toolbar's buttons, the tab segment and its
+  close button, the crumb labels and chevrons, the header cells, the search box's clear, content and
+  search buttons and the path-mode button (pane.slint); TwinFM's own menu items, the Windows 11 menu's
+  rows and icon-row buttons, the sidebar footer's Settings and About text and its hide chevron (colour
+  and colorize, the hover changing those), the splitter and the preview handle (app.slint); and two the
+  survey did not name, the sidebar's resize edge and the collapsed sidebar's strip (chrome, never
+  scrolled). Not faded, as the plan says: the sidebar rows and the crumb dropdown's rows (in ListViews
+  that scroll); rows and tiles have no hover.
+- **The badges' line**: the 28 px status line keeps its height, so `LIST_BOTTOM_GAP` (33) stands. The
+  badges sit in a start-aligned inner layout padded 3 px top and bottom, so they are 22 px; in the fork's
+  box layout (`layout.rs` `solve_box_layout`, `adjust_items`) a start-aligned layout gives spare width to
+  nothing, and when the line is short it shrinks only the items with a stretch, so the left text elides
+  before a badge loses a pixel (the badges and the free space never stretch). `statusbar::selection_text`
+  returns the count and the size apart; nothing read the joined text (the soaks read `[band]` lines, not
+  the status bar).
+- **The preview's icons**: the message text is the identity of each state (every message is a constant in
+  preview.rs), so a pure `message_icon` maps it to an icon name the column draws, with no change to the
+  worker's replies. The plan names four kinds; the two other "not previewed" messages, inside an archive
+  and no HEIF decoder, take the file icon. Lucide's `lock` and `triangle-alert` were added to
+  `src/ui/icons/` (ISC, as the folder's licence and README's notice already cover); `file` and `cloud`
+  were there.
+
+### What landed (2026-10-25)
+
+Four code commits, each built and tested before it was made (302, 302, 302 and 303 tests), then the docs
+and the gate wrapper. Per item:
+
+- **A fade on hover**: done (02a5f64). `animate background { duration: 100ms; }` (and `border-color`,
+  `color`, `colorize` where the hover changes those) on the controls listed above; the Switch knob's
+  100 ms was the one animation before.
+- **Tooltips in the look**: done (84acac3). `TipCard` in theme.slint: the card colour, a hairline, 6 px
+  corners, 12 px text in `Theme.fg` with shadcn's 12 and 6 px padding (28 px tall), a soft shadow (blur
+  8 px, 2 px down, black at 20%); the toolbar's buttons, the content toggle and the search button use it.
+  The `[toolbar] top|pane=N tooltip "<name> (<key>)"` line is unchanged (the card's `init`).
+- **The status bar's badges**: done (b196b77). The item count muted, then "M selected" on the muted fill
+  and the size in an outline badge (the folder-size variants, "so far...", "(updating...)", inside it), 22
+  px tall, 6 px corners, 12 px at weight 500, 8 px apart, right after the items as the Parts board draws
+  them; the free space stays on the right. `Badge` in theme.slint; `StatusInfo` is `{ left, count, size,
+  right }`; `statusbar::mid_text` became `selection_text`, its tests the split
+  (`folder_sizes_in_the_size_badge` renamed from `folder_sizes_in_the_middle_text`).
+- **The preview column's frame**: done (e0c9a28). The title in `Theme.fg` at weight 500 (fluent's default
+  colour at 600 before); each message under its Lucide icon, 20 px in `Theme.fg` on a 40 px muted tile
+  with 10 px corners (shadcn's empty state): file for "No preview", inside an archive and no decoder, lock
+  for both password messages, cloud for a cloud-only file, the warning triangle for the four "could not
+  be read" messages (`preview::message_icon`, tested for every message; `preview-icon` beside
+  `preview-message`); the page note's `#444` is `Theme.paper-fg` and the page's `#FFFFFF`
+  `Theme.paper`, both the same in either scheme since the paper stays white.
+
+No new driver step and no new stderr line.
+
+### Calls made in this milestone, for Jeremy to check
+
+- The tooltip stays where Slint puts it, under the pointer; a tooltip under its control would have been
+  TwinFM's own overlay, which painting over the frame made unneeded.
+- The tooltip's text is 12 px with shadcn's padding, so it is 28 px tall, a little taller than before.
+- The preview's messages sit under an icon on a small muted tile (shadcn's empty state) rather than a bare
+  icon.
+- The PDF page note ("Page N took too long") is the light scheme's muted grey, `#737373`, on the white
+  page, a little lighter than the `#444` before.
+- The sidebar's resize edge and the collapsed sidebar's strip fade too, though the plan's list did not
+  name them.
+
+### Scripted checks (2026-10-25, the worktree's own build at e0c9a28, not a gate build)
+
+Runs of the branch's build with `SLINT_BACKEND=winit-software` and `TWINFM_SCHEME=dark`, then `light`,
+captured by `PrintWindow` of that process's own window, over a scratch folder
+(`%TEMP%\twinfm-p12m1-check`: a folder of 1.4 MB, a file of no previewed type, a damaged PDF, a text file
+marked offline, the P11-M6 test's revision 3 password PDF, a text file and a 1.3 MB file):
+
+- **Tooltip**: `hover 300 22` over Copy logged `[toolbar] top tooltip "Copy (Ctrl+C)"`; at eight times
+  zoom the card is `#171717` with the hairline in dark and white with `#E5E5E5` in light, 6 px corners,
+  and no pixel of Slint's frame anywhere; the Copy button behind it in its hover fill. The shadow does not
+  show in these captures (dark ground, and the software renderer); femtovg's is the console check's.
+- **Badges**: two files selected, "7 items", then "2 selected" on the muted fill and "1.3 MB" in the
+  outline; then the folder (sized, `[size] done ... 1403000 bytes`) and a file, "2 selected" and "2.6 MB";
+  both schemes, the free space on the right, the texts centred in the line.
+- **The preview's messages**: `preview toggle` and the cursor through the four files gave `no preview for
+  this type`, `password`, `cloud-only` and `damaged: Invalid` lines, and the file, lock (with the "Enter
+  password…" button under it), cloud and triangle tiles over their messages, the titles in the
+  foreground, both schemes.
+- No `panicked` line in any run.
+
+### Soak
+
+None, by the plan: nothing new to drive (the tooltips, badges and messages are drawn, not driven), and
+`tools/soak-p5m3.ps1` is unchanged.
+
+### Gate
+
+ab56, passed (2026-10-25, Jeremy at the console; the six Phase 12 gates of both streams, ab56 to ab61,
+ran in one elevated script from 22:10 to 23:33, this one 22:10 to 22:26): `tools/gate-p12m1.ps1`,
+`target-p12m1` (e0c9a28) against `target-p11close` (a99f2f2), the defaults and the preview column
+(`C:\traces\preview.toml`).
+
+| Setting | p11close (WPR) | p12m1 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 21.3, 21.7, 21.4 | 21.5, 21.0, 21.0 | 21.4 / 21.0 | 2.86 to 3.07 ms |
+| preview | 20.1, 19.8, 20.0 | 20.0, 20.3, 20.3 | 20.0 / 20.3 | 2.65 to 2.75 ms |
+
+No gap that counts in either (no setting has every reference run below every candidate run, and the
+medians differ by 0.4 and 0.3 of a point); no panic, every settings file read. The whole session ran in
+the costlier state (render p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2
+normally; as ab42 in Phase 10), so the 20% bar was met by neither build; read like for like.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m1`, light and dark)
+
+- **The fade**: the pointer slowly across the toolbar's buttons, a tab and its close cross, the crumbs
+  and their chevrons, the column headers, the search box's three buttons and the path-mode button, the
+  Settings dialog's buttons and choices, a right-click menu's rows and its icon row, the sidebar's
+  Settings and About and its hide chevron, the splitter, the preview handle and the sidebar's edge: each
+  fill fades in and out quickly, never flickers dark; the sidebar's rows still light at once.
+- **The three tooltips**: a toolbar button (both toolbar placements), the search box's content toggle (on
+  and off) and its search button: the card colour, the hairline and the soft shadow, no grey frame
+  around it.
+- **The badges**: files selected ("2 selected" and the size), folders sized with Alt+Shift+Enter (the
+  size "so far..." while they are walked, then the total), a long note on the left with a narrow pane
+  (the note shortens before the badges move).
+- **Each preview message**: a file of no previewed type, a password PDF (the lock, the button), a file
+  in OneDrive that is online only (the cloud), a damaged PDF (the triangle), a file inside a zip.
+
+## P12-M2: scrollbars easier to see
+
+The look stream's second milestone, Jeremy's request of 2026-10-23 ("the scroll bars are too transparent
+and need to be more visible"), opened 2026-10-25 on the P12-M1 branch's head (46c6385; P12-M1 not yet
+merged), branch `feat/p12-m2-scrollbars`. One change, every list's scrollbar, inside today's boxes: no
+geometry constant, driver aim or soak row moved.
+
+### Settled first (2026-10-25: the fork's source at c1d3a8d, then the spike in the coordinating session's slot)
+
+- **What the Fluent bar is** (`fluent/scrollview.slint`): `ScrollBar`, not exported, a 14 px overlay at
+  the view's edge with `clip: true`; its thumb `FluentPalette.border`, 2 px wide at rest and 6 px on hover
+  (`states [hover]`, `animate size 150ms`), 4 px from the edge, 16 px from each end for the arrow buttons
+  that show on hover. The app sets only the policy. Its thumb's place binds to the Flickable's content-y,
+  so it is laid out again every frame a list scrolls, as any bar's would be.
+- **One bar for the file lists**: `FileListHost` owns `content-y` (two-way into whichever of its six list
+  components shows) and can reckon the content's height (rows × row-h, grid rows × tile-h, as the pane's
+  `rows-h` already does), so one `VScrollBar` after the six `if`s covers the details lists with and
+  without the Type column, the 32 px lists, both grids; each list sets `vertical-scrollbar-policy:
+  always-off`. The sidebar, the crumb dropdown and the preview's views take the same component bound to
+  the view's own `content-y`, `content-height` and `visible-height`; the preview's pages past 100% take
+  `HScrollBar`, the same on its side.
+- **The driver**: `thumb()` aims 10 px in from the pane's edge and 17 px below the list's top; the gate
+  scenario drags both panes' thumbs there. A thumb that starts 2 px below the list's top and is at least
+  24 px long sits under that aim, so the aim, the gate scenario and the soaks stay as they are.
+- **The text beside it**: the rows end their right-aligned Modified text 6 px from the list's edge
+  (`dnd::name_cell`'s 6.0). An overlay bar keeps every geometry constant; a 6 px thumb 1 px from the edge
+  then meets the last digit with no gap (the scripted check, below). Padding the rows 4 px more would
+  move the columns, the header's offset, `name_cell` and its tests: not done, put to Jeremy (§ Calls
+  made).
+- **Contrast** (3:1 asked, on the card): light needs a thumb at or darker than about `#949494` (`ring`
+  `#A3A3A3` is 2.5:1), dark at or lighter than about `#636363`. The tokens: `scroll-thumb` `#8A8A8A` light
+  (3.4:1 on white) and `#737373` dark (3.8:1 on `#171717`), `scroll-thumb-hover` one step stronger (`#737373`
+  light, `#A3A3A3` dark), `scroll-track` black or white at 5%, shown only under the pointer.
+- **The spike** (the plan's: own bar against a fork patch, decided by a trace): three builds were planned,
+  the fork patch only if the own bar cost anything. Base, the P12-M1 build (e0c9a28's code, the Fluent
+  bar), against own, `VScrollBar` over every file list; twelve in-app runs of the gate scenario on
+  `C:\traces\bigdir` back to back, base, own, own, base three times, unelevated, no WPR, in the
+  coordinating session's slot with the machine otherwise idle (2026-10-25). Nobody was at the console:
+  every run presented at a frame interval p50 of 46.3 to 47.8 ms (about 21 Hz, not the 60 Hz of gate
+  days), so `[busy]` reads near 11 rather than 19; the state never changed across the twelve (render p50
+  within 0.1 ms), so they compare like for like.
+
+| Build | `[busy] 10 s after split` | Median | Render p50 (ms) | Frames |
+|---|---|---|---|---|
+| base (Fluent bar) | 11.1 / 12.0 / 11.4 / 9.1 / 9.2 / 13.9 | 11.3 | 2.71 to 2.77 | 384 to 385 |
+| own (`VScrollBar`) | 10.0 / 12.1 / 13.4 / 9.3 / 11.1 / 8.4 | 10.6 | 2.67 to 2.71 | 382 |
+
+  No cost: the own bar's median is lower, its spread the same, its time per frame no higher. **TwinFM's own
+  scrollbar is taken; no fork patch was built**, so `docs/patches/`, the `rev` and the snap patch stay as
+  they are (the snap patch rides only with a fork change, Jeremy's rule of 2026-10-13). The console
+  triplets at the gate decide as usual. A scripted drag under the unchanged aim moved both lists as the
+  Fluent thumb did: `drag 0 400 1000` to content-y −567,314 (the base −586,234; the own track is 28 px
+  longer and its thumb 24 px at least, so the same drag moves 3% less), `drag 1 200` to −283,646
+  (−293,106).
+
+### What landed (2026-10-25)
+
+- **c36ae6a**: `VScrollBar` and `HScrollBar` in theme.slint: a 14 px strip at the view's right (bottom)
+  edge, shown only when the content overflows; the thumb 6 px, 1 px from the edge, 2 px from the strip's
+  ends, at least 24 px long, round-ended, `Theme.scroll-thumb`; under the pointer or while dragged 10 px
+  and `scroll-thumb-hover` over the faint track (`scroll-track`), the width and colour fading over 100 ms.
+  A press on the thumb drags it (the thumb keeps the point it was taken by); a press on the track pages a
+  screenful towards the pointer (once per press: Explorer repeats while held, TwinFM does not); the wheel
+  over the strip goes on to the view. Placed: one in `FileListHost` over the six list components, one over
+  the sidebar's list, one in the crumb dropdown, and in the preview one over the pages (with the
+  horizontal one past 100%, each short of the corner when both show) and one over the Markdown list; every
+  one of those views `always-off`.
+- **472ceae**: `thumb()`'s comment (the aim lands on the new thumb; no aim changed).
+
+No new driver step, no new stderr line, no pure part to test (the bar is all Slint; its arithmetic is
+checked by the scripted drags and track clicks below). Tests 303, as before.
+
+### Calls made in this milestone, for Jeremy to check
+
+- At rest the thumb meets the last digit of the Modified column with no gap (it never covers it); under
+  the pointer it widens over the last few pixels of the text. The alternative is 4 px more right padding
+  in the rows, which moves the columns.
+- A press on the track pages once; holding it does not repeat.
+- The faint track shows only under the pointer; at rest there is the thumb alone.
+- No arrow buttons (Fluent's showed on hover).
+
+### Scripted checks (2026-10-25, the branch's build at c36ae6a, `SLINT_BACKEND=winit-software`)
+
+- **`C:\traces\bigdir` in the details list, both schemes**: at rest the 6 px thumb at the list's top
+  right; `hover` over the strip widened it with the track behind; `drag 0 400 1000` to content-y
+  −567,314; a press on the track below the thumb (`band 0 1003 600 1003 600`, a press and release at that
+  point of the list) paged down 648 px, one screenful (−567,962), and above it back up (−567,314);
+  `wheelat` over the strip scrolled the list 120 px (−567,434), so the wheel passes through.
+- **The grid with thumbnails** (`TWINFM_CONFIG=C:\traces\grid-thumbs.toml`, `[view] pane=0 starts as
+  large icons`): `drag 0 200 600` to −175,168, the thumb inside the grid's 12 px right margin.
+- **The sidebar** with fourteen bookmarks (`bookmark add` in fourteen folders of `C:\Windows`; a scripted
+  run saves none) and **the crumb dropdown** of `C:\Windows` (79 folders): each shows the thumb, both
+  schemes.
+- **The preview**: a four-page PDF at 250% (`previewzoom in` six times) shows both bars, the horizontal
+  one along the bottom short of the corner; this repository's `CLAUDE.md` as Markdown shows the list's
+  thumb clear of the text.
+- No `panicked` line in any run.
+
+### Soak
+
+None added: the gate scenario already drags both panes' thumbs, and a track press has no driver step of
+its own (the scripted check used `band`'s press and release); `tools/soak-p5m3.ps1` is unchanged.
+
+### Gate
+
+ab58, passed (2026-10-25, Jeremy at the console, 22:35 to 22:59 in the six-gate script):
+`tools/gate-p12m2.ps1`, `target-p12m2` (472ceae) against `target-p12m1` (e0c9a28, its base), the
+defaults, the grid with thumbnails and the preview column.
+
+| Setting | p12m1 (WPR) | p12m2 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 21.3, 22.0, 21.1 | 21.2, 20.7, 21.1 | 21.3 / 21.1 | 2.86 to 2.90 ms |
+| grid-thumbs | 11.8, 11.8, 11.8 | 11.9, 11.8, 11.8 | 11.8 / 11.8 | 1.46 to 1.55 ms |
+| preview | 20.3, 20.2, 20.0 | 19.7, 20.3, 20.0 | 20.2 / 20.0 | 2.68 to 2.73 ms |
+
+No gap that counts in any setting; the candidate's medians at or under the reference's, as the spike read
+in-app (the scenario drags both panes' thumbs in every run); no panic. The whole session ran in the
+costlier state (render p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally;
+as ab42 in Phase 10), so neither build came under the 20% bar in the defaults or the preview column (the
+grid with thumbnails is far under it in both); read like for like.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m2`, light and dark)
+
+- `C:\traces\bigdir` beside Explorer: the thumb easy to find at rest; dragged top to bottom; a click on
+  the track above and below it (a screenful each); the wheel over it.
+- The grid at large and medium tiles with thumbnails: the thumb in the right margin, a drag, a track
+  click.
+- The sidebar with enough bookmarks to scroll, and a crumb dropdown of a big folder (`C:\Windows`).
+- A PDF at 400%: both bars, each dragged; a long Markdown file's bar (the drift recorded since Phase 8 is
+  the list's own height estimate, unchanged).
+- Whether the thumb meeting the date's last digit at rest bothers you (§ Calls made).
+
+Jeremy's results (2026-10-26, on `target-p12m5`, which holds this milestone's code): his words for the
+zoom item, "#8-There's no ability to zoom so I couldn't test scroll. others looked good." (the PDF zoom
+is Ctrl+wheel or Ctrl+plus over the column, P11-M4; the coordinating session told him, no change); and
+on the thumb against the date's last digit, his decision, "Add padding".
+
+- **c35133d**, the padding. The four details row components (with and without the Type column, 22 and
+  32 px rows) end 10 px from the list's right edge, 6 before (`dnd::ROW_PAD_RIGHT`, in place of
+  `name_cell`'s 6.0); the grid keeps 10 px at its right too (`cols`: `floor((width - 10px) / tile-w)`),
+  so a last tile never sits under the thumb. The scripted check (`C:\Windows\System32`, both schemes,
+  the details list, 32 px thumbnail rows and the large grid): the date's last digit ends 4 px left of
+  the thumb at rest (x 1203 against 1208 at 100%), the grid's last tile well clear; under the pointer
+  the 10 px thumb still covers the last pixel of the text, as the 6 px padding let it cover five.
+
+  **What moves**: the Type, Size and Modified columns and the name cell's right end, 4 px left in every
+  details row; `dnd::name_cell` (the drop target's name cell and the column drags' name floor,
+  `main.rs` `name_px`) and its test (each width 4 px less). A grid pane whose width left under 10 px past
+  its last tile shows one tile fewer to a row (the tile count is Slint's, which Rust and the driver read,
+  so their aims follow; the gate's panes and the soak's left 20 px or more, so their counts stay).
+  **What does not**: the header (its cells were already flush with the list's right edge, 6 px right of
+  the rows' columns, now 10; the labels sit at the cells' left and the values at the rows' right, so the
+  offset does not show), the column grips and `coldrag`'s aims (on the header's boundaries), the rename
+  editor (it already ended 6 px short of the Type column; now 2), the driver's row aims (the list's
+  middle), `drag`'s thumb aim, every hit test (whole rows). Needs: ab58's settings (the defaults, the
+  grid with thumbnails, the preview column) re-run against `target-p12m1`; no aim moves, so no soak for
+  this change by itself.
+
+ab63, passed (2026-10-26, Jeremy at the console, done 18:20, 25 min): the padding's re-gate,
+`target-p12m2` rebuilt from c35133d against `target-p12m1` (e0c9a28), ab58's settings
+(`C:\traces\gate-p12m2-ab63.ps1`: `tools/gate-p12m2.ps1` with its head and tag changed).
+
+| Setting | p12m1 (WPR) | p12m2 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 22.3, 21.6, 21.4 | 21.5, 21.0, 21.2 | 21.6 / 21.2 | 2.86 to 3.10 ms |
+| grid-thumbs | 12.3, 12.0, 12.1 | 11.8, 11.9, 11.7 | 12.1 / 11.8 | 1.45 to 1.54 ms |
+| preview | 20.8, 21.1, 20.7 | 20.7, 20.7, 21.0 | 20.8 / 20.7 | 2.69 to 2.91 ms |
+
+No gap that counts in any setting; the candidate's medians under the reference's in all three; no panic.
+Both builds again in the costlier state (render p50 2.86 to 3.10 ms in the defaults runs), read like for
+like.
+
+Jeremy's re-checks (2026-10-26, on `target-p12m5` rebuilt from 3d5e162, which holds the padding), his
+words: the padding, "1. looks fine."; the PDF zoom's bars, "2. look good".
+
+## P12-M3: TwinFM's own questions in the look
+
+The look stream's third milestone, opened 2026-10-25 on the P12-M2 branch's head (fee789f; P12-M1 and
+P12-M2 not yet merged), branch `feat/p12-m3-questions`. Windows' three message boxes and the hand-built
+password dialog become one question dialog of TwinFM's own.
+
+### Settled first (2026-10-25, reading the code before any)
+
+- **Who asks, and on which thread**: the file operation worker (`fileops`, an STA thread with a message
+  loop) asks the zip's replace question (the conflict closure `archivewrite::add`, `copy_from_zip` and
+  `from_shell` call), the permanent delete inside a zip (`confirm_delete`) and a zip's password
+  (`key_for`); the preview worker (`preview`) asks a PDF's password (`pdf_password`, after the "Enter
+  password…" button); the UI thread asks "Open N items at once?" (`open_rows`). Each was a modal loop
+  on its own thread (`MessageBoxW`, `DialogBoxIndirectParamW`), owned by the app's window.
+- **The plan's rule holds in the code as it is**: nothing on the UI thread waits for the file operation
+  or preview worker (their replies come through `invoke_from_event_loop`; the driver's `waitops` and
+  `waitpreview` poll on timers); at exit the UI thread posts the workers' loops `WM_QUIT` and joins
+  neither (the watcher's stop is its one wait, and the watcher never asks). So a worker waiting in
+  `ask` cannot deadlock with the UI thread, and `ask::quit`, right after `app.run()` returns, answers
+  Cancel to anything still waiting. While it waits, the file operation worker owns no window (it asks
+  before or between its shell operations), so blocking on a channel instead of pumping a message box's
+  loop leaves no sent message waiting on it.
+- **Slint, at the pinned rev**: showing a popup takes the focus and gives it to nothing, so the focus is
+  set by a token bumped after `show()` (the settings dialog's way); an element inside a `for` cannot be
+  named from outside it, so the buttons are three fixed slots, right-aligned (the buttons in the last
+  ones, an empty slot's button not visible), focused by id; a layout keeps the space of an element that
+  is not visible, so the password field's row has a height only when asked for; `TextInput` has
+  `input-type: password` (masked, not copyable), which `Field` now passes on.
+- **`Btn` took no keyboard focus** (a Rectangle and a TouchArea), so Tab could not move between a
+  question's buttons: it gains a `FocusScope` (Space or Return presses it, a 2 px accent ring shows it,
+  `enabled` only while visible). The settings dialog's and About's buttons take the focus too.
+- **The PDF's window handle**: `Req::Open`'s `ask` carried the window handle only to own the dialog; it
+  becomes a flag, and `pdf_password` and `ask_password` lose their handle (`ask_password(title, prompt)`).
+
+### What landed (2026-10-25)
+
+- **541bdf9**: `src/ask.rs` (new): `Question` (a kind for the lines, title, text, a password field or
+  not, one to three buttons with the primary and the Cancel), `ask` for a worker (the question handed to
+  the UI thread, the answer awaited on a one-slot channel; Cancel when the UI thread is gone, and a
+  refusal with a line if it is ever called on the UI thread, which would hang it), `ask_here` for the UI
+  thread (the reply runs on the answer), `Queue` (one shown, the rest in order), the scripted run's tick
+  (`overdue`, `SCRIPT_CANCEL` 30 s), `quit`, and the driver's `shown` and `answer_label`; five tests. In
+  app.slint `question-popup`: a popup over the whole window on `Theme.scrim` (black at 40%), the card
+  centred (420 px, the look's 10 px corners and the dialogs' shadow), the title at 16 px weight 600, the
+  text muted, the masked field when asked, the three slots of `Btn`s; Escape presses the Cancel slot,
+  Return the primary (a focused button presses itself), the window's keys do nothing while it shows.
+  The four questions: the zip's replace ("Replace files in z.zip?", the names, Cancel, Skip, Replace),
+  the zip delete ("Permanently delete N items?", "From z.zip. A zip archive has no Recycle Bin, and this
+  cannot be undone.", Cancel, Delete), the password ("Password for <name>", the prompt as before, a
+  masked field, Cancel, OK; the zip's and the PDF's), open-many ("Open N items at once?", "Each folder
+  opens in a new tab, and each file in its program.", Cancel, Open), its items kept in the reply
+  (`open_rows` then `open_items`). Driver `waitquestion <ms>` and `answer <button>`; `[ask]` lines
+  (CLAUDE.md § Measuring). Unchanged: `TWINFM_SOAK`'s answers and the password questions' script rule.
+
+Tests 308 (303 and the five of `ask.rs`).
+
+### Calls made in this milestone, for Jeremy to check
+
+- The buttons read left to right Cancel, then the others, the primary last and filled (the settings
+  dialog's order); the replace question's are Cancel, Skip, Replace, Replace the default as the message
+  box's Yes was; the zip delete's default is Delete, as before.
+- The window is dimmed behind a question (black at 40%); the dialog has no icon (the message boxes
+  had a warning or question mark).
+- Return on a focused button presses that button (Windows' rule); in the password field, or with the
+  focus on the primary, it presses the primary.
+- Buttons everywhere now show a ring when Tab reaches them (the settings dialog's too).
+- A file dropped onto the window from another program while a question shows is not refused (the
+  scrim stops TwinFM's own pointer, not OLE's drop target); the job it starts waits behind the question.
+
+### Scripted checks (2026-10-25, the branch's build at 541bdf9, `TWINFM_SCRIPT` without `TWINFM_SOAK`)
+
+A scratch folder, `%TEMP%\twinfm-p12m3-check` (sixteen folders, `a.txt`, and `z.zip` holding `a.txt`
+and `b.txt`), made afresh for each run:
+
+- **Replace**: `copy` of `a.txt` into the zip in the right pane: `[ask] shown replace "Replace files in
+  z.zip?" (from fileops, 0 waiting)`, `answer Replace`, `[archive] 1 file(s) already in ...: replace`,
+  the job Done.
+- **Zip delete**: `delete` of `a.txt` inside the zip: `[ask] shown zip delete "Permanently delete 1
+  item?" (from fileops, 0 waiting)`, `answer Delete`, the job Done (the zip left holding `b.txt`).
+- **Open many**: sixteen folders and Return: `[ask] shown open many "Open 16 items at once?" (from the
+  UI thread, 0 waiting)`; `answer Cancel` gave `[open] ... not opened (the question was declined)`; again
+  with `answer Open`, sixteen `[tab] pane=0 opened tab` lines.
+- **30 s**: the open-many question left alone: `[ask] open many unanswered after 30 s: Cancel (scripted
+  run)`, answered after 30,013 ms, nothing opened.
+- **Quit**: `quit` with the question shown: `[ask] quit: 1 question(s) answered Cancel`, nothing opened.
+- **The queue**: the open-many question shown, then a file dropped into the zip (`dropfiles 1 -1 copy`):
+  the worker's replace question waited; after `answer Cancel` it showed (`from fileops, 0 waiting`),
+  `answer Skip`, the job Done 2.7 s after it started (its wait included).
+- Screenshots of the replace, zip delete and open-many questions in both schemes (the scrim, the card,
+  the primary focused with its ring). No `panicked` line in any run. The password questions are the
+  console's: a scripted run never shows them (the script's rule).
+
+### Soak
+
+None: as the plan says, the soak never meets a question (`TWINFM_SOAK` answers the replace, zip delete
+and open-many questions itself, and its passwords come from `zippassword`); `tools/soak-p5m3.ps1` is
+unchanged.
+
+### Gate
+
+ab60, passed (2026-10-25, Jeremy at the console, 23:08 to 23:16 in the six-gate script):
+`tools/gate-p12m3.ps1`, `target-p12m3` (541bdf9) against `target-p12m2` (472ceae, its base), the
+defaults.
+
+| Setting | p12m2 (WPR) | p12m3 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.6, 20.7, 20.7 | 21.1, 21.2, 20.6 | 20.7 / 21.1 | 2.86 to 2.97 ms |
+
+No gap that counts: not every reference run sits below every candidate run (the candidate's 20.6 under
+the reference's 20.7), and the medians differ by 0.4 of a point. The scenario asks no question, so it
+proves only that the rest is untouched; no panic. The whole session ran in the costlier state (render p50
+2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally; as ab42 in Phase 10), so the
+20% bar was met by neither build; read like for like.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m3`, light and dark)
+
+- Each question: a file pasted into a zip that holds one of the same name (Replace, Skip, Cancel); a file
+  deleted inside a zip; a zip with a password (`C:\traces\password-twinfm.zip`, password `twinfm`) given a
+  file, with a wrong password first (asked again), then the right one; a password PDF's "Enter
+  password…", wrong then right; more than fifteen items opened at once.
+- In each: Tab between the buttons (the ring), Return, Escape (Cancel), a click outside the card (nothing
+  happens).
+- A question while a copy runs: a large copy started, then a file pasted into a zip that holds it: the
+  zip's job waits behind the copy, and its question shows when the job starts, not hidden behind the
+  shell's progress window.
+
+Jeremy's result (2026-10-26, on `target-p12m5`, which holds this milestone's code), his words for this
+item: "#10, tabs do not flow smoothly." A scripted check then pressed Tab four times and Shift+Tab twice
+in each question a script can show (open-many, the zip delete, the replace), a screenshot after each
+key: after the last button, Tab moved to an invisible stop (no ring anywhere), and only the next Tab
+reached Cancel; Shift+Tab from Cancel stopped there too. The stop was the card's own `FocusScope`, the
+one that takes Escape and Return from the buttons, which Slint makes a Tab stop by default
+(`focus-on-tab-navigation`); the hidden password field was skipped, and Tab never left the card. The fix
+(below) sets `focus-on-tab-navigation: false` on it: the same check in both schemes then went Replace,
+Cancel, Skip, Replace (open-many: Open, Cancel, Open; the zip delete: Delete, Cancel, Delete), Shift+Tab
+the other way, every stop a button with its ring; Escape still answered Cancel in each. The password
+questions cannot be shown in a script (`zippassword` and `pdfpassword` answer them unseen): their order
+is the field, Cancel, OK, back to the field; Jeremy's console check. The driver gained the key names
+`Tab` and `ShiftTab` for it.
+
+- **bc63834**: the question card's key handler takes no Tab stop (`focus-on-tab-navigation: false`); driver
+  key names `Tab`, `ShiftTab`.
+
+Jeremy's re-check (2026-10-26, on `target-p12m5` rebuilt from 3d5e162), his words: "3. Tab moves, but
+it's tough to determine exactly which icon or pane is the active tab. On some tabs, it doesn't even show
+a row or icon that's highlighted with the tab." "Which icon or pane" reads like Tab in the main window
+rather than in a question; the coordinating session asked him which he meant, and the look stream
+surveys every Tab stop of both meanwhile.
+
+## P12-M4: comfortable rows
+
+The look stream's fourth milestone, opened 2026-10-25 on the P12-M3 branch's head (1a11a6e), branch
+`feat/p12-m4-rows`. A setting for 30 px rows in the details list, the canvas's compact density.
+
+### Settled first (2026-10-25: reading, then the spike in the coordinating session's slot)
+
+- **Where the row height lives**: `FileRows` and `FileRowsNoType` (and their focus layers) each set the
+  row's 22 px as a constant, and their `init` sets `content-height` to rows × 22 px; `FileListHost`
+  chooses one of six components per pane and keeps `row-h` for its own arithmetic and the pane's
+  overlays (the rename editor, the drop highlight, paging, the empty space all read `list.row-h`).
+- **Rust read "taller than 22 px" as "thumbnails"**: `icons::ListGeom` was `new(thumbnails)` and its
+  `name_x` was `6 + row_px (+ 4)`, and `dnd::name_cell` rebuilt the geometry from `row_px > 22`. A 30
+  px row would have moved the name to 36 px and the drop target's name cell with it. So `ListGeom`
+  keeps the icon column apart from the row: `new(thumbnails, comfortable)`, `name_x` from the icon
+  size (28 px for the 16 px icons in either row height, 42 with a thumbnail), and `of_row(row_px)` for
+  dnd's layout, which carries the height alone (32 px rows are the thumbnails'). The strip overlay
+  already centres an icon in its row (`(row_px - icon_px) / 2`, 7 px of a 30 px row).
+- **The spike: a height binding or four more components** (the plan's: a binding only if it costs
+  nothing the in-app runs see). Base, P12-M3's build (541bdf9's code), against binding, the two 22 px
+  row components' height bound to `row-h` (22 px in the run); the four-component shape costs nothing by
+  construction at 22 px (today's components unchanged), so it was not built. Two batches of twelve
+  in-app runs of the gate scenario on `C:\traces\bigdir` in the coordinating session's slot, the first
+  base, binding, binding, base three times, the second swapped, unelevated, no WPR. Nobody was at the
+  console: every run presented at a frame interval p50 of 47.0 to 47.5 ms (about 21 Hz), render p50
+  2.72 to 2.95 ms, one state throughout.
+
+| Batch | base `[busy]` | median | binding `[busy]` | median |
+|---|---|---|---|---|
+| 1 | 8.9 / 9.8 / 12.5 / 10.2 / 13.9 / 8.4 | 10.0 | 12.2 / 8.3 / 12.0 / 7.6 / 11.6 / 12.8 | 11.8 |
+| 2 (swapped) | 11.1 / 10.3 / 10.8 / 9.0 / 7.5 / 7.8 | 9.65 | 11.7 / 9.8 / 9.5 / 8.9 / 11.7 / 10.0 | 9.9 |
+| all 24 | 7.5 to 13.9, mean 10.0 | 10.0 | 7.6 to 12.8, mean 10.5 | 10.8 |
+
+  Render p50 per frame the same (base 2.73 to 2.95 ms, binding 2.72 to 2.84). The first batch's 1.8-point
+  median gap is the binding's runs falling in two clusters (about 8 and about 12; means 10.6 / 10.75);
+  swapped, the medians are 0.25 apart; over all 24 the means differ by half a point inside each build's
+  own spread of five to six. **The binding is taken**, as P9-M1's width binding was: the 22 px
+  components' rows are `row-h` tall. The console triplets at the gate decide as usual; the four-component
+  shape is the fallback if they read a gap.
+
+### What landed (2026-10-25)
+
+- **24e8425**: the setting `row_height` (`"compact"`, the default, or `"comfortable"`; anything else and
+  a file without the key read as compact; `Config::comfortable`), the dialog's Rows row under View (a
+  choice, Compact (22 px) or Comfortable (30 px); the dialog 710 px tall, 670 before), `settings set
+  row_height compact|comfortable` through the dialog's stage function, `[settings] dialog: row_height
+  compact -> comfortable` and `[icons] list geometry: 30 px rows, 16 px icons`. On OK
+  (`set_row_height`): the window's `comfortable` property (the host's `row-h` 30 px for the 22 px lists;
+  the 32 px thumbnail lists and the grids unchanged), the strips composed again at the new pitch (the
+  icons stay 16 px, so their keys stand and nothing is listed again), and each list scrolled so its
+  first row stays at the top. `ListGeom::new(thumbnails, comfortable)`, `of_row`, `name_x` from the icon
+  column; `StripGeom::new(scale, list)`; `main.rs` `list_geom` for every reader of the geometry;
+  `dnd::name_cell` through `of_row`. Tests: the geometry for both heights (the strip's icon places at 1
+  and 1.5 times, the name's x, thumbnails winning, `of_row`), the name cell at 30 px, the setting's
+  default and round trip, the dialog's change; two lines of `shellmenu.rs`'s menu-point test take the
+  new `ListGeom::new`. The soak cycle (below).
+
+Tests 309 (308, the setting's new one; the geometry's and the name cell's extend existing tests).
+
+### Calls made in this milestone, for Jeremy to check
+
+- The setting is a choice of two in the dialog's View section ("Rows"), not a switch, so a third
+  density could join it later.
+- Turning it on or off keeps each list's first row at the top (the list scrolls in pixels, so without
+  that the view would jump).
+- With thumbnails on, the rows stay 32 px whatever this setting says (the plan's). Superseded
+  2026-10-26 by Jeremy's decision (below): 44 px.
+
+### Scripted checks (2026-10-25, the branch's build, `C:\traces\bigdir`)
+
+Through the dialog (`settings open`, `settings set row_height comfortable`, `settings ok`):
+`[settings] dialog: row_height compact -> comfortable` and `[icons] list geometry: 30 px rows, 16 px
+icons`; `click 0 5` put the cursor on row 5; PageDown went to row 20, the last row wholly on screen at
+30 px (648 px of list); back to compact, `[icons] list geometry: 22 px rows, 16 px icons`, and `click 0
+5` on row 5 again. Screenshots in both schemes: the 30 px rows with their hairlines, the 16 px icons
+centred, the names at the same x as in 22 px rows, the selection and cursor ring on the taller row.
+
+### Soak
+
+`tools/soak-p5m3.ps1` gains a cycle: comfortable rows on through the dialog in `src\tree`, a click and
+PageDown, and off again; the report counts the switches each way and the 30 px geometry lines (one each
+per cycle).
+
+Run by the coordinating session, 2026-10-25 23:34 to 23:44 (10.1 minutes), `tools/soak-p5m3.ps1` from
+the `gate-p12m4` checkout (24e8425) on `target-p12m4`: exit code 0, the window closed by the script, no
+panicked line; 274 jobs done (none failed or cancelled); every count that must be 0 was 0 (dropped
+drags, refused menupicks and presses, zip jobs not done, picture and Office failures, alt text,
+waitpreview timeouts, worker panics, copy failures, wrong passwords); comfortable rows on 4, off 4, and
+4 lines of the 30 px geometry (one each per cycle); working set 138.2 MB at 5 s, 231.6 MB at the end
+(at most 252.2), private bytes 163.9 to 239.2 MB.
+
+### Gate
+
+ab61, passed (2026-10-25, Jeremy at the console, 23:16 to 23:32 in the six-gate script):
+`tools/gate-p12m4.ps1`, `target-p12m4` (24e8425) against `target-p12m3` (541bdf9, its base), the defaults
+and comfortable rows (`C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`, made by
+the coordinating session).
+
+| Setting | p12m3 (WPR) | p12m4 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.9, 20.7, 21.2 | 21.4, 21.0, 21.1 | 20.9 / 21.1 | 2.87 to 2.93 ms |
+| rows-comfortable | 21.0, 20.6, 21.1 | 17.5, 17.8, 17.4 | 21.0 / 17.5 | 2.84 to 2.88 / 2.35 to 2.41 ms |
+
+No gap that counts. The defaults pair is the spike's question at the console: the 22 px rows through the
+bound height, 0.2 of a point above by the medians, not every reference run below. In the comfortable pair
+the reference ignores the key and draws 22 px rows, the candidate 30 px ones: fewer rows on screen, so
+less to draw (render p50 2.35 to 2.41 ms against 2.84 to 2.88) and 3.5 points less busy; the 30 px
+geometry line was in every candidate run; no panic. The whole session ran in the costlier state (render
+p50 2.86 to 3.07 ms in every binary's defaults runs, against about 2.2 normally; as ab42 in Phase 10), so
+neither build came under the 20% bar in the defaults (the candidate's comfortable rows did, with fewer
+rows to draw); read like for like.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m4`, light and dark)
+
+- Both heights beside Explorer's details view, switched in Settings > Rows; the first row stays at the
+  top across the switch.
+- In 30 px rows: a drop onto a row (it lights the row it lands on), a rename (F2: the editor centred in
+  the row), PageDown and PageUp, a right-click and Shift+F10 (the menu under the row).
+- Thumbnails on with comfortable rows set: the rows stay 32 px.
+
+Jeremy's result (2026-10-26, on `target-p12m5`, which holds this milestone's code), his words for this
+milestone's item: "#12, I don't see any difference between compact and comfortable rows on details or
+large icons." Comfortable changed only the 22 px lists, so with thumbnails on (32 px rows) and in the
+grids nothing moved. Asked whether comfortable should make the thumbnail rows taller or be greyed out
+while thumbnails are on, his decision, in his words: "comfortable should make rows taller". The grids
+are tiles, not rows, and stay as they are.
+
+- **fbc17fe**: comfortable rows with thumbnails are 44 px (compact keeps 32). The value: the canvas
+  Jeremy chose in Phase 10 draws its compact density as a 16 px icon in a 30 px row, which is what
+  comfortable makes of TwinFM's 22 px rows, 30/22 of the height; the same proportion on the 32 px
+  thumbnail rows is 43.6 px, rounded to 44, which leaves 6 px above and below the 32 px picture (the
+  canvas leaves 7 around its 16 px icon). The two 32 px row components' height is bound to the host's
+  `row-h`, as the 22 px ones' has been since this milestone's spike (a height read when a row is made);
+  `FileListHost`'s `row-h` is 44 px for them with comfortable on, `ListGeom::new(true, true)` 44 px
+  rows with 32 px icons (`of_row(44)` the same, for dnd's layout), so the strip centres the pictures 6
+  px down, the name stays at 42 px, and the line reads `[icons] list geometry: 44 px rows, 32 px icons`;
+  the driver's aims, the hit tests, paging and the menu point read the height from that geometry and
+  follow. Settings > Rows reads "Compact" and "Comfortable" (the pixel heights in the labels were the 22
+  px lists' only). Found on the way: the rename editor was placed from the row height (`row-h + 2 px`),
+  so in comfortable 30 px rows it stood 8 px right of where it stands in 22 px rows, and would have
+  stood 12 px off in 44 px rows; it now follows the icon column (24 px, or 38 with thumbnails, whatever
+  the row height), as in the 22 and 32 px rows before. Tests: the geometry at 44 px (the strip's places
+  at 1 and 1.25 times, every icon inside its row band at five scales, the name's x, `of_row`), the name
+  cell at 44 px; 309 tests.
+
+  Scripted check (the branch's build, `%TEMP%\twinfm-p3m5-thumbs`, both schemes): thumbnails on, `[icons]
+  list geometry: 32 px rows, 32 px icons`; comfortable on, `[settings] dialog: row_height compact ->
+  comfortable` and `[icons] list geometry: 44 px rows, 32 px icons`; the pictures centred in the taller
+  rows; PageDown from row 2 went to row 13, the last row wholly on screen at 44 px; F2's editor over the
+  name, its text where the name's is; thumbnails off with comfortable on, 30 px rows, the editor over the
+  name there too. The soak's P12-M4 cycle turns thumbnails on between (a click and PageDown in the 44 px
+  rows), then compact and thumbnails off, and its report adds the 44 px geometry lines (one per cycle).
+  The gate is one with P12-M5's Tab follow-up (P12-M5's record), with a read-only
+  `C:\traces\rows-comfortable-thumbs.toml` (`thumbnails = true`, `row_height = "comfortable"`).
+
+## P12-M5: the sidebar, bookmarks by mouse and the new-tab button
+
+The look stream's fifth milestone, opened 2026-10-25 on the P12-M4 branch's head, branch
+`feat/p12-m5-sidebar-tabs`. The icons-only rail, bookmarks reordered by dragging, a bookmark made with
+the mouse, the Recent group, and the "+" after a tab strip that now shows always.
+
+### Jeremy's decisions
+
+- **The rail** (2026-10-25, through the coordinating session, his words): "Collapsing the sidebar gives
+  the icons-only rail instead of today's thin strip; no fully hidden state."
+- From the kickoff, quoted in the plan: "Always show the tab strip"; a bookmark made with the mouse ("add
+  a way to create a bookmark using the mouse (click/drag?)", put in P12-M5 by his word); the Recent
+  group (his pick); the new-tab button (his request of 2026-10-23, taken 2026-10-25).
+
+### Settled first (2026-10-25, reading the sidebar's code and its drop spots before any)
+
+The plan left four questions here; the stream's answers went to the coordinating session with a
+recommendation each, and the first went to Jeremy (above).
+
+1. **The rail replaces the 12 px strip**: two states, full and rail, no third hidden state. F9 and the
+   chevron stay a toggle, and `sidebar_visible = false` in a saved settings file loads as the rail, so no
+   new key. The rail is 48 px: each row's icon centred in its 32 px row (drives, places, Recent,
+   bookmarks), a header a hairline, the row's name a tooltip, a click and a drop as on the full row, the
+   chevron at its foot to widen it. Collapsed, the panes start at 48 px, not 12: one constant
+   (`dnd::RAIL_W`) for `Layout.left`, the driver and the tests; the gate's scenario (sidebar shown) does
+   not see it.
+2. **The gap against a row: 6 px at each edge of a bookmark row.** A drop in the top or bottom 6 px of a
+   32 px bookmark row (a 12 px band across the line between two rows) is the gap and inserts the folder
+   there; the middle 20 px is the row, which copies or moves files into its folder as before. The
+   Bookmarks header whole inserts first; the last bookmark's bottom 6 px and the empty space below it
+   append. The same bands in the rail. The insertion line (2 px, the accent) shows where the folder will
+   land, for this drop and for a bookmark dragged to a new place.
+3. **The Bookmarks header gets a menu with "Bookmark this folder"** (Ctrl+D's action: the active pane's
+   folder, appended), beside "Add to bookmarks" in the Windows 11 menu. It is where a person looks for it,
+   and the Recent header gets a menu anyway ("Clear recent", the plan's).
+4. **Recent's rules**: the last eight folders a pane showed, newest first, under Places. Shown is a
+   listing that lands in a pane's active tab: a navigation, Back and Forward, a tab switch, a restored tab
+   at start. A folder already there moves to the top (the same-folder test bookmarks use, any case). Not
+   counted: archive levels, search tabs, This PC, the hidden right pane. A bookmarked folder can be in
+   Recent too (the groups are apart). A folder that is gone stays until it is clicked, which shows the
+   error a missing bookmark does. Saved as `recent` (paths, newest first).
+
+**The strip always shown and the "+"** needed no question: `TAB_STRIP` is always in `list_top`, so every
+list starts 32 px lower with one tab, and the driver's aims, `dnd::hit_all`, the soaks' row aims and the
+gate scenario's geometry move in the same commit. The order of work followed from it: the strip and the
+"+" first (it moves every aim), then Recent, the drag, the bookmark by mouse, the rail last.
+
+### What landed (2026-10-25)
+
+- **74d9c66**, the tab strip shown always and the "+": every pane shows its strip with one tab too
+  (`window_layout` says `tabs: [true; 2]`), the strip as wide as its tabs up to the room they have, and
+  the "+" (32 px with a 2 px gap, `dnd::TAB_PLUS`, taken from the tabs' room at the right) right after
+  it, opening a tab of the pane's folder as Ctrl+T does and making the pane active (tooltip "New tab
+  (Ctrl+T)"). Not a drop target: the "+" is the pane, and a tab scrolled under it is not hit; the strip's
+  auto-scroll end moves left of it. Driver `tab plus <pane>`; `[tab] pane=N + button: new tab`. Tests:
+  the hit test left of and over the "+", the strip's scroll end.
+- **31feed2**, Recent: `RowKind::Recent`, `sidebar::note_recent` (`RECENT_MAX` 8), `compose` with the
+  group under Places, `recent` in the settings, the header's right-click menu "Clear recent". `[sidebar]
+  recent: <path> (K kept)`, `[sidebar] recent cleared (N removed)`. Tests: the last eight newest first
+  (a folder again moves to the top, any case), the setting's round trip beside the window and the
+  bookmarks.
+- **4005f6f**, bookmarks reordered by dragging: a press on a bookmark row dragged past 4 px carries it
+  (Slint's pointer, not OLE), the insertion line shows where it lands, the release moves it
+  (`sidebar::drag_target`, `move_bookmark_to`). Driver `bookmark drag <from> <to>`; `[sidebar] bookmark
+  moved F -> T (drag)`, `[sidebar] bookmark F dragged to its own place: not moved`. Test: the landing
+  index for each gap above and below the dragged row.
+- **9c629e7**, a bookmark made with the mouse: the gap is a spot of its own (`Spot::SideGap(k)`,
+  `Mark::Gap(k)`, `dnd::GAP_PX` 6), a drag carrying a folder gets the link effect there (a copy where the
+  source allows no link, never a move: `bookmark_effect`) and the drop description "Bookmark", and the
+  drop bookmarks its folders at that place in order (files left out, a drag of files alone refused; a
+  folder bookmarked already stays, with Ctrl+D's note; `sidebar::insert_bookmark`, which
+  `add_bookmark` now calls). The Bookmarks header's menu "Bookmark this folder". Driver `dropfiles
+  sidegap <index> <mode> <paths>`; `[dnd] over sidebar bookmarks gap K ... -> effect link|copy|none`,
+  `[sidebar] bookmark added <path> at K (drop | menu)`, `[sidebar] <path> is bookmarked already`. Tests:
+  the gap against the row at each edge, the header and below the last row, the effect for each allowed
+  set; the insert place and a folder bookmarked already.
+- **d497939**, "Add to bookmarks" in the Windows 11 menu: on folders and drives (each selected one, never
+  inside an archive) and on a folder's background (the folder shown), appended (`Cmd::Bookmark`, the
+  fixed ids now 21). `menupick Add to bookmarks`; `[winmenu] pane=N runs Bookmark`. Tests: the menus of a
+  folder, of several items, of a drive and of a background carry it (the file menus' tests unchanged);
+  the ids' round trip.
+- **5eae5e5**, the soak cycle (below), and the driver's bookmark steps scroll the sidebar to its end first
+  (Recent's rows push the bookmarks below the fold in the gate's window).
+- **7ff870b**, the icons-only rail: collapsed (F9, the chevron, the dialog's switch, now "Names (off: the
+  icons-only rail)"), the sidebar is 48 px (`dnd::RAIL_W`) with the same rows and heights: each row's
+  icon centred (the full row's icon, one binding for both), its name a tooltip, a header a 1 px hairline,
+  the footer only its chevron (chevron-right widens the rail; Settings and About are the full sidebar's).
+  A click, a drop, a gap, a bookmark's drag and the keys work on it as on the full sidebar, since its
+  geometry is the full one's narrowed (`strips()`'s `side_w` and `Layout.left` from `RAIL_W`); the 12 px
+  strip is gone. The driver's sidebar aims take the rail's middle when collapsed (`auto.rs` `side_x`).
+  Test: the rail's hit test (a drive's icon, the Bookmarks hairline as the gap, a bookmark's icon, the
+  pane right of the rail).
+- **a853e52**, two things the rail's scripted check found: the rail's tooltip sat below the row's
+  TouchArea, which took the hover, so it never showed (Slint puts the tooltip's area where the `Tooltip`
+  element stands; the toolbar's and the "+"'s stand after their TouchArea, so now does the rail's); and
+  the sidebar list scrolled sideways in the rail, its thin horizontal thumb drawn above the footer (a
+  list's content is as wide as its rows' minimum, and a row's hidden name keeps its place in the layout),
+  so the list's `content-width` is its own visible width.
+
+Tests 313 (309, four new: Recent's two, the drag's landing index, the gap's insert; the hit tests, the
+menu's and the rail's extend existing ones).
+
+### Calls made in this milestone, for Jeremy to check
+
+- The gap is 6 px at each edge of a bookmark row, the header whole, and the space below the last row
+  (Settled first 2).
+- The Bookmarks header's own menu has "Bookmark this folder" (Settled first 3).
+- Recent's rules, Settled first 4: a gone folder stays until clicked; a bookmarked folder can be in
+  Recent too.
+- The rail keeps the footer's chevron only; Settings (Ctrl+,) and About (F1) are on the full sidebar.
+- A drop into the gap where the source allows no link (TwinFM's own drag allows copy and move only, as
+  most programs' do) shows the copy cursor, never a move, and copies nothing: the drop bookmarks.
+
+### Scripted checks (2026-10-25, the branch's builds, `SLINT_BACKEND=winit-software`, both schemes)
+
+- The rail (a853e52's build, light and dark): in `%TEMP%\twinfm-p12m5-rail` (two folders and a file,
+  removed afterwards), `inner` bookmarked, then F9: the rail shows every row's icon, the headers as
+  hairlines, the chevron alone in the footer; the pointer over Home shows the tooltip "Home"; a file
+  dropped onto the rail's `inner` bookmark was copied into it (`[dnd] Drop at sidebar row 16 (...inner)
+  ... effect copy`, `Copied 1 item`); `other` dropped into the rail's Bookmarks gap 0 was bookmarked there
+  (`bookmark added ... at 0 (drop)`), then dragged below `inner` (`bookmark moved 0 -> 1 (drag)`); a click
+  on the last rail row opened `other`, and Up moved the sidebar's row to `inner` (`[sidebar] key Up: row
+  15 (inner)`, drawn as the current row on the rail); F9 again gave the full sidebar as before. 7ff870b's
+  build had shown no tooltip and a horizontal thumb above the footer: a853e52.
+
+- The "+" (74d9c66's build): `tab plus 0` gave `[tab] pane=0 + button: new tab` and a second tab on the
+  same folder; screenshots with one tab and two, the strip as wide as its tabs and the "+" after it.
+- Recent (31feed2's build): five navigations gave `[sidebar] recent: ... (1 kept)` to `(4 kept)`,
+  `C:\Windows` moved to the top when shown again (`(3 kept)` twice); screenshots of the group under
+  Places.
+- The gap (9c629e7's build): two folders dropped into gap 1 were bookmarked at 1 and 2 in order (`effect
+  copy`: the driver's data object allows copy and move only); a file alone into gap 0 refused (`effect
+  none`, nothing added); a mixed drop into gap 4 added its folder only, and `C:\Windows`, bookmarked
+  already, stayed with the note.
+- "Add to bookmarks" (d497939's build): on a folder's row `bookmark added ... at 0 (menu)`, on the
+  background the folder shown at 1, the same folder again "bookmarked already".
+- The soak cycle (5eae5e5's build): a drop into gap 0, `bookmark moved 0 -> 2 (drag)` and the bookmark
+  removed again, with the sidebar scrolled to its end first.
+
+### Soak
+
+`tools/soak-p5m3.ps1` gains a cycle: `src` dropped into the Bookmarks gap above `bm` (bookmarked first),
+dragged below it (`bookmark drag 0 1`), removed again (`bookmark remove 1`, so `bm` is the sidebar's last
+row as before), and a tab opened by the "+" and closed; the report counts the bookmarks added by the drop,
+the drags, the removals and the "+" tabs (one each per cycle). Every list starts 32 px lower, so this
+milestone takes the full soak (every aim moved).
+
+Run by the coordinating session, 2026-10-26 from about 00:25 (10.1 minutes), `tools/soak-p5m3.ps1` from
+the `gate-p12m5` checkout (a853e52) on `target-p12m5`: exit code 0, the window closed by the script, no
+panicked line; 271 jobs done (none failed or cancelled); every count that must be 0 was 0; bookmarks
+added by a drop 4, dragged 4, removed 4, and tabs by the "+" 4 (one each per cycle); comfortable rows
+on 4, off 4; working set 141.1 MB at 5 s, 262.7 MB at the end (at most 273.5), private bytes 164.8 to
+252.3 MB. One count reads oddly and is older than Phase 12: "tabs they opened 14 (two per cycle)" for 4
+several-item opens, as P12-M4's soak read and as the 0.2.0 memory run did (70 for 18): the report's
+counting, left for a later look.
+
+### Gate
+
+ab62, passed (2026-10-26, Jeremy at the console, 06:53 to 07:01): `tools/gate-p12m5.ps1`, `target-p12m5`
+(a853e52) against `target-p12m4` (24e8425, its base), the defaults.
+
+| Setting | p12m4 (WPR) | p12m5 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 21.8, 21.0, 21.1 | 21.2, 20.7, 20.6 | 21.1 / 20.7 | 2.93 to 2.97 / 2.83 to 2.88 ms |
+
+No gap that counts: the candidate's median 0.4 of a point under the reference's, and not every reference
+run below every candidate run. The tab strip drawn in both panes costs nothing the triplet sees: the
+lists 32 px shorter leave fewer rows to draw per frame (render p50 2.83 to 2.88 ms against 2.93 to 2.97).
+No panic. The session ran in the same costlier state as the night's gates (ab56 to ab61), so neither
+build came under the 20% bar; read like for like.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m5`, light and dark)
+
+- The rail (F9 or the chevron) with drives, Recent and bookmarks: the icons, a header's hairline, a
+  row's name as its tooltip; a click on a rail row; a drop onto a rail row (a copy into that folder); a
+  bookmark dragged in the rail.
+- A bookmark dragged to a new place in the full sidebar (the insertion line, then the row there).
+- A folder dragged from TwinFM and from Explorer onto the Bookmarks header and between two bookmarks
+  (the cursor and "Bookmark", then the new row there); a file dragged there (refused); a drop onto a
+  bookmark row's middle (still a copy into it).
+- "Add to bookmarks" on a folder and on a background; the Bookmarks header's "Bookmark this folder";
+  Recent filling as folders are shown, and "Clear recent".
+- The "+" with one tab and with several (it stays after the last tab, and the strip scrolls left of it
+  when the tabs overflow).
+
+Jeremy's results (2026-10-26, on `target-p12m5`), his words for the two that failed: "Clear recent does
+not work, items still shown." and "Dragging to bookmarks still doesn't work."
+
+- **Clear recent**, found and fixed (eb36468). A new driver step, `clickat <x> <y> [right]`, gave the
+  mouse's path: a right click on the Recent header showed the menu, a click on "Clear recent" closed it,
+  and nothing was cleared (no `[sidebar] recent cleared` line). The header menu's items are `if`s inside
+  the popup (one item per header), and each closed the popup before calling its action: the close drops
+  those items, so the call after it never reached the window. "Bookmark this folder" had the same fault.
+  Both now act first, then close: the same clicks gave `[sidebar] recent cleared (3 removed)` and the
+  group gone from the sidebar, then `[sidebar] Bookmarked C:\Users` from the Bookmarks header's menu.
+  The scripted checks before had called the callbacks directly (`bookmark add`), never through the menu.
+- **A folder dragged to the Bookmarks** (16de542). Jeremy's own run (2026-10-26, his words: "screenshot
+  of drag within twinfm pane to bookmarks. logging was on, build p12-m6";
+  `C:\traces\jeremy-bookmark-drag-2026-10-26.log` and `.webp`) was on a build without this milestone,
+  but showed the gesture: the folder row `Reagyn_Download` dragged from the right pane and let go in the
+  empty sidebar area below the only bookmark, from TwinFM's own drag, which allows copy and move
+  (`allowed=0x3`, no link); that build read the spot as `over nowhere`. This milestone's code takes it:
+  through the real hit test at window points well below the last row (the driver's new `dropfiles point
+  <x> <y>`), a folder dropped there with copy and move allowed gave `over sidebar bookmarks gap 1 ...
+  allowed=0x3 -> effect copy` and `bookmark added ... at 1 (drop)`, the same in the rail (`... at 2`),
+  and a file alone was refused (`effect none`), in both schemes. One fault found on the way: over the
+  gap the drop description ("Bookmark") always carried the link image, while TwinFM's own drag gets a
+  copy, and the shell draws a description only with the effect's image, so its "Bookmark" could not
+  show for that drag. It now takes the effect's image (`dnd::gap_description`, tested). Not checked by
+  a script: the shell drawing that text (the driver's data object refuses descriptions); Jeremy's
+  console check, on a build with this milestone.
+
+No gate rerun for these fixes or P12-M3's Tab stop (the coordinating session, 2026-10-26): a call order
+in a popup, the drop description over the sidebar and one Slint focus property, none of them in the
+rows or the gate scenario (it opens no question, no sidebar menu and drags nothing).
+
+Jeremy's re-checks (2026-10-26, on `target-p12m5` rebuilt from 3d5e162), his words: the folder dragged
+to the Bookmarks, "4. Works good!"; Clear recent and Bookmark this folder, "5. Works as expected."
+
+### Jeremy's console-check follow-up: Tab switches panes (2026-10-26)
+
+His re-check of P12-M3's item, in his words: "3. Tab moves, but it's tough to determine exactly which
+icon or pane is the active tab. On some tabs, it doesn't even show a row or icon that's highlighted with
+the tab." A survey of every Tab stop (the look stream's scripted runs on `target-p12m5`'s code, both
+schemes, a screenshot and UI Automation's focused element after each key, consecutive shots
+pixel-diffed; the notes and shots in the coordinating session's notes folder, `p12-tab-stops.md`) found
+the questions sound (every stop a button with its ring) and the main window not: only the search boxes
+and the path entry drew anything when they took the keys; the window's own key handler, the sidebar's
+and both lists drew nothing (the cursor's outline showed in both panes whether or not the list had the
+keys); the sidebar's handler sent Tab back to the active list, so with the right pane active Tab cycled
+three stops of which none changed a pixel; and a list that took the keys by Tab did not become the
+active pane (Down moved the right list's cursor while the title, the ring and the toolbar stayed with
+the left). Jeremy's decision, his words: "tab switches panes" (the dual-pane alternative in the
+report).
+
+- **2b41100**: Tab and Shift+Tab in a list give the keys to the other pane's list (the same list with
+  one pane; app.slint `tab-panes` through `focus-pane`, as Ctrl+Shift+Right does), which becomes the
+  active pane; a list with no cursor gets one on its first row wholly on screen (`cursor-to-first`); a
+  list the keys reach by Tab from its own search box or path entry makes its pane active the same way
+  (`tabbed-in`: the six list variants' key layers report a `focus-gained` with `tab-navigation`). The
+  window's own key handler and the sidebar's take no Tab stop (`focus-on-tab-navigation: false`; the
+  sidebar keeps its keys after a click, and Escape, Tab and now Shift+Tab give them back). Every list's
+  and tile's cursor outline reads its colour from the host (`cursor-color`, a property of the four
+  details row components and both grids): the accent in the active pane, `Theme.ring` in the other; the
+  cursor tile's whole-name overlay the same. `[focus] pane=N has the keys by Tab, cursor R`. No pure part
+  to test (the change is Slint's and one log line); 313 tests.
+
+Calls made, for Jeremy to check:
+
+- The cursor a Tab gives a list with none goes on its first row wholly on screen, not row 0 whatever the
+  scroll: they are the same unless the list was scrolled without a click, and scrolling it back to the
+  top would lose the place. It moves the cursor only; nothing is selected (Explorer's focus rectangle).
+- From the search box and the path entry Tab goes to their own pane's list (Slint's order), and
+  Shift+Tab from the left search box to the right list; only a list's Tab jumps to the other pane.
+- The inactive pane's cursor outline is the grey ring colour (#A3A3A3 light, #737373 dark), drawn as
+  before (2 px), so it still shows where that pane's cursor is.
+
+Scripted check (the branch's build, both schemes, `C:\Windows` and `C:\Windows\Web` side by side, the
+cursor on the left only; 14 shots, consecutive pixel diffs, UI Automation's focused element): Tab gave
+`[focus] pane=1 has the keys by Tab, cursor 0` (the right list's cursor on its first row, the ring and
+title on the right, the left cursor's outline grey), Tab back `pane=0 ... cursor 2`, Shift+Tab twice the
+same, Down after each moved the cursor of the pane that had the keys; in a scrolled `System32` with no
+cursor, Tab put it on row 219, the first row wholly on screen; Ctrl+L, Tab and Tab went path entry,
+search box, list (`[focus] pane=1 ... cursor 219` from the search box); the sidebar after a click took
+Down (`[sidebar] key Down: row 4 (Home)`) and Tab gave the keys back to the active list; in the large
+grid the inactive pane's cursor tile was outlined grey; with one pane Tab stayed in the list. Every Tab
+and Shift+Tab changed pixels; no panic.
+
+Together with P12-M4's comfortable thumbnail rows, merged forward (d1d6068), one gate on this branch's
+code head: `tools/gate-p12m5b.ps1`, tag ab64 (the coordinating session's to set), `target-p12m5b`
+(2b41100) against `target-p12m5` (3d5e162), four pairs: the defaults, `C:\traces\rows-comfortable.toml`,
+`C:\traces\rows-comfortable-thumbs.toml` (new, read-only: `thumbnails = true`, `row_height =
+"comfortable"`; the reference draws 32 px rows with it, the candidate 44) and `C:\traces\grid-thumbs.toml`
+(every tile now reads its cursor colour). The soak: P12-M4's cycle adds the 44 px thumbnail rows, and
+P12-M5's ends with a click in the left list, Tab and Shift+Tab (`[focus]` lines, one each per cycle).
+
+The soak, run by the coordinating session on `target-p12m5b` (2b41100), 2026-10-26, twice, 10.1 minutes
+each, both exit code 0, the window closed by the script, no panicked line, every count that must be 0 at
+0:
+
+- **The follow-up's soak**: 024d3f0's `tools/soak-p5m3.ps1` (the PR head's, with the Tab pair): 257 jobs
+  done; comfortable rows on 4, off 4, 30 px geometry lines 4, 44 px (thumbnails) 4; bookmarks added by a
+  drop 4, dragged 4, removed 4, tabs by the "+" 4; "Tab between the panes: to the right 4, back 4 (one
+  each per cycle)"; working set 142.9 MB at the start, 243.7 MB at the end, private bytes 165.6 to 242.0
+  MB.
+- **The rows cycle confirmed** in a first run of 2b41100's own `tools/soak-p5m3.ps1`, which has the 44 px
+  rows cycle but not the Tab pair (the coordinating session took the code head's script): 258 jobs done;
+  the same rows and bookmark counts (30 px lines 4, 44 px 4); private bytes 165.2 to 242.2 MB.
+
+ab64, passed (2026-10-26, Jeremy at the console, done 22:09, 33 min): `C:\traces\gate-p12m5b.ps1`,
+`target-p12m5b` (2b41100) against `target-p12m5` (3d5e162), the four settings above; it is P12-M4's gate
+for the 44 px rows too.
+
+| Setting | p12m5 (WPR) | p12m5b (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.4, 20.9, 20.7 | 20.7, 21.0, 21.0 | 20.7 / 21.0 | 2.81 to 2.88 ms |
+| rows-comfortable | 18.6, 16.9, 17.6 | 18.5, 17.2, 17.4 | 17.6 / 17.4 | 2.32 to 2.51 ms |
+| rows-comfortable-thumbs | 16.8, 16.8, 17.2 | 14.5, 14.5, 14.5 | 16.8 / 14.5 | 2.21 to 2.30 / 1.91 to 2.03 ms |
+| grid-thumbs | 11.9, 11.8, 11.8 | 12.0, 11.8, 12.2 | 11.8 / 12.0 | 1.47 to 1.56 ms |
+
+No gap that counts in any setting: in the defaults and the grid the candidate's median is 0.3 and 0.2 of a
+point above, with a reference run above a candidate run in each. In rows-comfortable both builds draw the
+30 px rows (like for like). In rows-comfortable-thumbs the reference draws 32 px thumbnail rows and the
+candidate 44 px ones: fewer rows on screen, so less to draw (render p50 1.91 to 2.03 ms against 2.21 to
+2.30) and 2.3 points less busy. The three settings with a line to check had it in every candidate run's
+stderr (the 30 px and 44 px geometry, the grid's start); no panic. The defaults runs were again in the costlier state (render p50 about
+2.8 ms), read like for like.
+
+Console checks (for Jeremy, unelevated, after the gate, `target-p12m5b`, light and dark):
+
+- Two panes: Tab and Shift+Tab from either list; the keys, the ring, the title and the one accent
+  outline go together; Down, Return and Delete act in the pane that has them.
+- A pane with no cursor (just navigated): Tab puts one on its first row on screen.
+- The search box and Ctrl+L's path entry: Tab to their own list.
+- The sidebar after a click: its keys, then Tab or Escape back to the list.
+- Settings > Rows > Comfortable with thumbnails on: the 44 px rows beside Explorer; a rename (F2) in
+  them and in 30 px rows: the editor over the name.
+
 ## The memory check (the coordinating session, 2026-10-25)
 
 Jeremy's word at the kickoff: "The memory check". The question, from the Phase 11 close's 60-minute soak: what
@@ -455,3 +1396,398 @@ two snapshots of this one run.
 `<heapType>SegmentHeap</heapType>`, which returns freed memory to the system more readily), measured by the
 same 60-minute soak without tracking against `target-p11close`; fewer large temporary allocations in the
 preview's styled text for a big file (built per chunk); the Recycle Bin enumeration's shell cache (small).
+
+## P12-M6: Google Drive's commands, and its volume
+
+Started 2026-10-25 from main at 76b5d35 (the Phase 12 plan), branch `feat/p12-m6-gdrive-commands`, the
+cloud stream's first milestone. Three items, each settled first, each a commit of its own.
+
+### Settled first (2026-10-25)
+
+**Why the ids differ.** Settled by a probe in TwinFM's own process (the release exe, a scripted run;
+the probe code was never committed): the classic menu `show` builds on the UI thread, dumped command by
+command with its id and verb before and after the menu ran, then the same menu built again on the UI
+thread (with the main window as owner and with none), and the verb worker's rebuild (`menuverb 0
+sleep:10`, so nothing ran), all on Jeremy's PDF in `G:\My Drive\Automobiles\2020 Audi A3`, reading
+menus only. `QueryContextMenu` returns 0xED on the UI thread and 0xEC on the worker, one id fewer;
+compared command by command (Open with's apps left aside, a submenu the shown menu never opened),
+**the one missing is "Scan with Microsoft Defender..."** (id 200 in the shown menu, offset 100);
+every command numbered after it sits
+one id lower on the worker, and Google Drive's are all after it: "Available offline" 208 shown, 207
+rebuilt (so 208 holds "Online only" there, Jeremy's refusal), "Manage versions with Google Drive" 210
+shown, 209 rebuilt (and no 210 at all, his other refusal). **The doubled "Move to OneDrive" is not the
+cause**: both menus list both (the packaged command, verb `{1FA0E654-...B01}`, and OneDrive's classic
+one with no verb). "Manage versions with Google Drive" is in the rebuilt menu, one id lower. A local
+file in `%TEMP%` shows the same: Defender's item at 216 shown, absent on the worker
+(`QueryContextMenu` 0x102 against 0x101), and "Move to OneDrive" (no verb) at 300 shown, 299 rebuilt.
+
+**Why Defender's item is missing.** Not the apartment: the worker initialised with `OleInitialize` in
+place of `CoInitializeEx` still had no Defender item. The owner window: the same worker, given a
+hidden window of its own as the owner (`parse_items` and `GetUIObjectOf`), built a menu identical to
+the shown one (0x102, Defender at 216); the UI thread with no owner had it too, its own window being
+active. So Defender's handler adds its item only when the menu has an owner window it can use, and
+the worker has none by P7-M1's decision (a dialog a verb shows is unowned, so the two threads' input
+queues are never attached; console-checked then). A throwaway test listed every command without a
+verb whose id differs between a menu with an owner and one without, over 24 local file kinds and a
+folder: always Defender's item missing and every later command one lower; on local files the moved
+commands without a verb are "Move to OneDrive" (all), "Sync or Backup this folder" (a folder),
+"Cast to Device" (pictures and video, its device list racing), "Install" for fonts and "Edit in
+IDLE" for `.py` files.
+
+**The fix**, as the plan has it, and not the owner window: a pick hands the worker its label path, and
+when the item at the picked id has another label, the one command without a verb at that path in the
+rebuilt menu is invoked. Giving the worker an owner window would make the ids match (and bring
+Defender's scan back), but changes P7-M1's checked rule for every verb's dialog; left as an option
+(§ For Jeremy below). Commands with a verb never moved anything: they are invoked by their verb.
+
+**Google Drive's volume.** On this machine: `QueryDosDeviceW("G:")` is `\Device\Volume{f5ae2bcb-...}`,
+no driver's name; `GetVolumeInformationW` reads label "Google Drive", file system FAT32, flags 0x106;
+the driver `googledrivefs31931` is a file system driver service whose name carries Google's build
+number, so asking for it in the volume's path would mean finding the current name first;
+`HKCU\Software\Google\DriveFS\Share\SyncTargets` holds the mount point in an undocumented protobuf
+(`...12 02 "G:"`); the root holds `$RECYCLE.BIN`, `.Encrypted`, `.shortcut-targets-by-id`, `My Drive`
+(a translated name) and `Other computers`. Taken: **`.shortcut-targets-by-id` at the volume's root**,
+one attribute read once per volume, language-independent, with the label as the fallback.
+
+**The device notification.** `RegisterDeviceNotificationW` on a `G:` handle fails with os error 1066
+at every watch (P11-M3 registers hot-pluggable fixed drives, and `G:` reports hot-pluggable). The
+volume is remembered by its GUID path (`GetVolumeNameForVolumeMountPointW`, `\\?\Volume{4ec70a0a-...}\`
+for `G:` here), so another disk later given the same letter is asked again.
+
+### What landed
+
+1. **A moved command is found by its label path: done** (f3f3422). `show` hands on the picked
+   command's label path (`label_path` over `command_tree`: "Offline access>Available offline"); the
+   worker's `choose` checks the item at the id by the path's last label, and when that refuses,
+   `find_moved` takes the one command without a verb at the whole path in the rebuilt menu (none or
+   several: refused, the reason ending `, and none at its label path` or `, and N at its label path`);
+   `fill_until` stops as soon as either is found, so a moved command no longer waits 3 s. `[menu]
+   "<label path>" moved from offset A to B in the rebuilt menu: by offset B`. It mends every handler's
+   commands numbered after Defender's, not only Google Drive's; the Windows 11 menu's packaged commands
+   are unaffected. **The driver's dry test verb** `menuverb <pane> try:<label path>`: the command at
+   that path in the menu `show` would show (`find_shown`, built by the same `build` as `show`, never
+   shown; of two at one path, the one without a verb), handed to the worker as a pick hands it
+   (`verbs::Work::Try`), resolved there, and never invoked (`run_verb`'s `dry` returns before the
+   invoke is built). Tests: `choose` with a label path, `find_moved` (one match, none, two, the
+   owner-drawn empty label, a command with a verb, a lone label against a path) and `label_path`.
+2. **Google Drive's volume by its root folder: done** (0d150f6). `cloud::google_by`: the root's
+   `.shortcut-targets-by-id`, else the label; `[cloud] volume g: named "Google Drive": google drive (by
+   its root's .shortcut-targets-by-id)` (the line's shape changed: a colon, then `not cloud` or `google
+   drive (by <how>)`). Tests: the order (the folder first, a renamed drive, the label exactly, neither)
+   and the system drive has no such folder.
+3. **The refused device notification noted once per volume: done** (77c4280). `register` skips a
+   volume in the watcher's `no_notify` set; the first refusal reads `[watch] pane=N tab=T no device
+   notification for <path>: <error>: not asked again on \\?\Volume{...}\`.
+
+Also: `CLAUDE.md` § Measuring (the moved command, the label path in the lines, the dry test verb, the
+volume line, the watcher's line, 304 tests), the driver's doc line in `src/auto.rs`,
+`tools/gate-p12m6.ps1`.
+
+### Scripted checks (2026-10-25, the branch's release build, `TWINFM_SCRIPT`, no settings file)
+
+- **The moved path on a local file** (`%TEMP%\twinfm-p12m6-probe\a.txt`, the dry test verb):
+  `try:Move to OneDrive` reads `"Move to OneDrive" at offset 200 in the menu shown, verb ""`, then
+  `"Move to OneDrive" moved from offset 200 to 199 in the rebuilt menu: by offset 199` and `resolved: by
+  offset (the test verb: not invoked)`; `a.txt` stayed where it was and nothing reached OneDrive.
+  `try:Scan with Microsoft Defender...`: `refused: the rebuilt menu has no item at that id ("Scan with
+  Microsoft Defender..."), and none at its label path` after 3 s (Defender's item is in no rebuilt
+  menu). `try:Open`: `resolved: by verb`. `try:No such command`: `no "No such command" in the menu`.
+  No local command without a verb that moves also changes nothing (the list above), so the moved path
+  is shown by the dry test verb rather than by a real invoke.
+- **The real case on `G:`, read-only** (the same PDF, the dry test verb, nothing invoked): "Offline
+  access>Available offline" 108 to 107, "Offline access>Online only" 109 to 108, "Manage versions with
+  Google Drive" 110 to 109, "Share with Google Drive" 104 to 103, each `resolved: by offset (the test
+  verb: not invoked)`.
+- **The volume and the device notification** (`G:\`, `My Drive`, two folders down, F5, a new tab,
+  then `C:\Windows`): one `[cloud] volume g: ... (by its root's .shortcut-targets-by-id)`, one `no
+  device notification for G:\: ... (os error 1066): not asked again on \\?\Volume{4ec70a0a-...}\`, and
+  no refusal for the four watches of `G:` after it; `C:` reads `has no name: not cloud`.
+- `cargo test --release`: 304 passed.
+
+One thing seen, not changed: `fill_until`'s `found after T ms (a submenu filled late)` line appears at
+51 to 60 ms for commands in no late submenu, because the first check's own time (filling every
+submenu on `G:`, Open with among them) passes its 50 ms threshold; the line is P7-M3's.
+
+### Soak
+
+Unchanged, not run: the soak never touches `G:` or a classic-menu pick without a verb, and the device
+registration skips only a volume that refused.
+
+### Gate
+
+The defaults triplet, `target-p12m6` against `target-p11close` (a99f2f2), `tools/gate-p12m6.ps1 -Tag
+<tag> -Head <commit>`, the tag and the gate build from the coordinating session. The scenario never
+opens a menu or a cloud folder and its drives are never hot-pluggable: it proves only that the rest is
+untouched.
+
+- **ab57: passed** (no gap that counts, no panics). Run by Jeremy at the console with ab56 to ab61,
+  2026-10-25 22:10 to 23:33, `target-p12m6` (578bf25, built `--locked` from a detached checkout by the
+  coordinating session) against `target-p11close` (a99f2f2; nothing in Phase 12 had merged),
+  `C:\traces\gate-ab57-summary.txt`.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11close-1 / 2 / 3 | 20.8 / 21.1 / 21.1 | 21.7 / 22.0 / 24.4 | 2.89 / 2.89 / 2.98 |
+| p12m6-1 / 2 / 3 | 21.0 / 21.4 / 21.2 | 24.1 / 24.1 / 22.5 | 2.93 / 2.88 / 2.88 |
+
+  Medians 21.1 (reference) / 21.2 (candidate), 0.1 points, and not every reference run below every
+  candidate run (21.1 above 21.0): **no gap**. The whole session ran in the costlier state (render p50
+  about 2.9 ms for every binary, against about 2.2 normally), so neither build is under the 20% bar; read
+  like for like.
+
+### Console checks (for Jeremy, unelevated, `target-p12m6`, beside Explorer)
+
+1. On a file in `G:\My Drive`: Show more options > Offline access > Available offline, then Online
+   only; Google's mark changes as in Explorer, and no "was not run" note.
+2. Show more options > Manage versions with Google Drive, and Share with Google Drive: Google's windows
+   open.
+3. Another program's moved command on a local file (the plan named one "below the doubled Move to
+   OneDrive"; the cause is Defender's item instead): on a `.py` file in a scratch folder, Show more
+   options > Edit in IDLE > Python 3.13 (64-bit) opens IDLE with the file.
+4. Show more options > Scan with Microsoft Defender... on any file: refused with the note "... was not
+   run: ..., and none at its label path" (as before, with the longer reason).
+
+**Jeremy's results** (2026-10-26, `target-p12m6` at 99cb871, through the coordinating session, whose
+numbering for him was 1 = check 3 above and 2 = check 4), his words: "Cloud checks-1 & 2 work
+correctly." So Edit in IDLE opens the `.py` file in IDLE (check 3), and Defender's scan is still refused
+(check 4).
+
+**Checks 1 and 2, Google Drive's commands: passed** (2026-10-26, the same build, the log on), his words:
+"Cloud checks all ran as expected, no errors". On a `G:\My Drive` file that was online only, Show more
+options > Offline access > Available offline ran with no note and the mark changed as in Explorer, then
+Online only took it back to the cloud (check 1); Manage versions with Google Drive and Share with Google
+Drive opened Google's windows (check 2). Every console check of P12-M6 has now passed.
+
+### For Jeremy, answered
+
+- **Defender's scan from TwinFM's classic menu** stays refused: its handler adds the item only to a
+  menu with an owner window, and the verb worker has none. A hidden window of the worker's own as the
+  owner brings it back (and makes every id match), but every dialog a verb shows would then be owned by
+  that hidden window, so P7-M1's console checks would be owed again. Jeremy's answer (2026-10-26,
+  through the coordinating session): "keep it refused". Not done, and not on the roadmap.
+
+### After the console check: OneDrive's Free up space (2026-10-26)
+
+Jeremy, checking P12-M7 (#26, Free up space, then Always keep on this device, on a OneDrive file): "p12-m7,
+free up space does not work, files still show green checks." He ran it again himself with logging on,
+his words: "Using the target-p12m6\release\twinfm.exe, I turned on logging and ran the free up space on
+several files in one drive." His log (`C:\traces\jeremy-freeup-2026-10-26.log`), Show more options over
+five OneDrive files: `[menu] verb "慍敫癁楡慬汢佥汮湩e" ("Free up space") queued on the verb worker`, then
+`InvokeCommand ... by verb = 0x80070483` (no association) and the pane's note `"Free up space" failed:
+0x80070483`.
+
+**Cause.** Settled by a probe in TwinFM's own process (P12-M6's build, never committed: every command's
+`GetCommandString` answers dumped raw, on the UI thread's menu and the worker's, on one OneDrive file
+and on four). OneDrive puts Free up space and Always keep on this device in the classic menu twice: in
+the block of the packaged commands' bridge, whose `GCS_VERBW` answers are right ("MakeAvailableOnline",
+"MakeAvailableOffline"), and in its classic handler's block next to Defender's item, whose `GCS_VERBW`
+answers are the same verbs as **ANSI bytes in the wide buffer** (`614D 656B 7641 ...`, "Ma", "ke",
+"Av" read as UTF-16, with no wide terminator after them) while its `GCS_VERBA` answers are right.
+Jeremy picked the classic handler's item, so TwinFM queued the garbled verb, which no handler takes; the
+fallback by offset then met Defender's shift (that handler's items sit after Defender's: offset 168 in
+the menu shown, 167 on the worker) and, being the bare-id check, refused. P12-M6's earlier dry check had
+resolved the bridge's twin, the first at that label path, which is why it read the verb right.
+
+**The fixes** (one commit): `verb_of` takes a `GCS_VERBW` answer only when it is plain ASCII (canonical
+verbs and the packaged commands' CLSIDs all are), else reads `GCS_VERBA` and takes it when that is,
+else no verb, so the label path decides (`verb_text`, logged once per text per process); and when
+invoking by verb fails, the fallback by offset uses the label path as a command without a verb does
+(`find_moved` with the command's verb), never a bare id holding another item. Tests: the exact garbled
+text from the log read again as "MakeAvailableOnline", nothing usable in `GCS_VERBA`, a plain verb and a
+CLSID never asking it, no verb; `find_moved` with a verb (one match, OneDrive's two twins refused).
+305 tests.
+
+**Scripted** (the dry test verb, four OneDrive files in `Documents`, nothing invoked; the files' attributes
+unchanged): `[menu] GCS_VERBW gave "慍敫癁楡慬汢佥汮湩e" at offset 150: GCS_VERBA "MakeAvailableOnline"
+taken` and the same for "MakeAvailableOffline" at 151, once each; both commands `resolved: by verb`
+("MakeAvailableOnline", "MakeAvailableOffline").
+
+**What it needs**: no triplet (the classic menu's verb path only, nothing per row or frame); the real
+invoke is Jeremy's console check, which he has already allowed: Free up space on several OneDrive files
+from Show more options, then Always keep on this device, beside Explorer.
+
+**Jeremy's re-check** (2026-10-26, `target-p12m6` rebuilt from 99cb871 by the coordinating session, the
+log on), his words: "Free up space is now working correctly. I had the log on if you need to review it."
+His log (`C:\traces\jeremy-freeup-recheck-2026-10-26.log`): the two repairs, `GCS_VERBW gave
+"慍敫癁楡慬汢佥汮湩e" at offset 173: GCS_VERBA "MakeAvailableOnline" taken` and "MakeAvailableOffline" at
+174, once each; `InvokeCommand verb="MakeAvailableOnline" offset=173 label="Free up space" by verb =
+0x00000000`; the freed files (the `bigdir` archives, a PDF in the OneDrive root) reading state 10, sync
+pending, while OneDrive released them (P9-M4's rule); and Always keep on this device twice, `by verb =
+0x00000000` (offsets 122 and 178).
+
+## P12-M7: OneDrive's syncing and error icons
+
+Started 2026-10-25 from main at 76b5d35, branch `feat/p12-m7-onedrive-icons`, the cloud stream's second
+milestone, its Settled first begun while P12-M6 waited for its gate. Jeremy's word on the one write into
+OneDrive the brief needed (2026-10-25, through the coordinating session): "Yes: the cloud session may copy
+one 1 KB test file into a OneDrive probe folder and delete it afterwards, after the memory check and the
+two gates."
+
+### Settled first (2026-10-25)
+
+**The way in: (a), the placeholder mode per thread.** Settled by a probe in TwinFM's own process (the
+release exe, a scripted run; the probe code was never committed): one thread walked
+`C:\Users\jtkli\OneDrive` through `entry_of` three times, in Windows' default placeholder mode, with
+`RtlSetThreadPlaceholderCompatibilityMode(PHCM_EXPOSE_PLACEHOLDERS)` on that thread only, and in the
+default mode again; the walk stopped at 40,023 entries in 3,984 folders. Nothing was opened or
+downloaded.
+
+| Mode | Time | Placeholder states | Kinds | Thumbnail keys | `look:` keys |
+|---|---|---|---|---|---|
+| default | 8.4 s (cold), 6.2 s | all 0 | Directory 4,012, File 36,011 | 20,520 | 4,012 |
+| shown | 6.1 s | 0: 13, 0x9: 5,266, 0xD: 343, 0x39: 34,401 | Cloud 40,010, File 13 | 0 | 4,012 |
+
+Shown, every placeholder carries its real state at no cost to the listing; every one of them is in sync
+today (`CF_PLACEHOLDER_STATE_IN_SYNC`, 0x8, set: 0x9 a placeholder in sync, 0xD with its essential
+properties too, 0x39 with its data not all on this disk, `PARTIAL` and `PARTIALLY_ON_DISK`), so
+the steady state adds no property read. The 13 that are no placeholder are the `desktop.ini` files and
+one hidden system file (as P9-M4 found). The three entries both modes flag as needing a read are P9-M4's
+releasing rule on unpinned folders (`Documents\Stack`, two folders under `Archive Docs_Online_only`),
+which are looked up as folders anyway. **What the mode changes**, kept as today: each placeholder gains
+`FILE_ATTRIBUTE_REPARSE_POINT` (0x400: `0x20` and `0x420` for the same PDF, `0x10` and `0x410` for a
+folder, `0x00100031` and `0x00100431` for `Stack`; a file whose data is not all here is also offline
+and sparse when shown, 0x1200 more, which the entry-by-entry check below found) and a cloud tag
+(`0x9000601A`, `0x9000E01A`), so it becomes `Kind::Cloud` (folders too), and a `Kind::Cloud` file gets no
+thumbnail key (20,520 to 0). So `entry_of` takes the state and lists the entry as the plain file or
+folder it is by default (`as_listed`), and only the threads that build a sync root's entries show
+placeholders: each listing's own (when its folder is under a sync root) and the watch's edit worker. The
+search walker, the size walker and a search tab's re-stat keep Windows' default (a search tab is no
+cloud location: its keys carry no marks). Ways (b), the folder's own state first, and (c), the property
+read for every file on screen, are not needed.
+
+**Whether OneDrive's switch to in sync reaches the watch: it does.** The probe Jeremy allowed (the
+coordinating session's probe slot, 2026-10-25): TwinFM (this branch's build with one timed log line in
+`land_edits`, never committed) showed `C:\Users\jtkli\OneDrive\twinfm-p12m7-probe\`, and a PowerShell
+poller wrote one 1,022-byte file there and logged its attributes and reparse tag every 250 ms. The file
+was written at 0.0 s; its creation reached the watch 0.25 s later (`records 2, changes 1`, the edit
+`probe.txt attrs 0x20`). For 5.7 s OneDrive left it a plain file, no placeholder at all (attributes
+`Archive`, no tag); at 5.7 s it became an in-sync placeholder (`Archive, ReparsePoint`, tag
+`0x9000601A`), and one record reached the watch 0.2 s after that (`records 1, changes 1`, re-statted on
+the edit worker, `applied: +0 -0 ~1`). So the mark follows the file through the watch, with no timed
+re-read (the plan's fallback, per-row work on the icon workers, is not needed). The file and the folder
+were deleted afterwards; nothing else was written. **What the probe also showed**: while it uploads, the
+new file is not a placeholder, so the rule "a placeholder not in sync" missed it, and the row drew the
+"on this device" tick where Explorer draws the syncing arrows. Hence the second half of the rule below.
+**P9-M4's console check 4** ("shows the syncing or pending mark while it uploads", answered "as
+expected") must have been the folder's mark: in TwinFM's process the file was a plain file then, keyed
+by its attributes (the tick).
+
+**How to make an error for the console check**: OneDrive does not sync a file whose name contains
+`_vti_` (a name SharePoint reserves), which Explorer shows with the error mark; if Explorer shows none for
+it on Jeremy's OneDrive, the error glyph's check stays open (the glyph table's test covers the drawing).
+
+### What landed
+
+1. **Placeholders shown on the threads that build a sync root's entries: done** (5dfc704).
+   `fs::enumerate::expose_placeholders` (`RtlSetThreadPlaceholderCompatibilityMode(PHCM_EXPOSE_PLACEHOLDERS)`,
+   windows-sys's `Wdk_Storage_FileSystem` feature, no new crate; `PHCM_EXPOSE_PLACEHOLDERS` declared
+   locally, windows-sys has the call but not its modes) runs on a listing's own thread when its folder
+   is a sync root, and once on the watch's edit worker; a thread-local says the thread is shown them.
+   `entry_of` takes the Cloud Files state from the shown attributes and tag (`placeholder_state`, a
+   pure cldapi call, made only for a reparse point or an unpinned entry as before) and lists the entry
+   as the plain file or folder it is by default (`as_listed`). `needs_state_read` gains `shown`: a file
+   there that is no placeholder (just copied in, uploading) is looked up too. `[cloud] pane=N not in
+   sync: K of M files` per sync-root listing; `[cloud] <listing | watch edits>: placeholders not shown
+   (RtlSetThreadPlaceholderCompatibilityMode = R)` if Windows refuses the mode.
+2. **Listed exactly as before: done** (0c7e516), after the check below found two differences: a
+   placeholder whose data is not all here is offline and sparse as well when shown (0x1200), now dropped
+   with the reparse bit; and OneDrive's own excluded files (pinned and unpinned both: the `desktop.ini`
+   files and one hidden system file at the root, `0x00180026`), which no placeholder rule should look up,
+   keep no mark as before.
+
+Tests: `a_shown_placeholder_lists_as_before_with_its_own_state` (a shown in-sync file lists as the plain
+file with its thumbnail key and attribute mark, a placeholder out of sync and a file not uploaded yet
+are looked up, a shown folder is a folder, a thread not shown keeps today's kinds and marks, `as_listed`
+for each case; the out-of-sync tag is the first of the sixteen cloud tags that cldapi reads so), the rule
+(`placeholders_out_of_sync_are_looked_up`: the shown cases, the excluded file), and the glyph table
+(`status_glyphs_come_from_imageres`: the pending states draw the syncing arrows, and syncing, error,
+warning and the tick are four different glyphs). 303 tests.
+
+Also: `CLAUDE.md` § Measuring's P12-M7 paragraph and the test count, `tools/gate-p12m7.ps1`,
+`tools/check-p12m7-onedrive.ps1` (the plan's in-app comparison on OneDrive).
+
+### Scripted checks (2026-10-25, the branch's release build, `TWINFM_SCRIPT`, no settings file)
+
+- **Every OneDrive entry lists as before**: the probe again, walking the same 40,023 entries through
+  `entry_of` in the default mode and shown, comparing each entry's kind, attributes and icon key. First
+  run (5dfc704): 5,614 the same, 34,409 different: the 34,401 files whose data is not all here (offline
+  and sparse when shown; their keys the same) and the 8 excluded files (looked up). Second run (with
+  both fixed, 0c7e516): **40,023 the same, 0 different**; thumbnail keys 20,520 and `look:` keys 4,012 in
+  both modes; kinds Directory 4,012 and File 36,011 in both.
+- **The real build on OneDrive** (the root, `Documents`, F5, then `C:\Windows`): `[cloud] pane=0 not in
+  sync: 0 of 5 files`, `0 of 6 files` twice; the `[enum]` reparse counts as before (no cloud); the
+  folders' `state read` lines as before; no refusal line, no panic.
+- **The in-app comparison on OneDrive** (`tools/check-p12m7-onedrive.ps1`: the root, `Documents` with F5,
+  `Pictures\Camera Roll` scrolled and F5; reference, candidate, candidate, reference). Two trials on a busy
+  machine (the look stream building), this branch against `target-p11close` in both orders, then the
+  coordinating session's quiet slot (2026-10-25, nobody at the console, about 21 Hz presentation), the gate
+  builds `target-p11close` and `target-p12m7` (6441b31). **Property reads (`cloud N`) 41 and `state read`
+  lines 3 in every one of the 16 runs**, `not in sync` 0 in every OneDrive listing, no panic. `slow N`: the
+  trials 0, 1, 1, 0 and 1, 16, 0, 0 (the 16 a busy run, both builds slow), the quiet run 0, 2, 1, 0; the
+  candidate's slow renders were `Personal Vault.lnk`'s icon (135 to 155 ms, a key both builds share) and
+  once the `Pictures` folder's lookup at 104 ms. So far 5 of 6 candidate runs against 1 of 6 reference
+  runs, so the slot continued for a probe: the same build with the listing thread's mode on and off by an
+  environment variable (never committed), on, off, off, on: `slow N` 0 in all four, the shortcut never
+  slow, the root's first 14 icons averaging 29.6 and 27.5 ms on against 27.5 and 29.8 ms off; and the gate
+  builds again, reference, candidate, candidate, reference: `slow N` 0, 0, 1, 1, the shortcut slow once in
+  each build (138 ms in the candidate's second run, 137 ms in the reference's), the root averages 27.7 and
+  31.1 ms (reference) against 27.5 and 31.5 ms (candidate). **No difference the change makes**: that one
+  shortcut's first render varies from run to run in both builds.
+- `cargo test --release`: 303 passed.
+
+### Soak
+
+Unchanged, not run: the OneDrive soak folder is not approved, and the soak lists no sync root.
+
+### Gate
+
+The defaults triplet, `target-p12m7` against the last merged milestone's gate build,
+`tools/gate-p12m7.ps1 -Tag <tag> -Head <commit> -Ref <name>`, the tag and the build from the
+coordinating session. The scenario never lists a cloud folder: it proves only that the rest is
+untouched. The plan's in-app run on OneDrive, `cloud N` and `slow N` compared: done in the quiet slot
+(§ Scripted checks: no difference the change makes).
+
+- **ab59: passed** (no gap that counts, no panics). Run by Jeremy at the console with ab56 to ab61,
+  2026-10-25 22:10 to 23:33, `target-p12m7` (6441b31, built `--locked` from a detached checkout by the
+  coordinating session) against `target-p11close` (a99f2f2; nothing in Phase 12 had merged),
+  `C:\traces\gate-ab59-summary.txt`.
+
+| Run | WPR | In-app | Render p50 (ms) |
+|---|---|---|---|
+| p11close-1 / 2 / 3 | 20.8 / 21.4 / 21.1 | 23.4 / 21.7 / 20.9 | 2.88 / 2.96 / 2.86 |
+| p12m7-1 / 2 / 3 | 21.1 / 21.2 / 21.2 | 20.9 / 23.4 / 20.2 | 3.14 / 3.00 / 2.91 |
+
+  Medians 21.1 (reference) / 21.2 (candidate), 0.1 points, and not every reference run below every
+  candidate run (21.4 above 21.2): **no gap**. The whole session ran in the costlier state (render p50
+  about 2.9 ms for every binary, against about 2.2 normally), so neither build is under the 20% bar; read
+  like for like. The candidate's first run read a higher render p50 (3.14 against 2.86 to 3.00), on the
+  render path, which P12-M7 does not touch; its WPR figure (21.1) is the reference's median.
+
+### Console checks (for Jeremy, unelevated, `target-p12m7`, beside Explorer)
+
+1. Copy a large file (a few hundred MB, so the upload lasts) into a OneDrive folder TwinFM shows: the
+   syncing arrows while it uploads, then the tick, with no F5, as Explorer.
+2. A file OneDrive refuses (a name with `_vti_` in it): the error mark Explorer shows (the red cross),
+   in TwinFM too; if Explorer shows none, say so.
+3. Free up space and Always keep on this device on a file, as in P9-M4: the marks as Explorer's.
+4. A OneDrive folder with thumbnails on (the settings dialog): the pictures as before.
+
+**Jeremy's results** (2026-10-26, `target-p12m7` at 6441b31, through the coordinating session, whose
+numbering for him was 3 = check 1 above, 4 = check 2 and 5 = check 4), his words: "3 works correctly.
+... 5. works as expected." So the large file showed the syncing arrows while it uploaded and then the
+tick, with no F5 (check 1), and the thumbnails in `OneDrive\Pictures` are as before (check 4). Check 3 is
+open: it needs P12-M6's fix to Free up space from Show more options (P12-M6's record, After the console
+check), which this branch has since main, with #116, was merged in (2026-10-26); Jeremy's re-check of it
+ran on `target-p12m6`, which does not show placeholders.
+
+**Check 2, the `_vti_` file: passed against Explorer.** His words: "The icon itself doesn't show red X
+but the onedrive sync icon in the taskbar does show red x and prompts to rename the file", and asked
+whether Explorer showed it on the file, "The file did not show a red X." His log (`%APPDATA%\twinfm\twinfm.log`,
+this build, 2026-10-26 19:23; nothing written into OneDrive to read it) shows why: he made
+`Documents\test_vti_.txt` with TwinFM's New file, OneDrive never made it a placeholder (`[cloud] pane=0 not
+in sync: 2 of 8 files`, then `1 of 8` once the large file was in sync), and both reads of its state gave
+4, sync pending, never 7, error (`[cloud] state read ...\test_vti_.txt: 4 in 43 ms`, then `4 in 22 ms`),
+so TwinFM drew the syncing arrows (imageres -1401) until he deleted it. OneDrive reports the refused name
+through its own taskbar icon and its rename prompt, not through the file's state, so neither Explorer nor
+TwinFM draws the red cross. The error glyph itself stays covered by the glyph table's test only; no file
+in an error state has been seen here.

@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, Field } from "theme.slint";
+import { Theme, Field, TipCard, Badge, VScrollBar } from "theme.slint";
 
 // kind: 0 directory, 1 file, 2 drive, 3 other reparse point, 4 junction, 5 symbolic link,
 // 6 cloud placeholder, 7 app execution alias (model::Kind)
@@ -51,10 +51,12 @@ export struct Crumb {
     label: string,
 }
 
-// The pane's status bar: items and hidden count, the selection, the volume's free space.
+// The pane's status bar: items and hidden count, the selection's count and size (each "" for no
+// badge; statusbar.rs `selection_text`), the volume's free space.
 export struct StatusInfo {
     left: string,
-    mid: string,
+    count: string,
+    size: string,
     right: string,
 }
 
@@ -82,7 +84,8 @@ export struct ToolState {
 // One toolbar button: a Segoe Fluent Icons glyph (the font of Explorer's own command bar, part of
 // Windows 11), with its label beside it in the toolbar across the window. A disabled button is
 // dimmed and takes no clicks. Its tooltip (P7-M4, Slint's built-in `Tooltip`, after 500 ms under
-// the pointer) gives its name and key, disabled or not; tip(text) when it shows. The mouse's Back
+// the pointer; its face the look's TipCard since P12-M1) gives its name and key, disabled or not;
+// tip(text) when it shows. The mouse's Back
 // and Forward buttons over it go back and forward (back(), forward()), so its TouchArea stays
 // enabled and only the click is refused.
 component ToolButton inherits Rectangle {
@@ -101,6 +104,7 @@ component ToolButton inherits Rectangle {
     accessible-label: root.text;
     border-radius: Theme.radius;
     background: !root.enabled ? transparent : ta.pressed || root.checked ? Theme.muted : ta.has-hover ? Theme.muted : transparent;
+    animate background { duration: 100ms; }
     HorizontalLayout {
         padding-left: root.labelled ? 8px : 6px;
         padding-right: root.labelled ? 10px : 6px;
@@ -124,15 +128,9 @@ component ToolButton inherits Rectangle {
         }
     }
     Tooltip {
-        Rectangle {
+        TipCard {
+            text: root.text + " (" + root.key + ")";
             init => { root.tip(root.text + " (" + root.key + ")"); }
-            HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                padding-top: 4px;
-                padding-bottom: 4px;
-                Text { text: root.text + " (" + root.key + ")"; }
-            }
         }
     }
 }
@@ -182,7 +180,7 @@ component TabButton inherits Rectangle {
     callback close();
     background: transparent;
     // The segment, 2 px inside the slot the strip and dnd.rs TAB_H give the tab (P10-M1).
-    Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: Theme.radius; background: root.active ? Theme.tab-active : (ta.has-hover ? Theme.ring-soft : transparent); }
+    Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: Theme.radius; background: root.active ? Theme.tab-active : (ta.has-hover ? Theme.ring-soft : transparent); animate background { duration: 100ms; } }
     if root.active: Rectangle { x: 2px; y: parent.height - 2px; width: parent.width - 4px; height: 1px; background: Theme.shadow; }
     ta := TouchArea {
         pointer-event(ev) => {
@@ -203,6 +201,7 @@ component TabButton inherits Rectangle {
             width: 18px;
             border-radius: 4px;
             background: close-ta.has-hover ? Theme.muted : transparent;
+            animate background { duration: 100ms; }
             Image { x: 3px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("icons/x.svg"); colorize: Theme.fg-muted; }
             close-ta := TouchArea { clicked => { root.close(); } }
         }
@@ -233,6 +232,7 @@ component CrumbButton inherits HorizontalLayout {
     label-box := Rectangle {
         border-radius: Theme.radius;
         background: root.drop-here ? Theme.selection : ta.has-hover ? Theme.muted : transparent;
+        animate background { duration: 100ms; }
         border-width: root.drop-here ? 2px : 0px;
         border-color: Theme.cursor;
         changed width => { root.geometry(root.x, self.width); }
@@ -252,6 +252,7 @@ component CrumbButton inherits HorizontalLayout {
     Rectangle {
         width: 16px;
         background: chevron-ta.has-hover ? Theme.muted : transparent;
+        animate background { duration: 100ms; }
         Image { x: 2px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("icons/chevron-right.svg"); colorize: Theme.fg-muted; }
         chevron-ta := TouchArea {
             clicked => { root.menu(self.absolute-position.x, self.absolute-position.y + self.height); }
@@ -272,6 +273,7 @@ component HeaderCell inherits Rectangle {
     callback back();
     callback forward();
     background: ta.has-hover ? Theme.muted : transparent;
+    animate background { duration: 100ms; }
     Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
     HorizontalLayout {
         padding-left: 6px;
@@ -323,10 +325,17 @@ component ColGrip inherits TouchArea {
 // FileListNoType); FileListHost shows one per pane, so no row binds to the switch (a binding on
 // it per row cost 0.7 of a point on the gate, a conditional cell per row 1.5). The rows and the
 // focus layer are all each variant holds; the state and the logic live in the host, once. Each
-// has a 32 px copy for thumbnails (FileRows32 and the rest, below).
+// has a 32 px copy for thumbnails (FileRows32 and the rest, below). Since P12-M4 their rows are
+// row-h tall, 22 px or 30 px for comfortable rows (a height read when a row is made; the spike's
+// in-app runs measured no cost, docs/phase-12-plan.md § P12-M4).
 component FileRows inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
+    // The row height (P12-M4): 22 px, or 30 px for comfortable rows; read when a row is made.
+    in property <length> row-h: 22px;
     // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> type-w: 120px;
@@ -342,7 +351,7 @@ component FileRows inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 22px;
+        height: root.row-h;
         accessible-role: AccessibleRole.list-item;
         // Files of every kind (plain, cloud placeholder, link, alias) have a size and a time;
         // folders have no size, drives no time. The type text names a junction or a link.
@@ -355,12 +364,14 @@ component FileRows inherits ListView {
         border-radius: Theme.radius;
         // The cursor is an outline, so it stays visible on selected and unselected rows alike.
         border-width: i == current-row ? 2px : 0px;
-        border-color: Theme.cursor;
+        border-color: root.cursor-color;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
-            // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip.
+            // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip. 10 px
+            // on the right keep the last column clear of the scrollbar's thumb at rest (6 px wide, 1 px
+            // from the edge; Jeremy's "Add padding", 2026-10-26; dnd.rs ROW_PAD_RIGHT).
             padding-left: 28px;
-            padding-right: 6px;
+            padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
@@ -378,6 +389,11 @@ component FileRows inherits ListView {
 component FileRowsNoType inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
+    // The row height (P12-M4), as FileRows'.
+    in property <length> row-h: 22px;
     // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> size-w: 90px;
@@ -390,7 +406,7 @@ component FileRowsNoType inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 22px;
+        height: root.row-h;
         accessible-role: AccessibleRole.list-item;
         accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
             : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
@@ -400,11 +416,11 @@ component FileRowsNoType inherits ListView {
         background: row.selected ? Theme.selection : transparent;
         border-radius: Theme.radius;
         border-width: i == current-row ? 2px : 0px;
-        border-color: Theme.cursor;
+        border-color: root.cursor-color;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             padding-left: 28px;
-            padding-right: 6px;
+            padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
@@ -421,21 +437,23 @@ component FileRowsNoType inherits ListView {
 // the list that had the focus, or the pane split) takes the focus itself.
 // A new list starts at the host's content-y, but the Flickable checks its bounds on the next turn
 // of the event loop, before the ListView's first layout has set content-height, and would scroll
-// it back to the top; so init sets content-height to what that layout will (22 px rows).
+// it back to the top; so init sets content-height to what that layout will (rows of row-h).
 component FileList inherits FileRows {
     in property <int> focus-request;
     in property <bool> focus-on-init;
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 22px;
+        root.content-height = root.rows.length * root.row-h;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
     key-area := FocusScope {
         x: 0;
         width: 0;
         key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
     }
 }
 
@@ -445,23 +463,30 @@ component FileListNoType inherits FileRowsNoType {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 22px;
+        root.content-height = root.rows.length * root.row-h;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
     key-area := FocusScope {
         x: 0;
         width: 0;
         key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
     }
 }
 
 // The four components above with 32 px rows and a 32 px icon column and a 4 px gap (42 px of left padding), for
-// thumbnails (settings `thumbnails`). Copies, not a row height bound to a property: the height of
-// a row is a constant of its component, and FileListHost chooses the component once per pane.
+// thumbnails (settings `thumbnails`). Copies; FileListHost chooses the component once per pane. Their
+// rows are row-h tall, 32 px or 44 px for comfortable rows (Jeremy, 2026-10-26: "comfortable should
+// make rows taller"; the height read when a row is made, as the 22 px components' since P12-M4).
 component FileRows32 inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
+    in property <length> row-h: 32px;
     // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> type-w: 120px;
@@ -477,7 +502,7 @@ component FileRows32 inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 32px;
+        height: root.row-h;
         accessible-role: AccessibleRole.list-item;
         // Files of every kind (plain, cloud placeholder, link, alias) have a size and a time;
         // folders have no size, drives no time. The type text names a junction or a link.
@@ -490,12 +515,13 @@ component FileRows32 inherits ListView {
         border-radius: Theme.radius;
         // The cursor is an outline, so it stays visible on selected and unselected rows alike.
         border-width: i == current-row ? 2px : 0px;
-        border-color: Theme.cursor;
+        border-color: root.cursor-color;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
-            // 6 px padding plus the 32 px icon column; the icons are drawn by the pane's strip.
+            // 6 px padding plus the 32 px icon column; the icons are drawn by the pane's strip. 10 px
+            // on the right: clear of the scrollbar's thumb, as above.
             padding-left: 42px;
-            padding-right: 6px;
+            padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
@@ -511,6 +537,10 @@ component FileRows32 inherits ListView {
 component FileRowsNoType32 inherits ListView {
     in property <[Row]> rows;
     in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
+    in property <length> row-h: 32px;
     // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> size-w: 90px;
@@ -523,7 +553,7 @@ component FileRowsNoType32 inherits ListView {
     accessible-delegate-focus: max(0, current-row);
 
     for row[i] in rows: Rectangle {
-        height: 32px;
+        height: root.row-h;
         accessible-role: AccessibleRole.list-item;
         accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
             : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
@@ -533,11 +563,11 @@ component FileRowsNoType32 inherits ListView {
         background: row.selected ? Theme.selection : transparent;
         border-radius: Theme.radius;
         border-width: i == current-row ? 2px : 0px;
-        border-color: Theme.cursor;
+        border-color: root.cursor-color;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             padding-left: 42px;
-            padding-right: 6px;
+            padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
@@ -555,14 +585,16 @@ component FileList32 inherits FileRows32 {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 32px;
+        root.content-height = root.rows.length * root.row-h;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
     key-area := FocusScope {
         x: 0;
         width: 0;
         key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
     }
 }
 
@@ -572,14 +604,16 @@ component FileListNoType32 inherits FileRowsNoType32 {
     callback key(KeyEvent) -> EventResult;
     forward-focus: key-area;
     init => {
-        root.content-height = root.rows.length * 32px;
+        root.content-height = root.rows.length * root.row-h;
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
     key-area := FocusScope {
         x: 0;
         width: 0;
         key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
     }
 }
 
@@ -590,6 +624,9 @@ component FileListNoType32 inherits FileRowsNoType32 {
 component FileGrid inherits ListView {
     in property <[GridRow]> grid;
     in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
     in property <int> cols: 1;
     // row-pointer(entry, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
     // window y of the tile's TouchArea): FileListHost.row-pointer decides what it means.
@@ -612,7 +649,7 @@ component FileGrid inherits ListView {
             background: t.selected ? Theme.selection : transparent;
             border-radius: Theme.radius;
             border-width: t.current ? 2px : 0px;
-            border-color: Theme.cursor;
+            border-color: root.cursor-color;
             // The icon (the strip's) fills 2..98 px; the name sits under it on up to two lines,
             // wrapped at words (a longer word anywhere) and elided on the second (P7-M4, Explorer's).
             Text {
@@ -648,10 +685,12 @@ component FileGridList inherits FileGrid {
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
     key-area := FocusScope {
         x: 0;
         width: 0;
         key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
     }
 }
 
@@ -663,6 +702,9 @@ component FileGridList inherits FileGrid {
 component FileGridMedium inherits ListView {
     in property <[GridRow]> grid;
     in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
     in property <int> cols: 1;
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
@@ -683,7 +725,7 @@ component FileGridMedium inherits ListView {
             background: t.selected ? Theme.selection : transparent;
             border-radius: Theme.radius;
             border-width: t.current ? 2px : 0px;
-            border-color: Theme.cursor;
+            border-color: root.cursor-color;
             Text {
                 x: 2px;
                 y: 50px;
@@ -715,10 +757,12 @@ component FileGridMediumList inherits FileGridMedium {
         if (root.focus-on-init) { key-area.focus(); }
     }
     changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
     key-area := FocusScope {
         x: 0;
         width: 0;
         key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
     }
 }
 
@@ -756,7 +800,9 @@ component FileListHost inherits Rectangle {
     out property <length> tile-h: root.medium ? 107px : 136px;
     // The tile's name box: two lines of large tiles, three of medium (P8-L1).
     out property <length> name-h: root.medium ? 57px : 38px;
-    out property <int> cols: max(1, floor(self.width / root.tile-w));
+    // 10 px kept at the right, so the last tile stays clear of the scrollbar's thumb at rest (as the
+    // details rows' right padding).
+    out property <int> cols: max(1, floor((self.width - 10px) / root.tile-w));
     callback grid-cols(int);
     callback grid-cursor(int);
     changed cols => { if (root.grid) { root.grid-cols(root.cols); } }
@@ -765,11 +811,15 @@ component FileListHost inherits Rectangle {
     pure public function col-of(i: int) -> int { return root.grid ? mod(i, root.cols) : 0; }
     // Entries a vertical arrow key moves by: one row, or one grid row of tiles.
     private property <int> step: root.grid ? root.cols : 1;
-    out property <length> row-h: root.grid ? root.tile-h : (root.thumbnails ? 32px : 22px);
+    // Comfortable rows (settings `row_height`, P12-M4): the 22 px lists' rows 30 px tall, the 32 px
+    // lists' 44 px (icons.rs ListGeom).
+    in property <bool> comfortable: false;
+    out property <length> row-h: root.grid ? root.tile-h : (root.thumbnails ? (root.comfortable ? 44px : 32px) : (root.comfortable ? 30px : 22px));
     // The pane is active: a list created now takes the focus.
     in property <bool> active;
     in-out property <length> content-y;
-    // A ListView's visible size is its own (Fluent's scrollbar overlays the content).
+    // A ListView's visible size is its own (the scrollbar, the host's own since P12-M2, overlays the
+    // content).
     out property <length> visible-width: self.width;
     out property <length> visible-height: self.height;
     callback open-row(int);
@@ -817,6 +867,19 @@ component FileListHost inherits Rectangle {
     min-height: 50px;
 
     public function focus-list() { root.focus-request += 1; }
+
+    // Tab and Shift+Tab (Jeremy, 2026-10-26: "tab switches panes"): in the list they ask the window
+    // to give the keys to the other pane's list (tab-key); a list the keys reach by Tab from its own
+    // search box or path entry makes its pane active (tabbed-in). Either way a list with no cursor
+    // gets one on its first row wholly on screen (row 0 unless it was scrolled without a click), so
+    // the keys always show where they are.
+    callback tab-key();
+    callback tabbed-in();
+    public function cursor-to-first() {
+        if (root.current-row < 0 && root.rows.length > 0) {
+            root.current-row = min(root.rows.length - 1, ceil(-root.content-y / root.row-h) * root.step);
+        }
+    }
 
     // Same arithmetic as StandardListView's bring-into-view, for our row-h rows (the cursor's
     // grid row in the grid): scroll just far enough that the cursor row is fully inside the
@@ -896,6 +959,7 @@ component FileListHost inherits Rectangle {
 
     // The list's keys (the variants' zero-width FocusScope hands them here).
     function key(e: KeyEvent) -> EventResult {
+        if ((e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt) { root.tab-key(); return EventResult.accept; }
         if (e.text == Key.Backspace && !e.modifiers.control) { root.go-up(); return EventResult.accept; }
         if (e.text == Key.UpArrow && e.modifiers.alt) { root.go-up(); return EventResult.accept; }
         if (e.text == Key.LeftArrow && e.modifiers.alt) { root.history(false); return EventResult.accept; }
@@ -978,6 +1042,7 @@ component FileListHost inherits Rectangle {
     }
 
     if root.show-type && !root.thumbnails && !root.grid: FileList {
+        row-h: root.row-h;
         type-w: root.type-w;
         size-w: root.size-w;
         modified-w: root.modified-w;
@@ -985,28 +1050,36 @@ component FileListHost inherits Rectangle {
         height: root.height;
         rows: root.rows;
         current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
     if !root.show-type && !root.thumbnails && !root.grid: FileListNoType {
+        row-h: root.row-h;
         size-w: root.size-w;
         modified-w: root.modified-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
         current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
     if root.show-type && root.thumbnails && !root.grid: FileList32 {
+        row-h: root.row-h;
         type-w: root.type-w;
         size-w: root.size-w;
         modified-w: root.modified-w;
@@ -1014,26 +1087,33 @@ component FileListHost inherits Rectangle {
         height: root.height;
         rows: root.rows;
         current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
     if !root.show-type && root.thumbnails && !root.grid: FileListNoType32 {
+        row-h: root.row-h;
         size-w: root.size-w;
         modified-w: root.modified-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
         current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
     if root.grid && !root.medium: FileGridList {
         width: root.width;
@@ -1041,12 +1121,15 @@ component FileListHost inherits Rectangle {
         grid: root.grid-rows;
         cols: root.cols;
         current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
     if root.grid && root.medium: FileGridMediumList {
         width: root.width;
@@ -1054,12 +1137,25 @@ component FileListHost inherits Rectangle {
         grid: root.grid-rows;
         cols: root.cols;
         current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
         content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
         focus-request: root.focus-request;
         focus-on-init: root.active;
         row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
         row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
         key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+    }
+    // TwinFM's own scrollbar over whichever list shows (P12-M2), the lists' Fluent bars off: the
+    // host owns the scroll and knows the content's height (rows of row-h, or grid rows of tile-h).
+    VScrollBar {
+        x: root.width - self.width;
+        y: 0px;
+        height: root.height;
+        content-y <=> root.content-y;
+        content-height: root.grid ? root.grid-rows.length * root.tile-h : root.rows.length * root.row-h;
+        visible-height: root.visible-height;
     }
 }
 
@@ -1092,6 +1188,8 @@ export component Pane inherits Rectangle {
     // Thumbnails (settings `thumbnails`): the 32 px lists (FileListHost); the overlays below read
     // the row height from list.row-h.
     in property <bool> thumbnails: false;
+    // Comfortable 30 px rows (P12-M4), for FileListHost.
+    in property <bool> comfortable: false;
     // The large-icon grid (settings `view_left` / `view_right`): FileListHost shows the grid over
     // grid-rows (model.rs GridModel); tiles-per-row is its tile count per grid row (main.rs reads it
     // for hit testing); the two callbacks are the host's.
@@ -1145,6 +1243,8 @@ export component Pane inherits Rectangle {
     callback focus-requested();
     callback tab-clicked(int);
     callback tab-close(int);
+    // The "+" after the tab strip (P12-M5).
+    callback tab-plus();
     // tab-move(from, to): a tab dragged past a neighbour's midpoint.
     callback tab-move(int, int);
     callback crumb-clicked(int);
@@ -1248,21 +1348,22 @@ export component Pane inherits Rectangle {
     in property <[StripRow]> strip-rows;
 
     // The tab strip: every tab the same width, from 160 px down to 120 px as tabs are added, then
-    // the strip scrolls instead (no scrollbar; the wheel scrolls it). tab-scroll is the content's
+    // the strip scrolls instead (no scrollbar; the wheel scrolls it). Its room is the pane's less the
+    // "+" and its gap (34 px, dnd.rs TAB_PLUS; P12-M5). tab-scroll is the content's
     // offset (zero or negative), set by the wheel and by reveal-tab; shown-tab-scroll keeps it in
     // range when tabs close or the pane widens. All of these are bindings on the tab count and the
     // pane's width, so nothing here runs while the list scrolls.
     in-out property <length> tab-scroll: 0px;
-    private property <length> tab-strip-w: root.width - 6px;
+    private property <length> tab-strip-w: root.width - 6px - 34px;
     out property <length> tab-w: max(120px, min(160px, root.tab-strip-w / max(1, root.tabs.length)));
     private property <length> tab-scroll-min: min(0px, root.tab-strip-w - root.tabs.length * root.tab-w);
     out property <length> shown-tab-scroll: max(root.tab-scroll-min, min(0px, root.tab-scroll));
     // The tab a left-button drag in the strip is moving (-1: none).
     private property <int> drag-tab: -1;
     // The strip's width changed (a window resize, the split or the splitter, the sidebar): main.rs
-    // scrolls the active tab back into view (P6-M3). Only while the strip shows.
+    // scrolls the active tab back into view (P6-M3).
     callback strip-resized();
-    changed tab-strip-w => { if (root.tabs.length > 1) { root.strip-resized(); } }
+    changed tab-strip-w => { root.strip-resized(); }
 
     border-width: 1px;
     border-color: active ? Theme.ring : Theme.border;
@@ -1293,6 +1394,10 @@ export component Pane inherits Rectangle {
     // No forward-focus: the list's FocusScope sits inside FileListHost's `if`, out of reach;
     // focus-list asks for it (nothing focuses a Pane itself).
     public function focus-list() { list.focus-list(); }
+    public function cursor-to-first() { list.cursor-to-first(); }
+    // Tab or Shift+Tab in the list, and the list reached by Tab (FileListHost).
+    callback tab-key();
+    callback tabbed-in();
     public function reset-scroll() { list.content-y = 0; current-row = -1; }
     public function get-scroll() -> length { return list.content-y; }
     public function set-scroll(y: length) { list.content-y = y; }
@@ -1364,57 +1469,86 @@ export component Pane inherits Rectangle {
             back => { root.back-button(); }
             forward => { root.forward-button(); }
         }
-        // Not a Flickable: its drag-to-flick would take the presses a tab drag needs.
-        if root.tabs.length > 1: Rectangle {
+        // The tab strip, shown always since P12-M5 (Jeremy: "Always show the tab strip"): as wide as
+        // its tabs up to the room they have, the "+" right after it (a new tab of the pane's own folder,
+        // as Ctrl+T), as the Phase 10 canvas draws them (dnd.rs TAB_PLUS).
+        Rectangle {
             height: 30px;
-            clip: true;
-            background: Theme.muted;
-            border-radius: Theme.radius-md;
-            // Behind the tabs, whose TouchAreas pass wheel events on: the wheel scrolls the strip.
-            TouchArea {
-                scroll-event(e) => {
-                    root.tab-scroll = root.shown-tab-scroll + (abs(e.delta-y) > abs(e.delta-x) ? e.delta-y : e.delta-x);
-                    root.tab-scroll = root.shown-tab-scroll;
-                    return accept;
-                }
-            }
-            for t[i] in root.tabs: TabButton {
-                x: root.shown-tab-scroll + i * root.tab-w;
-                y: 0px;
-                width: root.tab-w;
+            // Not a Flickable: its drag-to-flick would take the presses a tab drag needs.
+            Rectangle {
+                x: 0px;
+                width: min(root.tabs.length * root.tab-w, root.tab-strip-w);
                 height: 30px;
-                title: t.title;
-                active: t.active;
-                pressed => {
-                    root.drag-tab = i;
-                    root.tab-clicked(i);
-                }
-                released => { root.drag-tab = -1; }
-                // The pointer's x in the strip's content is this tab's slot plus its offset in
-                // the tab (whichever tab now sits in the slot). Once it passes a neighbour's
-                // midpoint, the dragged tab swaps with that neighbour.
-                drag-moved(mx) => {
-                    if (root.drag-tab < 0) { return; }
-                    if (i * root.tab-w + mx > (root.drag-tab + 1.5) * root.tab-w && root.drag-tab + 1 < root.tabs.length) {
-                        root.tab-move(root.drag-tab, root.drag-tab + 1);
-                        root.drag-tab += 1;
-                    } else if (i * root.tab-w + mx < (root.drag-tab - 0.5) * root.tab-w && root.drag-tab > 0) {
-                        root.tab-move(root.drag-tab, root.drag-tab - 1);
-                        root.drag-tab -= 1;
+                clip: true;
+                background: Theme.muted;
+                border-radius: Theme.radius-md;
+                // Behind the tabs, whose TouchAreas pass wheel events on: the wheel scrolls the strip.
+                TouchArea {
+                    scroll-event(e) => {
+                        root.tab-scroll = root.shown-tab-scroll + (abs(e.delta-y) > abs(e.delta-x) ? e.delta-y : e.delta-x);
+                        root.tab-scroll = root.shown-tab-scroll;
+                        return accept;
                     }
                 }
-                close => { root.tab-close(i); }
+                for t[i] in root.tabs: TabButton {
+                    x: root.shown-tab-scroll + i * root.tab-w;
+                    y: 0px;
+                    width: root.tab-w;
+                    height: 30px;
+                    title: t.title;
+                    active: t.active;
+                    pressed => {
+                        root.drag-tab = i;
+                        root.tab-clicked(i);
+                    }
+                    released => { root.drag-tab = -1; }
+                    // The pointer's x in the strip's content is this tab's slot plus its offset in
+                    // the tab (whichever tab now sits in the slot). Once it passes a neighbour's
+                    // midpoint, the dragged tab swaps with that neighbour.
+                    drag-moved(mx) => {
+                        if (root.drag-tab < 0) { return; }
+                        if (i * root.tab-w + mx > (root.drag-tab + 1.5) * root.tab-w && root.drag-tab + 1 < root.tabs.length) {
+                            root.tab-move(root.drag-tab, root.drag-tab + 1);
+                            root.drag-tab += 1;
+                        } else if (i * root.tab-w + mx < (root.drag-tab - 0.5) * root.tab-w && root.drag-tab > 0) {
+                            root.tab-move(root.drag-tab, root.drag-tab - 1);
+                            root.drag-tab -= 1;
+                        }
+                    }
+                    close => { root.tab-close(i); }
+                }
+                // Drop highlight on tab `drop-tab` (a drag would drop into its folder): an overlay over
+                // the tab's slot, no input handling and no accessibility node.
+                if root.drop-tab >= 0: Rectangle {
+                    x: root.shown-tab-scroll + root.drop-tab * root.tab-w;
+                    y: 0px;
+                    width: root.tab-w;
+                    height: 30px;
+                    background: Theme.selection;
+                    border-width: 2px;
+                    border-color: Theme.cursor;
+                }
             }
-            // Drop highlight on tab `drop-tab` (a drag would drop into its folder): an overlay over
-            // the tab's slot, no input handling and no accessibility node.
-            if root.drop-tab >= 0: Rectangle {
-                x: root.shown-tab-scroll + root.drop-tab * root.tab-w;
-                y: 0px;
-                width: root.tab-w;
+            Rectangle {
+                x: min(root.tabs.length * root.tab-w, root.tab-strip-w) + 2px;
+                width: 32px;
                 height: 30px;
-                background: Theme.selection;
-                border-width: 2px;
-                border-color: Theme.cursor;
+                border-radius: Theme.radius;
+                background: plus-ta.has-hover ? Theme.muted : transparent;
+                animate background { duration: 100ms; }
+                accessible-role: button;
+                accessible-label: "New tab";
+                Image { x: 8px; y: 7px; width: 16px; height: 16px; source: @image-url("icons/plus.svg"); colorize: Theme.fg-muted; }
+                plus-ta := TouchArea {
+                    clicked => { root.tab-plus(); }
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back-button(); }
+                        if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward-button(); }
+                    }
+                }
+                Tooltip {
+                    TipCard { text: "New tab (Ctrl+T)"; }
+                }
             }
         }
         // Same height whichever mode shows, so the list's top does not move (dnd.rs LIST_TOP).
@@ -1569,6 +1703,7 @@ export component Pane inherits Rectangle {
                     width: 20px;
                     border-radius: 4px;
                     background: clear-ta.has-hover ? Theme.muted : transparent;
+                    animate background { duration: 100ms; }
                     accessible-role: button;
                     accessible-label: "Clear";
                     Image { x: 4px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("icons/x.svg"); colorize: Theme.fg-muted; }
@@ -1580,6 +1715,7 @@ export component Pane inherits Rectangle {
                     width: 26px;
                     border-radius: Theme.radius;
                     background: root.content-mode || content-ta.has-hover ? Theme.muted : transparent;
+                    animate background { duration: 100ms; }
                     accessible-role: button;
                     accessible-label: "Search inside files";
                     Image { x: 5px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: @image-url("icons/file-text.svg"); colorize: root.content-mode ? Theme.accent : Theme.fg-muted; }
@@ -1590,15 +1726,7 @@ export component Pane inherits Rectangle {
                         }
                     }
                     Tooltip {
-                        Rectangle {
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                padding-top: 4px;
-                                padding-bottom: 4px;
-                                Text { text: root.content-mode ? "Searching inside files: click for names" : "Search inside files"; }
-                            }
-                        }
+                        TipCard { text: root.content-mode ? "Searching inside files: click for names" : "Search inside files"; }
                     }
                 }
                 // The search button: this folder and everything under it, for the box's text
@@ -1607,20 +1735,13 @@ export component Pane inherits Rectangle {
                     width: 26px;
                     border-radius: Theme.radius;
                     background: search-ta.has-hover ? Theme.muted : transparent;
+                    animate background { duration: 100ms; }
                     accessible-role: button;
                     accessible-label: "Search this folder and below";
                     Image { x: 5px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: @image-url("icons/search.svg"); colorize: Theme.fg; }
                     search-ta := TouchArea { clicked => { root.search-pressed(); } }
                     Tooltip {
-                        Rectangle {
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                padding-top: 4px;
-                                padding-bottom: 4px;
-                                Text { text: "Search this folder and below (Ctrl+Shift+F)"; }
-                            }
-                        }
+                        TipCard { text: "Search this folder and below (Ctrl+Shift+F)"; }
                     }
                 }
             }
@@ -1629,6 +1750,7 @@ export component Pane inherits Rectangle {
                 x: parent.width - 24px;
                 width: 24px;
                 background: mode-ta.has-hover ? Theme.muted : transparent;
+                animate background { duration: 100ms; }
                 // The ellipsis edits the path as text; the chevron goes back to the breadcrumb.
                 Image { x: 5px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: root.entry-sticky ? @image-url("icons/chevron-right.svg") : @image-url("icons/ellipsis.svg"); colorize: Theme.fg-muted; }
                 mode-ta := TouchArea {
@@ -1669,6 +1791,7 @@ export component Pane inherits Rectangle {
             size-w: root.col-size;
             modified-w: root.col-modified;
             thumbnails: root.thumbnails;
+            comfortable: root.comfortable;
             grid: root.grid;
             grid-rows: root.grid-rows;
             medium: root.medium;
@@ -1679,6 +1802,8 @@ export component Pane inherits Rectangle {
             history(f) => { root.history(f); }
             open-row(i) => { root.open-row(i); }
             focus-requested => { root.focus-requested(); }
+            tab-key => { root.tab-key(); }
+            tabbed-in => { root.tabbed-in(); }
             select(op, i) => { root.select(op, i); }
             viewport-changed(y, h) => { root.viewport-changed(y, h); }
             command(c) => { root.command(c); }
@@ -1688,12 +1813,23 @@ export component Pane inherits Rectangle {
             drag-dx: root.drag-dx;
             drag-dy: root.drag-dy;
         }
+        // The status line (P12-M1, the canvas's Parts board): the items muted, the selection after
+        // them as two badges 22 px tall inside the 28 px line (dnd.rs LIST_BOTTOM_GAP stands), the
+        // free space on the right. Packed at the start, so the badges follow the text; when the
+        // line is short, the left text elides first (the only part that stretches).
         HorizontalLayout {
             height: 28px;
             spacing: 12px;
-            Text { text: root.status.left; font-size: 12px; color: Theme.fg-muted; overflow: elide; horizontal-stretch: 1; }
-            Text { text: root.status.mid; font-size: 12px; color: Theme.fg; horizontal-alignment: center; }
-            Text { text: root.status.right; font-size: 12px; color: Theme.fg-muted; horizontal-alignment: right; }
+            HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+                padding-top: 3px;
+                padding-bottom: 3px;
+                Text { text: root.status.left; font-size: 12px; color: Theme.fg-muted; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                if root.status.count != "": Badge { text: root.status.count; }
+                if root.status.size != "": Badge { text: root.status.size; outline: true; }
+            }
+            Text { text: root.status.right; font-size: 12px; color: Theme.fg-muted; vertical-alignment: center; horizontal-alignment: right; horizontal-stretch: 0; }
         }
     }
 
@@ -1836,7 +1972,7 @@ export component Pane inherits Rectangle {
                 background: root.rows[list.current-row].selected ? Theme.selection : transparent;
                 border-radius: Theme.radius;
                 border-width: 2px;
-                border-color: Theme.cursor;
+                border-color: root.active ? Theme.cursor : Theme.ring;
             }
             full-name := Text {
                 x: 2px;
@@ -1889,16 +2025,17 @@ export component Pane inherits Rectangle {
     }
 
     // Return commits, Escape cancels, focus loss cancels. Over the name cell: 6 px row padding
-    // plus the icon slot (one row high, 22 or 32 px) from the left, the columns shown (P9-M1: the
+    // plus the icon column (22 px, or 32 px and a 4 px gap with thumbnails, whatever the row height)
+    // less the editor's own 4 px from the left, the columns shown (P9-M1: the
     // pane's widths) and 12 px from the right, centred on the row. In the grid, over the tile's name (2 px
     // in, the tile's width less 4 px, centred on the name's first line, which starts 38 px above
     // the tile's bottom: 94 px down a large tile, 46 px down a medium one, P7-M4).
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
-        x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + 2px : list.row-h + 2px + (root.thumbnails ? 4px : 0px));
+        x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + 2px : (root.thumbnails ? 38px : 24px));
         y: list.y + (root.grid ? list.tile-h - 42px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
-        width: root.grid ? list.tile-w - 4px : max(160px, list.width - list.row-h - 2px - (root.thumbnails ? 4px : 0px) - ((root.show-type ? root.col-type : 0px) + root.col-size + root.col-modified) - 12px);
+        width: root.grid ? list.tile-w - 4px : max(160px, list.width - (root.thumbnails ? 38px : 24px) - ((root.show-type ? root.col-type : 0px) + root.col-size + root.col-modified) - 12px);
         height: 28px;
         background: Theme.card;
         // As behind the path entry: Back or Forward over the editor is ignored, not taken by the

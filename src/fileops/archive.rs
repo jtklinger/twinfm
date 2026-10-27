@@ -7,8 +7,8 @@
 //! is an ordinary `IFileOperation` job and is not classified.
 //!
 //! Since P8-L2 items go from one zip into another, or within one, as bytes (`archivewrite::
-//! copy_from_zip`), and a password-protected zip is written: the job asks for the password (a
-//! dialog of TwinFM's own on this worker, or the script's `zippassword`) when it adds files, and
+//! copy_from_zip`), and a password-protected zip is written: the job asks for the password (one of
+//! TwinFM's own questions since P12-M3, `crate::ask`, or the script's `zippassword`) when it adds files, and
 //! checks it against an existing entry first. Copies from the other formats into a zip are still
 //! refused.
 //!
@@ -199,47 +199,48 @@ fn names(n: usize) -> String {
     if n == 1 { "1 item".into() } else { format!("{n} items") }
 }
 
-/// The question for files that would replace files in the zip: Yes replaces, No skips them,
-/// Cancel stops. A message box owned by the app's window, on this worker (as `IFileOperation`'s
-/// own dialogs are).
-fn ask_conflicts(hwnd: isize, zip: &Path, clash: &[String]) -> Option<Conflict> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES, MB_ICONWARNING, MB_YESNOCANCEL, MessageBoxW};
+/// The question for files that would replace files in the zip: Replace, Skip them, or Cancel to
+/// stop. One of TwinFM's own questions (`crate::ask`, P12-M3), asked from this worker.
+fn ask_conflicts(zip: &Path, clash: &[String]) -> Option<Conflict> {
     let shown: Vec<&str> = clash.iter().take(8).map(String::as_str).collect();
     let more = if clash.len() > shown.len() { format!("\n... and {} more", clash.len() - shown.len()) } else { String::new() };
-    let text = format!(
-        "{} already in {}:\n\n{}{more}\n\nReplace them?\n\nYes: replace them. No: skip them. Cancel: stop.",
-        names(clash.len()),
-        zip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        shown.join("\n")
-    );
-    let t: Vec<u16> = text.encode_utf16().chain([0]).collect();
-    let c: Vec<u16> = "TwinFM".encode_utf16().chain([0]).collect();
-    // SAFETY: NUL-terminated strings that outlive the call; the owner is the app's window or none.
-    let r = unsafe { MessageBoxW(hwnd as _, t.as_ptr(), c.as_ptr(), MB_YESNOCANCEL | MB_ICONWARNING) };
-    eprintln!("[archive] {} file(s) already in {}: {}", clash.len(), zip.display(), match r {
-        IDYES => "replace",
-        IDNO => "skip",
-        _ => "cancelled",
+    let name = zip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let a = crate::ask::ask(crate::ask::Question {
+        kind: "replace",
+        title: format!("Replace files in {name}?"),
+        text: format!("{} already in {name}:\n\n{}{more}", names(clash.len()), shown.join("\n")),
+        password: false,
+        buttons: vec!["Cancel", "Skip", "Replace"],
+        primary: 2,
+        cancel: 0,
     });
-    match r {
-        IDYES => Some(Conflict::Replace),
-        IDNO => Some(Conflict::Skip),
+    let r = match a.button {
+        2 => Some(Conflict::Replace),
+        1 => Some(Conflict::Skip),
         _ => None,
-    }
+    };
+    eprintln!("[archive] {} file(s) already in {}: {}", clash.len(), zip.display(), match r {
+        Some(Conflict::Replace) => "replace",
+        Some(Conflict::Skip) => "skip",
+        None => "cancelled",
+    });
+    r
 }
 
-/// "Permanently delete N items from x.zip?" (a zip has no Recycle Bin). True to go on.
-fn confirm_delete(hwnd: isize, zip: &Path, n: usize) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONWARNING, MB_YESNO, MessageBoxW};
-    let text = format!(
-        "Permanently delete {} from {}?\n\nA zip archive has no Recycle Bin, and this cannot be undone.",
-        names(n),
-        zip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-    );
-    let t: Vec<u16> = text.encode_utf16().chain([0]).collect();
-    let c: Vec<u16> = "TwinFM".encode_utf16().chain([0]).collect();
-    // SAFETY: as in `ask_conflicts`.
-    unsafe { MessageBoxW(hwnd as _, t.as_ptr(), c.as_ptr(), MB_YESNO | MB_ICONWARNING) == IDYES }
+/// "Permanently delete N items from x.zip?" (a zip has no Recycle Bin), one of TwinFM's own
+/// questions (P12-M3). True to go on.
+fn confirm_delete(zip: &Path, n: usize) -> bool {
+    let name = zip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let a = crate::ask::ask(crate::ask::Question {
+        kind: "zip delete",
+        title: format!("Permanently delete {}?", names(n)),
+        text: format!("From {name}. A zip archive has no Recycle Bin, and this cannot be undone."),
+        password: false,
+        buttons: vec!["Cancel", "Delete"],
+        primary: 1,
+        cancel: 0,
+    });
+    a.button == 1
 }
 
 /// A writer's (bytes done, bytes in all) as the job's percentage, through the gate (in KiB, so
@@ -267,7 +268,7 @@ pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outco
     let key = match needs_key(&plan) {
         Ok(false) => Key::None,
         Ok(true) if protection == Protection::None => Key::None,
-        Ok(true) => match key_for(req, &zip, &protection) {
+        Ok(true) => match key_for(&zip, &protection) {
             Ok(Some(k)) => k,
             Ok(None) => {
                 eprintln!("[archive] job id={} {:?} on {}: Cancelled at the password", req.id, plan_name(&plan), zip.display());
@@ -283,9 +284,8 @@ pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outco
     let mut report = reporter(req.id, progress);
     let (outcome, results) = match &plan {
         Plan::Add { inner, sources, mv, .. } => {
-            let hwnd = req.hwnd;
             let no_confirm = req.no_confirm;
-            let mut ask = |clash: &[String]| if no_confirm { Some(Conflict::Replace) } else { ask_conflicts(hwnd, &zip, clash) };
+            let mut ask = |clash: &[String]| if no_confirm { Some(Conflict::Replace) } else { ask_conflicts(&zip, clash) };
             match archivewrite::add(&zip, inner, sources, &key, &mut ask, &mut report) {
                 Err(e) if e == "cancelled" => (Outcome::Cancelled, Vec::new()),
                 Err(e) => (Outcome::Error(e), Vec::new()),
@@ -323,7 +323,7 @@ pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outco
             Err(e) => (Outcome::Error(e), Vec::new()),
         },
         Plan::Delete { inners, .. } => {
-            if !req.no_confirm && !confirm_delete(req.hwnd, &zip, inners.len()) {
+            if !req.no_confirm && !confirm_delete(&zip, inners.len()) {
                 (Outcome::Cancelled, Vec::new())
             } else {
                 match archivewrite::delete(&zip, inners, &mut report) {
@@ -351,9 +351,8 @@ pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outco
             }
         }
         Plan::FromZip { inner, from, inners, mv, .. } => {
-            let hwnd = req.hwnd;
             let no_confirm = req.no_confirm;
-            let mut ask = |clash: &[String]| if no_confirm { Some(Conflict::Replace) } else { ask_conflicts(hwnd, &zip, clash) };
+            let mut ask = |clash: &[String]| if no_confirm { Some(Conflict::Replace) } else { ask_conflicts(&zip, clash) };
             match archivewrite::copy_from_zip(&zip, inner, from, inners, *mv, &key, &mut ask, &mut report) {
                 Err(e) if e == "cancelled" => (Outcome::Cancelled, Vec::new()),
                 Err(e) => (Outcome::Error(e), Vec::new()),
@@ -375,9 +374,8 @@ pub fn run(req: &Request, plan: Plan, progress: &Rc<dyn Fn(Progress)>) -> (Outco
             }
         }
         Plan::FromShell { inner, sources, .. } => {
-            let hwnd = req.hwnd;
             let no_confirm = req.no_confirm;
-            let mut ask = |clash: &[String]| if no_confirm { Some(Conflict::Replace) } else { ask_conflicts(hwnd, &zip, clash) };
+            let mut ask = |clash: &[String]| if no_confirm { Some(Conflict::Replace) } else { ask_conflicts(&zip, clash) };
             from_shell(req, &zip, inner, sources, &key, &mut ask, progress, &mut report)
         }
     };
@@ -473,10 +471,10 @@ pub fn script_password(password: &str) {
 }
 
 /// The key new files get in the password-protected `zip`: the password asked (the script's, or
-/// the dialog's) and checked against an existing entry, asked again while it is wrong. None: the
+/// the question's) and checked against an existing entry, asked again while it is wrong. None: the
 /// question was cancelled. A scripted run without a password of the script's is refused, never
 /// shown a dialog.
-fn key_for(req: &Request, zip: &Path, protection: &Protection) -> Result<Option<Key>, String> {
+fn key_for(zip: &Path, protection: &Protection) -> Result<Option<Key>, String> {
     if let Protection::Unsupported(what) = protection {
         return Err(format!("this zip uses {what}, which TwinFM does not write beside"));
     }
@@ -499,7 +497,7 @@ fn key_for(req: &Request, zip: &Path, protection: &Protection) -> Result<Option<
                 } else {
                     format!("{name} is password-protected. Its password, to encrypt the files added ({method}):")
                 };
-                match ask_password(req.hwnd, &prompt) {
+                match ask_password(&format!("Password for {name}"), &prompt) {
                     Some(p) => (p, false),
                     None => {
                         eprintln!("[archive] password for {}: cancelled", zip.display());
@@ -520,95 +518,20 @@ fn key_for(req: &Request, zip: &Path, protection: &Protection) -> Result<Option<
     }
 }
 
-/// The edit box's id in the password dialog.
-const PASSWORD_EDIT: i32 = 100;
-
-/// A dialog of TwinFM's own asking for a password (`prompt` above a masked box, OK and Cancel),
-/// owned by the app's window and run on the calling worker (the file operation worker for a zip,
-/// as `ask_conflicts`' message box is; the preview worker for a PDF since P11-M6). None: cancelled.
-pub(crate) fn ask_password(hwnd: isize, prompt: &str) -> Option<String> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BS_DEFPUSHBUTTON, BS_PUSHBUTTON, DLGTEMPLATE, DS_CENTER, DS_MODALFRAME, DS_SETFONT, DialogBoxIndirectParamW, ES_AUTOHSCROLL, ES_PASSWORD, IDCANCEL, IDOK,
-        WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
-    };
-    let text = prompt;
-    // The template, built as 16-bit words: header, then each item DWORD-aligned.
-    let mut t: Vec<u16> = Vec::new();
-    let push32 = |t: &mut Vec<u16>, v: u32| t.extend_from_slice(&[v as u16, (v >> 16) as u16]);
-    let push_str = |t: &mut Vec<u16>, s: &str| t.extend(s.encode_utf16().chain([0]));
-    push32(&mut t, (WS_POPUP | WS_CAPTION | WS_SYSMENU) | (DS_MODALFRAME | DS_CENTER | DS_SETFONT) as u32);
-    push32(&mut t, 0);
-    t.extend_from_slice(&[4, 0, 0, 250, 80, 0, 0]);
-    push_str(&mut t, "TwinFM");
-    t.push(9);
-    push_str(&mut t, "Segoe UI");
-    let items: [(u32, [i16; 4], u16, u16, &str); 4] = [
-        (WS_CHILD | WS_VISIBLE, [7, 7, 236, 24], 0xFFFF, 0x0082, text),
-        (WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | (ES_PASSWORD | ES_AUTOHSCROLL) as u32, [7, 34, 236, 14], PASSWORD_EDIT as u16, 0x0081, ""),
-        (WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON as u32, [139, 58, 50, 14], IDOK as u16, 0x0080, "OK"),
-        (WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32, [193, 58, 50, 14], IDCANCEL as u16, 0x0080, "Cancel"),
-    ];
-    for (style, [x, y, cx, cy], id, class, title) in items {
-        if t.len() % 2 != 0 {
-            t.push(0);
-        }
-        push32(&mut t, style);
-        push32(&mut t, 0);
-        t.extend_from_slice(&[x as u16, y as u16, cx as u16, cy as u16, id, 0xFFFF, class]);
-        push_str(&mut t, title);
-        t.push(0);
-    }
-    // DWORD-aligned memory for the template.
-    let mut aligned: Vec<u32> = vec![0; t.len().div_ceil(2)];
-    // SAFETY: `aligned` holds at least `t.len()` u16s.
-    unsafe { std::ptr::copy_nonoverlapping(t.as_ptr(), aligned.as_mut_ptr() as *mut u16, t.len()) };
-    let mut out: Option<String> = None;
-    // MODAL LOOP on this worker; no app state lives here.
-    // SAFETY: a well-formed in-memory template that outlives the call; `out` outlives the dialog,
-    // whose procedure is the only reader of the pointer passed as its init parameter.
-    unsafe {
-        DialogBoxIndirectParamW(std::ptr::null_mut(), aligned.as_ptr() as *const DLGTEMPLATE, hwnd as _, Some(password_proc), &mut out as *mut Option<String> as isize);
-    }
-    out
-}
-
-unsafe extern "system" fn password_proc(h: windows_sys::Win32::Foundation::HWND, msg: u32, wp: usize, lp: isize) -> isize {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EndDialog, GWLP_USERDATA, GetDlgItem, GetDlgItemTextW, GetWindowLongPtrW, GetWindowTextLengthW, IDCANCEL, IDOK, SetWindowLongPtrW, WM_COMMAND,
-        WM_INITDIALOG,
-    };
-    // SAFETY (each call): `h` is the dialog this procedure was given; the user data is the
-    // `Option<String>` that `ask_password` keeps alive across DialogBoxIndirectParamW.
-    unsafe {
-        match msg {
-            WM_INITDIALOG => {
-                SetWindowLongPtrW(h, GWLP_USERDATA, lp);
-                SetFocus(GetDlgItem(h, PASSWORD_EDIT));
-                0
-            }
-            WM_COMMAND => match (wp & 0xFFFF) as i32 {
-                IDOK => {
-                    let edit = GetDlgItem(h, PASSWORD_EDIT);
-                    let n = GetWindowTextLengthW(edit).max(0) as usize;
-                    let mut buf = vec![0u16; n + 1];
-                    let got = GetDlgItemTextW(h, PASSWORD_EDIT, buf.as_mut_ptr(), buf.len() as i32) as usize;
-                    let out = GetWindowLongPtrW(h, GWLP_USERDATA) as *mut Option<String>;
-                    if !out.is_null() {
-                        *out = Some(String::from_utf16_lossy(&buf[..got.min(n)]));
-                    }
-                    EndDialog(h, 1);
-                    1
-                }
-                IDCANCEL => {
-                    EndDialog(h, 0);
-                    1
-                }
-                _ => 0,
-            },
-            _ => 0,
-        }
-    }
+/// A password, asked as one of TwinFM's own questions (`crate::ask`, P12-M3): `prompt` above a
+/// masked field, OK and Cancel, from the calling worker (the file operation worker for a zip, the
+/// preview worker for a PDF). None: cancelled. The password is never written to a line.
+pub(crate) fn ask_password(title: &str, prompt: &str) -> Option<String> {
+    let a = crate::ask::ask(crate::ask::Question {
+        kind: "password",
+        title: title.to_string(),
+        text: prompt.to_string(),
+        password: true,
+        buttons: vec!["Cancel", "OK"],
+        primary: 1,
+        cancel: 0,
+    });
+    (a.button == 1).then_some(a.password)
 }
 
 /// A Compress job (7z or TAR) on the worker: the archive named after the first item, beside it.

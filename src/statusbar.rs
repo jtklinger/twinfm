@@ -1,5 +1,5 @@
-//! The status bar under each pane: items and hidden count on the left, the selection in the
-//! middle, the volume's free space on the right. Composed on navigation, selection and operation
+//! The status bar under each pane: items and hidden count on the left, the selection after them as
+//! two badges (P12-M1), the volume's free space on the right. Composed on navigation, selection and operation
 //! completion only; the free space is read on the enumeration worker (`disk_free`), never on the
 //! UI thread and never per frame.
 
@@ -61,22 +61,21 @@ pub fn search_text(note: &str, found: usize, hidden: usize, secs: Option<f64>, s
     if note.is_empty() { s } else { format!("{note} | {s}") }
 }
 
-/// Middle: "M selected, <total size>", empty when nothing is selected. Without selected folders
-/// the total is the selected files'; "M selected" alone when only links or drives are selected.
-/// With selected folders (`dirs`) their computed sizes count too: "X so far..." while some are
-/// still being sized (finished sizes plus partial totals), "X so far (K folders not sized)" when
-/// more were selected than are sized. When every selected folder has a size but some are out of date
-/// (a change below them; their last size counts until the re-walk lands): "X (updating...)". A
-/// folder with no size at all wins: "X so far..." also when others are updating.
-pub fn mid_text(selected: usize, bytes: u64, any_file: bool, dirs: DirTotals) -> String {
+/// The selection's two badges: the count ("M selected") and the total size, both empty when
+/// nothing is selected. Without selected folders the total is the selected files'; no size when
+/// only links or drives are selected. With selected folders (`dirs`) their computed sizes count too:
+/// "X so far..." while some are still being sized (finished sizes plus partial totals), "X so far
+/// (K folders not sized)" when more were selected than are sized. When every selected folder has a
+/// size but some are out of date (a change below them; their last size counts until the re-walk
+/// lands): "X (updating...)". A folder with no size at all wins: "X so far..." also when others are
+/// updating.
+pub fn selection_text(selected: usize, bytes: u64, any_file: bool, dirs: DirTotals) -> (String, String) {
+    let count = if selected == 0 { String::new() } else { format!("{selected} selected") };
     if dirs.folders == 0 {
-        return match (selected, any_file) {
-            (0, _) => String::new(),
-            (n, true) => format!("{n} selected, {}", format_size(bytes)),
-            (n, false) => format!("{n} selected"),
-        };
+        let size = if selected > 0 && any_file { format_size(bytes) } else { String::new() };
+        return (count, size);
     }
-    let mut s = format!("{selected} selected, {}", format_size(bytes + dirs.bytes));
+    let mut s = format_size(bytes + dirs.bytes);
     if dirs.pending > 0 || dirs.not_sized > 0 {
         s.push_str(" so far");
     }
@@ -92,7 +91,7 @@ pub fn mid_text(selected: usize, bytes: u64, any_file: bool, dirs: DirTotals) ->
     if dirs.pending == 0 && dirs.not_sized == 0 && dirs.updating > 0 {
         s.push_str(" (updating...)");
     }
-    s
+    (count, s)
 }
 
 /// Right: "X free of Y" for the pane's volume, empty when unknown (This PC, an error).
@@ -157,6 +156,12 @@ mod tests {
         assert_eq!(with_queue(&with_progress("copying 3 items...", Some(42)), 1), "copying 3 items... 42%, 1 operation queued");
     }
 
+    /// The two badges joined by `|`, for compact asserts.
+    fn badges(selected: usize, bytes: u64, any_file: bool, dirs: DirTotals) -> String {
+        let (count, size) = selection_text(selected, bytes, any_file, dirs);
+        format!("{count}|{size}")
+    }
+
     #[test]
     fn status_text_composition() {
         assert_eq!(left_text("", 40000, None, 0, false, None, None), "40000 items");
@@ -172,33 +177,35 @@ mod tests {
         assert_eq!(search_text("", 12, 2, Some(4.26), false, None), "12 found in 4.3 s (2 hidden)");
         assert_eq!(search_text("Deleted 1 item", 7, 0, Some(1.0), true, None), "Deleted 1 item | 7 found, stopped after 1.0 s");
         assert_eq!(search_text("", 0, 0, Some(0.0), false, Some("Access is denied.")), "error: Access is denied.");
+        // The selection as two badges (P12-M1): the count, then the size, each empty when it has
+        // nothing to show.
         let none = DirTotals::default();
-        assert_eq!(mid_text(0, 0, false, none), "");
-        assert_eq!(mid_text(3, 1536, true, none), "3 selected, 1.5 KB");
-        assert_eq!(mid_text(2, 0, false, none), "2 selected");
-        assert_eq!(mid_text(1, 0, true, none), "1 selected, 0 B");
+        assert_eq!(badges(0, 0, false, none), "|");
+        assert_eq!(badges(3, 1536, true, none), "3 selected|1.5 KB");
+        assert_eq!(badges(2, 0, false, none), "2 selected|", "links or drives only: no size");
+        assert_eq!(badges(1, 0, true, none), "1 selected|0 B");
     }
 
     #[test]
-    fn folder_sizes_in_the_middle_text() {
+    fn folder_sizes_in_the_size_badge() {
         let kb = 1024;
         // Two folders sized, one file: everything known.
         let done = DirTotals { folders: 2, bytes: 3 * kb, pending: 0, not_sized: 0, updating: 0 };
-        assert_eq!(mid_text(3, kb, true, done), "3 selected, 4.0 KB");
+        assert_eq!(badges(3, kb, true, done), "3 selected|4.0 KB");
         // Folders only, one still walking (its partial total counts).
         let walking = DirTotals { folders: 2, bytes: 2 * kb, pending: 1, not_sized: 0, updating: 0 };
-        assert_eq!(mid_text(2, 0, false, walking), "2 selected, 2.0 KB so far...");
+        assert_eq!(badges(2, 0, false, walking), "2 selected|2.0 KB so far...");
         // More folders than the cap: the rest are not sized.
         let capped = DirTotals { folders: 150, bytes: 5 * kb, pending: 0, not_sized: 50, updating: 0 };
-        assert_eq!(mid_text(150, 0, false, capped), "150 selected, 5.0 KB so far (50 folders not sized)");
+        assert_eq!(badges(150, 0, false, capped), "150 selected|5.0 KB so far (50 folders not sized)");
         // Two sized, one of them out of date: its old size counts.
         let updating = DirTotals { folders: 2, bytes: 3 * kb, pending: 0, not_sized: 0, updating: 1 };
-        assert_eq!(mid_text(2, 0, false, updating), "2 selected, 3.0 KB (updating...)");
+        assert_eq!(badges(2, 0, false, updating), "2 selected|3.0 KB (updating...)");
         // One updating, one with no size yet: "so far..." wins.
         let mixed = DirTotals { folders: 2, bytes: 3 * kb, pending: 1, not_sized: 0, updating: 1 };
-        assert_eq!(mid_text(2, 0, false, mixed), "2 selected, 3.0 KB so far...");
+        assert_eq!(badges(2, 0, false, mixed), "2 selected|3.0 KB so far...");
         let both = DirTotals { folders: 102, bytes: 0, pending: 3, not_sized: 1, updating: 0 };
-        assert_eq!(mid_text(102, 0, false, both), "102 selected, 0 B so far... (1 folder not sized)");
+        assert_eq!(badges(102, 0, false, both), "102 selected|0 B so far... (1 folder not sized)");
     }
 
     #[test]
