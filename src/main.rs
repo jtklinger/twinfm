@@ -632,6 +632,7 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         hide_strip(st, &app, pane);
         let shown = path.to_string_lossy().to_string();
         set_path(st, &app, pane);
+        note_recent(st, &app, pane);
         update_tabs(st, pane);
         update_status(st, &app, pane);
         app.invoke_reset_scroll(pane as i32);
@@ -1028,9 +1029,36 @@ fn save_now() {
     }
 }
 
+/// A pane showed its active tab's folder (P12-M5, a navigation or a tab put on screen): the folder
+/// goes to the top of the sidebar's Recent group, unless it is This PC, an archive level, a search tab
+/// or the hidden right pane's; the sidebar is rebuilt only when the list changed.
+fn note_recent(st: &mut State, app: &App, pane: usize) {
+    let t = st.tab(pane);
+    let path = t.path.to_string_lossy().to_string();
+    if (pane == 1 && !app.get_split()) || t.search.is_some() || is_this_pc(&path) || fs::archive::split(&t.path).is_some() {
+        return;
+    }
+    if sidebar::note_recent(&mut st.config.recent, &path) {
+        eprintln!("[sidebar] recent: {path} ({} kept)", st.config.recent.len());
+        rebuild_sidebar(st);
+        schedule_save(st);
+    }
+}
+
+/// The Recent header's "Clear recent" (P12-M5).
+fn recent_clear() {
+    with_state(|st| {
+        let n = st.config.recent.len();
+        st.config.recent.clear();
+        eprintln!("[sidebar] recent cleared ({n} removed)");
+        rebuild_sidebar(st);
+        schedule_save(st);
+    });
+}
+
 /// Rebuild the sidebar's rows from its sections (on a change only).
 fn rebuild_sidebar(st: &mut State) {
-    st.side = sidebar::compose(&st.drives, &st.places, &st.config.bookmarks);
+    st.side = sidebar::compose(&st.drives, &st.places, &st.config.recent, &st.config.bookmarks);
     let items: Vec<SideItem> =
         st.side.iter().map(|r| SideItem { label: r.label.as_str().into(), kind: r.kind as i32, index: r.index as i32 }).collect();
     st.side_model.set_vec(items);
@@ -1141,6 +1169,19 @@ fn bookmark_move(i: usize, up: bool) {
         rebuild_sidebar(st);
         schedule_save(st);
         eprintln!("[sidebar] moved bookmark {i} to {to}: {}", st.config.bookmarks[to].path);
+    });
+}
+
+/// A bookmark dragged in the sidebar (P12-M5) and dropped in gap `gap`.
+fn bookmark_drag(from: usize, gap: usize) {
+    with_state(|st| {
+        let to = sidebar::drag_target(from, gap);
+        if !sidebar::move_bookmark_to(&mut st.config.bookmarks, from, to) {
+            return eprintln!("[sidebar] bookmark {from} dragged to its own place: not moved");
+        }
+        rebuild_sidebar(st);
+        schedule_save(st);
+        eprintln!("[sidebar] bookmark moved {from} -> {to} (drag)");
     });
 }
 
@@ -4027,6 +4068,7 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
         Cmd::OpenOther => own_item(pane, shellmenu::OwnItem::OpenOther, m.ctx),
         Cmd::Terminal => own_item(pane, shellmenu::OwnItem::Terminal, m.ctx),
         Cmd::CopyPath => own_item(pane, shellmenu::OwnItem::CopyPath, m.ctx),
+        Cmd::Bookmark => menu_bookmarks(pane, &m.req.folder, &m.req.names),
         Cmd::Share => queue_verb(pane, verb_request(&m.req, "", "Share", true), None),
         Cmd::Zip => queue_verb(pane, verb_request(&m.req, "", ZIP_LABEL, true), None),
         Cmd::SevenZ | Cmd::Tar => {
@@ -4674,13 +4716,14 @@ fn register_dnd() {
 /// the window and its properties, so it needs no app-state borrow.
 pub fn window_layout(app: &App) -> dnd::Layout {
     let size = app.window().size().to_logical(app.window().scale_factor());
-    let left = if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { 12.0 };
+    let left = if app.get_sidebar_visible() { app.get_sidebar_width() + 4.0 } else { dnd::RAIL_W };
     dnd::Layout {
         width: size.width,
         height: size.height,
         split: app.get_split(),
         ratio: app.get_split_ratio(),
-        tabs: [app.get_left_tabs().row_count() > 1, app.get_right_tabs().row_count() > 1],
+        // Every pane shows its tab strip, one tab too (P12-M5).
+        tabs: [true; 2],
         left,
         preview: if app.get_preview() { dnd::preview_w(size.width, left, app.get_preview_width()) } else { 0.0 },
         row_px: icons::ListGeom::new(app.get_thumbnails(), app.get_comfortable()).row_px,
@@ -4760,6 +4803,10 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             dnd::Spot::Outside => return None,
             dnd::Spot::Pane(p) => (p, None),
             dnd::Spot::Row(p, r) => (p, Some(r)),
+            // The Bookmarks gap (P12-M5): the folders dropped are bookmarked there, nothing copied.
+            dnd::Spot::SideGap(k) => {
+                return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Gap(k), dest: PathBuf::new(), springs: false });
+            }
             // A sidebar row's folder (a drive's root, a place, a bookmark), noted in the active pane.
             dnd::Spot::Side(i) => {
                 let dest = st.side.get(i)?.path.clone()?;
@@ -4848,9 +4895,10 @@ fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
 fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)], crumb_row: [(f32, f32); 2], crumbs: &'a [Vec<(f32, f32)>; 2]) -> dnd::Strips<'a> {
     let tab = |p: usize| (st.panes[p].len(), app.invoke_tab_width(p as i32), app.invoke_tab_offset(p as i32));
     dnd::Strips {
-        side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { 0.0 },
+        side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { dnd::RAIL_W },
         side_scroll: app.invoke_side_scroll(),
         side_rows,
+        side_bookmarks: (st.side.len() - st.config.bookmarks.len(), st.config.bookmarks.len()),
         tabs: [tab(0), tab(1)],
         crumb_row,
         crumbs: [&crumbs[0], &crumbs[1]],
@@ -4950,6 +4998,17 @@ pub fn side_row_centre(i: i32) -> Option<f32> {
         let i = if i < 0 { rows.len().checked_sub(i.unsigned_abs() as usize)? } else { i as usize };
         let h = rows.get(i)?.0;
         Some(dnd::side_top(&window_layout(&app)) + app.invoke_side_scroll() + dnd::side_row_top(&rows, i) + h / 2.0)
+    })
+}
+
+/// The window y of the line before bookmark `k` in the sidebar (the count: after the last), the
+/// driver's `dropfiles sidegap` (P12-M5).
+pub fn side_gap_y(k: usize) -> Option<f32> {
+    with_state(|st| {
+        let app = st.app.upgrade()?;
+        let rows = side_rows(st, &app);
+        let first = st.side.len().checked_sub(st.config.bookmarks.len())?;
+        Some(dnd::side_top(&window_layout(&app)) + app.invoke_side_scroll() + dnd::side_row_top(&rows, first + k.min(st.config.bookmarks.len())))
     })
 }
 
@@ -5248,6 +5307,12 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
         _ => (-1, -1, -1, -1, -1, -1),
     };
     let (side_row, side_y, side_h) = side.unwrap_or((-1, 0.0, 0.0));
+    // The Bookmarks gap's insertion line (P12-M5).
+    let gap = if let Some((_, dnd::Mark::Gap(k))) = at { k as i32 } else { -1 };
+    if app.get_drop_side_gap() != gap {
+        app.set_drop_side_gap(gap);
+        dnd::repaint_during_own_drag();
+    }
     let now = (
         (app.get_drop_pane(), app.get_drop_row(), app.get_drop_tab_pane(), app.get_drop_tab(), app.get_drop_side_row()),
         (app.get_drop_crumb_pane(), app.get_drop_crumb()),
@@ -5265,6 +5330,66 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
     app.set_drop_side_h(side_h);
     app.set_drop_side_row(side_row);
     dnd::repaint_during_own_drag();
+}
+
+/// The Windows 11 menu's "Add to bookmarks" (P12-M5): each folder or drive among `names` in `folder`
+/// (a file is left out), or with no names the folder itself, appended to the bookmarks; one
+/// bookmarked already stays where it is, noted as Ctrl+D notes it.
+fn menu_bookmarks(pane: usize, folder: &Path, names: &[String]) {
+    let paths: Vec<PathBuf> = if names.is_empty() { vec![folder.to_path_buf()] } else { names.iter().map(|n| folder.join(n)).filter(|p| p.is_dir()).collect() };
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let mut added = false;
+        let mut noted = String::new();
+        for p in &paths {
+            let f = p.to_string_lossy().to_string();
+            let at = st.config.bookmarks.len();
+            if sidebar::insert_bookmark(&mut st.config.bookmarks, &f, at) {
+                eprintln!("[sidebar] bookmark added {f} at {at} (menu)");
+                noted = format!("Bookmarked {f}");
+                added = true;
+            } else {
+                eprintln!("[sidebar] {f} is bookmarked already");
+                noted = format!("{f} is bookmarked already");
+            }
+        }
+        if added {
+            rebuild_sidebar(st);
+            schedule_save(st);
+        }
+        if !noted.is_empty() {
+            note(st, &app, pane, noted);
+        }
+    });
+}
+
+/// Folders dropped into the Bookmarks gap (P12-M5): each folder bookmarked at gap `at` in order (a
+/// file is left out; a folder bookmarked already stays where it is, noted as Ctrl+D notes it).
+pub fn drop_bookmarks(at: usize, sources: Vec<PathBuf>) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let pane = active_pane(&app);
+        let mut k = at;
+        let mut noted = String::new();
+        for p in sources.iter().filter(|p| p.is_dir()) {
+            let folder = p.to_string_lossy().to_string();
+            if sidebar::insert_bookmark(&mut st.config.bookmarks, &folder, k) {
+                eprintln!("[sidebar] bookmark added {folder} at {k} (drop)");
+                noted = format!("Bookmarked {folder}");
+                k += 1;
+            } else {
+                eprintln!("[sidebar] {folder} is bookmarked already");
+                noted = format!("{folder} is bookmarked already");
+            }
+        }
+        if k > at {
+            rebuild_sidebar(st);
+            schedule_save(st);
+        }
+        if !noted.is_empty() {
+            note(st, &app, pane, noted);
+        }
+    });
 }
 
 /// A drop landed (posted by the drop target through the event loop): copy or move the files
@@ -5374,6 +5499,7 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
         app.set_right_sort_asc(asc);
     }
     set_path(st, app, pane);
+    note_recent(st, app, pane);
     set_filter_box(app, pane, &model.filter.borrow().pattern);
     set_current_row(app, pane, usize::try_from(cursor).ok());
     app.invoke_set_scroll(pane as i32, scroll);
@@ -5528,6 +5654,14 @@ fn move_tab(pane: usize, from: usize, to: usize) {
 fn tab_key(pane: usize, what: &str) {
     match what {
         "new" => open_tab(pane, None),
+        // The "+" after a pane's tab strip (P12-M5): that pane becomes active, then Ctrl+T's tab.
+        "plus" => {
+            eprintln!("[tab] pane={pane} + button: new tab");
+            if let Some(app) = with_state(|st| st.app.upgrade()) {
+                app.invoke_focus_pane(pane as i32);
+            }
+            open_tab(pane, None);
+        }
         "close" => {
             let i = with_state(|st| st.panes[pane].active_index());
             close_tab(pane, i);
@@ -6985,6 +7119,12 @@ fn main() -> Result<(), slint::PlatformError> {
         .unwrap_or(0.0)
     });
     app.on_bookmark_add(bookmark_add);
+    app.on_recent_clear(recent_clear);
+    app.on_bookmark_drag(|from, gap| {
+        if let (Ok(from), Ok(gap)) = (usize::try_from(from), usize::try_from(gap)) {
+            bookmark_drag(from, gap);
+        }
+    });
     app.on_bookmark_remove(|i| {
         if let Ok(i) = usize::try_from(i) {
             bookmark_remove(i);
@@ -7069,6 +7209,8 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     app.on_tab_key(|pane, what| tab_key(pane as usize, what.as_str()));
+    // Tab and Shift+Tab between the lists (Jeremy, 2026-10-26: "tab switches panes").
+    app.on_keys_by_tab(|pane, row| eprintln!("[focus] pane={pane} has the keys by Tab, cursor {row}"));
     app.on_crumb_clicked(|pane, i| {
         if let Ok(i) = usize::try_from(i) {
             crumb_clicked(pane as usize, i);

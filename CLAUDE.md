@@ -50,7 +50,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (313 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (317 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -219,7 +219,7 @@ put off, with where it came from.
   <path|path>` calls the drop target's DragEnter and Drop directly (no OLE loop; row -1 is the
   pane's folder; `|` separates paths); in place of `<pane> <row>`, `side <row>` aims at a sidebar
   row (headers count; -1 is the last row, the newest bookmark) and `tab <pane> <index>` at a tab
-  (shown with two tabs or more); the mode `menu <copy|move|cancel>` holds the right button, so
+  (shown always since P12-M5, with two tabs or more before); the mode `menu <copy|move|cancel>` holds the right button, so
   Drop opens the Move here / Copy here / Cancel menu and the in-menu timer picks the item.
   `dragover <pane> <top|bottom> <ms> <path|path>` hovers a drag 6 px inside a list's edge for
   `<ms>` (DragEnter, DragOver every 20 ms, DragLeave; never a drop): the auto-scroll. `dragrow
@@ -252,7 +252,7 @@ put off, with where it came from.
   tab <pane> <index> ...` and `dragover crumb <pane> <index> ...` at the centre of that spot (as
   `dropfiles` aims; the hover's DragOver every 20 ms is the spring-load's clock), `dragover side
   <top|bottom> ...` 6 px inside the sidebar list's top or its bottom above the footer, `dragover
-  strip <pane> <left|right> ...` 6 px inside a tab strip's end (shown with two tabs or more).
+  strip <pane> <left|right> ...` 6 px inside a tab strip's end (the right end left of the "+" since P12-M5).
   Spring-loaded folders: a drag held `dnd::SPRING_MS` (1000 ms) over a folder row or tile, or a
   tab other than the active one, opens it in that pane (a navigation, or the tab switch, run from
   the event loop), for drags from anywhere; once per spot until the pointer leaves it; since P11-M3
@@ -687,8 +687,9 @@ put off, with where it came from.
   always shown (`model::Show`, `shows`). `backclick <pane> path|edit` posts the Back button over the
   path bar's middle or over row 0's name cell: ignored over the text entry and the rename editor.
   `sidebar click <row>` is a left click (a negative row counts from the end): the sidebar takes the
-  keys, `key F2` opens a bookmark row's title editor, `key Escape` (or Tab) gives the keys back to
-  the list. In the breadcrumb dropdown (`crumbmenu`) `key Down` / `key Up` move a highlight and
+  keys, `key F2` opens a bookmark row's title editor, `key Escape` (or Tab, or Shift+Tab) gives the
+  keys back to the active pane's list; since 2026-10-26 the sidebar is no Tab stop (only a click gives
+  it the keys). In the breadcrumb dropdown (`crumbmenu`) `key Down` / `key Up` move a highlight and
   `key Return` picks it. `[tab] pane=N strip resized: scrolled to X (tab I of N in view)` when the
   pane's width changes moved its strip. Search results' rows read `file.txt  (sub\dir)`
   (`model::search_label`; the entries, the sort and the commands keep `sub\dir\file.txt`). A tab sent
@@ -1005,6 +1006,60 @@ put off, with where it came from.
   pages a screenful towards the pointer, the wheel over it scrolls the view. `drag <pane> <dy> <ms>`
   presses its thumb at the same aim as before (`thumb()`: 10 px in from the pane's edge, 17 px below the
   list's top). No new driver step or stderr line.
+  Since P12-M5, the sidebar and the tab strip. **Every pane shows its tab strip, one tab too**
+  (Jeremy: "Always show the tab strip"), so every list starts 32 px lower than with one tab before
+  (`TAB_STRIP` always in `list_top`; `window_layout` says `tabs: [true; 2]`); the strip is as wide as
+  its tabs up to the room they have, and the **"+"** (32 px and a 2 px gap, `dnd::TAB_PLUS`, taken
+  from the tabs' room at the right) right after it opens a tab of that pane's folder as Ctrl+T does,
+  making the pane active (tooltip "New tab (Ctrl+T)"; not a drop target: the pane). Driver `tab plus
+  <pane>`; `[tab] pane=N + button: new tab`. **Recent**: the sidebar's group under Places, the last
+  eight folders a pane showed (a navigation or a tab put on screen; not This PC, an archive level, a
+  search tab or the hidden right pane's), newest first, a folder already there moved to the top
+  (`sidebar::note_recent`, `RECENT_MAX`); saved as `recent` (paths) in the settings; its header's
+  right-click menu "Clear recent". `[sidebar] recent: <path> (K kept)`, `[sidebar] recent cleared (N
+  removed)`. **Bookmarks reordered by dragging**: a press on a bookmark dragged past 4 px carries it
+  (Slint's pointer, not OLE), a 2 px line in the accent shows where it lands, the release moves it
+  (`sidebar::drag_target`, `move_bookmark_to`). Driver `bookmark drag <from> <to>` (a press, 4 px
+  moves and a release through Slint's pointer path, the sidebar scrolled to its end first);
+  `[sidebar] bookmark moved F -> T (drag)`, `[sidebar] bookmark F dragged to its own place: not
+  moved`, `[auto] bookmark drag F -> T: pressed at y A, released at y B`. **A bookmark made with the
+  mouse**: the Bookmarks header, a bookmark row's top and bottom 6 px (`dnd::GAP_PX`) and the space
+  below the last row are a drop spot of their own (`Spot::SideGap(k)`, `Mark::Gap(k)`, the same
+  insertion line, the window's `drop-side-gap`); a drag carrying a folder gets the link effect (a copy
+  where the source allows no link, never a move: `bookmark_effect`) and the drop description
+  "Bookmark", and the drop bookmarks its folders there in order (files left out; a folder bookmarked
+  already stays, with Ctrl+D's note; `sidebar::insert_bookmark`); a drop onto a bookmark row's middle
+  still copies or moves files into it. Driver `dropfiles sidegap <index> <copy|move|auto> <paths>` and
+  `dropfiles point <x> <y> <mode> <paths>` (any window point, logical px, through the real hit test)
+  (the line before bookmark `<index>`, the count below the last; the sidebar scrolled to its end
+  first); `[dnd] over sidebar bookmarks gap K ... -> effect link|copy|none`, `[dnd] drop description:
+  Bookmark` (the effect's image: a copy for TwinFM's own drag, which allows no link,
+  `gap_description`), `[sidebar] bookmark added <path> at K (drop | menu)`, `[sidebar] <path> is
+  bookmarked already`. **"Add to bookmarks"** in the Windows 11 menu on folders and drives (each selected one,
+  never inside an archive) and on a folder's background (the folder shown), appended (`Cmd::Bookmark`,
+  `menupick Add to bookmarks`; `[winmenu] pane=N runs Bookmark`); the Bookmarks header's right-click
+  menu "Bookmark this folder" (Ctrl+D's). The headers' menus run their item before they close (the
+  items are `if`s inside the popup, and a call after the close never reached the window). Driver
+  `clickat <x> <y> [right]` presses and releases a button at a window point through Slint's pointer
+  path (TwinFM's own popups, such as these menus). **The icons-only rail**: collapsed (F9, the chevron, the
+  dialog's sidebar switch, now "Names (off: the icons-only rail)") the sidebar is a 48 px rail
+  (`dnd::RAIL_W`; the 12 px strip until P12-M5; Jeremy: "Collapsing the sidebar gives the icons-only
+  rail instead of today's thin strip; no fully hidden state."): the same rows and heights, each row's
+  icon centred with its name as a tooltip, a header a hairline, the footer's chevron widening it; a
+  click, a drop, a gap, a bookmark's drag and the keys work on it as on the full sidebar; the panes
+  start right of it (`Layout.left` 48). `sidebar_visible = false` loads as the rail.
+  **Tab switches panes** (Jeremy's console-check follow-up, 2026-10-26: "tab switches panes"): Tab and
+  Shift+Tab in a list give the keys to the other pane's list (the same list with one pane; app.slint
+  `tab-panes`, the list's key handler, Ctrl+Tab still the tabs'), which becomes the active pane (its
+  ring, the title, the toolbar); a list with no cursor then gets one on its first row wholly on screen
+  (`cursor-to-first`: row 0 unless it was scrolled without a click), and a list the keys reach by Tab
+  from its own search box or path entry does the same (`tabbed-in`, its key layer's `focus-gained` with
+  `tab-navigation`). The window's own key handler (`outer`) and the sidebar's take no Tab stop
+  (`focus-on-tab-navigation: false`; neither drew anything there). Every list's and tile's cursor outline
+  takes its colour from the host (`cursor-color`): the accent in the active pane, the grey ring
+  (`Theme.ring`) in the other, the cursor tile's whole-name overlay too, so one accent outline shows
+  where the keys are. Driver key names `Tab`, `ShiftTab` (P12-M3's). `[focus] pane=N has the keys by
+  Tab, cursor R`.
   Since P12-M3, TwinFM's own questions are drawn in the look (`src/ask.rs`, app.slint's
   `question-popup`): the zip's replace question (Cancel, Skip, Replace) and permanent delete (Cancel,
   Delete), a zip's or a PDF's password (a masked field, Cancel, OK), "Open N items at once?" (Cancel,
@@ -1119,7 +1174,9 @@ put off, with where it came from.
   column apart from the row, the strips are composed again at the new pitch and each list keeps its
   first row at the top; the rename editor follows the icon column, not the row; a gate run with it
   takes `TWINFM_CONFIG=C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`, and
-  with thumbnails `C:\traces\rows-comfortable-thumbs.toml`, read-only, `thumbnails = true` as well); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
+  with thumbnails `C:\traces\rows-comfortable-thumbs.toml`, read-only, `thumbnails = true` as well), since P12-M5 `recent` (the sidebar's Recent group, at most
+  eight paths, newest first; "Clear recent" empties it) and `sidebar_visible = false` the icons-only
+  rail (the 12 px strip before); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
   `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
   `TWINFM_SCHEME=light|dark` overrides it for a scripted screenshot of the other scheme; since P10-M3 the
   native title bar follows it through `DWMWA_USE_IMMERSIVE_DARK_MODE`, set when the window's handle is
@@ -1219,6 +1276,12 @@ put off, with where it came from.
   px geometry lines (one each per cycle); since 2026-10-26 thumbnails go on between (a click and
   PageDown in 44 px rows), then compact and thumbnails off, and it reports the 44 px geometry lines (one
   per cycle).
+  Since P12-M5 each cycle also drops `src` into the Bookmarks gap above `bm` (`dropfiles sidegap 0`),
+  drags it below `bm` (`bookmark drag 0 1`), removes it again (`bookmark remove 1`), and opens a tab with
+  the "+" (`tab plus 0`) and closes it; it reports the bookmarks added by the drop, the drags, the
+  removals and the "+" tabs (one each per cycle). Every list starts 32 px lower since P12-M5 (the tab
+  strip always shown), and the driver's aims follow. Since 2026-10-26 the cycle ends with a click in the
+  left list, Tab and Shift+Tab; it reports the `[focus]` lines each way (one each per cycle).
   `tools/soak-p2m1.ps1 -Minutes N` keeps both panes on watched folders in `%TEMP%\twinfm-m5\watch\`
   (2,000 files each) and scrolls them, with `touch`/`rmfile`/`waitwatch`, tab switches and Ctrl+R,
   while a PowerShell writer job creates, renames, deletes and appends to files there (a few per

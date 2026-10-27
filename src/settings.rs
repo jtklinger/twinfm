@@ -157,6 +157,9 @@ pub struct Config {
     pub col_modified_right: f32,
     /// Restored only when its title bar would be on a monitor.
     pub window: Option<WindowGeom>,
+    /// The folders the panes showed last, newest first, at most `sidebar::RECENT_MAX` (P12-M5): the
+    /// sidebar's Recent group. Missing in an older file: none.
+    pub recent: Vec<String>,
     /// Bookmarked folders in sidebar order, as `[[bookmark]]` tables with `path` and an optional
     /// `title` (without one the sidebar shows the folder's name).
     #[serde(rename = "bookmark")]
@@ -304,6 +307,7 @@ impl Default for Config {
             col_size_right: crate::cols::DEFAULT.size,
             col_modified_right: crate::cols::DEFAULT.modified,
             window: None,
+            recent: Vec::new(),
             bookmarks: Vec::new(),
             legacy_bookmarks: Vec::new(),
         }
@@ -1007,6 +1011,21 @@ show_type = false
         // A folder that does not exist is accepted as typed.
         let missing = Dialog { start_left: r"Q:\nowhere".into(), ..open.clone() }.normalized();
         assert_eq!(open.changes(&missing), vec![("start_left", r"C:\".into(), r"Q:\nowhere".into())]);
+    }
+
+    #[test]
+    fn recent_round_trips_beside_the_window_and_bookmarks() {
+        // P12-M5: the Recent list written between the [window] table and the [[bookmark]] tables.
+        let c = Config {
+            recent: vec![r"C:\work".into(), r"D:\".into()],
+            window: Some(WindowGeom { x: 10, y: 20, width: 800.0, height: 600.0, maximized: false }),
+            bookmarks: vec![Bookmark::new(r"C:\b")],
+            ..Config::default()
+        };
+        let back = Config::parse(&c.to_toml()).unwrap();
+        assert_eq!(back.recent, c.recent);
+        assert_eq!((back.window, back.bookmarks.len()), (c.window, 1));
+        assert!(Config::parse("split = true\n").unwrap().recent.is_empty(), "an older file: none");
     }
 
     #[test]

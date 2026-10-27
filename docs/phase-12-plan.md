@@ -1027,6 +1027,324 @@ are tiles, not rows, and stay as they are.
   The gate is one with P12-M5's Tab follow-up (P12-M5's record), with a read-only
   `C:\traces\rows-comfortable-thumbs.toml` (`thumbnails = true`, `row_height = "comfortable"`).
 
+## P12-M5: the sidebar, bookmarks by mouse and the new-tab button
+
+The look stream's fifth milestone, opened 2026-10-25 on the P12-M4 branch's head, branch
+`feat/p12-m5-sidebar-tabs`. The icons-only rail, bookmarks reordered by dragging, a bookmark made with
+the mouse, the Recent group, and the "+" after a tab strip that now shows always.
+
+### Jeremy's decisions
+
+- **The rail** (2026-10-25, through the coordinating session, his words): "Collapsing the sidebar gives
+  the icons-only rail instead of today's thin strip; no fully hidden state."
+- From the kickoff, quoted in the plan: "Always show the tab strip"; a bookmark made with the mouse ("add
+  a way to create a bookmark using the mouse (click/drag?)", put in P12-M5 by his word); the Recent
+  group (his pick); the new-tab button (his request of 2026-10-23, taken 2026-10-25).
+
+### Settled first (2026-10-25, reading the sidebar's code and its drop spots before any)
+
+The plan left four questions here; the stream's answers went to the coordinating session with a
+recommendation each, and the first went to Jeremy (above).
+
+1. **The rail replaces the 12 px strip**: two states, full and rail, no third hidden state. F9 and the
+   chevron stay a toggle, and `sidebar_visible = false` in a saved settings file loads as the rail, so no
+   new key. The rail is 48 px: each row's icon centred in its 32 px row (drives, places, Recent,
+   bookmarks), a header a hairline, the row's name a tooltip, a click and a drop as on the full row, the
+   chevron at its foot to widen it. Collapsed, the panes start at 48 px, not 12: one constant
+   (`dnd::RAIL_W`) for `Layout.left`, the driver and the tests; the gate's scenario (sidebar shown) does
+   not see it.
+2. **The gap against a row: 6 px at each edge of a bookmark row.** A drop in the top or bottom 6 px of a
+   32 px bookmark row (a 12 px band across the line between two rows) is the gap and inserts the folder
+   there; the middle 20 px is the row, which copies or moves files into its folder as before. The
+   Bookmarks header whole inserts first; the last bookmark's bottom 6 px and the empty space below it
+   append. The same bands in the rail. The insertion line (2 px, the accent) shows where the folder will
+   land, for this drop and for a bookmark dragged to a new place.
+3. **The Bookmarks header gets a menu with "Bookmark this folder"** (Ctrl+D's action: the active pane's
+   folder, appended), beside "Add to bookmarks" in the Windows 11 menu. It is where a person looks for it,
+   and the Recent header gets a menu anyway ("Clear recent", the plan's).
+4. **Recent's rules**: the last eight folders a pane showed, newest first, under Places. Shown is a
+   listing that lands in a pane's active tab: a navigation, Back and Forward, a tab switch, a restored tab
+   at start. A folder already there moves to the top (the same-folder test bookmarks use, any case). Not
+   counted: archive levels, search tabs, This PC, the hidden right pane. A bookmarked folder can be in
+   Recent too (the groups are apart). A folder that is gone stays until it is clicked, which shows the
+   error a missing bookmark does. Saved as `recent` (paths, newest first).
+
+**The strip always shown and the "+"** needed no question: `TAB_STRIP` is always in `list_top`, so every
+list starts 32 px lower with one tab, and the driver's aims, `dnd::hit_all`, the soaks' row aims and the
+gate scenario's geometry move in the same commit. The order of work followed from it: the strip and the
+"+" first (it moves every aim), then Recent, the drag, the bookmark by mouse, the rail last.
+
+### What landed (2026-10-25)
+
+- **74d9c66**, the tab strip shown always and the "+": every pane shows its strip with one tab too
+  (`window_layout` says `tabs: [true; 2]`), the strip as wide as its tabs up to the room they have, and
+  the "+" (32 px with a 2 px gap, `dnd::TAB_PLUS`, taken from the tabs' room at the right) right after
+  it, opening a tab of the pane's folder as Ctrl+T does and making the pane active (tooltip "New tab
+  (Ctrl+T)"). Not a drop target: the "+" is the pane, and a tab scrolled under it is not hit; the strip's
+  auto-scroll end moves left of it. Driver `tab plus <pane>`; `[tab] pane=N + button: new tab`. Tests:
+  the hit test left of and over the "+", the strip's scroll end.
+- **31feed2**, Recent: `RowKind::Recent`, `sidebar::note_recent` (`RECENT_MAX` 8), `compose` with the
+  group under Places, `recent` in the settings, the header's right-click menu "Clear recent". `[sidebar]
+  recent: <path> (K kept)`, `[sidebar] recent cleared (N removed)`. Tests: the last eight newest first
+  (a folder again moves to the top, any case), the setting's round trip beside the window and the
+  bookmarks.
+- **4005f6f**, bookmarks reordered by dragging: a press on a bookmark row dragged past 4 px carries it
+  (Slint's pointer, not OLE), the insertion line shows where it lands, the release moves it
+  (`sidebar::drag_target`, `move_bookmark_to`). Driver `bookmark drag <from> <to>`; `[sidebar] bookmark
+  moved F -> T (drag)`, `[sidebar] bookmark F dragged to its own place: not moved`. Test: the landing
+  index for each gap above and below the dragged row.
+- **9c629e7**, a bookmark made with the mouse: the gap is a spot of its own (`Spot::SideGap(k)`,
+  `Mark::Gap(k)`, `dnd::GAP_PX` 6), a drag carrying a folder gets the link effect there (a copy where the
+  source allows no link, never a move: `bookmark_effect`) and the drop description "Bookmark", and the
+  drop bookmarks its folders at that place in order (files left out, a drag of files alone refused; a
+  folder bookmarked already stays, with Ctrl+D's note; `sidebar::insert_bookmark`, which
+  `add_bookmark` now calls). The Bookmarks header's menu "Bookmark this folder". Driver `dropfiles
+  sidegap <index> <mode> <paths>`; `[dnd] over sidebar bookmarks gap K ... -> effect link|copy|none`,
+  `[sidebar] bookmark added <path> at K (drop | menu)`, `[sidebar] <path> is bookmarked already`. Tests:
+  the gap against the row at each edge, the header and below the last row, the effect for each allowed
+  set; the insert place and a folder bookmarked already.
+- **d497939**, "Add to bookmarks" in the Windows 11 menu: on folders and drives (each selected one, never
+  inside an archive) and on a folder's background (the folder shown), appended (`Cmd::Bookmark`, the
+  fixed ids now 21). `menupick Add to bookmarks`; `[winmenu] pane=N runs Bookmark`. Tests: the menus of a
+  folder, of several items, of a drive and of a background carry it (the file menus' tests unchanged);
+  the ids' round trip.
+- **5eae5e5**, the soak cycle (below), and the driver's bookmark steps scroll the sidebar to its end first
+  (Recent's rows push the bookmarks below the fold in the gate's window).
+- **7ff870b**, the icons-only rail: collapsed (F9, the chevron, the dialog's switch, now "Names (off: the
+  icons-only rail)"), the sidebar is 48 px (`dnd::RAIL_W`) with the same rows and heights: each row's
+  icon centred (the full row's icon, one binding for both), its name a tooltip, a header a 1 px hairline,
+  the footer only its chevron (chevron-right widens the rail; Settings and About are the full sidebar's).
+  A click, a drop, a gap, a bookmark's drag and the keys work on it as on the full sidebar, since its
+  geometry is the full one's narrowed (`strips()`'s `side_w` and `Layout.left` from `RAIL_W`); the 12 px
+  strip is gone. The driver's sidebar aims take the rail's middle when collapsed (`auto.rs` `side_x`).
+  Test: the rail's hit test (a drive's icon, the Bookmarks hairline as the gap, a bookmark's icon, the
+  pane right of the rail).
+- **a853e52**, two things the rail's scripted check found: the rail's tooltip sat below the row's
+  TouchArea, which took the hover, so it never showed (Slint puts the tooltip's area where the `Tooltip`
+  element stands; the toolbar's and the "+"'s stand after their TouchArea, so now does the rail's); and
+  the sidebar list scrolled sideways in the rail, its thin horizontal thumb drawn above the footer (a
+  list's content is as wide as its rows' minimum, and a row's hidden name keeps its place in the layout),
+  so the list's `content-width` is its own visible width.
+
+Tests 313 (309, four new: Recent's two, the drag's landing index, the gap's insert; the hit tests, the
+menu's and the rail's extend existing ones).
+
+### Calls made in this milestone, for Jeremy to check
+
+- The gap is 6 px at each edge of a bookmark row, the header whole, and the space below the last row
+  (Settled first 2).
+- The Bookmarks header's own menu has "Bookmark this folder" (Settled first 3).
+- Recent's rules, Settled first 4: a gone folder stays until clicked; a bookmarked folder can be in
+  Recent too.
+- The rail keeps the footer's chevron only; Settings (Ctrl+,) and About (F1) are on the full sidebar.
+- A drop into the gap where the source allows no link (TwinFM's own drag allows copy and move only, as
+  most programs' do) shows the copy cursor, never a move, and copies nothing: the drop bookmarks.
+
+### Scripted checks (2026-10-25, the branch's builds, `SLINT_BACKEND=winit-software`, both schemes)
+
+- The rail (a853e52's build, light and dark): in `%TEMP%\twinfm-p12m5-rail` (two folders and a file,
+  removed afterwards), `inner` bookmarked, then F9: the rail shows every row's icon, the headers as
+  hairlines, the chevron alone in the footer; the pointer over Home shows the tooltip "Home"; a file
+  dropped onto the rail's `inner` bookmark was copied into it (`[dnd] Drop at sidebar row 16 (...inner)
+  ... effect copy`, `Copied 1 item`); `other` dropped into the rail's Bookmarks gap 0 was bookmarked there
+  (`bookmark added ... at 0 (drop)`), then dragged below `inner` (`bookmark moved 0 -> 1 (drag)`); a click
+  on the last rail row opened `other`, and Up moved the sidebar's row to `inner` (`[sidebar] key Up: row
+  15 (inner)`, drawn as the current row on the rail); F9 again gave the full sidebar as before. 7ff870b's
+  build had shown no tooltip and a horizontal thumb above the footer: a853e52.
+
+- The "+" (74d9c66's build): `tab plus 0` gave `[tab] pane=0 + button: new tab` and a second tab on the
+  same folder; screenshots with one tab and two, the strip as wide as its tabs and the "+" after it.
+- Recent (31feed2's build): five navigations gave `[sidebar] recent: ... (1 kept)` to `(4 kept)`,
+  `C:\Windows` moved to the top when shown again (`(3 kept)` twice); screenshots of the group under
+  Places.
+- The gap (9c629e7's build): two folders dropped into gap 1 were bookmarked at 1 and 2 in order (`effect
+  copy`: the driver's data object allows copy and move only); a file alone into gap 0 refused (`effect
+  none`, nothing added); a mixed drop into gap 4 added its folder only, and `C:\Windows`, bookmarked
+  already, stayed with the note.
+- "Add to bookmarks" (d497939's build): on a folder's row `bookmark added ... at 0 (menu)`, on the
+  background the folder shown at 1, the same folder again "bookmarked already".
+- The soak cycle (5eae5e5's build): a drop into gap 0, `bookmark moved 0 -> 2 (drag)` and the bookmark
+  removed again, with the sidebar scrolled to its end first.
+
+### Soak
+
+`tools/soak-p5m3.ps1` gains a cycle: `src` dropped into the Bookmarks gap above `bm` (bookmarked first),
+dragged below it (`bookmark drag 0 1`), removed again (`bookmark remove 1`, so `bm` is the sidebar's last
+row as before), and a tab opened by the "+" and closed; the report counts the bookmarks added by the drop,
+the drags, the removals and the "+" tabs (one each per cycle). Every list starts 32 px lower, so this
+milestone takes the full soak (every aim moved).
+
+Run by the coordinating session, 2026-10-26 from about 00:25 (10.1 minutes), `tools/soak-p5m3.ps1` from
+the `gate-p12m5` checkout (a853e52) on `target-p12m5`: exit code 0, the window closed by the script, no
+panicked line; 271 jobs done (none failed or cancelled); every count that must be 0 was 0; bookmarks
+added by a drop 4, dragged 4, removed 4, and tabs by the "+" 4 (one each per cycle); comfortable rows
+on 4, off 4; working set 141.1 MB at 5 s, 262.7 MB at the end (at most 273.5), private bytes 164.8 to
+252.3 MB. One count reads oddly and is older than Phase 12: "tabs they opened 14 (two per cycle)" for 4
+several-item opens, as P12-M4's soak read and as the 0.2.0 memory run did (70 for 18): the report's
+counting, left for a later look.
+
+### Gate
+
+ab62, passed (2026-10-26, Jeremy at the console, 06:53 to 07:01): `tools/gate-p12m5.ps1`, `target-p12m5`
+(a853e52) against `target-p12m4` (24e8425, its base), the defaults.
+
+| Setting | p12m4 (WPR) | p12m5 (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 21.8, 21.0, 21.1 | 21.2, 20.7, 20.6 | 21.1 / 20.7 | 2.93 to 2.97 / 2.83 to 2.88 ms |
+
+No gap that counts: the candidate's median 0.4 of a point under the reference's, and not every reference
+run below every candidate run. The tab strip drawn in both panes costs nothing the triplet sees: the
+lists 32 px shorter leave fewer rows to draw per frame (render p50 2.83 to 2.88 ms against 2.93 to 2.97).
+No panic. The session ran in the same costlier state as the night's gates (ab56 to ab61), so neither
+build came under the 20% bar; read like for like.
+
+### Console checks (for Jeremy, unelevated, after the gate, `target-p12m5`, light and dark)
+
+- The rail (F9 or the chevron) with drives, Recent and bookmarks: the icons, a header's hairline, a
+  row's name as its tooltip; a click on a rail row; a drop onto a rail row (a copy into that folder); a
+  bookmark dragged in the rail.
+- A bookmark dragged to a new place in the full sidebar (the insertion line, then the row there).
+- A folder dragged from TwinFM and from Explorer onto the Bookmarks header and between two bookmarks
+  (the cursor and "Bookmark", then the new row there); a file dragged there (refused); a drop onto a
+  bookmark row's middle (still a copy into it).
+- "Add to bookmarks" on a folder and on a background; the Bookmarks header's "Bookmark this folder";
+  Recent filling as folders are shown, and "Clear recent".
+- The "+" with one tab and with several (it stays after the last tab, and the strip scrolls left of it
+  when the tabs overflow).
+
+Jeremy's results (2026-10-26, on `target-p12m5`), his words for the two that failed: "Clear recent does
+not work, items still shown." and "Dragging to bookmarks still doesn't work."
+
+- **Clear recent**, found and fixed (eb36468). A new driver step, `clickat <x> <y> [right]`, gave the
+  mouse's path: a right click on the Recent header showed the menu, a click on "Clear recent" closed it,
+  and nothing was cleared (no `[sidebar] recent cleared` line). The header menu's items are `if`s inside
+  the popup (one item per header), and each closed the popup before calling its action: the close drops
+  those items, so the call after it never reached the window. "Bookmark this folder" had the same fault.
+  Both now act first, then close: the same clicks gave `[sidebar] recent cleared (3 removed)` and the
+  group gone from the sidebar, then `[sidebar] Bookmarked C:\Users` from the Bookmarks header's menu.
+  The scripted checks before had called the callbacks directly (`bookmark add`), never through the menu.
+- **A folder dragged to the Bookmarks** (16de542). Jeremy's own run (2026-10-26, his words: "screenshot
+  of drag within twinfm pane to bookmarks. logging was on, build p12-m6";
+  `C:\traces\jeremy-bookmark-drag-2026-10-26.log` and `.webp`) was on a build without this milestone,
+  but showed the gesture: the folder row `Reagyn_Download` dragged from the right pane and let go in the
+  empty sidebar area below the only bookmark, from TwinFM's own drag, which allows copy and move
+  (`allowed=0x3`, no link); that build read the spot as `over nowhere`. This milestone's code takes it:
+  through the real hit test at window points well below the last row (the driver's new `dropfiles point
+  <x> <y>`), a folder dropped there with copy and move allowed gave `over sidebar bookmarks gap 1 ...
+  allowed=0x3 -> effect copy` and `bookmark added ... at 1 (drop)`, the same in the rail (`... at 2`),
+  and a file alone was refused (`effect none`), in both schemes. One fault found on the way: over the
+  gap the drop description ("Bookmark") always carried the link image, while TwinFM's own drag gets a
+  copy, and the shell draws a description only with the effect's image, so its "Bookmark" could not
+  show for that drag. It now takes the effect's image (`dnd::gap_description`, tested). Not checked by
+  a script: the shell drawing that text (the driver's data object refuses descriptions); Jeremy's
+  console check, on a build with this milestone.
+
+No gate rerun for these fixes or P12-M3's Tab stop (the coordinating session, 2026-10-26): a call order
+in a popup, the drop description over the sidebar and one Slint focus property, none of them in the
+rows or the gate scenario (it opens no question, no sidebar menu and drags nothing).
+
+Jeremy's re-checks (2026-10-26, on `target-p12m5` rebuilt from 3d5e162), his words: the folder dragged
+to the Bookmarks, "4. Works good!"; Clear recent and Bookmark this folder, "5. Works as expected."
+
+### Jeremy's console-check follow-up: Tab switches panes (2026-10-26)
+
+His re-check of P12-M3's item, in his words: "3. Tab moves, but it's tough to determine exactly which
+icon or pane is the active tab. On some tabs, it doesn't even show a row or icon that's highlighted with
+the tab." A survey of every Tab stop (the look stream's scripted runs on `target-p12m5`'s code, both
+schemes, a screenshot and UI Automation's focused element after each key, consecutive shots
+pixel-diffed; the notes and shots in the coordinating session's notes folder, `p12-tab-stops.md`) found
+the questions sound (every stop a button with its ring) and the main window not: only the search boxes
+and the path entry drew anything when they took the keys; the window's own key handler, the sidebar's
+and both lists drew nothing (the cursor's outline showed in both panes whether or not the list had the
+keys); the sidebar's handler sent Tab back to the active list, so with the right pane active Tab cycled
+three stops of which none changed a pixel; and a list that took the keys by Tab did not become the
+active pane (Down moved the right list's cursor while the title, the ring and the toolbar stayed with
+the left). Jeremy's decision, his words: "tab switches panes" (the dual-pane alternative in the
+report).
+
+- **2b41100**: Tab and Shift+Tab in a list give the keys to the other pane's list (the same list with
+  one pane; app.slint `tab-panes` through `focus-pane`, as Ctrl+Shift+Right does), which becomes the
+  active pane; a list with no cursor gets one on its first row wholly on screen (`cursor-to-first`); a
+  list the keys reach by Tab from its own search box or path entry makes its pane active the same way
+  (`tabbed-in`: the six list variants' key layers report a `focus-gained` with `tab-navigation`). The
+  window's own key handler and the sidebar's take no Tab stop (`focus-on-tab-navigation: false`; the
+  sidebar keeps its keys after a click, and Escape, Tab and now Shift+Tab give them back). Every list's
+  and tile's cursor outline reads its colour from the host (`cursor-color`, a property of the four
+  details row components and both grids): the accent in the active pane, `Theme.ring` in the other; the
+  cursor tile's whole-name overlay the same. `[focus] pane=N has the keys by Tab, cursor R`. No pure part
+  to test (the change is Slint's and one log line); 313 tests.
+
+Calls made, for Jeremy to check:
+
+- The cursor a Tab gives a list with none goes on its first row wholly on screen, not row 0 whatever the
+  scroll: they are the same unless the list was scrolled without a click, and scrolling it back to the
+  top would lose the place. It moves the cursor only; nothing is selected (Explorer's focus rectangle).
+- From the search box and the path entry Tab goes to their own pane's list (Slint's order), and
+  Shift+Tab from the left search box to the right list; only a list's Tab jumps to the other pane.
+- The inactive pane's cursor outline is the grey ring colour (#A3A3A3 light, #737373 dark), drawn as
+  before (2 px), so it still shows where that pane's cursor is.
+
+Scripted check (the branch's build, both schemes, `C:\Windows` and `C:\Windows\Web` side by side, the
+cursor on the left only; 14 shots, consecutive pixel diffs, UI Automation's focused element): Tab gave
+`[focus] pane=1 has the keys by Tab, cursor 0` (the right list's cursor on its first row, the ring and
+title on the right, the left cursor's outline grey), Tab back `pane=0 ... cursor 2`, Shift+Tab twice the
+same, Down after each moved the cursor of the pane that had the keys; in a scrolled `System32` with no
+cursor, Tab put it on row 219, the first row wholly on screen; Ctrl+L, Tab and Tab went path entry,
+search box, list (`[focus] pane=1 ... cursor 219` from the search box); the sidebar after a click took
+Down (`[sidebar] key Down: row 4 (Home)`) and Tab gave the keys back to the active list; in the large
+grid the inactive pane's cursor tile was outlined grey; with one pane Tab stayed in the list. Every Tab
+and Shift+Tab changed pixels; no panic.
+
+Together with P12-M4's comfortable thumbnail rows, merged forward (d1d6068), one gate on this branch's
+code head: `tools/gate-p12m5b.ps1`, tag ab64 (the coordinating session's to set), `target-p12m5b`
+(2b41100) against `target-p12m5` (3d5e162), four pairs: the defaults, `C:\traces\rows-comfortable.toml`,
+`C:\traces\rows-comfortable-thumbs.toml` (new, read-only: `thumbnails = true`, `row_height =
+"comfortable"`; the reference draws 32 px rows with it, the candidate 44) and `C:\traces\grid-thumbs.toml`
+(every tile now reads its cursor colour). The soak: P12-M4's cycle adds the 44 px thumbnail rows, and
+P12-M5's ends with a click in the left list, Tab and Shift+Tab (`[focus]` lines, one each per cycle).
+
+The soak, run by the coordinating session on `target-p12m5b` (2b41100), 2026-10-26, twice, 10.1 minutes
+each, both exit code 0, the window closed by the script, no panicked line, every count that must be 0 at
+0:
+
+- **The follow-up's soak**: 024d3f0's `tools/soak-p5m3.ps1` (the PR head's, with the Tab pair): 257 jobs
+  done; comfortable rows on 4, off 4, 30 px geometry lines 4, 44 px (thumbnails) 4; bookmarks added by a
+  drop 4, dragged 4, removed 4, tabs by the "+" 4; "Tab between the panes: to the right 4, back 4 (one
+  each per cycle)"; working set 142.9 MB at the start, 243.7 MB at the end, private bytes 165.6 to 242.0
+  MB.
+- **The rows cycle confirmed** in a first run of 2b41100's own `tools/soak-p5m3.ps1`, which has the 44 px
+  rows cycle but not the Tab pair (the coordinating session took the code head's script): 258 jobs done;
+  the same rows and bookmark counts (30 px lines 4, 44 px 4); private bytes 165.2 to 242.2 MB.
+
+ab64, passed (2026-10-26, Jeremy at the console, done 22:09, 33 min): `C:\traces\gate-p12m5b.ps1`,
+`target-p12m5b` (2b41100) against `target-p12m5` (3d5e162), the four settings above; it is P12-M4's gate
+for the 44 px rows too.
+
+| Setting | p12m5 (WPR) | p12m5b (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.4, 20.9, 20.7 | 20.7, 21.0, 21.0 | 20.7 / 21.0 | 2.81 to 2.88 ms |
+| rows-comfortable | 18.6, 16.9, 17.6 | 18.5, 17.2, 17.4 | 17.6 / 17.4 | 2.32 to 2.51 ms |
+| rows-comfortable-thumbs | 16.8, 16.8, 17.2 | 14.5, 14.5, 14.5 | 16.8 / 14.5 | 2.21 to 2.30 / 1.91 to 2.03 ms |
+| grid-thumbs | 11.9, 11.8, 11.8 | 12.0, 11.8, 12.2 | 11.8 / 12.0 | 1.47 to 1.56 ms |
+
+No gap that counts in any setting: in the defaults and the grid the candidate's median is 0.3 and 0.2 of a
+point above, with a reference run above a candidate run in each. In rows-comfortable both builds draw the
+30 px rows (like for like). In rows-comfortable-thumbs the reference draws 32 px thumbnail rows and the
+candidate 44 px ones: fewer rows on screen, so less to draw (render p50 1.91 to 2.03 ms against 2.21 to
+2.30) and 2.3 points less busy. The three settings with a line to check had it in every candidate run's
+stderr (the 30 px and 44 px geometry, the grid's start); no panic. The defaults runs were again in the costlier state (render p50 about
+2.8 ms), read like for like.
+
+Console checks (for Jeremy, unelevated, after the gate, `target-p12m5b`, light and dark):
+
+- Two panes: Tab and Shift+Tab from either list; the keys, the ring, the title and the one accent
+  outline go together; Down, Return and Delete act in the pane that has them.
+- A pane with no cursor (just navigated): Tab puts one on its first row on screen.
+- The search box and Ctrl+L's path entry: Tab to their own list.
+- The sidebar after a click: its keys, then Tab or Escape back to the list.
+- Settings > Rows > Comfortable with thumbnails on: the 44 px rows beside Explorer; a rename (F2) in
+  them and in 30 px rows: the editor over the name.
+
 ## The memory check (the coordinating session, 2026-10-25)
 
 Jeremy's word at the kickoff: "The memory check". The question, from the Phase 11 close's 60-minute soak: what
