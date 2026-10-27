@@ -14,6 +14,23 @@ export struct Row {
     cut: bool,
 }
 
+// A row of the sizes view (P13-M3, sizeview.rs `SizeModel`): the entry's own name (the row's
+// entry keeps its path under the root), its depth under the root, its share of the root's size on
+// disk (0 to 1), its size on disk and file count as text, and for a folder whether it is opened in
+// place.
+export struct SizeRow {
+    name: string,
+    kind: int,
+    selected: bool,
+    cut: bool,
+    depth: int,
+    share: float,
+    size: string,
+    files: string,
+    folder: bool,
+    open: bool,
+}
+
 // The large-icon grid (P4-M1, from the P3-M5 trace's variant b): one tile per entry, `GridRow.tiles`
 // of them to a grid row, the grid row's first entry index in `first` (model.rs GridModel). The
 // tile carries what it draws; `current` is the cursor, decided in Rust, so no tile binds to a root
@@ -766,6 +783,105 @@ component FileGridMediumList inherits FileGridMedium {
     }
 }
 
+// The sizes view's list (P13-M3): one row per folder or file, biggest first in its level; a folder's
+// chevron opens it in place (row-gesture what 8, main.rs). The icon column is the pane's strip, as
+// in the details list; the chevron and the name are indented by the depth after it. Fixed columns:
+// the share bar (130 px), the size on disk (100 px) and the file count (80 px), as the header's.
+component SizeRows inherits ListView {
+    in property <[SizeRow]> rows;
+    in property <int> current-row: -1;
+    in property <brush> cursor-color: Theme.cursor;
+    in property <length> row-h: 22px;
+    // The icon column's padding: 28 px, or 42 px beside 32 px icons (thumbnails).
+    in property <length> pad: 28px;
+    callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
+    callback row-gesture(int, int, bool, bool);
+
+    accessible-label: "Sizes";
+    accessible-item-count: rows.length;
+    accessible-delegate-focus: max(0, current-row);
+
+    for row[i] in rows: Rectangle {
+        height: root.row-h;
+        accessible-role: AccessibleRole.list-item;
+        accessible-label: row.name + ", " + row.size + ", " + row.files;
+        accessible-item-selectable: true;
+        accessible-item-selected: row.selected;
+        accessible-item-index: i;
+        background: row.selected ? Theme.selection : transparent;
+        border-radius: Theme.radius;
+        border-width: i == current-row ? 2px : 0px;
+        border-color: root.cursor-color;
+        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+        HorizontalLayout {
+            padding-left: root.pad + row.depth * 16px;
+            padding-right: 10px;
+            spacing: 0px;
+            Rectangle {
+                width: 16px;
+                if row.folder: Image {
+                    x: 1px;
+                    y: (parent.height - 14px) / 2;
+                    width: 14px;
+                    height: 14px;
+                    source: row.open ? @image-url("icons/chevron-down.svg") : @image-url("icons/chevron-right.svg");
+                    colorize: Theme.fg-muted;
+                }
+            }
+            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Rectangle {
+                width: 130px;
+                Rectangle {
+                    x: 8px;
+                    y: (parent.height - 8px) / 2;
+                    width: parent.width - 16px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.muted;
+                    Rectangle {
+                        x: 0;
+                        width: max(row.share > 0 ? 2px : 0px, parent.width * row.share);
+                        height: parent.height;
+                        border-radius: 4px;
+                        background: Theme.accent;
+                    }
+                }
+            }
+            Text { text: row.size; width: 100px; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.files; width: 80px; horizontal-alignment: right; vertical-alignment: center; color: Theme.fg-muted; }
+        }
+        TouchArea {
+            pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
+            double-clicked => { root.row-gesture(i, 3, false, false); }
+        }
+        // The chevron, over the row's own TouchArea: a click opens or closes the folder in place.
+        if row.folder: TouchArea {
+            x: root.pad + row.depth * 16px - 2px;
+            width: 20px;
+            clicked => { root.row-gesture(i, 8, false, false); }
+        }
+    }
+}
+
+component SizeList inherits SizeRows {
+    in property <int> focus-request;
+    in property <bool> focus-on-init;
+    callback key(KeyEvent) -> EventResult;
+    forward-focus: key-area;
+    init => {
+        root.content-height = root.rows.length * root.row-h;
+        if (root.focus-on-init) { key-area.focus(); }
+    }
+    changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
+    key-area := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
+    }
+}
+
 // A pane's file list: its state, callbacks and logic, and one of the six lists above, chosen by
 // the Type column, thumbnail, view and tile size switches once per pane, outside any `for`. Switching keeps the rows, the scroll
 // (content-y), the cursor and the selection, which are the host's; the new list binds to them.
@@ -796,6 +912,10 @@ component FileListHost inherits Rectangle {
     // Medium tiles (settings `tile_left` / `tile_right`, Ctrl+Shift+3): FileGridMediumList. tile-w
     // and tile-h are the tile's size (icons::TileGeom) for the host's and the pane's arithmetic.
     in property <bool> medium: false;
+    // The sizes view (P13-M3): SizeList over size-rows (sizeview.rs SizeModel, over the same entries
+    // as rows), in place of the details list; never the grid.
+    in property <bool> sizes: false;
+    in property <[SizeRow]> size-rows;
     out property <length> tile-w: root.medium ? 80px : 96px;
     out property <length> tile-h: root.medium ? 107px : 136px;
     // The tile's name box: two lines of large tiles, three of medium (P8-L1).
@@ -807,14 +927,14 @@ component FileListHost inherits Rectangle {
     callback grid-cursor(int);
     changed cols => { if (root.grid) { root.grid-cols(root.cols); } }
     changed current-row => { if (root.grid) { root.grid-cursor(root.current-row); } }
-    pure public function line-of(i: int) -> int { return root.grid ? floor(i / root.cols) : i; }
-    pure public function col-of(i: int) -> int { return root.grid ? mod(i, root.cols) : 0; }
+    pure public function line-of(i: int) -> int { return root.grid && !root.sizes ? floor(i / root.cols) : i; }
+    pure public function col-of(i: int) -> int { return root.grid && !root.sizes ? mod(i, root.cols) : 0; }
     // Entries a vertical arrow key moves by: one row, or one grid row of tiles.
-    private property <int> step: root.grid ? root.cols : 1;
+    private property <int> step: root.grid && !root.sizes ? root.cols : 1;
     // Comfortable rows (settings `row_height`, P12-M4): the 22 px lists' rows 30 px tall, the 32 px
     // lists' 44 px (icons.rs ListGeom).
     in property <bool> comfortable: false;
-    out property <length> row-h: root.grid ? root.tile-h : (root.thumbnails ? (root.comfortable ? 44px : 32px) : (root.comfortable ? 30px : 22px));
+    out property <length> row-h: root.grid && !root.sizes ? root.tile-h : (root.thumbnails ? (root.comfortable ? 44px : 32px) : (root.comfortable ? 30px : 22px));
     // The pane is active: a list created now takes the focus.
     in property <bool> active;
     in-out property <length> content-y;
@@ -971,6 +1091,12 @@ component FileListHost inherits Rectangle {
         // The grid: Left and Right move one entry, Up and Down one grid row (step = cols entries;
         // Down from the last full grid row lands on the last entry), PageUp and PageDown as the
         // details list's, by grid rows. In the details list step is 1 and the rest is unchanged.
+        // The sizes view: Right opens the cursor's folder in place, Left closes it (or goes to its
+        // parent's row), as a tree does.
+        if ((e.text == Key.RightArrow || e.text == Key.LeftArrow) && root.sizes && !e.modifiers.alt) {
+            root.command(e.text == Key.RightArrow ? "sizeopen" : "sizeclose");
+            return EventResult.accept;
+        }
         if (e.text == Key.LeftArrow && root.grid) {
             if (root.current-row > 0) { root.current-row -= 1; } else if (root.rows.length > 0) { root.current-row = 0; }
             root.cursor-moved(e.modifiers.shift);
@@ -1041,7 +1167,7 @@ component FileListHost inherits Rectangle {
         return EventResult.reject;
     }
 
-    if root.show-type && !root.thumbnails && !root.grid: FileList {
+    if root.show-type && !root.thumbnails && !root.grid && !root.sizes: FileList {
         row-h: root.row-h;
         type-w: root.type-w;
         size-w: root.size-w;
@@ -1060,7 +1186,7 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
         tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
-    if !root.show-type && !root.thumbnails && !root.grid: FileListNoType {
+    if !root.show-type && !root.thumbnails && !root.grid && !root.sizes: FileListNoType {
         row-h: root.row-h;
         size-w: root.size-w;
         modified-w: root.modified-w;
@@ -1078,7 +1204,7 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
         tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
-    if root.show-type && root.thumbnails && !root.grid: FileList32 {
+    if root.show-type && root.thumbnails && !root.grid && !root.sizes: FileList32 {
         row-h: root.row-h;
         type-w: root.type-w;
         size-w: root.size-w;
@@ -1097,7 +1223,7 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
         tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
-    if !root.show-type && root.thumbnails && !root.grid: FileListNoType32 {
+    if !root.show-type && root.thumbnails && !root.grid && !root.sizes: FileListNoType32 {
         row-h: root.row-h;
         size-w: root.size-w;
         modified-w: root.modified-w;
@@ -1115,7 +1241,7 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
         tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
-    if root.grid && !root.medium: FileGridList {
+    if root.grid && !root.medium && !root.sizes: FileGridList {
         width: root.width;
         height: root.height;
         grid: root.grid-rows;
@@ -1131,11 +1257,28 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
         tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
-    if root.grid && root.medium: FileGridMediumList {
+    if root.grid && root.medium && !root.sizes: FileGridMediumList {
         width: root.width;
         height: root.height;
         grid: root.grid-rows;
         cols: root.cols;
+        current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
+        content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+        focus-request: root.focus-request;
+        focus-on-init: root.active;
+        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+        key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+    }
+    if root.sizes: SizeList {
+        row-h: root.row-h;
+        pad: root.thumbnails ? 42px : 28px;
+        width: root.width;
+        height: root.height;
+        rows: root.size-rows;
         current-row: root.current-row;
         cursor-color: root.active ? Theme.cursor : Theme.ring;
         content-y <=> root.content-y;
@@ -1154,7 +1297,7 @@ component FileListHost inherits Rectangle {
         y: 0px;
         height: root.height;
         content-y <=> root.content-y;
-        content-height: root.grid ? root.grid-rows.length * root.tile-h : root.rows.length * root.row-h;
+        content-height: root.grid && !root.sizes ? root.grid-rows.length * root.tile-h : root.rows.length * root.row-h;
         visible-height: root.visible-height;
     }
 }
@@ -1198,6 +1341,10 @@ export component Pane inherits Rectangle {
     // Medium tiles in the grid (FileListHost.medium).
     in property <bool> medium: false;
     out property <int> tiles-per-row: list.cols;
+    // The sizes view (P13-M3): its rows and its own header; main.rs shows such a tab as a list
+    // (`grid` false) whatever the pane's view.
+    in property <bool> sizes: false;
+    in property <[SizeRow]> size-rows;
     // The toolbar inside the pane, at its top above the tab strip and the path bar (settings
     // `toolbar = "pane"`), its buttons'
     // state and tool(name) for a press (main.rs makes the pane active). A sibling of the
@@ -1770,14 +1917,21 @@ export component Pane inherits Rectangle {
             height: 32px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
-        if root.show-type && !root.grid: HorizontalLayout {
+        if root.sizes: HorizontalLayout {
+            height: 32px;
+            HeaderCell { label: "Name"; sorted: false; back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Share"; width: 130px; sorted: false; back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Size on disk"; width: 100px; sorted: true; asc: false; back => { root.back-button(); } forward => { root.forward-button(); } }
+            HeaderCell { label: "Files"; width: 80px; sorted: false; back => { root.back-button(); } forward => { root.forward-button(); } }
+        }
+        if root.show-type && !root.grid && !root.sizes: HorizontalLayout {
             height: 32px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Type"; width: root.col-type; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
-        if !root.show-type && !root.grid: HorizontalLayout {
+        if !root.show-type && !root.grid && !root.sizes: HorizontalLayout {
             height: 32px;
             HeaderCell { label: "Name"; sorted: sort-col == 0; asc: sort-asc; clicked => { root.sort-by(0); } back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
@@ -1795,6 +1949,8 @@ export component Pane inherits Rectangle {
             grid: root.grid;
             grid-rows: root.grid-rows;
             medium: root.medium;
+            sizes: root.sizes;
+            size-rows: root.size-rows;
             grid-cols(n) => { root.grid-cols(n); }
             grid-cursor(c) => { root.grid-cursor(c); }
             active: root.active;
@@ -1999,7 +2155,7 @@ export component Pane inherits Rectangle {
     // The column grips (P9-M1) over the details header, which sits 34 px above the list (32 px and
     // the layout's 2 px spacing): one at each boundary, the list's right edge pinned. Siblings of
     // the list, never in the rows.
-    if !root.grid: Rectangle {
+    if !root.grid && !root.sizes: Rectangle {
         x: list.x;
         y: list.y - 34px;
         width: list.width;

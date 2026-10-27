@@ -61,6 +61,20 @@ pub fn search_text(note: &str, found: usize, hidden: usize, secs: Option<f64>, s
     if note.is_empty() { s } else { format!("{note} | {s}") }
 }
 
+/// A sizes view's status line (P13-M3): `Walking… F files, S so far` while its walk runs (`secs`
+/// None), then `S on disk in F files, D folders, in T s`, and `K folders could not be read` when
+/// any were skipped.
+pub fn sizes_text(note: &str, files: u64, disk: u64, folders: u64, skipped: u64, secs: Option<f64>) -> String {
+    let mut s = match secs {
+        None => format!("Walking… {} files, {} so far", crate::sizeview::count(files), format_size(disk)),
+        Some(t) => format!("{} on disk in {} files, {} folders, in {t:.1} s", format_size(disk), crate::sizeview::count(files), crate::sizeview::count(folders)),
+    };
+    if skipped > 0 {
+        s.push_str(&format!(", {} folder{} could not be read", crate::sizeview::count(skipped), if skipped == 1 { "" } else { "s" }));
+    }
+    if note.is_empty() { s } else { format!("{note} | {s}") }
+}
+
 /// The selection's two badges: the count ("M selected") and the total size, both empty when
 /// nothing is selected. Without selected folders the total is the selected files'; no size when
 /// only links or drives are selected. With selected folders (`dirs`) their computed sizes count too:

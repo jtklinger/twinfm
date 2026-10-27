@@ -236,6 +236,12 @@
 //!                                    of the listing (at most 500, nearest the cursor first)
 //!   waitsize <ms>                    wait until no folder size is queued or walking and the last
 //!                                    reply has landed (at most <ms>), then 300 ms more
+//!   sizeview <pane> [<path>]         "Show sizes" (P13-M3): a sizes tab on <path> (the rest of the
+//!                                    step), or on the cursor row's folder, or on the pane's folder
+//!   sizeopen <row>                   the chevron of row <row> in the active pane's sizes view: its
+//!                                    folder opened in place (or closed)
+//!   waitsizeview <ms>                wait until no sizes walk or level listing is out (at most
+//!                                    <ms>), then 300 ms more
 //!   preview toggle                   Alt+P (key name AltP): show or hide the preview column (P8-M1)
 //!   preview width <ratio>            set the column's share of the space right of the sidebar (0.2
 //!                                    to 0.6, clamped), as its handle's drag does
@@ -426,6 +432,9 @@ enum Step {
     ContentSearch { pane: usize, text: String },
     /// Wait until no search tab is still walking (at most `ms`), then 300 ms for the pass.
     WaitSearch(u64),
+    SizeView { pane: usize, path: Option<String> },
+    SizeOpen(usize),
+    WaitSizeView(u64),
     /// Alt+Shift+Return in the pane's list.
     SizeAll(usize),
     /// Wait until no folder size is queued or walking (at most `ms`), then 300 ms.
@@ -663,6 +672,12 @@ fn parse(script: &str) -> Vec<Step> {
                 "waitsearch" => Step::WaitSearch(num(1).max(1) as u64),
                 "sizeall" => Step::SizeAll(num(1) as usize),
                 "waitsize" => Step::WaitSize(num(1).max(1) as u64),
+                "sizeview" => Step::SizeView {
+                    pane: num(1) as usize,
+                    path: Some(s.trim().splitn(3, char::is_whitespace).nth(2).unwrap_or("").trim().to_string()).filter(|p| !p.is_empty()),
+                },
+                "sizeopen" => Step::SizeOpen(num(1) as usize),
+                "waitsizeview" => Step::WaitSizeView(num(1).max(1) as u64),
                 "preview" if a.get(1) == Some(&"width") => Step::PreviewWidth(a.get(2).and_then(|v| v.parse().ok()).unwrap_or(crate::preview::RATIO_DEFAULT)),
                 "preview" => Step::Key("AltP".into()),
                 "previewscroll" => Step::PreviewScroll(num(1) as f32),
@@ -1658,6 +1673,29 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 if !running || std::time::Instant::now() >= deadline {
                     if running {
                         eprintln!("[auto] waitsearch: still searching after {max_ms} ms");
+                    }
+                    r2.borrow().sub.stop();
+                    schedule(r2.clone(), 300);
+                }
+            });
+        }
+        Step::SizeView { pane, path } => {
+            eprintln!("[auto] sizeview pane={pane} {}", path.as_deref().unwrap_or("(the cursor row's folder)"));
+            crate::script_sizeview(pane, path.map(std::path::PathBuf::from));
+            schedule(runner, 1);
+        }
+        Step::SizeOpen(row) => {
+            crate::script_sizeopen(row);
+            schedule(runner, 1);
+        }
+        Step::WaitSizeView(max_ms) => {
+            let deadline = std::time::Instant::now() + Duration::from_millis(max_ms);
+            let r2 = runner.clone();
+            runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                let running = crate::sizes_view_running();
+                if !running || std::time::Instant::now() >= deadline {
+                    if running {
+                        eprintln!("[auto] waitsizeview: still walking after {max_ms} ms");
                     }
                     r2.borrow().sub.stop();
                     schedule(r2.clone(), 300);
