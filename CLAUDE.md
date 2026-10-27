@@ -50,7 +50,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (305 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (306 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1021,6 +1021,25 @@ put off, with where it came from.
   offset only where the rebuilt menu's item at its id has its label, or where the one command with its
   verb at its label path is (`find_moved`'s `verb`), never at a bare id that holds another: `[menu]
   InvokeCommand by verb "<verb>" = 0x...: by offset N instead`.
+  Since P12-M7, **OneDrive files show their own states**: Windows hides the cloud files'
+  placeholders from TwinFM's process (a OneDrive file lists as a plain file, its placeholder state 0,
+  P9-M4), so a sync root's listing thread and the watch's edit worker show them to themselves
+  (`fs::enumerate::expose_placeholders`, `RtlSetThreadPlaceholderCompatibilityMode(PHCM_EXPOSE_PLACEHOLDERS)`,
+  windows-sys's `Wdk_Storage_FileSystem` feature; no other thread, so the search and size walkers list as
+  before). There each placeholder is a reparse point with its cloud tag, and `CfGetPlaceholderStateFromAttributeTag`
+  gives its real state; `entry_of` takes the state and lists the entry as the plain file or folder it is by
+  default (`as_listed`: the reparse bit and the tag dropped, and the offline and sparse bits a placeholder
+  whose data is not all here gains), so kinds, attributes, keys, thumbnails and the `[enum]` reparse counts
+  are as before (all 40,023 OneDrive entries the P12-M7 check listed both ways). A file not in sync
+  (syncing, waiting, in error, with a warning), or no placeholder at all there (a file just copied in, a
+  plain file until OneDrive has uploaded it; not one OneDrive excludes, pinned and unpinned both like
+  `desktop.ini`: `needs_state_read`'s `shown`), is keyed `look:s:` as P9-M4 built it,
+  the icon worker reads its `System.StorageProviderState` (`[cloud] state read <path>: S in T ms`) and draws
+  the provider's glyph (`STATE_GLYPHS`: 4, 5, 6 and 10 the arrows, 7 the red cross, 8 the warning). OneDrive's
+  switch of a file to an in-sync placeholder reaches the watch as a record (the P12-M7 probe: 0.2 s after it),
+  so the mark follows without F5. `[cloud] pane=N not in sync: K of M files` once per sync-root listing (K the
+  files looked up); `[cloud] <listing | watch edits>: placeholders not shown
+  (RtlSetThreadPlaceholderCompatibilityMode = R)` if Windows refuses the mode. No new driver step.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

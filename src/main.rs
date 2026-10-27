@@ -1369,6 +1369,9 @@ fn edit_worker() -> Sender<StatJob> {
     std::thread::Builder::new()
         .name("watch-edits".into())
         .spawn(move || {
+            // A sync root's changed files are statted with their placeholders shown (P12-M7), as
+            // its listing is, so their marks follow their states; nothing else lists differently.
+            fs::enumerate::expose_placeholders("watch edits");
             for mut job in rx {
                 let t0 = Instant::now();
                 let dir = stat_dir(&job.path);
