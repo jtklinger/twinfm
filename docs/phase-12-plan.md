@@ -1314,6 +1314,25 @@ each, both exit code 0, the window closed by the script, no panicked line, every
   rows cycle but not the Tab pair (the coordinating session took the code head's script): 258 jobs done;
   the same rows and bookmark counts (30 px lines 4, 44 px 4); private bytes 165.2 to 242.2 MB.
 
+ab64, passed (2026-10-26, Jeremy at the console, done 22:09, 33 min): `C:\traces\gate-p12m5b.ps1`,
+`target-p12m5b` (2b41100) against `target-p12m5` (3d5e162), the four settings above; it is P12-M4's gate
+for the 44 px rows too.
+
+| Setting | p12m5 (WPR) | p12m5b (WPR) | Medians | Render p50 |
+|---|---|---|---|---|
+| defaults | 20.4, 20.9, 20.7 | 20.7, 21.0, 21.0 | 20.7 / 21.0 | 2.81 to 2.88 ms |
+| rows-comfortable | 18.6, 16.9, 17.6 | 18.5, 17.2, 17.4 | 17.6 / 17.4 | 2.32 to 2.51 ms |
+| rows-comfortable-thumbs | 16.8, 16.8, 17.2 | 14.5, 14.5, 14.5 | 16.8 / 14.5 | 2.21 to 2.30 / 1.91 to 2.03 ms |
+| grid-thumbs | 11.9, 11.8, 11.8 | 12.0, 11.8, 12.2 | 11.8 / 12.0 | 1.47 to 1.56 ms |
+
+No gap that counts in any setting: in the defaults and the grid the candidate's median is 0.3 and 0.2 of a
+point above, with a reference run above a candidate run in each. In rows-comfortable both builds draw the
+30 px rows (like for like). In rows-comfortable-thumbs the reference draws 32 px thumbnail rows and the
+candidate 44 px ones: fewer rows on screen, so less to draw (render p50 1.91 to 2.03 ms against 2.21 to
+2.30) and 2.3 points less busy. The three settings with a line to check had it in every candidate run's
+stderr (the 30 px and 44 px geometry, the grid's start); no panic. The defaults runs were again in the costlier state (render p50 about
+2.8 ms), read like for like.
+
 Console checks (for Jeremy, unelevated, after the gate, `target-p12m5b`, light and dark):
 
 - Two panes: Tab and Shift+Tab from either list; the keys, the ring, the title and the one accent
