@@ -9,6 +9,7 @@ mod fs {
     pub mod archivefolder;
     pub mod archivewrite;
     pub mod content;
+    pub mod dirinfo;
     pub mod enumerate;
     pub mod sizes;
     pub mod watch;

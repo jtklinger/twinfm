@@ -584,7 +584,7 @@ fn find_pattern(path: &Path) -> Vec<u16> {
 
 /// A wide path, NUL-terminated, with the long-path prefix when it needs one (`find_pattern`), or
 /// always with `verbatim` (`stat_entry`: no normalisation, so a trailing dot or space is kept).
-fn long_wide(star: Vec<u16>, verbatim: bool) -> Vec<u16> {
+pub(crate) fn long_wide(star: Vec<u16>, verbatim: bool) -> Vec<u16> {
     let (bs, q) = (b'\\' as u16, b'?' as u16);
     let (prefix, rest) = if (!verbatim && star.len() < 248) || star.starts_with(&[bs, bs, q, bs]) {
         ("", &star[..])
