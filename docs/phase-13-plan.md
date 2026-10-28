@@ -563,8 +563,18 @@ split made the left pane 499 px and the column went first, with Type (`shows nam
 `splitter 0.8` brought it back at 608 px; off through the dialog. Screenshot in the light theme: the column
 at the row's end, the header "Size on disk" unclipped.
 
-**Gate**: its own triplet (the extra cell per row), to be handed over through the coordinating session:
-defaults, and a run with `size_on_disk = true`.
+**Soak** (2026-10-28, the branch's release build, code as cb91532, on the coordinating session's go):
+`tools/soak-p5m3.ps1 -Minutes 10`: 10.1 minutes, closed by the script, exit code 0, 0 panicked lines, 259
+jobs done (0 failed, 0 cancelled), 0 waitops timeouts, 0 soak refusals; 13 cycles started, 3 whole. Every
+"must be 0" is 0. **Size on disk column: on 3, off 3, the left pane shown with it 3, listings read with it
+3** (one each per cycle: the right pane sits in `a.zip` when the column goes on, and an archive level is
+not read), the watch edit of `od.txt` applied as a row edit. P13-M1's "name, Size and Modified" lines 19
+(six per cycle with this cycle's return to the 0.5 split). The sizes view's counts as before (3 walks, 6
+levels, 3 removals). Working set 147 MB at 5 s, 228 MB at 601 s (at most 268); private 164 to 222 MB.
+
+**Gate**: its own triplet (the extra cell per row), tag ab69, `tools/gate-p13m3b.ps1`: `target-p13od`
+(c25173c, code as cb91532) against `target-p13base` (main at 34449ee, so the column alone differs), the
+defaults and `C:\traces\ondisk.toml` (`size_on_disk = true`, read-only).
 
 ### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
 

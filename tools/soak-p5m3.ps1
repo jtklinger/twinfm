@@ -150,7 +150,8 @@
 # split line to 0.85 (the left pane wide enough for it beside every column), makes and removes od.txt
 # there (`touch`, `rmfile`, each through the watch's edits), moves the line back to 0.5 (the column the
 # first to go) and turns it off; the report counts the switches each way, the listings read with sizes on
-# disk and the left pane shown with the column (one each per cycle, the listings two or more). The line's
+# disk (the left pane's; the right one is in a.zip, which is not read) and the left pane shown with the
+# column (one each per cycle). The line's
 # return to 0.5 is one more of P13-M1's name, Size and Modified lines (six per cycle since).
 # P13-M1: each cycle then hides the second pane with the toolbar's Two panes and shows it again
 # (`toolbar 0 split` twice: the right pane comes back on the left's folder, which the next cycle's
@@ -805,7 +806,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
 "sizes view: walks done $svDone, levels opened in place $svOpened (two per cycle), sz.txt taken off three totals $svRemoved (one per cycle)"
-"Size on disk column: on $odOn, off $odOff, left pane shown with it $odShown (one each per cycle), listings read with it $odRead (two or more per cycle)"
+"Size on disk column: on $odOn, off $odOff, left pane shown with it $odShown (one each per cycle), listings read with it $odRead (one per cycle: the right pane is in a.zip then, and an archive level is not read)"
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

@@ -1,11 +1,12 @@
 # P13-M3's Size on disk column gate: target-p13od from the column's PR head c25173c (code as cb91532;
-# the later commits change no code) against $Ref, the defaults and the column on: a fifth cell in every
+# the later commits change no code) against target-p13base (main at 34449ee, P13-M1 and the sizes view
+# merged, so the column alone differs), the defaults and the column on: a fifth cell in every
 # details row (its width 0 with the column off), so the defaults runs show what the cell costs off, and
 # the runs with C:\traces\ondisk.toml (read-only, `size_on_disk = true`, made below if missing) what the
 # column and its second read cost on. Defaults runs must hold no `size on disk:` line, the column's runs
 # at least one; no run may hold a `[sizeview]` line. 9 runs, about 13 minutes, then the analysis.
-# The tag and the reference are the coordinating session's to set: change $Tag or $Ref below if it
-# allocates another tag or gates against another build (the wrapper refuses a tag that has traces).
+# Tag ab69 and the reference p13base are the coordinating session's (2026-10-28); the wrapper refuses a
+# tag that has traces.
 # Only one gate at a time on this machine.
 # Elevated PowerShell at the physical console, Narrator off, every TwinFM window closed:
 #   powershell -ExecutionPolicy Bypass -File C:\traces\gate-p13m3b.ps1
@@ -19,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 $Head = 'c25173c'
 $Tag = 'ab69'
-$Ref = 'p12seg'
+$Ref = 'p13base'
 $Cand = 'p13od'
 $Gate = "$Root\.claude\worktrees\gate-p13od"
 $Cfg = 'C:\traces\ondisk.toml'
