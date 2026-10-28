@@ -534,12 +534,37 @@ them.
 
 ### Size on disk in the normal list
 
-Waits for P13-M1's merge, as agreed with the coordinating session (2026-10-27): the column is a fourth
-cell in each details row component, reading a fourth width property, `ondisk-w`, as the other three are
-read (P13-M1's route: a hidden column's width is 0, and a zero-width Text draws nothing). `cols::shown`
-takes it as the first to drop (Size on disk, then Type, Size, Modified). It is filled by a second read of
-the folder (`fs::dirinfo::read`) only while the setting `size_on_disk` is on. The extra binding per row
-needs its own triplet before it merges.
+Built after P13-M1 and the sizes view merged (main at 34449ee), on its own branch
+`feat/p13-m3-size-on-disk`, by the route agreed with the coordinating session: a fifth cell in each
+details row component, reading a width property, `ondisk-w`, as the others read theirs (P13-M1's route:
+0 px when off or dropped, and a zero-width Text draws nothing), first to make way for the name
+(`cols::ondisk_shown`: Size on disk, then Type, Size, Modified), filled by a second read of the folder
+(`fs::dirinfo::disk_by_name`) only while the setting `size_on_disk` is on. The dialog's "Size on disk
+column" switch, under the Type column's, turns it on and lists the panes again. A watch edit reads a
+changed file's size on disk from its own handle (`fs::dirinfo::disk_of`, the same figure as the
+directory's, tested on a plain, a compressed and a sparse file).
+
+**Calls made here, for Jeremy to check:**
+
+- **At the row's right end, after Modified**, where Explorer puts a column added, so every grip and the
+  name's width shift by the column's width and nothing else changes.
+- **A fixed 100 px, no grip and no sort**: the least code. A grip would make it a fourth `cols::Col`
+  through the drags, fits, settings and driver; a sort would need the size on disk in every listing.
+- **Folders show nothing in it**, as the Size column shows nothing for them; a folder's size on disk is
+  the sizes view's.
+- **A file small enough to live in the MFT reads 8 B**, the directory's figure; Explorer shows 0.
+
+**Scripted check** (2026-10-27, the branch's release build, a scratch folder with a 1 MB plain file, a
+1 MB zero-filled file compressed by `compact /c`, a 5-byte file and a folder): the column on through the
+dialog (`[cols] pane=0 shows name, type, size, modified, size on disk at 1010 px`, `[enum] ... size on
+disk: 5 entries read in 0.1 ms`); 980.0 KB, 0 B and 8 B in the column, the folder blank; a `touch` became a
+watch edit (`applied: +1`); `colwidth`, `coldrag` and `colfit` hit their grips with the column shown; the
+split made the left pane 499 px and the column went first, with Type (`shows name, size, modified`);
+`splitter 0.8` brought it back at 608 px; off through the dialog. Screenshot in the light theme: the column
+at the row's end, the header "Size on disk" unclipped.
+
+**Gate**: its own triplet (the extra cell per row), to be handed over through the coordinating session:
+defaults, and a run with `size_on_disk = true`.
 
 ### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
 
