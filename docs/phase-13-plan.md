@@ -530,12 +530,33 @@ Per cycle in `tools/soak-p5m3.ps1`:
 - The toolbar presses' count now leaves out the picks and the `fits` lines: twelve per cycle (P6-M3's
   eight, P13-M1's two, P13-M2's Undo and Redo).
 
-Run: to come, on the coordinating session's word.
+Two 10-minute runs on 2d94fed's code (the branch's own release build, moved onto main at 34449ee, so P13-M1
+and P13-M3 are in it), on the coordinating session's go:
+
+- **The first, disturbed** (2026-10-27, 23:12 to 23:22): the sizes stream ran a scripted TwinFM window about
+  60 to 76 s in and `cargo test --release` (which overwrites the clipboard and uses the Recycle Bin) about 268
+  to 275 s in, a hold that reached it late. The run read clean all the same: 10.1 minutes, closed by the
+  script, exit code 0, 0 panicked lines, 237 jobs done (0 failed, 0 cancelled), 0 soak refusals, 0 waitops
+  timeouts, no `another program took the clipboard` line, every count as its line says and every "must be 0"
+  0. Its working set went 145 to 238 MB with two samples at 320 and 318 MB (305 s and 485 s in; P13-M3's
+  soak also read at most 321); the clean run below has no such sample.
+- **The clean run** (nothing else on the machine, both other streams holding): 10.1 minutes, closed by the
+  script, exit code 0, **0 panicked lines**, 16 cycles started (3 whole), **245 jobs done, 0 failed, 0
+  cancelled**, 0 soak refusals, 0 waitops timeouts, every "must be 0" 0. Working set 146.5 MB at 5 s, 221.1
+  MB at 601 s, **at most 229.1 MB**; private 164.7 to 228.8 MB.
+  - **Mouse: path bar buttons 12 (four per cycle), View picks 6 (two), More picks 21 (seven), details bands
+    done with 2 selected 3 (one), presses on a row's blank part 3 (one).**
+  - Toolbar presses 46 (twelve per whole cycle), refused as disabled 0.
+  - Grid bands: 8 started, 8 done with 2 selected, 0 cancelled; medium grid's done with the cursor on tile 0:
+    8. Drags: 19 cancelled, 0 dropped.
+  - P13-M1's lines as its soak read them: drags read back as Size 90 -> 60 3, widths back at 120, 90, 140 7,
+    Two panes presses 6, narrowed 9, name, Size and Modified 16. P13-M3's: sizes view walks 3, levels opened
+    in place 6, `sz.txt` off three totals 3.
 
 ### Gate
 
 To come: the defaults triplet and the toolbar-pane triplet (`C:\traces\toolbar-pane.toml`), against
-`target-p12seg` (3698cd2), tag ab68, by `tools/gate-p13m2.ps1` on the code head 2d94fed.
+`target-p13base` (main at 34449ee, so P13-M2 alone), tag ab68, by `tools/gate-p13m2.ps1` on the code head 2d94fed.
 
 ### Console checks (for Jeremy, unelevated, after the gate, light and dark, beside Explorer)
 
