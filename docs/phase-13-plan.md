@@ -410,5 +410,19 @@ Per cycle in `tools/soak-p5m3.ps1`:
 
 ### Gate
 
-To come: the defaults triplet and the cols triplet (`C:\traces\cols.toml`), with what the scenario's
-panes show before and after, from each run's stderr.
+ab66, 2026-10-27, Jeremy at the console at 60 Hz: 936336a (`target-p13m1`, built `--locked` from the
+detached `gate-p13m1` worktree) against `target-p12seg`, by `tools/gate-p13m1.ps1`, 17 minutes; summary
+`C:\traces\gate-ab66-summary.txt`. WPR main-thread busy:
+
+| Run | Defaults | With `cols.toml` |
+| --- | --- | --- |
+| p12seg 1, 2, 3 | 21.4, 21.4, 21.1 | 21.0, 20.4, 20.5 |
+| p13m1 1, 2, 3 | 19.9, 19.6, 19.4 | 19.4, 19.0, 19.8 |
+| Median | 21.4 against **19.6** | 20.5 against **19.4** |
+
+Every check ok, every candidate run under 20%, no gap (the candidate is the cheaper one). Render p50
+2.45 to 2.56 ms against 2.72 to 2.95 ms, so no run sat in the costlier state. Every candidate run ended
+with both panes showing name, Size and Modified at 499 px: at the gate's 1200 px window with the split,
+each list is 499 px and Type is already hidden, so the candidate draws no Type cells and its lower
+number is that narrower draw, not a saving at equal columns. The full-width comparison (to come, after
+the gate) checks the route with every column shown.
