@@ -88,7 +88,9 @@ export global Paging {
 }
 
 // Which toolbar buttons apply to a pane (toolbar.rs `state`, set from Rust in update_status's
-// rhythm, on change only).
+// rhythm, on change only). Since P13-M2 also the path bar's Back, Forward and Up, Undo and Redo with
+// their records' text for the tooltips, Cancel waiting jobs, the hidden files and the view for the
+// menus' ticks (toolbar.rs `with_facts`).
 export struct ToolState {
     new: bool,
     cut: bool,
@@ -96,6 +98,16 @@ export struct ToolState {
     paste: bool,
     rename: bool,
     delete: bool,
+    back: bool,
+    forward: bool,
+    up: bool,
+    undo: bool,
+    redo: bool,
+    undo-tip: string,
+    redo-tip: string,
+    cancel: bool,
+    hidden: bool,
+    view: int,
 }
 
 // One toolbar button: a Segoe Fluent Icons glyph (the font of Explorer's own command bar, part of
@@ -113,6 +125,11 @@ component ToolButton inherits Rectangle {
     in property <bool> enabled: true;
     // A toggle shown as on (the Preview button while the column shows, P8-M1).
     in property <bool> checked: false;
+    // A button that opens a menu (View and More, P13-M2): a chevron after it.
+    in property <bool> drop: false;
+    // Said after the name and key in the tooltip (Undo's and Redo's record, P13-M2).
+    in property <string> detail;
+    private property <string> tip-text: root.text + (root.key == "" ? "" : " (" + root.key + ")") + (root.detail == "" ? "" : ": " + root.detail);
     callback clicked();
     callback tip(string);
     callback back();
@@ -136,6 +153,10 @@ component ToolButton inherits Rectangle {
             font-weight: 500;
             color: root.enabled ? Theme.fg : Theme.fg-faint;
         }
+        if root.drop: Rectangle {
+            width: 12px;
+            Image { y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("icons/chevron-down.svg"); colorize: root.enabled ? Theme.fg-muted : Theme.fg-faint; }
+        }
     }
     ta := TouchArea {
         clicked => { if (root.enabled) { root.clicked(); } }
@@ -146,9 +167,42 @@ component ToolButton inherits Rectangle {
     }
     Tooltip {
         TipCard {
-            text: root.text + " (" + root.key + ")";
-            init => { root.tip(root.text + " (" + root.key + ")"); }
+            text: root.tip-text;
+            init => { root.tip(root.tip-text); }
         }
+    }
+}
+
+// One of the path bar's four buttons (P13-M2, Jeremy's layout B): Back, Forward, Up, Refresh, a
+// Lucide icon 28 x 30 px, dimmed and refusing the click when disabled, its tooltip naming its key. A
+// right click reports where (Back and Forward open the history menu there); the mouse's side buttons
+// over it go back and forward as over the rest of the bar.
+component NavButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> tip;
+    in property <bool> enabled: true;
+    in property <string> label;
+    callback clicked();
+    callback right-clicked(length, length);
+    callback back();
+    callback forward();
+    width: 28px;
+    accessible-role: button;
+    accessible-label: root.label;
+    border-radius: Theme.radius;
+    background: !root.enabled ? transparent : ta.pressed || ta.has-hover ? Theme.muted : transparent;
+    animate background { duration: 100ms; }
+    Image { x: 6px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: root.icon; colorize: root.enabled ? Theme.fg : Theme.fg-faint; }
+    ta := TouchArea {
+        clicked => { if (root.enabled) { root.clicked(); } }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right) { root.right-clicked(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+        }
+    }
+    Tooltip {
+        TipCard { text: root.tip; }
     }
 }
 
@@ -157,36 +211,48 @@ component ToolSeparator inherits Rectangle {
     Rectangle { x: 4px; y: 5px; width: 1px; height: parent.height - 10px; background: Theme.border; }
 }
 
-// The toolbar (P6-M3), in its three groups: New file, New folder; Cut, Copy, Paste; Rename, Delete;
-// and since P8-M1 the Preview toggle at its end, always enabled, drawn as on while the column shows;
-// since P13-M1 Two panes before it (F3's toggle, drawn as on while both panes show).
-// tool(name) names the button (toolbar.rs `command` maps it to its key's command; "preview" toggles
-// the column); tip(text) a tooltip shown; back() and forward() the mouse's side buttons over a
-// button (P7-M4).
+// The toolbar (P6-M3), in its groups: New file, New folder; Cut, Copy, Paste; Rename, Delete; since
+// P13-M2 (Jeremy's layout B) Undo, Redo; View (a menu), Two panes (P13-M1, F3's toggle, drawn as on
+// while both panes show) and the Preview toggle (P8-M1, drawn as on while the column shows); and More
+// (a menu), at its end. tool(name) names the button pressed (main.rs `toolbar_clicked`; toolbar.rs
+// `BUTTONS`); tool-menu(name, x, y) a menu button, at the window point under its left edge; tip(text) a
+// tooltip shown; back() and forward() the mouse's side buttons over a button (P7-M4). Only the first
+// `fit` of the twelve buttons before More show (toolbar.rs `fit`, from the bar's width, which
+// width-changed reports): the rest are More's first items, so each bar overflows on its own.
 export component Toolbar inherits HorizontalLayout {
     in property <ToolState> tools;
     in property <bool> labelled;
     in property <bool> preview-on;
     in property <bool> split-on;
+    in property <int> fit: 12;
     callback tool(string);
+    callback tool-menu(string, length, length);
     callback tip(string);
     callback back();
     callback forward();
+    callback width-changed(length);
+    init => { root.width-changed(self.width); }
+    changed width => { root.width-changed(self.width); }
     alignment: start;
     padding: 2px;
     spacing: 2px;
-    ToolButton { icon: @image-url("icons/file-plus.svg"); text: "New file"; key: "Ctrl+Alt+N"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfile"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
-    ToolButton { icon: @image-url("icons/folder-plus.svg"); text: "New folder"; key: "Ctrl+Shift+N"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfolder"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
-    ToolSeparator { }
-    ToolButton { icon: @image-url("icons/scissors.svg"); text: "Cut"; key: "Ctrl+X"; labelled: root.labelled; enabled: root.tools.cut; clicked => { root.tool("cut"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
-    ToolButton { icon: @image-url("icons/copy.svg"); text: "Copy"; key: "Ctrl+C"; labelled: root.labelled; enabled: root.tools.copy; clicked => { root.tool("copy"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
-    ToolButton { icon: @image-url("icons/clipboard-paste.svg"); text: "Paste"; key: "Ctrl+V"; labelled: root.labelled; enabled: root.tools.paste; clicked => { root.tool("paste"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
-    ToolSeparator { }
-    ToolButton { icon: @image-url("icons/pencil.svg"); text: "Rename"; key: "F2"; labelled: root.labelled; enabled: root.tools.rename; clicked => { root.tool("rename"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
-    ToolButton { icon: @image-url("icons/trash.svg"); text: "Delete"; key: "Delete"; labelled: root.labelled; enabled: root.tools.delete; clicked => { root.tool("delete"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
-    ToolSeparator { }
-    ToolButton { icon: @image-url("icons/columns-2.svg"); text: "Two panes"; key: "F3"; labelled: root.labelled; checked: root.split-on; clicked => { root.tool("split"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
-    ToolButton { icon: @image-url("icons/panel-right.svg"); text: "Preview pane"; key: "Alt+P"; labelled: root.labelled; checked: root.preview-on; clicked => { root.tool("preview"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 0: ToolButton { icon: @image-url("icons/file-plus.svg"); text: "New file"; key: "Ctrl+Alt+N"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfile"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 1: ToolButton { icon: @image-url("icons/folder-plus.svg"); text: "New folder"; key: "Ctrl+Shift+N"; labelled: root.labelled; enabled: root.tools.new; clicked => { root.tool("newfolder"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 2: ToolSeparator { }
+    if root.fit > 2: ToolButton { icon: @image-url("icons/scissors.svg"); text: "Cut"; key: "Ctrl+X"; labelled: root.labelled; enabled: root.tools.cut; clicked => { root.tool("cut"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 3: ToolButton { icon: @image-url("icons/copy.svg"); text: "Copy"; key: "Ctrl+C"; labelled: root.labelled; enabled: root.tools.copy; clicked => { root.tool("copy"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 4: ToolButton { icon: @image-url("icons/clipboard-paste.svg"); text: "Paste"; key: "Ctrl+V"; labelled: root.labelled; enabled: root.tools.paste; clicked => { root.tool("paste"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 5: ToolSeparator { }
+    if root.fit > 5: ToolButton { icon: @image-url("icons/pencil.svg"); text: "Rename"; key: "F2"; labelled: root.labelled; enabled: root.tools.rename; clicked => { root.tool("rename"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 6: ToolButton { icon: @image-url("icons/trash.svg"); text: "Delete"; key: "Delete"; labelled: root.labelled; enabled: root.tools.delete; clicked => { root.tool("delete"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 7: ToolSeparator { }
+    if root.fit > 7: ToolButton { icon: @image-url("icons/undo-2.svg"); text: "Undo"; key: "Ctrl+Z"; detail: root.tools.undo-tip; labelled: root.labelled; enabled: root.tools.undo; clicked => { root.tool("undo"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 8: ToolButton { icon: @image-url("icons/redo-2.svg"); text: "Redo"; key: "Ctrl+Y"; detail: root.tools.redo-tip; labelled: root.labelled; enabled: root.tools.redo; clicked => { root.tool("redo"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 9: ToolSeparator { }
+    if root.fit > 9: ToolButton { icon: @image-url("icons/layout-grid.svg"); text: "View"; key: ""; drop: true; labelled: root.labelled; clicked => { root.tool-menu("view", self.absolute-position.x, self.absolute-position.y + self.height); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 10: ToolButton { icon: @image-url("icons/columns-2.svg"); text: "Two panes"; key: "F3"; labelled: root.labelled; checked: root.split-on; clicked => { root.tool("split"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    if root.fit > 11: ToolButton { icon: @image-url("icons/panel-right.svg"); text: "Preview pane"; key: "Alt+P"; labelled: root.labelled; checked: root.preview-on; clicked => { root.tool("preview"); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
+    ToolButton { icon: @image-url("icons/ellipsis.svg"); text: "More"; key: ""; drop: true; labelled: root.labelled; clicked => { root.tool-menu("more", self.absolute-position.x, self.absolute-position.y + self.height); } tip(t) => { root.tip(t); } back => { root.back(); } forward => { root.forward(); } }
 }
 
 // One tab; the strip places and sizes it. The left press activates it (as browsers do), and
@@ -1366,6 +1432,14 @@ export component Pane inherits Rectangle {
     // list, created only with the setting (dnd.rs PANE_BAR).
     in property <bool> toolbar: false;
     in property <ToolState> tools;
+    // The in-pane toolbar's buttons shown before More (toolbar.rs `fit`, P13-M2); tool-menu(name, x,
+    // y) its View or More button; tool-width(w) its width changed.
+    in property <int> tool-fit: 12;
+    callback tool-menu(string, length, length);
+    callback tool-width(length);
+    // The path bar's Back, Forward, Up and Refresh (P13-M2): nav-button(name) for a click; a right
+    // click on Back or Forward opens the history menu there (history-menu).
+    callback nav-button(string);
     // The column shows (the Preview button drawn as on, P8-M1); both panes show (Two panes, P13-M1).
     in property <bool> preview-on;
     in property <bool> split-on;
@@ -1473,6 +1547,8 @@ export component Pane inherits Rectangle {
     private property <bool> filter-grab: false;
     // searchbox.rs `width`: the Slint copy of the rule (a pane property, never per row).
     private property <length> filter-w: root.width < 520px ? 150px : 200px;
+    // The path bar's four buttons and the gap after them (dnd.rs NAV_W, P13-M2).
+    private property <length> nav-w: 116px;
 
     // Ctrl+F: show the box with the focus in it, its text selected.
     public function open-filter() {
@@ -1628,7 +1704,10 @@ export component Pane inherits Rectangle {
             labelled: false;
             preview-on: root.preview-on;
             split-on: root.split-on;
+            fit: root.tool-fit;
             tool(c) => { root.tool(c); }
+            tool-menu(n, x, y) => { root.tool-menu(n, x, y); }
+            width-changed(w) => { root.tool-width(w); }
             tip(t) => { root.tool-tip(t); }
             back => { root.back-button(); }
             forward => { root.forward-button(); }
@@ -1715,14 +1794,26 @@ export component Pane inherits Rectangle {
                 }
             }
         }
-        // Same height whichever mode shows, so the list's top does not move (dnd.rs LIST_TOP).
+        // Same height whichever mode shows, so the list's top does not move (dnd.rs LIST_TOP). Since
+        // P13-M2 the bar starts with Back, Forward, Up and Refresh (dnd.rs NAV_W: 4 x 28 px and a 4 px
+        // gap), the entry or the crumbs after them.
         Rectangle {
             height: 36px;
+            HorizontalLayout {
+                x: 0;
+                width: root.nav-w - 4px;
+                padding-top: 3px;
+                padding-bottom: 3px;
+                NavButton { icon: @image-url("icons/arrow-left.svg"); label: "Back"; tip: "Back (Alt+Left)"; enabled: root.tools.back; clicked => { root.nav-button("back"); } right-clicked(x, y) => { root.history-menu(x, y); } back => { root.back-button(); } forward => { root.forward-button(); } }
+                NavButton { icon: @image-url("icons/arrow-right.svg"); label: "Forward"; tip: "Forward (Alt+Right)"; enabled: root.tools.forward; clicked => { root.nav-button("forward"); } right-clicked(x, y) => { root.history-menu(x, y); } back => { root.back-button(); } forward => { root.forward-button(); } }
+                NavButton { icon: @image-url("icons/arrow-up.svg"); label: "Up"; tip: "Up (Alt+Up)"; enabled: root.tools.up; clicked => { root.nav-button("up"); } back => { root.back-button(); } forward => { root.forward-button(); } }
+                NavButton { icon: @image-url("icons/rotate-cw.svg"); label: "Refresh"; tip: "Refresh (F5)"; clicked => { root.nav-button("refresh"); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            }
             // The text entry and the breadcrumb share the bar; one of the two shows.
             Rectangle {
                 visible: root.path-entry;
-                x: 0;
-                width: parent.width - 26px - root.filter-w;
+                x: root.nav-w;
+                width: parent.width - root.nav-w - 26px - root.filter-w;
                 // Behind the entry, which takes no side button: the mouse's Back or Forward button
                 // over it is ignored, not taken by the pane as a move in the history (P6-M3).
                 TouchArea { }
@@ -1751,8 +1842,8 @@ export component Pane inherits Rectangle {
             // stays in view.
             crumb-clip := Rectangle {
                 visible: !root.path-entry;
-                x: 0;
-                width: parent.width - 26px - root.filter-w;
+                x: root.nav-w;
+                width: parent.width - root.nav-w - 26px - root.filter-w;
                 clip: true;
                 changed width => { root.crumb-geometry(-1, crumb-row.x, self.width); }
                 // The bar's background behind the crumbs: a right click opens the pane's history

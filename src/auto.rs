@@ -2,6 +2,12 @@
 //! (or to @<file> to read the list from a file; Windows caps an env var at 32 KB):
 //!   sleep <ms>                       wait
 //!   split                            toggle the second pane (same as F3)
+//!   navbutton <pane> <back|forward|up|refresh> [right]
+//!                                    the path bar's button (P13-M2), pressed and released at its
+//!                                    centre through Slint's pointer path (the right button with
+//!                                    `right`: Back's and Forward's history menu)
+//!   toolmenu <text>                  the open View or More menu's item by its text (P13-M2): as
+//!                                    menupick, the menu's own pick path
 //!   splitter <ratio>                 drag the split line from where it is to <ratio> of the panes'
 //!                                    room (P13-M1), through Slint's pointer path in 8 px steps (the
 //!                                    splitter clamps it to 0.15..0.85; `[auto] splitter A -> B`)
@@ -171,8 +177,10 @@
 //!                                    a `key Escape` cancels the band; no waitops/waitwatch inside)
 //!   crumb <pane> <index>             breadcrumb button <index> (0 is This PC), through its callback
 //!   toolbar <pane> <button>          a toolbar button (P6-M3: newfile, newfolder, cut, copy, paste,
-//!                                    rename, delete) through the callback a press calls, which makes
-//!                                    the pane active (`[toolbar]` lines);
+//!                                    rename, delete; P13-M1 split; P13-M2 undo, redo, and view and
+//!                                    more, which open their menus under the pane's path bar) through
+//!                                    the callback a press calls, which makes the pane active
+//!                                    (`[toolbar]` lines);
 //!                                    pressed with the toolbar hidden too, since a button only calls
 //!                                    its key's command; a disabled button is not pressed (logged)
 //!   menuverb <pane> <verb>           as if the shell command with canonical verb <verb> had been
@@ -343,6 +351,7 @@ enum HoverAt {
 enum Step {
     Sleep(u64),
     Split,
+    NavButton { pane: usize, name: String, right: bool },
     Splitter(f32),
     Wheel { pane: usize, ticks: i32, ms: u64 },
     Drag { pane: usize, dy: f32, ms: u64 },
@@ -478,6 +487,8 @@ fn parse(script: &str) -> Vec<Step> {
             Some(match *a.first()? {
                 "sleep" => Step::Sleep(num(1) as u64),
                 "split" => Step::Split,
+                "navbutton" => Step::NavButton { pane: num(1) as usize, name: a.get(2).unwrap_or(&"").to_string(), right: a.get(3) == Some(&"right") },
+                "toolmenu" => Step::MenuPick(a[1..].join(" ")),
                 "splitter" => Step::Splitter(a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.5)),
                 "wheel" => Step::Wheel { pane: num(1) as usize, ticks: num(2) as i32, ms: num(3).max(1) as u64 },
                 "drag" => Step::Drag { pane: num(1) as usize, dy: num(2) as f32, ms: num(3).max(1) as u64 },
@@ -1383,6 +1394,8 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 "paste" => t.paste,
                 "rename" => t.rename,
                 "delete" => t.delete,
+                "undo" => t.undo,
+                "redo" => t.redo,
                 _ => true,
             };
             if enabled {
@@ -1419,6 +1432,28 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::CrumbClose => {
             app.invoke_close_crumb_menu();
+            schedule(runner, 1);
+        }
+        Step::NavButton { pane, name, right } => {
+            // The four buttons sit at the path bar's left, 28 px each, as the crumbs' row's height.
+            let k = ["back", "forward", "up", "refresh"].iter().position(|n| *n == name);
+            match k {
+                None => eprintln!("[auto] navbutton: no button {name:?} (back, forward, up or refresh)"),
+                Some(k) => {
+                    let l = crate::window_layout(&app);
+                    let (left, _) = crate::dnd::pane_x(&l, pane);
+                    let at = LogicalPosition::new(
+                        left + crate::dnd::PANE_PAD + crate::dnd::NAV_BUTTON * (k as f32 + 0.5),
+                        crate::dnd::crumb_top(&l, pane) + crate::dnd::CRUMB_H / 2.0,
+                    );
+                    let button = if right { PointerEventButton::Right } else { PointerEventButton::Left };
+                    let win = app.window();
+                    win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at }).ok();
+                    win.dispatch_event_with_result(WindowEvent::PointerPressed { position: at, button }).ok();
+                    win.dispatch_event_with_result(WindowEvent::PointerReleased { position: at, button }).ok();
+                    eprintln!("[auto] navbutton pane={pane} {name}{} at ({:.0}, {:.0})", if right { " right" } else { "" }, at.x, at.y);
+                }
+            }
             schedule(runner, 1);
         }
         Step::Splitter(ratio) => {

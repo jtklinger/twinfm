@@ -62,6 +62,8 @@ pub enum Cmd {
     App(usize),
     /// The history menu's place at that index (P11-M3).
     History(usize),
+    /// The toolbar's View or More menu's item at that index (P13-M2).
+    Tool(usize),
 }
 
 impl Cmd {
@@ -92,9 +94,10 @@ impl Cmd {
 
     /// The id the Slint model carries: 1 to 22 for the fixed commands, 100 + i for a packaged
     /// command, 500 + k for an app, 1000 + 100 i + j for a command's own command, 10000 + k for a
-    /// history place.
+    /// history place, 20000 + k for a toolbar menu's item.
     pub fn id(self) -> i32 {
         match self {
+            Cmd::Tool(k) => 20_000 + k as i32,
             Cmd::History(k) => 10_000 + k as i32,
             Cmd::Packaged(i) => 100 + i as i32,
             Cmd::App(k) => 500 + k as i32,
@@ -108,6 +111,7 @@ impl Cmd {
             1..=22 => Some(Cmd::FIXED[id as usize - 1]),
             100..=499 => Some(Cmd::Packaged(id as usize - 100)),
             500..=999 => Some(Cmd::App(id as usize - 500)),
+            20_000.. => Some(Cmd::Tool(id as usize - 20_000)),
             10_000.. => Some(Cmd::History(id as usize - 10_000)),
             1000.. => Some(Cmd::Sub((id as usize - 1000) / 100, (id as usize - 1000) % 100)),
             _ => None,
@@ -230,6 +234,22 @@ const G_SIZES: &str = "\u{EB05}";
 /// current one (`current` true) checked.
 pub fn history_items(places: &[(String, bool)]) -> Vec<Entry> {
     places.iter().enumerate().map(|(i, (text, current))| Entry::item(Cmd::History(i), text, if *current { G_CHECK } else { "" }, "")).collect()
+}
+
+/// The toolbar's View or More menu's rows (P13-M2): each item with its key at its right, ticked
+/// (the check glyph) or dimmed as `toolbar::MenuItem` says; a separator before More's own items
+/// when buttons that did not fit come first (`own`: the index of More's first own item).
+pub fn tool_items(items: &[crate::toolbar::MenuItem], own: usize) -> Vec<Entry> {
+    let mut out = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        if i == own && i > 0 {
+            out.push(Entry::sep());
+        }
+        let mut e = Entry::item(Cmd::Tool(i), it.text, if it.ticked { G_CHECK } else { "" }, it.key);
+        e.enabled = it.enabled;
+        out.push(e);
+    }
+    out
 }
 
 /// The icon row for `ctx`: the buttons that apply, in Explorer's order (Cut, Copy, Rename, Share,

@@ -215,14 +215,15 @@ component MenuRow inherits Rectangle {
             color: root.entry.enabled ? Theme.fg : Theme.fg-faint;
         }
         Text {
-            x: 40px; width: parent.width - 40px - (root.entry.key != "" || root.entry.sub ? 96px : 12px);
+            x: 40px; width: parent.width - 40px - (root.entry.key != "" || root.entry.sub ? 108px : 12px);
             text: root.entry.text;
             vertical-alignment: center;
             overflow: elide;
             color: root.entry.enabled ? Theme.fg : Theme.fg-faint;
         }
         Text {
-            x: parent.width - 96px; width: 84px;
+            // 96 px: More's "Alt+Shift+Enter" (P13-M2) is the longest key a menu shows.
+            x: parent.width - 108px; width: 96px;
             text: root.entry.sub ? "\u{E76C}" : root.entry.key;
             font-family: root.entry.sub ? "Segoe Fluent Icons" : "";
             font-size: root.entry.sub ? 11px : 12px;
@@ -349,6 +350,16 @@ export component App inherits Window {
     in property <bool> right-shows-size: true;
     in property <bool> right-shows-modified: true;
     callback list-width(int, length);
+    // P13-M2: the buttons each toolbar shows before More (toolbar.rs `fit`; -1 the bar across the
+    // window, 0 and 1 the panes' own), set from Rust when a bar's width changes (toolbar-width);
+    // toolbar-menu(pane, name, x, y) a View or More button pressed, its menu under it at (x, y);
+    // nav-button(pane, name) one of a path bar's Back, Forward, Up, Refresh.
+    in property <int> top-tool-fit: 12;
+    in property <int> left-tool-fit: 12;
+    in property <int> right-tool-fit: 12;
+    callback toolbar-width(int, length);
+    callback toolbar-menu(int, string, length, length);
+    callback nav-button(int, string);
     // Thumbnails and 32 px rows in both panes (settings `thumbnails`; set at start and by the dialog).
     in property <bool> thumbnails: false;
     // Comfortable 30 px rows in the details lists without thumbnails (settings `row_height`, P12-M4).
@@ -903,7 +914,10 @@ export component App inherits Window {
                 }
             }
             Toolbar {
-                x: 4px; y: 2px; height: parent.height - 4px;
+                x: 4px; y: 2px; width: parent.width - 8px; height: parent.height - 4px;
+                fit: root.top-tool-fit;
+                tool-menu(n, x, y) => { root.toolbar-menu(root.split && root.active-pane == 1 ? 1 : 0, n, x, y); }
+                width-changed(w) => { root.toolbar-width(-1, w); }
                 tools: root.split && root.active-pane == 1 ? root.right-tools : root.left-tools;
                 labelled: true;
                 preview-on: root.preview;
@@ -1165,6 +1179,10 @@ export component App inherits Window {
                 preview-on: root.preview;
                 split-on: root.split;
                 tool(c) => { root.toolbar-clicked(0, c); }
+                tool-fit: root.left-tool-fit;
+                tool-menu(m, x, y) => { root.toolbar-menu(0, m, x, y); }
+                tool-width(w) => { root.toolbar-width(0, w); }
+                nav-button(b) => { root.nav-button(0, b); }
                 tool-tip(t) => { root.toolbar-tip(0, t); }
             }
             right := Pane {
@@ -1240,6 +1258,10 @@ export component App inherits Window {
                 preview-on: root.preview;
                 split-on: root.split;
                 tool(c) => { root.toolbar-clicked(1, c); }
+                tool-fit: root.right-tool-fit;
+                tool-menu(m, x, y) => { root.toolbar-menu(1, m, x, y); }
+                tool-width(w) => { root.toolbar-width(1, w); }
+                nav-button(b) => { root.nav-button(1, b); }
                 tool-tip(t) => { root.toolbar-tip(1, t); }
             }
             splitter := Rectangle {
