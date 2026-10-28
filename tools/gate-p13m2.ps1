@@ -1,11 +1,11 @@
-# P13-M2 gate, tag ab67: target-p13m2 from the P13-M2 PR's code head HEAD_TBD (everything by mouse: the
+# P13-M2 gate, tag ab68: target-p13m2 from the P13-M2 PR's code head 2d94fed (everything by mouse: the
 # path bar's Back, Forward, Up and Refresh; the toolbar's Undo, Redo, View and More menus, each bar
 # overflowing into More on its own; the band in the details list; the docs and this wrapper follow it)
-# against the reference the coordinating session names (P13-M1's gate build here; P13-M3's if it merges
-# first), two settings interleaved in one session under the one tag: the defaults and the in-pane toolbar
+# against target-p12seg (3698cd2, main's code at the Phase 12 close: nothing has merged since), two
+# settings interleaved in one session under the one tag: the defaults and the in-pane toolbar
 # (C:\traces\toolbar-pane.toml, read-only, toolbar = "pane"; the reference runs with the same file).
 # The scenario presses no new button and draws no band: it measures the path bar's buttons and the bars'
-# new buttons on screen while the lists scroll. Each round runs p13m1, p13m2, p13m1-toolbar-pane,
+# new buttons on screen while the lists scroll. Each round runs p12seg, p13m2, p12seg-toolbar-pane,
 # p13m2-toolbar-pane. 12 runs, about 18 minutes, then the analysis.
 # The tag and the reference are the coordinating session's to set: change $Tag or $Ref below if it
 # allocates another tag or gates against another build (the wrapper refuses a tag that has traces).
@@ -20,9 +20,9 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = 'HEAD_TBD'
-$Tag = 'ab67'
-$Ref = 'p13m1'
+$Head = '2d94fed'
+$Tag = 'ab68'
+$Ref = 'p12seg'
 $Cand = 'p13m2'
 $Gate = "$Root\.claude\worktrees\gate-p13m2"
 # Each setting: the settings file ('' for the defaults), its label suffix, and a line every run's

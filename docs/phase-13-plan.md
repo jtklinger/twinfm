@@ -534,8 +534,8 @@ Run: to come, on the coordinating session's word.
 
 ### Gate
 
-To come: the defaults triplet and the toolbar-pane triplet (`C:\traces\toolbar-pane.toml`), against the
-reference the coordinating session names (P13-M1's gate build, or P13-M3's if it merges first).
+To come: the defaults triplet and the toolbar-pane triplet (`C:\traces\toolbar-pane.toml`), against
+`target-p12seg` (3698cd2), tag ab68, by `tools/gate-p13m2.ps1` on the code head 2d94fed.
 
 ### Console checks (for Jeremy, unelevated, after the gate, light and dark, beside Explorer)
 
