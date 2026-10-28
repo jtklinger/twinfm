@@ -808,7 +808,11 @@ fn update_status(st: &State, app: &App, pane: usize) {
         right: statusbar::free_text(t.free).into(),
     };
     if pane == 0 { app.set_left_status(s) } else { app.set_right_status(s) }
-    update_tools(st, app, pane);
+    // Both panes: Undo, Redo and Cancel waiting jobs follow the stacks and the queue, which any pane's
+    // job changes (P13-M2).
+    for p in 0..2 {
+        update_tools(st, app, p);
+    }
 }
 
 /// Where the pane's active tab is, as the toolbar and the Windows 11 menu (P7-M2) see it.
@@ -828,7 +832,19 @@ fn tool_place(st: &State, pane: usize) -> toolbar::Place {
 /// The pane's toolbar buttons, from what its status bar shows (where the tab is, its selection)
 /// and the clipboard; set only when they change, in `update_status`'s rhythm (P6-M3).
 fn update_tools(st: &State, app: &App, pane: usize) {
-    let tools = toolbar::state(tool_place(st, pane), st.model(pane).selected_count(), st.clip_files);
+    let t = st.tab(pane);
+    let facts = toolbar::Facts {
+        back: t.history.back_len() > 0,
+        forward: t.history.forward_len() > 0,
+        this_pc: is_this_pc(&t.path.to_string_lossy()),
+        undo: st.undo.last().map(|r| r.text.clone()),
+        redo: st.redo.last().map(|r| r.text.clone()),
+        busy: !st.jobs.is_empty(),
+        waiting: st.jobs.len().saturating_sub(1),
+        hidden: t.model.show_hidden.get(),
+        view: view_of(st, pane).index(),
+    };
+    let tools = toolbar::with_facts(toolbar::state(tool_place(st, pane), st.model(pane).selected_count(), st.clip_files), &facts);
     let now = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
     if now != tools {
         if pane == 0 { app.set_left_tools(tools) } else { app.set_right_tools(tools) }
@@ -840,6 +856,18 @@ fn update_tools(st: &State, app: &App, pane: usize) {
 /// buttons that open the name editor, which takes them itself: the list's focus request lands a
 /// moment later (a `changed` handler) and would close the editor again.
 fn toolbar_clicked(pane: usize, button: &str) {
+    // View and More open their menus (P13-M2); a button press without a point (the driver) puts the
+    // menu under the pane's path bar.
+    if button == "view" || button == "more" {
+        let Some(at) = with_state(|st| {
+            let app = st.app.upgrade()?;
+            let l = window_layout(&app);
+            Some((dnd::pane_x(&l, pane).0 + 8.0, dnd::list_top(&l, pane) - 34.0))
+        }) else {
+            return;
+        };
+        return open_tool_menu(pane, button, at.0, at.1);
+    }
     // The Preview button (P8-M1) is Alt+P's toggle, for the window, not a pane's command.
     if button == "preview" {
         eprintln!("[toolbar] pane={pane} preview -> toggle");
@@ -864,6 +892,153 @@ fn toolbar_clicked(pane: usize, button: &str) {
         app.invoke_focus_pane(pane as i32);
     }
     command(pane, cmd);
+}
+
+/// The toolbar's View or More menu (P13-M2) for `pane`, at window point (x, y) (under its button):
+/// TwinFM's own Windows 11 menu, its items `toolbar::view_menu` or `toolbar::more_menu` (the buttons
+/// the pane's bar had no room for first). `[toolbar] menu <name>: <items>`.
+fn open_tool_menu(pane: usize, name: &str, x: f32, y: f32) {
+    winmenu_close("another menu opens");
+    let Some((req, ctx)) = menu_request(pane, -1, x, y, false) else { return };
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let tools = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
+        let (items, own) = if name == "view" {
+            (toolbar::view_menu(tools.view), 0)
+        } else {
+            let fit = tool_fit(&app, pane) as usize;
+            let items = toolbar::more_menu(&tools, fit, app.get_split(), tool_place(st, pane));
+            let own = items.len() - 6;
+            (items, own)
+        };
+        let entries = winmenu::tool_items(&items, own);
+        eprintln!(
+            "[toolbar] menu {name}: {}",
+            items.iter().map(|i| format!("{}{}{}", i.text, if i.enabled { "" } else { " (off)" }, if i.ticked { " (on)" } else { "" })).collect::<Vec<_>>().join(" | ")
+        );
+        let wctx = winmenu::Ctx { place: tool_place(st, pane), what: winmenu::What::Background, clipboard_files: st.clip_files, same_type: false };
+        st.winmenu_seq += 1;
+        st.winmenu = Some(WinMenu {
+            seq: st.winmenu_seq,
+            pane,
+            row: -1,
+            at: (x, y),
+            req,
+            ctx,
+            wctx,
+            waiting: false,
+            answer: explorercmd::Answer { seq: st.winmenu_seq, ..Default::default() },
+            opened: Instant::now(),
+            shown: false,
+            tools: Vec::new(),
+            items: Vec::new(),
+            placed: winmenu::Placed { x, y, h: 0.0, scrolls: false, left: false, up: false },
+            hl: -1,
+            sub: None,
+            history: None,
+            tool: Some((entries, items)),
+        });
+    });
+    show_winmenu("the toolbar");
+}
+
+/// The buttons pane `pane`'s bar shows before More: the bar across the window's for the pane it acts
+/// on, else the pane's own.
+fn tool_fit(app: &App, pane: usize) -> i32 {
+    if app.get_toolbar() == settings::Toolbar::Top.index() {
+        app.get_top_tool_fit()
+    } else if pane == 0 {
+        app.get_left_tool_fit()
+    } else {
+        app.get_right_tool_fit()
+    }
+}
+
+/// A View or More menu's item, picked (P13-M2): the command its key or button calls.
+/// `[toolbar] pane=N picks "<item>" -> <command>`.
+fn run_tool(pane: usize, item: &toolbar::MenuItem) {
+    eprintln!("[toolbar] pane={pane} picks \"{}\" -> {}", item.text, item.command);
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    match item.command {
+        "view:details" => set_view(pane, settings::View::Details),
+        "view:large" => set_view(pane, settings::View::Large),
+        "view:medium" => set_view(pane, settings::View::Medium),
+        "selectall" => {
+            app.invoke_focus_pane(pane as i32);
+            app.invoke_select(pane as i32, SelOp::All as i32, current_row(&app, pane));
+        }
+        "copyother" | "moveother" => {
+            app.invoke_focus_pane(pane as i32);
+            command(pane, if item.command == "copyother" { "copy" } else { "move" });
+        }
+        "sizeall" => {
+            app.invoke_focus_pane(pane as i32);
+            command(pane, "sizeall");
+        }
+        "hidden" => toggle_hidden(pane),
+        "cancelwaiting" => {
+            cancel_queued(pane);
+        }
+        other => toolbar_clicked(pane, other),
+    }
+}
+
+/// One of the path bar's buttons (P13-M2): its pane becomes active and goes back, forward, up or
+/// refreshes, as Alt+Left, Alt+Right, Alt+Up and F5 do there. `[nav] pane=N <Back|Forward|Up|Refresh>
+/// button`.
+fn nav_button(pane: usize, name: &str) {
+    let Some(app) = with_state(|st| st.app.upgrade()) else { return };
+    app.invoke_focus_pane(pane as i32);
+    let label = match name {
+        "back" => "Back",
+        "forward" => "Forward",
+        "up" => "Up",
+        "refresh" => "Refresh",
+        _ => return eprintln!("[nav] pane={pane} no button {name}"),
+    };
+    eprintln!("[nav] pane={pane} {label} button");
+    match name {
+        "back" => history_move(pane, false),
+        "forward" => history_move(pane, true),
+        "up" => {
+            go_up(pane);
+        }
+        _ => refresh(pane),
+    }
+}
+
+/// A toolbar's width changed (`which` -1 the bar across the window, 0 or 1 a pane's own): how many of
+/// its buttons fit before More (`toolbar::fit`), set when that changes. `[toolbar] top|pane=N fits K of
+/// 12 buttons at W px`.
+fn toolbar_width(app: &App, which: i32, w: f32) {
+    if w <= 0.0 {
+        return;
+    }
+    // The buttons' widths as pane.slint's ToolButton lays them out: 6 + 16 + 6 px icon-only, 8 + 16 + 6
+    // + the label + 10 px labelled (measured in the heavier weight, so a bar never clips a label); a
+    // menu button's chevron 6 + 12 px more.
+    let labelled = which < 0;
+    let label_w = |text: &str| if labelled { 40.0 + app.invoke_measure(text.into(), true) } else { 28.0 };
+    let texts = ["New file", "New folder", "Cut", "Copy", "Paste", "Rename", "Delete", "Undo", "Redo", "View", "Two panes", "Preview pane"];
+    let widths: Vec<f32> = texts.iter().map(|t| label_w(t) + if *t == "View" { 18.0 } else { 0.0 }).collect();
+    let seps: Vec<bool> = toolbar::BUTTONS.iter().map(|b| toolbar::SEP_BEFORE.contains(b)).collect();
+    let more_w = label_w("More") + 18.0;
+    let fit = toolbar::fit(&widths, &seps, w, more_w, 2.0, 9.0, 2.0) as i32;
+    let now = match which {
+        -1 => app.get_top_tool_fit(),
+        0 => app.get_left_tool_fit(),
+        _ => app.get_right_tool_fit(),
+    };
+    if fit == now {
+        return;
+    }
+    match which {
+        -1 => app.set_top_tool_fit(fit),
+        0 => app.set_left_tool_fit(fit),
+        _ => app.set_right_tool_fit(fit),
+    }
+    let bar = if which < 0 { "top".to_string() } else { format!("pane={which}") };
+    eprintln!("[toolbar] {bar} fits {fit} of {} buttons at {w:.0} px", widths.len());
 }
 
 /// Alt+P, the toolbar's Preview button and the dialog (P8-M1): show or hide the preview column,
@@ -3713,6 +3888,8 @@ struct WinMenu {
     /// The history menu (P11-M3): its rows and each one's steps from the current place, in place
     /// of the selection's items.
     history: Option<(Vec<winmenu::Entry>, Vec<isize>)>,
+    /// The toolbar's View or More menu (P13-M2): its rows and its items.
+    tool: Option<(Vec<winmenu::Entry>, Vec<toolbar::MenuItem>)>,
 }
 
 /// An open submenu: whose it is, its rows, where it is, its highlight, and whether the keyboard
@@ -3807,6 +3984,7 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
             hl: -1,
             sub: None,
             history: None,
+            tool: None,
         });
         Some((seq, waiting))
     });
@@ -3853,6 +4031,7 @@ fn open_history_menu(pane: usize, x: f32, y: f32) {
             hl: -1,
             sub: None,
             history: Some((winmenu::history_items(&labels), list.iter().map(|(s, _)| *s).collect())),
+            tool: None,
         });
     });
     show_winmenu("history");
@@ -3909,9 +4088,9 @@ fn show_winmenu(why: &str) {
     let first = with_state(|st| {
         let app = st.app.upgrade()?;
         let m = st.winmenu.as_mut()?;
-        (m.tools, m.items) = match &m.history {
-            Some((items, _)) => (Vec::new(), items.clone()),
-            None => (winmenu::tools(&m.wctx), winmenu::items(&m.wctx, &m.answer.commands)),
+        (m.tools, m.items) = match (&m.history, &m.tool) {
+            (Some((items, _)), _) | (_, Some((items, _))) => (Vec::new(), items.clone()),
+            _ => (winmenu::tools(&m.wctx), winmenu::items(&m.wctx, &m.answer.commands)),
         };
         let win = window_logical(&app);
         let h = winmenu::menu_height(!m.tools.is_empty(), &m.items);
@@ -4164,6 +4343,11 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
         Cmd::History(i) => {
             if let Some(steps) = m.history.as_ref().and_then(|(_, s)| s.get(i)) {
                 history_jump(pane, *steps);
+            }
+        }
+        Cmd::Tool(i) => {
+            if let Some(item) = m.tool.as_ref().and_then(|(_, items)| items.get(i)) {
+                run_tool(pane, item);
             }
         }
         Cmd::Delete => {
@@ -5120,7 +5304,7 @@ pub fn crumb_centre(app: &App, pane: usize, i: i32) -> Option<slint::LogicalPosi
         return None;
     }
     let (left, _) = dnd::pane_x(&layout, pane);
-    Some(slint::LogicalPosition::new(left + dnd::PANE_PAD + bx, dnd::crumb_top(&layout, pane) + dnd::CRUMB_H / 2.0))
+    Some(slint::LogicalPosition::new(left + dnd::PANE_PAD + dnd::NAV_W + bx, dnd::crumb_top(&layout, pane) + dnd::CRUMB_H / 2.0))
 }
 
 /// For the driver's `dropfiles side <row>`: sidebar row `i`'s vertical centre in the window
@@ -5248,21 +5432,50 @@ fn band_point(app: &App, layout: &dnd::Layout, pane: usize, at: (f32, f32)) -> (
     (at.0 - left - dnd::PANE_PAD, at.1 - dnd::list_top(layout, pane) - content_y)
 }
 
-/// The left button on a grid pane's empty space (`band-pointer`): kind 0 down, 1 move, 2 up, 3
-/// cancel, at window point `at` (logical px). The band starts once the pointer leaves the drag
-/// threshold, selects the tiles it touches on every move, scrolls the list while the pointer sits
-/// at its top or bottom edge, and ends on the release; a press released under the threshold is a
-/// click on empty space, which clears the selection (Explorer) unless Ctrl or Shift is held.
+/// A left press on details row `row` of `pane` at window point `at` (P13-M2, `row-press`): on the
+/// row's icon or the name's text it drags the files as before (false); anywhere else in the row it
+/// starts the band (true), as Explorer's details view does. The name's width is measured now, for
+/// this row only. `[band] pane=N press on row R <icon|name|blank>: drag|band`.
+fn row_press(app: &App, pane: usize, row: usize, at: (f32, f32), ctrl: bool, shift: bool) -> bool {
+    let l = window_layout(app);
+    if l.grid[pane].is_some() {
+        return false;
+    }
+    let (left, _) = dnd::pane_x(&l, pane);
+    let geom = icons::ListGeom::new(app.get_thumbnails(), app.get_comfortable());
+    let rows = if pane == 0 { app.get_left_rows() } else { app.get_right_rows() };
+    let Some(r) = rows.row_data(row) else { return false };
+    let text_w = app.invoke_measure(r.name, false);
+    let on = band::press_on(at.0 - left - dnd::PANE_PAD, geom.name_x(), text_w, name_px(app, pane, cols_of(app, pane)));
+    eprintln!("[band] pane={pane} press on row {row} {}: {}", on.name(), if on.drags() { "drag" } else { "band" });
+    if on.drags() {
+        return false;
+    }
+    band_pointer(pane, 0, at, ctrl, shift);
+    with_state(|st| {
+        if let Some(b) = st.band.as_mut().filter(|b| b.pane == pane) {
+            b.row = Some(row);
+        }
+    });
+    true
+}
+
+/// The left button on a pane's empty space, or since P13-M2 on a details row's blank part
+/// (`band-pointer`): kind 0 down, 1 move, 2 up, 3 cancel, at window point `at` (logical px). The band
+/// starts once the pointer leaves the drag threshold, selects the tiles (rows) it touches on every
+/// move, scrolls the list while the pointer sits at its top or bottom edge, and ends on the release; a
+/// press released under the threshold is a click: on a row, the row's (P13-M2); on empty space, it
+/// clears the selection (Explorer) unless Ctrl or Shift is held.
 fn band_pointer(pane: usize, kind: i32, at: (f32, f32), ctrl: bool, shift: bool) {
     match kind {
         0 => with_state(|st| {
             let Some(app) = st.app.upgrade() else { return };
             let layout = window_layout(&app);
-            if layout.grid[pane].is_none() {
-                return;
-            }
             let p = band_point(&app, &layout, pane, at);
-            st.band = Some(band::Band::press(pane, p, band::Mode::from_keys(ctrl, shift), st.model(pane).selected_set()));
+            let mut b = band::Band::press(pane, p, band::Mode::from_keys(ctrl, shift), st.model(pane).selected_set());
+            // The details list's band touches rows (P13-M2).
+            b.rows = layout.grid[pane].is_none().then_some(layout.row_px);
+            st.band = Some(b);
             st.band_at = at;
             st.band_logged = None;
         }),
@@ -5279,6 +5492,11 @@ fn band_pointer(pane: usize, kind: i32, at: (f32, f32), ctrl: bool, shift: bool)
                 band_restore(pane, &b, "the pointer grab ended");
             } else if b.active {
                 eprintln!("[band] pane={pane} done: {} selected, cursor {}", with_state(|st| st.model(pane).selected_count()), current_row(&app, pane));
+            } else if let Some(row) = b.row {
+                // A press on a row's blank part released where it went down: a click on the row.
+                let (ctrl, shift) = (b.mode == band::Mode::Toggle, b.mode == band::Mode::Add);
+                row_gesture(pane, row as i32, 0, ctrl, shift);
+                row_gesture(pane, row as i32, 1, ctrl, shift);
             } else if b.mode == band::Mode::Replace {
                 with_state(|st| {
                     let model = st.panes[pane].active().model.clone();
@@ -5358,8 +5576,8 @@ fn band_tick(pane: usize) {
 fn band_apply(st: &mut State, app: &App, pane: usize, log: bool) {
     let Some(b) = st.band.as_ref().filter(|b| b.pane == pane) else { return };
     let layout = window_layout(app);
-    let Some(cols) = layout.grid[pane] else { return };
-    let tile = layout.tile[pane];
+    // The details list's band reads its rows' height from the band (`Band::rows`).
+    let (cols, tile) = (layout.grid[pane].unwrap_or(1), layout.tile[pane]);
     let (x, y, w, h) = band::rect(b.anchor, b.now);
     app.set_band_x(x);
     app.set_band_y(y);
@@ -7642,6 +7860,10 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_open_row(|pane, row| open_row(pane as usize, row));
     app.on_row_gesture(|pane, row, what, ctrl, shift| row_gesture(pane as usize, row, what, ctrl, shift));
     app.on_band_pointer(|pane, kind, x, y, ctrl, shift| band_pointer(pane as usize, kind, (x, y), ctrl, shift));
+    app.on_row_press({
+        let w = app.as_weak();
+        move |pane, row, x, y, ctrl, shift| w.upgrade().is_some_and(|app| row >= 0 && row_press(&app, pane as usize, row as usize, (x, y), ctrl, shift))
+    });
     app.on_go_up(|pane| {
         go_up(pane as usize);
     });
@@ -7765,6 +7987,16 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_toolbar_clicked(|pane, button| toolbar_clicked(pane as usize, button.as_str()));
     app.on_col_drag(|pane, col, dx, phase| col_drag(pane as usize, col, dx, phase));
     app.on_col_fit(|pane, col| col_fit(pane as usize, col));
+    app.on_nav_button(|pane, name| nav_button(pane as usize, name.as_str()));
+    app.on_toolbar_menu(|pane, name, x, y| open_tool_menu(pane as usize, name.as_str(), x, y));
+    app.on_toolbar_width({
+        let w = app.as_weak();
+        move |which, px| {
+            if let Some(app) = w.upgrade() {
+                toolbar_width(&app, which, px);
+            }
+        }
+    });
     app.on_list_width({
         let w = app.as_weak();
         move |pane, px| {
