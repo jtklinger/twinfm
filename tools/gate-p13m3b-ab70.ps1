@@ -1,15 +1,11 @@
-# P13-M3's Size on disk column gate, ORDER SWAPPED (tag ab70): ab69 put p13base first in every round and
-# read a gap that counts (p13od 17.4% and p13od-ondisk 17.6% against 16.6%, every reference run below
-# every candidate run); the second slot reads high (ab53, ab54), so the rule is an order-swapped rerun.
-# Here each round runs p13od-ondisk, then p13od, then p13base, the reference last; labels, settings and
-# checks as ab69's.
-# Otherwise as tools\gate-p13m3b.ps1: target-p13od from the column's PR head c25173c (code as cb91532;
-# the later commits change no code) against target-p13base (main at 34449ee, P13-M1 and the sizes view
-# merged, so the column alone differs), the defaults and the column on: a fifth cell in every
-# details row (its width 0 with the column off), so the defaults runs show what the cell costs off, and
-# the runs with C:\traces\ondisk.toml (read-only, `size_on_disk = true`, made below if missing) what the
-# column and its second read cost on. Defaults runs must hold no `size on disk:` line, the column's runs
-# at least one; no run may hold a `[sizeview]` line. 9 runs, about 13 minutes, then the analysis.
+# P13-M3's Size on disk column gate, the fixed code (tag ab70): target-p13od2 from #131's head 1824ea8
+# (code as 0a835c8: the cell only in lists of its own, FileListOnDisk and FileListOnDisk32, chosen while
+# `size_on_disk` is on; Jeremy's "Zero cost when off" after ab69 read p13od 17.4% against 16.6% with the
+# column off) against target-p13base (main at 34449ee), the defaults and the column on. With the column off
+# the rows are main's, so the defaults runs should read as the reference; the runs with
+# C:\traces\ondisk.toml (read-only, `size_on_disk = true`, made below if missing) show what the column and
+# its second read cost on. Defaults runs must hold no `size on disk:` line, the column's runs at least one;
+# no run may hold a `[sizeview]` line. 9 runs, about 13 minutes, then the analysis.
 # Tag ab70 and the reference p13base are the coordinating session's (2026-10-28); the wrapper refuses a
 # tag that has traces.
 # Only one gate at a time on this machine.
@@ -23,11 +19,11 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = 'c25173c'
+$Head = '1824ea8'
 $Tag = 'ab70'
 $Ref = 'p13base'
-$Cand = 'p13od'
-$Gate = "$Root\.claude\worktrees\gate-p13od"
+$Cand = 'p13od2'
+$Gate = "$Root\.claude\worktrees\gate-p13od2"
 $Cfg = 'C:\traces\ondisk.toml'
 
 # --- Preconditions -------------------------------------------------------------------------------
@@ -67,11 +63,9 @@ if (git -C $Gate status --porcelain) { throw "$Gate has local changes." }
 cargo build --release --locked --manifest-path "$Gate\Cargo.toml" --target-dir "$Root\target-$Cand"
 if ($LASTEXITCODE) { throw 'cargo build failed' }
 
-# --- The runs, interleaved, the reference LAST in each round (order swapped, the P7-M4 rule) --------
-# wpr-triplet runs its -Reference first and the candidates in their order; the labels (p13od-ondisk-N,
-# p13od-N, p13base-N) are unchanged.
+# --- The runs, interleaved ------------------------------------------------------------------
 $started = Get-Date
-& "$Gate\tools\wpr-triplet.ps1" -Reference "$Cand@$Cfg" -Candidate "$Cand,$Ref" -Tag $Tag -Root $Root
+& "$Gate\tools\wpr-triplet.ps1" -Reference $Ref -Candidate "$Cand,$Cand@$Cfg" -Tag $Tag -Root $Root
 
 # --- Analysis and checks -----------------------------------------------------------------------
 # Windows PowerShell turns a native program's redirected stderr into error records: keep going.
@@ -106,7 +100,7 @@ foreach ($label in @($Ref, $Cand, $on)) {
 }
 
 function Median($v) { $x = @($v | Sort-Object); $x[[int][math]::Floor(($x.Count - 1) / 2)] }
-$lines = @("P13-M3 Size on disk column gate, ORDER SWAPPED (the reference last), tag $Tag, $(Get-Date -Format 'yyyy-MM-dd HH:mm'), $Head against target-$Ref, $([int]((Get-Date) - $started).TotalMinutes) min", '')
+$lines = @("P13-M3 Size on disk column gate (the cell in lists of its own), tag $Tag, $(Get-Date -Format 'yyyy-MM-dd HH:mm'), $Head against target-$Ref, $([int]((Get-Date) - $started).TotalMinutes) min", '')
 $lines += ($rows | Select-Object Run, WPR, InApp, RenderP50, Reads, Checks | Format-Table -AutoSize | Out-String).TrimEnd()
 $lines += ''
 $r = @($rows | Where-Object { $_.Label -eq $Ref } | ForEach-Object WPR)

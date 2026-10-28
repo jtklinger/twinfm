@@ -752,7 +752,13 @@ clean; 336 tests passed. Scripted check (a scratch folder; the widths set to Typ
 the column on (`shows ..., size on disk`), thumbnails on with it (the 32 px rows with the cell), Type off
 with it (the cell kept beside Name, Size and Modified), then everything back and the column off (the plain
 rows, no cell); the cursor (row 1) and the scroll (0) kept, and the widths kept (Size moved from 110 by
-the last `colwidth`). Screenshots of the four states.
+the last `colwidth`). Screenshots of the four states. Soak of the change (2026-10-28, the branch's release
+build, code as 0a835c8, main's P13-M2 merged in): `tools/soak-p5m3.ps1 -Minutes 10`: 10.1 minutes, exit
+code 0, 0 panicked lines, 251 jobs (0 failed, 0 cancelled), 0 waitops timeouts, 0 refusals, 16 cycles
+started, 3 whole; every "must be 0" at 0; the column on 3, off 3, shown 3, listings read 3; P13-M2's mouse
+counts as its line expects; working set 149 MB at 5 s, 234 MB at 601 s (at most 238), private 184 to 252
+MB. **Gate ab70** (`tools/gate-p13m3b-ab70.ps1`): `target-p13od2` from 1824ea8 against `target-p13base`,
+the defaults and `ondisk.toml`.
 
 ### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
 
