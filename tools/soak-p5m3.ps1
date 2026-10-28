@@ -681,7 +681,7 @@ $sideKeys = @($log | Select-String -SimpleMatch '[sidebar] key ').Count
 $sideReturns = @($log | Select-String -SimpleMatch '[sidebar] Return on row 1').Count
 # P8-L1 counts.
 $openMany = @($log | Select-String -SimpleMatch '[open] pane=0 2 items: 2 folder(s) to tabs').Count
-$openTabs = @($log | Select-String -SimpleMatch '[tab] pane=0 opened tab' | Select-String -SimpleMatch 'twinfm-m5\src\tree\d0').Count
+$openTabs = @($log | Select-String -SimpleMatch '[tab] pane=0 opened tab' | Select-String -SimpleMatch 'twinfm-m5\src\tree\d0' | Select-String -SimpleMatch -NotMatch 'for a search').Count
 # P7-M1 counts.
 $verbJobs = @($log | Select-String -SimpleMatch '[menu] verb "' | Select-String -SimpleMatch 'queued on the verb worker').Count
 $verbSlept = @($log | Select-String -SimpleMatch 'slept in').Count
