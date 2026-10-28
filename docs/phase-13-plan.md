@@ -812,7 +812,13 @@ note now says so). Soak (code as 3c42b79): `tools/soak-p5m3.ps1 -Minutes 10`: 10
 panicked lines, 250 jobs (0 failed, 0 cancelled), 0 waitops timeouts, 0 refusals, 16 cycles started, 3
 whole; every "must be 0" at 0; the column on 3, off 3, shown 3, listings read 3; working set 149 MB at 5 s,
 233 MB at 601 s (at most 238), private 184 to 252 MB. **Gate ab72** (`tools/gate-p13m3b-ab72.ps1`):
-`target-p13od3` against `target-p13base`, the defaults and `ondisk.toml`.
+`target-p13od3` against `target-p13base`, the defaults and `ondisk.toml`. Run 2026-10-28 at the console's
+60 Hz (an earlier attempt at 22 Hz is set aside in `C:\traces\ab72-22hz\`, not counted); summary
+`C:\traces\gate-ab72-summary.txt`. WPR main-thread busy: p13base 18.5, 19.6, 19.3 (median 19.3); p13od3
+19.1, 19.7, 20.7 (median 19.7, no gap); p13od3 with the column on 20.6, 19.2, 19.1 (median 19.2, no gap).
+Render p50 2.41 to 2.64 ms across all nine runs, no change of state. **Passed**: with the lists picked by
+whether the pane shows the column, the column's setting costs nothing in the gate's 499 px panes, where it
+makes way, and ab71's +1.2 points with it on is gone. The merge waits for Jeremy.
 
 ### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
 
