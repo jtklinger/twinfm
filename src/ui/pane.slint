@@ -8,6 +8,8 @@ export struct Row {
     type-text: string,
     size: string,
     modified: string,
+    // A file's size on disk (P13-M3, the Size on disk column); empty when the column is off.
+    ondisk: string,
     kind: int,
     selected: bool,
     // On the clipboard as a cut: the row's text is drawn dimmed.
@@ -361,6 +363,8 @@ component FileRows inherits ListView {
     in property <length> type-w: 120px;
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
+    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
+    in property <length> ondisk-w: 0px;
     // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
     // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
@@ -396,6 +400,7 @@ component FileRows inherits ListView {
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -418,6 +423,8 @@ component FileRowsNoType inherits ListView {
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
+    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
+    in property <length> ondisk-w: 0px;
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
 
@@ -444,6 +451,7 @@ component FileRowsNoType inherits ListView {
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -512,6 +520,8 @@ component FileRows32 inherits ListView {
     in property <length> type-w: 120px;
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
+    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
+    in property <length> ondisk-w: 0px;
     // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
     // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
@@ -546,6 +556,7 @@ component FileRows32 inherits ListView {
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -565,6 +576,8 @@ component FileRowsNoType32 inherits ListView {
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
+    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
+    in property <length> ondisk-w: 0px;
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
 
@@ -591,6 +604,7 @@ component FileRowsNoType32 inherits ListView {
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -900,6 +914,8 @@ component FileListHost inherits Rectangle {
     in property <length> type-w: 120px;
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
+    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
+    in property <length> ondisk-w: 0px;
     // Thumbnails (settings `thumbnails`): the 32 px lists. row-h is the chosen list's row height
     // (a grid row's with the grid), for the host's and the pane's per-pane arithmetic only; no row
     // or tile reads it.
@@ -1175,6 +1191,7 @@ component FileListHost inherits Rectangle {
         type-w: root.type-w;
         size-w: root.size-w;
         modified-w: root.modified-w;
+        ondisk-w: root.ondisk-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -1193,6 +1210,7 @@ component FileListHost inherits Rectangle {
         row-h: root.row-h;
         size-w: root.size-w;
         modified-w: root.modified-w;
+        ondisk-w: root.ondisk-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -1212,6 +1230,7 @@ component FileListHost inherits Rectangle {
         type-w: root.type-w;
         size-w: root.size-w;
         modified-w: root.modified-w;
+        ondisk-w: root.ondisk-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -1230,6 +1249,7 @@ component FileListHost inherits Rectangle {
         row-h: root.row-h;
         size-w: root.size-w;
         modified-w: root.modified-w;
+        ondisk-w: root.ondisk-w;
         width: root.width;
         height: root.height;
         rows: root.rows;
@@ -1339,10 +1359,13 @@ export component Pane inherits Rectangle {
     in property <bool> shows-type: true;
     in property <bool> shows-size: true;
     in property <bool> shows-modified: true;
+    // The Size on disk column (P13-M3): on and with room for it (main.rs update_shown, cols::ondisk_shown).
+    in property <bool> shows-ondisk: false;
     callback list-width(length);
     private property <length> eff-type: root.show-type && root.shows-type ? root.col-type : 0px;
     private property <length> eff-size: root.shows-size ? root.col-size : 0px;
     private property <length> eff-modified: root.shows-modified ? root.col-modified : 0px;
+    private property <length> eff-ondisk: root.shows-ondisk ? 100px : 0px;
     // Thumbnails (settings `thumbnails`): the 32 px lists (FileListHost); the overlays below read
     // the row height from list.row-h.
     in property <bool> thumbnails: false;
@@ -1936,6 +1959,7 @@ export component Pane inherits Rectangle {
             if !root.grid && root.show-type && root.shows-type: HeaderCell { label: "Type"; width: root.col-type; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
             if !root.grid && root.shows-size: HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
             if !root.grid && root.shows-modified: HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
+            if !root.grid && root.shows-ondisk: HeaderCell { label: "Size on disk"; width: root.eff-ondisk; sorted: false; back => { root.back-button(); } forward => { root.forward-button(); } }
         }
         if root.sizes: HorizontalLayout {
             height: 32px;
@@ -1951,6 +1975,7 @@ export component Pane inherits Rectangle {
             type-w: root.eff-type;
             size-w: root.eff-size;
             modified-w: root.eff-modified;
+            ondisk-w: root.eff-ondisk;
             init => { root.list-width(self.width); }
             changed width => { root.list-width(self.width); }
             thumbnails: root.thumbnails;
@@ -2171,19 +2196,19 @@ export component Pane inherits Rectangle {
         width: list.width;
         height: 32px;
         if root.show-type && root.shows-type: ColGrip {
-            x: parent.width - root.eff-modified - root.eff-size - root.eff-type - 3px;
+            x: parent.width - root.eff-ondisk - root.eff-modified - root.eff-size - root.eff-type - 3px;
             which: 0;
             drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
             fit(c) => { root.col-fit(c); }
         }
         if root.shows-size: ColGrip {
-            x: parent.width - root.eff-modified - root.eff-size - 3px;
+            x: parent.width - root.eff-ondisk - root.eff-modified - root.eff-size - 3px;
             which: 1;
             drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
             fit(c) => { root.col-fit(c); }
         }
         if root.shows-modified: ColGrip {
-            x: parent.width - root.eff-modified - 3px;
+            x: parent.width - root.eff-ondisk - root.eff-modified - 3px;
             which: 2;
             drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
             fit(c) => { root.col-fit(c); }
@@ -2201,7 +2226,7 @@ export component Pane inherits Rectangle {
         visible: root.edit-mode != 0;
         x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + 2px : (root.thumbnails ? 38px : 24px));
         y: list.y + (root.grid ? list.tile-h - 42px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
-        width: root.grid ? list.tile-w - 4px : max(160px, list.width - (root.thumbnails ? 38px : 24px) - (root.eff-type + root.eff-size + root.eff-modified) - 12px);
+        width: root.grid ? list.tile-w - 4px : max(160px, list.width - (root.thumbnails ? 38px : 24px) - (root.eff-type + root.eff-size + root.eff-modified + root.eff-ondisk) - 12px);
         height: 28px;
         background: Theme.card;
         // As behind the path entry: Back or Forward over the editor is ignored, not taken by the

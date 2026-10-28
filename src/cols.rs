@@ -106,6 +106,18 @@ pub fn shown(w: Widths, show_type: bool, room: f32) -> [bool; 3] {
     s
 }
 
+/// The Size on disk column's width (P13-M3, the setting `size_on_disk`): fixed, at the row's right
+/// end after Modified, with no grip and no sort.
+pub const ONDISK_W: f32 = 100.0;
+
+/// Whether a pane with the Size on disk column on shows it (P13-M3): it goes first, before Type, so
+/// only while every other column the setting allows fits beside it with Name at `NAME_FLOOR`. The
+/// others are then `shown(w, show_type, room - ONDISK_W)` when it shows, `shown(w, show_type, room)`
+/// when not.
+pub fn ondisk_shown(w: Widths, show_type: bool, room: f32) -> bool {
+    room - ONDISK_W - w.taken([show_type, true, true]) >= NAME_FLOOR
+}
+
 /// `shown` as the `[cols]` line names it: "name, size, modified".
 pub fn shown_text(s: [bool; 3]) -> String {
     let mut out = String::from("name");
@@ -305,5 +317,17 @@ mod tests {
         assert_eq!(left_of(Col::Size, NO_TYPE), None);
         let w = drag(DEFAULT, Col::Modified, -40.0, only_mod, 300.0);
         assert_eq!((w.size, w.modified), (90.0, 180.0), "Size's own width untouched");
+    }
+
+    #[test]
+    fn size_on_disk_goes_first_and_comes_back_last() {
+        // P13-M3: 100 px after Modified; it shows only while Type, Size and Modified fit beside it.
+        let all = DEFAULT.taken(ALL3); // 350
+        assert!(ondisk_shown(DEFAULT, true, NAME_FLOOR + all + ONDISK_W));
+        assert!(!ondisk_shown(DEFAULT, true, NAME_FLOOR + all + ONDISK_W - 1.0), "it goes before Type");
+        assert_eq!(shown(DEFAULT, true, NAME_FLOOR + all + ONDISK_W - 1.0), ALL3, "Type stays while it can");
+        // With the Type column off, Type's width is not asked for.
+        assert!(ondisk_shown(DEFAULT, false, NAME_FLOOR + DEFAULT.taken(NO_TYPE) + ONDISK_W));
+        assert!(!ondisk_shown(DEFAULT, false, 0.0));
     }
 }

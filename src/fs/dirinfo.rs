@@ -12,10 +12,11 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO, FILE_ID_BOTH_DIR_INFO,
-    FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileFullDirectoryInfo,
-    FileFullDirectoryRestartInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx,
-    OPEN_EXISTING,
+    CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_NO_RECALL,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileFullDirectoryInfo,
+    FileFullDirectoryRestartInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileStandardInfo,
+    GetFileInformationByHandleEx, OPEN_EXISTING,
 };
 
 /// Bytes of entries asked for per call.
@@ -114,6 +115,50 @@ pub fn read(dir: &Path, ids: bool, mut f: impl FnMut(&Item)) -> Result<(), u32> 
     // SAFETY: `h` is the handle opened above, closed exactly once.
     unsafe { CloseHandle(h) };
     res
+}
+
+/// Every entry's size on disk in `dir` by name (the Size on disk column's second read of a listed
+/// folder); None when the folder cannot be read.
+pub fn disk_by_name(dir: &Path) -> Option<std::collections::HashMap<String, u64>> {
+    let mut map = std::collections::HashMap::new();
+    read(dir, false, |it| {
+        if !it.is_dot() {
+            map.insert(String::from_utf16_lossy(it.name), it.disk);
+        }
+    })
+    .ok()?;
+    Some(map)
+}
+
+/// One file's size on disk, from its own handle (`FileStandardInfo`'s `AllocationSize`, the figure
+/// the directory information gives): a file a watch edit statted. Opened for its attributes only,
+/// never following a link and never recalling a cloud file. None when it cannot be opened.
+pub fn disk_of(path: &Path) -> Option<u64> {
+    let wide = super::enumerate::long_wide(path.as_os_str().encode_wide().collect(), true);
+    // SAFETY: `wide` is a NUL-terminated wide path alive for the call; no security attributes or
+    // template.
+    let h = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL,
+            std::ptr::null_mut(),
+        )
+    };
+    if h == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut info = FILE_STANDARD_INFO::default();
+    // SAFETY: `h` is the open handle and `info` a FILE_STANDARD_INFO of the size passed.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(h, FileStandardInfo, (&mut info as *mut FILE_STANDARD_INFO).cast(), size_of::<FILE_STANDARD_INFO>() as u32)
+    };
+    // SAFETY: `h` is the handle opened above, closed exactly once.
+    unsafe { CloseHandle(h) };
+    (ok != 0).then(|| info.AllocationSize.max(0) as u64)
 }
 
 fn item_of(name: &[u16], attrs: u32, ea: u32, eof: i64, alloc: i64, modified: i64, id: u64) -> Item<'_> {
@@ -224,6 +269,10 @@ mod tests {
             n
         };
         let missing = read(&dir.join("not-there"), false, |_| {});
+        // The Size on disk column's two reads: the folder's by name, and one file's own handle.
+        let column = disk_by_name(&dir).unwrap();
+        let own: Vec<Option<u64>> = ["plain.bin", "compressed.bin", "sparse.bin"].iter().map(|n| disk_of(&dir.join(n))).collect();
+        let (gone, no_folder) = (disk_of(&dir.join("not-there")), disk_by_name(&dir.join("not-there")));
         std::fs::remove_dir_all(&dir).unwrap();
 
         let (pa, pl, pd) = m["plain.bin"];
@@ -243,6 +292,9 @@ mod tests {
         assert_ne!(m["sub"].0 & FILE_ATTRIBUTE_DIRECTORY, 0);
         assert_eq!((m.len(), without_ids), (4, 4), "both classes list the same four");
         assert_eq!(missing, Err(2), "ERROR_FILE_NOT_FOUND");
+        assert_eq!((column["plain.bin"], column["compressed.bin"], column["sparse.bin"], column.len()), (pd, cd, sd, 4));
+        assert_eq!(own, vec![Some(pd), Some(cd), Some(sd)], "a file's own handle gives the directory's size on disk");
+        assert!(gone.is_none() && no_folder.is_none());
     }
 
     #[test]

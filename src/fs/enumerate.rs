@@ -66,11 +66,22 @@ impl ReparseCounts {
 }
 
 /// List `path` on a worker thread; `thumbnails`: thumbnail files get their own icon keys
-/// (`icons::IconKeys`); `cloud`: the folder's cloud location, which marks the keys.
-pub fn spawn(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, cloud: crate::icons::Cloud, tx: Sender<Msg>, wake: impl Fn() + Send + 'static) {
+/// (`icons::IconKeys`); `cloud`: the folder's cloud location, which marks the keys; `ondisk`: each
+/// file's size on disk is read too (the Size on disk column, P13-M3: a second read of the folder).
+#[allow(clippy::too_many_arguments)]
+pub fn spawn(
+    path: PathBuf,
+    pane: usize,
+    generation: u64,
+    thumbnails: bool,
+    cloud: crate::icons::Cloud,
+    ondisk: bool,
+    tx: Sender<Msg>,
+    wake: impl Fn() + Send + 'static,
+) {
     std::thread::Builder::new()
         .name(format!("enum-{pane}-{generation}"))
-        .spawn(move || run(path, pane, generation, thumbnails, cloud, tx, wake))
+        .spawn(move || run(path, pane, generation, thumbnails, cloud, ondisk, tx, wake))
         .expect("spawn enumeration thread");
 }
 
@@ -83,7 +94,8 @@ pub fn is_this_pc(path: &str) -> bool {
     t.is_empty() || t.eq_ignore_ascii_case(THIS_PC)
 }
 
-fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, cloud: crate::icons::Cloud, tx: Sender<Msg>, wake: impl Fn()) {
+#[allow(clippy::too_many_arguments)]
+fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, cloud: crate::icons::Cloud, ondisk: bool, tx: Sender<Msg>, wake: impl Fn()) {
     let t0 = Instant::now();
     if is_this_pc(&path.to_string_lossy()) {
         let entries = drive_entries();
@@ -109,7 +121,23 @@ fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, cloud: cra
     let mut total = 0usize;
     let mut reparse = ReparseCounts::default();
     let (mut files, mut unsynced) = (0usize, 0usize);
-    let listed = list_dir(&path, &mut types, &mut icon_keys, &zone, |e| {
+    // The Size on disk column's second read (P13-M3): the folder's directory information, before
+    // the listing, so each file's row carries it from its first batch.
+    let disk = ondisk.then(|| {
+        let t = Instant::now();
+        let m = crate::fs::dirinfo::disk_by_name(&path);
+        let n = m.as_ref().map_or(0, |m| m.len());
+        eprintln!("[enum] pane={pane} gen={generation} size on disk: {n} entries read in {:.1} ms", crate::perf::elapsed_ms(t));
+        m
+    });
+    let listed = list_dir(&path, &mut types, &mut icon_keys, &zone, |mut e| {
+        if let Some(Some(m)) = &disk {
+            if e.attrs & FILE_ATTRIBUTE_DIRECTORY == 0 {
+                if let Some(&d) = m.get(e.name.as_str()) {
+                    e.ondisk_text = crate::model::format_size(d).into();
+                }
+            }
+        }
         reparse.add(e.kind);
         if sync_root && e.attrs & FILE_ATTRIBUTE_DIRECTORY == 0 {
             files += 1;
@@ -936,8 +964,13 @@ mod tests {
     }
 
     fn collect(path: PathBuf) -> Vec<Msg> {
+        collect_with(path, false)
+    }
+
+    /// `ondisk`: with the Size on disk column's second read (P13-M3).
+    fn collect_with(path: PathBuf, ondisk: bool) -> Vec<Msg> {
         let (tx, rx) = unbounded();
-        spawn(path, 1, 7, false, crate::icons::Cloud::None, tx, || {});
+        spawn(path, 1, 7, false, crate::icons::Cloud::None, ondisk, tx, || {});
         let mut out = Vec::new();
         loop {
             let m = rx.recv().expect("worker sends Done before exiting");
@@ -954,6 +987,25 @@ mod tests {
             Msg::Batch { entries, .. } => format!("Batch of {}", entries.len()),
             Msg::Done { total, error, .. } => format!("Done total={total} error={error:?}"),
         }
+    }
+
+    #[test]
+    fn the_size_on_disk_column_is_read_only_while_it_is_on() {
+        // P13-M3: the listing's second read gives each file its size on disk; folders get none.
+        let dir = std::env::temp_dir().join(format!("twinfm-p13m3-ondisk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("big.bin"), vec![b'x'; 100_000]).unwrap();
+        let on = entries_of(&collect_with(dir.clone(), true));
+        let off = entries_of(&collect_with(dir.clone(), false));
+        let disk = crate::fs::dirinfo::disk_by_name(&dir).unwrap()["big.bin"];
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let text = |es: &[Entry], n: &str| es.iter().find(|e| e.name == n).unwrap().ondisk_text.to_string();
+        assert!(disk >= 100_000, "whole clusters: {disk}");
+        assert_eq!(text(&on, "big.bin"), crate::model::format_size(disk));
+        assert_eq!(text(&on, "sub"), "", "a folder has no size on disk in the column");
+        assert_eq!((text(&off, "big.bin"), text(&off, "sub")), (String::new(), String::new()), "off: nothing read");
     }
 
     #[test]
