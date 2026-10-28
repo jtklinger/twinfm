@@ -757,8 +757,14 @@ build, code as 0a835c8, main's P13-M2 merged in): `tools/soak-p5m3.ps1 -Minutes 
 code 0, 0 panicked lines, 251 jobs (0 failed, 0 cancelled), 0 waitops timeouts, 0 refusals, 16 cycles
 started, 3 whole; every "must be 0" at 0; the column on 3, off 3, shown 3, listings read 3; P13-M2's mouse
 counts as its line expects; working set 149 MB at 5 s, 234 MB at 601 s (at most 238), private 184 to 252
-MB. **Gate ab70** (`tools/gate-p13m3b-ab70.ps1`): `target-p13od2` from 1824ea8 against `target-p13base`,
-the defaults and `ondisk.toml`.
+MB. **ab70** (`tools/gate-p13m3b-ab70.ps1`, 2026-10-28 10:32): `target-p13od2` from 1824ea8 against
+`target-p13base`, the defaults and `ondisk.toml`. **Run at 22 Hz, not the gate**: after the move to the
+console, frames came every 46 ms, not the protocol's 60 Hz (ab69 ran at 16.4 ms). Read like for like it
+showed no gap: WPR medians p13od2 9.3% and p13od2-ondisk 9.6% against p13base 9.0% (reference runs 9.8,
+9.0, 8.9; p13od2 9.4, 9.3, 9.2; the column on 9.5, 9.6, 9.6), no reference run below every candidate run,
+every check ok, render p50 1.85 to 2.11 ms. Summary `C:\traces\gate-ab70-summary.txt`. The gate is ab71,
+the same wrapper with its tag changed (the coordinating session's `C:\traces\gate-p13m3b-ab71.ps1`), at
+60 Hz.
 
 ### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
 
