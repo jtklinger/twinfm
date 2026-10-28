@@ -349,6 +349,9 @@ export component App inherits Window {
     in property <bool> right-shows-type: true;
     in property <bool> right-shows-size: true;
     in property <bool> right-shows-modified: true;
+    // The Size on disk column (P13-M3): the setting on and the pane wide enough (main.rs update_shown).
+    in property <bool> left-shows-ondisk: false;
+    in property <bool> right-shows-ondisk: false;
     callback list-width(int, length);
     // P13-M2: the buttons each toolbar shows before More (toolbar.rs `fit`; -1 the bar across the
     // window, 0 and 1 the panes' own), set from Rust when a bar's width changes (toolbar-width);
@@ -612,6 +615,7 @@ export component App inherits Window {
     in-out property <int> dlg-view-left;
     in-out property <int> dlg-view-right;
     in-out property <bool> dlg-type-column;
+    in-out property <bool> dlg-size-on-disk;
     in-out property <bool> dlg-thumbnails;
     // The rows (P12-M4): 0 compact, 1 comfortable.
     in-out property <int> dlg-row-height;
@@ -689,6 +693,7 @@ export component App inherits Window {
         if (field == "protected_left") { dlg-protected-left = value == "true"; }
         if (field == "protected_right") { dlg-protected-right = value == "true"; }
         if (field == "type_column") { dlg-type-column = value == "true"; }
+        if (field == "size_on_disk") { dlg-size-on-disk = value == "true"; }
         if (field == "thumbnails") { dlg-thumbnails = value == "true"; }
         if (field == "row_height") { dlg-row-height = value == "comfortable" ? 1 : 0; }
         if (field == "sidebar") { dlg-sidebar = value == "true"; }
@@ -1163,6 +1168,7 @@ export component App inherits Window {
                 shows-type: root.left-shows-type;
                 shows-size: root.left-shows-size;
                 shows-modified: root.left-shows-modified;
+                shows-ondisk: root.left-shows-ondisk;
                 list-width(w) => { root.list-width(0, w); }
                 thumbnails: root.thumbnails;
                 comfortable: root.comfortable;
@@ -1243,6 +1249,7 @@ export component App inherits Window {
                 shows-type: root.right-shows-type;
                 shows-size: root.right-shows-size;
                 shows-modified: root.right-shows-modified;
+                shows-ondisk: root.right-shows-ondisk;
                 list-width(w) => { root.list-width(1, w); }
                 thumbnails: root.thumbnails;
                 comfortable: root.comfortable;
@@ -1787,6 +1794,15 @@ export component App inherits Window {
                                 checked: root.dlg-type-column;
                                 accessible-label: "Show the Type column";
                                 toggled => { root.settings-stage("type_column", self.checked ? "true" : "false"); }
+                            }
+                        }
+                        Row {
+                            Text { }
+                            Switch {
+                                text: "Size on disk column";
+                                checked: root.dlg-size-on-disk;
+                                accessible-label: "Show the Size on disk column";
+                                toggled => { root.settings-stage("size_on_disk", self.checked ? "true" : "false"); }
                             }
                         }
                         Row {

@@ -684,7 +684,7 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         eprintln!("[nav] pane={pane} gen={generation} path={shown}");
         let tx = st.tx.clone();
         let cloud = cloud_of(st, pane, &path);
-        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, cloud, tx, wake);
+        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, cloud, st.config.size_on_disk, tx, wake);
         schedule_save(st);
     });
 }
@@ -724,7 +724,7 @@ fn refresh(pane: usize) {
             return;
         }
         let cloud = cloud_of(st, pane, &path);
-        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, cloud, st.tx.clone(), wake);
+        fs::enumerate::spawn(path, pane, generation, st.config.thumbnails, cloud, st.config.size_on_disk, st.tx.clone(), wake);
     });
 }
 
@@ -1634,6 +1634,8 @@ struct StatJob {
     generation: u64,
     pass: u64,
     thumbnails: bool,
+    /// The Size on disk column is on (P13-M3): each statted file's size on disk is read too.
+    ondisk: bool,
     /// The folder's cloud location, for the edited entries' keys.
     cloud: icons::Cloud,
     /// The listing is younger than the longest window (`young_listing`): a name it does not have
@@ -1669,8 +1671,11 @@ fn edit_worker() -> Sender<StatJob> {
                 let zone = model::LocalZone::current();
                 let mut failed = false;
                 let (edits, vanished) = edits_from(&job.changes, |n| {
-                    let entry = fs::enumerate::stat_entry(&dir, n, &mut types, &mut keys, &zone);
+                    let mut entry = fs::enumerate::stat_entry(&dir, n, &mut types, &mut keys, &zone);
                     failed |= entry.is_none();
+                    if let Some(e) = entry.as_mut().filter(|e| job.ondisk && !e.is_dir()) {
+                        e.ondisk_text = fs::dirinfo::disk_of(&dir.join(n)).map(|d| model::format_size(d).into()).unwrap_or_default();
+                    }
                     entry
                 });
                 let folder_gone = failed && std::fs::metadata(&dir).is_err();
@@ -1903,6 +1908,7 @@ fn take_window(st: &mut State, pane: usize, tab_id: u64, active: bool, changes: 
                     pass: t.model.pass.get(),
                     young: young_listing(t),
                     thumbnails: st.config.thumbnails,
+                    ondisk: st.config.size_on_disk,
                     cloud: icons::Cloud::None,
                 };
                 let cloud = st.cloud.of(&job.path);
@@ -6896,6 +6902,9 @@ thread_local! {
     /// Each pane's list width as Slint last reported it (pane.slint `list-width`), logical px; 0
     /// before the first layout and while the right pane is hidden.
     static LIST_W: std::cell::Cell<[f32; 2]> = const { std::cell::Cell::new([0.0; 2]) };
+    /// The setting `size_on_disk` (P13-M3), for `update_shown`, which runs inside and outside the
+    /// state's borrow.
+    static ONDISK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Pane `pane`'s list is `w` px wide now (a window resize, the splitter, the split, the sidebar, the
@@ -6922,25 +6931,39 @@ fn update_shown(app: &App, pane: usize) {
     }
     let geom = icons::ListGeom::new(app.get_thumbnails(), app.get_comfortable());
     let room = w - geom.name_x() - dnd::ROW_PAD_RIGHT;
-    let s = cols::shown(cols_of(app, pane), app.get_show_type(), room);
-    if s == shown_of(app, pane) {
+    let (widths, show_type) = (cols_of(app, pane), app.get_show_type());
+    let ondisk = ONDISK.with(|c| c.get()) && cols::ondisk_shown(widths, show_type, room);
+    let s = cols::shown(widths, show_type, room - if ondisk { cols::ONDISK_W } else { 0.0 });
+    if s == shown_of(app, pane) && ondisk == ondisk_of(app, pane) {
         return;
     }
     if pane == 0 {
         app.set_left_shows_type(s[0]);
         app.set_left_shows_size(s[1]);
         app.set_left_shows_modified(s[2]);
+        app.set_left_shows_ondisk(ondisk);
     } else {
         app.set_right_shows_type(s[0]);
         app.set_right_shows_size(s[1]);
         app.set_right_shows_modified(s[2]);
+        app.set_right_shows_ondisk(ondisk);
     }
-    eprintln!("[cols] pane={pane} shows {} at {w:.0} px", cols::shown_text(s));
+    eprintln!("[cols] pane={pane} shows {}{} at {w:.0} px", cols::shown_text(s), if ondisk { ", size on disk" } else { "" });
+}
+
+/// Whether pane `pane` shows the Size on disk column (P13-M3), as the window has it.
+fn ondisk_of(app: &App, pane: usize) -> bool {
+    if pane == 0 { app.get_left_shows_ondisk() } else { app.get_right_shows_ondisk() }
+}
+
+/// What the Size on disk column takes from pane `pane`'s row: its width, or 0.
+fn ondisk_px(app: &App, pane: usize) -> f32 {
+    if ondisk_of(app, pane) { cols::ONDISK_W } else { 0.0 }
 }
 
 /// The width of pane `pane`'s name cell with widths `w`, as the window is laid out now.
 fn name_px(app: &App, pane: usize, w: cols::Widths) -> f32 {
-    dnd::name_cell(&window_layout(app), pane, w.taken(shown_of(app, pane))).1
+    dnd::name_cell(&window_layout(app), pane, w.taken(shown_of(app, pane)) + ondisk_px(app, pane)).1
 }
 
 /// One `[cols]` line per column whose width differs between `old` and `new`.
@@ -7095,6 +7118,21 @@ fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
     if app.get_split() { vec![0, 1] } else { vec![0] }
 }
 
+/// The Size on disk column on or off (P13-M3): the panes show it where it fits, and every listing
+/// is read again with its folder's sizes on disk (or without them). Returns the panes to refresh.
+fn set_size_on_disk(st: &mut State, app: &App, on: bool) -> Vec<usize> {
+    st.config.size_on_disk = on;
+    ONDISK.with(|c| c.set(on));
+    eprintln!("[settings] Size on disk column {}", if on { "on" } else { "off" });
+    for pane in 0..2 {
+        update_shown(app, pane);
+    }
+    mark_background_stale(st, true);
+    // A sizes view has no such column: it is not walked again for it.
+    let panes = if app.get_split() { vec![0, 1] } else { vec![0] };
+    panes.into_iter().filter(|&p| st.tab(p).sizeview.is_none()).collect()
+}
+
 /// Comfortable rows on or off (P12-M4): the details lists without thumbnails become 30 px (or 22
 /// px) rows. The icons stay 16 px, so their keys stand: the strips are composed again at the new
 /// pitch, and each list keeps its first row at the top.
@@ -7141,6 +7179,7 @@ fn settings_open() {
             view_left: view_of(st, 0).name().into(),
             view_right: view_of(st, 1).name().into(),
             show_type: st.config.show_type,
+            size_on_disk: st.config.size_on_disk,
             thumbnails: st.config.thumbnails,
             row_height: if st.config.comfortable() { "comfortable" } else { "compact" }.into(),
             sidebar_visible: app.get_sidebar_visible(),
@@ -7169,6 +7208,7 @@ fn settings_open() {
     app.set_dlg_view_left(settings::View::from_name(&d.view_left).index());
     app.set_dlg_view_right(settings::View::from_name(&d.view_right).index());
     app.set_dlg_type_column(d.show_type);
+    app.set_dlg_size_on_disk(d.size_on_disk);
     app.set_dlg_thumbnails(d.thumbnails);
     app.set_dlg_row_height(i32::from(d.row_height == "comfortable"));
     app.set_dlg_sidebar(d.sidebar_visible);
@@ -7287,6 +7327,7 @@ fn settings_closed(ok: bool) {
         view_left: settings::View::from_index(app.get_dlg_view_left()).name().into(),
         view_right: settings::View::from_index(app.get_dlg_view_right()).name().into(),
         show_type: app.get_dlg_type_column(),
+        size_on_disk: app.get_dlg_size_on_disk(),
         thumbnails: app.get_dlg_thumbnails(),
         row_height: if app.get_dlg_row_height() == 1 { "comfortable" } else { "compact" }.into(),
         sidebar_visible: app.get_dlg_sidebar(),
@@ -7335,6 +7376,11 @@ fn settings_closed(ok: bool) {
             "show_type" => with_state(|st| set_show_type(st, &app, staged.show_type)),
             "thumbnails" => {
                 for pane in with_state(|st| set_thumbnails(st, &app, staged.thumbnails)) {
+                    refresh(pane);
+                }
+            }
+            "size_on_disk" => {
+                for pane in with_state(|st| set_size_on_disk(st, &app, staged.size_on_disk)) {
                     refresh(pane);
                 }
             }
@@ -7663,6 +7709,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_preview(config.preview);
     preview::init(&app);
     app.set_show_type(config.show_type);
+    ONDISK.with(|c| c.set(config.size_on_disk));
     app.set_thumbnails(config.thumbnails);
     app.set_comfortable(config.comfortable());
     if config.thumbnails || config.comfortable() {

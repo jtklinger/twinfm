@@ -92,6 +92,9 @@ pub struct Entry {
     /// A content search's result (P11-M1): the first line holding the text, cut for the row;
     /// empty everywhere else.
     pub found: SharedString,
+    /// A file's size on disk (P13-M3, the Size on disk column), filled by the listing's second read
+    /// while the setting `size_on_disk` is on; empty for folders and everywhere else.
+    pub ondisk_text: SharedString,
 }
 
 impl Entry {
@@ -128,6 +131,7 @@ impl Entry {
             selected: false,
             cut: false,
             found: SharedString::default(),
+            ondisk_text: SharedString::default(),
         }
     }
 
@@ -147,6 +151,7 @@ impl Entry {
             selected: false,
             cut: false,
             found: SharedString::default(),
+            ondisk_text: SharedString::default(),
         }
     }
 
@@ -1143,6 +1148,7 @@ impl Model for PaneModel {
             type_text: e.type_text.clone(),
             size: e.size_text.clone(),
             modified: e.modified_text.clone(),
+            ondisk: e.ondisk_text.clone(),
             kind: e.kind as i32,
             selected: e.selected,
             cut: e.cut,

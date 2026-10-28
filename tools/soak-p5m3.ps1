@@ -146,6 +146,13 @@
 # last of its level at 0 bytes); the report counts the walks done, the levels opened in place (two per
 # cycle) and the removals taken off three totals (d01, tree and the root; one per cycle), then the tab
 # is closed.
+# P13-M3's Size on disk column: each cycle then turns it on through the dialog in src\tree, moves the
+# split line to 0.85 (the left pane wide enough for it beside every column), makes and removes od.txt
+# there (`touch`, `rmfile`, each through the watch's edits), moves the line back to 0.5 (the column the
+# first to go) and turns it off; the report counts the switches each way, the listings read with sizes on
+# disk (the left pane's; the right one is in a.zip, which is not read) and the left pane shown with the
+# column (one each per cycle). The line's
+# return to 0.5 is one more of P13-M1's name, Size and Modified lines (six per cycle since).
 # P13-M1: each cycle then hides the second pane with the toolbar's Two panes and shows it again
 # (`toolbar 0 split` twice: the right pane comes back on the left's folder, which the next cycle's
 # `nav 1` replaces), drags the split line to 0.35 of the room, where the left pane is too narrow for
@@ -153,7 +160,7 @@
 # presses (two per cycle) and the `[cols] pane=0 shows` lines, which every width change of the left list
 # makes at the soak's 1200 px window and 100% (its panes at 0.5 are 499 px, where Type is hidden):
 # narrowed to the name and Modified three per cycle (the preview cycle's Alt+P and its width set back to
-# 0.35, and the splitter to 0.35), and name, Size and Modified five per cycle (the preview hidden, the
+# 0.35, and the splitter to 0.35), and name, Size and Modified five per cycle (six with P13-M3's Size on disk cycle) (the preview hidden, the
 # re-split, the splitter back to 0.5 here and after the P9-M1 and P11-M2 cycles). The P9-M1 and P11-M2
 # cycles run with the split line at 0.6, where all four columns show, so the drag moves the Type | Size
 # boundary and the reset has Type's width to undo, as they were written to (at 499 px Type is hidden: the
@@ -552,6 +559,10 @@ $cycle = @(
     # P12-M5: a bookmark by a drop, dragged, removed; a tab by the "+" (see the header).
     "dropfiles sidegap 0 auto $src", 'sleep 400', 'bookmark drag 0 1', 'sleep 300', 'bookmark remove 1', 'sleep 300',
     'tab plus 0', 'sleep 400', 'tab close', 'sleep 300',
+    # P13-M3: the Size on disk column on, shown, a watch edit, dropped, off (see the header).
+    "nav 0 $src\tree", 'sleep 400', 'settings open', 'settings set size_on_disk true', 'settings ok', 'sleep 800',
+    'splitter 0.85', 'sleep 500', 'touch 0 od.txt', 'waitwatch 3000', 'rmfile 0 od.txt', 'waitwatch 3000',
+    'splitter 0.5', 'sleep 400', 'settings open', 'settings set size_on_disk false', 'settings ok', 'sleep 800',
     # P13-M3: the sizes view, a level opened, a file deleted from it (see the header).
     "nav 0 $src\tree\d01", 'sleep 400', 'touch 0 sz.txt', 'sleep 300', "nav 0 $src", 'sleep 400',
     "sizeview 0 $src", 'waitsizeview 5000', 'sizeopen 0', 'sleep 200', 'sizeopen 1', 'waitsizeview 3000',
@@ -762,6 +773,11 @@ $tabLeft = @($log | Select-String -SimpleMatch '[focus] pane=0 has the keys by T
 $svDone = @($log | Select-String -Pattern '\[sizeview\] pane=0 gen=\d+ done: ').Count
 $svOpened = @($log | Select-String -Pattern '\[sizeview\] pane=0 opened .* in place').Count
 $svRemoved = @($log | Select-String -Pattern '\[sizeview\] pane=0 removed .*sz\.txt: \d+ bytes off 3 totals').Count
+# P13-M3: the Size on disk column.
+$odOn = @($log | Select-String -SimpleMatch '[settings] Size on disk column on').Count
+$odOff = @($log | Select-String -SimpleMatch '[settings] Size on disk column off').Count
+$odRead = @($log | Select-String -Pattern '\[enum\] pane=\d gen=\d+ size on disk: \d+ entries read').Count
+$odShown = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, type, size, modified, size on disk at ').Count
 # P13-M1: Two panes and the columns making way.
 $splitPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=0 split -> toggle').Count
 $colsNarrow = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, modified at ').Count
@@ -821,7 +837,8 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
 "sizes view: walks done $svDone, levels opened in place $svOpened (two per cycle), sz.txt taken off three totals $svRemoved (one per cycle)"
+"Size on disk column: on $odOn, off $odOff, left pane shown with it $odShown (one each per cycle), listings read with it $odRead (one per cycle: the right pane is in a.zip then, and an archive level is not read)"
 "mouse: path bar buttons $navButtons (four per cycle), View picks $viewPicks (two per cycle), More picks $morePicks (seven per cycle), details bands done with 2 selected $detailsBands (one per cycle), presses on a row's blank part $blankPresses (one per cycle)"
-"columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (five per cycle; both at 100%)"
+"columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

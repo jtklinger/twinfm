@@ -106,6 +106,9 @@ pub struct Config {
     pub sort_ascending: bool,
     /// The Type column in both panes (the settings dialog sets it). Missing in an older file: on.
     pub show_type: bool,
+    /// The Size on disk column in both panes' details lists (P13-M3; the dialog sets it): each
+    /// listing reads its folder's sizes on disk too. Missing in an older file: off.
+    pub size_on_disk: bool,
     /// Thumbnails for image, video and document files, in 32 px rows with 32 px icons, in both
     /// panes (the settings dialog sets it). Missing in an older file: off (22 px rows).
     pub thumbnails: bool,
@@ -289,6 +292,7 @@ impl Default for Config {
             sort_column: "name".into(),
             sort_ascending: true,
             show_type: true,
+            size_on_disk: false,
             thumbnails: false,
             row_height: "compact".into(),
             view_left: "details".into(),
@@ -566,6 +570,8 @@ pub struct Dialog {
     pub view_left: String,
     pub view_right: String,
     pub show_type: bool,
+    /// `Config::size_on_disk` (P13-M3).
+    pub size_on_disk: bool,
     pub thumbnails: bool,
     /// "compact" or "comfortable", as in `Config::row_height` (P12-M4).
     pub row_height: String,
@@ -596,7 +602,7 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 18] {
+    fn fields(&self) -> [(&'static str, String); 19] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
@@ -607,6 +613,7 @@ impl Dialog {
             ("view_left", self.view_left.clone()),
             ("view_right", self.view_right.clone()),
             ("show_type", self.show_type.to_string()),
+            ("size_on_disk", self.size_on_disk.to_string()),
             ("thumbnails", self.thumbnails.to_string()),
             ("row_height", self.row_height.clone()),
             ("sidebar_visible", self.sidebar_visible.to_string()),
@@ -829,6 +836,7 @@ col_size_right = 99999.0
         assert_eq!((d.preview, d.preview_width), (false, 0.35), "the preview column is off by default (P8-M1)");
         assert!(d.syntax_colours && !Config::parse("syntax_colours = false\n").unwrap().syntax_colours, "P11-M5");
         assert!(!d.log && Config::parse("log = true\n").unwrap().log, "P11-M7");
+        assert!(!d.size_on_disk && Config::parse("size_on_disk = true\n").unwrap().size_on_disk, "P13-M3");
         assert_eq!((d.preview_zoom, Config::parse("preview_zoom = 5000\n").unwrap().preview_zoom), (100, 400), "P11-M4");
         use crate::model::SortCol;
         for c in [SortCol::Name, SortCol::Size, SortCol::Modified, SortCol::Type] {
@@ -982,6 +990,7 @@ show_type = false
             view_left: "details".into(),
             view_right: "large".into(),
             show_type: true,
+            size_on_disk: false,
             thumbnails: false,
             row_height: "compact".into(),
             sidebar_visible: true,
@@ -993,7 +1002,7 @@ show_type = false
             log: false,
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, thumbnails: true, row_height: "comfortable".into(), path_bar: "entry".into(), toolbar: "pane".into(), theme: "dark".into(), preview: true, syntax_colours: false, log: true, ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, size_on_disk: true, thumbnails: true, row_height: "comfortable".into(), path_bar: "entry".into(), toolbar: "pane".into(), theme: "dark".into(), preview: true, syntax_colours: false, log: true, ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
@@ -1001,6 +1010,7 @@ show_type = false
                 ("show_protected_right", "false".into(), "true".into()),
                 ("view_right", "large".into(), "medium".into()),
                 ("show_type", "true".into(), "false".into()),
+                ("size_on_disk", "false".into(), "true".into()),
                 ("thumbnails", "false".into(), "true".into()),
                 ("row_height", "compact".into(), "comfortable".into()),
                 ("path_bar", "breadcrumb".into(), "entry".into()),

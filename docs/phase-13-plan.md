@@ -691,12 +691,134 @@ them.
 
 ### Size on disk in the normal list
 
-Waits for P13-M1's merge, as agreed with the coordinating session (2026-10-27): the column is a fourth
-cell in each details row component, reading a fourth width property, `ondisk-w`, as the other three are
-read (P13-M1's route: a hidden column's width is 0, and a zero-width Text draws nothing). `cols::shown`
-takes it as the first to drop (Size on disk, then Type, Size, Modified). It is filled by a second read of
-the folder (`fs::dirinfo::read`) only while the setting `size_on_disk` is on. The extra binding per row
-needs its own triplet before it merges.
+Built after P13-M1 and the sizes view merged (main at 34449ee), on its own branch
+`feat/p13-m3-size-on-disk`, by the route agreed with the coordinating session: a fifth cell in each
+details row component, reading a width property, `ondisk-w`, as the others read theirs (P13-M1's route:
+0 px when off or dropped, and a zero-width Text draws nothing), first to make way for the name
+(`cols::ondisk_shown`: Size on disk, then Type, Size, Modified), filled by a second read of the folder
+(`fs::dirinfo::disk_by_name`) only while the setting `size_on_disk` is on. The dialog's "Size on disk
+column" switch, under the Type column's, turns it on and lists the panes again. A watch edit reads a
+changed file's size on disk from its own handle (`fs::dirinfo::disk_of`, the same figure as the
+directory's, tested on a plain, a compressed and a sparse file).
+
+**Calls made here, for Jeremy to check:**
+
+- **At the row's right end, after Modified**, where Explorer puts a column added, so every grip and the
+  name's width shift by the column's width and nothing else changes.
+- **A fixed 100 px, no grip and no sort**: the least code. A grip would make it a fourth `cols::Col`
+  through the drags, fits, settings and driver; a sort would need the size on disk in every listing.
+- **Folders show nothing in it**, as the Size column shows nothing for them; a folder's size on disk is
+  the sizes view's.
+- **A file small enough to live in the MFT reads 8 B**, the directory's figure; Explorer shows 0.
+
+**Scripted check** (2026-10-27, the branch's release build, a scratch folder with a 1 MB plain file, a
+1 MB zero-filled file compressed by `compact /c`, a 5-byte file and a folder): the column on through the
+dialog (`[cols] pane=0 shows name, type, size, modified, size on disk at 1010 px`, `[enum] ... size on
+disk: 5 entries read in 0.1 ms`); 980.0 KB, 0 B and 8 B in the column, the folder blank; a `touch` became a
+watch edit (`applied: +1`); `colwidth`, `coldrag` and `colfit` hit their grips with the column shown; the
+split made the left pane 499 px and the column went first, with Type (`shows name, size, modified`);
+`splitter 0.8` brought it back at 608 px; off through the dialog. Screenshot in the light theme: the column
+at the row's end, the header "Size on disk" unclipped.
+
+**Soak** (2026-10-28, the branch's release build, code as cb91532, on the coordinating session's go):
+`tools/soak-p5m3.ps1 -Minutes 10`: 10.1 minutes, closed by the script, exit code 0, 0 panicked lines, 259
+jobs done (0 failed, 0 cancelled), 0 waitops timeouts, 0 soak refusals; 13 cycles started, 3 whole. Every
+"must be 0" is 0. **Size on disk column: on 3, off 3, the left pane shown with it 3, listings read with it
+3** (one each per cycle: the right pane sits in `a.zip` when the column goes on, and an archive level is
+not read), the watch edit of `od.txt` applied as a row edit. P13-M1's "name, Size and Modified" lines 19
+(six per cycle with this cycle's return to the 0.5 split). The sizes view's counts as before (3 walks, 6
+levels, 3 removals). Working set 147 MB at 5 s, 228 MB at 601 s (at most 268); private 164 to 222 MB.
+
+**Gate ab69** (2026-10-28), its own triplet (the extra cell per row), `tools/gate-p13m3b.ps1`: `target-p13od`
+(c25173c, code as cb91532) against `target-p13base` (main at 34449ee, so the column alone differs), the
+defaults and `C:\traces\ondisk.toml` (`size_on_disk = true`, read-only). WPR medians **p13od 17.4%** (column off)
+and **p13od-ondisk 17.6%** against **p13base 16.6%**; every reference run (16.4 to 16.7) below every
+candidate run (17.1 to 18.1): a gap that counts, with the column off too. Render p50 1.82 to 1.94 ms in
+every run (one state). The traces' main-thread buckets (ms in the 10 s after the split, medians): total
+1665 against 1735; the ListView's rows (`ensure_updated_listview`) 379 against 420 (+41); the
+accessibility tree's full rebuild 134 against 159 (+25, +19%); render 885 against 894 and text 445
+against 432, flat. So it was the fifth `Text` in every row: one more element made per row as the list
+scrolls, and one more accessibility node (a row's five became six, the +19%). The code explained the gap,
+so the order-swapped rerun the coordinating session had prepared (ab70) was dropped.
+
+**Zero cost when off** (Jeremy's choice, 2026-10-28, of the two the coordinating session put to him: the
+cell hidden from the accessibility tree, or lists of its own): the four details lists are main's again,
+and the cell lives in two more, `FileListOnDisk` (22 px rows) and `FileListOnDisk32` (thumbnails), each a
+rows component and its focus layer, chosen by `FileListHost` once per pane while `size_on_disk` is on (the
+window's `size-on-disk`), as the Type setting chooses its lists. They keep the Type cell at the pane's
+Type width (0 with Type off or hidden), so no copy without it is needed: two components, not four. With
+the setting on, the column still makes way for the name through its width. Gates on the change: build
+clean; 336 tests passed. Scripted check (a scratch folder; the widths set to Type 100, Size 110 first):
+the column on (`shows ..., size on disk`), thumbnails on with it (the 32 px rows with the cell), Type off
+with it (the cell kept beside Name, Size and Modified), then everything back and the column off (the plain
+rows, no cell); the cursor (row 1) and the scroll (0) kept, and the widths kept (Size moved from 110 by
+the last `colwidth`). Screenshots of the four states. Soak of the change (2026-10-28, the branch's release
+build, code as 0a835c8, main's P13-M2 merged in): `tools/soak-p5m3.ps1 -Minutes 10`: 10.1 minutes, exit
+code 0, 0 panicked lines, 251 jobs (0 failed, 0 cancelled), 0 waitops timeouts, 0 refusals, 16 cycles
+started, 3 whole; every "must be 0" at 0; the column on 3, off 3, shown 3, listings read 3; P13-M2's mouse
+counts as its line expects; working set 149 MB at 5 s, 234 MB at 601 s (at most 238), private 184 to 252
+MB. **ab70** (`tools/gate-p13m3b-ab70.ps1`, 2026-10-28 10:32): `target-p13od2` from 1824ea8 against
+`target-p13base`, the defaults and `ondisk.toml`. **Run at 22 Hz, not the gate**: after the move to the
+console, frames came every 46 ms, not the protocol's 60 Hz (ab69 ran at 16.4 ms). Read like for like it
+showed no gap: WPR medians p13od2 9.3% and p13od2-ondisk 9.6% against p13base 9.0% (reference runs 9.8,
+9.0, 8.9; p13od2 9.4, 9.3, 9.2; the column on 9.5, 9.6, 9.6), no reference run below every candidate run,
+every check ok, render p50 1.85 to 2.11 ms. Summary `C:\traces\gate-ab70-summary.txt`. The gate is ab71,
+the same wrapper with its tag changed (the coordinating session's `C:\traces\gate-p13m3b-ab71.ps1`), at
+60 Hz.
+
+**Gate ab71** (2026-10-28 10:51, 60 Hz: every run drew at 16.35 to 16.44 ms; every check ok; every run
+under 20%). WPR runs: p13base 19.2, 16.8, 16.6; p13od2 16.8, 17.0, 17.2; p13od2-ondisk 18.4, 17.9, 18.0.
+Summary `C:\traces\gate-ab71-summary.txt`.
+
+- **Column off: p13od2 17.0% against p13base 16.8%, no gap. Zero cost when off, confirmed.**
+- **Column on: 18.0% against 16.8%, +1.2 points**, a gap that counts by the medians (no reference run
+  below every candidate run). Render p50 1.99 to 2.11 ms against the reference's 1.87 to 2.12 ms.
+  Whether this cost is accepted is Jeremy's call.
+
+Where the column-on cost goes, from the traces' main-thread buckets (ms in the 10 s after the split,
+medians, the column on against the same build with it off): total 1700 against 1798 (+98); the ListView's
+rows 367 against 414 (+47); the accessibility tree 191 against 212 (+21, the full rebuild +20); text
+drawing 419 against 443 (+24); the render pass 931 against 939 (+8). In that window the column is **not
+shown**: the gate's split leaves both panes at 499 px, where it has made way for the name (`[cols] pane=0
+shows name, size, modified at 499 px` in every column-on run). So the +1.2 points is the column's lists
+carrying their cell at 0 px in every row: one more element made per row as the list scrolls, one more
+accessibility node, and the zero-width text still passed through text drawing (ab69's mechanism, now only
+with the setting on). The second read is not on the main thread: the listing thread read 40,000 entries'
+sizes on disk in 20 to 29 ms per listing, before the window, besides the 67 to 92 ms listing. A way to
+take the hidden case to zero too, for Jeremy if he wants it: have the host pick the lists with the cell
+by whether the column shows (`shows-ondisk`, already per pane) rather than by the setting, so a pane where
+it has made way uses the plain lists; a column coming back would then swap the pane's list.
+
+**Cut the on cost first** (Jeremy, 2026-10-28, after ab71): `FileListHost` picks the cell's lists by
+whether that pane shows the column (`ondisk` is the pane's `shows-ondisk`), not by the setting; the window's
+`size-on-disk` property and its two setters, which fed only the old pick, went. A pane where the column has
+made way uses main's plain lists. Nothing per row or per frame was added: `shows-ondisk` changes only in
+`update_shown`, on a list width change. Gates: build clean; 336 tests passed. A swap cannot feed back into
+the width it was picked by: the width is reported by the host (`list-width`, its `init` and `changed
+width`), which stays when its inner list swaps; a grip drag's freeze (`COL_DRAG`, P13-M1) holds the set,
+this pick with it, until the release; the splitter has no freeze and needs none, a swap being one per
+crossing. Scripted check (`C:\Windows\System32` in the left pane, the column on, Size set to 110, the list
+scrolled to row 218 and the cursor on row 221): the split (both panes 499 px, the column gone from the
+left), `splitter 0.85` (the left pane at 610 px showing it beside the right at 294 px without it), back to
+0.5, three more crossings each way, the window maximised (both panes showing it at 1947 px) and restored.
+Every crossing changed the set once, at 8 px steps (no back and forth); the cursor stayed on row 221 and the
+widths were kept (the last `colwidth` moved Size from 110). The scroll moved once, at the first swap,
+from -4800 to -4796 (row 218's top): a new list lands on a whole row, and main's swap for the Type setting
+does the same (-4800 to -4796 on `target-p13base`); with the column off the split kept -4800. Every later
+swap kept -4796 exactly. Screenshots of the left pane showing the column beside the right without it, and
+of both showing it maximised (found by the run's own process id: the first capture, by the title prefix
+alone, found Jeremy's everyday window, open at the time, and was deleted unread; CLAUDE.md's screenshot
+note now says so). Soak (code as 3c42b79): `tools/soak-p5m3.ps1 -Minutes 10`: 10.1 minutes, exit code 0, 0
+panicked lines, 250 jobs (0 failed, 0 cancelled), 0 waitops timeouts, 0 refusals, 16 cycles started, 3
+whole; every "must be 0" at 0; the column on 3, off 3, shown 3, listings read 3; working set 149 MB at 5 s,
+233 MB at 601 s (at most 238), private 184 to 252 MB. **Gate ab72** (`tools/gate-p13m3b-ab72.ps1`):
+`target-p13od3` against `target-p13base`, the defaults and `ondisk.toml`. Run 2026-10-28 at the console's
+60 Hz (an earlier attempt at 22 Hz is set aside in `C:\traces\ab72-22hz\`, not counted); summary
+`C:\traces\gate-ab72-summary.txt`. WPR main-thread busy: p13base 18.5, 19.6, 19.3 (median 19.3); p13od3
+19.1, 19.7, 20.7 (median 19.7, no gap); p13od3 with the column on 20.6, 19.2, 19.1 (median 19.2, no gap).
+Render p50 2.41 to 2.64 ms across all nine runs, no change of state. **Passed**: with the lists picked by
+whether the pane shows the column, the column's setting costs nothing in the gate's 499 px panes, where it
+makes way, and ab71's +1.2 points with it on is gone. The merge waits for Jeremy.
 
 ### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
 

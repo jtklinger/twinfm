@@ -51,7 +51,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (334 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (336 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -67,8 +67,8 @@ put off, with where it came from.
   folders of files for a shell menu over both, since P11-M5 one more writes source files into
   one, since P11-M6 one more writes encrypted PDFs into one, and since P11-M7 one more writes log
   files into one (and points the process's stderr at them while it runs), and since P13-M3 two
-  more write a compressed and a sparse file, and a small tree with a hard link, into scratch folders,
-  see below)
+  more write a compressed and a sparse file, and a small tree with a hard link, into scratch folders, and one more lists a folder with the Size on
+  disk column on and off, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
   `docs/patches/`; a fresh clone builds with no manual steps)
@@ -1249,6 +1249,32 @@ put off, with where it came from.
   Stays keyboard-only, recorded: Shift+Delete (the Delete button and the menu's with Shift held), the path
   entry (the ellipsis glyph at the path bar's right end switches to it), Tab between panes (a click on the
   other pane).
+  Since P13-M3's follow-up, **the Size on disk column** (setting `size_on_disk`, off by default; the
+  dialog's "Size on disk column" switch under the Type column's, applied on OK, which lists the panes
+  again, `set_size_on_disk`): a fifth cell at the row's right end after Modified (where Explorer puts a
+  column added), a fixed 100 px (`cols::ONDISK_W`; no grip, no sort, the header "Size on disk"), **only in
+  lists of its own** (Jeremy's "Zero cost when off", after ab69 measured the cell in every row at 0.8
+  points with the column off): `FileListOnDisk` and `FileListOnDisk32` (pane.slint, copies of `FileList`
+  and `FileList32` with the cell; the Type cell kept at the pane's Type width, 0 when Type is off or
+  hidden), which `FileListHost` chooses while that pane **shows** the column (`ondisk`, the pane's
+  `shows-ondisk`: the setting on and room for it; Jeremy's "Cut the on cost first" after ab71 measured the
+  setting's lists at +1.2 points in panes where the column had made way) in place of the four lists
+  without it, so with the setting off, or in a pane too narrow for it, the rows are main's. A pane crossing
+  the threshold (the splitter, the window's size) swaps its list, keeping the cursor and the widths; the
+  scroll lands on a whole row, as main's swap for the Type setting does (at most a row's height). The cell
+  reads the width `ondisk-w` (pane.slint `eff-ondisk`, 100 px) and the row's `ondisk` text (`Entry::ondisk_text`, empty for folders, drives,
+  archive levels and search results). It is **the first to make way for the name**: `cols::ondisk_shown`
+  shows it only while every other column the setting allows fits beside it with Name at `NAME_FLOOR`,
+  and the others are then `shown` in the room less its width (main.rs `update_shown`; the `ONDISK`
+  thread-local holds the setting, as `update_shown` runs inside and outside the state's borrow); the
+  grips, the rename editor, `name_px` and the driver's grip aim (`ondisk_px`) sit left of it. While on,
+  each folder listing reads the folder's directory information first (`fs::dirinfo::disk_by_name`, one
+  call per 64 KB of entries, on the enumeration worker, before the first batch) and each file's row
+  carries its size on disk; a watch edit reads a statted file's from its own handle
+  (`fs::dirinfo::disk_of`: `FileStandardInfo`, opened for attributes with no recall and no link
+  followed; the same figure). Off, nothing is read. `[enum] pane=N gen=G size on disk: K entries read in
+  T ms`, `[settings] Size on disk column on|off`, and the `[cols] pane=N shows ...` line ends `, size on
+  disk` while it shows. Driver: `settings set size_on_disk true|false`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -1291,7 +1317,7 @@ put off, with where it came from.
   column apart from the row, the strips are composed again at the new pitch and each list keeps its
   first row at the top; the rename editor follows the icon column, not the row; a gate run with it
   takes `TWINFM_CONFIG=C:\traces\rows-comfortable.toml`, read-only, `row_height = "comfortable"`, and
-  with thumbnails `C:\traces\rows-comfortable-thumbs.toml`, read-only, `thumbnails = true` as well), since P12-M5 `recent` (the sidebar's Recent group, at most
+  with thumbnails `C:\traces\rows-comfortable-thumbs.toml`, read-only, `thumbnails = true` as well), since P13-M3 `size_on_disk` (the Size on disk column, default false, in the dialog), since P12-M5 `recent` (the sidebar's Recent group, at most
   eight paths, newest first; "Clear recent" empties it) and `sidebar_visible = false` the icons-only
   rail (the 12 px strip before); since P10-M1 `theme` (`"system"`, the default, Windows' app mode followed live,
   `"light"` or `"dark"`, in the dialog's Theme row, applied at start and on OK without a restart;
@@ -1503,7 +1529,8 @@ put off, with where it came from.
   them while it runs. Since P13-M3 `fs::dirinfo::tests::compressed_and_sparse_files_take_less_on_disk`
   writes a plain, an NTFS-compressed and a sparse file in `%TEMP%\twinfm-p13m3-test-<pid>\`, and
   `sizeview::tests::a_walk_reads_folders_into_the_tree` a small tree with a hard link in
-  `%TEMP%\twinfm-p13m3-walk-<pid>\`. All remove their folders.
+  `%TEMP%\twinfm-p13m3-walk-<pid>\`, and `fs::enumerate::tests::the_size_on_disk_column_is_read_only_while_it_is_on`
+  lists a folder with a file and a subfolder in `%TEMP%\twinfm-p13m3-ondisk-<pid>\`. All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols
@@ -1576,7 +1603,9 @@ put off, with where it came from.
 - Screenshots of a scripted run: the femtovg window captures blank (CopyFromScreen and
   PrintWindow alike). Run with `SLINT_BACKEND=winit-software` and capture with
   `PrintWindow(hwnd, hdc, 2)` from a script started in the background, finding the window by its
-  title prefix `TwinFM - ` (2026-10-18, P7-M2's menu check). **The title bar is not in that capture**:
+  title prefix `TwinFM - ` (2026-10-18, P7-M2's menu check) **and the scripted run's own process id**
+  (`GetWindowThreadProcessId`): a title prefix alone found Jeremy's everyday window first while he had one
+  open (2026-10-28) and captured his own folders. **The title bar is not in that capture**:
   `PrintWindow` draws a stale frame (it showed the bar dark after the theme had set it light, P10-M3), so
   the bar is checked by a `CopyFromScreen` of the window's top 60 px from `GetWindowRect`, with the real
   renderer; the client area stays the `PrintWindow` capture.

@@ -1511,7 +1511,8 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     // The grip's centre: the header's cells end at the list's right edge, and the
                     // header is the 32 px above the list's top less the layout's 2 px spacing.
                     let (_, right) = crate::dnd::pane_x(&l, pane);
-                    let x0 = crate::cols::grip_x(right - crate::dnd::PANE_PAD, crate::cols_of(&app, pane), c, crate::shown_of(&app, pane));
+                    let right = right - crate::dnd::PANE_PAD - crate::ondisk_px(&app, pane);
+                    let x0 = crate::cols::grip_x(right, crate::cols_of(&app, pane), c, crate::shown_of(&app, pane));
                     let y = crate::dnd::list_top(&l, pane) - 18.0;
                     let at = |x: f32| LogicalPosition::new(x, y);
                     let win = app.window();
