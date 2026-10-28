@@ -158,6 +158,16 @@
 # cycles run with the split line at 0.6, where all four columns show, so the drag moves the Type | Size
 # boundary and the reset has Type's width to undo, as they were written to (at 499 px Type is hidden: the
 # grip is Name | Size and `colwidth 0 type` is refused).
+# P13-M2: the toolbar cycle's Delete is undone and redone by the toolbar's Undo and Redo (`toolbar 0
+# undo`, `toolbar 0 redo`: the recycled file comes back and goes again). At the cycle's end, in src\tree:
+# each path bar button once (`navbutton 0 up`, back, forward, refresh); a View menu round trip (Large
+# icons and back to Details, `toolbar 0 view`, `toolmenu`); in m2 (made by the setup: a.txt and b.txt)
+# beside m2b (empty), More's Select all, Copy to other pane (a and b into m2b), then in m2b Select all
+# and Move to other pane (back over m2's own, replaced: TWINFM_SOAK asks nothing), Size all folders in
+# src, Show hidden files twice; and in m2 a band in the details list from row 0's blank part to row
+# 1's (`band 0 400 11 400 33`), which selects the two files. Reported: path bar buttons (four per
+# cycle), View and More picks (two and seven per cycle), the details bands done with 2 selected (one
+# per cycle) and their presses on a blank part (one per cycle).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -231,7 +241,10 @@ $tabdir = Join-Path $root 'tabdir'
 $spring = Join-Path $root 'spring'
 $arch = Join-Path $root 'arch'
 $prev = Join-Path $root 'preview'
-foreach ($d in $src, $dst, $bm, $tabdir, $spring, $arch, $prev) {
+# P13-M2: m2 holds two files for More's copy and move and the details band; m2b takes the copies.
+$m2 = Join-Path $root 'm2'
+$m2b = Join-Path $root 'm2b'
+foreach ($d in $src, $dst, $bm, $tabdir, $spring, $arch, $prev, $m2, $m2b) {
     if (Test-Path $d) { Remove-Item -LiteralPath $d -Recurse -Force }
 }
 for ($i = 1; $i -le 10; $i++) {
@@ -241,7 +254,8 @@ for ($i = 1; $i -le 10; $i++) {
         [System.IO.File]::WriteAllText((Join-Path $sub ("f{0:00}.txt" -f $j)), "scratch file $i/$j`r`n")
     }
 }
-foreach ($d in $dst, $bm, $tabdir, (Join-Path $spring 'inner')) { New-Item -ItemType Directory -Force $d | Out-Null }
+foreach ($d in $dst, $bm, $tabdir, (Join-Path $spring 'inner'), $m2, $m2b) { New-Item -ItemType Directory -Force $d | Out-Null }
+foreach ($n in 'a.txt', 'b.txt') { [System.IO.File]::WriteAllText((Join-Path $m2 $n), "m2 file $n`r`n") }
 # P7-M3: the archives, made with Windows' own tar.exe (bsdtar) from a small tree.
 $archSrc = Join-Path $root 'arch-src'
 if (Test-Path $archSrc) { Remove-Item -LiteralPath $archSrc -Recurse -Force }
@@ -434,6 +448,8 @@ $cycle = @(
     'click 1 0', 'toolbar 1 copy', 'sleep 200', 'toolbar 1 paste', $wait,
     'click 1 1', 'toolbar 1 cut', 'click 0 0', 'sleep 200', 'toolbar 0 paste', $wait,
     'click 0 0', 'toolbar 0 delete', $wait,
+    # P13-M2: the recycle undone and redone by the toolbar (see the header).
+    'toolbar 0 undo', $wait, 'toolbar 0 redo', $wait,
     'click 1 0', 'sdelete', $wait,
     # P7-M1: the verb cycle (see the header).
     "dropfiles 1 -1 copy $pick", $wait,
@@ -542,7 +558,16 @@ $cycle = @(
     'click 0 22', 'sdelete', $wait, 'sleep 300', 'tab close', 'sleep 300',
     'click 0 0', 'sleep 200', 'key Tab', 'sleep 300', 'key ShiftTab', 'sleep 300',
     # P13-M1: Two panes off and on by the toolbar, the split line narrowed and widened (see the header).
-    'toolbar 0 split', 'sleep 500', 'toolbar 0 split', 'sleep 1000', 'splitter 0.35', 'sleep 400', 'splitter 0.5', 'sleep 400'
+    'toolbar 0 split', 'sleep 500', 'toolbar 0 split', 'sleep 1000', 'splitter 0.35', 'sleep 400', 'splitter 0.5', 'sleep 400',
+    # P13-M2: the path bar's buttons, the View and More menus, the band in the details list (see the header).
+    "nav 0 $src\tree", 'sleep 500', 'navbutton 0 up', 'sleep 500', 'navbutton 0 back', 'sleep 500', 'navbutton 0 forward', 'sleep 500', 'navbutton 0 refresh', 'sleep 500',
+    'toolbar 0 view', 'waitmenu 2000', 'toolmenu Large icons', 'sleep 400', 'toolbar 0 view', 'waitmenu 2000', 'toolmenu Details', 'sleep 400',
+    "nav 0 $m2", "nav 1 $m2b", 'sleep 800',
+    'toolbar 0 more', 'waitmenu 2000', 'toolmenu Select all', 'sleep 200', 'toolbar 0 more', 'waitmenu 2000', 'toolmenu Copy to other pane', $wait,
+    'click 1 0', 'toolbar 1 more', 'waitmenu 2000', 'toolmenu Select all', 'sleep 200', 'toolbar 1 more', 'waitmenu 2000', 'toolmenu Move to other pane', $wait,
+    "nav 0 $src", 'sleep 500', 'toolbar 0 more', 'waitmenu 2000', 'toolmenu Size all folders', 'waitsize 10000',
+    'toolbar 0 more', 'waitmenu 2000', 'toolmenu Show hidden files', 'sleep 300', 'toolbar 0 more', 'waitmenu 2000', 'toolmenu Show hidden files', 'sleep 300',
+    "nav 0 $m2", 'sleep 600', 'band 0 400 11 400 33', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -632,7 +657,7 @@ $mediumImages = @($log | Select-String -SimpleMatch 'drag image 80x80 px, 48 px 
 $bandsCursor = @($log | Select-String -SimpleMatch '[band] pane=1 done: 2 selected, cursor 0').Count
 $shiftFromCursor = @($log | Select-String -SimpleMatch '[select] pane=1 Range row=1 selected=2').Count
 # P6-M3 counts.
-$toolPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=' | Select-String -SimpleMatch -NotMatch ' tooltip "').Count
+$toolPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=' | Select-String -SimpleMatch -NotMatch ' tooltip "' | Select-String -SimpleMatch -NotMatch ' picks "' | Select-String -SimpleMatch -NotMatch ' fits ').Count
 $toolDisabled = @($log | Select-String -SimpleMatch 'disabled, not pressed').Count
 $newFiles = @($log | Select-String -SimpleMatch 'Done: Created New Text Document.txt').Count
 $newFilesUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Created New Text Document.txt').Count
@@ -741,6 +766,12 @@ $svRemoved = @($log | Select-String -Pattern '\[sizeview\] pane=0 removed .*sz\.
 $splitPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=0 split -> toggle').Count
 $colsNarrow = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, modified at ').Count
 $colsWide = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, size, modified at ').Count
+# P13-M2: the path bar, the menus, the details band.
+$navButtons = @($log | Select-String -Pattern '^\[nav\] pane=0 (Back|Forward|Up|Refresh) button$').Count
+$viewPicks = @($log | Select-String -Pattern '^\[toolbar\] pane=0 picks "(Large icons|Details)"').Count
+$morePicks = @($log | Select-String -Pattern '^\[toolbar\] pane=[01] picks "(Select all|Copy to other pane|Move to other pane|Size all folders|Show hidden files)"').Count
+$detailsBands = @($log | Select-String -SimpleMatch '[band] pane=0 done: 2 selected').Count
+$blankPresses = @($log | Select-String -Pattern '^\[band\] pane=0 press on row \d+ blank: band$').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 # P11-M4: the zoom and "Copy text".
@@ -768,7 +799,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "menus opened and closed: $menus; in-menu ticks: $($ticks.Count), with state or driver busy: $ticksBusy"
 "grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (two per cycle: large and medium); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
 "medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
-"toolbar: presses $toolPresses (ten per cycle: P6-M3's eight and P13-M1's two Two panes), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
+"toolbar: presses $toolPresses (twelve per cycle: P6-M3's eight, P13-M1's two Two panes, P13-M2's Undo and Redo), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
 "toolbar tooltips shown $tooltips (three per cycle); Back over the toolbar $toolBack, Forward $toolForward (one each per cycle); sidebar keys $sideKeys (five per cycle), Return $sideReturns (one per cycle)"
 "several-item opens $openMany (one per cycle), tabs they opened $openTabs (two per cycle)"
 "verbs: jobs queued $verbJobs (three per cycle: two of P7-M1's, P7-M2's ZIP), slept $verbSlept, link by verb with S_OK $verbOk; routed deletes $routedDeletes, restored $restores; cuts cancelled by Escape $cutsCancelled"
@@ -790,6 +821,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
 "sizes view: walks done $svDone, levels opened in place $svOpened (two per cycle), sz.txt taken off three totals $svRemoved (one per cycle)"
+"mouse: path bar buttons $navButtons (four per cycle), View picks $viewPicks (two per cycle), More picks $morePicks (seven per cycle), details bands done with 2 selected $detailsBands (one per cycle), presses on a row's blank part $blankPresses (one per cycle)"
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (five per cycle; both at 100%)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

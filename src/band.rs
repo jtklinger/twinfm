@@ -1,6 +1,12 @@
 //! The grid's rubber band (P4-M3): which tiles a rectangle touches and what selection the band
 //! means, in content coordinates (logical px, y from the top of the first grid row), free of
 //! Slint and the window. main.rs runs the gesture and applies the result to the model.
+//!
+//! Since P13-M2 the band runs in the details list too, as Explorer's details view does (Jeremy,
+//! 2026-10-27: "dragging from a row's blank part (past the name, or on Size/Modified/Type) selects;
+//! dragging the name or icon moves files"): `press_on` tells a press on a row's icon or name text
+//! (a drag of the files) from one on the rest of the row (a band), and the band touches every row
+//! its height overlaps, whatever its width (`touched_rows`).
 
 use crate::icons::TileGeom;
 use std::collections::BTreeSet;
@@ -98,6 +104,71 @@ pub fn edge(top: f32, bottom: f32, y: f32) -> Option<i32> {
     }
 }
 
+/// Where a press in a details row landed (P13-M2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressOn {
+    /// The icon column: a drag moves the files.
+    Icon,
+    /// The name's text: a drag moves the files.
+    Name,
+    /// Anywhere else in the row (the name cell past the text, the Type, Size and Modified cells,
+    /// the padding): a drag selects with the band.
+    Blank,
+}
+
+impl PressOn {
+    pub fn name(self) -> &'static str {
+        match self {
+            PressOn::Icon => "icon",
+            PressOn::Name => "name",
+            PressOn::Blank => "blank",
+        }
+    }
+
+    /// The press drags the files (or else starts the band).
+    pub fn drags(self) -> bool {
+        self != PressOn::Blank
+    }
+}
+
+/// What `TEXT_SLACK` adds to the name's drawn width: a press just past its last letter still takes
+/// the name, as Explorer's does.
+pub const TEXT_SLACK: f32 = 4.0;
+
+/// Where a press `x` px from a details row's left edge lands, the icon column spanning 6 px to
+/// `name_x` (`ListGeom::name_x`), the name's text `text_w` px wide from `name_x` in a name cell
+/// `cell_w` px wide (the text ends where the cell elides it).
+pub fn press_on(x: f32, name_x: f32, text_w: f32, cell_w: f32) -> PressOn {
+    if x >= 6.0 && x < name_x {
+        PressOn::Icon
+    } else if x >= name_x && x < name_x + (text_w + TEXT_SLACK).min(cell_w) {
+        PressOn::Name
+    } else {
+        PressOn::Blank
+    }
+}
+
+/// The details rows (`row_h` px tall, `len` of them) a band between `a` and `b` touches: every row
+/// its height overlaps, whatever its width, so a drag straight down selects (Explorer). Half-open as
+/// `touched`: a band of zero height touches nothing.
+pub fn touched_rows(a: (f32, f32), b: (f32, f32), len: usize, row_h: f32) -> BTreeSet<usize> {
+    let (_, y, _, h) = rect(a, b);
+    if len == 0 || h <= 0.0 || row_h <= 0.0 {
+        return BTreeSet::new();
+    }
+    let r0 = (y.max(0.0) / row_h).floor() as usize;
+    let r1 = (((y + h) / row_h).ceil().max(0.0) as usize).min(len);
+    (r0..r1).collect()
+}
+
+/// Where the cursor goes as a details band between `anchor` and `now` selects: the touched row under
+/// `now`, or the touched row nearest it above or below them.
+pub fn cursor_rows(anchor: (f32, f32), now: (f32, f32), len: usize, row_h: f32) -> Option<usize> {
+    let t = touched_rows(anchor, now, len, row_h);
+    let (first, last) = (*t.first()?, *t.last()?);
+    Some(((now.1.max(0.0) / row_h).floor() as usize).clamp(first, last))
+}
+
 /// A band gesture in one pane, from the press on empty space to the release. Points are content
 /// coordinates of that pane's list.
 #[derive(Clone, Debug)]
@@ -112,11 +183,17 @@ pub struct Band {
     pub before: BTreeSet<usize>,
     /// The pointer has left the drag threshold since the press: the band shows and selects.
     pub active: bool,
+    /// The details row the press landed on (P13-M2): released under the threshold, the press is a
+    /// click on that row.
+    pub row: Option<usize>,
+    /// A band in the details list (P13-M2): its rows' height; it touches rows (`touched_rows`), not
+    /// tiles.
+    pub rows: Option<f32>,
 }
 
 impl Band {
     pub fn press(pane: usize, at: (f32, f32), mode: Mode, before: BTreeSet<usize>) -> Band {
-        Band { pane, anchor: at, now: at, mode, before, active: false }
+        Band { pane, anchor: at, now: at, mode, before, active: false, row: None, rows: None }
     }
 
     /// The pointer moved to `at` with the button down; `threshold` is the drag threshold (x, y).
@@ -129,9 +206,12 @@ impl Band {
         self.active
     }
 
-    /// The tiles the band touches now.
+    /// The tiles (or details rows) the band touches now.
     pub fn touched(&self, cols: usize, len: usize, t: TileGeom) -> BTreeSet<usize> {
-        touched(self.anchor, self.now, cols, len, t)
+        match self.rows {
+            Some(h) => touched_rows(self.anchor, self.now, len, h),
+            None => touched(self.anchor, self.now, cols, len, t),
+        }
     }
 
     /// The selection the band means now.
@@ -139,9 +219,12 @@ impl Band {
         selection(self.mode, &self.before, &self.touched(cols, len, t))
     }
 
-    /// Where the cursor goes now (`cursor`).
+    /// Where the cursor goes now (`cursor`, or `cursor_rows` in the details list).
     pub fn cursor(&self, cols: usize, len: usize, t: TileGeom) -> Option<usize> {
-        cursor(self.anchor, self.now, cols, len, t)
+        match self.rows {
+            Some(h) => cursor_rows(self.anchor, self.now, len, h),
+            None => cursor(self.anchor, self.now, cols, len, t),
+        }
     }
 }
 
@@ -215,6 +298,37 @@ mod tests {
         assert_eq!(edge(63.0, 779.0, 755.0), Some(1), "near the bottom");
         assert_eq!(edge(63.0, 779.0, 754.9), None);
         assert_eq!(edge(63.0, 779.0, 803.0), Some(1), "below the list: still down");
+    }
+
+    #[test]
+    fn a_details_press_drags_on_the_icon_and_the_name_and_bands_elsewhere() {
+        // The 16 px icons' column: 6 to 28; a name 100 px wide in a 300 px cell.
+        assert_eq!(press_on(3.0, 28.0, 100.0, 300.0), PressOn::Blank, "the row's left padding");
+        assert_eq!(press_on(6.0, 28.0, 100.0, 300.0), PressOn::Icon);
+        assert_eq!(press_on(27.9, 28.0, 100.0, 300.0), PressOn::Icon);
+        assert_eq!(press_on(28.0, 28.0, 100.0, 300.0), PressOn::Name);
+        assert_eq!(press_on(131.9, 28.0, 100.0, 300.0), PressOn::Name, "a few px past the last letter");
+        assert_eq!(press_on(132.0, 28.0, 100.0, 300.0), PressOn::Blank, "the name cell past the text");
+        assert_eq!(press_on(500.0, 28.0, 100.0, 300.0), PressOn::Blank, "the Size and Modified cells");
+        // A name the cell elides ends with the cell.
+        assert_eq!(press_on(128.0, 28.0, 400.0, 100.0), PressOn::Blank);
+        assert_eq!(press_on(120.0, 28.0, 400.0, 100.0), PressOn::Name);
+        // Thumbnails: the 32 px column and its gap, 6 to 42.
+        assert_eq!(press_on(40.0, 42.0, 100.0, 300.0), PressOn::Icon);
+        assert!(PressOn::Icon.drags() && PressOn::Name.drags() && !PressOn::Blank.drags());
+        // The band from row 1's blank part down to row 3 touches rows 1 to 3, straight down too.
+        assert_eq!(touched_rows((300.0, 30.0), (310.0, 70.0), 10, 22.0), set(&[1, 2, 3]));
+        assert_eq!(touched_rows((300.0, 30.0), (300.0, 70.0), 10, 22.0), set(&[1, 2, 3]), "zero width: still the rows");
+        assert_eq!(touched_rows((300.0, 30.0), (310.0, 30.0), 10, 22.0), set(&[]), "zero height: none");
+        assert_eq!(touched_rows((300.0, 30.0), (310.0, 400.0), 10, 22.0), (1..10).collect(), "below the rows: to the last");
+        assert_eq!(touched_rows((300.0, 400.0), (300.0, -50.0), 10, 22.0), (0..10).collect(), "from below the rows up past the top");
+        assert_eq!(cursor_rows((300.0, 30.0), (310.0, 70.0), 10, 22.0), Some(3), "the cursor follows the moving corner");
+        assert_eq!(cursor_rows((300.0, 400.0), (300.0, 50.0), 10, 22.0), Some(2), "dragged up from below the rows");
+        assert_eq!(cursor_rows((300.0, 30.0), (300.0, 900.0), 10, 22.0), Some(9));
+        let mut b = Band::press(0, (300.0, 30.0), Mode::Replace, set(&[]));
+        b.rows = Some(22.0);
+        b.now = (300.0, 70.0);
+        assert_eq!(b.touched(1, 10, L), set(&[1, 2, 3]), "a details band touches rows");
     }
 
     #[test]

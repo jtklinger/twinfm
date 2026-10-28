@@ -488,6 +488,9 @@ export component App inherits Window {
     // button release (7); see pane.slint
     // FileListBase.
     callback row-gesture(int, int, int, bool, bool);
+    // A left press on a details row (P13-M2): true when it lands on the row's blank part and starts the
+    // band (main.rs `row_press`, band.rs `press_on`).
+    callback row-press(int, int, length, length, bool, bool) -> bool;
     // tab-select(pane, index), tab-close(pane, index): a click or middle-click in a tab strip.
     callback tab-select(int, int);
     callback tab-close(int, int);
@@ -1137,6 +1140,7 @@ export component App inherits Window {
                 context-menu(r, x, y, s) => { root.context-menu(0, r, x, y, s); }
                 context-key(r, x, y, cy, h) => { root.context-key(0, r, x, y, cy, h); }
                 row-gesture(r, w, c, s) => { root.row-gesture(0, r, w, c, s); }
+                row-press(r, x, y, c, s) => { return root.row-press(0, r, x, y, c, s); }
                 drag-dx: root.drag-dx;
                 drag-dy: root.drag-dy;
                 drop-here: root.drop-pane == 0;
@@ -1216,6 +1220,7 @@ export component App inherits Window {
                 context-menu(r, x, y, s) => { root.context-menu(1, r, x, y, s); }
                 context-key(r, x, y, cy, h) => { root.context-key(1, r, x, y, cy, h); }
                 row-gesture(r, w, c, s) => { root.row-gesture(1, r, w, c, s); }
+                row-press(r, x, y, c, s) => { return root.row-press(1, r, x, y, c, s); }
                 drag-dx: root.drag-dx;
                 drag-dy: root.drag-dy;
                 drop-here: root.drop-pane == 1;

@@ -439,6 +439,120 @@ route costs nothing measurable per frame, which is what the trace-first rule ask
 widths change nothing when nothing is hidden. Script: the session's `fullwidth.ps1` (not in the repo;
 the shape is this paragraph).
 
+## P13-M2: everything by mouse
+
+The mouse stream, from 2026-10-27, branch `feat/p13-m2-mouse`: built on P13-M1's branch, then moved onto main
+at 34449ee once P13-M1 (#128) and P13-M3 (#129) had merged, as two commits (the bars, then the band).
+
+### Settled first
+
+- **The bar's overflow, nothing per frame.** Each bar reports its width once per change (`width-changed`,
+  the Toolbar's `init` and `changed width`: a window resize, the splitter, the split, the sidebar, the
+  preview column). `toolbar::fit` turns the width into a count, and the bar shows its first `fit` buttons
+  through one `if` per button. Nothing is evaluated per frame or per row; a count change rebuilds only the
+  bar's buttons. The labelled widths are measured once per width change, in the heavier weight, so a
+  label is never clipped. More never overflows.
+- **The name's width for the band, without a per-row cost.** Nothing new sits in the rows. A left press on
+  a details row asks Rust where it landed (`row-press`, a callback returning a bool), and Rust measures that
+  one row's name with the window's hidden measuring Text, as `colfit` does (`invoke_measure`), when the
+  press lands. The rows keep their single TouchArea; its handler sends the moves and the release to the
+  band when the press began one.
+- **One commit for the two bars.** The path bar's buttons and the toolbar's new ones read the same new
+  facts (`ToolState`'s fields and `toolbar::with_facts`), so they went in as one commit. The band is a
+  commit of its own.
+
+### What landed
+
+- **The path bar's buttons and the toolbar's new buttons and menus** (commit 1):
+  - The path bar: Back, Forward, Up and Refresh before the crumbs.
+  - The toolbar: Undo and Redo with their records' text in the tooltips, View, and More with its six
+    items.
+  - The two menus are the Windows 11 menu's own popup (`winmenu::Cmd::Tool`).
+  - Each bar overflows into More on its own.
+  - With `toolbar = "none"` only the path bar's buttons show.
+  - The menu rows' key column is now 96 px, 12 px wider, for "Alt+Shift+Enter".
+  - Driver: `navbutton`, `toolmenu`, and `toolbar <pane> <undo|redo|view|more>`.
+- **The band in the details list** (commit 2):
+  - `band::press_on`, `touched_rows` and `cursor_rows`.
+  - The press decision in `main.rs` `row_press`.
+  - The band's rectangle now draws over either view.
+  - The driver's row aim moved onto the name's first letters. The pane's middle, where it aimed before, is
+    now a row's blank part and would start a band, so the old `dragrow`, `click` and `rclick` aims keep
+    their old meaning.
+
+### Scripted checks (2026-10-27, the branch's release build, `SLINT_BACKEND=winit-software`, no settings file unless named)
+
+- **The path bar**, in `C:\Windows\System32`:
+  - Up went to `C:\Windows`, Back to System32, Forward to `C:\Windows`, and Refresh listed it again, each
+    with its `[nav] ... button` line.
+  - A right click on Back opened the history menu with its three places.
+  - Screenshot: the four buttons before "This PC > C: > Windows", and Refresh's tooltip "Refresh (F5)".
+- **The View menu**: Details is ticked and the keys are at the right. Large icons switched the pane to the
+  grid, and Details switched it back (screenshot).
+- **The More menu** (labelled bar at 1192 px):
+  - Fits 11 of 12 buttons, so Preview pane comes first, then a separator and More's six items.
+  - Show hidden files is ticked after its first pick.
+  - Copy and Move to other pane are off with nothing selected.
+  - Select all, then Copy to other pane: "Copied 2 items".
+  - In the other pane, Select all, then Move to other pane: "Moved 2 items".
+  - Size all folders sized the three folders.
+  - Undo by the toolbar: "Undid: Moved 2 items", the files back where they were.
+- **The in-pane toolbar** (`C:\traces\toolbar-pane.toml`):
+  - Splitter to 0.30: the left pane's bar fell from 12 to 7 buttons, one line per change (468 to 319 px).
+  - Its More listed Undo and Redo (off), the three views (Details ticked), Two panes (ticked) and Preview
+    pane, then the six items (screenshot).
+  - The right pane's bar kept all twelve.
+  - In the narrow pane the crumbs have no room left beside the four buttons and the 150 px search box.
+- **The band in the details list** (`C:\Windows`):
+  - A drag straight down from row 2's blank part selected rows 2 to 5, the cursor on 5.
+  - With Ctrl from row 7: 6 selected. With Shift from row 9: 8 selected.
+  - A press on row 0's name and on row 1's icon, released in place: a click on each row (selected alone).
+  - A band from row 11 held, then Escape: back to the selection before it.
+  - A press on row 4's blank part released in place: row 4 alone, as a click.
+  - In `C:\Windows\Boot`, from below the last row up past the top: all 9 entries, the cursor on row 1.
+  - A first run of a straight-down drag selected nothing, because the grid's rule touches nothing at zero
+    width. Since then the details band touches rows by its height alone (`touched_rows`), as Explorer's
+    does.
+
+### Soak
+
+Per cycle in `tools/soak-p5m3.ps1`:
+
+- The toolbar cycle's Delete undone and redone by the toolbar.
+- Each path bar button once, in `src\tree`.
+- A View menu round trip.
+- In `m2` and `m2b` (made by the setup): More's Select all, Copy to other pane, and back by Move to other
+  pane, replacing (TWINFM_SOAK asks nothing).
+- Size all folders in `src`, and Show hidden files twice.
+- A band from row 0's blank part to row 1 in `m2`, selecting the two files.
+- Reported: path bar buttons (four per cycle), View picks (two), More picks (seven), details bands done with
+  2 selected (one), presses on a blank part (one).
+- The toolbar presses' count now leaves out the picks and the `fits` lines: twelve per cycle (P6-M3's
+  eight, P13-M1's two, P13-M2's Undo and Redo).
+
+Run: to come, on the coordinating session's word.
+
+### Gate
+
+To come: the defaults triplet and the toolbar-pane triplet (`C:\traces\toolbar-pane.toml`), against the
+reference the coordinating session names (P13-M1's gate build, or P13-M3's if it merges first).
+
+### Console checks (for Jeremy, unelevated, after the gate, light and dark, beside Explorer)
+
+- Every new button and item.
+- A band from below the last row, with Ctrl and with Shift.
+- A file drag from the name and from the icon still drags.
+- The bar at the window's minimum width.
+
+### Calls made in this milestone, for Jeremy to check
+
+- More's first items are the buttons that did not fit, in the bar's order, and the View button that does
+  not fit becomes its three items, not a submenu.
+- Copy and Move to other pane need two panes and a selection, as their keys do.
+- A press on a row's blank part selects that row on the release, not on the press (the press may become a
+  band).
+- At the default 1200 px window the labelled bar has no room for Preview pane, which sits in More.
+
 ## P13-M3: the sizes view, and size on disk
 
 Started 2026-10-27 from main at d29bdac, branch `feat/p13-m3-sizes-view`, the sizes stream. The coordinating

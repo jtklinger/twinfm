@@ -5426,21 +5426,50 @@ fn band_point(app: &App, layout: &dnd::Layout, pane: usize, at: (f32, f32)) -> (
     (at.0 - left - dnd::PANE_PAD, at.1 - dnd::list_top(layout, pane) - content_y)
 }
 
-/// The left button on a grid pane's empty space (`band-pointer`): kind 0 down, 1 move, 2 up, 3
-/// cancel, at window point `at` (logical px). The band starts once the pointer leaves the drag
-/// threshold, selects the tiles it touches on every move, scrolls the list while the pointer sits
-/// at its top or bottom edge, and ends on the release; a press released under the threshold is a
-/// click on empty space, which clears the selection (Explorer) unless Ctrl or Shift is held.
+/// A left press on details row `row` of `pane` at window point `at` (P13-M2, `row-press`): on the
+/// row's icon or the name's text it drags the files as before (false); anywhere else in the row it
+/// starts the band (true), as Explorer's details view does. The name's width is measured now, for
+/// this row only. `[band] pane=N press on row R <icon|name|blank>: drag|band`.
+fn row_press(app: &App, pane: usize, row: usize, at: (f32, f32), ctrl: bool, shift: bool) -> bool {
+    let l = window_layout(app);
+    if l.grid[pane].is_some() {
+        return false;
+    }
+    let (left, _) = dnd::pane_x(&l, pane);
+    let geom = icons::ListGeom::new(app.get_thumbnails(), app.get_comfortable());
+    let rows = if pane == 0 { app.get_left_rows() } else { app.get_right_rows() };
+    let Some(r) = rows.row_data(row) else { return false };
+    let text_w = app.invoke_measure(r.name, false);
+    let on = band::press_on(at.0 - left - dnd::PANE_PAD, geom.name_x(), text_w, name_px(app, pane, cols_of(app, pane)));
+    eprintln!("[band] pane={pane} press on row {row} {}: {}", on.name(), if on.drags() { "drag" } else { "band" });
+    if on.drags() {
+        return false;
+    }
+    band_pointer(pane, 0, at, ctrl, shift);
+    with_state(|st| {
+        if let Some(b) = st.band.as_mut().filter(|b| b.pane == pane) {
+            b.row = Some(row);
+        }
+    });
+    true
+}
+
+/// The left button on a pane's empty space, or since P13-M2 on a details row's blank part
+/// (`band-pointer`): kind 0 down, 1 move, 2 up, 3 cancel, at window point `at` (logical px). The band
+/// starts once the pointer leaves the drag threshold, selects the tiles (rows) it touches on every
+/// move, scrolls the list while the pointer sits at its top or bottom edge, and ends on the release; a
+/// press released under the threshold is a click: on a row, the row's (P13-M2); on empty space, it
+/// clears the selection (Explorer) unless Ctrl or Shift is held.
 fn band_pointer(pane: usize, kind: i32, at: (f32, f32), ctrl: bool, shift: bool) {
     match kind {
         0 => with_state(|st| {
             let Some(app) = st.app.upgrade() else { return };
             let layout = window_layout(&app);
-            if layout.grid[pane].is_none() {
-                return;
-            }
             let p = band_point(&app, &layout, pane, at);
-            st.band = Some(band::Band::press(pane, p, band::Mode::from_keys(ctrl, shift), st.model(pane).selected_set()));
+            let mut b = band::Band::press(pane, p, band::Mode::from_keys(ctrl, shift), st.model(pane).selected_set());
+            // The details list's band touches rows (P13-M2).
+            b.rows = layout.grid[pane].is_none().then_some(layout.row_px);
+            st.band = Some(b);
             st.band_at = at;
             st.band_logged = None;
         }),
@@ -5457,6 +5486,11 @@ fn band_pointer(pane: usize, kind: i32, at: (f32, f32), ctrl: bool, shift: bool)
                 band_restore(pane, &b, "the pointer grab ended");
             } else if b.active {
                 eprintln!("[band] pane={pane} done: {} selected, cursor {}", with_state(|st| st.model(pane).selected_count()), current_row(&app, pane));
+            } else if let Some(row) = b.row {
+                // A press on a row's blank part released where it went down: a click on the row.
+                let (ctrl, shift) = (b.mode == band::Mode::Toggle, b.mode == band::Mode::Add);
+                row_gesture(pane, row as i32, 0, ctrl, shift);
+                row_gesture(pane, row as i32, 1, ctrl, shift);
             } else if b.mode == band::Mode::Replace {
                 with_state(|st| {
                     let model = st.panes[pane].active().model.clone();
@@ -5536,8 +5570,8 @@ fn band_tick(pane: usize) {
 fn band_apply(st: &mut State, app: &App, pane: usize, log: bool) {
     let Some(b) = st.band.as_ref().filter(|b| b.pane == pane) else { return };
     let layout = window_layout(app);
-    let Some(cols) = layout.grid[pane] else { return };
-    let tile = layout.tile[pane];
+    // The details list's band reads its rows' height from the band (`Band::rows`).
+    let (cols, tile) = (layout.grid[pane].unwrap_or(1), layout.tile[pane]);
     let (x, y, w, h) = band::rect(b.anchor, b.now);
     app.set_band_x(x);
     app.set_band_y(y);
@@ -7779,6 +7813,10 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_open_row(|pane, row| open_row(pane as usize, row));
     app.on_row_gesture(|pane, row, what, ctrl, shift| row_gesture(pane as usize, row, what, ctrl, shift));
     app.on_band_pointer(|pane, kind, x, y, ctrl, shift| band_pointer(pane as usize, kind, (x, y), ctrl, shift));
+    app.on_row_press({
+        let w = app.as_weak();
+        move |pane, row, x, y, ctrl, shift| w.upgrade().is_some_and(|app| row >= 0 && row_press(&app, pane as usize, row as usize, (x, y), ctrl, shift))
+    });
     app.on_go_up(|pane| {
         go_up(pane as usize);
     });

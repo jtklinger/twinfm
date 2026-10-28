@@ -804,15 +804,20 @@ fn thumb(app: &App, pane: usize) -> LogicalPosition {
     LogicalPosition::new(right_edge - 10.0, list_top(app, pane) + 17.0)
 }
 
-/// Centre of a visible row: rows start under the 3 px padding, the tab strip when there is one,
+/// A visible row's name (its first letters since P13-M2; the row's centre before): rows start under the 3 px padding, the tab strip when there is one,
 /// 32 px path bar, 2 px spacing, 24 px header, 2 px spacing; 22 px each (32 px with thumbnails on).
 /// In the icon grid, the centre of visible entry `row`'s tile (`row / cols` grid rows down,
 /// `row % cols` tiles across, 96 x 136 px each (P7-M4), 80 x 107 px medium (P8-L1)).
 fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
-    let (_, _, mid) = geometry(app, pane);
     let l = crate::window_layout(app);
     match l.grid[pane] {
-        None => LogicalPosition::new(mid.x, list_top(app, pane) + row as f32 * l.row_px + l.row_px / 2.0),
+        // On the name's first letters (P13-M2): a press there drags files, as every step aiming at a row
+        // expects; a press on a row's blank part (the pane's middle, its aim before) starts the band.
+        None => {
+            let (left, _) = crate::dnd::pane_x(&l, pane);
+            let name_x = crate::icons::ListGeom::of_row(l.row_px).name_x();
+            LogicalPosition::new(left + crate::dnd::PANE_PAD + name_x + 2.0, list_top(app, pane) + row as f32 * l.row_px + l.row_px / 2.0)
+        }
         Some(cols) => {
             let (r, c) = crate::model::grid_cell(row, cols);
             let (left, _) = crate::dnd::pane_x(&l, pane);

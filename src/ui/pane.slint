@@ -1041,6 +1041,14 @@ component FileListHost inherits Rectangle {
     in property <length> drag-dy: 4px;
     // The drag gesture for the current press has been reported.
     private property <bool> drag-sent: false;
+    // P13-M2: a left press on a details row asks Rust where it landed (row-press(row, window x,
+    // window y, ctrl, shift), band.rs `press_on`, measured when the press lands): true, a press on the
+    // row's blank part, which starts the band (band(kind, window x, window y): 1 a move, 2 the
+    // release, 3 the grab ended), so its moves and release go to the band and no drag starts; false,
+    // the icon or the name's text, which drags the files as before.
+    callback row-press(int, length, length, bool, bool) -> bool;
+    callback band(int, length, length);
+    private property <bool> banding: false;
     // The right button is down on a row (TouchArea.pressed is the left button's only), and where
     // it went down, in the row: a move past the threshold starts a right-button drag (6).
     private property <bool> right-down: false;
@@ -1099,11 +1107,21 @@ component FileListHost inherits Rectangle {
             root.current-row = i;
             root.focus-list();
             root.focus-requested();
-            root.row-gesture(i, 0, ev.modifiers.control, ev.modifiers.shift);
+            root.banding = !root.grid && root.row-press(i, ax + mx, ay + my, ev.modifiers.control, ev.modifiers.shift);
+            if (!root.banding) { root.row-gesture(i, 0, ev.modifiers.control, ev.modifiers.shift); }
         }
         // The grab ended without a release (the end of a right-button drag, main.rs).
         if (ev.kind == PointerEventKind.cancel) {
             root.right-down = false;
+            if (root.banding) { root.banding = false; root.band(3, ax + mx, ay + my); }
+        }
+        if (root.banding) {
+            if (ev.kind == PointerEventKind.move && pressed) { root.band(1, ax + mx, ay + my); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+                root.banding = false;
+                root.band(2, ax + mx, ay + my);
+            }
+            return;
         }
         if (ev.kind == PointerEventKind.move && pressed && !root.drag-sent
             && (abs(mx - px) > root.drag-dx || abs(my - py) > root.drag-dy)) {
@@ -1448,8 +1466,9 @@ export component Pane inherits Rectangle {
     callback tool-tip(string);
     callback grid-cols(int);
     callback grid-cursor(int);
-    // The rubber band (P4-M3, grid only): band-pointer(kind, window x, window y, ctrl, shift) for
-    // the left button on empty grid space (kind 0 down, 1 move, 2 up, 3 cancel); main.rs runs the
+    // The rubber band (P4-M3 in the grid, P13-M2 in the details list too): band-pointer(kind, window
+    // x, window y, ctrl, shift) for the left button on empty space or a details row's blank part (kind
+    // 0 down, 1 move, 2 up, 3 cancel); main.rs runs the
     // gesture (band.rs) and draws it through band-here and the rectangle (content coordinates).
     callback band-pointer(int, length, length, bool, bool);
     in property <bool> band-here: false;
@@ -1464,7 +1483,6 @@ export component Pane inherits Rectangle {
             list.focus-list();
             root.focus-requested();
         }
-        if (!root.grid) { return; }
         if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
             root.band-pointer(0, ax + mx, ay + my, ev.modifiers.control, ev.modifiers.shift);
         }
@@ -1505,6 +1523,8 @@ export component Pane inherits Rectangle {
     callback context-menu(int, length, length, bool);
     callback context-key(int, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
+    // A press on a details row's blank part starts the band (P13-M2, FileListHost.row-press).
+    callback row-press(int, length, length, bool, bool) -> bool;
     in property <length> drag-dx: 4px;
     in property <length> drag-dy: 4px;
     // A drag is over this pane and would drop: on row `drop-row`, or (-1) into the pane's folder.
@@ -2066,6 +2086,8 @@ export component Pane inherits Rectangle {
             context-menu(r, x, y, s) => { root.context-menu(r, x, y, s); }
             context-key(r, x, y, cy, h) => { root.context-key(r, x, y, cy, h); }
             row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            row-press(r, x, y, c, s) => { return root.row-press(r, x, y, c, s); }
+            band(k, x, y) => { root.band-pointer(k, x, y, false, false); }
             drag-dx: root.drag-dx;
             drag-dy: root.drag-dy;
         }
@@ -2240,8 +2262,16 @@ export component Pane inherits Rectangle {
                 color: root.rows[list.current-row].cut ? Theme.fg-faint : Theme.fg;
             }
         }
+    }
+    // The band's rectangle over either view (the grid's since P4-M3, the details list's since P13-M2),
+    // clipped to the list, created only while a band is on.
+    if root.band-here: Rectangle {
+        x: list.x;
+        y: list.y;
+        width: list.visible-width;
+        height: list.visible-height;
+        clip: true;
         Rectangle {
-            visible: root.band-here;
             x: root.band-x;
             y: list.content-y + root.band-y;
             width: root.band-w;
