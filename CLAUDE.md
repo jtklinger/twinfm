@@ -324,7 +324,8 @@ put off, with where it came from.
   delete), `no parent watch for <path>: <why>`, `no watch for <path>: <reason>` (This PC, discs, a
   search tab, an archive level, a folder that cannot be opened, `watch cap reached (8)`, `stalled:
   no watch` for a share whose open took over 3 s, then refused at once for 30 s; logged once per
-  tab and path), `records R, changes C, window W ms[, overflow]` per delivered window, `back-off:
+  tab and path; since P13-M4 a tab refused inside the 30 s is asked for again when they end, `stall
+  cool-down over: asks again for <path>`, unless the tab moved on or its listing failed first), `records R, changes C, window W ms[, overflow]` per delivered window, `back-off:
   window W ms` (250 ms doubling to 2 s while changes arrive within 1 s of the last delivery, back
   to 250 after a quiet second), `N records in the window: overflow` (past 1,000), `applied: +A -R
   ~C (stat S ms, apply T ms)` (the window became row edits), `R records netted to nothing`, `R

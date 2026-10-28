@@ -888,8 +888,23 @@ network window):
   here. The watch was not opened then: the listing landed 10 s into the cool-down, which refuses at
   once and logs nothing the second time, and nothing asks again when the cool-down ends, so the tab
   stayed unwatched until F5 2.5 minutes later (`watching \\<share-host>\twinfm-test`), after which a file written
-  from outside appeared through the watch. **For Jeremy**: a retry of the watch when the cool-down ends
-  would close that gap (small, in `fs/watch.rs`); left as it is until he says.
+  from outside appeared through the watch. Jeremy: "Fix it here".
+
+**The retry when the cool-down ends** (7efb0e3): a tab whose watch is refused inside the cool-down is
+asked for again when the cool-down ends (`Dirwatch::retry`, one open; `[watch] pane=N tab=T stall
+cool-down over: asks again for <path>`). Any later request for the tab replaces the retry, and an unwatch
+drops it. The test `a_share_refused_in_the_stall_cool_down_is_watched_when_it_ends` watches its scratch
+folder through the loopback admin share (`\\localhost\C$\...`; skipped where that is not reachable), with
+the stall backdated by a test-only command so the cool-down ends half a second later. It failed before
+the fix (no change arrived) and passes after. `cargo test --release`: 337 passed, 1 ignored. The stall
+case run again on the share (16:28 to 16:35): the listing came back at 16:31:43, inside the cool-down;
+at 16:32:01, when it ended, `stall cool-down over: asks again`, then `watching`. That was two minutes
+before the script's F5, and a file written from outside appeared through the watch. One retry set earlier
+in that run (a navigation into the dead share inside the cool-down) never ran. A run with temporary log
+lines showed that the UI's unwatch had dropped it 5 s after the navigation. Nothing else ran in that
+window, so the likely cause is that the navigation's listing failed against the dead share; a failed
+listing is not logged, so this is inferred rather than seen. TwinFM does not watch a folder it cannot
+list, so dropping that retry is correct.
 
 **The name does not resolve** (2026-10-28 15:55 to 16:10):
 
