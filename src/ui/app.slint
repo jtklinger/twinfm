@@ -350,6 +350,8 @@ export component App inherits Window {
     in property <bool> right-shows-size: true;
     in property <bool> right-shows-modified: true;
     // The Size on disk column (P13-M3): the setting on and the pane wide enough (main.rs update_shown).
+    // The setting `size_on_disk`: both panes' lists with the cell (set at start and by the dialog).
+    in property <bool> size-on-disk: false;
     in property <bool> left-shows-ondisk: false;
     in property <bool> right-shows-ondisk: false;
     callback list-width(int, length);
@@ -1168,6 +1170,7 @@ export component App inherits Window {
                 shows-type: root.left-shows-type;
                 shows-size: root.left-shows-size;
                 shows-modified: root.left-shows-modified;
+                size-on-disk: root.size-on-disk;
                 shows-ondisk: root.left-shows-ondisk;
                 list-width(w) => { root.list-width(0, w); }
                 thumbnails: root.thumbnails;
@@ -1249,6 +1252,7 @@ export component App inherits Window {
                 shows-type: root.right-shows-type;
                 shows-size: root.right-shows-size;
                 shows-modified: root.right-shows-modified;
+                size-on-disk: root.size-on-disk;
                 shows-ondisk: root.right-shows-ondisk;
                 list-width(w) => { root.list-width(1, w); }
                 thumbnails: root.thumbnails;

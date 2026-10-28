@@ -429,8 +429,6 @@ component FileRows inherits ListView {
     in property <length> type-w: 120px;
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
-    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
-    in property <length> ondisk-w: 0px;
     // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
     // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
@@ -466,7 +464,6 @@ component FileRows inherits ListView {
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -489,8 +486,6 @@ component FileRowsNoType inherits ListView {
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
-    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
-    in property <length> ondisk-w: 0px;
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
 
@@ -517,7 +512,6 @@ component FileRowsNoType inherits ListView {
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -586,8 +580,6 @@ component FileRows32 inherits ListView {
     in property <length> type-w: 120px;
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
-    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
-    in property <length> ondisk-w: 0px;
     // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
     // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
@@ -622,7 +614,6 @@ component FileRows32 inherits ListView {
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -642,8 +633,6 @@ component FileRowsNoType32 inherits ListView {
     // bindings beyond the row's own data (the P9-M1 spike measured no cost).
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
-    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
-    in property <length> ondisk-w: 0px;
     callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
     callback row-gesture(int, int, bool, bool);
 
@@ -670,7 +659,6 @@ component FileRowsNoType32 inherits ListView {
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -721,6 +709,164 @@ component FileListNoType32 inherits FileRowsNoType32 {
 // GRID ROWS (136 px since P7-M4), each holding a nested `for` over its tiles (96 px wide). Tiles carry no
 // image: the pane's strip draws the icons. Accessibility: each grid row is one list-item node (the
 // item count is the grid-row count); the tiles add no role of their own, only their name Text.
+// The Size on disk column's rows (P13-M3; Jeremy's "Zero cost when off", 2026-10-28): FileRows and
+// FileRows32 with a fifth cell at the row's right end, chosen by FileListHost only while the setting
+// `size_on_disk` is on, so the other lists carry no cell for it. The Type cell stays, at the pane's
+// Type width (0 with the Type column off or hidden), so no copy without it is needed.
+component FileRowsOnDisk inherits ListView {
+    in property <[Row]> rows;
+    in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
+    // The row height (P12-M4): 22 px, or 30 px for comfortable rows; read when a row is made.
+    in property <length> row-h: 22px;
+    // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
+    // bindings beyond the row's own data (the P9-M1 spike measured no cost).
+    in property <length> type-w: 120px;
+    in property <length> size-w: 90px;
+    in property <length> modified-w: 140px;
+    // The Size on disk cell's width: 100 px, or 0 when dropped for the name's room.
+    in property <length> ondisk-w: 0px;
+    // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
+    // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
+    callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
+    callback row-gesture(int, int, bool, bool);
+
+    accessible-label: "Files";
+    accessible-item-count: rows.length;
+    accessible-delegate-focus: max(0, current-row);
+
+    for row[i] in rows: Rectangle {
+        height: root.row-h;
+        accessible-role: AccessibleRole.list-item;
+        // Files of every kind (plain, cloud placeholder, link, alias) have a size and a time;
+        // folders have no size, drives no time. The type text names a junction or a link.
+        accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
+            : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
+        accessible-item-selectable: true;
+        accessible-item-selected: row.selected;
+        accessible-item-index: i;
+        background: row.selected ? Theme.selection : transparent;
+        border-radius: Theme.radius;
+        // The cursor is an outline, so it stays visible on selected and unselected rows alike.
+        border-width: i == current-row ? 2px : 0px;
+        border-color: root.cursor-color;
+        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+        HorizontalLayout {
+            // 6 px padding plus the 22 px icon column; the icons are drawn by the pane's strip. 10 px
+            // on the right keep the last column clear of the scrollbar's thumb at rest (6 px wide, 1 px
+            // from the edge; Jeremy's "Add padding", 2026-10-26; dnd.rs ROW_PAD_RIGHT).
+            padding-left: 28px;
+            padding-right: 10px;
+            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+        }
+        TouchArea {
+            pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
+            double-clicked => { root.row-gesture(i, 3, false, false); }
+        }
+    }
+}
+
+component FileListOnDisk inherits FileRowsOnDisk {
+    in property <int> focus-request;
+    in property <bool> focus-on-init;
+    callback key(KeyEvent) -> EventResult;
+    forward-focus: key-area;
+    init => {
+        root.content-height = root.rows.length * root.row-h;
+        if (root.focus-on-init) { key-area.focus(); }
+    }
+    changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
+    key-area := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
+    }
+}
+
+component FileRowsOnDisk32 inherits ListView {
+    in property <[Row]> rows;
+    in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
+    in property <length> row-h: 32px;
+    // The pane's column widths (P9-M1), read by every row's cells: the list's only per-row
+    // bindings beyond the row's own data (the P9-M1 spike measured no cost).
+    in property <length> type-w: 120px;
+    in property <length> size-w: 90px;
+    in property <length> modified-w: 140px;
+    // The Size on disk cell's width: 100 px, or 0 when dropped for the name's room.
+    in property <length> ondisk-w: 0px;
+    // row-pointer(row, event, left button held, mouse x, mouse y, pressed x, pressed y, window x,
+    // window y of the row's TouchArea): FileListHost.row-pointer decides what it means.
+    callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
+    callback row-gesture(int, int, bool, bool);
+
+    accessible-label: "Files";
+    accessible-item-count: rows.length;
+    accessible-delegate-focus: max(0, current-row);
+
+    for row[i] in rows: Rectangle {
+        height: root.row-h;
+        accessible-role: AccessibleRole.list-item;
+        // Files of every kind (plain, cloud placeholder, link, alias) have a size and a time;
+        // folders have no size, drives no time. The type text names a junction or a link.
+        accessible-label: row.size != "" && row.modified != "" ? row.name + ", " + row.type-text + ", " + row.size + ", " + row.modified
+            : row.name + ", " + row.type-text + (row.size == "" ? "" : ", " + row.size);
+        accessible-item-selectable: true;
+        accessible-item-selected: row.selected;
+        accessible-item-index: i;
+        background: row.selected ? Theme.selection : transparent;
+        border-radius: Theme.radius;
+        // The cursor is an outline, so it stays visible on selected and unselected rows alike.
+        border-width: i == current-row ? 2px : 0px;
+        border-color: root.cursor-color;
+        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+        HorizontalLayout {
+            // 6 px padding plus the 32 px icon column; the icons are drawn by the pane's strip. 10 px
+            // on the right: clear of the scrollbar's thumb, as above.
+            padding-left: 42px;
+            padding-right: 10px;
+            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+        }
+        TouchArea {
+            pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
+            double-clicked => { root.row-gesture(i, 3, false, false); }
+        }
+    }
+}
+
+component FileListOnDisk32 inherits FileRowsOnDisk32 {
+    in property <int> focus-request;
+    in property <bool> focus-on-init;
+    callback key(KeyEvent) -> EventResult;
+    forward-focus: key-area;
+    init => {
+        root.content-height = root.rows.length * root.row-h;
+        if (root.focus-on-init) { key-area.focus(); }
+    }
+    changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
+    key-area := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
+    }
+}
+
 component FileGrid inherits ListView {
     in property <[GridRow]> grid;
     in property <int> current-row: -1;
@@ -980,7 +1126,9 @@ component FileListHost inherits Rectangle {
     in property <length> type-w: 120px;
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
-    // The Size on disk column (P13-M3): 0 when it is off or dropped for the name's room.
+    // The Size on disk column (P13-M3): `ondisk` the setting, which picks FileListOnDisk or
+    // FileListOnDisk32 in place of the four lists below; ondisk-w its width (0 when dropped).
+    in property <bool> ondisk: false;
     in property <length> ondisk-w: 0px;
     // Thumbnails (settings `thumbnails`): the 32 px lists. row-h is the chosen list's row height
     // (a grid row's with the grid), for the host's and the pane's per-pane arithmetic only; no row
@@ -1270,7 +1418,81 @@ component FileListHost inherits Rectangle {
         return EventResult.reject;
     }
 
-    if root.show-type && !root.thumbnails && !root.grid && !root.sizes: FileList {
+    if root.show-type && !root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileList {
+        row-h: root.row-h;
+        type-w: root.type-w;
+        size-w: root.size-w;
+        modified-w: root.modified-w;
+        width: root.width;
+        height: root.height;
+        rows: root.rows;
+        current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
+        content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+        focus-request: root.focus-request;
+        focus-on-init: root.active;
+        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+        key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+    }
+    if !root.show-type && !root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileListNoType {
+        row-h: root.row-h;
+        size-w: root.size-w;
+        modified-w: root.modified-w;
+        width: root.width;
+        height: root.height;
+        rows: root.rows;
+        current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
+        content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+        focus-request: root.focus-request;
+        focus-on-init: root.active;
+        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+        key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+    }
+    if root.show-type && root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileList32 {
+        row-h: root.row-h;
+        type-w: root.type-w;
+        size-w: root.size-w;
+        modified-w: root.modified-w;
+        width: root.width;
+        height: root.height;
+        rows: root.rows;
+        current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
+        content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+        focus-request: root.focus-request;
+        focus-on-init: root.active;
+        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+        key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+    }
+    if !root.show-type && root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileListNoType32 {
+        row-h: root.row-h;
+        size-w: root.size-w;
+        modified-w: root.modified-w;
+        width: root.width;
+        height: root.height;
+        rows: root.rows;
+        current-row: root.current-row;
+        cursor-color: root.active ? Theme.cursor : Theme.ring;
+        content-y <=> root.content-y;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+        focus-request: root.focus-request;
+        focus-on-init: root.active;
+        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+        key(e) => { return root.key(e); }
+        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+    }
+    if root.ondisk && !root.thumbnails && !root.grid && !root.sizes: FileListOnDisk {
         row-h: root.row-h;
         type-w: root.type-w;
         size-w: root.size-w;
@@ -1290,47 +1512,9 @@ component FileListHost inherits Rectangle {
         key(e) => { return root.key(e); }
         tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
-    if !root.show-type && !root.thumbnails && !root.grid && !root.sizes: FileListNoType {
-        row-h: root.row-h;
-        size-w: root.size-w;
-        modified-w: root.modified-w;
-        ondisk-w: root.ondisk-w;
-        width: root.width;
-        height: root.height;
-        rows: root.rows;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
-    }
-    if root.show-type && root.thumbnails && !root.grid && !root.sizes: FileList32 {
+    if root.ondisk && root.thumbnails && !root.grid && !root.sizes: FileListOnDisk32 {
         row-h: root.row-h;
         type-w: root.type-w;
-        size-w: root.size-w;
-        modified-w: root.modified-w;
-        ondisk-w: root.ondisk-w;
-        width: root.width;
-        height: root.height;
-        rows: root.rows;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
-    }
-    if !root.show-type && root.thumbnails && !root.grid && !root.sizes: FileListNoType32 {
-        row-h: root.row-h;
         size-w: root.size-w;
         modified-w: root.modified-w;
         ondisk-w: root.ondisk-w;
@@ -1443,7 +1627,9 @@ export component Pane inherits Rectangle {
     in property <bool> shows-type: true;
     in property <bool> shows-size: true;
     in property <bool> shows-modified: true;
-    // The Size on disk column (P13-M3): on and with room for it (main.rs update_shown, cols::ondisk_shown).
+    // The Size on disk column (P13-M3): the setting (its own lists, FileListHost.ondisk), and on with
+    // room for it (main.rs update_shown, cols::ondisk_shown).
+    in property <bool> size-on-disk: false;
     in property <bool> shows-ondisk: false;
     callback list-width(length);
     private property <length> eff-type: root.show-type && root.shows-type ? root.col-type : 0px;
@@ -2086,6 +2272,7 @@ export component Pane inherits Rectangle {
             type-w: root.eff-type;
             size-w: root.eff-size;
             modified-w: root.eff-modified;
+            ondisk: root.size-on-disk;
             ondisk-w: root.eff-ondisk;
             init => { root.list-width(self.width); }
             changed width => { root.list-width(self.width); }
