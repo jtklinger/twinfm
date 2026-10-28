@@ -193,6 +193,9 @@ pub struct SavedTab {
     pub back: Vec<SavedPlace>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub forward: Vec<SavedPlace>,
+    /// A sizes view on `path` (P13-M3): walked again when restored. Missing: a folder tab.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub sizes: bool,
 }
 
 /// The places of a tab's history saved each way (P11-M3).
@@ -212,7 +215,7 @@ pub struct SavedPlace {
 impl SavedTab {
     /// A tab that is only a folder (an old entry, a start folder).
     pub fn path(path: &str) -> SavedTab {
-        SavedTab { path: path.into(), sort: None, ascending: None, hidden: None, cursor: None, scroll: None, back: Vec::new(), forward: Vec::new() }
+        SavedTab { path: path.into(), sort: None, ascending: None, hidden: None, cursor: None, scroll: None, back: Vec::new(), forward: Vec::new(), sizes: false }
     }
 }
 
@@ -238,6 +241,8 @@ enum TabEntry {
         back: Vec<SavedPlace>,
         #[serde(default)]
         forward: Vec<SavedPlace>,
+        #[serde(default)]
+        sizes: bool,
     },
 }
 
@@ -245,8 +250,8 @@ impl From<TabEntry> for SavedTab {
     fn from(e: TabEntry) -> SavedTab {
         match e {
             TabEntry::Path(p) => SavedTab::path(&p),
-            TabEntry::Table { path, sort, ascending, hidden, cursor, scroll, back, forward } => {
-                SavedTab { path, sort, ascending, hidden, cursor, scroll, back, forward }
+            TabEntry::Table { path, sort, ascending, hidden, cursor, scroll, back, forward, sizes } => {
+                SavedTab { path, sort, ascending, hidden, cursor, scroll, back, forward, sizes }
             }
         }
     }
@@ -858,6 +863,8 @@ col_size_right = 99999.0
                 SavedPlace { path: r"C:\a".into(), search: Some("needle".into()), content: true },
             ],
             forward: vec![SavedPlace { path: r"C:\b\sub".into(), search: None, content: false }],
+            // P13-M3: a sizes view.
+            sizes: true,
         };
         let c = Config {
             start_left: r"C:\b".into(),

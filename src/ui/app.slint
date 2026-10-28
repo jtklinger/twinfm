@@ -1,4 +1,4 @@
-import { Pane, Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
+import { Pane, Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
 import { ListView, AboutSlint } from "std-widgets.slint";
 import { Theme, Btn, Switch, Field, Choice, VScrollBar, TipCard } from "theme.slint";
 // Inter (SIL Open Font License 1.1, src/ui/fonts/OFL.txt), the face of the look (P10-M1 task 4):
@@ -7,7 +7,7 @@ import "fonts/Inter-Regular.ttf";
 import "fonts/Inter-Medium.ttf";
 import "fonts/Inter-SemiBold.ttf";
 import { Preview, PreviewPage, MdBlock, MdRow, MdCell } from "preview.slint";
-export { Row, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
+export { Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
 // The fluent Palette, for main.rs's TWINFM_SCHEME override (a scripted screenshot of the other scheme).
 export { Palette } from "std-widgets.slint";
 
@@ -286,6 +286,11 @@ export component App inherits Window {
     in property <bool> right-medium: false;
     in property <[GridRow]> left-grid-rows;
     in property <[GridRow]> right-grid-rows;
+    // The sizes view per pane (P13-M3): the active tab is one, and its rows (sizeview.rs SizeModel).
+    in property <bool> left-sizes: false;
+    in property <bool> right-sizes: false;
+    in property <[SizeRow]> left-size-rows;
+    in property <[SizeRow]> right-size-rows;
     out property <int> left-grid-cols: left.tiles-per-row;
     out property <int> right-grid-cols: right.tiles-per-row;
     // The grid's icon strip per pane: one image per grid row (main.rs `grid_slots`).
@@ -1091,7 +1096,7 @@ export component App inherits Window {
             left := Pane {
                 x: 0; y: 0; height: parent.height;
                 width: split ? parent.width * split-ratio - 3px : parent.width;
-                rows: left-rows; grid: left-grid; medium: left-medium; grid-rows: left-grid-rows; strip-rows: left-strip-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
+                rows: left-rows; sizes: left-sizes; size-rows: left-size-rows; grid: left-grid; medium: left-medium; grid-rows: left-grid-rows; strip-rows: left-strip-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
@@ -1166,7 +1171,7 @@ export component App inherits Window {
                 visible: split;
                 x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
                 width: split ? parent.width - self.x : 0px;
-                rows: right-rows; grid: right-grid; medium: right-medium; grid-rows: right-grid-rows; strip-rows: right-strip-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
+                rows: right-rows; sizes: right-sizes; size-rows: right-size-rows; grid: right-grid; medium: right-medium; grid-rows: right-grid-rows; strip-rows: right-strip-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;

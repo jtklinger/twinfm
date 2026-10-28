@@ -47,6 +47,9 @@ pub enum Cmd {
     More,
     /// "Add to bookmarks" (P12-M5): each selected folder or drive, or the folder shown.
     Bookmark,
+    /// "Show sizes" (P13-M3): a sizes view of each selected folder or drive, or of the folder shown
+    /// (This PC: every fixed drive).
+    Sizes,
     NewFolder,
     NewFile,
     /// Open with's "Choose another app" (the shell's dialog).
@@ -62,7 +65,7 @@ pub enum Cmd {
 }
 
 impl Cmd {
-    const FIXED: [Cmd; 21] = [
+    const FIXED: [Cmd; 22] = [
         Cmd::Cut,
         Cmd::Copy,
         Cmd::Rename,
@@ -84,9 +87,10 @@ impl Cmd {
         Cmd::SevenZ,
         Cmd::Tar,
         Cmd::Bookmark,
+        Cmd::Sizes,
     ];
 
-    /// The id the Slint model carries: 1 to 21 for the fixed commands, 100 + i for a packaged
+    /// The id the Slint model carries: 1 to 22 for the fixed commands, 100 + i for a packaged
     /// command, 500 + k for an app, 1000 + 100 i + j for a command's own command, 10000 + k for a
     /// history place.
     pub fn id(self) -> i32 {
@@ -101,7 +105,7 @@ impl Cmd {
 
     pub fn from_id(id: i32) -> Option<Cmd> {
         match id {
-            1..=21 => Some(Cmd::FIXED[id as usize - 1]),
+            1..=22 => Some(Cmd::FIXED[id as usize - 1]),
             100..=499 => Some(Cmd::Packaged(id as usize - 100)),
             500..=999 => Some(Cmd::App(id as usize - 500)),
             10_000.. => Some(Cmd::History(id as usize - 10_000)),
@@ -219,6 +223,8 @@ const G_NEW_FOLDER: &str = "\u{E8F4}";
 const G_NEW_FILE: &str = "\u{E8A5}";
 const G_CHECK: &str = "\u{E73E}";
 const G_BOOKMARK: &str = "\u{E734}";
+/// Segoe Fluent Icons' PieSingle.
+const G_SIZES: &str = "\u{EB05}";
 
 /// The history menu's rows (P11-M3): one per place, as `tabs::History::list` orders them, the
 /// current one (`current` true) checked.
@@ -287,6 +293,9 @@ pub fn items(ctx: &Ctx, commands: &[Command]) -> Vec<Entry> {
                 own.push(Entry::item(Cmd::Terminal, "Open in terminal", G_TERMINAL, ""));
                 own.push(Entry::item(Cmd::Bookmark, "Add to bookmarks", G_BOOKMARK, ""));
             }
+            if matches!(ctx.place, Place::Folder | Place::ThisPc) {
+                own.push(Entry::item(Cmd::Sizes, "Show sizes", G_SIZES, ""));
+            }
             if matches!(ctx.place, Place::Folder | Place::Zip) {
                 last.push(Entry::item(Cmd::NewFolder, "New folder", G_NEW_FOLDER, "Ctrl+Shift+N"));
                 last.push(Entry::item(Cmd::NewFile, "New file", G_NEW_FILE, "Ctrl+Alt+N"));
@@ -317,6 +326,7 @@ pub fn items(ctx: &Ctx, commands: &[Command]) -> Vec<Entry> {
             }
             if dirs + drives > 0 && !archive {
                 open.push(Entry::item(Cmd::Bookmark, "Add to bookmarks", G_BOOKMARK, ""));
+                open.push(Entry::item(Cmd::Sizes, "Show sizes", G_SIZES, ""));
             }
             let mut last = packaged;
             if matches!(ctx.place, Place::Folder | Place::Search) && drives == 0 {
@@ -545,11 +555,11 @@ mod tests {
         assert_eq!(tool_texts(&tools(&dir)), ["Cut", "Copy", "Rename", "Delete"], "no Share for a folder");
         assert_eq!(
             texts(&items(&dir, &[cmd("Open in Terminal")])),
-            ["Open", "Open in other pane", "Open in terminal", "Add to bookmarks", "---", "Open in Terminal", "Compress to", "Copy path", "Properties", "---", "Show more options"]
+            ["Open", "Open in other pane", "Open in terminal", "Add to bookmarks", "Show sizes", "---", "Open in Terminal", "Compress to", "Copy path", "Properties", "---", "Show more options"]
         );
         let many = ctx(Place::Folder, What::Items { files: 2, dirs: 1, drives: 0 });
         assert_eq!(tool_texts(&tools(&many)), ["Cut", "Copy", "Delete"], "Rename takes one entry; Share files only");
-        assert_eq!(texts(&items(&many, &[])), ["Open", "Open in terminal", "Add to bookmarks", "---", "Compress to", "Copy path", "Properties", "---", "Show more options"], "Open for several (P8-L1)");
+        assert_eq!(texts(&items(&many, &[])), ["Open", "Open in terminal", "Add to bookmarks", "Show sizes", "---", "Compress to", "Copy path", "Properties", "---", "Show more options"], "Open for several (P8-L1)");
         let two_files = ctx(Place::Folder, files(2));
         assert_eq!(tool_texts(&tools(&two_files)), ["Cut", "Copy", "Share", "Delete"]);
         assert_eq!(texts(&items(&two_files, &[]))[..2], ["Open", "Open in terminal"], "two types: no Open with");
@@ -559,7 +569,7 @@ mod tests {
         assert_eq!(texts(&items(&in_zip, &[]))[..2], ["Open", "---"], "no Open with inside an archive");
         let drive = ctx(Place::ThisPc, What::Items { files: 0, dirs: 0, drives: 1 });
         assert!(tools(&drive).is_empty(), "drives are neither cut, copied, renamed nor deleted");
-        assert_eq!(texts(&items(&drive, &[])), ["Open", "Open in other pane", "Open in terminal", "Add to bookmarks", "---", "Copy path", "Properties", "---", "Show more options"]);
+        assert_eq!(texts(&items(&drive, &[])), ["Open", "Open in other pane", "Open in terminal", "Add to bookmarks", "Show sizes", "---", "Copy path", "Properties", "---", "Show more options"]);
     }
 
     #[test]
@@ -577,9 +587,9 @@ mod tests {
         assert!(tools(&ctx(Place::Folder, What::Background)).is_empty(), "nothing to paste");
         assert_eq!(
             texts(&items(&bg, &[cmd("Open in Terminal")])),
-            ["Open in other pane", "Open in terminal", "Add to bookmarks", "---", "Open in Terminal", "New folder", "New file", "Copy path", "Properties", "---", "Show more options"]
+            ["Open in other pane", "Open in terminal", "Add to bookmarks", "Show sizes", "---", "Open in Terminal", "New folder", "New file", "Copy path", "Properties", "---", "Show more options"]
         );
-        assert_eq!(texts(&items(&ctx(Place::ThisPc, What::Background), &[])), ["Properties", "---", "Show more options"]);
+        assert_eq!(texts(&items(&ctx(Place::ThisPc, What::Background), &[])), ["Show sizes", "---", "Properties", "---", "Show more options"]);
         assert_eq!(texts(&items(&ctx(Place::Archive, What::Background), &[])), ["Copy path", "---", "Show more options"]);
     }
 
@@ -614,7 +624,7 @@ mod tests {
             assert_eq!(Cmd::from_id(c.id()), Some(c), "{c:?}");
         }
         assert_eq!(Cmd::from_id(0), None);
-        assert_eq!(Cmd::from_id(22), None);
+        assert_eq!(Cmd::from_id(23), None);
         assert_eq!(Cmd::Cut.key_command(), Some("cx"));
         assert_eq!(Cmd::Properties.key_command(), Some("properties"), "Alt+Enter's command");
         assert_eq!(Cmd::Share.key_command(), None);

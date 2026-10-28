@@ -607,6 +607,30 @@ impl PaneModel {
         out.cursor
     }
 
+    /// The sizes view's rows (P13-M3), in the order the view gives them (no pass sorts them): they
+    /// become the listing and what is shown at once, the selection, the cursor and the cut marks
+    /// carried by name (`r`). The listing counts as settled. Returns the cursor's row.
+    pub fn set_rows(&self, rows: Vec<Entry>, r: &Restore) -> Option<usize> {
+        *self.all.borrow_mut() = rows.clone();
+        let mut out = PassOutput { shown: rows, hidden: 0, filtered: 0, cursor: None, selection: BTreeSet::new(), cut_marked: false };
+        out.restore(r);
+        let pass = self.pass.get() + 1;
+        self.pass.set(pass);
+        let cursor = self.replace(out);
+        self.landed_pass.set(pass);
+        cursor
+    }
+
+    /// Read row `i`'s entry in place (the sizes view's model, P13-M3: no clone per row).
+    pub fn with_entry<R>(&self, i: usize, f: impl FnOnce(&Entry) -> R) -> Option<R> {
+        self.shown.borrow().get(i).map(f)
+    }
+
+    /// The rows' notifications, for a model over the same rows (the sizes view's).
+    pub fn tracker(&self) -> &dyn ModelTracker {
+        &self.notify
+    }
+
     /// Start re-enumerating in place: batches are staged, the current rows stay shown.
     pub fn begin_refresh(&self) {
         self.incoming.borrow_mut().clear();

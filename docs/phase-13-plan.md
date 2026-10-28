@@ -438,3 +438,132 @@ seconds read 4.83 to 4.84 ms for p12seg and 4.82 to 4.88 ms for p13m1. With ever
 route costs nothing measurable per frame, which is what the trace-first rule asked of it: the 0 px
 widths change nothing when nothing is hidden. Script: the session's `fullwidth.ps1` (not in the repo;
 the shape is this paragraph).
+
+## P13-M3: the sizes view, and size on disk
+
+Started 2026-10-27 from main at d29bdac, branch `feat/p13-m3-sizes-view`, the sizes stream. The coordinating
+session gave the go for the settle-first measurement (a `C:\` walk), and allowed tests, builds and scripted
+TwinFM windows in the stream's own worktree; soaks, gate builds and the in-app `C:\` run still ask first.
+
+### Settled first (2026-10-27)
+
+**Size on disk: the directory information class, one call per 64 KB of entries** (`src/fs/dirinfo.rs`).
+`GetFileInformationByHandleEx` on the folder's handle with `FileIdBothDirectoryInfo` gives every entry's
+`AllocationSize` (its clusters) and its file ID, and `FileFullDirectoryInfo` the same without the ID.
+Checked against `GetCompressedFileSizeW`, a call per file, on files the test makes
+(`compressed_and_sparse_files_take_less_on_disk`). A 1 MB NTFS-compressed file reads 65,536 bytes both ways,
+once the cache has written it out. A 64 MB sparse file with nothing written reads 0 both ways. A plain 1 MB
+file reads 1,048,576. A tiny file that lives in the MFT reads 8 bytes; Explorer shows 0. Measured by the
+ignored `measure_walks` test, a release build, each root walked twice (round 0 cold, round 1 warm). The mouse
+stream's builds ran at the same time, so these times are rough:
+
+| Root | Today's walk (FindFirstFileExW) | Directory info, no IDs | Directory info, with IDs |
+|---|---|---|---|
+| `C:\traces\bigdir` (40,000 files) | 126 ms, 48 ms | 23 ms, 20 ms | 1,289 ms (first use), 37 ms |
+| `C:\` (1.26 M files, 370 k folders, 201 unreadable) | 112.5 s, 63.2 s | 37.2 s, 59.1 s | 53.5 s, 46.7 s |
+
+The directory information is no slower than today's walk, and it is the same one call per folder (per
+64 KB of entries). WOF compact files (CompactOS): none on this machine (0 met), so their directory sizes
+could not be checked. They are counted at what the directory says (tag 0x80000017 is not treated as a link).
+
+**Hard links: once per walk, by file ID.** The directory information has no link count, so every file's ID
+goes into a set (`dirinfo::HardLinks`). On `C:\` that is 1.2 M IDs, and the test process grew from 18 MB to
+36 MB of working set (5 to 23 MB private) against the walk without IDs, at no extra time worth noting. The
+walk met 59,344 more names of files already counted (WinSxS and System32 share theirs), 15.7 GB. Counted
+once, `C:\` holds 752 GB on disk. Counted per name, it holds 768 GB, which is what Explorer's per-folder numbers
+add up to. Which name counts is the first one the walk meets; the others count 0. So a folder of nothing but
+links to files elsewhere under the root reads small, and the files show under one name, as TreeSize's
+"count hard links once" does.
+
+### What landed
+
+- **The view** (`src/sizeview.rs`, pane.slint `SizeList`): a tab of its own kind, `Sizes: <folder>`, with a
+  "Sizes" crumb after the root's. Its rows are each level's folders and files, biggest first, then by name.
+  Each row shows a share bar (its size on disk against the root's), its size on disk, and for a folder its
+  file count and a chevron. The chevron, Right and Left open a folder in place one level down or close it.
+  Left on a file or a closed folder goes to its parent's row. Return or a double-click on a folder opens it
+  in a normal tab. The header reads Name, Share, Size on disk (sorted, the arrow down) and Files. The status
+  line reads `Walking… F files, S so far`, then `S on disk in F files, D folders, in T s`, then `, K folders
+  could not be read` when any were skipped. The numbers and the order are rebuilt every 250 ms while the walk
+  runs, the cursor and the selection kept on their items by path.
+- **Where**: the Windows 11 menu's "Show sizes", after "Add to bookmarks", on folders and drives (a tab each)
+  and on a folder's or This PC's background. On This PC every fixed drive but Google Drive's volume is sized,
+  one row each. Refused with a note inside an archive and on Google Drive's volume. OneDrive is walked, its
+  cloud-only files at 0. ⋯ More's item comes with P13-M2, once both have merged.
+- **The walk**: a thread of its own per view (the lead's call, changed with the coordinating session's
+  word: a `C:\` walk on the shared `sizes` worker would hold up Alt+Shift+Enter for a minute). It keeps
+  every folder in a `Tree` (a linked list of children, no Vec per folder) with its totals, and no file
+  entries. A level's files are read again when it is opened (one folder's listing, on a thread). Reparse
+  points other than compact files count 0, and a junction or directory link is counted as a folder and not
+  entered. Folders deeper than 64 levels are not entered, as folder sizes do.
+- **Acting on it**: the rows are the pane's entries, named by their path under the root as search results
+  are, so the Windows 11 menu, Delete, Shift+Delete, drag out and Return work unchanged. Rename, New, Paste and
+  drops into the view are refused, as in search results. After a delete or a move out of the root, each item
+  comes off every total above it at once (`sizes_removed`), with no new walk. The scripted check deleted
+  `big\b.bin`: 1,003,520 bytes came off 2 totals. F5 then walked again, and its total was 3,609,160 bytes,
+  exactly 4,612,680 less 1,003,520.
+- **Restored tabs**: a sizes tab is saved with its tab list (`sizes = true`) and walked again when it is shown.
+- **The view setting**: a pane set to icons shows a sizes tab as a list (`sync_grid`). Ctrl+Shift+1, 2 and 3
+  there set the view for the pane's other tabs.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **A call changed (accepted by the coordinating session, 2026-10-27): the walk runs on a thread of its
+  own per view**, as a search's does, not on the shared `sizes` worker the plan named. A long walk of `C:\`
+  never holds up Alt+Shift+Enter.
+- **Changes from elsewhere are not followed**: the plan had the subtree watch re-walk a changed folder, as
+  folder sizes do. The watch only names which child of the root changed. On `C:\`, `Windows` and `Users`
+  change every few seconds (logs, caches), so the view would keep walking tens of GB. Instead the numbers
+  stand as of the walk, and F5 walks again. A move within the root is not followed either, since the root's
+  own total does not change. **Open with Jeremy**: the coordinating session puts this to him before the
+  merge; the branch keeps F5 until he answers.
+- **Hard links count once per walk** (above), so `C:\` reads 752 GB rather than Explorer's 768 GB.
+- **The icon column stays at the left**, and the chevron and the name are indented 16 px per level. The pane's
+  icon strip stays one image, so nothing per row was added for it.
+
+### Scripted checks (2026-10-27, the branch's release build, `TWINFM_SCRIPT`, no settings file)
+
+A scratch tree in `%TEMP%\twinfm-p13m3-check` (4.6 MB in five files, three folders): the view opened by
+`sizeview`, `big` and `big\deep` opened in place (`opened ... in place (1 children)`, `listed ...: 1 files`),
+Left twice (deep closed, the cursor to big's row), `big\b.bin` deleted from the view (to the Recycle Bin: the
+check runs without `TWINFM_SOAK`, so Shift+Delete would ask), F5, the menu's "Show sizes" on a row (`[winmenu]
+pane=0 runs Sizes`, a new tab on `big`), Ctrl+Shift+2 in the view (`kept for the pane's other tabs`), and
+the tabs closed (`[view] pane=0 shows large icons` as the folder tab came back). Screenshots light and dark
+(`SLINT_BACKEND=winit-software`, PrintWindow) show the rows, bars, numbers and status line as the mockup drew
+them.
+
+### Size on disk in the normal list
+
+Waits for P13-M1's merge, as agreed with the coordinating session (2026-10-27): the column is a fourth
+cell in each details row component, reading a fourth width property, `ondisk-w`, as the other three are
+read (P13-M1's route: a hidden column's width is 0, and a zero-width Text draws nothing). `cols::shown`
+takes it as the first to drop (Size on disk, then Type, Size, Modified). It is filled by a second read of
+the folder (`fs::dirinfo::read`) only while the setting `size_on_disk` is on. The extra binding per row
+needs its own triplet before it merges.
+
+### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
+
+`tools/soak-p5m3.ps1 -Minutes 10`, on the coordinating session's go (the mouse stream editing only): 10.1
+minutes, closed by the script, exit code 0, 0 panicked lines, 259 jobs done (0 failed, 0 cancelled), 0
+waitops timeouts, 0 soak refusals; 13 cycles started, 3 whole. Every count is one per cycle or as its line
+says, and every "must be 0" is 0. **Sizes view: 3 walks done, 6 levels opened in place, 3 removals of
+`sz.txt` off three totals**, each one per cycle; no `could not list` or `cancelled` line. Working set 167 MB
+at 5 s, 239 MB at 601 s (at most 321); private 193 to 273 MB. The 60-minute soak at the phase's end is the
+memory check.
+
+### Gate (2026-10-27, tag ab67)
+
+`tools/gate-p13m3.ps1`: `target-p13m3` (8cdda35, built `--locked` from the detached `gate-p13m3` checkout)
+against `target-p12seg` (3698cd2), the defaults only, on the console at 60 Hz, run by Jeremy after ab66.
+WPR medians: **p13m3 21.1% against p12seg 21.2%**. Runs: reference 21.2, 21.4, 20.9; candidate 21.2, 21.1,
+21.1. No gap counts; every check ok (no panic, no `[sizeview]` line in any run). Render p50 2.84 to 2.94 ms
+in every run, so the session kept one state. Summary `C:\traces\gate-ab67-summary.txt`, traces
+`C:\traces\twinfm-ab67-*`.
+
+### The in-app `C:\` run (2026-10-27, after the gate, the machine free)
+
+`target-p13m3`'s exe, a script of `sizeview 0 C:\` and `waitsizeview 900000`, no settings file, the other
+streams holding. **74 s** for 756 GB on disk (761 GB logical) in 1,273,588 files and 373,474 folders, 202
+folders unreadable. The `done:` line: working set 178 MB, **+72 MB since the start** (the 150 MB limit
+holds), private 166 MB, 373,423 folders and 1,214,052 file IDs kept. The window's peak working set, sampled
+every 2 s from outside, was 202 MB. 279 `partial` lines (under four a second), no panic.

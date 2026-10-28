@@ -41,6 +41,34 @@ pub fn process_heap() -> String {
     }
 }
 
+/// The process's working set and private bytes, in MB (P13-M3: the sizes view's walk is held to
+/// its memory). psapi's call through kernel32, declared here rather than enabling windows-sys's
+/// ProcessStatus feature for one call.
+pub fn memory_mb() -> (f64, f64) {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Counters {
+        cb: u32,
+        page_faults: u32,
+        peak_working_set: usize,
+        working_set: usize,
+        quota: [usize; 4],
+        pagefile: usize,
+        peak_pagefile: usize,
+        private: usize,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, cb: u32) -> i32;
+    }
+    let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, ..Default::default() };
+    // SAFETY: the current process's pseudo-handle (-1) and a PROCESS_MEMORY_COUNTERS_EX-shaped out
+    // buffer of the size given.
+    unsafe { K32GetProcessMemoryInfo(-1, &mut c, c.cb) };
+    let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+    (mb(c.working_set), mb(c.private))
+}
+
 pub fn before_rendering() {
     PERF.with(|p| {
         let mut p = p.borrow_mut();

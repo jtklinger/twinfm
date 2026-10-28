@@ -9,6 +9,7 @@ mod fs {
     pub mod archivefolder;
     pub mod archivewrite;
     pub mod content;
+    pub mod dirinfo;
     pub mod enumerate;
     pub mod sizes;
     pub mod watch;
@@ -34,6 +35,7 @@ mod perf;
 mod preview;
 mod searchbox;
 mod settings;
+mod sizeview;
 mod shellmenu;
 mod sidebar;
 mod statusbar;
@@ -135,6 +137,9 @@ struct Tab {
     /// A search tab (Ctrl+Shift+F): its listing is a recursive name search under `path`, its
     /// root. None for a folder tab.
     search: Option<Search>,
+    /// A sizes view tab (P13-M3, "Show sizes"): its rows are the walk's folders and the opened
+    /// levels' files under `path`, its root. None for every other tab.
+    sizeview: Option<SizeTab>,
     /// Folder sizes computed for this tab (selected folders, Alt+Shift+Return), and those in flight.
     sizes: fs::sizes::TabSizes,
     /// The UI asked the watcher to watch this tab's folder and has not heard `Refused` or `Lost`
@@ -165,6 +170,26 @@ struct Search {
     restating: bool,
 }
 
+/// A sizes view (`sizeview`): its walk's tree, the folders opened in place, the levels' files once
+/// listed, the rows in their order and what each draws besides its entry.
+#[derive(Default)]
+struct SizeTab {
+    /// Its walk's (unique, from `State::generation`; 0 before the first walk).
+    generation: u64,
+    tree: Arc<std::sync::Mutex<sizeview::Tree>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    open: HashSet<sizeview::Id>,
+    files: HashMap<sizeview::Id, Vec<sizeview::File>>,
+    /// Levels whose listing is out.
+    listing: HashSet<sizeview::Id>,
+    rows: Vec<sizeview::Row>,
+    extra: Rc<RefCell<Vec<sizeview::Extra>>>,
+    /// The walk's time once it is done.
+    done_ms: Option<u64>,
+    /// The working set when the walk started, MB (the done line says how much the walk held).
+    ws_before: f64,
+}
+
 impl Tab {
     /// Where the tab is, as its history records it: its folder, or its search and root.
     fn place(&self) -> Place {
@@ -178,7 +203,13 @@ impl Tab {
     /// Folder sizes are computed in folder tabs only (not for search results, not on This PC, not
     /// inside an archive).
     fn sizable(&self) -> bool {
-        self.search.is_none() && !is_this_pc(&self.path.to_string_lossy()) && !fs::archive::inside(&self.path)
+        self.search.is_none() && self.sizeview.is_none() && !is_this_pc(&self.path.to_string_lossy()) && !fs::archive::inside(&self.path)
+    }
+
+    /// Search results or a sizes view (P13-M3): rows from many folders under `path`, never watched,
+    /// no drop or new item into the root.
+    fn results(&self) -> bool {
+        self.search.is_some() || self.sizeview.is_some()
     }
 
     /// The tab leaves the foreground (a tab switch, a new tab): its finished folder sizes stay,
@@ -399,6 +430,7 @@ fn blank_tab(id: u64, icons: &Rc<RefCell<IconTable>>) -> Tab {
         watch_refresh: false,
         history: tabs::History::default(),
         search: None,
+        sizeview: None,
         sizes: fs::sizes::TabSizes::default(),
         watched: false,
         watched_bg: false,
@@ -486,7 +518,7 @@ impl State {
             for (i, t) in tabs.iter().enumerate() {
                 let listed = t.timing.error.is_none();
                 let eligible = if i == active {
-                    t.search.is_none() && listed
+                    !t.results() && listed
                 } else {
                     folder_tab(t) && t.timing.done_ms.is_some() && listed && (!t.stale || t.sizes.any())
                 };
@@ -507,14 +539,16 @@ impl State {
                 t.watched = false;
                 t.watched_bg = false;
                 if i == active {
-                    if t.search.is_some() && (pane == 0 || split) && self.no_watch_logged[pane] != Some(t.id) {
-                        // A search's results come from many folders; F5 runs it again.
-                        eprintln!("[watch] pane={pane} no watch for {}: search results", t.path.display());
+                    if t.results() && (pane == 0 || split) && self.no_watch_logged[pane] != Some(t.id) {
+                        // A search's results come from many folders; F5 runs it again. So does a
+                        // sizes view's walk (P13-M3).
+                        let what = if t.search.is_some() { "search results" } else { "sizes view" };
+                        eprintln!("[watch] pane={pane} no watch for {}: {what}", t.path.display());
                         self.no_watch_logged[pane] = Some(t.id);
                     }
                     continue;
                 }
-                if t.search.is_some() {
+                if t.results() {
                     continue;
                 }
                 if t.stale {
@@ -564,6 +598,11 @@ impl State {
     fn is_search(&self, pane: usize) -> bool {
         self.tab(pane).search.is_some()
     }
+
+    /// The active tab shows search results or a sizes view (`Tab::results`).
+    fn is_results(&self, pane: usize) -> bool {
+        self.tab(pane).results()
+    }
 }
 
 /// An ordinary navigation (a click, Return, a crumb, the sidebar, the path entry, up a folder):
@@ -611,6 +650,12 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         if let Some(s) = t.search.take() {
             s.cancel(fs::enumerate::SEARCH_NAVIGATED);
         }
+        // So does a sizes view (P13-M3).
+        if let Some(sv) = t.sizeview.take() {
+            if sv.done_ms.is_none() && !sv.cancel.swap(true, Ordering::Relaxed) {
+                eprintln!("[sizeview] pane={pane} gen={} cancelled (navigated away)", sv.generation);
+            }
+        }
         t.model.search_names.set(false);
         // Another folder starts unfiltered (Explorer's behaviour).
         let filtered = !t.model.filter.borrow().is_empty();
@@ -649,6 +694,11 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
 fn refresh(pane: usize) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
+        // A sizes view walks again (P13-M3).
+        if st.tab(pane).sizeview.is_some() {
+            eprintln!("[refresh] pane={pane} sizes view: walked again");
+            return start_sizes(st, &app, pane);
+        }
         let generation = st.generation();
         let t = st.tab_mut(pane);
         t.model.generation.set(generation);
@@ -732,6 +782,11 @@ fn update_status(st: &State, app: &App, pane: usize) {
     let pct = progress_for(st.progress, &st.jobs, pane, t.id, &t.note);
     let note = statusbar::with_queue(&statusbar::with_progress(&t.note, pct), st.jobs.len().saturating_sub(1));
     let left = match &t.search {
+        _ if t.sizeview.is_some() => {
+            let sv = t.sizeview.as_ref().expect("checked");
+            let r = *sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner).root();
+            statusbar::sizes_text(&note, r.files, r.disk, r.folders, r.skipped, sv.done_ms.map(|ms| ms as f64 / 1e3))
+        }
         Some(s) => {
             let secs = (!loading).then(|| t.timing.done_ms.unwrap_or(0.0) / 1e3);
             let stopped = s.cancel.load(Ordering::Relaxed) != fs::enumerate::SEARCH_RUNNING;
@@ -761,7 +816,7 @@ fn tool_place(st: &State, pane: usize) -> toolbar::Place {
     let path = st.tab(pane).path.to_string_lossy();
     if is_this_pc(&path) {
         toolbar::Place::ThisPc
-    } else if st.is_search(pane) {
+    } else if st.is_results(pane) {
         toolbar::Place::Search
     } else if in_archive(st, pane) {
         if in_readonly_archive(st, pane) { toolbar::Place::Archive } else { toolbar::Place::Zip }
@@ -913,6 +968,9 @@ fn strip_resized(pane: usize) {
 /// A tab's title: its folder's name, or `Search: <pattern>` for a search tab (`Text: <text>` for
 /// a content search, P11-M1).
 fn tab_title(t: &Tab) -> String {
+    if t.sizeview.is_some() {
+        return format!("Sizes: {}", pathbar::title(&t.path.to_string_lossy()));
+    }
     match &t.search {
         Some(s) if s.content => format!("Text: {}", s.pattern.pattern),
         Some(s) => format!("Search: {}", s.pattern.pattern),
@@ -930,6 +988,9 @@ fn set_path(st: &State, app: &App, pane: usize) {
     if let Some(s) = &t.search {
         let what = if s.content { "Text" } else { "Search" };
         crumbs.push(Crumb { label: format!("{what}: \"{}\"", s.pattern.pattern).into() });
+    }
+    if t.sizeview.is_some() {
+        crumbs.push(Crumb { label: "Sizes".into() });
     }
     crumb_geometry_reset(pane, crumbs.len());
     st.crumb_models[pane].set_vec(crumbs);
@@ -988,6 +1049,7 @@ fn save_now() {
                         hidden: Some(t.model.show_hidden.get()),
                         cursor: cursor.map(|c| c.to_string()),
                         scroll: Some(t.restore_scroll.unwrap_or(scroll)),
+                        sizes: t.sizeview.is_some(),
                     }
                 })
                 .collect();
@@ -1043,7 +1105,7 @@ fn save_now() {
 fn note_recent(st: &mut State, app: &App, pane: usize) {
     let t = st.tab(pane);
     let path = t.path.to_string_lossy().to_string();
-    if (pane == 1 && !app.get_split()) || t.search.is_some() || is_this_pc(&path) || fs::archive::split(&t.path).is_some() {
+    if (pane == 1 && !app.get_split()) || t.results() || is_this_pc(&path) || fs::archive::split(&t.path).is_some() {
         return;
     }
     if sidebar::note_recent(&mut st.config.recent, &path) {
@@ -1316,7 +1378,7 @@ fn watch_set(cands: &[WatchCand], cap: usize) -> Vec<u64> {
 
 /// A folder tab: not a search, not This PC, not a level inside an archive (never watched).
 fn folder_tab(t: &Tab) -> bool {
-    t.search.is_none() && !is_this_pc(&t.path.to_string_lossy()) && !fs::archive::inside(&t.path)
+    !t.results() && !is_this_pc(&t.path.to_string_lossy()) && !fs::archive::inside(&t.path)
 }
 
 /// Every name the window's changes touch (both names of a rename) is in `set` (lower-cased).
@@ -1945,7 +2007,7 @@ fn size_selection(st: &mut State, pane: usize) {
 fn size_all(st: &mut State, app: &App, pane: usize) {
     let cursor = usize::try_from(current_row(app, pane)).unwrap_or(0);
     if !st.tab(pane).sizable() {
-        let why = if st.is_search(pane) {
+        let why = if st.is_results(pane) {
             "search results have no folder sizes"
         } else if in_archive(st, pane) {
             eprintln!("[archive] refused: folder sizes (inside an archive)");
@@ -2401,6 +2463,12 @@ fn view_of(st: &State, pane: usize) -> settings::View {
 fn set_view(pane: usize, view: settings::View) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
+        // A sizes view is always a list (P13-M3): the pane's view is set for its other tabs.
+        if st.tab(pane).sizeview.is_some() {
+            st.config.set_view(pane, view);
+            schedule_save(st);
+            return eprintln!("[view] pane={pane} {} kept for the pane's other tabs: the sizes view stays a list", view.label());
+        }
         let old = view_of(st, pane);
         if old == view {
             return eprintln!("[view] pane={pane} already {}", view.label());
@@ -2440,6 +2508,31 @@ fn set_view(pane: usize, view: settings::View) {
         resolve_view(st, &app, pane);
         schedule_save(st);
     });
+}
+
+/// The pane shows the grid when its view is one and its active tab is no sizes view (P13-M3: that
+/// is always a list): called as a tab comes to the front; switches the pane's list as `set_view`
+/// does, without touching the setting.
+fn sync_grid(st: &mut State, app: &App, pane: usize) {
+    let view = st.config.view(pane);
+    let want = view.is_grid() && st.tab(pane).sizeview.is_none();
+    if st.grid[pane] == want {
+        return;
+    }
+    if want {
+        st.tile[pane] = icons::TileGeom::of(view.is_medium());
+    }
+    if pane == 0 { app.set_left_medium(st.tile[pane] == icons::TileGeom::MEDIUM) } else { app.set_right_medium(st.tile[pane] == icons::TileGeom::MEDIUM) }
+    let cols = (if pane == 0 { app.get_left_grid_cols() } else { app.get_right_grid_cols() }).max(1) as usize;
+    st.grid[pane] = want;
+    st.grid_n[pane] = cols;
+    if pane == 0 { app.set_left_grid(want) } else { app.set_right_grid(want) }
+    hide_strip(st, app, pane);
+    st.strip_dirty[pane] = true;
+    for t in st.panes[pane].iter() {
+        t.model.forget_icons();
+    }
+    eprintln!("[view] pane={pane} shows {}", if want { view.label() } else { "a list (the sizes view)" });
 }
 
 /// Take every icon reply the worker has sent, intern the images, then re-resolve both panes'
@@ -2736,6 +2829,14 @@ fn command(pane: usize, cmd: &str) {
             return open_history_menu(pane, at.0, at.1);
         }
         "cv" => return clipboard_paste(pane),
+        // The sizes view's Right and Left (P13-M3): the cursor row's folder opened or closed in place.
+        "sizeopen" | "sizeclose" => {
+            let row = with_state(|st| st.app.upgrade().and_then(|app| usize::try_from(current_row(&app, pane)).ok()));
+            if let Some(row) = row {
+                size_toggle(pane, row, Some(cmd == "sizeopen"));
+            }
+            return;
+        }
         "undo" => return undo(pane),
         "redo" => return redo(pane),
         "properties" => return properties(pane),
@@ -2760,8 +2861,10 @@ fn command(pane: usize, cmd: &str) {
         match cmd {
             "sizeall" => size_all(st, &app, pane),
             "newfolder" | "newfile" if at_drives => note(st, &app, pane, "This PC lists drives; open a folder first".into()),
-            "newfolder" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a folder in it".into()),
-            "newfile" if st.is_search(pane) => note(st, &app, pane, "search results: open a folder to make a file in it".into()),
+            "newfolder" if st.is_results(pane) => note(st, &app, pane, "search results: open a folder to make a folder in it".into()),
+            "newfile" if st.is_results(pane) => note(st, &app, pane, "search results: open a folder to make a file in it".into()),
+            // The sizes view's rows are under folders the editor does not stand over (P13-M3).
+            "rename" if st.tab(pane).sizeview.is_some() => note(st, &app, pane, "the sizes view: rename in a folder tab (Return opens a folder in one)".into()),
             "newfolder" | "newfile" if in_readonly_archive(st, pane) => {
                 let why = read_only_why(st, pane);
                 refuse_archive(st, &app, pane, if cmd == "newfolder" { "new folder" } else { "new file" }, &why);
@@ -2792,7 +2895,7 @@ fn command(pane: usize, cmd: &str) {
                     return None;
                 }
                 let dest = st.tab(1 - pane).path.clone();
-                if st.is_search(1 - pane) {
+                if st.is_results(1 - pane) {
                     note(st, &app, pane, "the other pane shows search results; open a folder there first".into());
                     return None;
                 }
@@ -3147,7 +3250,7 @@ fn clipboard_paste(pane: usize) {
             note(st, &app, pane, "This PC lists drives; open a folder first".into());
             return None;
         }
-        if st.is_search(pane) {
+        if st.is_results(pane) {
             note(st, &app, pane, "search results: paste into a folder".into());
             return None;
         }
@@ -3276,8 +3379,10 @@ fn job_done(d: fileops::Done) {
         }
         // A watched background tab gets the job's changes from its watch.
         mark_background_stale(st, false);
+        // A sizes view takes what went off its totals instead of walking again (P13-M3).
+        let sizes = sizes_removed(st, &d.job, &d.results);
         let split = st.app.upgrade().is_some_and(|a| a.get_split());
-        let panes = if split { vec![0, 1] } else { vec![0] };
+        let panes: Vec<usize> = if split { vec![0, 1] } else { vec![0] }.into_iter().filter(|&p| !sizes[p]).collect();
         // The refresh below covers what the job did: its own records, arriving after it, are
         // not refreshed again.
         for &p in &panes {
@@ -3366,7 +3471,7 @@ fn menu_request(pane: usize, row: i32, x: f32, y: f32, extended: bool) -> Option
         let this_pc = is_this_pc(&folder.to_string_lossy());
         let targets = if row >= 0 { st.model(pane).targets(current_row(&app, pane)) } else { Vec::new() };
         let names: Vec<String> = targets.iter().map(|e| e.name.to_string()).collect();
-        if targets.is_empty() && st.is_search(pane) {
+        if targets.is_empty() && st.is_results(pane) {
             // Its "Paste" and "New" would act on the root, which is not what the list shows.
             note(st, &app, pane, "search results have no folder menu; right-click a result".into());
             return None;
@@ -4077,6 +4182,18 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
         Cmd::Terminal => own_item(pane, shellmenu::OwnItem::Terminal, m.ctx),
         Cmd::CopyPath => own_item(pane, shellmenu::OwnItem::CopyPath, m.ctx),
         Cmd::Bookmark => menu_bookmarks(pane, &m.req.folder, &m.req.names),
+        // A sizes tab for each selected folder or drive, or for the folder shown (P13-M3).
+        Cmd::Sizes => {
+            if m.req.names.is_empty() {
+                open_sizeview(pane, m.req.folder.clone());
+            }
+            for n in &m.req.names {
+                let p = m.req.folder.join(n);
+                if p.is_dir() {
+                    open_sizeview(pane, p);
+                }
+            }
+        }
         Cmd::Share => queue_verb(pane, verb_request(&m.req, "", "Share", true), None),
         Cmd::Zip => queue_verb(pane, verb_request(&m.req, "", ZIP_LABEL, true), None),
         Cmd::SevenZ | Cmd::Tar => {
@@ -4340,11 +4457,13 @@ fn open_one(pane: usize, row: i32) {
         let archive = in_archive(st, pane);
         // An archive opens as a folder, one inside an archive too (P8-L3: read-only, from its copy).
         let enter = e.is_dir() || fs::archive::is_archive_name(&e.name);
-        Some((enter, path, dir, hwnd, archive))
+        Some((enter, path, dir, hwnd, archive, st.tab(pane).sizeview.is_some()))
     });
     match target {
-        Some((true, p, _, _, _)) => navigate(pane, p),
-        Some((false, file, folder, hwnd, archive)) => {
+        // In a sizes view a folder opens in a normal tab (its chevron opens it in place, P13-M3).
+        Some((true, p, _, _, _, true)) => open_tab(pane, Some(p)),
+        Some((true, p, _, _, _, false)) => navigate(pane, p),
+        Some((false, file, folder, hwnd, archive, _)) => {
             // No state borrow across ShellExecuteExW: the shell can show a dialog from inside it.
             let res = if archive { shellmenu::open_in_archive(hwnd, &file) } else { shellmenu::open_item(hwnd, &file, &folder) };
             eprintln!("[open] pane={pane} {}: {res:?}", file.display());
@@ -4510,6 +4629,8 @@ fn row_gesture(pane: usize, row: i32, what: i32, ctrl: bool, shift: bool) {
         4 => middle_click_row(pane, row),
         5 => history_button(pane, false),
         7 => history_button(pane, true),
+        // The sizes view's chevron (P13-M3).
+        8 => size_toggle(pane, row, None),
         _ => {}
     }
 }
@@ -4829,7 +4950,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             // when the drag is held over it.
             dnd::Spot::Tab(p, i) => {
                 let tab = st.panes[p].iter().nth(i)?;
-                if tab.search.is_some() {
+                if tab.results() {
                     refuse_search_drop(p, tab.id);
                     return None;
                 }
@@ -4848,7 +4969,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             dnd::Spot::Crumb(p, i) => {
                 let tab = st.tab(p);
                 let Some(c) = pathbar::crumbs(&tab.path.to_string_lossy()).into_iter().nth(i) else {
-                    if tab.search.is_some() {
+                    if tab.results() {
                         refuse_search_drop(p, tab.id);
                     }
                     return None;
@@ -4865,7 +4986,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
                 return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Crumb(i), dest: c.target, springs });
             }
         };
-        if st.is_search(pane) {
+        if st.is_results(pane) {
             refuse_search_drop(pane, st.tab(pane).id);
             return None;
         }
@@ -5490,10 +5611,18 @@ fn set_current_row(app: &App, pane: usize, row: Option<usize>) {
 /// breadcrumb, sort indicators, cursor, scroll, status and icons.
 fn show_tab(st: &mut State, app: &App, pane: usize) {
     st.tab_mut(pane).shown_at = Instant::now();
+    sync_grid(st, app, pane);
     let t = st.tab(pane);
     let (model, cursor, scroll) = (t.model.clone(), t.cursor, t.scroll);
     let rows = ModelRc::from(model.clone());
     if pane == 0 { app.set_left_rows(rows) } else { app.set_right_rows(rows) }
+    // A sizes view (P13-M3): its own list over the same rows.
+    let sizes = t.sizeview.as_ref().map(|s| ModelRc::new(sizeview::SizeModel::new(model.clone(), s.extra.clone())));
+    let on = sizes.is_some();
+    if let Some(m) = sizes {
+        if pane == 0 { app.set_left_size_rows(m) } else { app.set_right_size_rows(m) }
+    }
+    if pane == 0 { app.set_left_sizes(on) } else { app.set_right_sizes(on) }
     model.set_grid_n(st.grid_n[pane]);
     model.set_grid_cursor(cursor);
     let grid = ModelRc::new(GridModel::new(model.clone()));
@@ -5622,6 +5751,11 @@ fn close_tab(pane: usize, i: usize) {
         closed.model.generation.set(0);
         if let Some(s) = &closed.search {
             s.cancel(fs::enumerate::SEARCH_CLOSED);
+        }
+        if let Some(sv) = &closed.sizeview {
+            if sv.done_ms.is_none() && !sv.cancel.swap(true, Ordering::Relaxed) {
+                eprintln!("[sizeview] pane={pane} gen={} cancelled (tab closed)", sv.generation);
+            }
         }
         closed.drop_sizes(pane, "tab closed");
         st.watch.unwatch(closed.id);
@@ -6078,6 +6212,331 @@ fn start_search(pane: usize, pattern: &str, content: bool, history_root: Option<
     // moving the focus runs the pane's handlers.
     if let Some(app) = started {
         app.invoke_focus_pane(pane as i32);
+    }
+}
+
+/// "Show sizes" (the Windows 11 menu, the driver's `sizeview`): a sizes tab on `root` after the
+/// active one (P13-M3). This PC sizes every fixed drive but Google Drive's; inside an archive and on
+/// Google Drive's volume it is refused (its sizes are not space on this PC, and a walk there may
+/// list remotely).
+fn open_sizeview(pane: usize, root: PathBuf) {
+    let started = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let this_pc = is_this_pc(&root.to_string_lossy());
+        let refusal = if this_pc {
+            None
+        } else if fs::archive::inside(&root) {
+            Some("The sizes view does not read inside archives")
+        } else if st.cloud.of(&root) == icons::Cloud::Overlays {
+            Some("The sizes view does not walk Google Drive: its sizes are not space on this PC")
+        } else {
+            None
+        };
+        if let Some(why) = refusal {
+            eprintln!("[sizeview] pane={pane} {}: refused ({why})", root.display());
+            note(st, &app, pane, why.into());
+            return None;
+        }
+        save_view(st, &app, pane);
+        st.tab_mut(pane).background_sizes(pane);
+        let root = if this_pc { PathBuf::from(THIS_PC) } else { root };
+        let mut t = st.new_tab(root.clone());
+        t.sizeview = Some(SizeTab::default());
+        let id = t.id;
+        st.panes[pane].open(t);
+        let tabs = &st.panes[pane];
+        eprintln!("[tab] pane={pane} opened tab {} of {} (id {id}) on {} for its sizes", tabs.active_index() + 1, tabs.len(), root.display());
+        start_sizes(st, &app, pane);
+        Some(app)
+    });
+    if let Some(app) = started {
+        app.invoke_focus_pane(pane as i32);
+    }
+}
+
+/// (Re)start the walk of pane `pane`'s active tab, a sizes tab (opened, F5, restored, after a file
+/// operation that was not a removal): a new tree, nothing opened, the root's files listed.
+fn start_sizes(st: &mut State, app: &App, pane: usize) {
+    let generation = st.generation();
+    let root = st.tab(pane).path.clone();
+    let this_pc = is_this_pc(&root.to_string_lossy());
+    let drives: Vec<PathBuf> = if this_pc {
+        sizeview::fixed_drives().into_iter().filter(|d| st.cloud.of(d) != icons::Cloud::Overlays).collect()
+    } else {
+        Vec::new()
+    };
+    let mut tree = sizeview::Tree::new(if this_pc { THIS_PC.into() } else { root.to_string_lossy() }.as_ref(), this_pc);
+    let roots: Vec<(sizeview::Id, PathBuf)> =
+        if this_pc { drives.iter().map(|d| (tree.add_folder(0, &d.to_string_lossy()), d.clone())).collect() } else { vec![(0, root.clone())] };
+    let tree = Arc::new(std::sync::Mutex::new(tree));
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let t = st.tab_mut(pane);
+    if let Some(old) = &t.sizeview {
+        if old.generation != 0 && old.done_ms.is_none() && !old.cancel.swap(true, Ordering::Relaxed) {
+            eprintln!("[sizeview] pane={pane} gen={} cancelled (a new walk)", old.generation);
+        }
+    }
+    let id = t.id;
+    t.sizeview = Some(SizeTab { generation, tree: tree.clone(), cancel: cancel.clone(), ws_before: perf::memory_mb().0, ..Default::default() });
+    t.model.generation.set(generation);
+    t.model.clear();
+    t.timing = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
+    t.note.clear();
+    t.cursor = -1;
+    t.scroll = 0.0;
+    t.stale = false;
+    t.free = None;
+    if st.cut_source == Some((pane, id)) {
+        st.cut_source = None;
+    }
+    st.icon_gens[pane].store(generation, Ordering::Relaxed);
+    show_tab(st, app, pane);
+    schedule_save(st);
+    eprintln!("[sizeview] pane={pane} gen={generation} start {}", root.display());
+    if !this_pc {
+        list_level(st, pane, 0);
+    }
+    std::thread::Builder::new()
+        .name("sizeview".into())
+        .spawn(move || {
+            // No "insert a disk" dialog for an empty drive met on the way.
+            // SAFETY: plain flag call on this (worker) thread; the old mode is not needed.
+            unsafe {
+                windows_sys::Win32::System::Diagnostics::Debug::SetThreadErrorMode(
+                    windows_sys::Win32::System::Diagnostics::Debug::SEM_FAILCRITICALERRORS,
+                    std::ptr::null_mut(),
+                )
+            };
+            sizeview::walk(&tree, &roots, &cancel, |p| {
+                let end = match p {
+                    sizeview::Progress::Partial => None,
+                    sizeview::Progress::Done { ms, ids } => Some((ms, ids)),
+                    sizeview::Progress::Cancelled => return,
+                };
+                let _ = slint::invoke_from_event_loop(move || sizes_tick(pane, id, generation, end));
+            });
+        })
+        .expect("spawn sizeview thread");
+}
+
+/// A sizes walk's partial totals (`end` None, at most every 250 ms) or its end, on the UI thread:
+/// logged, and the tab's rows built again from the tree.
+fn sizes_tick(pane: usize, id: u64, generation: u64, end: Option<(u64, usize)>) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let Some(t) = st.find(pane, id) else { return };
+        let Some(sv) = t.sizeview.as_mut().filter(|s| s.generation == generation) else { return };
+        let (root, kept) = {
+            let tree = sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            (*tree.root(), tree.nodes.len())
+        };
+        match end {
+            None => eprintln!("[sizeview] pane={pane} gen={generation} partial: {} files, {} bytes on disk", root.files, root.disk),
+            Some((ms, ids)) => {
+                sv.done_ms = Some(ms);
+                t.timing.done_ms = Some(ms as f64);
+                let (ws, private) = perf::memory_mb();
+                eprintln!(
+                    "[sizeview] pane={pane} gen={generation} done: {} bytes on disk ({} logical), {} files, {} folders, {} skipped, in {ms} ms; working set {ws:.0} MB ({:+.0} MB since the start), private {private:.0} MB, {kept} folders and {ids} file IDs kept",
+                    root.disk,
+                    root.logical,
+                    root.files,
+                    root.folders,
+                    root.skipped,
+                    ws - sv.ws_before
+                );
+            }
+        }
+        rebuild_sizes(st, &app, pane, id);
+    });
+}
+
+/// Build a sizes tab's rows again from its tree (a tick, a level opened or listed, a removal): the
+/// order and numbers change, the cursor and the selection stay on their items (by path).
+fn rebuild_sizes(st: &mut State, app: &App, pane: usize, id: u64) {
+    let active = st.is_active(pane, id);
+    let cursor_now = if active { current_row(app, pane) } else { st.find(pane, id).map_or(-1, |t| t.cursor) };
+    let y = active.then(|| app.invoke_get_scroll(pane as i32));
+    let zone = model::LocalZone::current();
+    let Some(t) = st.find(pane, id) else { return };
+    let root = t.path.clone();
+    let Some(sv) = t.sizeview.as_mut() else { return };
+    let (entries, extra) = {
+        let tree = sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        sv.rows = sizeview::rows(&tree, &sv.open, &sv.files);
+        sizeview::entries(&tree, &sv.files, &root, &sv.rows, &zone)
+    };
+    let r = t.model.capture(cursor_now);
+    *sv.extra.borrow_mut() = extra;
+    let cursor = t.model.set_rows(entries, &r);
+    if !active {
+        t.cursor = cursor.map_or(-1, |c| c as i32);
+        return;
+    }
+    set_current_row(app, pane, cursor);
+    if let Some(y) = y {
+        app.invoke_set_scroll(pane as i32, y);
+    }
+    update_status(st, app, pane);
+    st.strip_dirty[pane] = true;
+    resolve_view(st, app, pane);
+}
+
+/// List level `node` of pane `pane`'s sizes tab (its files, each with its size on disk) on a thread
+/// of its own; `land_level` puts them in.
+fn list_level(st: &mut State, pane: usize, node: sizeview::Id) {
+    let t = st.tab_mut(pane);
+    let (id, root) = (t.id, t.path.clone());
+    let Some(sv) = t.sizeview.as_mut() else { return };
+    if !sv.listing.insert(node) {
+        return;
+    }
+    let dir = if node == 0 { root } else { root.join(sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner).rel(node)) };
+    let generation = sv.generation;
+    std::thread::spawn(move || {
+        let t0 = Instant::now();
+        let res = sizeview::level_files(&dir);
+        let ms = perf::elapsed_ms(t0);
+        let _ = slint::invoke_from_event_loop(move || land_level(pane, id, generation, node, dir, res, ms));
+    });
+}
+
+fn land_level(pane: usize, id: u64, generation: u64, node: sizeview::Id, dir: PathBuf, res: Result<Vec<sizeview::File>, u32>, ms: f64) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let Some(sv) = st.find(pane, id).and_then(|t| t.sizeview.as_mut()).filter(|s| s.generation == generation) else { return };
+        sv.listing.remove(&node);
+        match res {
+            Ok(files) => {
+                eprintln!("[sizeview] pane={pane} listed {}: {} files in {ms:.1} ms", dir.display(), files.len());
+                sv.files.insert(node, files);
+            }
+            Err(e) => eprintln!("[sizeview] pane={pane} could not list {}: os error {e}", dir.display()),
+        }
+        rebuild_sizes(st, &app, pane, id);
+    });
+}
+
+/// The ▸ of row `row` (a click, Right or Left, the driver's `sizeopen`): `open` None flips it. A
+/// folder opens in place one level down (its subfolders at once, from the tree; its files when its
+/// listing lands) or closes; Left on a file or a closed folder moves the cursor to its parent's
+/// row, as a tree does.
+fn size_toggle(pane: usize, row: usize, open: Option<bool>) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let t = st.tab_mut(pane);
+        let (id, root) = (t.id, t.path.clone());
+        let Some(sv) = t.sizeview.as_mut() else { return };
+        let Some(r) = sv.rows.get(row).cloned() else { return };
+        let (parent, node) = {
+            let tree = sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match r.item {
+                sizeview::Item::Folder(n) => (tree.nodes[n as usize].parent, Some(n)),
+                sizeview::Item::File(p, _) => (p, None),
+            }
+        };
+        let is_open = node.is_some_and(|n| sv.open.contains(&n));
+        let want = open.unwrap_or(!is_open);
+        let Some(node) = node.filter(|_| want != is_open) else {
+            // Left on a file or on a closed folder: to its parent's row.
+            if open == Some(false) {
+                if let Some(i) = sv.rows.iter().position(|x| x.item == sizeview::Item::Folder(parent)) {
+                    set_current_row(&app, pane, Some(i));
+                    st.model(pane).select(SelOp::Only, i);
+                }
+            }
+            return;
+        };
+        let path = root.join(&r.rel);
+        if want {
+            sv.open.insert(node);
+            let kids = sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner).children(node).count();
+            eprintln!("[sizeview] pane={pane} opened {} in place ({kids} children)", path.display());
+            if !sv.files.contains_key(&node) {
+                list_level(st, pane, node);
+            }
+        } else {
+            sv.open.remove(&node);
+            eprintln!("[sizeview] pane={pane} closed {} in place", path.display());
+        }
+        rebuild_sizes(st, &app, pane, id);
+    });
+}
+
+/// A delete or a move out finished (`job_done`): every sizes view showing what went takes it off
+/// its totals at once, with no new walk (P13-M3). Returns the panes whose active tab is a sizes
+/// view, which therefore need no refresh.
+fn sizes_removed(st: &mut State, job: &Job, results: &[fileops::ItemResult]) -> [bool; 2] {
+    let gone: Vec<&Path> = match job {
+        Job::Delete { .. } | Job::Move { .. } => results.iter().filter(|r| r.ok()).map(|r| r.source.as_path()).collect(),
+        _ => Vec::new(),
+    };
+    let Some(app) = st.app.upgrade() else { return [false; 2] };
+    let mut skip = [false; 2];
+    for pane in 0..2 {
+        skip[pane] = st.tab(pane).sizeview.is_some();
+        let ids: Vec<u64> = st.panes[pane].iter().filter(|t| t.sizeview.is_some()).map(|t| t.id).collect();
+        for id in ids {
+            let Some(t) = st.find(pane, id) else { continue };
+            let root = t.path.clone();
+            let Some(sv) = t.sizeview.as_mut() else { continue };
+            let mut changed = false;
+            for p in &gone {
+                // A move within the root changes none of the root's totals: not followed (F5 walks).
+                if let Job::Move { dest_dir, .. } = job {
+                    if sizeview::rel_under(&root, dest_dir).is_some() || same_dir(&root, dest_dir) {
+                        continue;
+                    }
+                }
+                let Some(rel) = sizeview::rel_under(&root, p) else { continue };
+                let mut tree = sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some((disk, k)) = sizeview::remove(&mut tree, &mut sv.files, &rel) {
+                    eprintln!("[sizeview] pane={pane} removed {}: {disk} bytes off {k} totals", p.display());
+                    changed = true;
+                }
+            }
+            if changed {
+                rebuild_sizes(st, &app, pane, id);
+            }
+        }
+    }
+    skip
+}
+
+/// For the driver's `waitsizeview`: a sizes walk or a level's listing is still out.
+pub fn sizes_view_running() -> bool {
+    STATE.with(|s| match s.try_borrow() {
+        Ok(g) => g.as_ref().is_some_and(|st| {
+            st.panes.iter().any(|p| p.iter().any(|t| t.sizeview.as_ref().is_some_and(|s| (s.done_ms.is_none() && s.generation != 0) || !s.listing.is_empty())))
+        }),
+        Err(_) => true,
+    })
+}
+
+/// The driver's `sizeview <pane> [<path>]`: the view on `path`, or on the cursor row's folder, or
+/// on the pane's own folder.
+pub fn script_sizeview(pane: usize, path: Option<PathBuf>) {
+    let root = path.or_else(|| {
+        with_state(|st| {
+            let app = st.app.upgrade()?;
+            let folder = st.tab(pane).path.clone();
+            let e = usize::try_from(current_row(&app, pane)).ok().and_then(|r| st.model(pane).entry(r));
+            Some(match e {
+                Some(e) if e.is_dir() => folder.join(e.name.as_str()),
+                _ => folder,
+            })
+        })
+    });
+    if let Some(root) = root {
+        open_sizeview(pane, root);
+    }
+}
+
+/// The driver's `sizeopen <row>`: the ▸ of that row in the active pane.
+pub fn script_sizeopen(row: usize) {
+    let pane = with_state(|st| st.app.upgrade().map(|app| active_pane(&app)));
+    if let Some(pane) = pane {
+        size_toggle(pane, row, None);
     }
 }
 
@@ -6921,6 +7380,11 @@ fn main() -> Result<(), slint::PlatformError> {
             .map(|(i, p)| {
                 next_tab += 1;
                 let mut t = Tab { path: PathBuf::from(&p.path), stale: i != active, ..blank_tab(next_tab, &icons) };
+                // A sizes view walks again when it is shown (P13-M3): `refresh` starts its walk.
+                if p.sizes {
+                    t.sizeview = Some(SizeTab::default());
+                    t.stale = true;
+                }
                 let sort = settings::sort_from_name(p.sort.as_deref().unwrap_or(&config.sort_column));
                 t.model.sort_col.set(if sort == SortCol::Type && !config.show_type { SortCol::Name } else { sort });
                 t.model.sort_asc.set(p.ascending.unwrap_or(config.sort_ascending));
@@ -7351,11 +7815,13 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // Each pane's active tab lists its folder; the restored background tabs wait until shown.
-    navigate(0, PathBuf::from(&left_paths[left_active].path));
+    // Each pane's active tab lists its folder (a sizes view walks it, P13-M3); the restored
+    // background tabs wait until shown.
+    let first = |pane: usize, p: &settings::SavedTab| if p.sizes { refresh(pane) } else { navigate(pane, PathBuf::from(&p.path)) };
+    first(0, &left_paths[left_active]);
     if config.split {
         app.set_split(true);
-        navigate(1, PathBuf::from(&right_paths[right_active].path));
+        first(1, &right_paths[right_active]);
     }
     // Start with keyboard focus in the list, so arrows, Space and Ctrl+A work before a click.
     app.invoke_focus_pane(0);
