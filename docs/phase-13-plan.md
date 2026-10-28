@@ -424,5 +424,17 @@ Every check ok, every candidate run under 20%, no gap (the candidate is the chea
 2.45 to 2.56 ms against 2.72 to 2.95 ms, so no run sat in the costlier state. Every candidate run ended
 with both panes showing name, Size and Modified at 499 px: at the gate's 1200 px window with the split,
 each list is 499 px and Type is already hidden, so the candidate draws no Type cells and its lower
-number is that narrower draw, not a saving at equal columns. The full-width comparison (to come, after
-the gate) checks the route with every column shown.
+number is that narrower draw, not a saving at equal columns. The full-width comparison below checks the
+route with every column shown.
+
+**The full-width comparison** (2026-10-27, after the gate, unelevated, in-app figures only, so it decides
+nothing on its own): the gate's split-and-scroll scenario on `C:\traces\bigdir` with the window
+maximised first, so the split panes are 1010 px wide and both show name, Type, Size and Modified (the
+candidate's `[cols]` lines, and `widths ... (name 622 px)` for both panes). Six runs, the order swapped
+between pairs: p12seg, p13m1, p13m1, p12seg, p12seg, p13m1. The UI thread's busy share over the 10 s
+after the split read p12seg 21.9, 15.9, 16.7 and p13m1 15.2, 16.1, 17.5 (medians 16.7 and 16.1; the
+first run of the session reads high whichever binary sits in it). The render p50 of the scrolling
+seconds read 4.83 to 4.84 ms for p12seg and 4.82 to 4.88 ms for p13m1. With every column shown the
+route costs nothing measurable per frame, which is what the trace-first rule asked of it: the 0 px
+widths change nothing when nothing is hidden. Script: the session's `fullwidth.ps1` (not in the repo;
+the shape is this paragraph).
