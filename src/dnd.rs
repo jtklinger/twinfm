@@ -564,7 +564,8 @@ pub fn preview_w(width: f32, left: f32, ratio: f32) -> f32 {
 
 /// The name cell of pane `pane`'s rows (P9-M1): its left edge in window px and its width, the
 /// list's width less the rows' left padding (`ListGeom::name_x`), their right padding
-/// (`ROW_PAD_RIGHT`) and the width the columns shown take (`cols::Widths::shown`); zero when the
+/// (`ROW_PAD_RIGHT`) and the width the columns shown take (`cols::Widths::taken`, P13-M1: hidden
+/// columns take none); zero when the
 /// pane is too narrow for them,
 /// as the row clips them. `hit` keeps the whole row: a drop on the Type cell lands on the row.
 pub fn name_cell(l: &Layout, pane: usize, shown: f32) -> (f32, f32) {
@@ -3376,22 +3377,22 @@ mod tests {
         use crate::cols::{Widths, DEFAULT};
         let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
         // 3 px pane padding, 28 px row padding; 1000 - 3 - 10 - 350 = 637 on the right.
-        assert_eq!(name_cell(&one, 0, DEFAULT.shown(true)), (31.0, 606.0));
-        assert_eq!(name_cell(&one, 0, DEFAULT.shown(false)), (31.0, 726.0));
+        assert_eq!(name_cell(&one, 0, DEFAULT.taken([true; 3])), (31.0, 606.0));
+        assert_eq!(name_cell(&one, 0, DEFAULT.taken([false, true, true])), (31.0, 726.0));
         let wide = Widths { ty: 200.0, size: 110.0, modified: 180.0 };
-        assert_eq!(name_cell(&one, 0, wide.shown(true)), (31.0, 466.0));
+        assert_eq!(name_cell(&one, 0, wide.taken([true; 3])), (31.0, 466.0));
         // 32 px rows: 42 px of row padding.
         let tall = Layout { row_px: 32.0, ..one };
-        assert_eq!(name_cell(&tall, 0, DEFAULT.shown(true)), (45.0, 592.0));
+        assert_eq!(name_cell(&tall, 0, DEFAULT.taken([true; 3])), (45.0, 592.0));
         // Comfortable 30 px rows (P12-M4): the 16 px icons' 28 px, as the 22 px rows.
         let comfy = Layout { row_px: 30.0, ..one };
-        assert_eq!(name_cell(&comfy, 0, DEFAULT.shown(true)), (31.0, 606.0));
+        assert_eq!(name_cell(&comfy, 0, DEFAULT.taken([true; 3])), (31.0, 606.0));
         // Comfortable thumbnail rows, 44 px: the thumbnails' 42 px, as the 32 px rows.
         let comfy_thumbs = Layout { row_px: 44.0, ..one };
-        assert_eq!(name_cell(&comfy_thumbs, 0, DEFAULT.shown(true)), (45.0, 592.0));
+        assert_eq!(name_cell(&comfy_thumbs, 0, DEFAULT.taken([true; 3])), (45.0, 592.0));
         // The right pane of a split, narrower than its columns: clamped at zero.
         let two = Layout { split: true, width: 600.0, ..one };
-        let (x, w) = name_cell(&two, 1, wide.shown(true));
+        let (x, w) = name_cell(&two, 1, wide.taken([true; 3]));
         assert_eq!((x, w), (303.0 + 3.0 + 28.0, 0.0));
     }
 

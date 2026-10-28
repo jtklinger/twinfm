@@ -2,6 +2,9 @@
 //! (or to @<file> to read the list from a file; Windows caps an env var at 32 KB):
 //!   sleep <ms>                       wait
 //!   split                            toggle the second pane (same as F3)
+//!   splitter <ratio>                 drag the split line from where it is to <ratio> of the panes'
+//!                                    room (P13-M1), through Slint's pointer path in 8 px steps (the
+//!                                    splitter clamps it to 0.15..0.85; `[auto] splitter A -> B`)
 //!   wheel <pane> <ticks> <ms>        wheel ticks (negative = down) <ms> apart over the pane's list
 //!   drag <pane> <dy> <ms>            press the pane's scrollbar thumb and drag it <dy> px in 16 ms steps
 //!   nav <pane> <path>                navigate a pane (a path inside a zip archive, `C:\dir\x.zip\sub`,
@@ -340,6 +343,7 @@ enum HoverAt {
 enum Step {
     Sleep(u64),
     Split,
+    Splitter(f32),
     Wheel { pane: usize, ticks: i32, ms: u64 },
     Drag { pane: usize, dy: f32, ms: u64 },
     Nav { pane: usize, path: String },
@@ -474,6 +478,7 @@ fn parse(script: &str) -> Vec<Step> {
             Some(match *a.first()? {
                 "sleep" => Step::Sleep(num(1) as u64),
                 "split" => Step::Split,
+                "splitter" => Step::Splitter(a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.5)),
                 "wheel" => Step::Wheel { pane: num(1) as usize, ticks: num(2) as i32, ms: num(3).max(1) as u64 },
                 "drag" => Step::Drag { pane: num(1) as usize, dy: num(2) as f32, ms: num(3).max(1) as u64 },
                 "nav" => Step::Nav { pane: num(1) as usize, path: a[2..].join(" ") },
@@ -1416,6 +1421,26 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             app.invoke_close_crumb_menu();
             schedule(runner, 1);
         }
+        Step::Splitter(ratio) => {
+            // The split line's centre, as dnd::pane_x places it; the splitter sets the ratio from the
+            // pointer's x in the panes' room.
+            let l = crate::window_layout(&app);
+            let right = l.width - l.preview;
+            let line = |r: f32| l.left + (right - l.left) * r;
+            let (x0, x1) = (line(l.ratio), line(ratio));
+            let y = (l.top + l.height) / 2.0;
+            let at = |x: f32| LogicalPosition::new(x, y);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at(x0) }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: at(x0), button: PointerEventButton::Left }).ok();
+            let steps = ((x1 - x0).abs() / 8.0).ceil().max(1.0) as i32;
+            for k in 1..=steps {
+                win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at(x0 + (x1 - x0) * k as f32 / steps as f32) }).ok();
+            }
+            win.dispatch_event_with_result(WindowEvent::PointerReleased { position: at(x1), button: PointerEventButton::Left }).ok();
+            eprintln!("[auto] splitter {:.2} -> {:.2}", l.ratio, app.get_split_ratio());
+            schedule(runner, 1);
+        }
         Step::TabDrag { pane, index, dx } => {
             // The strip is the pane's first row: 3 px padding, 26 px tall, every tab tab-width
             // wide from the strip's offset.
@@ -1438,7 +1463,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             let l = crate::window_layout(&app);
             match crate::cols::Col::from_name(&col) {
                 None => eprintln!("[auto] col: no column {col:?} (type, size or modified)"),
-                Some(c) if l.grid[pane].is_some() || !crate::cols::grips(app.get_show_type()).contains(&c) => {
+                Some(c) if l.grid[pane].is_some() || !crate::cols::grips(crate::shown_of(&app, pane)).contains(&c) => {
                     eprintln!("[auto] col pane={pane} {col}: no such grip in this pane's header")
                 }
                 Some(c) if !drag && what.is_some() => crate::col_set(&app, pane, c, what.unwrap_or(0.0), "script"),
@@ -1446,7 +1471,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     // The grip's centre: the header's cells end at the list's right edge, and the
                     // header is the 32 px above the list's top less the layout's 2 px spacing.
                     let (_, right) = crate::dnd::pane_x(&l, pane);
-                    let x0 = crate::cols::grip_x(right - crate::dnd::PANE_PAD, crate::cols_of(&app, pane), c);
+                    let x0 = crate::cols::grip_x(right - crate::dnd::PANE_PAD, crate::cols_of(&app, pane), c, crate::shown_of(&app, pane));
                     let y = crate::dnd::list_top(&l, pane) - 18.0;
                     let at = |x: f32| LogicalPosition::new(x, y);
                     let win = app.window();

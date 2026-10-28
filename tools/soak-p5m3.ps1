@@ -146,6 +146,18 @@
 # last of its level at 0 bytes); the report counts the walks done, the levels opened in place (two per
 # cycle) and the removals taken off three totals (d01, tree and the root; one per cycle), then the tab
 # is closed.
+# P13-M1: each cycle then hides the second pane with the toolbar's Two panes and shows it again
+# (`toolbar 0 split` twice: the right pane comes back on the left's folder, which the next cycle's
+# `nav 1` replaces), drags the split line to 0.35 of the room, where the left pane is too narrow for
+# Type and Size (only Modified stays beside the name), and back to 0.5; the report counts the Two panes
+# presses (two per cycle) and the `[cols] pane=0 shows` lines, which every width change of the left list
+# makes at the soak's 1200 px window and 100% (its panes at 0.5 are 499 px, where Type is hidden):
+# narrowed to the name and Modified three per cycle (the preview cycle's Alt+P and its width set back to
+# 0.35, and the splitter to 0.35), and name, Size and Modified five per cycle (the preview hidden, the
+# re-split, the splitter back to 0.5 here and after the P9-M1 and P11-M2 cycles). The P9-M1 and P11-M2
+# cycles run with the split line at 0.6, where all four columns show, so the drag moves the Type | Size
+# boundary and the reset has Type's width to undo, as they were written to (at 499 px Type is hidden: the
+# grip is Name | Size and `colwidth 0 type` is refused).
 # P9-M3: the setup adds k-report.docx, l-table.xlsx and m-deck.pptx, zips of hand-written parts
 # (a heading, a list, a table, a link and e-dot.png in the Word file; two sheets of shared strings,
 # numbers and a date; two slides with a title, bullets and the picture); after j-page.html the cursor
@@ -498,7 +510,7 @@ $cycle = @(
     'view details', 'sleep 300', 'click 0 0', 'shiftclick 0 1', 'key Return', 'sleep 800', 'tab 2', 'sleep 200', 'tab close', 'sleep 300', 'tab 2', 'sleep 200', 'tab close', 'sleep 300',
     'tab 1', 'sleep 300',
     # P9-M1: a grip drag, a fit, and the widths set back (see the header).
-    "nav 0 $src\tree", 'sleep 500', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200',
+    "nav 0 $src\tree", 'sleep 500', 'splitter 0.6', 'sleep 300', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200', 'splitter 0.5', 'sleep 300',
     # P9-M4: a thumbnail drag and a search tab with thumbnails (see the header).
     'settings open', 'settings set thumbnails true', 'settings ok', 'sleep 300', "nav 0 $prev", 'sleep 1500', 'click 0 8', 'sleep 800',
     'dragrow 0 8 40 0', 'sleep 400', 'dragcancel', 'sleep 300', 'filter 0 photo', 'sleep 300', 'search 0', 'waitsearch 5000', 'sleep 1500',
@@ -511,8 +523,9 @@ $cycle = @(
     # P11-M1: a content search in src (see the header).
     "nav 0 $src", 'sleep 500', 'csearch 0 scratch file 3/7', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
     'contentmode 0 off', 'filter 0', 'sleep 300',
-    # P11-M2: the widths reset through the dialog (see the header).
-    "nav 0 $src\tree", 'sleep 500', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300',
+    # P11-M2: the widths reset through the dialog (see the header), at the 0.6 split since P13-M1, where
+    # Type shows (at 0.5 it is hidden, and `colwidth 0 type` is refused).
+    "nav 0 $src\tree", 'sleep 500', 'splitter 0.6', 'sleep 300', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300', 'splitter 0.5', 'sleep 300',
     # P11-M3: the history menu (see the header).
     "nav 0 $src", 'sleep 400', "nav 0 $src\tree", 'sleep 400', 'histmenu 0', 'waitmenu 2000', 'histpick 1', 'sleep 600',
     # P12-M4: comfortable rows on and off (see the header).
@@ -527,7 +540,9 @@ $cycle = @(
     "nav 0 $src\tree\d01", 'sleep 400', 'touch 0 sz.txt', 'sleep 300', "nav 0 $src", 'sleep 400',
     "sizeview 0 $src", 'waitsizeview 5000', 'sizeopen 0', 'sleep 200', 'sizeopen 1', 'waitsizeview 3000',
     'click 0 22', 'sdelete', $wait, 'sleep 300', 'tab close', 'sleep 300',
-    'click 0 0', 'sleep 200', 'key Tab', 'sleep 300', 'key ShiftTab', 'sleep 300'
+    'click 0 0', 'sleep 200', 'key Tab', 'sleep 300', 'key ShiftTab', 'sleep 300',
+    # P13-M1: Two panes off and on by the toolbar, the split line narrowed and widened (see the header).
+    'toolbar 0 split', 'sleep 500', 'toolbar 0 split', 'sleep 1000', 'splitter 0.35', 'sleep 400', 'splitter 0.5', 'sleep 400'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
@@ -722,6 +737,10 @@ $tabLeft = @($log | Select-String -SimpleMatch '[focus] pane=0 has the keys by T
 $svDone = @($log | Select-String -Pattern '\[sizeview\] pane=0 gen=\d+ done: ').Count
 $svOpened = @($log | Select-String -Pattern '\[sizeview\] pane=0 opened .* in place').Count
 $svRemoved = @($log | Select-String -Pattern '\[sizeview\] pane=0 removed .*sz\.txt: \d+ bytes off 3 totals').Count
+# P13-M1: Two panes and the columns making way.
+$splitPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=0 split -> toggle').Count
+$colsNarrow = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, modified at ').Count
+$colsWide = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, size, modified at ').Count
 $colBack = @($log | Select-String -SimpleMatch '[cols] pane=0 widths type 120 size 90 modified 140 ').Count
 $pvPanics = @($log | Select-String -SimpleMatch '[preview] worker panicked').Count
 # P11-M4: the zoom and "Copy text".
@@ -749,7 +768,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "menus opened and closed: $menus; in-menu ticks: $($ticks.Count), with state or driver busy: $ticksBusy"
 "grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (two per cycle: large and medium); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
 "medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
-"toolbar: presses $toolPresses (eight per cycle), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
+"toolbar: presses $toolPresses (ten per cycle: P6-M3's eight and P13-M1's two Two panes), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
 "toolbar tooltips shown $tooltips (three per cycle); Back over the toolbar $toolBack, Forward $toolForward (one each per cycle); sidebar keys $sideKeys (five per cycle), Return $sideReturns (one per cycle)"
 "several-item opens $openMany (one per cycle), tabs they opened $openTabs (two per cycle)"
 "verbs: jobs queued $verbJobs (three per cycle: two of P7-M1's, P7-M2's ZIP), slept $verbSlept, link by verb with S_OK $verbOk; routed deletes $routedDeletes, restored $restores; cuts cancelled by Escape $cutsCancelled"
@@ -771,5 +790,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
 "sizes view: walks done $svDone, levels opened in place $svOpened (two per cycle), sz.txt taken off three totals $svRemoved (one per cycle)"
+"columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (five per cycle; both at 100%)"
 "content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
