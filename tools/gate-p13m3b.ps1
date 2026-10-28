@@ -48,7 +48,8 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) { throw 'python is 
 if (Test-Path "C:\traces\twinfm-$Tag-$Ref-1.etl") { throw "Tag $Tag has traces already in C:\traces: move them away or pick the next tag." }
 # The column's settings file, read-only so no run rewrites it.
 if (-not (Test-Path $Cfg)) {
-    Set-Content -Encoding utf8 -Path $Cfg -Value 'size_on_disk = true'
+    # No byte order mark (Windows PowerShell's utf8 writes one, which the settings reader refuses).
+    [System.IO.File]::WriteAllText($Cfg, "size_on_disk = true`n")
     Set-ItemProperty -Path $Cfg -Name IsReadOnly -Value $true
 }
 
