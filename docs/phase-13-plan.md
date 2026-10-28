@@ -412,10 +412,19 @@ says, and every "must be 0" is 0. **Sizes view: 3 walks done, 6 levels opened in
 at 5 s, 239 MB at 601 s (at most 321); private 193 to 273 MB. The 60-minute soak at the phase's end is the
 memory check.
 
-### Gate, the in-app `C:\` run
+### Gate (2026-10-27, tag ab67)
 
-To be handed over through the coordinating session: the soak (`tools/soak-p5m3.ps1`, with this branch's
-cycle: a view of `src`, two levels opened, `sz.txt` deleted from the view, off three totals), the defaults
-triplet (the scenario never opens the view, so it proves only that the rest is untouched), and the in-app
-run of the view on `C:\`. That run is recorded for its time and working set from the `done:` line, against
-the 150 MB limit.
+`tools/gate-p13m3.ps1`: `target-p13m3` (8cdda35, built `--locked` from the detached `gate-p13m3` checkout)
+against `target-p12seg` (3698cd2), the defaults only, on the console at 60 Hz, run by Jeremy after ab66.
+WPR medians: **p13m3 21.1% against p12seg 21.2%**. Runs: reference 21.2, 21.4, 20.9; candidate 21.2, 21.1,
+21.1. No gap counts; every check ok (no panic, no `[sizeview]` line in any run). Render p50 2.84 to 2.94 ms
+in every run, so the session kept one state. Summary `C:\traces\gate-ab67-summary.txt`, traces
+`C:\traces\twinfm-ab67-*`.
+
+### The in-app `C:\` run (2026-10-27, after the gate, the machine free)
+
+`target-p13m3`'s exe, a script of `sizeview 0 C:\` and `waitsizeview 900000`, no settings file, the other
+streams holding. **74 s** for 756 GB on disk (761 GB logical) in 1,273,588 files and 373,474 folders, 202
+folders unreadable. The `done:` line: working set 178 MB, **+72 MB since the start** (the 150 MB limit
+holds), private 166 MB, 373,423 folders and 1,214,052 file IDs kept. The window's peak working set, sampled
+every 2 s from outside, was 202 MB. 279 `partial` lines (under four a second), no panic.
