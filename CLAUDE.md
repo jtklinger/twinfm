@@ -51,7 +51,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (330 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (334 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1202,6 +1202,53 @@ put off, with where it came from.
   error E`, `pane=N removed <path>: S bytes off K totals`; `[view] pane=N shows a list (the sizes view) |
   <view>`, `[watch] pane=N no watch for <root>: sizes view`, `[refresh] pane=N sizes view: walked again`.
   `perf::memory_mb` reads the process's working set and private bytes.
+  Since P13-M2, **everything by mouse** (Jeremy's layout B). **Each pane's path bar starts with Back,
+  Forward, Up and Refresh** (pane.slint `NavButton`, Lucide `arrow-left`, `arrow-right`, `arrow-up`,
+  `rotate-cw`, 28 px each; the crumbs and the text entry start `dnd::NAV_W`, 116 px, into the bar, which
+  `hit_all` and `crumb_centre` add, so `crumb`, `crumbmenu` and `dropfiles crumb` follow; the bar's 36 px
+  and the list's top unchanged): each makes its pane active and runs Alt+Left's, Alt+Right's, Alt+Up's or
+  F5's command (`main.rs` `nav_button`); Back and Forward are disabled with nothing to go to, Up on This
+  PC, Refresh never; a right click on Back or Forward opens the history menu there; tooltips "Back
+  (Alt+Left)", "Forward (Alt+Right)", "Up (Alt+Up)", "Refresh (F5)". `[nav] pane=N <Back|Forward|Up|
+  Refresh> button`. **The toolbar** gains, after Delete, **Undo** and **Redo** (Lucide `undo-2`, `redo-2`;
+  disabled with an empty stack or a job running; the tooltip ends with the newest record's text, "Undo
+  (Ctrl+Z): Copied 3 items"), **View** (Lucide `layout-grid` and a chevron: a menu of Details, Large icons,
+  Medium icons, the pane's own ticked), **Two panes** (P13-M1), Preview, and **More** (an ellipsis and a
+  chevron, always last): first the bar's buttons that did not fit, in the bar's order (View as its three
+  items), then Select all (Ctrl+A), Copy to other pane (Shift+F5), Move to other pane (Shift+F6), both with
+  two panes and a selection, Size all folders (Alt+Shift+Enter, in a folder), Show hidden files (Ctrl+H,
+  ticked while on), Cancel waiting jobs (Escape's queue cancel, with jobs waiting). The menus are the
+  Windows 11 menu's popup and rows (`winmenu::Cmd::Tool`, `tool_items`; the item rows' key column 96 px
+  since, for "Alt+Shift+Enter"); every item runs the command its key runs (`main.rs` `run_tool`). Which
+  buttons and items apply: `toolbar::with_facts` (`Facts`: the tab's history, This PC, the stacks' newest
+  records, a job running, jobs waiting, hidden files, the view), set on change in `update_status`'s
+  rhythm, both panes each time (the stacks and the queue are the window's). **Each bar overflows on its
+  own**: the bar reports its width (`Toolbar.width-changed`, `toolbar-width`), `toolbar::fit` counts the
+  buttons that fit before More (labelled widths measured in the heavier weight, icon-only 28 px; More never
+  overflows), and the bar shows the first `fit` of `toolbar::BUTTONS` (`top-tool-fit`, `left-tool-fit`,
+  `right-tool-fit`): `[toolbar] top|pane=N fits K of 12 buttons at W px` when it changes. At the default
+  1200 px window the labelled bar fits 11 (Preview pane in More). With `toolbar = "none"` the path bar's
+  buttons stay and nothing else shows. `[toolbar] menu <view|more>: <items, (off) disabled, (on) ticked>`,
+  `[toolbar] pane=N picks "<item>" -> <command>`, `[toolbar] pane=N undo -> undo` (and redo). **The band in
+  the details list**, as Explorer's details view: a left press on a row asks where it landed
+  (`row-press`, `main.rs` `row_press`, `band::press_on`: the icon column, 6 px to `ListGeom::name_x`; the
+  name's text, measured for that row when the press lands, as `colfit` measures, plus `band::TEXT_SLACK`,
+  4 px, and never past the name cell; anything else), the icon or the name drags the files as before, the
+  rest of the row starts the band (its moves and release go to `band-pointer`, no drag), and so does the
+  space below the last row; the band touches every row its height overlaps, whatever its width
+  (`band::touched_rows`, `cursor_rows`, `Band::rows`), with Ctrl toggling, Shift adding, the edge
+  auto-scroll by rows and Escape restoring, as the grid's; a press on a blank part released under the
+  threshold is a click on that row (its two gestures, at the release). `[band] pane=N press on row R
+  <icon|name|blank>: drag|band` per press on a row; the grid's `[band]` lines otherwise. **The driver's row
+  aim** (`row_pos`, every step that takes a details row: `click`, `dragrow`, `rclick`, `midclick`, `dblclick`,
+  `dropfiles <pane> <row>`) is the name's first letters since P13-M2 (the pane's middle before, now a blank
+  part). Driver: `toolbar <pane> <undo|redo|view|more>` (view and more open their menus under the pane's
+  path bar), `toolmenu <text>` (the open menu's item by its text, as `menupick`), `navbutton <pane>
+  <back|forward|up|refresh> [right]` (pressed and released at its centre through Slint's pointer path; the
+  right button with `right`); `band` works in a details pane (aim at a row's blank part, or below the rows).
+  Stays keyboard-only, recorded: Shift+Delete (the Delete button and the menu's with Shift held), the path
+  entry (the ellipsis glyph at the path bar's right end switches to it), Tab between panes (a click on the
+  other pane).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

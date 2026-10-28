@@ -449,6 +449,10 @@ pub const TAB_H: f32 = 30.0;
 /// the buttons are 30 px tall from 6 px (or 38 px) below the pane's top.
 pub const CRUMB_PAD: f32 = 3.0;
 pub const CRUMB_H: f32 = 30.0;
+/// The path bar's Back, Forward, Up and Refresh before the crumbs (P13-M2): four 28 px buttons and a
+/// 4 px gap (pane.slint `nav-w`); the crumb row and the text entry start this far into the bar.
+pub const NAV_W: f32 = 116.0;
+pub const NAV_BUTTON: f32 = 28.0;
 
 /// The top of pane `pane`'s breadcrumb buttons, in window px.
 pub fn crumb_top(l: &Layout, pane: usize) -> f32 {
@@ -531,7 +535,7 @@ pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len:
         // left end are the pane).
         let top = crumb_top(l, pane);
         let (row_x, shown_w) = s.crumb_row[pane];
-        let bx = x - a - PANE_PAD;
+        let bx = x - a - PANE_PAD - NAV_W;
         if x < b - PANE_PAD && bx >= 0.0 && bx < shown_w && y >= top && y < top + CRUMB_H {
             let cx = bx - row_x;
             if let Some(i) = s.crumbs[pane].iter().position(|&(cx0, w)| cx >= cx0 && cx < cx0 + w) {
@@ -3688,39 +3692,42 @@ mod tests {
         let s = Strips { side_w: 0.0, side_scroll: 0.0, side_rows: &[], side_bookmarks: (0, 0), tabs: [(1, 160.0, 0.0); 2], crumb_row: [(0.0, 900.0), (0.0, 0.0)], crumbs: [&crumbs, &[]] };
         let none = [0.0, 0.0];
         let hit = |s: &Strips, x: f32, y: f32| hit_all(&l, s, x, y, none, [5, 0]);
-        // The labels run from y 6 to 32, from x 3 (the pane's padding) plus their x in the row.
+        // The labels run from y 6 to 32, from x 3 (the pane's padding) and the path bar's four buttons
+        // (NAV_W, P13-M2) plus their x in the row.
+        let n = NAV_W;
         assert_eq!(crumb_top(&l, 0), 6.0);
-        assert_eq!(hit(&s, 3.0, 6.0), Spot::Crumb(0, 0));
-        assert_eq!(hit(&s, 56.9, 35.9), Spot::Crumb(0, 0));
-        assert_eq!(hit(&s, 57.0, 20.0), Spot::Pane(0), "the chevron after This PC");
-        assert_eq!(hit(&s, 73.0, 20.0), Spot::Crumb(0, 1));
-        assert_eq!(hit(&s, 113.0 + 59.9, 20.0), Spot::Crumb(0, 2));
-        assert_eq!(hit(&s, 400.0, 20.0), Spot::Pane(0), "the bar past the crumbs");
-        assert_eq!(hit(&s, 80.0, 5.0), Spot::Pane(0), "above the crumbs: the padding");
-        assert_eq!(hit(&s, 80.0, 36.0), Spot::Pane(0), "below them: the bar's padding");
-        assert_eq!(hit(&s, 80.0, 80.0), Spot::Row(0, 0), "the list as before");
+        assert_eq!(hit(&s, n + 3.0, 6.0), Spot::Crumb(0, 0));
+        assert_eq!(hit(&s, n + 56.9, 35.9), Spot::Crumb(0, 0));
+        assert_eq!(hit(&s, n + 57.0, 20.0), Spot::Pane(0), "the chevron after This PC");
+        assert_eq!(hit(&s, n + 73.0, 20.0), Spot::Crumb(0, 1));
+        assert_eq!(hit(&s, n + 113.0 + 59.9, 20.0), Spot::Crumb(0, 2));
+        assert_eq!(hit(&s, n + 400.0, 20.0), Spot::Pane(0), "the bar past the crumbs");
+        assert_eq!(hit(&s, n + 80.0, 5.0), Spot::Pane(0), "above the crumbs: the padding");
+        assert_eq!(hit(&s, n + 80.0, 36.0), Spot::Pane(0), "below them: the bar's padding");
+        assert_eq!(hit(&s, n + 80.0, 80.0), Spot::Row(0, 0), "the list as before");
+        assert_eq!(hit(&s, 50.0, 20.0), Spot::Pane(0), "the path bar's own buttons: the pane");
         // A row right-aligned in a narrow bar (offset -60, 100 px shown): This PC is clipped off,
         // "C:" sits at 13..37 and "Users" (53..113) is cut at the bar's end (x 103).
         let narrow = Strips { crumb_row: [(-60.0, 100.0), (0.0, 0.0)], ..s };
-        assert_eq!(hit(&narrow, 5.0, 20.0), Spot::Pane(0), "This PC, off the bar's left end");
-        assert_eq!(hit(&narrow, 13.0, 20.0), Spot::Crumb(0, 1));
-        assert_eq!(hit(&narrow, 102.9, 20.0), Spot::Crumb(0, 2));
-        assert_eq!(hit(&narrow, 103.0, 20.0), Spot::Pane(0), "past the bar: the mode glyph");
+        assert_eq!(hit(&narrow, n + 5.0, 20.0), Spot::Pane(0), "This PC, off the bar's left end");
+        assert_eq!(hit(&narrow, n + 13.0, 20.0), Spot::Crumb(0, 1));
+        assert_eq!(hit(&narrow, n + 102.9, 20.0), Spot::Crumb(0, 2));
+        assert_eq!(hit(&narrow, n + 103.0, 20.0), Spot::Pane(0), "past the bar: the mode glyph");
         // A tab strip moves the bar down by 28 px.
         let lt = Layout { tabs: [true, false], ..l };
         assert_eq!(crumb_top(&lt, 0), 38.0);
         assert_eq!(hit_all(&lt, &s, 80.0, 20.0, none, [5, 0]), Spot::Tab(0, 0), "the strip, not a crumb");
-        assert_eq!(hit_all(&lt, &s, 80.0, 40.0, none, [5, 0]), Spot::Crumb(0, 1));
+        assert_eq!(hit_all(&lt, &s, n + 80.0, 40.0, none, [5, 0]), Spot::Crumb(0, 1));
         // No crumbs (the text entry shows): the bar is the pane.
         let entry = Strips { crumbs: [&[], &[]], ..s };
-        assert_eq!(hit(&entry, 80.0, 20.0), Spot::Pane(0));
+        assert_eq!(hit(&entry, n + 80.0, 20.0), Spot::Pane(0));
         // Split: each pane its own crumbs; the right pane starts at 503.
         let two = Layout { split: true, ..l };
         let right = [(0.0, 54.0)];
         let both = Strips { crumb_row: [(0.0, 400.0), (0.0, 400.0)], crumbs: [&crumbs, &right], ..s };
-        assert_eq!(hit_all(&two, &both, 73.0, 20.0, none, [5, 0]), Spot::Crumb(0, 1));
-        assert_eq!(hit_all(&two, &both, 510.0, 20.0, none, [5, 0]), Spot::Crumb(1, 0));
-        assert_eq!(hit_all(&two, &both, 580.0, 20.0, none, [5, 0]), Spot::Pane(1));
+        assert_eq!(hit_all(&two, &both, n + 73.0, 20.0, none, [5, 0]), Spot::Crumb(0, 1));
+        assert_eq!(hit_all(&two, &both, n + 510.0, 20.0, none, [5, 0]), Spot::Crumb(1, 0));
+        assert_eq!(hit_all(&two, &both, n + 580.0, 20.0, none, [5, 0]), Spot::Pane(1));
     }
 
     #[test]
