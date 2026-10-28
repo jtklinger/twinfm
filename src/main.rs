@@ -7123,8 +7123,6 @@ fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
 fn set_size_on_disk(st: &mut State, app: &App, on: bool) -> Vec<usize> {
     st.config.size_on_disk = on;
     ONDISK.with(|c| c.set(on));
-    // The lists with the cell, in place of the ones without (pane.slint FileListHost.ondisk).
-    app.set_size_on_disk(on);
     eprintln!("[settings] Size on disk column {}", if on { "on" } else { "off" });
     for pane in 0..2 {
         update_shown(app, pane);
@@ -7712,7 +7710,6 @@ fn main() -> Result<(), slint::PlatformError> {
     preview::init(&app);
     app.set_show_type(config.show_type);
     ONDISK.with(|c| c.set(config.size_on_disk));
-    app.set_size_on_disk(config.size_on_disk);
     app.set_thumbnails(config.thumbnails);
     app.set_comfortable(config.comfortable());
     if config.thumbnails || config.comfortable() {

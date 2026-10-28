@@ -710,8 +710,9 @@ component FileListNoType32 inherits FileRowsNoType32 {
 // image: the pane's strip draws the icons. Accessibility: each grid row is one list-item node (the
 // item count is the grid-row count); the tiles add no role of their own, only their name Text.
 // The Size on disk column's rows (P13-M3; Jeremy's "Zero cost when off", 2026-10-28): FileRows and
-// FileRows32 with a fifth cell at the row's right end, chosen by FileListHost only while the setting
-// `size_on_disk` is on, so the other lists carry no cell for it. The Type cell stays, at the pane's
+// FileRows32 with a fifth cell at the row's right end, chosen by FileListHost only while the pane
+// shows the column (the setting on and room for it; Jeremy's "Cut the on cost first", after ab71), so the
+// other lists carry no cell for it. The Type cell stays, at the pane's
 // Type width (0 with the Type column off or hidden), so no copy without it is needed.
 component FileRowsOnDisk inherits ListView {
     in property <[Row]> rows;
@@ -1126,8 +1127,8 @@ component FileListHost inherits Rectangle {
     in property <length> type-w: 120px;
     in property <length> size-w: 90px;
     in property <length> modified-w: 140px;
-    // The Size on disk column (P13-M3): `ondisk` the setting, which picks FileListOnDisk or
-    // FileListOnDisk32 in place of the four lists below; ondisk-w its width (0 when dropped).
+    // The Size on disk column (P13-M3): `ondisk` whether this pane shows it, which picks FileListOnDisk
+    // or FileListOnDisk32 in place of the four lists below; ondisk-w its width.
     in property <bool> ondisk: false;
     in property <length> ondisk-w: 0px;
     // Thumbnails (settings `thumbnails`): the 32 px lists. row-h is the chosen list's row height
@@ -1627,9 +1628,8 @@ export component Pane inherits Rectangle {
     in property <bool> shows-type: true;
     in property <bool> shows-size: true;
     in property <bool> shows-modified: true;
-    // The Size on disk column (P13-M3): the setting (its own lists, FileListHost.ondisk), and on with
-    // room for it (main.rs update_shown, cols::ondisk_shown).
-    in property <bool> size-on-disk: false;
+    // The Size on disk column (P13-M3): on and with room for it (main.rs update_shown,
+    // cols::ondisk_shown); its own lists while it shows (FileListHost.ondisk).
     in property <bool> shows-ondisk: false;
     callback list-width(length);
     private property <length> eff-type: root.show-type && root.shows-type ? root.col-type : 0px;
@@ -2272,7 +2272,7 @@ export component Pane inherits Rectangle {
             type-w: root.eff-type;
             size-w: root.eff-size;
             modified-w: root.eff-modified;
-            ondisk: root.size-on-disk;
+            ondisk: root.shows-ondisk;
             ondisk-w: root.eff-ondisk;
             init => { root.list-width(self.width); }
             changed width => { root.list-width(self.width); }
