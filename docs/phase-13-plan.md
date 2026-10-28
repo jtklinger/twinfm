@@ -299,3 +299,142 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 Each brief settles first: how hidden columns reach the rows (P13-M1), the bar's overflow (P13-M2), how to
 read size on disk without a call per file and how hard links count (P13-M3), and the share's switches
 (P13-M4, from the Homelab session).
+
+## P13-M1: the name gets its room, and the second pane by mouse
+
+The mouse stream (one session, worktree `p13-mouse-c54e0b`), from 2026-10-27.
+
+### Settled first: how a hidden column reaches the rows (2026-10-27)
+
+Route (b), the lead's recommendation, agreed with the coordinating session before any code ran. **No row
+component changes and no row gains a binding.** The details rows already read the pane's three widths for
+their Type, Size and Modified cells (P9-M1). The pane now hands them a width of 0 for a hidden column
+(pane.slint's `eff-type`, `eff-size` and `eff-modified`), and Slint draws nothing for a Text 0 px wide:
+`sharedparley::draw_text` returns before laying out any glyph when the item's width is 0 or less
+(`internal/core/textlayout/sharedparley.rs:144` in the fork at c1d3a8d, the same path for femtovg and the
+software renderer). The rows' cells sit in a HorizontalLayout with no spacing, so a 0-wide cell takes no
+room and Name stretches into it. The rows re-read their widths only when the shown set changes: a resize,
+never a frame or a scroll. Options (a) (more components) and (c) (cells drawn and clipped) were not needed.
+The gate triplet is the trace that settles it (below).
+
+For the sizes stream (P13-M3), agreed through the coordinating session: its Size on disk column would be a
+fourth width each row reads, 0 while off or hidden, dropped first (Size on disk, Type, Size, Modified).
+That is one more width binding per row, so it needs its own trace. `cols::shown` and `Widths` are shaped
+for it (`ALL`, `taken`), and P13-M3 builds the column itself.
+
+### What landed
+
+- **Columns that make way** (commit 1): `cols::shown(widths, show_type, room)` is the rule, pure and
+  tested at each boundary both ways. `room` is the list's width less the rows' paddings (`ListGeom::name_x`
+  and `ROW_PAD_RIGHT`). Columns go Type first, then Size, then Modified, until Name keeps 120 px; they come
+  back in the reverse order, each when it fits at its set width, which hiding never changes. Each pane
+  reports its list's width (the host's `init` and `changed width`, `list-width`), and `update_shown` sets
+  the window's `left-shows-*` and `right-shows-*` on change, with the line `[cols] pane=N shows <columns> at
+  W px`. The hidden right pane is skipped (it is laid out at the list's 50 px minimum). The header is one
+  layout with a conditional cell per column (it was two, by `show_type`). The grips follow the shown
+  columns: `cols::grips(shown)`, `grip_x` and `left_of`, so Modified's grip beside a hidden Size is Name |
+  Modified and its drag moves against Name. The rename editor follows, and so does `dnd::name_cell` through
+  `Widths::taken`. The driver's `colwidth`, `coldrag` and `colfit` on a hidden column log `no such grip`. A
+  new driver step, `splitter <ratio>`, is a real drag of the split line through Slint's pointer path, for
+  the soak.
+- **Two panes** (commit 2): a toolbar button (Lucide `columns-2`, before Preview pane, tooltip "Two panes
+  (F3)", drawn as on while both panes show; on each pane's bar in the in-pane toolbar), calling F3's
+  `toggle-split`. `toolbar <pane> split`, and `[toolbar] pane=N split -> toggle`.
+
+### Scripted checks (2026-10-27, the branch's release build, `SLINT_BACKEND=winit-software`, no settings file, 1200 px window at 100%)
+
+- At start the panes report a first-layout width (`shows name at 210 px`), then the real one (`name, type,
+  size, modified at 1010 px`).
+- **Split at 0.5, each list 499 px: Type is hidden in both panes** (`shows name, size, modified at 499
+  px`), since 499 less 38 px of padding is 461 px of room, under the 470 that Type, Size, Modified and
+  Name's 120 need. So the default window split in two already drops Type. The gate's own window is larger
+  (the plan's estimate: panes about 590 px), so the triplet's stderr records what its panes show.
+- Splitter to 0.30: the left list at 382 px shows name and Modified, at 296 px name only; the right list
+  at 515 px shows all four. Back to 0.50: name and Modified at 304 px, then name, Size and Modified at
+  390 px. Each line lands once, at its boundary.
+- Splitter to 0.35 (the soak's): name and Modified at 385 px; back at 0.50, Size returns at 392 px.
+- `colfit 0 type`, `colfit 0 size` and `coldrag 0 modified -30` with only Name shown: `no such grip` each.
+- Two panes off: the left list at 1010 px shows all four. On again: back to 499 px and name, Size and
+  Modified. The right pane logs nothing while hidden.
+- Screenshots (both panes at 499 px; the left pane at 0.30 with Name alone beside the right's four):
+  hidden cells draw nothing, the header shows only the shown columns, and the grips sit on their edges.
+
+### Soak
+
+Per cycle in `tools/soak-p5m3.ps1`:
+
+- Two panes off and on by the toolbar (`toolbar 0 split` twice).
+- The split line to 0.35 and back to 0.5 (`splitter`).
+- Reported: Two panes presses (two per cycle), the left pane narrowed to the name and Modified (three per
+  cycle), and name, Size and Modified (four per cycle at 100%). Every width change of the left list makes
+  a line: the preview cycle's two, the split and the splitter.
+- The P9-M1 cycle runs with the split line at 0.6, where all four columns show, so its drag moves the Type
+  | Size boundary as it was written to.
+
+**First run** (2026-10-27, 534a711, the worktree's own build):
+- 10.1 minutes, exit 0, no panics. 10 cycles started, 3 complete.
+- 256 jobs, none failed. Every must-be-0 count was 0.
+- Memory: working set 167 to 239 MB, private bytes 193 to 273 MB.
+- Two panes presses: 6.
+- **It found a bug.** At 499 px the P9-M1 cycle's Size grip drag shrank Size, so Type fitted again and came
+  back mid-drag. The grip's neighbour then switched from Name to Type under the pointer: Type flickered
+  in and out, and the drag ended at Type 120 -> 150 instead of Name growing.
+- **Fixed in commit 4:** the shown set waits while a grip is held and is applied on the release. The new
+  test `a_drag_keeps_its_neighbour_while_a_column_could_come_back` pins the case.
+- **The soak changed too:** the P9-M1 cycle moved to the 0.6 split, and the `[cols] shows` counts were
+  relabelled by what makes each line.
+
+**Second run** (2026-10-27, 936336a):
+- 10.1 minutes, exit 0, no panics. 256 jobs, none failed. Every must-be-0 count was 0.
+- Memory: working set 143 to 213 MB, private bytes 178 to 248 MB.
+- The fix held. At the 0.6 split the Size grip drag read Type 120 -> 150 and Size 90 -> 60 (P9-M1's
+  boundary, as written), and the widths came back to 120, 90, 140.
+- Every `[cols] pane=0 shows` line came from the preview column, the splitter, the split or the start;
+  none from the drag.
+- "Widths back at 120, 90, 140" still read 4, not 7, for the same interaction in another cycle. P11-M2's
+  reset cycle narrows Type with `colwidth 0 type 100` first. At 499 px Type is hidden, so the step was
+  refused (`no such grip`, three times) and the reset had nothing to undo.
+- **Soak changed again** (commit 5): that cycle runs at the 0.6 split too. The name, Size and Modified
+  count is now five per cycle.
+
+**Third run** (2026-10-27, 936336a's build with 6665c2c's script):
+- It ran beside the `target-p13m1` gate build, on the coordinating session's word: a soak checks
+  correctness, not speed.
+- 10.1 minutes, exit 0, no panics. 10 cycles started, 3 complete.
+- 237 jobs, none failed. Every must-be-0 count was 0.
+- Memory: working set 139 to 206 MB, private bytes 177 to 245 MB.
+- Column widths: drags read back as Size 90 -> 60, 3. Fits, 3. **Widths back at 120, 90, 140, 7** (two
+  per cycle and one at start). Resets through the dialog, 6.
+- Columns making way: Two panes presses 6. Narrowed to the name and Modified 9 (three per cycle). Name,
+  Size and Modified 16 (five per cycle, and the start's split).
+
+### Gate
+
+ab66, 2026-10-27, Jeremy at the console at 60 Hz: 936336a (`target-p13m1`, built `--locked` from the
+detached `gate-p13m1` worktree) against `target-p12seg`, by `tools/gate-p13m1.ps1`, 17 minutes; summary
+`C:\traces\gate-ab66-summary.txt`. WPR main-thread busy:
+
+| Run | Defaults | With `cols.toml` |
+| --- | --- | --- |
+| p12seg 1, 2, 3 | 21.4, 21.4, 21.1 | 21.0, 20.4, 20.5 |
+| p13m1 1, 2, 3 | 19.9, 19.6, 19.4 | 19.4, 19.0, 19.8 |
+| Median | 21.4 against **19.6** | 20.5 against **19.4** |
+
+Every check ok, every candidate run under 20%, no gap (the candidate is the cheaper one). Render p50
+2.45 to 2.56 ms against 2.72 to 2.95 ms, so no run sat in the costlier state. Every candidate run ended
+with both panes showing name, Size and Modified at 499 px: at the gate's 1200 px window with the split,
+each list is 499 px and Type is already hidden, so the candidate draws no Type cells and its lower
+number is that narrower draw, not a saving at equal columns. The full-width comparison below checks the
+route with every column shown.
+
+**The full-width comparison** (2026-10-27, after the gate, unelevated, in-app figures only, so it decides
+nothing on its own): the gate's split-and-scroll scenario on `C:\traces\bigdir` with the window
+maximised first, so the split panes are 1010 px wide and both show name, Type, Size and Modified (the
+candidate's `[cols]` lines, and `widths ... (name 622 px)` for both panes). Six runs, the order swapped
+between pairs: p12seg, p13m1, p13m1, p12seg, p12seg, p13m1. The UI thread's busy share over the 10 s
+after the split read p12seg 21.9, 15.9, 16.7 and p13m1 15.2, 16.1, 17.5 (medians 16.7 and 16.1; the
+first run of the session reads high whichever binary sits in it). The render p50 of the scrolling
+seconds read 4.83 to 4.84 ms for p12seg and 4.82 to 4.88 ms for p13m1. With every column shown the
+route costs nothing measurable per frame, which is what the trace-first rule asked of it: the 0 px
+widths change nothing when nothing is hidden. Script: the session's `fullwidth.ps1` (not in the repo;
+the shape is this paragraph).

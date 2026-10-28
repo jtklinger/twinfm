@@ -790,6 +790,14 @@ fn toolbar_clicked(pane: usize, button: &str) {
         eprintln!("[toolbar] pane={pane} preview -> toggle");
         return toggle_preview();
     }
+    // Two panes (P13-M1) is F3's toggle, for the window.
+    if button == "split" {
+        eprintln!("[toolbar] pane={pane} split -> toggle");
+        if let Some(app) = with_state(|st| st.app.upgrade()) {
+            app.invoke_toggle_split();
+        }
+        return;
+    }
     let Some(cmd) = toolbar::command(button) else {
         return eprintln!("[toolbar] pane={pane} no button {button}");
     };
@@ -6195,11 +6203,67 @@ fn set_cols(app: &App, pane: usize, w: cols::Widths) {
         app.set_right_col_size(w.size);
         app.set_right_col_modified(w.modified);
     }
+    update_shown(app, pane);
+}
+
+/// The columns pane `pane` shows (P13-M1), in `cols::ALL`'s order, as the window has them.
+fn shown_of(app: &App, pane: usize) -> [bool; 3] {
+    if pane == 0 {
+        [app.get_left_shows_type(), app.get_left_shows_size(), app.get_left_shows_modified()]
+    } else {
+        [app.get_right_shows_type(), app.get_right_shows_size(), app.get_right_shows_modified()]
+    }
+}
+
+thread_local! {
+    /// Each pane's list width as Slint last reported it (pane.slint `list-width`), logical px; 0
+    /// before the first layout and while the right pane is hidden.
+    static LIST_W: std::cell::Cell<[f32; 2]> = const { std::cell::Cell::new([0.0; 2]) };
+}
+
+/// Pane `pane`'s list is `w` px wide now (a window resize, the splitter, the split, the sidebar, the
+/// preview column): the columns it shows follow.
+fn list_width(app: &App, pane: usize, w: f32) {
+    LIST_W.with(|c| {
+        let mut a = c.get();
+        a[pane] = w;
+        c.set(a);
+    });
+    update_shown(app, pane);
+}
+
+/// The columns pane `pane` shows, from its widths, the Type setting and its list's width
+/// (`cols::shown`), set on the pane when they change: `[cols] pane=N shows <columns> at W px`. A
+/// pane with no width yet (or the right pane hidden) keeps what it has, and so does a pane whose
+/// grip is held (the set waits for the release: a column coming back mid-drag would change the
+/// grip's neighbour under the pointer, the P13-M1 soak's finding).
+fn update_shown(app: &App, pane: usize) {
+    let w = LIST_W.with(|c| c.get())[pane];
+    // The hidden right pane is laid out at its list's minimum width: nothing to show there.
+    if w <= 0.0 || (pane == 1 && !app.get_split()) || COL_DRAG.with(|d| d.get()).is_some_and(|d| d.0 == pane) {
+        return;
+    }
+    let geom = icons::ListGeom::new(app.get_thumbnails(), app.get_comfortable());
+    let room = w - geom.name_x() - dnd::ROW_PAD_RIGHT;
+    let s = cols::shown(cols_of(app, pane), app.get_show_type(), room);
+    if s == shown_of(app, pane) {
+        return;
+    }
+    if pane == 0 {
+        app.set_left_shows_type(s[0]);
+        app.set_left_shows_size(s[1]);
+        app.set_left_shows_modified(s[2]);
+    } else {
+        app.set_right_shows_type(s[0]);
+        app.set_right_shows_size(s[1]);
+        app.set_right_shows_modified(s[2]);
+    }
+    eprintln!("[cols] pane={pane} shows {} at {w:.0} px", cols::shown_text(s));
 }
 
 /// The width of pane `pane`'s name cell with widths `w`, as the window is laid out now.
 fn name_px(app: &App, pane: usize, w: cols::Widths) -> f32 {
-    dnd::name_cell(&window_layout(app), pane, w.shown(app.get_show_type())).1
+    dnd::name_cell(&window_layout(app), pane, w.taken(shown_of(app, pane))).1
 }
 
 /// One `[cols]` line per column whose width differs between `old` and `new`.
@@ -6252,10 +6316,12 @@ fn col_drag(pane: usize, col: i32, dx: f32, phase: i32) {
     if (p, c0) != (pane, c) {
         return;
     }
-    let w = cols::drag(start, c, dx, app.get_show_type(), name);
+    // The columns shown stay as they were at the press until the release (`update_shown`).
+    let w = cols::drag(start, c, dx, shown_of(&app, pane), name);
     set_cols(&app, pane, w);
     if phase == 2 {
         COL_DRAG.with(|d| d.set(None));
+        update_shown(&app, pane);
         with_state(|st| cols_changed(st, &app, pane, start, w, "drag"));
     }
 }
@@ -6263,7 +6329,7 @@ fn col_drag(pane: usize, col: i32, dx: f32, phase: i32) {
 /// Column `c` of pane `pane` set to `px` by moving its grip: `colwidth` (why "script") and the fit.
 fn col_set(app: &App, pane: usize, c: cols::Col, px: f32, why: &str) {
     let start = cols_of(app, pane);
-    let w = cols::set_width(start, c, px, app.get_show_type(), name_px(app, pane, start));
+    let w = cols::set_width(start, c, px, shown_of(app, pane), name_px(app, pane, start));
     set_cols(app, pane, w);
     with_state(|st| cols_changed(st, app, pane, start, w, why));
 }
@@ -6310,6 +6376,9 @@ fn set_show_type(st: &mut State, app: &App, on: bool) {
     app.set_show_type(on);
     st.config.show_type = on;
     eprintln!("[settings] Type column {}", if on { "shown" } else { "removed from the header and the rows" });
+    for pane in 0..2 {
+        update_shown(app, pane);
+    }
     if on {
         return;
     }
@@ -6337,6 +6406,10 @@ fn set_thumbnails(st: &mut State, app: &App, on: bool) -> Vec<usize> {
     st.config.thumbnails = on;
     app.set_thumbnails(on);
     log_list_geom(list_geom(st));
+    // The name starts 14 px further right beside a thumbnail: the room for the columns changed.
+    for pane in 0..2 {
+        update_shown(app, pane);
+    }
     for pane in 0..2 {
         hide_strip(st, app, pane);
     }
@@ -7181,6 +7254,14 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_toolbar_clicked(|pane, button| toolbar_clicked(pane as usize, button.as_str()));
     app.on_col_drag(|pane, col, dx, phase| col_drag(pane as usize, col, dx, phase));
     app.on_col_fit(|pane, col| col_fit(pane as usize, col));
+    app.on_list_width({
+        let w = app.as_weak();
+        move |pane, px| {
+            if let Some(app) = w.upgrade() {
+                list_width(&app, pane as usize, px);
+            }
+        }
+    });
     app.global::<Paging>().on_target(|cursor, content_y, visible_h, row_h, len, down| {
         model::page_target(cursor, content_y, visible_h, row_h, len, down)
     });
