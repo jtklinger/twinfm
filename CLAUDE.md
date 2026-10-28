@@ -1251,10 +1251,15 @@ put off, with where it came from.
   other pane).
   Since P13-M3's follow-up, **the Size on disk column** (setting `size_on_disk`, off by default; the
   dialog's "Size on disk column" switch under the Type column's, applied on OK, which lists the panes
-  again, `set_size_on_disk`): a fifth cell in each details row component, at the row's right end after
-  Modified (where Explorer puts a column added), a fixed 100 px (`cols::ONDISK_W`; no grip, no sort, the
-  header "Size on disk"), reading the width `ondisk-w` (pane.slint `eff-ondisk`: 100 px or 0) as the
-  other cells read theirs, and the row's `ondisk` text (`Entry::ondisk_text`, empty for folders, drives,
+  again, `set_size_on_disk`): a fifth cell at the row's right end after Modified (where Explorer puts a
+  column added), a fixed 100 px (`cols::ONDISK_W`; no grip, no sort, the header "Size on disk"), **only in
+  lists of its own** (Jeremy's "Zero cost when off", after ab69 measured the cell in every row at 0.8
+  points with the column off): `FileListOnDisk` and `FileListOnDisk32` (pane.slint, copies of `FileList`
+  and `FileList32` with the cell; the Type cell kept at the pane's Type width, 0 when Type is off or
+  hidden), which `FileListHost` chooses once per pane while the setting is on (`ondisk`, the window's
+  `size-on-disk`) in place of the four lists without it, so with it off the rows are main's. The cell reads
+  the width `ondisk-w` (pane.slint `eff-ondisk`: 100 px, or 0 when dropped for the name's room) and the
+  row's `ondisk` text (`Entry::ondisk_text`, empty for folders, drives,
   archive levels and search results). It is **the first to make way for the name**: `cols::ondisk_shown`
   shows it only while every other column the setting allows fits beside it with Name at `NAME_FLOOR`,
   and the others are then `shown` in the room less its width (main.rs `update_shown`; the `ONDISK`

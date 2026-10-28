@@ -729,9 +729,30 @@ not read), the watch edit of `od.txt` applied as a row edit. P13-M1's "name, Siz
 (six per cycle with this cycle's return to the 0.5 split). The sizes view's counts as before (3 walks, 6
 levels, 3 removals). Working set 147 MB at 5 s, 228 MB at 601 s (at most 268); private 164 to 222 MB.
 
-**Gate**: its own triplet (the extra cell per row), tag ab69, `tools/gate-p13m3b.ps1`: `target-p13od`
+**Gate ab69** (2026-10-28), its own triplet (the extra cell per row), `tools/gate-p13m3b.ps1`: `target-p13od`
 (c25173c, code as cb91532) against `target-p13base` (main at 34449ee, so the column alone differs), the
-defaults and `C:\traces\ondisk.toml` (`size_on_disk = true`, read-only).
+defaults and `C:\traces\ondisk.toml` (`size_on_disk = true`, read-only). WPR medians **p13od 17.4%** (column off)
+and **p13od-ondisk 17.6%** against **p13base 16.6%**; every reference run (16.4 to 16.7) below every
+candidate run (17.1 to 18.1): a gap that counts, with the column off too. Render p50 1.82 to 1.94 ms in
+every run (one state). The traces' main-thread buckets (ms in the 10 s after the split, medians): total
+1665 against 1735; the ListView's rows (`ensure_updated_listview`) 379 against 420 (+41); the
+accessibility tree's full rebuild 134 against 159 (+25, +19%); render 885 against 894 and text 445
+against 432, flat. So it was the fifth `Text` in every row: one more element made per row as the list
+scrolls, and one more accessibility node (a row's five became six, the +19%). The code explained the gap,
+so the order-swapped rerun the coordinating session had prepared (ab70) was dropped.
+
+**Zero cost when off** (Jeremy's choice, 2026-10-28, of the two the coordinating session put to him: the
+cell hidden from the accessibility tree, or lists of its own): the four details lists are main's again,
+and the cell lives in two more, `FileListOnDisk` (22 px rows) and `FileListOnDisk32` (thumbnails), each a
+rows component and its focus layer, chosen by `FileListHost` once per pane while `size_on_disk` is on (the
+window's `size-on-disk`), as the Type setting chooses its lists. They keep the Type cell at the pane's
+Type width (0 with Type off or hidden), so no copy without it is needed: two components, not four. With
+the setting on, the column still makes way for the name through its width. Gates on the change: build
+clean; 336 tests passed. Scripted check (a scratch folder; the widths set to Type 100, Size 110 first):
+the column on (`shows ..., size on disk`), thumbnails on with it (the 32 px rows with the cell), Type off
+with it (the cell kept beside Name, Size and Modified), then everything back and the column off (the plain
+rows, no cell); the cursor (row 1) and the scroll (0) kept, and the widths kept (Size moved from 110 by
+the last `colwidth`). Screenshots of the four states.
 
 ### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
 
