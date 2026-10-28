@@ -766,6 +766,29 @@ every check ok, render p50 1.85 to 2.11 ms. Summary `C:\traces\gate-ab70-summary
 the same wrapper with its tag changed (the coordinating session's `C:\traces\gate-p13m3b-ab71.ps1`), at
 60 Hz.
 
+**Gate ab71** (2026-10-28 10:51, 60 Hz: every run drew at 16.35 to 16.44 ms; every check ok; every run
+under 20%). WPR runs: p13base 19.2, 16.8, 16.6; p13od2 16.8, 17.0, 17.2; p13od2-ondisk 18.4, 17.9, 18.0.
+Summary `C:\traces\gate-ab71-summary.txt`.
+
+- **Column off: p13od2 17.0% against p13base 16.8%, no gap. Zero cost when off, confirmed.**
+- **Column on: 18.0% against 16.8%, +1.2 points**, a gap that counts by the medians (no reference run
+  below every candidate run). Render p50 1.99 to 2.11 ms against the reference's 1.87 to 2.12 ms.
+  Whether this cost is accepted is Jeremy's call.
+
+Where the column-on cost goes, from the traces' main-thread buckets (ms in the 10 s after the split,
+medians, the column on against the same build with it off): total 1700 against 1798 (+98); the ListView's
+rows 367 against 414 (+47); the accessibility tree 191 against 212 (+21, the full rebuild +20); text
+drawing 419 against 443 (+24); the render pass 931 against 939 (+8). In that window the column is **not
+shown**: the gate's split leaves both panes at 499 px, where it has made way for the name (`[cols] pane=0
+shows name, size, modified at 499 px` in every column-on run). So the +1.2 points is the column's lists
+carrying their cell at 0 px in every row: one more element made per row as the list scrolls, one more
+accessibility node, and the zero-width text still passed through text drawing (ab69's mechanism, now only
+with the setting on). The second read is not on the main thread: the listing thread read 40,000 entries'
+sizes on disk in 20 to 29 ms per listing, before the window, besides the 67 to 92 ms listing. A way to
+take the hidden case to zero too, for Jeremy if he wants it: have the host pick the lists with the cell
+by whether the column shows (`shows-ondisk`, already per pane) rather than by the setting, so a pane where
+it has made way uses the plain lists; a column coming back would then swap the pane's list.
+
 ### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
 
 `tools/soak-p5m3.ps1 -Minutes 10`, on the coordinating session's go (the mouse stream editing only): 10.1
