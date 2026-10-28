@@ -789,6 +789,31 @@ take the hidden case to zero too, for Jeremy if he wants it: have the host pick 
 by whether the column shows (`shows-ondisk`, already per pane) rather than by the setting, so a pane where
 it has made way uses the plain lists; a column coming back would then swap the pane's list.
 
+**Cut the on cost first** (Jeremy, 2026-10-28, after ab71): `FileListHost` picks the cell's lists by
+whether that pane shows the column (`ondisk` is the pane's `shows-ondisk`), not by the setting; the window's
+`size-on-disk` property and its two setters, which fed only the old pick, went. A pane where the column has
+made way uses main's plain lists. Nothing per row or per frame was added: `shows-ondisk` changes only in
+`update_shown`, on a list width change. Gates: build clean; 336 tests passed. A swap cannot feed back into
+the width it was picked by: the width is reported by the host (`list-width`, its `init` and `changed
+width`), which stays when its inner list swaps; a grip drag's freeze (`COL_DRAG`, P13-M1) holds the set,
+this pick with it, until the release; the splitter has no freeze and needs none, a swap being one per
+crossing. Scripted check (`C:\Windows\System32` in the left pane, the column on, Size set to 110, the list
+scrolled to row 218 and the cursor on row 221): the split (both panes 499 px, the column gone from the
+left), `splitter 0.85` (the left pane at 610 px showing it beside the right at 294 px without it), back to
+0.5, three more crossings each way, the window maximised (both panes showing it at 1947 px) and restored.
+Every crossing changed the set once, at 8 px steps (no back and forth); the cursor stayed on row 221 and the
+widths were kept (the last `colwidth` moved Size from 110). The scroll moved once, at the first swap,
+from -4800 to -4796 (row 218's top): a new list lands on a whole row, and main's swap for the Type setting
+does the same (-4800 to -4796 on `target-p13base`); with the column off the split kept -4800. Every later
+swap kept -4796 exactly. Screenshots of the left pane showing the column beside the right without it, and
+of both showing it maximised (found by the run's own process id: the first capture, by the title prefix
+alone, found Jeremy's everyday window, open at the time, and was deleted unread; CLAUDE.md's screenshot
+note now says so). Soak (code as 3c42b79): `tools/soak-p5m3.ps1 -Minutes 10`: 10.1 minutes, exit code 0, 0
+panicked lines, 250 jobs (0 failed, 0 cancelled), 0 waitops timeouts, 0 refusals, 16 cycles started, 3
+whole; every "must be 0" at 0; the column on 3, off 3, shown 3, listings read 3; working set 149 MB at 5 s,
+233 MB at 601 s (at most 238), private 184 to 252 MB. **Gate ab72** (`tools/gate-p13m3b-ab72.ps1`):
+`target-p13od3` against `target-p13base`, the defaults and `ondisk.toml`.
+
 ### Soak (2026-10-27, the branch's own release build, code as 8cdda35)
 
 `tools/soak-p5m3.ps1 -Minutes 10`, on the coordinating session's go (the mouse stream editing only): 10.1

@@ -1256,10 +1256,13 @@ put off, with where it came from.
   lists of its own** (Jeremy's "Zero cost when off", after ab69 measured the cell in every row at 0.8
   points with the column off): `FileListOnDisk` and `FileListOnDisk32` (pane.slint, copies of `FileList`
   and `FileList32` with the cell; the Type cell kept at the pane's Type width, 0 when Type is off or
-  hidden), which `FileListHost` chooses once per pane while the setting is on (`ondisk`, the window's
-  `size-on-disk`) in place of the four lists without it, so with it off the rows are main's. The cell reads
-  the width `ondisk-w` (pane.slint `eff-ondisk`: 100 px, or 0 when dropped for the name's room) and the
-  row's `ondisk` text (`Entry::ondisk_text`, empty for folders, drives,
+  hidden), which `FileListHost` chooses while that pane **shows** the column (`ondisk`, the pane's
+  `shows-ondisk`: the setting on and room for it; Jeremy's "Cut the on cost first" after ab71 measured the
+  setting's lists at +1.2 points in panes where the column had made way) in place of the four lists
+  without it, so with the setting off, or in a pane too narrow for it, the rows are main's. A pane crossing
+  the threshold (the splitter, the window's size) swaps its list, keeping the cursor and the widths; the
+  scroll lands on a whole row, as main's swap for the Type setting does (at most a row's height). The cell
+  reads the width `ondisk-w` (pane.slint `eff-ondisk`, 100 px) and the row's `ondisk` text (`Entry::ondisk_text`, empty for folders, drives,
   archive levels and search results). It is **the first to make way for the name**: `cols::ondisk_shown`
   shows it only while every other column the setting allows fits beside it with Name at `NAME_FLOOR`,
   and the others are then `shown` in the room less its width (main.rs `update_shown`; the `ONDISK`
@@ -1600,7 +1603,9 @@ put off, with where it came from.
 - Screenshots of a scripted run: the femtovg window captures blank (CopyFromScreen and
   PrintWindow alike). Run with `SLINT_BACKEND=winit-software` and capture with
   `PrintWindow(hwnd, hdc, 2)` from a script started in the background, finding the window by its
-  title prefix `TwinFM - ` (2026-10-18, P7-M2's menu check). **The title bar is not in that capture**:
+  title prefix `TwinFM - ` (2026-10-18, P7-M2's menu check) **and the scripted run's own process id**
+  (`GetWindowThreadProcessId`): a title prefix alone found Jeremy's everyday window first while he had one
+  open (2026-10-28) and captured his own folders. **The title bar is not in that capture**:
   `PrintWindow` draws a stale frame (it showed the bar dark after the theme had set it light, P10-M3), so
   the bar is checked by a `CopyFromScreen` of the window's top 60 px from `GetWindowRect`, with the real
   renderer; the client area stays the `PrintWindow` capture.
