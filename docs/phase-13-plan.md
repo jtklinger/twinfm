@@ -555,8 +555,30 @@ and P13-M3 are in it), on the coordinating session's go:
 
 ### Gate
 
-To come: the defaults triplet and the toolbar-pane triplet (`C:\traces\toolbar-pane.toml`), against
-`target-p13base` (main at 34449ee, so P13-M2 alone), tag ab68, by `tools/gate-p13m2.ps1` on the code head 2d94fed.
+ab68, 2026-10-28, Jeremy at the console: 2d94fed (`target-p13m2`, built `--locked` from the detached
+`gate-p13m2` worktree) against `target-p13base` (main at 34449ee, P13-M1 and P13-M3 merged, so P13-M2
+alone), by `tools/gate-p13m2.ps1`, 18 minutes; summary `C:\traces\gate-ab68-summary.txt`. WPR main-thread
+busy:
+
+| Run | Defaults | With `toolbar-pane.toml` |
+| --- | --- | --- |
+| p13base 1, 2, 3 | 18.0, 23.3, 23.4 | 23.4, 23.5, 24.5 |
+| p13m2 1, 2, 3 | 24.9, 23.4, 23.8 | 23.2, 24.5, 24.5 |
+| Median | 23.3 against **23.8** | 23.5 against **24.5** |
+
+Every check ok, the runner exited 0, and **no gap counts**: the runs overlap in both settings, and the
+toolbar-pane medians differ by exactly 1.0 point, which the rule does not count. Two things to read with it:
+
+- **p13base-1 ran in the cheaper state** (render p50 1.95 ms, WPR 18.0); every run after it sat in the
+  costlier one (2.74 to 3.06 ms). Like for like, without it, the defaults' reference runs are 23.3 and 23.4
+  against the candidate's 23.4, 23.8 and 24.9.
+- **The candidate's render p50 sits a little higher in both settings**: 2.95 to 3.06 ms against 2.74 to
+  3.04 ms. The candidate always ran in the second slot of its pair, which reads high in console triplets too
+  (ab53 against ab54), so this small cost is not separated from the slot bias. An order-swapped rerun would
+  separate it, if Jeremy wants one.
+
+Every candidate run ended with both panes showing name, Size and Modified at 499 px (the scenario's split
+at 1200 px; P13-M1's rule, unchanged).
 
 ### Console checks (for Jeremy, unelevated, after the gate, light and dark, beside Explorer)
 
