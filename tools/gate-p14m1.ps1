@@ -16,7 +16,7 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = 'HEAD-TBD'
+$Head = '28c4e7b'
 $Tag = 'ab77'
 $Ref = 'p13close'
 $Cand = 'p14m1'
