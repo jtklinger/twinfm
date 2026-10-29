@@ -17,7 +17,7 @@
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 $Head = '28c4e7b'
-$Tag = 'ab77'
+$Tag = 'ab76'
 $Ref = 'p13close'
 $Cand = 'p14m1'
 $Gate = "$Root\.claude\worktrees\gate-p14m1"
