@@ -960,3 +960,27 @@ Five findings, fixed on `fix/p13-console-findings`:
   is made on Return, as before, one Undo step.
 - The sizes view's wide Name column (its Share, Size on disk and Files at the far right of a wide pane) is
   left as it is: nothing there is cut.
+
+The fixes went in as #134 (d7f7ba0) after the gate ab75 (the physical console, 60 Hz, interval p50 16.4 ms
+in all six runs; ab74 ran at about 22 Hz and was set aside): main-thread busy, main 23.0, 20.6, 20.3
+(median 20.6) against the fixes 21.5, 21.4, 21.7 (median 21.5), no gap by the rule; render p50 a little
+higher in every run of the fixes, 3.04 to 3.17 ms against 2.88 to 2.97 (the elided cells).
+
+### The memory item: not needed (2026-10-29, Jeremy: "Record it drop fix")
+
+The item was the Phase 12 memory check's candidate: the preview's styled text for a big file built per
+chunk, so fewer large temporary allocations stay committed (`phase-12-plan.md` § The memory check). Two
+things settle it:
+
+- **It is built per block already.** `shown_blocks` calls `StyledText::from_markdown` once per paragraph,
+  heading and table cell (`styled`), each a few hundred bytes; the soak's 2 MB `g-big.md` is 104,914 small
+  blocks, with no large single build to split.
+- **The memory comes back since the segment heap** (Phase 12's manifest, after that check). Measured on
+  main's build (d7f7ba0) by a scripted run that previews the soak's `g-big.md` (made the same way) and a small
+  text file in turn, 25 times, the process's private bytes sampled every second: about 160 to 215 MB while
+  the big file shows (its 104,914 blocks held for the list), back to 110.7, 111.4 and 110.8 MB each time
+  the small file shows, no rise across the rounds. The script is not kept in the repo; its shape: `nav` to
+  the folder, `preview toggle`, `click 0 0`, then per round `key Down`, `waitpreview 15000`,
+  `previewscroll 20000`, `key Up`, `waitpreview 5000`.
+
+No code changed. The phase's long soak still compares private bytes against Phase 12's (about 259 MB, flat).
