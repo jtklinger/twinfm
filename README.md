@@ -7,7 +7,7 @@ without stalling, where Windows' own Files app struggles.
 TwinFM uses the Windows shell for the things Explorer users rely on, so copies, moves, the Recycle
 Bin, the context menu, drag and drop, the clipboard and file icons behave as they do in Explorer.
 
-**Status: 0.3.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
+**Status: 0.4.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
 keep backups as you would with any file manager.
 
 ## Features
@@ -15,14 +15,19 @@ keep backups as you would with any file manager.
 - **Two panes, each with tabs.** Every tab keeps its own folder, sort, hidden-files setting,
   selection, scroll position and Back/Forward history (Alt+Left, Alt+Right, the mouse's side
   buttons; Alt+Down lists the places to jump to). The "+" after the tabs opens a new one, and Tab
-  moves the keyboard to the other pane. Tabs with their history, the split and the window are
+  moves the keyboard to the other pane. Back, Forward, Up and Refresh buttons start each pane's path
+  bar. Tabs with their history, the split and the window are
   restored at the next start.
 - **Fast listings.** Folders are read on a worker thread and streamed in; icons and thumbnails are
   fetched only for the rows on screen. Folders are watched, so changes made elsewhere appear
   without a refresh.
 - **Views:** details (with adjustable column widths, and compact or comfortable rows), large icons
   and medium icons, with thumbnails, cloud status marks for OneDrive (syncing and errors too) and
-  Google Drive, and a rubber-band selection.
+  Google Drive, and a rubber-band selection (in the details view too, from a row's blank part). In a
+  narrow pane the columns make way so file names are not cut: Type goes first, then Size, then
+  Modified, each coming back as the pane widens. An optional Size on disk column.
+- **Sizes view** (right-click a folder or drive, "Show sizes"): every folder and file biggest first,
+  with share bars and size on disk, opened level by level, for finding what fills a disk.
 - **File operations through the shell** (`IFileOperation`): copy, move, rename, new folder, new
   file, delete to the Recycle Bin or permanently, with Explorer's progress and conflict dialogs,
   and **undo and redo** (Ctrl+Z, Ctrl+Y), including restoring from the Recycle Bin.
@@ -42,11 +47,12 @@ keep backups as you would with any file manager.
   needed). Right-click a block to copy its text.
 - **Sidebar** with drives, the usual places, recent folders and your bookmarks (drop a folder on
   Bookmarks to add one, drag bookmarks to reorder them); it collapses to a rail of icons. A
-  toolbar; light and dark themes that follow Windows.
+  toolbar with Undo, Redo, View, Two panes and a More menu, so every command can be reached with
+  the mouse; light and dark themes that follow Windows.
 
 ## Install
 
-Download `twinfm-0.3.0-x86_64-windows.zip` from the
+Download `twinfm-0.4.0-x86_64-windows.zip` from the
 [latest release](https://github.com/jtklinger/twinfm/releases/latest), unzip it anywhere, and run
 `twinfm.exe`. There is no installer; settings are kept in `%APPDATA%\twinfm`.
 
