@@ -167,6 +167,10 @@ pub struct Config {
     /// `title` (without one the sidebar shows the folder's name).
     #[serde(rename = "bookmark")]
     pub bookmarks: Vec<Bookmark>,
+    /// Saved searches in sidebar order (P14-M1), as `[[search]]` tables: the sidebar's Searches
+    /// group. Missing in an older file: none.
+    #[serde(rename = "search")]
+    pub searches: Vec<SavedSearch>,
     /// The bare list of paths older files carry (`bookmarks = ["C:\\x"]`): read, turned into
     /// `[[bookmark]]` entries when loaded, never written.
     #[serde(rename = "bookmarks", skip_serializing)]
@@ -274,6 +278,24 @@ impl Bookmark {
     }
 }
 
+/// One saved search (P14-M1): the folder it walks, its pattern, whether it searched inside the
+/// files, and, if renamed, the title the sidebar shows. Opening it runs the search again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedSearch {
+    pub path: String,
+    pub pattern: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub content: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+impl SavedSearch {
+    pub fn new(path: &str, pattern: &str, content: bool) -> SavedSearch {
+        SavedSearch { path: path.to_string(), pattern: pattern.to_string(), content, title: None }
+    }
+}
+
 impl Default for Config {
     fn default() -> Config {
         Config {
@@ -318,6 +340,7 @@ impl Default for Config {
             window: None,
             recent: Vec::new(),
             bookmarks: Vec::new(),
+            searches: Vec::new(),
             legacy_bookmarks: Vec::new(),
         }
     }
@@ -1043,6 +1066,26 @@ show_type = false
         assert_eq!(back.recent, c.recent);
         assert_eq!((back.window, back.bookmarks.len()), (c.window, 1));
         assert!(Config::parse("split = true\n").unwrap().recent.is_empty(), "an older file: none");
+    }
+
+    #[test]
+    fn saved_searches_round_trip_and_an_older_file_has_none() {
+        // P14-M1: [[search]] tables after the [[bookmark]] ones; `content` and `title` only when set.
+        let mut renamed = SavedSearch::new(r"D:\", "invoice", true);
+        renamed.title = Some("Invoices".into());
+        let c = Config {
+            bookmarks: vec![Bookmark::new(r"C:\b")],
+            searches: vec![SavedSearch::new(r"C:\work", "*.rs", false), renamed],
+            ..Config::default()
+        };
+        let text = c.to_toml();
+        assert!(text.contains("[[search]]"), "{text}");
+        assert_eq!(text.matches("content = true").count(), 1, "{text}");
+        assert_eq!(text.matches("title").count(), 1, "{text}");
+        let back = Config::parse(&text).unwrap();
+        assert_eq!(back.searches, c.searches);
+        assert_eq!(back.bookmarks, c.bookmarks);
+        assert!(Config::parse("split = true\n[[bookmark]]\npath = 'C:\\x'\n").unwrap().searches.is_empty(), "an older file: none");
     }
 
     #[test]

@@ -170,6 +170,14 @@ struct Search {
     restating: bool,
 }
 
+/// Where `start_search` runs a search: under the active tab's folder, again under a root from the
+/// tab's history, or under a saved search's root in a new tab (P14-M1).
+enum SearchAt {
+    Here,
+    History(PathBuf),
+    Saved(PathBuf),
+}
+
 /// A sizes view (`sizeview`): its walk's tree, the folders opened in place, the levels' files once
 /// listed, the rows in their order and what each draws besides its entry.
 #[derive(Default)]
@@ -852,6 +860,10 @@ fn update_tools(st: &State, app: &App, pane: usize) {
         view: view_of(st, pane).index(),
     };
     let tools = toolbar::with_facts(toolbar::state(tool_place(st, pane), st.model(pane).selected_count(), st.clip_files), &facts);
+    // The Searches header's "Save this search" (P14-M1) follows the active pane's tab.
+    if pane == active_pane(app) && app.get_active_is_search() != st.is_search(pane) {
+        app.set_active_is_search(st.is_search(pane));
+    }
     let now = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
     if now != tools {
         if pane == 0 { app.set_left_tools(tools) } else { app.set_right_tools(tools) }
@@ -914,7 +926,7 @@ fn open_tool_menu(pane: usize, name: &str, x: f32, y: f32) {
             (toolbar::view_menu(tools.view), 0)
         } else {
             let fit = tool_fit(&app, pane) as usize;
-            let items = toolbar::more_menu(&tools, fit, app.get_split(), tool_place(st, pane));
+            let items = toolbar::more_menu(&tools, fit, app.get_split(), tool_place(st, pane), st.is_search(pane));
             let own = items.len() - 6;
             (items, own)
         };
@@ -983,6 +995,7 @@ fn run_tool(pane: usize, item: &toolbar::MenuItem) {
             command(pane, "sizeall");
         }
         "hidden" => toggle_hidden(pane),
+        "savesearch" => search_save_in(pane),
         "cancelwaiting" => {
             cancel_queued(pane);
         }
@@ -1310,12 +1323,29 @@ fn recent_clear() {
 
 /// Rebuild the sidebar's rows from its sections (on a change only).
 fn rebuild_sidebar(st: &mut State) {
-    st.side = sidebar::compose(&st.drives, &st.places, &st.config.recent, &st.config.bookmarks);
-    let items: Vec<SideItem> =
-        st.side.iter().map(|r| SideItem { label: r.label.as_str().into(), kind: r.kind as i32, index: r.index as i32 }).collect();
+    st.side = sidebar::compose(&st.drives, &st.places, &st.config.recent, &st.config.bookmarks, &st.config.searches);
+    let items: Vec<SideItem> = st
+        .side
+        .iter()
+        .map(|r| {
+            let search = (r.kind == sidebar::RowKind::Search).then(|| &st.config.searches[r.index]);
+            SideItem {
+                label: r.label.as_str().into(),
+                kind: r.kind as i32,
+                index: r.index as i32,
+                tip: search.map(|s| s.path.as_str()).unwrap_or_default().into(),
+                content: search.is_some_and(|s| s.content),
+            }
+        })
+        .collect();
     st.side_model.set_vec(items);
     if let Some(app) = st.app.upgrade() {
-        app.set_bookmark_count(st.config.bookmarks.len() as i32);
+        let (bf, bn) = sidebar::group(&st.side, sidebar::RowKind::Bookmark);
+        let (sf, sn) = sidebar::group(&st.side, sidebar::RowKind::Search);
+        app.set_bookmark_first(bf as i32);
+        app.set_bookmark_count(bn as i32);
+        app.set_search_first(sf as i32);
+        app.set_search_count(sn as i32);
     }
 }
 
@@ -1340,8 +1370,13 @@ fn active_pane(app: &App) -> usize {
     if app.get_split() && app.get_active_pane() == 1 { 1 } else { 0 }
 }
 
-/// A sidebar row: open its folder in the active pane, or with the middle button in a new tab there.
+/// A sidebar row: open its folder in the active pane, or with the middle button in a new tab there;
+/// a saved search runs again (P14-M1, `search_open`).
 fn side_clicked(i: usize, middle: bool) {
+    if let Some(k) = with_state(|st| st.side.get(i).filter(|r| r.kind == sidebar::RowKind::Search).map(|r| r.index)) {
+        eprintln!("[sidebar] row {i} {}: saved search {k}", if middle { "middle-click" } else { "click" });
+        return search_open(k, middle);
+    }
     let Some((app, path)) = with_state(|st| Some((st.app.upgrade()?, st.side.get(i)?.path.clone()?))) else { return };
     let pane = active_pane(&app);
     eprintln!("[sidebar] row {i} {}: {}", if middle { "middle-click, new tab" } else { "click" }, path.display());
@@ -1366,11 +1401,14 @@ fn side_step(current: i32, key: &str) -> i32 {
     to as i32
 }
 
-/// Ctrl+D: bookmark the active tab's folder.
+/// Ctrl+D: bookmark the active tab's folder; in a search tab, save the search (P14-M1).
 fn bookmark_add() {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let pane = active_pane(&app);
+        if st.is_search(pane) {
+            return save_search(st, &app, pane);
+        }
         let folder = st.tab(pane).path.to_string_lossy().to_string();
         let text = if is_this_pc(&folder) {
             "This PC cannot be bookmarked".to_string()
@@ -1390,7 +1428,7 @@ fn bookmark_add() {
 fn bookmark_remove(i: usize) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
-        let Some(gone) = sidebar::remove_bookmark(&mut st.config.bookmarks, i) else { return };
+        let Some(gone) = sidebar::remove_at(&mut st.config.bookmarks, i) else { return };
         rebuild_sidebar(st);
         schedule_save(st);
         eprintln!("[sidebar] removed bookmark {i}: {}", gone.path);
@@ -1415,7 +1453,7 @@ fn bookmark_rename(i: usize, title: &str) {
 /// The bookmark menu's "Move up" and "Move down".
 fn bookmark_move(i: usize, up: bool) {
     with_state(|st| {
-        let Some(to) = sidebar::move_bookmark(&mut st.config.bookmarks, i, up) else {
+        let Some(to) = sidebar::move_by(&mut st.config.bookmarks, i, up) else {
             return eprintln!("[sidebar] bookmark {i} cannot move {}", if up { "up" } else { "down" });
         };
         rebuild_sidebar(st);
@@ -1424,16 +1462,114 @@ fn bookmark_move(i: usize, up: bool) {
     });
 }
 
-/// A bookmark dragged in the sidebar (P12-M5) and dropped in gap `gap`.
-fn bookmark_drag(from: usize, gap: usize) {
+/// A bookmark (kind 3, P12-M5) or a saved search (kind 5, P14-M1) dragged in the sidebar and dropped
+/// in gap `gap` of its own group.
+fn side_drag(kind: i32, from: usize, gap: usize) {
     with_state(|st| {
         let to = sidebar::drag_target(from, gap);
-        if !sidebar::move_bookmark_to(&mut st.config.bookmarks, from, to) {
-            return eprintln!("[sidebar] bookmark {from} dragged to its own place: not moved");
+        let (what, moved) = if kind == sidebar::RowKind::Search as i32 {
+            ("saved search", sidebar::move_to(&mut st.config.searches, from, to))
+        } else {
+            ("bookmark", sidebar::move_to(&mut st.config.bookmarks, from, to))
+        };
+        if !moved {
+            return eprintln!("[sidebar] {what} {from} dragged to its own place: not moved");
         }
         rebuild_sidebar(st);
         schedule_save(st);
-        eprintln!("[sidebar] bookmark moved {from} -> {to} (drag)");
+        eprintln!("[sidebar] {what} moved {from} -> {to} (drag)");
+    });
+}
+
+/// Save the search of `pane`'s active tab (P14-M1: Ctrl+D there, More's "Save this search", the
+/// Searches header's): its root, pattern and kind at the end of the Searches group, unless the same
+/// search is saved already.
+fn save_search(st: &mut State, app: &App, pane: usize) {
+    let t = st.tab(pane);
+    let Some(s) = &t.search else {
+        eprintln!("[sidebar] pane={pane} save search: not a search tab");
+        return note(st, app, pane, "Open a search to save it".into());
+    };
+    let (root, pattern, content) = (t.path.to_string_lossy().to_string(), s.pattern.pattern.clone(), s.content);
+    let text = if let Some(k) = sidebar::saved_at(&st.config.searches, &root, &pattern, content) {
+        let title = sidebar::search_title(&st.config.searches[k]);
+        eprintln!("[sidebar] \"{title}\" is saved already");
+        format!("{title} is saved already")
+    } else if sidebar::add_search(&mut st.config.searches, &root, &pattern, content) {
+        let title = sidebar::search_title(st.config.searches.last().expect("just added"));
+        eprintln!("[sidebar] saved search added \"{title}\": {root} \"{pattern}\" {}", if content { "content" } else { "name" });
+        rebuild_sidebar(st);
+        schedule_save(st);
+        format!("Saved search {title}")
+    } else {
+        return;
+    };
+    note(st, app, pane, text);
+}
+
+/// The driver's `searchsave <pane>` and the menus' "Save this search": `save_search` on that pane.
+pub fn search_save_in(pane: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        save_search(st, &app, pane);
+    });
+}
+
+/// A saved search's row clicked (or Return on it): its search runs again in a new tab of the active
+/// pane; the middle button runs it in the other pane (P14-M1).
+fn search_open(i: usize, middle: bool) {
+    let Some((app, s)) = with_state(|st| Some((st.app.upgrade()?, st.config.searches.get(i)?.clone()))) else { return };
+    let mut pane = active_pane(&app);
+    if middle {
+        if !app.get_split() {
+            app.invoke_toggle_split();
+        }
+        pane = 1 - pane;
+    }
+    eprintln!(
+        "[sidebar] saved search {i} opened: {} \"{}\" {}{}",
+        s.path,
+        s.pattern,
+        if s.content { "content" } else { "name" },
+        if middle { " (the other pane)" } else { "" }
+    );
+    start_search(pane, &s.pattern, s.content, SearchAt::Saved(PathBuf::from(&s.path)));
+}
+
+/// The saved search menu's "Remove saved search".
+fn search_remove(i: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let Some(gone) = sidebar::remove_at(&mut st.config.searches, i) else { return };
+        rebuild_sidebar(st);
+        schedule_save(st);
+        let title = sidebar::search_title(&gone);
+        eprintln!("[sidebar] saved search {i} removed: \"{title}\"");
+        note(st, &app, active_pane(&app), format!("Removed the saved search {title}"));
+    });
+}
+
+/// A saved search row's editor (from "Rename saved search", F2): an empty title goes back to the
+/// default one.
+fn search_rename(i: usize, title: &str) {
+    with_state(|st| {
+        let Some(old) = st.config.searches.get(i).map(sidebar::search_title) else { return };
+        sidebar::rename_search(&mut st.config.searches, i, title);
+        rebuild_sidebar(st);
+        schedule_save(st);
+        eprintln!("[sidebar] saved search {i} renamed \"{old}\" -> \"{}\"", sidebar::search_title(&st.config.searches[i]));
+    });
+}
+
+/// The saved search menu's "Move up" and "Move down".
+fn search_move(i: usize, up: bool) {
+    with_state(|st| {
+        let Some(to) = sidebar::move_by(&mut st.config.searches, i, up) else {
+            return eprintln!("[sidebar] saved search {i} cannot move {}", if up { "up" } else { "down" });
+        };
+        rebuild_sidebar(st);
+        schedule_save(st);
+        eprintln!("[sidebar] saved search moved {i} -> {to}");
     });
 }
 
@@ -4729,7 +4865,7 @@ fn history_move(pane: usize, forward: bool) {
 /// again, in this tab, under the same root.
 fn go_to_place(pane: usize, place: Place) {
     match place {
-        Place { path, search: Some(pattern), content } => start_search(pane, &pattern, content, Some(path)),
+        Place { path, search: Some(pattern), content } => start_search(pane, &pattern, content, SearchAt::History(path)),
         Place { path, search: None, .. } => navigate_to(pane, path, false),
     }
 }
@@ -5203,7 +5339,7 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
 
 /// The sidebar's rows as the drop target's hit test sees them: each row's height (sidebar.slint
 /// `SideRow`: a header 26 px, a row 24 px, the row being renamed 30 px) and whether it is a drop
-/// target (every row but a header).
+/// target (every row but a header and a saved search, P14-M1: it is no folder).
 fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
     let editing = app.get_side_edit();
     st.side
@@ -5211,7 +5347,8 @@ fn side_rows(st: &State, app: &App) -> Vec<(f32, bool)> {
         .enumerate()
         .map(|(i, r)| match r.kind {
             sidebar::RowKind::Header => (32.0, false),
-            _ if i as i32 == editing => (30.0, true),
+            _ if i as i32 == editing => (30.0, r.kind != sidebar::RowKind::Search),
+            sidebar::RowKind::Search => (32.0, false),
             _ => (32.0, true),
         })
         .collect()
@@ -5224,7 +5361,7 @@ fn strips<'a>(st: &State, app: &App, side_rows: &'a [(f32, bool)], crumb_row: [(
         side_w: if app.get_sidebar_visible() { app.get_sidebar_width() } else { dnd::RAIL_W },
         side_scroll: app.invoke_side_scroll(),
         side_rows,
-        side_bookmarks: (st.side.len() - st.config.bookmarks.len(), st.config.bookmarks.len()),
+        side_bookmarks: sidebar::group(&st.side, sidebar::RowKind::Bookmark),
         tabs: [tab(0), tab(1)],
         crumb_row,
         crumbs: [&crumbs[0], &crumbs[1]],
@@ -5333,7 +5470,7 @@ pub fn side_gap_y(k: usize) -> Option<f32> {
     with_state(|st| {
         let app = st.app.upgrade()?;
         let rows = side_rows(st, &app);
-        let first = st.side.len().checked_sub(st.config.bookmarks.len())?;
+        let (first, _) = sidebar::group(&st.side, sidebar::RowKind::Bookmark);
         Some(dnd::side_top(&window_layout(&app)) + app.invoke_side_scroll() + dnd::side_row_top(&rows, first + k.min(st.config.bookmarks.len())))
     })
 }
@@ -6270,7 +6407,7 @@ fn filter_return(pane: usize, text: SharedString) {
         searchbox::ReturnAction::Search(pattern) => {
             let content = content_mode(pane);
             eprintln!("[search] pane={pane} box Return: searches \"{pattern}\"{}", if content { " inside files" } else { "" });
-            start_search(pane, &pattern, content, None);
+            start_search(pane, &pattern, content, SearchAt::Here);
         }
         searchbox::ReturnAction::FocusList => {
             eprintln!("[search] pane={pane} box Return: empty, the list takes the focus");
@@ -6335,7 +6472,7 @@ fn search_key(pane: usize) {
         eprintln!("[search] pane={pane} no pattern yet: the search box takes the focus, Return searches");
         return app.invoke_open_filter(pane as i32);
     }
-    start_search(pane, text.trim(), content_mode(pane), None);
+    start_search(pane, text.trim(), content_mode(pane), SearchAt::Here);
 }
 
 /// Start a recursive name search for `pattern` (with `content`, a search for that text inside the
@@ -6344,21 +6481,31 @@ fn search_key(pane: usize) {
 /// search worker sends its matches through the enumeration channel with the tab's generation, so
 /// they stream in as a listing's batches do.
 ///
-/// `history_root`: a search taken from the tab's history (Back or Forward): it runs again in this
-/// tab under that root, and nothing is pushed. Otherwise the search is a navigation: a new search
-/// tab starts with its root folder on its back stack (it was searched from there), and a new search
-/// in a search tab pushes the old one.
-fn start_search(pane: usize, pattern: &str, content: bool, history_root: Option<PathBuf>) {
+/// `at`: `History(root)`, a search taken from the tab's history (Back or Forward): it runs again in
+/// this tab under that root, and nothing is pushed. `Saved(root)` (P14-M1), a saved search opened
+/// from the sidebar: always a new search tab, on that root. `Here`, the search is a navigation: a
+/// new search tab starts with its root folder on its back stack (it was searched from there), and a
+/// new search in a search tab pushes the old one.
+fn start_search(pane: usize, pattern: &str, content: bool, at: SearchAt) {
     let started = with_state(|st| {
         let app = st.app.upgrade()?;
         st.filter_timer[pane].stop();
-        if is_this_pc(&st.tab(pane).path.to_string_lossy()) {
+        let root = match &at {
+            SearchAt::Here => st.tab(pane).path.clone(),
+            SearchAt::History(root) | SearchAt::Saved(root) => root.clone(),
+        };
+        if is_this_pc(&root.to_string_lossy()) {
             note(st, &app, pane, "This PC lists drives; open a folder to search in it".into());
+            return None;
+        }
+        if matches!(at, SearchAt::Saved(_)) && !root.is_dir() && fs::archive::split(&root).is_none() {
+            let text = format!("{} is not there any more", root.display());
+            eprintln!("[search] pane={pane} saved search \"{pattern}\": {text}");
+            note(st, &app, pane, text);
             return None;
         }
         // A content search never reads a cloud location (a read downloads the file) nor inside an
         // archive (P11-M1).
-        let root = history_root.clone().unwrap_or_else(|| st.tab(pane).path.clone());
         if content {
             let refusal = if fs::archive::inside(&root) {
                 Some("A search inside files does not read inside archives")
@@ -6374,9 +6521,9 @@ fn start_search(pane: usize, pattern: &str, content: bool, history_root: Option<
             }
         }
         let to = |root: &Path| Place::search(root, pattern, content);
-        if let Some(root) = history_root {
+        if let SearchAt::History(root) = at {
             st.tab_mut(pane).path = root;
-        } else if st.is_search(pane) {
+        } else if matches!(at, SearchAt::Here) && st.is_search(pane) {
             let t = st.tab_mut(pane);
             let from = t.place();
             if t.history.push(&from, &to(&t.path)) {
@@ -6388,7 +6535,7 @@ fn start_search(pane: usize, pattern: &str, content: bool, history_root: Option<
             // switch_tab).
             st.tab_mut(pane).background_sizes(pane);
             let cur = st.tab(pane);
-            let (col, asc, show, root) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show(), cur.path.clone());
+            let (col, asc, show) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show());
             let mut t = st.new_tab(root.clone());
             t.model.sort_col.set(col);
             t.model.sort_asc.set(asc);
@@ -7945,9 +8092,29 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_bookmark_add(bookmark_add);
     app.on_recent_clear(recent_clear);
-    app.on_bookmark_drag(|from, gap| {
+    app.on_side_drag(|kind, from, gap| {
         if let (Ok(from), Ok(gap)) = (usize::try_from(from), usize::try_from(gap)) {
-            bookmark_drag(from, gap);
+            side_drag(kind, from, gap);
+        }
+    });
+    app.on_search_save(|| {
+        if let Some(pane) = with_state(|st| st.app.upgrade()).map(|a| active_pane(&a)) {
+            search_save_in(pane);
+        }
+    });
+    app.on_search_remove(|i| {
+        if let Ok(i) = usize::try_from(i) {
+            search_remove(i);
+        }
+    });
+    app.on_search_rename(|i, title| {
+        if let Ok(i) = usize::try_from(i) {
+            search_rename(i, title.as_str());
+        }
+    });
+    app.on_search_move(|i, up| {
+        if let Ok(i) = usize::try_from(i) {
+            search_move(i, up);
         }
     });
     app.on_bookmark_remove(|i| {
