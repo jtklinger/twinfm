@@ -289,9 +289,23 @@ the phase-end hour; Phase 13's 60-minute soak ended at 247 MB private, flat).
 
 ### Gate
 
-To come: `tools/gate-p14m1.ps1`, the defaults triplet against `target-p13close`. The scenario never saves or
-opens a search and has no Searches group, so it proves the rest untouched; the wrapper also fails a
-candidate run that logs a saved-search line.
+ab76, 2026-10-29, Jeremy at the console: 28c4e7b (`target-p14m1`, built `--locked` from the detached
+`gate-p14m1` worktree by the coordinating session) against `target-p13close` (13cfe82), by
+`tools/gate-p14m1.ps1`; summary `C:\traces\gate-ab76-summary.txt`. The scenario never saves or opens a search
+and has no Searches group, so the triplet proves the rest untouched (the wrapper also fails a candidate run
+that logs a saved-search line; none did). WPR main-thread busy, the defaults:
+
+| Run | p13close | p14m1 |
+| --- | --- | --- |
+| 1, 2, 3 | 20.5, 20.7, 22.1 | 20.1, 21.2, 20.1 |
+| Median | 20.7 | **20.1** |
+
+**No gap**: the runs overlap and the candidate's median sits below the reference's. Every run at 60 Hz
+(interval p50 16.29 to 16.41 ms), render p50 2.65 to 2.85 ms with no state change part-way, every check ok.
+
+A lesson from it: the wrapper first failed at its `git` line because Jeremy's elevated console sat in the
+deleted `gate-p13cf` folder; it ran clean once started from `C:\traces`. **Start the gate console in
+`C:\traces`.**
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
