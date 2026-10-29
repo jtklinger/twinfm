@@ -984,3 +984,29 @@ things settle it:
   `previewscroll 20000`, `key Up`, `waitpreview 5000`.
 
 No code changed. The phase's long soak still compares private bytes against Phase 12's (about 259 MB, flat).
+
+### The long soak of the merged code (2026-10-29, Jeremy: "Run the soak")
+
+`tools/soak-p5m3.ps1 -Minutes 60` on `target-p13close` (13cfe82, main's code: every Phase 13 milestone, the
+console fixes and the memory record; `[mem] process heap: segment heap` at start), 2026-10-29, by this
+session, the session at 100% (`[dnd] drag threshold 4 x 4 px (scale 1)`, so the report's 128 px and 80 px
+drag image counts read true: 42 and 21). 60.7 minutes, exit code 0, no panics, 104 cycles started, 1,447
+jobs (none failed or cancelled), every must-be-0 count 0 (dropped drags, refused menupicks, disabled toolbar
+presses, zip jobs not done, picture and Office failures, alt text, waitpreview timeouts, worker panics, copy
+failures, refused colour chunks, wrong passwords, spring-loaded tabs). The per-cycle steps ran 21 times; the
+last round was cut by the clock after the Size on disk column's steps, so the Tab, path bar button, View,
+More and details band counts read 20. Phase 13's own steps all ran: Two panes presses 40, the columns making
+way (name and Modified 62, name, Size and Modified 125), the sizes view (21 walks, 42 levels opened in place,
+`sz.txt` taken off three totals 21), the Size on disk column (on 21, off 21, listings read with it 21), the
+mouse steps (path bar buttons 80, View picks 40, More picks 140, details bands done with 2 selected 20).
+Memory (working set / private bytes, MB, every 300 s):
+
+| s | 5 | 305 | 606 | 905 | 1206 | 1506 | 1805 | 2106 | 2405 | 2706 | 3006 | 3305 | 3601 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| WS | 185 | 259 | 262 | 240 | 252 | 240 | 244 | 244 | 241 | 242 | 245 | 245 | 246 |
+| private | 180 | 230 | 238 | 237 | 249 | 238 | 242 | 242 | 238 | 244 | 248 | 247 | 248 |
+
+Read: the caches fill in the first ten minutes, then the line holds between 237 and 249 MB private: a median
+of 247 MB over the last 10 minutes (Phase 12's soak: 259), a highest 30 s sample of 323 MB (341), no climb
+from 20 to 60 minutes (249 to 248). The merged Phase 13 code holds memory as Phase 12's did, about 12 MB
+lower.
