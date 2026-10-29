@@ -2529,6 +2529,37 @@ export component Pane inherits Rectangle {
     // pane's widths) and 12 px from the right, centred on the row. In the grid, over the tile's name (2 px
     // in, the tile's width less 4 px, centred on the name's first line, which starts 38 px above
     // the tile's bottom: 94 px down a large tile, 46 px down a medium one, P7-M4).
+    // A new folder's or file's own row while it is named (the 2026-10-29 console check: the editor
+    // stood over the top row, its icon, type and size beside the new name): the top row of the
+    // list (in the grid, the editor's tile) covered by a blank item of the kind being made, a
+    // folder or a text file icon and its type. Nothing is made until Return.
+    if (root.edit-mode == 2 || root.edit-mode == 3): Rectangle {
+        x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w : 0px);
+        y: list.y;
+        width: root.grid ? list.tile-w : list.width;
+        height: root.grid ? list.tile-h : list.row-h;
+        background: Theme.card;
+        property <length> icon: root.grid ? (root.medium ? 48px : 96px) : root.thumbnails ? 32px : 16px;
+        Image {
+            x: root.grid ? (parent.width - parent.icon) / 2 : 6px;
+            y: root.grid ? 8px : (parent.height - parent.icon) / 2;
+            width: parent.icon;
+            height: parent.icon;
+            source: root.edit-mode == 2 ? @image-url("icons/folder.svg") : @image-url("icons/file-text.svg");
+            colorize: Theme.fg-muted;
+        }
+        if !root.grid: Text {
+            x: parent.width - 10px - (root.eff-type + root.eff-size + root.eff-modified + root.eff-ondisk);
+            width: root.eff-type;
+            height: parent.height;
+            vertical-alignment: center;
+            overflow: elide;
+            color: Theme.fg-muted;
+            text: root.edit-mode == 2 ? "File folder" : "Text Document";
+        }
+        if !root.grid: Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+    }
+
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
