@@ -68,7 +68,7 @@ target\release\twinfm.exe
 ```
 
 An optional argument names the starting folder for the left pane. Slint comes from a fork with two
-accessibility patches (see [License](#license)); Cargo fetches it, so no manual steps are needed.
+accessibility patches and a list fix (see [License](#license)); Cargo fetches it, so no manual steps are needed.
 
 ## Keys
 
@@ -144,10 +144,10 @@ provided the Slint attribution is shown. This README is that attribution (option
 2), and so is the About dialog (F1, or "About TwinFM" at the foot of the sidebar), which shows
 Slint's `AboutSlint` widget.
 
-The modifications to Slint are the two commits on the `rustfm` branch of
+The modifications to Slint are the three commits on the `rustfm` branch of
 [jtklinger/slint](https://github.com/jtklinger/slint), also carried as `docs/patches/`. Slint's
 licensing FAQ states that modifications may be released under any license of the modifier's
-choice, so those two commits are offered under MIT like the rest of this repository; the Slint code
+choice, so those three commits are offered under MIT like the rest of this repository; the Slint code
 around them keeps Slint's own triple license (GPL-3.0-only, Royalty-free 2.0, or commercial), and
 the fork as a standalone copy of Slint is redistributed under Slint's GPL-3.0 option, as section 3
 of the Royalty-free license directs.

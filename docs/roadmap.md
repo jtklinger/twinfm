@@ -81,7 +81,7 @@ memory follow-up and the two small log and soak clean-ups.
 
 - **The whole-row snap**: Slint snaps a list rebuilt while scrolled to a whole row (a settings switch,
   a tab switch, a thumb drag). The one-line fork patch is proven (`target-zcfix`) and would be the
-  third fork patch, with its own triplet (P3-M1, P3-M5).
+  fourth fork patch (the third, since 2026-10-28, is the ListView fix), with its own triplet (P3-M1, P3-M5).
 - **Upstreaming the two accessibility patches**: `docs/upstream-issue-draft.md` and `docs/patches/`
   are the record. Jeremy decides when; no session posts to slint-ui/slint.
 

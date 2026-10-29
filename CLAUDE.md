@@ -70,7 +70,8 @@ put off, with where it came from.
   more write a compressed and a sparse file, and a small tree with a hard link, into scratch folders, and one more lists a folder with the Size on
   disk column on and off, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
-  pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches in
+  pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches and, since
+  2026-10-28, the ListView fix (row 0 kept at the content's top when a scrolled list gets a shorter model) in
   `docs/patches/`; a fresh clone builds with no manual steps)
 - Run the tests, read the result, then commit, as two steps: never chain a test run and a commit
   (two Phase 9 commits went in past a failing test that way, `docs/phase-9-plan.md` § Phase 9 close).
