@@ -211,3 +211,87 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
 Each brief settles first: how much memory each folder's own-files totals add to a walk of `C:\` (P14-M2);
 the hover's shape by the trace (P14-M3); where the bookmark code and the saved searches' share their reorder
 (P14-M1).
+
+## P14-M1: saved searches
+
+Built by the sidebar and look stream on `feat/p14-m1-saved-searches`, 2026-10-29.
+
+### Settled first: where bookmarks and saved searches share their reorder (2026-10-29)
+
+The pure rules in `sidebar.rs` (remove, move up or down, move to a place, the drag's landing gap) never
+touched anything a bookmark has, so they became generic over the list (`remove_at`, `move_by`, `move_to`;
+`drag_target` already was) and both groups call them; only renaming stays per group, since the default
+titles differ. The real coupling was in `app.slint`: the drag's gap and its insertion line assumed the
+bookmarks were the sidebar's **last** rows. With Searches after them that no longer holds, so each group's
+first row and count come from `sidebar::group` (`bookmark-first`/`-count`, `search-first`/`-count`), the
+drag carries its group (`side-drag(kind, from, gap)`), and the gap and the line are measured inside it. The
+drop target's Bookmarks gap uses the bookmarks' own first row and count. The coordinating session approved
+it before the build; its addition: the empty space below the whole list still appends to the bookmarks
+(P12-M5's rule) with Searches between, which the hit test's unit test and the scripted check both show.
+
+### What landed
+
+- **Saving**: Ctrl+D in a search tab (name or content, finished or still walking) saves the search;
+  elsewhere it bookmarks as before. Also ⋯ More's "Save this search" (a search tab only; not a sizes view)
+  and the Searches header's menu (enabled in a search tab). No tab menu: the kickoff's console-check line
+  named "the tab's menu" by mistake and now reads "More and the Searches header's menu" (the coordinating
+  session's correction). A search saved already stays one row, with the note "<title> is saved already".
+- **The group**: Searches after Bookmarks, shown only with a row; Lucide `search` or `file-search` (added
+  under `src/ui/icons/`); the default title `"<pattern>" in <folder>` or `Text "<text>" in <folder>`; the
+  root as the tooltip. Rename (F2 or the row's menu; empty goes back to the default), Move up and down, drag,
+  "Remove saved search".
+- **Opening**: a click or Return runs it again in a new tab of the active pane (`start_search` with
+  `SearchAt::Saved`, the same refusals plus "<root> is not there any more"); a middle click in the other
+  pane, turning the split on first when it is off (the lead's call left the one-pane case open; this is the
+  one that runs anywhere).
+- **Drops**: a saved search's row and the Searches header refuse a drop; the space below the list appends
+  to the bookmarks.
+- **Settings**: `[[search]]` tables after `[[bookmark]]`; an older file has none (tested). Search tabs are
+  still not restored at start.
+- **A P13-M2 bug found here**: the toolbar's More and View menus never opened in a search tab or a sizes
+  view. The background menu's refusal on results ("search results have no folder menu") caught them too,
+  since P13-M2's toolbar menus are built through the same request. Toolbar menus now skip that refusal
+  (they show no shell items), and More's separator index counts the new item.
+
+### Scripted checks (2026-10-29, the branch's release build, `tools/check-p14m1.ps1`, a scratch settings file in `%TEMP%`)
+
+Two runs, the window closed through `WM_CLOSE` so the settings are written, then read by the second run.
+The first run showed the More bug (`[auto] waitmenu: no settled Windows 11 menu`, the note "search results
+have no folder menu"); after the fix, every case held:
+
+- Ctrl+D: `[sidebar] saved search added ""*.rs" in proj": ...\proj "*.rs" name`, then again `""*.rs" in
+  proj" is saved already`.
+- More: `[toolbar] menu more: Preview pane | Save this search | Select all | ...`, `picks "Save this
+  search" -> savesearch`, `saved search added "Text "needle" in proj": ... "needle" content`.
+- Rename, move, open: `renamed ""*.rs" in proj" -> "Rust files"`, `moved 1 -> 0`, `saved search 0 opened:
+  ... "needle" content` and its `done: 1 found in 3 files read`; an empty rename back to the default title.
+- The drop below the list with the Searches group showing and one bookmark: `[dnd] over sidebar bookmarks
+  gap 1 ... -> effect copy`, `bookmark added ...\dropped at 1 (drop)`.
+- After a restart: the three `[[search]]` tables read back (`content = true` on the text one only); the
+  `gone` root deleted between the runs: `[search] pane=0 saved search "x": ...\gone is not there any more`;
+  `saved search 2 removed`; the content search opened again and found its file.
+
+Tests: 342 passed (four new: the default title and duplicate rule with the rename, the group's rows with and
+without saved searches, the shared reorder, the settings round trip with an older file; the drop target's
+test gained the Searches group's rows; More's test its new item).
+
+### Soak
+
+To come (`soak-p5m3.ps1`, its new cycle: the content search in `src` saved, opened again from the sidebar,
+its tab closed, the row removed).
+
+### Gate
+
+To come: `tools/gate-p14m1.ps1`, the defaults triplet against `target-p13close`. The scenario never saves or
+opens a search and has no Searches group, so it proves the rest untouched; the wrapper also fails a
+candidate run that logs a saved-search line.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+Save from Ctrl+D, More and the Searches header's menu; open, rename, drag, remove; a saved content search; a
+saved search whose root was deleted; the settings file read back after a restart.
+
+### Calls made in this milestone, for Jeremy to check
+
+- A middle click on a saved search with one pane turns the second pane on and runs it there.
+- The "saved already" note names the row that holds it, its own title if renamed.
