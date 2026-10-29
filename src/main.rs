@@ -651,11 +651,11 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
             s.cancel(fs::enumerate::SEARCH_NAVIGATED);
         }
         // So does a sizes view (P13-M3).
-        if let Some(sv) = t.sizeview.take() {
+        let left_sizes = t.sizeview.take().inspect(|sv| {
             if sv.done_ms.is_none() && !sv.cancel.swap(true, Ordering::Relaxed) {
                 eprintln!("[sizeview] pane={pane} gen={} cancelled (navigated away)", sv.generation);
             }
-        }
+        });
         t.model.search_names.set(false);
         // Another folder starts unfiltered (Explorer's behaviour).
         let filtered = !t.model.filter.borrow().is_empty();
@@ -674,6 +674,13 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         // Watched from the start, so a change during the listing is not missed; dropped again if
         // the listing fails (Msg::Done).
         st.watch_active(&app, pane);
+        // The pane draws the folder's own list again, not the sizes view's (the 2026-10-29
+        // console check: C:\ drawn as a tree after leaving its sizes view).
+        if left_sizes.is_some() {
+            if pane == 0 { app.set_left_sizes(false) } else { app.set_right_sizes(false) }
+            sync_grid(st, &app, pane);
+            eprintln!("[view] pane={pane} leaves the sizes view");
+        }
         hide_strip(st, &app, pane);
         let shown = path.to_string_lossy().to_string();
         set_path(st, &app, pane);
@@ -6905,6 +6912,8 @@ thread_local! {
     /// The setting `size_on_disk` (P13-M3), for `update_shown`, which runs inside and outside the
     /// state's borrow.
     static ONDISK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The narrowest each column may be dragged (`cols::floors`), measured once at start.
+    static FLOORS: std::cell::Cell<cols::Widths> = const { std::cell::Cell::new(cols::Widths { ty: cols::FLOOR, size: cols::FLOOR, modified: cols::FLOOR }) };
 }
 
 /// Pane `pane`'s list is `w` px wide now (a window resize, the splitter, the split, the sidebar, the
@@ -7017,7 +7026,7 @@ fn col_drag(pane: usize, col: i32, dx: f32, phase: i32) {
         return;
     }
     // The columns shown stay as they were at the press until the release (`update_shown`).
-    let w = cols::drag(start, c, dx, shown_of(&app, pane), name);
+    let w = cols::drag(start, c, dx, shown_of(&app, pane), name, FLOORS.with(|f| f.get()));
     set_cols(&app, pane, w);
     if phase == 2 {
         COL_DRAG.with(|d| d.set(None));
@@ -7029,7 +7038,7 @@ fn col_drag(pane: usize, col: i32, dx: f32, phase: i32) {
 /// Column `c` of pane `pane` set to `px` by moving its grip: `colwidth` (why "script") and the fit.
 fn col_set(app: &App, pane: usize, c: cols::Col, px: f32, why: &str) {
     let start = cols_of(app, pane);
-    let w = cols::set_width(start, c, px, shown_of(app, pane), name_px(app, pane, start));
+    let w = cols::set_width(start, c, px, shown_of(app, pane), name_px(app, pane, start), FLOORS.with(|f| f.get()));
     set_cols(app, pane, w);
     with_state(|st| cols_changed(st, app, pane, start, w, why));
 }
@@ -7715,9 +7724,18 @@ fn main() -> Result<(), slint::PlatformError> {
     if config.thumbnails || config.comfortable() {
         log_list_geom(icons::ListGeom::new(config.thumbnails, config.comfortable()));
     }
+    let floors = cols::floors(|s| app.invoke_measure(s.into(), false));
+    FLOORS.with(|f| f.set(floors));
+    eprintln!("[cols] floors: type {:.0} size {:.0} modified {:.0} px", floors.ty, floors.size, floors.modified);
     for pane in 0..2 {
-        set_cols(&app, pane, config.cols(pane));
-        log_col_changes(pane, cols::DEFAULT, config.cols(pane), "config");
+        let saved = config.cols(pane);
+        let w = saved.raised(floors);
+        set_cols(&app, pane, w);
+        log_col_changes(pane, cols::DEFAULT, saved, "config");
+        if w != saved {
+            log_col_changes(pane, saved, w, "under its floor: the default");
+            config.set_cols(pane, w);
+        }
     }
     app.set_version(env!("CARGO_PKG_VERSION").into());
     if let Some(g) = config.window {

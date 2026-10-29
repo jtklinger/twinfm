@@ -51,7 +51,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (336 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (338 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -900,7 +900,7 @@ put off, with where it came from.
   Name | Type, `size` Type | Size (Name | Size with the Type column off), `modified` Size |
   Modified; none at the list's right edge, none in the grid. Dragging grip `c` moves that boundary
   from the widths at the press: `c` narrows by what its left neighbour (Name for `type`) grows; a
-  column stops at 40 px, the name cell at 120 px (a pane already narrower keeps what it has:
+  column stops at its floor (Type 40 px; since the 2026-10-29 console fixes Size and Modified at their longest text, `cols::floors`, logged at start as `[cols] floors: type T size S modified M px`, a saved width under it opening at its default; every cell's text elided), the name cell at 120 px (a pane already narrower keeps what it has:
   `dnd::name_cell`, the name cell's x range from the widths, clamped at zero). A double-click fits
   column `c` to the widest of its cells on screen and its bold header label, plus 12 px (one hidden
   `Text` in app.slint measures them, `measure`), moving the same boundary. Driver: `colwidth <pane>
@@ -908,7 +908,7 @@ put off, with where it came from.
   centre 18 px above the list's top, moves in 8 px steps, release, through Slint's pointer path),
   `colfit <pane> <col>` (two clicks at the grip; `[auto] col pane=N <col>: no such grip in this
   pane's header` for `type` with the Type column off or a pane in the grid). `[cols]` lines: `pane=N
-  <col> W -> W2 px (drag | fit | script | config)` per column changed (a drag logged at the
+  <col> W -> W2 px (drag | fit | script | config | under its floor: the default)` per column changed (a drag logged at the
   release; `config` at start for a value other than the default), `pane=N fit <col>: widest of K
   rows on screen = W px`, and `pane=N widths type T size S modified M (name N px)` after each change
   and for both panes 400 ms after start (N the name cell's width then; the right pane's is its
@@ -1202,7 +1202,7 @@ put off, with where it came from.
   (a new walk | navigated away | tab closed)`, `pane=N opened <folder> in place (K children)`, `pane=N
   closed <folder> in place`, `pane=N listed <folder>: K files in T ms`, `pane=N could not list <folder>: os
   error E`, `pane=N removed <path>: S bytes off K totals`; `[view] pane=N shows a list (the sizes view) |
-  <view>`, `[watch] pane=N no watch for <root>: sizes view`, `[refresh] pane=N sizes view: walked again`.
+  <view>`, `[view] pane=N leaves the sizes view` (a navigation in its tab), `[watch] pane=N no watch for <root>: sizes view`, `[refresh] pane=N sizes view: walked again`.
   `perf::memory_mb` reads the process's working set and private bytes.
   Since P13-M2, **everything by mouse** (Jeremy's layout B). **Each pane's path bar starts with Back,
   Forward, Up and Refresh** (pane.slint `NavButton`, Lucide `arrow-left`, `arrow-right`, `arrow-up`,

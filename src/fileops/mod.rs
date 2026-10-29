@@ -38,10 +38,10 @@ use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATT
 use windows_sys::Win32::System::Com::{CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Shell::{
-    BHID_EnumItems, BHID_SFUIObject, CMF_NORMAL, CMINVOKECOMMANDINFOEX, COPYENGINE_E_USER_CANCELLED, FOF_ALLOWUNDO,
+    BHID_SFUIObject, CMF_NORMAL, CMINVOKECOMMANDINFOEX, COPYENGINE_E_USER_CANCELLED, FOF_ALLOWUNDO,
     FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION, FOF_WANTNUKEWARNING, FOFX_ADDUNDORECORD,
     FOFX_SHOWELEVATIONPROMPT, FOLDERID_RecycleBinFolder, FileOperation, KF_FLAG_DEFAULT, SHCreateItemFromParsingName,
-    SHGetKnownFolderItem,
+    SHCreateItemFromRelativeName, SHGetKnownFolderItem,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyMenu, DispatchMessageW, GetMessageW, HMENU, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
@@ -938,20 +938,12 @@ fn perform_inner(req: &Request, progress: &Rc<dyn Fn(Progress)>, results: &mut V
 
 // --- Restore from the Recycle Bin ---------------------------------------------------------------
 
-const IID_IENUMSHELLITEMS: GUID = GUID::from_u128(0x70629033_e363_4a28_a567_0db78006e6d7);
 const IID_ICONTEXTMENU: GUID = GUID::from_u128(0x000214e4_0000_0000_c000_000000000046);
 
 /// CMIC_MASK_FLAG_NO_UI (SEE_MASK_FLAG_NO_UI): no dialogs from the verb.
 const CMIC_MASK_FLAG_NO_UI: u32 = 0x0000_0400;
 /// CMIC_MASK_NOASYNC (SEE_MASK_NOASYNC): the handler finishes before InvokeCommand returns.
 const CMIC_MASK_NOASYNC: u32 = 0x0000_0100;
-
-/// IEnumShellItems, up to `Next`.
-#[repr(C)]
-struct EnumShellItemsVtbl {
-    base: UnknownVtbl,
-    next: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void, *mut u32) -> HRESULT,
-}
 
 /// IContextMenu, up to `InvokeCommand`.
 #[repr(C)]
@@ -1048,12 +1040,10 @@ enum NotRestored {
     Quit,
 }
 
-/// The bin's own items for the `$R` paths, in their order (None: not in the bin), from one pass
-/// over the bin; Err when the bin cannot be listed.
+/// The bin's own items for the `$R` paths, in their order (None: not in the bin), each parsed by
+/// the bin from its path (the bin's parsing name; a walk of the whole bin took about 10 s for
+/// 3,475 items, the 2026-10-29 console check); Err when the bin cannot be reached.
 fn bin_items(items: &[(PathBuf, PathBuf)]) -> Result<Vec<Option<Com>>, String> {
-    let lower = |p: &Path| p.to_string_lossy().to_lowercase();
-    let want: Vec<String> = items.iter().map(|(r, _)| lower(r)).collect();
-    let mut found: Vec<Option<Com>> = items.iter().map(|_| None).collect();
     let mut p: *mut c_void = std::ptr::null_mut();
     // SAFETY: a known folder id and an out-pointer that receives an IShellItem or stays null.
     let hr = unsafe { SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, std::ptr::null_mut(), &IID_ISHELLITEM, &mut p) };
@@ -1061,27 +1051,17 @@ fn bin_items(items: &[(PathBuf, PathBuf)]) -> Result<Vec<Option<Com>>, String> {
         return Err(format!("the Recycle Bin 0x{:08X}", hr as u32));
     }
     let bin = Com(p);
-    let mut e: *mut c_void = std::ptr::null_mut();
-    // SAFETY: `bin` is a live IShellItem; `e` receives an IEnumShellItems or stays null.
-    let hr = unsafe { ((**(bin.0 as *const *const ShellItemVtbl)).bind_to_handler)(bin.0, std::ptr::null_mut(), &BHID_EnumItems, &IID_IENUMSHELLITEMS, &mut e) };
-    if hr < 0 || e.is_null() {
-        return Err(format!("listing the Recycle Bin 0x{:08X}", hr as u32));
-    }
-    let en = Com(e);
-    while found.iter().any(Option::is_none) {
-        let mut item: *mut c_void = std::ptr::null_mut();
-        let mut n = 0u32;
-        // SAFETY: `en` is a live IEnumShellItems; one item out, owned by us when fetched.
-        let hr = unsafe { ((**(en.0 as *const *const EnumShellItemsVtbl)).next)(en.0, 1, &mut item, &mut n) };
-        if hr != 0 || n == 0 || item.is_null() {
-            break; // S_FALSE: the end
-        }
-        let item = Com(item);
-        if let Some(k) = item_path(item.0).map(|p| lower(&p)).and_then(|p| want.iter().zip(&found).position(|(w, f)| f.is_none() && *w == p)) {
-            found[k] = Some(item);
-        }
-    }
-    Ok(found)
+    Ok(items
+        .iter()
+        .map(|(r, _)| {
+            let w = wide(r.as_os_str());
+            let mut item: *mut c_void = std::ptr::null_mut();
+            // SAFETY: `bin` is a live IShellItem, `w` a NUL-terminated path that outlives the call;
+            // `item` receives an IShellItem or stays null.
+            let hr = unsafe { SHCreateItemFromRelativeName(bin.0, w.as_ptr(), std::ptr::null_mut(), &IID_ISHELLITEM, &mut item) };
+            (hr >= 0 && !item.is_null()).then(|| Com(item))
+        })
+        .collect())
 }
 
 /// The bin item's "undelete" verb, then a wait (pumping) until `r` is gone and `original` is
