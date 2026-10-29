@@ -918,7 +918,9 @@ fn toolbar_clicked(pane: usize, button: &str) {
 /// the pane's bar had no room for first). `[toolbar] menu <name>: <items>`.
 fn open_tool_menu(pane: usize, name: &str, x: f32, y: f32) {
     winmenu_close("another menu opens");
-    let Some((req, ctx)) = menu_request(pane, -1, x, y, false) else { return };
+    // A toolbar menu runs TwinFM's commands only, so it opens in search results too (P14-M1: More's
+    // "Save this search"), where the background's shell menu is refused.
+    let Some((req, ctx)) = menu_request_for(pane, -1, x, y, false, true) else { return };
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let tools = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
@@ -927,7 +929,8 @@ fn open_tool_menu(pane: usize, name: &str, x: f32, y: f32) {
         } else {
             let fit = tool_fit(&app, pane) as usize;
             let items = toolbar::more_menu(&tools, fit, app.get_split(), tool_place(st, pane), st.is_search(pane));
-            let own = items.len() - 6;
+            // More's own items: six, and "Save this search" before them in a search tab.
+            let own = items.len() - 6 - usize::from(st.is_search(pane));
             (items, own)
         };
         let entries = winmenu::tool_items(&items, own);
@@ -3784,6 +3787,12 @@ fn classic_menu(pane: usize, row: i32, x: f32, y: f32, extended: bool) {
 /// What the context menu needs, taken out of the state: the request for `shellmenu::show` and
 /// what its own items need afterwards. None (with a note) when there is no menu to show.
 fn menu_request(pane: usize, row: i32, x: f32, y: f32, extended: bool) -> Option<(shellmenu::Request, MenuContext)> {
+    menu_request_for(pane, row, x, y, extended, false)
+}
+
+/// `menu_request`; `tool`: for a toolbar menu, which shows no shell items and so is not refused on
+/// search results' background.
+fn menu_request_for(pane: usize, row: i32, x: f32, y: f32, extended: bool, tool: bool) -> Option<(shellmenu::Request, MenuContext)> {
     with_state(|st| {
         let app = st.app.upgrade()?;
         let hwnd = main_hwnd(st, &app);
@@ -3795,7 +3804,7 @@ fn menu_request(pane: usize, row: i32, x: f32, y: f32, extended: bool) -> Option
         let this_pc = is_this_pc(&folder.to_string_lossy());
         let targets = if row >= 0 { st.model(pane).targets(current_row(&app, pane)) } else { Vec::new() };
         let names: Vec<String> = targets.iter().map(|e| e.name.to_string()).collect();
-        if targets.is_empty() && st.is_results(pane) {
+        if targets.is_empty() && st.is_results(pane) && !tool {
             // Its "Paste" and "New" would act on the root, which is not what the list shows.
             note(st, &app, pane, "search results have no folder menu; right-click a result".into());
             return None;

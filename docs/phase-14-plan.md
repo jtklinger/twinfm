@@ -88,7 +88,7 @@ More menu, `src/auto.rs`, `tools/soak-p5m3.ps1`):
      file, the group's rows with and without saved searches, the shared reorder. Soak: per cycle a content
      search in `src` saved, opened from the sidebar into a tab (its `done` line counted), the tab closed, the
      row removed. Gate: the defaults triplet (the scenario has no saved search: it proves the rest untouched,
-     and the record says so). Console checks: save from Ctrl+D, the tab's menu and More; open, rename, drag,
+     and the record says so). Console checks: save from Ctrl+D, More and the Searches header's menu; open, rename, drag,
      remove; a saved content search; a saved search whose root was deleted; the settings file read back after
      a restart.
 2. **P14-M3, the look's leftovers.**
