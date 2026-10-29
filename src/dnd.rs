@@ -518,7 +518,8 @@ pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len:
             }
             top += h;
         }
-        // Below the last row: after the last bookmark.
+        // Below the last row: after the last bookmark (P12-M5), with a Searches group below them too
+        // (P14-M1: its own header and rows take no drop, the space below the list still appends).
         return if ly >= top && first > 0 { Spot::SideGap(n) } else { Spot::Outside };
     }
     let panes = if l.split { 2 } else { 1 };
@@ -3547,6 +3548,15 @@ mod tests {
         assert_eq!(hit(90.0, 176.9), Spot::Side(6));
         assert_eq!(hit(90.0, 177.0), Spot::SideGap(1), "its bottom 6 px: after it");
         assert_eq!(hit(90.0, 184.0), Spot::SideGap(1), "below the last row: after the last");
+        // A Searches group after the bookmarks (P14-M1): its header and rows take no drop; the
+        // bookmark's bottom edge and the space below the list still append to the bookmarks.
+        let with_searches = [&rows[..], &[(26.0, false), (24.0, false)]].concat();
+        let s2 = Strips { side_rows: &with_searches, ..s };
+        let hit2 = |x: f32, y: f32| hit_all(&l, &s2, x, y, none, [5, 7]);
+        assert_eq!(hit2(90.0, 177.0), Spot::SideGap(1), "the last bookmark's bottom 6 px");
+        assert_eq!(hit2(90.0, 190.0), Spot::Outside, "the Searches header");
+        assert_eq!(hit2(90.0, 215.0), Spot::Outside, "a saved search: no folder");
+        assert_eq!(hit2(90.0, 240.0), Spot::SideGap(1), "below the list: after the last bookmark, as before");
         assert_eq!(bookmark_effect(COPY | MOVE | LINK), LINK);
         assert_eq!(bookmark_effect(COPY | MOVE), COPY, "no link allowed: a copy, never a move");
         assert_eq!(bookmark_effect(MOVE), NONE);

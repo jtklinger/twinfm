@@ -118,6 +118,11 @@
 # content toggle on, the text, Ctrl+Shift+F), closes its tab and turns the toggle off; the report
 # counts content searches done (one per cycle), the files they read (src's 200 at least) and the
 # files they found (one per cycle: tree\d03\f07.txt).
+# P14-M1: the content search's tab is saved (`searchsave 0`, Ctrl+D's command) before it closes, the
+# saved search is opened from the sidebar (`searchopen 0`: a new tab of the left pane, the search run
+# again), that tab closed and the row removed (`searchremove 0`); the report counts the searches saved,
+# opened, the content searches done after an open (each one per cycle) and the rows removed, and the
+# content search counts above are two per cycle since (the saved one's run again).
 # P11-M2: each cycle also narrows the left pane's Type column to 100 px and puts both panes back
 # through the settings dialog's "Reset column widths" (`settings set cols_reset`, OK); the report
 # counts the resets (two lines per cycle, one per pane), and the widths-back lines are two per
@@ -552,7 +557,10 @@ $cycle = @(
     'filter 0 notes', 'sleep 300', 'searchbutton 0', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
     'filter 0', 'sleep 200', 'searchreturn 0', 'sleep 300',
     # P11-M1: a content search in src (see the header).
-    "nav 0 $src", 'sleep 500', 'csearch 0 scratch file 3/7', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
+    "nav 0 $src", 'sleep 500', 'csearch 0 scratch file 3/7', 'waitsearch 5000', 'sleep 800',
+    # P14-M1: that search saved, opened again from the sidebar, its row removed (see the header).
+    'searchsave 0', 'sleep 300', 'tab close', 'sleep 300', 'searchopen 0', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
+    'searchremove 0', 'sleep 300',
     'contentmode 0 off', 'filter 0', 'sleep 300',
     # P11-M2: the widths reset through the dialog (see the header), at the 0.6 split since P13-M1, where
     # Type shows (at 0.5 it is hidden, and `colwidth 0 type` is refused).
@@ -767,6 +775,16 @@ $boxEmpty = @($log | Select-String -SimpleMatch '[search] pane=0 box Return: emp
 $contentDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: (\d+) found in (\d+) files read')
 $contentRead = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[2].Value } | Measure-Object -Sum).Sum
 $contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum).Sum
+# P14-M1: saved searches; a content search done counts as the saved one's when an open came before it.
+$searchSaved = @($log | Select-String -SimpleMatch '[sidebar] saved search added "Text "scratch file 3/7" in ').Count
+$searchOpened = @($log | Select-String -SimpleMatch '[sidebar] saved search 0 opened: ').Count
+$searchRemoved = @($log | Select-String -SimpleMatch '[sidebar] saved search 0 removed: ').Count
+$searchRerun = 0
+$afterOpen = $false
+foreach ($line in $log) {
+    if ($line.StartsWith('[sidebar] saved search 0 opened: ')) { $afterOpen = $true }
+    elseif ($afterOpen -and $line -match '^\[search\] pane=0 gen=\d+ done: 1 found in \d+ files read') { $searchRerun++; $afterOpen = $false }
+}
 $colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 120 px (drag)').Count
 $colFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit modified: ').Count
 $colResets = @($log | Select-String -SimpleMatch '[cols] pane=0 widths reset to 120, 90, 140').Count + @($log | Select-String -SimpleMatch '[cols] pane=1 widths reset to 120, 90, 140').Count
@@ -869,5 +887,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "Size on disk column: on $odOn, off $odOff, left pane shown with it $odShown (one each per cycle), listings read with it $odRead (one per cycle: the right pane is in a.zip then, and an archive level is not read)"
 "mouse: path bar buttons $navButtons (four per cycle), View picks $viewPicks (two per cycle), More picks $morePicks (seven per cycle), details bands done with 2 selected $detailsBands (one per cycle), presses on a row's blank part $blankPresses (one per cycle)"
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
-"content search: done $($contentDone.Count) (one per cycle), files read $contentRead (200 or more per cycle), found $contentFound (one per cycle)"
+"content search: done $($contentDone.Count) (two per cycle), files read $contentRead (400 or more per cycle), found $contentFound (two per cycle)"
+"saved searches: saved $searchSaved, opened $searchOpened, run again and found $searchRerun, removed $searchRemoved (one each per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

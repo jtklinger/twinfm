@@ -1317,6 +1317,32 @@ put off, with where it came from.
   followed; the same figure). Off, nothing is read. `[enum] pane=N gen=G size on disk: K entries read in
   T ms`, `[settings] Size on disk column on|off`, and the `[cols] pane=N shows ...` line ends `, size on
   disk` while it shows. Driver: `settings set size_on_disk true|false`.
+  Since P14-M1, **saved searches**: in a search tab (a name or a content search, finished or walking)
+  **Ctrl+D saves the search** (`bookmark_add` hands it to `save_search`; elsewhere it bookmarks as
+  before), as do ⋯ More's "Save this search" (`toolbar::more_menu`'s `search`, a search tab only, not a
+  sizes view; command `savesearch`) and the Searches header's menu (enabled in a search tab, the
+  window's `active-is-search`). Tabs have no menu. Kept: the root, the pattern, name or content
+  (`settings::SavedSearch`, saved as `[[search]]` tables after the `[[bookmark]]` ones: `path`,
+  `pattern`, `content` when true, `title` when renamed); one saved already (`sidebar::saved_at`: the root
+  by the bookmarks' folder test, the same pattern and kind) stays where it is. The sidebar's **Searches**
+  group (`RowKind::Search`, header section 4) follows Bookmarks while it has a row; each row a Lucide
+  `search` icon (`file-search` for text in files), titled `"<pattern>" in <folder>` or `Text "<text>" in
+  <folder>` (`sidebar::search_title`), its root as the tooltip (`SideItem`'s `tip`). A click or Return
+  runs it again in a new tab of the active pane (`search_open`, `start_search` with `SearchAt::Saved`: the
+  same refusals, and "<root> is not there any more"); a middle click in the other pane (the split turned
+  on first). Rename (F2, the row's menu; empty goes back to the default title), Move up and down, a drag
+  and "Remove saved search" as bookmarks have, through the same rules: `sidebar::remove_at`, `move_by`,
+  `move_to` and `drag_target` are generic over the group, and the drag carries its group
+  (`side-drag(kind, from, gap)`; each group's first row and count, `sidebar::group`, set as
+  `bookmark-first`/`-count` and `search-first`/`-count`, since the bookmarks are no longer the last
+  rows). A saved search's row and the Searches header take no drop; the space below the list still
+  appends to the bookmarks (P12-M5's rule, with Searches between). Search tabs are still not
+  restored at start. Driver: `searchsave <pane>`, `searchopen <index>`, `searchremove <index>`,
+  `searchrename <index> <title>`, `searchmove <index> up|down`. Lines: `[sidebar] saved search added
+  "<title>": <root> "<pattern>" name|content`, `[sidebar] "<title>" is saved already`, `[sidebar] saved
+  search <i> opened: <root> "<pattern>" name|content[ (the other pane)]`, `[sidebar] saved search <i>
+  removed: "<title>"`, `[sidebar] saved search <i> renamed "<a>" -> "<b>"`, `[sidebar] saved search moved
+  F -> T[ (drag)]`, `[search] pane=N saved search "<pattern>": <root> is not there any more`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

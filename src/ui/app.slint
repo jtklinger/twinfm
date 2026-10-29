@@ -12,12 +12,16 @@ export { Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, Tool
 export { Palette } from "std-widgets.slint";
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark, 4 a recent
-// folder (P12-M5); index is the bookmark's index in the bookmark list (a recent folder's in the Recent
-// list; a header's section: 0 Drives, 1 Places, 2 Recent, 3 Bookmarks).
+// folder (P12-M5), 5 a saved search (P14-M1); index is the bookmark's index in the bookmark list (a
+// recent folder's in the Recent list, a saved search's in the search list; a header's section: 0
+// Drives, 1 Places, 2 Recent, 3 Bookmarks, 4 Searches). tip: a saved search's root, its tooltip;
+// content: a saved search inside files (its icon).
 export struct SideItem {
     label: string,
     kind: int,
     index: int,
+    tip: string,
+    content: bool,
 }
 
 component SideRow inherits Rectangle {
@@ -30,16 +34,16 @@ component SideRow inherits Rectangle {
     // header a hairline.
     in property <bool> rail;
     // The row's icon (P10-M1): drives, bookmarks, and the known places by their label.
-    property <image> icon: item.kind == 1 ? @image-url("icons/hard-drive.svg") : item.kind == 3 ? @image-url("icons/star.svg") : item.label == "Home" ? @image-url("icons/house.svg") : item.label == "Desktop" ? @image-url("icons/monitor.svg") : item.label == "Downloads" ? @image-url("icons/download.svg") : item.label == "Pictures" ? @image-url("icons/image.svg") : item.label == "Music" ? @image-url("icons/music.svg") : item.label == "Videos" ? @image-url("icons/film.svg") : item.label == "OneDrive" ? @image-url("icons/cloud.svg") : @image-url("icons/folder.svg");
+    property <image> icon: item.kind == 1 ? @image-url("icons/hard-drive.svg") : item.kind == 5 ? (item.content ? @image-url("icons/file-search.svg") : @image-url("icons/search.svg")) : item.kind == 3 ? @image-url("icons/star.svg") : item.label == "Home" ? @image-url("icons/house.svg") : item.label == "Desktop" ? @image-url("icons/monitor.svg") : item.label == "Downloads" ? @image-url("icons/download.svg") : item.label == "Pictures" ? @image-url("icons/image.svg") : item.label == "Music" ? @image-url("icons/music.svg") : item.label == "Videos" ? @image-url("icons/film.svg") : item.label == "OneDrive" ? @image-url("icons/cloud.svg") : @image-url("icons/folder.svg");
     // clicked(middle): the left or the middle button released over the row.
     callback clicked(bool);
-    // menu(x, y): the right button released over a bookmark, or the Recent or Bookmarks header
-    // (P12-M5), at window coordinates.
+    // menu(x, y): the right button released over a bookmark or a saved search, or the Recent,
+    // Bookmarks or Searches header (P12-M5, P14-M1), at window coordinates.
     callback menu(length, length);
     // renamed(title): Return in the editor. edit-cancelled(refocus): Escape (true) or focus loss.
     callback renamed(string);
     callback edit-cancelled(bool);
-    // A bookmark carried by a drag (P12-M5): drag(phase, y), phase 0 the press dragged past 4 px, 1 a
+    // A bookmark or a saved search carried by a drag (P12-M5, P14-M1): drag(phase, y), phase 0 the press dragged past 4 px, 1 a
     // move, 2 the release, 3 the grab lost; y the pointer's, in window px. A drag's release opens
     // nothing.
     callback drag(int, length);
@@ -90,7 +94,7 @@ component SideRow inherits Rectangle {
         width: parent.width - 12px;
         height: parent.height;
         text: root.item.label;
-        label: "Bookmark title";
+        label: item.kind == 5 ? "Search title" : "Bookmark title";
         init => {
             self.focus();
             self.select-all();
@@ -105,12 +109,13 @@ component SideRow inherits Rectangle {
         }
     }
     ta := TouchArea {
-        // A header takes the right button only, for its menu (the Recent and Bookmarks headers', P12-M5).
+        // A header takes the right button only, for its menu (the Recent and Bookmarks headers', P12-M5,
+        // the Searches header's, P14-M1).
         enabled: (item.kind != 0 || item.index >= 2) && !root.editing;
         moved => {
             if (root.dragging) {
                 root.drag(1, self.absolute-position.y + self.mouse-y);
-            } else if (self.pressed && item.kind == 3 && abs(self.mouse-y - self.pressed-y) > 4px) {
+            } else if (self.pressed && (item.kind == 3 || item.kind == 5) && abs(self.mouse-y - self.pressed-y) > 4px) {
                 root.dragging = true;
                 root.drag(0, self.absolute-position.y + self.mouse-y);
             }
@@ -128,14 +133,15 @@ component SideRow inherits Rectangle {
             }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left && item.kind != 0) { root.clicked(false); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle && item.kind != 0) { root.clicked(true); }
-            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right && (item.kind == 3 || item.kind == 0)) {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right && (item.kind == 3 || item.kind == 5 || item.kind == 0)) {
                 root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
         }
     }
     // After the TouchArea, so the tooltip's area is on top and sees the hover (it passes the pointer on).
-    if root.rail && item.kind != 0: Tooltip {
-        TipCard { text: item.label; }
+    // A saved search's root, on the full sidebar too (P14-M1).
+    if (root.rail && item.kind != 0) || item.kind == 5: Tooltip {
+        TipCard { text: root.rail ? item.label : item.tip; }
     }
 }
 
@@ -535,22 +541,38 @@ export component App inherits Window {
     callback bookmark-move(int, bool);
     // The Recent header's "Clear recent" (P12-M5).
     callback recent-clear();
-    // A bookmark dragged in the sidebar (P12-M5): bookmark-drag(from, gap) on the release, gap 0
-    // above the first bookmark to bookmark-count below the last; side-drag-from and side-drag-gap
-    // while it is carried (-1: none), the gap by the row line nearest the pointer.
-    callback bookmark-drag(int, int);
+    // Saved searches (P14-M1): search-save() Ctrl+D's in a search tab (the Searches header's "Save
+    // this search", More's); search-remove(index), search-rename(index, title), search-move(index,
+    // up) as the bookmarks' three.
+    callback search-save();
+    callback search-remove(int);
+    callback search-rename(int, string);
+    callback search-move(int, bool);
+    // A bookmark or a saved search dragged in the sidebar (P12-M5, P14-M1): side-drag(kind, from,
+    // gap) on the release, kind 3 a bookmark or 5 a saved search, gap 0 above the group's first row to
+    // its count below the last; side-drag-kind, side-drag-from and side-drag-gap while it is carried
+    // (-1: none), the gap by the row line nearest the pointer, inside the row's own group.
+    callback side-drag(int, int, int);
+    private property <int> side-drag-kind: -1;
     private property <int> side-drag-from: -1;
     private property <int> side-drag-gap: -1;
     // A folder dragged over the Bookmarks gap from TwinFM's lists or another program (P12-M5, the drop
     // target's): the gap its drop bookmarks it at, the same line as a bookmark's drag (-1: none).
     in property <int> drop-side-gap: -1;
-    function bookmark-gap(y: length) -> int {
-        let top = side-list.absolute-position.y + side-list.content-y + (root.side-items.length - root.bookmark-count) * 32px;
-        return max(0, min(root.bookmark-count, round((y - top) / 32px)));
+    // The gap nearest window y in a group whose first row is sidebar row `first` (rows 32 px each).
+    function group-gap(y: length, first: int, count: int) -> int {
+        let top = side-list.absolute-position.y + side-list.content-y + first * 32px;
+        return max(0, min(count, round((y - top) / 32px)));
     }
-    // How many bookmarks there are (for the menu's move items), and the sidebar row whose title
-    // editor is open (-1: none).
+    // Each group's first sidebar row and its count (sidebar.rs `group`; P14-M1: the bookmarks are no
+    // longer the last rows), for the drag, its line and the menus' move items; and the sidebar row
+    // whose title editor is open (-1: none). active-is-search: the active pane's tab is a search
+    // tab (the Searches header's "Save this search").
+    in property <int> bookmark-first;
     in property <int> bookmark-count;
+    in property <int> search-first;
+    in property <int> search-count;
+    in property <bool> active-is-search;
     in-out property <int> side-edit: -1;
     // The sidebar row clicked last (-1: none). A left click on a row gives the sidebar the keys,
     // as Explorer's navigation pane takes them (P6-M3): F2 on a bookmark opens its title editor,
@@ -956,7 +978,7 @@ export component App inherits Window {
                 focus-on-tab-navigation: false;
                 key-pressed(e) => {
                     if (e.text == Key.F2) {
-                        if (root.side-current >= 0 && root.side-current < root.side-items.length && root.side-items[root.side-current].kind == 3) {
+                        if (root.side-current >= 0 && root.side-current < root.side-items.length && (root.side-items[root.side-current].kind == 3 || root.side-items[root.side-current].kind == 5)) {
                             root.side-edit = root.side-current;
                         }
                         return accept;
@@ -998,6 +1020,7 @@ export component App inherits Window {
                         }
                         menu(x, y) => {
                             root.menu-index = item.index;
+                            root.menu-kind = item.kind;
                             root.menu-row = i;
                             root.menu-x = x;
                             root.menu-y = y;
@@ -1005,7 +1028,7 @@ export component App inherits Window {
                         }
                         renamed(t) => {
                             root.side-edit = -1;
-                            root.bookmark-rename(item.index, t);
+                            if (item.kind == 5) { root.search-rename(item.index, t); } else { root.bookmark-rename(item.index, t); }
                             root.focus-pane(root.active-pane);
                         }
                         edit-cancelled(refocus) => {
@@ -1013,10 +1036,16 @@ export component App inherits Window {
                             if (refocus) { root.focus-pane(root.active-pane); }
                         }
                         drag(phase, y) => {
-                            if (phase == 0) { root.side-drag-from = item.index; }
-                            if (phase <= 1) { root.side-drag-gap = root.bookmark-gap(y); }
-                            if (phase == 2) { root.bookmark-drag(root.side-drag-from, root.side-drag-gap); }
+                            if (phase == 0) {
+                                root.side-drag-kind = item.kind;
+                                root.side-drag-from = item.index;
+                            }
+                            if (phase <= 1) {
+                                root.side-drag-gap = item.kind == 5 ? root.group-gap(y, root.search-first, root.search-count) : root.group-gap(y, root.bookmark-first, root.bookmark-count);
+                            }
+                            if (phase == 2) { root.side-drag(root.side-drag-kind, root.side-drag-from, root.side-drag-gap); }
                             if (phase >= 2) {
+                                root.side-drag-kind = -1;
                                 root.side-drag-from = -1;
                                 root.side-drag-gap = -1;
                             }
@@ -1076,11 +1105,11 @@ export component App inherits Window {
                     border-color: Theme.cursor;
                 }
             }
-            // Where a dragged bookmark lands (P12-M5): a 2 px line in the accent on the line between two
-            // rows, in the list's content (the bookmarks are its last rows, 32 px each).
+            // Where a dragged bookmark or saved search lands (P12-M5, P14-M1): a 2 px line in the accent
+            // on the line between two rows of its group, in the list's content (32 px rows).
             if root.side-drag-gap >= 0 || root.drop-side-gap >= 0: Rectangle {
                 x: 8px;
-                y: side-list.y + side-list.content-y + (root.side-items.length - root.bookmark-count + (root.side-drag-gap >= 0 ? root.side-drag-gap : root.drop-side-gap)) * 32px - 1px;
+                y: side-list.y + side-list.content-y + (root.side-drag-gap >= 0 ? (root.side-drag-kind == 5 ? root.search-first : root.bookmark-first) + root.side-drag-gap : root.bookmark-first + root.drop-side-gap) * 32px - 1px;
                 width: side-list.width - 16px;
                 height: 2px;
                 background: Theme.cursor;
@@ -1375,8 +1404,10 @@ export component App inherits Window {
         }
     }
 
-    // The bookmark the menu is for: its index in the bookmark list and its sidebar row.
+    // The bookmark (or saved search, P14-M1) the menu is for: its index in its list, its kind and its
+    // sidebar row.
     private property <int> menu-index;
+    private property <int> menu-kind;
     private property <int> menu-row;
     private property <length> menu-x;
     private property <length> menu-y;
@@ -1393,7 +1424,7 @@ export component App inherits Window {
             VerticalLayout {
                 padding: 3px;
                 MenuItem {
-                    text: "Rename bookmark";
+                    text: root.menu-kind == 5 ? "Rename saved search" : "Rename bookmark";
                     activated => {
                         bookmark-menu.close();
                         root.side-edit = root.menu-row;
@@ -1404,22 +1435,22 @@ export component App inherits Window {
                     enabled: root.menu-index > 0;
                     activated => {
                         bookmark-menu.close();
-                        root.bookmark-move(root.menu-index, true);
+                        if (root.menu-kind == 5) { root.search-move(root.menu-index, true); } else { root.bookmark-move(root.menu-index, true); }
                     }
                 }
                 MenuItem {
                     text: "Move down";
-                    enabled: root.menu-index + 1 < root.bookmark-count;
+                    enabled: root.menu-index + 1 < (root.menu-kind == 5 ? root.search-count : root.bookmark-count);
                     activated => {
                         bookmark-menu.close();
-                        root.bookmark-move(root.menu-index, false);
+                        if (root.menu-kind == 5) { root.search-move(root.menu-index, false); } else { root.bookmark-move(root.menu-index, false); }
                     }
                 }
                 MenuItem {
-                    text: "Remove bookmark";
+                    text: root.menu-kind == 5 ? "Remove saved search" : "Remove bookmark";
                     activated => {
                         bookmark-menu.close();
-                        root.bookmark-remove(root.menu-index);
+                        if (root.menu-kind == 5) { root.search-remove(root.menu-index); } else { root.bookmark-remove(root.menu-index); }
                     }
                 }
             }
@@ -1427,7 +1458,8 @@ export component App inherits Window {
     }
 
     // A sidebar header's menu (P12-M5): the Recent header's "Clear recent", the Bookmarks header's
-    // "Bookmark this folder" (Ctrl+D's: the active pane's folder, at the end).
+    // "Bookmark this folder" (Ctrl+D's: the active pane's folder, at the end), the Searches header's
+    // "Save this search" (P14-M1, in a search tab only).
     header-menu := PopupWindow {
         x: root.menu-x;
         y: root.menu-y;
@@ -1452,6 +1484,14 @@ export component App inherits Window {
                     text: "Bookmark this folder";
                     activated => {
                         root.bookmark-add();
+                        header-menu.close();
+                    }
+                }
+                if root.menu-index == 4: MenuItem {
+                    text: "Save this search";
+                    enabled: root.active-is-search;
+                    activated => {
+                        root.search-save();
                         header-menu.close();
                     }
                 }

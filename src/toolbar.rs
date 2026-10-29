@@ -122,9 +122,10 @@ pub const SEP_BEFORE: [&str; 4] = ["cut", "rename", "undo", "view"];
 
 /// The More menu for a pane whose bar shows `fit` of `BUTTONS`: first each button that did not fit,
 /// in the bar's order (the View button as the view menu's three items), then More's own items:
-/// Select all, Copy and Move to the other pane (with two panes), Size all folders (in a folder), Show
-/// hidden files (ticked while on), Cancel waiting jobs (with jobs waiting).
-pub fn more_menu(t: &ToolState, fit: usize, split: bool, place: Place) -> Vec<MenuItem> {
+/// Save this search (with `search`: a search tab, not a sizes view, P14-M1), Select all, Copy and Move to the other pane (with
+/// two panes), Size all folders (in a folder), Show hidden files (ticked while on), Cancel waiting jobs
+/// (with jobs waiting).
+pub fn more_menu(t: &ToolState, fit: usize, split: bool, place: Place, search: bool) -> Vec<MenuItem> {
     let mut out = Vec::new();
     for b in BUTTONS.iter().skip(fit) {
         match *b {
@@ -144,6 +145,9 @@ pub fn more_menu(t: &ToolState, fit: usize, split: bool, place: Place) -> Vec<Me
         }
     }
     let folder = matches!(place, Place::Folder | Place::Zip);
+    if search {
+        out.push(item("Save this search", "Ctrl+D", "savesearch", true, false));
+    }
     out.extend([
         item("Select all", "Ctrl+A", "selectall", true, false),
         item("Copy to other pane", "Shift+F5", "copyother", split && t.copy, false),
@@ -243,7 +247,7 @@ mod tests {
         let names = |v: &[MenuItem]| v.iter().map(|i| (i.text, i.enabled, i.ticked)).collect::<Vec<_>>();
         assert_eq!(names(&view_menu(2)), [("Details", true, false), ("Large icons", true, false), ("Medium icons", true, true)]);
         let mut t = with_facts(state(Place::Folder, 1, false), &Facts { hidden: true, ..Facts::default() });
-        let all = more_menu(&t, BUTTONS.len(), true, Place::Folder);
+        let all = more_menu(&t, BUTTONS.len(), true, Place::Folder, false);
         assert_eq!(
             names(&all),
             [
@@ -255,12 +259,14 @@ mod tests {
                 ("Cancel waiting jobs", false, false)
             ]
         );
-        let one = more_menu(&t, BUTTONS.len(), false, Place::Search);
-        assert!(!one[1].enabled && !one[2].enabled, "one pane: nothing to copy to");
-        assert!(!one[3].enabled, "no folder sizes in search results");
+        let one = more_menu(&t, BUTTONS.len(), false, Place::Search, true);
+        assert_eq!((one[0].text, one[0].command), ("Save this search", "savesearch"), "a search tab saves its search (P14-M1)");
+        assert!(!one[2].enabled && !one[3].enabled, "one pane: nothing to copy to");
+        assert!(!one[4].enabled, "no folder sizes in search results");
+        assert!(all.iter().all(|i| i.command != "savesearch"), "a folder has no search to save");
         // Three buttons past the bar's edge come first, in the bar's order, View as its three items.
         t.view = 0;
-        let over = more_menu(&t, BUTTONS.len() - 3, true, Place::Folder);
+        let over = more_menu(&t, BUTTONS.len() - 3, true, Place::Folder, false);
         let texts: Vec<_> = over.iter().take(5).map(|i| i.text).collect();
         assert_eq!(texts, ["Details", "Large icons", "Medium icons", "Two panes", "Preview pane"]);
         assert!(over[3].ticked, "Two panes ticked while split");
