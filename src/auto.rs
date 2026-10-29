@@ -213,7 +213,15 @@
 //!   bookmark drag <from> <to>        drag bookmark <from> so it lands at index <to> (P12-M5): a press
 //!                                    on its row, moves in 4 px steps to the line where it lands and a
 //!                                    release, through Slint's pointer path (the sidebar scrolled to its
-//!                                    end first, where the bookmarks are)
+//!                                    end first)
+//!   searchsave <pane>                Ctrl+D's command in the pane's active tab (P14-M1): a search tab
+//!                                    saves its search into the sidebar's Searches group
+//!   searchopen <index>               a click on saved search <index> (its row in the sidebar): the
+//!                                    search runs again in a new tab of the active pane
+//!   searchremove <index>             the saved search menu's "Remove saved search"
+//!   searchrename <index> <title>     what the saved search row's title editor commits (an empty title
+//!                                    goes back to the default one)
+//!   searchmove <index> <up|down>     the saved search menu's "Move up" / "Move down"
 //!   about open | about close         F1 opens the About dialog; close closes it
 //!   settings open                    Ctrl+, opens the settings dialog (key name CtrlComma)
 //!   settings set <field> <value>     stage a value in the open dialog through the function its control
@@ -415,6 +423,12 @@ enum Step {
     BookmarkMove(i32, bool),
     /// Drag bookmark `from` so it lands at index `to` (P12-M5).
     BookmarkDrag(usize, usize),
+    /// Saved searches (P14-M1): save the pane's search, open, remove, rename and move a saved one.
+    SearchSave(usize),
+    SearchOpen(i32),
+    SearchRemove(i32),
+    SearchRename(i32, String),
+    SearchMove(i32, bool),
     AboutClose,
     /// The settings dialog's OK (true) or Cancel button.
     SettingsClose(bool),
@@ -655,6 +669,11 @@ fn parse(script: &str) -> Vec<Step> {
                 "bookmark" if a.get(1) == Some(&"move") => Step::BookmarkMove(num(2) as i32, a.get(3) == Some(&"up")),
                 "bookmark" if a.get(1) == Some(&"drag") => Step::BookmarkDrag(num(2) as usize, num(3) as usize),
                 "bookmark" => Step::Key("CtrlD".into()),
+                "searchsave" => Step::SearchSave(num(1) as usize),
+                "searchopen" => Step::SearchOpen(num(1) as i32),
+                "searchremove" => Step::SearchRemove(num(1) as i32),
+                "searchrename" => Step::SearchRename(num(1) as i32, a.get(2..).unwrap_or(&[]).join(" ")),
+                "searchmove" => Step::SearchMove(num(1) as i32, a.get(2) == Some(&"up")),
                 "about" if a.get(1) == Some(&"close") => Step::AboutClose,
                 "about" => Step::Key("F1".into()),
                 "settings" if a.get(1) == Some(&"ok") => Step::SettingsClose(true),
@@ -1612,11 +1631,11 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             schedule(runner, 1);
         }
         Step::BookmarkDrag(from, to) => {
-            // The bookmarks are the sidebar's last rows: the list scrolled to its end, then rows
-            // aimed with its scroll.
+            // The list scrolled to its end, then rows aimed with its scroll (the bookmarks found by
+            // their group, P14-M1: the Searches group may follow them).
             app.invoke_side_scroll_end();
             let n = app.get_bookmark_count().max(0) as usize;
-            let first = slint::Model::row_count(&app.get_side_items()).saturating_sub(n);
+            let first = app.get_bookmark_first().max(0) as usize;
             let top = crate::dnd::side_top(&crate::window_layout(&app)) + app.invoke_side_scroll();
             let row_y = |r: usize| top + app.invoke_side_row_top(r as i32);
             let x = side_x(&app);
@@ -1636,6 +1655,31 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         }
         Step::BookmarkMove(i, up) => {
             app.invoke_bookmark_move(i, up);
+            schedule(runner, 1);
+        }
+        Step::SearchSave(pane) => {
+            crate::search_save_in(pane);
+            schedule(runner, 1);
+        }
+        Step::SearchOpen(i) => {
+            // A left click on its row, as `sidebar click` gives it.
+            if i < 0 || i >= app.get_search_count() {
+                eprintln!("[auto] searchopen {i}: no such saved search");
+            } else {
+                app.invoke_side_click(app.get_search_first() + i);
+            }
+            schedule(runner, 1);
+        }
+        Step::SearchRemove(i) => {
+            app.invoke_search_remove(i);
+            schedule(runner, 1);
+        }
+        Step::SearchRename(i, title) => {
+            app.invoke_search_rename(i, title.as_str().into());
+            schedule(runner, 1);
+        }
+        Step::SearchMove(i, up) => {
+            app.invoke_search_move(i, up);
             schedule(runner, 1);
         }
         Step::AboutClose => {

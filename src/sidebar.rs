@@ -5,7 +5,7 @@
 //! bookmark list rules are pure and unit-tested.
 
 use crate::model::Entry;
-use crate::settings::Bookmark;
+use crate::settings::{Bookmark, SavedSearch};
 use std::path::PathBuf;
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::UI::Shell::{
@@ -23,14 +23,17 @@ pub enum RowKind {
     Bookmark = 3,
     /// A folder a pane showed lately (P12-M5).
     Recent = 4,
+    /// A saved search (P14-M1): opening it runs the search again. No folder, so no drop target.
+    Search = 5,
 }
 
 /// The Recent group's length (P12-M5).
 pub const RECENT_MAX: usize = 8;
 
-/// One sidebar row: its text, kind, the folder a click opens (none for a header) and, for a
-/// bookmark, its index in the bookmark list (a recent folder's in the Recent list; a header's
-/// section: 0 Drives, 1 Places, 2 Recent, 3 Bookmarks).
+/// One sidebar row: its text, kind, the folder a click opens (none for a header; a saved search's
+/// root, which a click searches rather than opens) and, for a bookmark, its index in the bookmark
+/// list (a recent folder's in the Recent list, a saved search's in the search list; a header's
+/// section: 0 Drives, 1 Places, 2 Recent, 3 Bookmarks, 4 Searches).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub label: String,
@@ -83,8 +86,14 @@ pub fn drive_label(e: &Entry) -> String {
 }
 
 /// The whole list: a header per section, then its rows. The Bookmarks header is always there,
-/// so Ctrl+D has a visible place to land.
-pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], recent: &[String], bookmarks: &[Bookmark]) -> Vec<Row> {
+/// so Ctrl+D has a visible place to land; Searches (P14-M1) after it only while it has a row.
+pub fn compose(
+    drives: &[(String, PathBuf)],
+    places: &[(String, PathBuf)],
+    recent: &[String],
+    bookmarks: &[Bookmark],
+    searches: &[SavedSearch],
+) -> Vec<Row> {
     let header = |label: &str, index| Row { label: label.into(), kind: RowKind::Header, path: None, index };
     let mut out = vec![header("Drives", 0)];
     out.extend(drives.iter().enumerate().map(|(i, (l, p))| Row { label: l.clone(), kind: RowKind::Drive, path: Some(p.clone()), index: i }));
@@ -102,7 +111,67 @@ pub fn compose(drives: &[(String, PathBuf)], places: &[(String, PathBuf)], recen
         path: Some(PathBuf::from(&b.path)),
         index: i,
     }));
+    if !searches.is_empty() {
+        out.push(header("Searches", 4));
+        out.extend(searches.iter().enumerate().map(|(i, s)| Row {
+            label: search_title(s),
+            kind: RowKind::Search,
+            path: Some(PathBuf::from(&s.path)),
+            index: i,
+        }));
+    }
     out
+}
+
+/// A group's rows in the composed list (P14-M1: the drag and the drop target find a group by its
+/// header, as neither group need be the last): the index of its first row and how many it has; the
+/// count is 0, and the index where its first row would be, when it has none.
+pub fn group(rows: &[Row], kind: RowKind) -> (usize, usize) {
+    let section = match kind {
+        RowKind::Drive => 0,
+        RowKind::Place => 1,
+        RowKind::Recent => 2,
+        RowKind::Bookmark => 3,
+        _ => 4,
+    };
+    let Some(h) = rows.iter().position(|r| r.kind == RowKind::Header && r.index == section) else { return (rows.len(), 0) };
+    (h + 1, rows[h + 1..].iter().take_while(|r| r.kind == kind).count())
+}
+
+/// A saved search's sidebar title (P14-M1): its own when renamed, else `"<pattern>" in <folder>`
+/// (`Text "<text>" in <folder>` for a search inside files), the folder named as a bookmark is.
+pub fn search_title(s: &SavedSearch) -> String {
+    s.title.clone().unwrap_or_else(|| default_search_title(s))
+}
+
+fn default_search_title(s: &SavedSearch) -> String {
+    let folder = crate::pathbar::title(&s.path);
+    if s.content { format!("Text \"{}\" in {folder}", s.pattern) } else { format!("\"{}\" in {folder}", s.pattern) }
+}
+
+/// Save a search at the end of the list unless the same one is saved already (the same root, by
+/// the folder test bookmarks use, the same pattern and the same kind), which stays where it is.
+/// Returns whether it was added.
+pub fn add_search(list: &mut Vec<SavedSearch>, root: &str, pattern: &str, content: bool) -> bool {
+    if root.trim().is_empty() || pattern.trim().is_empty() || saved_at(list, root, pattern, content).is_some() {
+        return false;
+    }
+    list.push(SavedSearch::new(root, pattern, content));
+    true
+}
+
+/// Where the search under `root` for `pattern` (inside the files with `content`) is saved, if it is.
+pub fn saved_at(list: &[SavedSearch], root: &str, pattern: &str, content: bool) -> Option<usize> {
+    list.iter().position(|s| same_folder(&s.path, root) && s.pattern == pattern && s.content == content)
+}
+
+/// Give saved search `i` the title `title` (trimmed); an empty one, or its default title, clears it.
+/// False when there is no search `i`.
+pub fn rename_search(list: &mut [SavedSearch], i: usize, title: &str) -> bool {
+    let Some(s) = list.get_mut(i) else { return false };
+    let t = title.trim();
+    s.title = (!t.is_empty() && t != default_search_title(s)).then(|| t.to_string());
+    true
 }
 
 /// The row current after a key in the sidebar (P7-M4): Up and Down move to the previous or next
@@ -166,8 +235,8 @@ pub fn insert_bookmark(list: &mut Vec<Bookmark>, folder: &str, at: usize) -> boo
     true
 }
 
-/// Remove bookmark `i`, returning it.
-pub fn remove_bookmark(list: &mut Vec<Bookmark>, i: usize) -> Option<Bookmark> {
+/// Remove row `i` of a group (a bookmark, a saved search), returning it.
+pub fn remove_at<T>(list: &mut Vec<T>, i: usize) -> Option<T> {
     (i < list.len()).then(|| list.remove(i))
 }
 
@@ -180,15 +249,17 @@ pub fn rename_bookmark(list: &mut [Bookmark], i: usize, title: &str) -> bool {
     true
 }
 
-/// Where bookmark `from` lands when it is dropped in gap `gap` (P12-M5's drag: gap 0 is above the
-/// first bookmark, gap N below the last of N): the gaps on either side of it leave it where it is.
+/// Where row `from` of a group lands when it is dropped in gap `gap` (P12-M5's drag: gap 0 is above
+/// the group's first row, gap N below the last of N): the gaps on either side of it leave it where
+/// it is.
 pub fn drag_target(from: usize, gap: usize) -> usize {
     if gap > from { gap - 1 } else { gap }
 }
 
-/// Move bookmark `from` to index `to` (P12-M5's drag), the others closing up behind it. False when
-/// it would not move (the same place, or no such bookmark or place).
-pub fn move_bookmark_to(list: &mut Vec<Bookmark>, from: usize, to: usize) -> bool {
+/// Move row `from` of a group to index `to` (the drag, bookmarks since P12-M5 and saved searches
+/// since P14-M1), the others closing up behind it. False when it would not move (the same place, or
+/// no such row or place).
+pub fn move_to<T>(list: &mut Vec<T>, from: usize, to: usize) -> bool {
     if from == to || from >= list.len() || to >= list.len() {
         return false;
     }
@@ -197,9 +268,9 @@ pub fn move_bookmark_to(list: &mut Vec<Bookmark>, from: usize, to: usize) -> boo
     true
 }
 
-/// Move bookmark `i` one place up or down; its new index, or None at the edge (or no such
-/// bookmark).
-pub fn move_bookmark(list: &mut [Bookmark], i: usize, up: bool) -> Option<usize> {
+/// Move row `i` of a group one place up or down; its new index, or None at the edge (or no such
+/// row).
+pub fn move_by<T>(list: &mut [T], i: usize, up: bool) -> Option<usize> {
     let to = if up { i.checked_sub(1)? } else { i + 1 };
     if i >= list.len() || to >= list.len() {
         return None;
@@ -245,8 +316,8 @@ mod tests {
         assert!(add_bookmark(&mut b, r"\\server\share"));
         let paths = |b: &[Bookmark]| b.iter().map(|b| b.path.clone()).collect::<Vec<_>>();
         assert_eq!(paths(&b), [r"C:\Users\x", r"C:\", r"\\server\share"]);
-        assert_eq!(remove_bookmark(&mut b, 1).map(|b| b.path).as_deref(), Some(r"C:\"));
-        assert_eq!(remove_bookmark(&mut b, 5), None);
+        assert_eq!(remove_at(&mut b, 1).map(|b| b.path).as_deref(), Some(r"C:\"));
+        assert_eq!(remove_at(&mut b, 5), None);
         assert_eq!(paths(&b), [r"C:\Users\x", r"\\server\share"]);
     }
 
@@ -267,12 +338,12 @@ mod tests {
         assert_eq!([0, 1, 2, 3, 4].map(|g| drag_target(1, g)), [0, 1, 1, 2, 3]);
         let mut b: Vec<Bookmark> = ["a", "b", "c", "d"].iter().map(|n| Bookmark::new(&format!(r"C:\{n}"))).collect();
         let names = |b: &[Bookmark]| b.iter().map(|x| x.path.trim_start_matches(r"C:\").to_string()).collect::<Vec<_>>().join("");
-        assert!(move_bookmark_to(&mut b, 0, drag_target(0, 3)), "a below c");
+        assert!(move_to(&mut b, 0, drag_target(0, 3)), "a below c");
         assert_eq!(names(&b), "bcad");
-        assert!(move_bookmark_to(&mut b, 3, drag_target(3, 0)), "d to the top");
+        assert!(move_to(&mut b, 3, drag_target(3, 0)), "d to the top");
         assert_eq!(names(&b), "dbca");
-        assert!(!move_bookmark_to(&mut b, 2, drag_target(2, 2)), "its own gap: not moved");
-        assert!(!move_bookmark_to(&mut b, 9, 0));
+        assert!(!move_to(&mut b, 2, drag_target(2, 2)), "its own gap: not moved");
+        assert!(!move_to(&mut b, 9, 0));
         assert_eq!(names(&b), "dbca");
     }
 
@@ -304,24 +375,90 @@ mod tests {
         assert_eq!(b[2].title, None);
         assert!(!rename_bookmark(&mut b, 3, "x"));
         rename_bookmark(&mut b, 0, "Alpha");
-        let labels = |b: &[Bookmark]| compose(&[], &[], &[], b).into_iter().skip(3).map(|r| (r.label, r.index)).collect::<Vec<_>>();
+        let labels = |b: &[Bookmark]| compose(&[], &[], &[], b, &[]).into_iter().skip(3).map(|r| (r.label, r.index)).collect::<Vec<_>>();
         assert_eq!(labels(&b), [("Alpha".to_string(), 0), ("b".to_string(), 1), ("c".to_string(), 2)]);
         // Move down, then up; nothing past either end.
-        assert_eq!(move_bookmark(&mut b, 0, false), Some(1));
+        assert_eq!(move_by(&mut b, 0, false), Some(1));
         assert_eq!(labels(&b), [("b".to_string(), 0), ("Alpha".to_string(), 1), ("c".to_string(), 2)]);
-        assert_eq!(move_bookmark(&mut b, 2, true), Some(1));
+        assert_eq!(move_by(&mut b, 2, true), Some(1));
         assert_eq!(labels(&b), [("b".to_string(), 0), ("c".to_string(), 1), ("Alpha".to_string(), 2)]);
-        assert_eq!(move_bookmark(&mut b, 0, true), None);
-        assert_eq!(move_bookmark(&mut b, 2, false), None);
-        assert_eq!(move_bookmark(&mut b, 7, true), None);
+        assert_eq!(move_by(&mut b, 0, true), None);
+        assert_eq!(move_by(&mut b, 2, false), None);
+        assert_eq!(move_by(&mut b, 7, true), None);
         assert_eq!(b[2].path, r"C:\a", "the title travels with its bookmark");
+    }
+
+    #[test]
+    fn saved_searches_title_dedupe_and_rename() {
+        let s = SavedSearch::new(r"C:\work\proj", "*.rs", false);
+        assert_eq!(search_title(&s), "\"*.rs\" in proj");
+        assert_eq!(search_title(&SavedSearch::new(r"D:\", "invoice", true)), "Text \"invoice\" in D:");
+        let mut l = Vec::new();
+        assert!(add_search(&mut l, r"C:\work\proj", "*.rs", false));
+        assert!(!add_search(&mut l, r"c:\WORK\proj\", "*.rs", false), "the same root, other case and a trailing separator");
+        assert!(add_search(&mut l, r"C:\work\proj", "*.rs", true), "the same text inside files is another search");
+        assert!(add_search(&mut l, r"C:\work\proj", "*.RS", false), "another pattern");
+        assert!(!add_search(&mut l, r"C:\work", "  ", false), "no pattern");
+        assert!(!add_search(&mut l, " ", "x", false), "no root");
+        assert_eq!(l.len(), 3);
+        assert_eq!(saved_at(&l, r"c:\work\PROJ", "*.rs", true), Some(1), "where it stays");
+        assert_eq!(saved_at(&l, r"C:\work", "*.rs", false), None);
+        assert!(rename_search(&mut l, 0, "  Rust files "));
+        assert_eq!(search_title(&l[0]), "Rust files");
+        assert!(rename_search(&mut l, 0, "\"*.rs\" in proj"), "its default title clears it");
+        assert_eq!(l[0].title, None);
+        assert!(rename_search(&mut l, 1, ""));
+        assert_eq!(l[1].title, None);
+        assert!(!rename_search(&mut l, 9, "x"));
+    }
+
+    #[test]
+    fn the_searches_group_follows_bookmarks_only_while_it_has_a_row() {
+        let b = [Bookmark::new(r"C:\a"), Bookmark::new(r"C:\b")];
+        let rows = compose(&[], &[], &[], &b, &[]);
+        assert!(rows.iter().all(|r| r.kind != RowKind::Search && r.label != "Searches"), "no saved search: no group");
+        assert_eq!(group(&rows, RowKind::Bookmark), (3, 2));
+        assert_eq!(group(&rows, RowKind::Search), (rows.len(), 0));
+        let s = [SavedSearch::new(r"C:\a", "x", false), SavedSearch::new(r"C:\b", "y", true)];
+        let rows = compose(&[], &[], &[r"C:\r".to_string()], &b, &s);
+        let shown: Vec<(&str, RowKind, usize)> = rows.iter().skip(4).map(|r| (r.label.as_str(), r.kind, r.index)).collect();
+        assert_eq!(
+            shown,
+            [
+                ("Bookmarks", RowKind::Header, 3),
+                ("a", RowKind::Bookmark, 0),
+                ("b", RowKind::Bookmark, 1),
+                ("Searches", RowKind::Header, 4),
+                ("\"x\" in a", RowKind::Search, 0),
+                ("Text \"y\" in b", RowKind::Search, 1),
+            ]
+        );
+        assert_eq!(group(&rows, RowKind::Bookmark), (5, 2), "the bookmarks are no longer the last rows");
+        assert_eq!(group(&rows, RowKind::Search), (8, 2));
+        assert_eq!(rows[8].path.as_deref(), Some(std::path::Path::new(r"C:\a")), "the root, for the tooltip");
+        // No bookmarks, a search: the Bookmarks header stays, its group empty.
+        let rows = compose(&[], &[], &[], &[], &s[..1]);
+        assert_eq!(group(&rows, RowKind::Bookmark), (3, 0));
+        assert_eq!(group(&rows, RowKind::Search), (4, 1));
+    }
+
+    #[test]
+    fn the_reorder_is_shared_by_both_groups() {
+        let mut s: Vec<SavedSearch> = ["a", "b", "c"].iter().map(|p| SavedSearch::new(r"C:\", p, false)).collect();
+        let pats = |s: &[SavedSearch]| s.iter().map(|x| x.pattern.as_str()).collect::<String>();
+        assert!(move_to(&mut s, 0, drag_target(0, 3)), "a to the end");
+        assert_eq!(pats(&s), "bca");
+        assert_eq!(move_by(&mut s, 2, true), Some(1));
+        assert_eq!(pats(&s), "bac");
+        assert_eq!(remove_at(&mut s, 0).map(|x| x.pattern).as_deref(), Some("b"));
+        assert_eq!(pats(&s), "ac");
     }
 
     #[test]
     fn known_folder_list_composition() {
         let drives = vec![("Local Disk (C:)".to_string(), PathBuf::from(r"C:\"))];
         let places = vec![("Home".to_string(), PathBuf::from(r"C:\Users\x")), ("Documents".to_string(), PathBuf::from(r"C:\Users\x\Documents"))];
-        let rows = compose(&drives, &places, &[], &[Bookmark::new(r"C:\work\proj")]);
+        let rows = compose(&drives, &places, &[], &[Bookmark::new(r"C:\work\proj")], &[]);
         let shown: Vec<(&str, RowKind, usize)> = rows.iter().map(|r| (r.label.as_str(), r.kind, r.index)).collect();
         assert_eq!(
             shown,
@@ -338,10 +475,10 @@ mod tests {
         assert_eq!(rows[6].path.as_deref(), Some(std::path::Path::new(r"C:\work\proj")));
         assert!(rows.iter().filter(|r| r.kind == RowKind::Header).all(|r| r.path.is_none()));
         // No bookmarks: the header stays. No recent folder: no Recent header.
-        assert_eq!(compose(&[], &[], &[], &[]).len(), 3);
+        assert_eq!(compose(&[], &[], &[], &[], &[]).len(), 3);
         // Recent folders (P12-M5): under Places, newest first, by their folder's name.
         let recent = vec![r"C:\work\proj".to_string(), r"D:\".to_string()];
-        let rows = compose(&drives, &places, &recent, &[]);
+        let rows = compose(&drives, &places, &recent, &[], &[]);
         let shown: Vec<(&str, RowKind, usize)> = rows.iter().skip(4).map(|r| (r.label.as_str(), r.kind, r.index)).collect();
         assert_eq!(shown, [("Documents", RowKind::Place, 1), ("Recent", RowKind::Header, 2), ("proj", RowKind::Recent, 0), ("D:", RowKind::Recent, 1), ("Bookmarks", RowKind::Header, 3)]);
         assert_eq!(rows[6].path.as_deref(), Some(std::path::Path::new(r"C:\work\proj")));
