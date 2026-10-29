@@ -576,8 +576,10 @@ $cycle = @(
     "sizeview 0 $src", 'waitsizeview 5000', 'sizeopen 0', 'sleep 200', 'sizeopen 1', 'waitsizeview 3000',
     'click 0 22', 'sdelete', $wait, 'sleep 300',
     # P14-M2: the view follows changes under it, then F5 walks again (see the header).
-    'touch 0 sv-a.txt', 'touch 0 sv-b.txt', 'sleep 700', 'waitsizeview 3000', 'mvfile 0 sv-a.txt sv-c.txt', 'sleep 700', 'waitsizeview 3000',
-    'rmfile 0 sv-b.txt', 'rmfile 0 sv-c.txt', 'sleep 700', 'waitsizeview 3000', 'click 0 0', 'key F5', 'sleep 300', 'waitsizeview 5000',
+    # Each wait covers the watch's longest window (2 s once it backs off): waitsizeview waits only for
+    # a window already delivered.
+    'touch 0 sv-a.txt', 'touch 0 sv-b.txt', 'sleep 2300', 'waitsizeview 3000', 'mvfile 0 sv-a.txt sv-c.txt', 'sleep 2300', 'waitsizeview 3000',
+    'rmfile 0 sv-b.txt', 'rmfile 0 sv-c.txt', 'sleep 2300', 'waitsizeview 3000', 'click 0 0', 'key F5', 'sleep 300', 'waitsizeview 5000',
     'tab close', 'sleep 300',
     'click 0 0', 'sleep 200', 'key Tab', 'sleep 300', 'key ShiftTab', 'sleep 300',
     # P13-M1: Two panes off and on by the toolbar, the split line narrowed and widened (see the header).
