@@ -87,6 +87,9 @@ export global Paging {
     // The grid's (P8-L1): model.rs `grid_page_target` from (cursor, tiles to a grid row,
     // content-y, visible height, tile height, entry count, down).
     pure callback grid-target(int, int, length, length, length, int, bool) -> int;
+    // The entry under the pointer (P14-M3's hover): model.rs `hover_index` from (x, y in the list,
+    // content-y, row or tile height, tile width, tiles to a grid row, entry count, grid).
+    pure callback hover-index(length, length, length, length, length, int, int, bool) -> int;
 }
 
 // Which toolbar buttons apply to a pane (toolbar.rs `state`, set from Rust in update_status's
@@ -1266,6 +1269,10 @@ component FileListHost inherits Rectangle {
     // A row's TouchArea event (FileRows.row-pointer). The selection a press makes (or defers to
     // the release, so a drag carries the whole selection) is Rust's decision: dnd::Gesture.
     function row-pointer(i: int, ev: PointerEvent, pressed: bool, mx: length, my: length, px: length, py: length, ax: length, ay: length) {
+        // The hover waits while a button is held (P14-M3): a press, a drag, a band.
+        if (ev.kind == PointerEventKind.down) { root.held = true; }
+        if (ev.kind == PointerEventKind.up || ev.kind == PointerEventKind.cancel) { root.held = false; }
+        if (ev.kind == PointerEventKind.move) { root.held = pressed || root.right-down; }
         if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
             root.drag-sent = false;
             root.right-down = false;
@@ -1419,168 +1426,195 @@ component FileListHost inherits Rectangle {
         return EventResult.reject;
     }
 
-    if root.show-type && !root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileList {
-        row-h: root.row-h;
-        type-w: root.type-w;
-        size-w: root.size-w;
-        modified-w: root.modified-w;
-        width: root.width;
-        height: root.height;
-        rows: root.rows;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+    // The hover (P14-M3): the entry under the pointer gets Theme.muted, as the sidebar's rows do, from
+    // ONE rectangle under the rows, never a binding in them. The TouchArea around the lists sees every
+    // pointer event on its way to the rows (Slint's filter before children sets its mouse-x, mouse-y
+    // and has-hover) and takes no press itself; the scrollbar and the pane's empty-space areas sit on
+    // top as siblings, so over them it has no hover. The rows are transparent unless selected, so the
+    // rectangle shows through a plain row and stays under a selected one's colour. Off while a button
+    // is held (a press, our own drag, a band) and while a drag is over the pane (no-hover). No fade:
+    // the list scrolls (P12-M1's rule).
+    in property <bool> no-hover: false;
+    private property <bool> held: false;
+    private property <int> hover: hover-ta.has-hover && !root.held && !root.banding && !root.no-hover
+        ? Paging.hover-index(hover-ta.mouse-x, hover-ta.mouse-y, root.content-y, root.row-h, root.tile-w, root.cols, root.rows.length, root.grid && !root.sizes)
+        : -1;
+    Rectangle {
+        clip: true;
+        Rectangle {
+            visible: root.hover >= 0;
+            x: root.col-of(root.hover) * root.tile-w;
+            y: root.content-y + root.line-of(root.hover) * root.row-h;
+            width: root.grid && !root.sizes ? root.tile-w : root.width;
+            height: root.row-h;
+            border-radius: Theme.radius;
+            background: Theme.muted;
+        }
     }
-    if !root.show-type && !root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileListNoType {
-        row-h: root.row-h;
-        size-w: root.size-w;
-        modified-w: root.modified-w;
-        width: root.width;
-        height: root.height;
-        rows: root.rows;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
-    }
-    if root.show-type && root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileList32 {
-        row-h: root.row-h;
-        type-w: root.type-w;
-        size-w: root.size-w;
-        modified-w: root.modified-w;
-        width: root.width;
-        height: root.height;
-        rows: root.rows;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
-    }
-    if !root.show-type && root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileListNoType32 {
-        row-h: root.row-h;
-        size-w: root.size-w;
-        modified-w: root.modified-w;
-        width: root.width;
-        height: root.height;
-        rows: root.rows;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
-    }
-    if root.ondisk && !root.thumbnails && !root.grid && !root.sizes: FileListOnDisk {
-        row-h: root.row-h;
-        type-w: root.type-w;
-        size-w: root.size-w;
-        modified-w: root.modified-w;
-        ondisk-w: root.ondisk-w;
-        width: root.width;
-        height: root.height;
-        rows: root.rows;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
-    }
-    if root.ondisk && root.thumbnails && !root.grid && !root.sizes: FileListOnDisk32 {
-        row-h: root.row-h;
-        type-w: root.type-w;
-        size-w: root.size-w;
-        modified-w: root.modified-w;
-        ondisk-w: root.ondisk-w;
-        width: root.width;
-        height: root.height;
-        rows: root.rows;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
-    }
-    if root.grid && !root.medium && !root.sizes: FileGridList {
-        width: root.width;
-        height: root.height;
-        grid: root.grid-rows;
-        cols: root.cols;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
-    }
-    if root.grid && root.medium && !root.sizes: FileGridMediumList {
-        width: root.width;
-        height: root.height;
-        grid: root.grid-rows;
-        cols: root.cols;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
-    }
-    if root.sizes: SizeList {
-        row-h: root.row-h;
-        pad: root.thumbnails ? 42px : 28px;
-        width: root.width;
-        height: root.height;
-        rows: root.size-rows;
-        current-row: root.current-row;
-        cursor-color: root.active ? Theme.cursor : Theme.ring;
-        content-y <=> root.content-y;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        focus-request: root.focus-request;
-        focus-on-init: root.active;
-        row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
-        row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
-        key(e) => { return root.key(e); }
-        tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+    hover-ta := TouchArea {
+        if root.show-type && !root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileList {
+            row-h: root.row-h;
+            type-w: root.type-w;
+            size-w: root.size-w;
+            modified-w: root.modified-w;
+            width: root.width;
+            height: root.height;
+            rows: root.rows;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if !root.show-type && !root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileListNoType {
+            row-h: root.row-h;
+            size-w: root.size-w;
+            modified-w: root.modified-w;
+            width: root.width;
+            height: root.height;
+            rows: root.rows;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if root.show-type && root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileList32 {
+            row-h: root.row-h;
+            type-w: root.type-w;
+            size-w: root.size-w;
+            modified-w: root.modified-w;
+            width: root.width;
+            height: root.height;
+            rows: root.rows;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if !root.show-type && root.thumbnails && !root.grid && !root.sizes && !root.ondisk: FileListNoType32 {
+            row-h: root.row-h;
+            size-w: root.size-w;
+            modified-w: root.modified-w;
+            width: root.width;
+            height: root.height;
+            rows: root.rows;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if root.ondisk && !root.thumbnails && !root.grid && !root.sizes: FileListOnDisk {
+            row-h: root.row-h;
+            type-w: root.type-w;
+            size-w: root.size-w;
+            modified-w: root.modified-w;
+            ondisk-w: root.ondisk-w;
+            width: root.width;
+            height: root.height;
+            rows: root.rows;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if root.ondisk && root.thumbnails && !root.grid && !root.sizes: FileListOnDisk32 {
+            row-h: root.row-h;
+            type-w: root.type-w;
+            size-w: root.size-w;
+            modified-w: root.modified-w;
+            ondisk-w: root.ondisk-w;
+            width: root.width;
+            height: root.height;
+            rows: root.rows;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if root.grid && !root.medium && !root.sizes: FileGridList {
+            width: root.width;
+            height: root.height;
+            grid: root.grid-rows;
+            cols: root.cols;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if root.grid && root.medium && !root.sizes: FileGridMediumList {
+            width: root.width;
+            height: root.height;
+            grid: root.grid-rows;
+            cols: root.cols;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if root.sizes: SizeList {
+            row-h: root.row-h;
+            pad: root.thumbnails ? 42px : 28px;
+            width: root.width;
+            height: root.height;
+            rows: root.size-rows;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
     }
     // TwinFM's own scrollbar over whichever list shows (P12-M2), the lists' Fluent bars off: the
     // host owns the scroll and knows the content's height (rows of row-h, or grid rows of tile-h).
@@ -2267,6 +2301,7 @@ export component Pane inherits Rectangle {
         }
         list := FileListHost {
             rows: root.rows;
+            no-hover: root.drop-here;
             current-row <=> root.current-row;
             show-type: root.show-type;
             type-w: root.eff-type;

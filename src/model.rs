@@ -1642,6 +1642,39 @@ pub fn grid_page_target(cursor: i32, cols: i32, content_y: f32, visible_h: f32, 
     (line * cols + cursor % cols).min(len - 1)
 }
 
+/// The entry under the pointer (P14-M3's hover): at (`x`, `y`) in the list's viewport, scrolled by
+/// `content_y` (zero or negative), with rows (grid rows) `line_h` high; in the grid `cols` tiles of
+/// `tile_w` to a grid row. -1 over no entry: above the list, the space below the last row, the grid's
+/// gap right of its last column or after the last tile of a short last grid row.
+#[allow(clippy::too_many_arguments)]
+pub fn hover_index(x: f32, y: f32, content_y: f32, line_h: f32, tile_w: f32, cols: i32, len: i32, grid: bool) -> i32 {
+    if x < 0.0 || y < 0.0 || line_h <= 0.0 || len <= 0 {
+        return -1;
+    }
+    let line = ((y - content_y) / line_h).floor();
+    if line < 0.0 {
+        return -1;
+    }
+    let line = line as i64;
+    let i = if grid {
+        let col = (x / tile_w.max(1.0)).floor() as i64;
+        if col >= i64::from(cols.max(1)) {
+            return -1;
+        }
+        line * i64::from(cols.max(1)) + col
+    } else {
+        line
+    };
+    if i < i64::from(len) { i as i32 } else { -1 }
+}
+
+/// Whether a press held on a scrollbar's track pages again (P14-M3's repeat, Windows' own rule): while
+/// the thumb (`thumb_at`, `thumb_len` along the track) has not reached the pointer (`at`), in the
+/// direction the press paged (`forward`: down or right).
+pub fn track_repeats(forward: bool, at: f32, thumb_at: f32, thumb_len: f32) -> bool {
+    if forward { at >= thumb_at + thumb_len } else { at < thumb_at }
+}
+
 /// The rows Return, a double-click or the menu's Open opens for `row` (P8-L1, Explorer's): the
 /// whole selection when `row` is in it and it holds more than one row, else `row` alone.
 pub fn open_set(selected: &BTreeSet<usize>, row: usize) -> Vec<usize> {
@@ -2643,6 +2676,36 @@ mod tests {
         assert_eq!(grid_page_target(-1, 5, 0.0, h, t, 23, true), 0, "no cursor");
         assert_eq!(grid_page_target(0, 5, 0.0, h, t, 0, true), -1, "nothing listed");
         assert_eq!(grid_page_target(2, 0, 0.0, h, t, 23, true), 4, "a zero tile count counts as one");
+    }
+
+    #[test]
+    fn the_hover_follows_the_pointer_and_the_scroll() {
+        // Details: 22 px rows, 30 of them, scrolled 50 px.
+        assert_eq!(hover_index(100.0, 0.0, 0.0, 22.0, 0.0, 1, 30, false), 0);
+        assert_eq!(hover_index(100.0, 21.9, 0.0, 22.0, 0.0, 1, 30, false), 0);
+        assert_eq!(hover_index(100.0, 22.0, 0.0, 22.0, 0.0, 1, 30, false), 1);
+        assert_eq!(hover_index(100.0, 0.0, -50.0, 22.0, 0.0, 1, 30, false), 2, "the rows scrolled under the pointer");
+        assert_eq!(hover_index(100.0, 660.0, 0.0, 22.0, 0.0, 1, 30, false), -1, "the space below the last row");
+        assert_eq!(hover_index(100.0, -1.0, 0.0, 22.0, 0.0, 1, 30, false), -1, "above the list");
+        assert_eq!(hover_index(100.0, 10.0, 0.0, 22.0, 0.0, 1, 0, false), -1, "nothing listed");
+        // The grid: 96 x 136 tiles, 4 to a grid row, 10 entries (the last grid row holds two).
+        assert_eq!(hover_index(10.0, 10.0, 0.0, 136.0, 96.0, 4, 10, true), 0);
+        assert_eq!(hover_index(300.0, 140.0, 0.0, 136.0, 96.0, 4, 10, true), 7);
+        assert_eq!(hover_index(390.0, 10.0, 0.0, 136.0, 96.0, 4, 10, true), -1, "the gap right of the last column");
+        assert_eq!(hover_index(100.0, 280.0, 0.0, 136.0, 96.0, 4, 10, true), 9);
+        assert_eq!(hover_index(200.0, 280.0, 0.0, 136.0, 96.0, 4, 10, true), -1, "after the last tile of a short grid row");
+        assert_eq!(hover_index(10.0, 10.0, -136.0, 136.0, 96.0, 4, 10, true), 4, "scrolled one grid row");
+    }
+
+    #[test]
+    fn a_held_track_press_repeats_until_the_thumb_reaches_the_pointer() {
+        // The thumb at 100..140; a press below it pages down while the pointer is past its end.
+        assert!(track_repeats(true, 300.0, 100.0, 40.0));
+        assert!(track_repeats(true, 140.0, 100.0, 40.0), "just past the thumb's end");
+        assert!(!track_repeats(true, 139.0, 100.0, 40.0), "the thumb has reached the pointer");
+        assert!(track_repeats(false, 99.0, 100.0, 40.0), "above the thumb: up");
+        assert!(!track_repeats(false, 100.0, 100.0, 40.0), "on the thumb: stops");
+        assert!(!track_repeats(false, 200.0, 100.0, 40.0), "the pointer moved below the thumb: no paging up");
     }
 
     #[test]

@@ -13,6 +13,10 @@
 //!                                    splitter clamps it to 0.15..0.85; `[auto] splitter A -> B`)
 //!   wheel <pane> <ticks> <ms>        wheel ticks (negative = down) <ms> apart over the pane's list
 //!   drag <pane> <dy> <ms>            press the pane's scrollbar thumb and drag it <dy> px in 16 ms steps
+//!   trackhold <pane> <top|bottom> <ms>  press the pane's list track 8 px from its top or bottom end and
+//!                                    hold it <ms> through Slint's pointer path (P14-M3: the press
+//!                                    pages, then repeats after 500 ms every 50 ms until the thumb
+//!                                    reaches the pointer); logs the scroll before and after
 //!   nav <pane> <path>                navigate a pane (a path inside a zip archive, `C:\dir\x.zip\sub`,
 //!                                    lists that level of the archive)
 //!   up <pane>                        go to the parent directory
@@ -363,6 +367,8 @@ enum Step {
     Splitter(f32),
     Wheel { pane: usize, ticks: i32, ms: u64 },
     Drag { pane: usize, dy: f32, ms: u64 },
+    /// A held press on the pane's list track (P14-M3), 8 px from its bottom end (or its top).
+    TrackHold { pane: usize, bottom: bool, ms: u64 },
     Nav { pane: usize, path: String },
     Up(usize),
     ScrollPos(usize),
@@ -506,6 +512,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "splitter" => Step::Splitter(a.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.5)),
                 "wheel" => Step::Wheel { pane: num(1) as usize, ticks: num(2) as i32, ms: num(3).max(1) as u64 },
                 "drag" => Step::Drag { pane: num(1) as usize, dy: num(2) as f32, ms: num(3).max(1) as u64 },
+                "trackhold" => Step::TrackHold { pane: num(1) as usize, bottom: a.get(2) != Some(&"top"), ms: num(3).max(1) as u64 },
                 "nav" => Step::Nav { pane: num(1) as usize, path: a[2..].join(" ") },
                 "up" => Step::Up(num(1) as usize),
                 "scrollpos" => Step::ScrollPos(num(1) as usize),
@@ -2177,6 +2184,28 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 app.window()
                     .dispatch_event_with_result(WindowEvent::PointerScrolled { position: pos, delta_x: 0.0, delta_y: delta })
                     .ok();
+            });
+        }
+        Step::TrackHold { pane, bottom, ms } => {
+            // The track's strip is the list's right 14 px (VScrollBar); its ends 2 px in.
+            let l = crate::window_layout(&app);
+            let (_, right_edge) = crate::dnd::pane_x(&l, pane);
+            let (top, end) = (list_top(&app, pane), l.height - crate::dnd::LIST_BOTTOM_GAP);
+            let at = LogicalPosition::new(right_edge - 10.0, if bottom { end - 8.0 } else { top + 8.0 });
+            let before = app.invoke_get_scroll(pane as i32);
+            let win = app.window();
+            win.dispatch_event_with_result(WindowEvent::PointerMoved { position: at }).ok();
+            win.dispatch_event_with_result(WindowEvent::PointerPressed { position: at, button: PointerEventButton::Left }).ok();
+            let r2 = runner.clone();
+            let w = app.as_weak();
+            let page = (end - top).max(1.0);
+            runner.borrow().sub.start(TimerMode::SingleShot, Duration::from_millis(ms), move || {
+                let Some(app) = w.upgrade() else { return };
+                app.window().dispatch_event_with_result(WindowEvent::PointerReleased { position: at, button: PointerEventButton::Left }).ok();
+                let after = app.invoke_get_scroll(pane as i32);
+                let pages = ((after - before).abs() / page).ceil() as i32;
+                eprintln!("[auto] trackhold pane={pane}: content-y {before:.0} -> {after:.0} in {pages} pages");
+                schedule(r2.clone(), 1);
             });
         }
         Step::Drag { pane, dy, ms } => {

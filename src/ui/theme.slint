@@ -149,7 +149,14 @@ export component Badge inherits Rectangle {
 // at the view's right edge, its thumb 6 px wide 1 px from the edge (10 px under the pointer or while
 // dragged, over a faint track), at least 24 px long, 2 px from the strip's ends. Bound to the view's
 // content-y (two-way), content height and visible height. A press on the thumb drags it; a press on
-// the track pages towards the pointer, a screenful at a time. The wheel passes to the view under it.
+// the track pages towards the pointer, a screenful at a time, and held, again after 500 ms and then
+// every 50 ms until the thumb reaches the pointer (P14-M3, Windows' own timing; the rule is model.rs
+// `track_repeats`, through ScrollRule). The wheel passes to the view under it.
+export global ScrollRule {
+    // repeats(forward, pointer, thumb start, thumb length) along the track.
+    pure callback repeats(bool, length, length, length) -> bool;
+}
+
 export component VScrollBar inherits Rectangle {
     in-out property <length> content-y;
     in property <length> content-height;
@@ -187,14 +194,31 @@ export component VScrollBar inherits Rectangle {
                 self.on-thumb = self.mouse-y >= root.thumb-y && self.mouse-y < root.thumb-y + root.thumb-h;
                 self.grab = self.mouse-y - root.thumb-y;
                 if (!self.on-thumb) {
-                    root.content-y = self.mouse-y < root.thumb-y ? min(0px, root.content-y + root.visible-height) : max(-root.maximum, root.content-y - root.visible-height);
+                    root.paging = self.mouse-y < root.thumb-y ? -1 : 1;
+                    root.first-wait = true;
+                    root.page();
                 }
             }
+            if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) { root.paging = 0; }
         }
         moved => {
             if (self.pressed && self.on-thumb && root.track > root.thumb-h) {
                 root.content-y = -clamp((self.mouse-y - self.grab - 2px) / (root.track - root.thumb-h) * root.maximum, 0px, root.maximum);
             }
+        }
+    }
+    // The held press's repeat (P14-M3): -1 paging up, 1 down, 0 none.
+    property <int> paging: 0;
+    property <bool> first-wait: true;
+    function page() {
+        root.content-y = root.paging < 0 ? min(0px, root.content-y + root.visible-height) : max(-root.maximum, root.content-y - root.visible-height);
+    }
+    Timer {
+        interval: root.first-wait ? 500ms : 50ms;
+        running: root.paging != 0;
+        triggered => {
+            root.first-wait = false;
+            if (ta.pressed && ScrollRule.repeats(root.paging > 0, ta.mouse-y, root.thumb-y, root.thumb-h)) { root.page(); } else { root.paging = 0; }
         }
     }
 }
@@ -238,14 +262,31 @@ export component HScrollBar inherits Rectangle {
                 self.on-thumb = self.mouse-x >= root.thumb-x && self.mouse-x < root.thumb-x + root.thumb-w;
                 self.grab = self.mouse-x - root.thumb-x;
                 if (!self.on-thumb) {
-                    root.content-x = self.mouse-x < root.thumb-x ? min(0px, root.content-x + root.visible-width) : max(-root.maximum, root.content-x - root.visible-width);
+                    root.paging = self.mouse-x < root.thumb-x ? -1 : 1;
+                    root.first-wait = true;
+                    root.page();
                 }
             }
+            if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) { root.paging = 0; }
         }
         moved => {
             if (self.pressed && self.on-thumb && root.track > root.thumb-w) {
                 root.content-x = -clamp((self.mouse-x - self.grab - 2px) / (root.track - root.thumb-w) * root.maximum, 0px, root.maximum);
             }
+        }
+    }
+    // The held press's repeat (P14-M3), as VScrollBar's: -1 left, 1 right, 0 none.
+    property <int> paging: 0;
+    property <bool> first-wait: true;
+    function page() {
+        root.content-x = root.paging < 0 ? min(0px, root.content-x + root.visible-width) : max(-root.maximum, root.content-x - root.visible-width);
+    }
+    Timer {
+        interval: root.first-wait ? 500ms : 50ms;
+        running: root.paging != 0;
+        triggered => {
+            root.first-wait = false;
+            if (ta.pressed && ScrollRule.repeats(root.paging > 0, ta.mouse-x, root.thumb-x, root.thumb-w)) { root.page(); } else { root.paging = 0; }
         }
     }
 }
