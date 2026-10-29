@@ -1237,7 +1237,9 @@ put off, with where it came from.
   `set_sizes_name`), at each rebuild of the rows and 150 ms after a scroll rests (`NAME_FIT`), so Share,
   Size on disk and Files sit beside the names and the rest of the row is empty. Driver: no new step;
   `waitsizeview` also waits for windows on the view's thread and a re-walk (`touch`, `rmfile`, `mvfile`
-  and the shell's jobs make the changes). `[sizeview]` lines: `pane=N gen=G watching <root>`, `pane=N
+  and the shell's jobs make the changes), **but not for a window the watch has not delivered yet**: sleep
+  past the watch's longest window (2 s once it backs off) after a change before `waitsizeview` (the first
+  P14-M2 soak's three mismatches were F5 walking before the removals' window). `[sizeview]` lines: `pane=N gen=G watching <root>`, `pane=N
   window: R records, F folders re-read, C created, D removed, M moved, in T ms; root S bytes on disk, F2
   files, D2 folders`, `pane=N <folder>: S -> S2 bytes on disk (K totals above)` (K the folder's and those
   above it), `pane=N re-walk: overflow (R records)`, `pane=N gen=G re-walk done: S bytes on disk, F files,
