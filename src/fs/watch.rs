@@ -80,6 +80,10 @@ const BUF_BYTES: usize = 64 * 1024;
 /// overflow (the UI lists the folder again).
 const MAX_RECORDS: usize = 1000;
 
+/// Past this many records in one window, anywhere below, a subtree watch stops keeping them
+/// (`Event::Subtree`'s `deep`): the sizes view walks again, as for an overflow.
+pub const MAX_DEEP: usize = 10_000;
+
 /// The buffer of a parent watch (folder names only).
 const PARENT_BUF_BYTES: usize = 4 * 1024;
 
@@ -132,7 +136,18 @@ pub enum Event {
     /// `MAX_RECORDS` or on an overflow (the listing needs a refresh). `changes`: each
     /// child of the folder that a record lay below or added, removed or renamed (not one that only
     /// modified the child's own entry), once, with the first such record ("added sub\x.txt"). `overflow`: the buffer overflowed, so what changed is unknown.
-    Subtree { pane: usize, tab_id: u64, top: bool, changes: Vec<(String, String)>, overflow: bool, edits: Option<Vec<Change>>, records: usize },
+    /// `deep`: every record of the window, anywhere below (FILE_ACTION_*, the path under the
+    /// folder), for the sizes view (P14-M2); None on an overflow or past `MAX_DEEP`.
+    Subtree {
+        pane: usize,
+        tab_id: u64,
+        top: bool,
+        changes: Vec<(String, String)>,
+        overflow: bool,
+        edits: Option<Vec<Change>>,
+        records: usize,
+        deep: Option<Vec<(u32, String)>>,
+    },
     /// The watched folder itself was renamed; the watch now follows `to`.
     Moved { pane: usize, tab_id: u64, from: PathBuf, to: PathBuf },
     /// No watch for `path` (sent every time it is asked for; logged once).
@@ -243,7 +258,7 @@ impl Watcher {
 
     /// Wait until the thread has handled every command sent so far.
     #[cfg(test)]
-    fn sync(&self) {
+    pub(crate) fn sync(&self) {
         let (tx, rx) = unbounded();
         self.send(Cmd::Sync(tx));
         let _ = rx.recv_timeout(Duration::from_secs(5));
@@ -386,6 +401,10 @@ struct Watch {
     raw: Vec<(u32, String)>,
     records: usize,
     raw_over: bool,
+    /// A subtree watch's records of the current window, anywhere below; `deep_over`: past
+    /// `MAX_DEEP`.
+    deep: Vec<(u32, String)>,
+    deep_over: bool,
     /// A main watch's parent watch (null if none) and whether one was asked for.
     parent: *mut Watch,
     wants_parent: bool,
@@ -424,6 +443,8 @@ impl Watch {
             raw: Vec::new(),
             records: 0,
             raw_over: false,
+            deep: Vec::new(),
+            deep_over: false,
             parent: std::ptr::null_mut(),
             wants_parent: false,
             cut_old: false,
@@ -1183,6 +1204,14 @@ impl<W: Fn()> Dirwatch<W> {
             let raw = unsafe { std::slice::from_raw_parts(w.buf.as_ptr() as *const u8, (bytes as usize).min(w.buf.len() * 4)) };
             let records = parse_records(raw);
             if w.subtree {
+                if !w.deep_over {
+                    w.deep.extend(records.iter().cloned());
+                    if w.deep.len() > MAX_DEEP {
+                        eprintln!("[watch] pane={} tab={} {} records below the folder: past the cap", w.pane, w.tab_id, w.deep.len());
+                        w.deep_over = true;
+                        w.deep = Vec::new();
+                    }
+                }
                 for (action, name) in records {
                     let child = crate::fs::sizes::child_of(&name);
                     let top = child.len() == name.len();
@@ -1437,6 +1466,8 @@ fn window_event(w: &mut Watch, now: Instant) -> Event {
         let (top, changes, overflow) = (std::mem::take(&mut w.top), std::mem::take(&mut w.changes), std::mem::take(&mut w.overflow));
         let (raw, records, raw_over) = (std::mem::take(&mut w.raw), std::mem::take(&mut w.records), std::mem::take(&mut w.raw_over));
         let edits = (!overflow && !raw_over).then(|| net_changes(raw));
+        let (deep, deep_over) = (std::mem::take(&mut w.deep), std::mem::take(&mut w.deep_over));
+        let deep = (!overflow && !deep_over).then_some(deep);
         if top && !overflow {
             eprintln!(
                 "[watch] pane={} tab={} subtree records {records} in the folder, changes {}, window {} ms",
@@ -1446,7 +1477,7 @@ fn window_event(w: &mut Watch, now: Instant) -> Event {
                 w.backoff.window.as_millis()
             );
         }
-        return Event::Subtree { pane: w.pane, tab_id: w.tab_id, top, changes, overflow, edits, records };
+        return Event::Subtree { pane: w.pane, tab_id: w.tab_id, top, changes, overflow, edits, records, deep };
     }
     let (raw, records, overflow) = (std::mem::take(&mut w.raw), std::mem::take(&mut w.records), std::mem::take(&mut w.overflow));
     let changes = if overflow { Vec::new() } else { net_changes(raw) };

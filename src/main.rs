@@ -188,9 +188,28 @@ struct SizeTab {
     done_ms: Option<u64>,
     /// The working set when the walk started, MB (the done line says how much the walk held).
     ws_before: f64,
+    /// The view's `sizeview` thread, which takes the watch's windows once the walk is done
+    /// (P14-M2); dropping it ends the thread.
+    tx: Option<Sender<sizeview::Cmd>>,
+    /// Windows sent to the thread and not landed yet.
+    out: usize,
+    /// A re-walk is out (the old figures shown meanwhile).
+    rewalking: bool,
+    /// When the last overflows came; two within a minute stop the following.
+    overflows: Vec<Instant>,
+    /// Not following changes any more (two overflows): F5 walks again.
+    stopped: bool,
+    /// The watch is asked for (its `watching` line written).
+    watching: bool,
 }
 
 impl Tab {
+    /// A sizes view whose walk is done and that follows changes (P14-M2): watched, subtree and all.
+    /// Not This PC's (no one folder to watch).
+    fn follows(&self) -> bool {
+        self.sizeview.as_ref().is_some_and(|s| s.done_ms.is_some() && !s.stopped && s.tx.is_some()) && !is_this_pc(&self.path.to_string_lossy())
+    }
+
     /// Where the tab is, as its history records it: its folder, or its search and root.
     fn place(&self) -> Place {
         Place {
@@ -518,9 +537,9 @@ impl State {
             for (i, t) in tabs.iter().enumerate() {
                 let listed = t.timing.error.is_none();
                 let eligible = if i == active {
-                    !t.results() && listed
+                    (!t.results() || t.follows()) && listed
                 } else {
-                    folder_tab(t) && t.timing.done_ms.is_some() && listed && (!t.stale || t.sizes.any())
+                    (folder_tab(t) && t.timing.done_ms.is_some() && listed && (!t.stale || t.sizes.any())) || t.follows()
                 };
                 cands.push(WatchCand { id: t.id, active: i == active, eligible, shown_at: t.shown_at });
             }
@@ -538,6 +557,9 @@ impl State {
                 self.watch.unwatch(t.id);
                 t.watched = false;
                 t.watched_bg = false;
+                if let Some(sv) = t.sizeview.as_mut() {
+                    sv.watching = false;
+                }
                 if i == active {
                     if t.results() && (pane == 0 || split) && self.no_watch_logged[pane] != Some(t.id) {
                         // A search's results come from many folders; F5 runs it again. So does a
@@ -570,16 +592,22 @@ impl State {
             for (pane, tabs) in self.panes.iter_mut().enumerate() {
                 let active = tabs.active().id == id;
                 let Some(t) = tabs.iter_mut().find(|t| t.id == id) else { continue };
+                // A sizes view that follows changes watches every folder below its root (P14-M2).
+                let follows = t.follows();
+                if let Some(sv) = t.sizeview.as_mut().filter(|s| follows && !s.watching) {
+                    sv.watching = true;
+                    eprintln!("[sizeview] pane={pane} gen={} watching {}", sv.generation, t.path.display());
+                }
                 if active {
                     // With folder sizes cached or in flight, every folder below is watched too
                     // (until two overflows in a row), so a change inside a sized folder drops its
                     // size.
-                    let subtree = t.sizes.any() && t.sizes.overflows < 2;
+                    let subtree = follows || (t.sizes.any() && t.sizes.overflows < 2);
                     asks.push((pane, id, t.path.clone(), subtree, true));
                     t.watched_bg = false;
                 } else {
                     // A subtree watch while the tab keeps folder sizes (P6-M3), shallow otherwise.
-                    let subtree = t.sizes.any() && t.sizes.overflows < 2;
+                    let subtree = follows || (t.sizes.any() && t.sizes.overflows < 2);
                     asks.push((pane, id, t.path.clone(), subtree, false));
                     if !t.watched_bg {
                         eprintln!("[watch] pane={pane} tab={id} watched in the background");
@@ -792,6 +820,13 @@ fn update_status(st: &State, app: &App, pane: usize) {
         _ if t.sizeview.is_some() => {
             let sv = t.sizeview.as_ref().expect("checked");
             let r = *sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner).root();
+            // Two overflows stopped the following (P14-M2).
+            let stopped = "Not following changes: F5 walks again";
+            let note = match (sv.stopped, note.is_empty()) {
+                (false, _) => note,
+                (true, true) => stopped.to_string(),
+                (true, false) => format!("{note} | {stopped}"),
+            };
             statusbar::sizes_text(&note, r.files, r.disk, r.folders, r.skipped, sv.done_ms.map(|ms| ms as f64 / 1e3))
         }
         Some(s) => {
@@ -1750,6 +1785,11 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
     };
     let active = st.is_active(pane, tab_id);
     let Some(t) = st.find(pane, tab_id) else { return };
+    let ev = match ev {
+        // A sizes view's window goes to its own thread (P14-M2).
+        Event::Subtree { overflow, deep, records, .. } if t.sizeview.is_some() => return sizes_window(st, pane, tab_id, overflow, deep, records),
+        ev => ev,
+    };
     let (mut resize, mut stale) = (false, false);
     let records = match ev {
         Event::Refused { path, .. } => {
@@ -2589,6 +2629,18 @@ fn on_viewport(pane: usize, y: f32, h: f32) {
         st.view[pane] = (y, h);
         if let Some(app) = st.app.upgrade() {
             resolve_view(st, &app, pane);
+        }
+        // A sizes view's Name column fits the rows on screen once the scroll rests (P14-M2).
+        if st.tab(pane).sizeview.is_some() {
+            NAME_FIT.with(|t| {
+                t[pane].start(slint::TimerMode::SingleShot, Duration::from_millis(150), move || {
+                    with_state(|st| {
+                        if let Some(app) = st.app.upgrade() {
+                            fit_sizes_name(st, &app, pane);
+                        }
+                    });
+                })
+            });
         }
         false
     });
@@ -5854,6 +5906,7 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
         if pane == 0 { app.set_left_size_rows(m) } else { app.set_right_size_rows(m) }
     }
     if pane == 0 { app.set_left_sizes(on) } else { app.set_right_sizes(on) }
+    fit_sizes_name(st, app, pane);
     model.set_grid_n(st.grid_n[pane]);
     model.set_grid_cursor(cursor);
     let grid = ModelRc::new(GridModel::new(model.clone()));
@@ -6508,7 +6561,8 @@ fn start_sizes(st: &mut State, app: &App, pane: usize) {
         }
     }
     let id = t.id;
-    t.sizeview = Some(SizeTab { generation, tree: tree.clone(), cancel: cancel.clone(), ws_before: perf::memory_mb().0, ..Default::default() });
+    let (tx, rx) = unbounded();
+    t.sizeview = Some(SizeTab { generation, tree: tree.clone(), cancel: cancel.clone(), ws_before: perf::memory_mb().0, tx: Some(tx), ..Default::default() });
     t.model.generation.set(generation);
     t.model.clear();
     t.timing = PaneTiming { requested: Some(Instant::now()), ..Default::default() };
@@ -6525,7 +6579,7 @@ fn start_sizes(st: &mut State, app: &App, pane: usize) {
     schedule_save(st);
     eprintln!("[sizeview] pane={pane} gen={generation} start {}", root.display());
     if !this_pc {
-        list_level(st, pane, 0);
+        list_level(st, pane, id, 0);
     }
     std::thread::Builder::new()
         .name("sizeview".into())
@@ -6546,6 +6600,30 @@ fn start_sizes(st: &mut State, app: &App, pane: usize) {
                 };
                 let _ = slint::invoke_from_event_loop(move || sizes_tick(pane, id, generation, end));
             });
+            // Then the watch's windows, in order, until the tab lets go of its sender (P14-M2).
+            let mut tree = tree;
+            for cmd in rx.iter() {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                match cmd {
+                    sizeview::Cmd::Window { root, records } => {
+                        let f = sizeview::follow(&tree, &root, &records, &cancel);
+                        let n = records.len();
+                        let _ = slint::invoke_from_event_loop(move || sizes_followed(pane, id, generation, n, f));
+                    }
+                    sizeview::Cmd::Rewalk { root } => {
+                        let fresh = Arc::new(std::sync::Mutex::new(sizeview::Tree::new(&root.to_string_lossy(), false)));
+                        tree = fresh.clone();
+                        sizeview::walk(&fresh, &[(0, root)], &cancel, |p| {
+                            if let sizeview::Progress::Done { ms, ids } = p {
+                                let fresh = fresh.clone();
+                                let _ = slint::invoke_from_event_loop(move || sizes_rewalked(pane, id, generation, fresh, ms, ids));
+                            }
+                        });
+                    }
+                }
+            }
         })
         .expect("spawn sizeview thread");
 }
@@ -6576,7 +6654,111 @@ fn sizes_tick(pane: usize, id: u64, generation: u64, end: Option<(u64, usize)>) 
                     root.skipped,
                     ws - sv.ws_before
                 );
+                // Its changes followed from now on (P14-M2).
+                st.watch_tabs(&app);
             }
+        }
+        rebuild_sizes(st, &app, pane, id);
+    });
+}
+
+/// A window of the subtree watch's records for a sizes view (`watch_event`): to the view's thread,
+/// or on an overflow (or past `MAX_DEEP` records) a re-walk of the whole root, the old figures
+/// shown meanwhile; the second overflow within a minute stops the following (P3-M3's rule of two).
+fn sizes_window(st: &mut State, pane: usize, tab_id: u64, overflow: bool, deep: Option<Vec<(u32, String)>>, records: usize) {
+    let Some(app) = st.app.upgrade() else { return };
+    let active = st.is_active(pane, tab_id);
+    let Some(t) = st.find(pane, tab_id) else { return };
+    let root = t.path.clone();
+    let Some(sv) = t.sizeview.as_mut().filter(|s| !s.stopped) else { return };
+    let Some(tx) = sv.tx.clone() else { return };
+    if let (false, Some(records)) = (overflow, deep) {
+        if !records.is_empty() {
+            sv.out += 1;
+            let _ = tx.send(sizeview::Cmd::Window { root, records });
+        }
+        return;
+    }
+    let now = Instant::now();
+    sv.overflows.retain(|at| now.duration_since(*at) < Duration::from_secs(60));
+    sv.overflows.push(now);
+    if sv.overflows.len() >= 2 {
+        sv.stopped = true;
+        eprintln!("[sizeview] pane={pane} not following changes (two overflows)");
+        st.watch_tabs(&app);
+        if active {
+            update_status(st, &app, pane);
+        }
+        return;
+    }
+    if !sv.rewalking {
+        sv.rewalking = true;
+        eprintln!("[sizeview] pane={pane} re-walk: overflow ({records} records)");
+        let _ = tx.send(sizeview::Cmd::Rewalk { root });
+    }
+}
+
+/// A window applied on the view's thread (`sizeview::follow`): logged, the levels shown of the
+/// folders read again listed again, the rows built again.
+fn sizes_followed(pane: usize, id: u64, generation: u64, records: usize, f: sizeview::Followed) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let Some(t) = st.find(pane, id) else { return };
+        let root = t.path.clone();
+        let Some(sv) = t.sizeview.as_mut().filter(|s| s.generation == generation) else { return };
+        sv.out = sv.out.saturating_sub(1);
+        let relist: Vec<sizeview::Id> = {
+            let tree = sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for &(node, before, after) in &f.changed {
+                let dir = if node == 0 { root.clone() } else { root.join(tree.rel(node)) };
+                let k = usize::from(tree.nodes[node as usize].depth) + 1;
+                eprintln!("[sizeview] pane={pane} {}: {before} -> {after} bytes on disk ({k} totals above)", dir.display());
+            }
+            sv.open.retain(|&n| tree.alive(n));
+            sv.files.retain(|&n, _| tree.alive(n));
+            f.reread.iter().copied().filter(|n| sv.files.contains_key(n)).collect()
+        };
+        eprintln!(
+            "[sizeview] pane={pane} window: {records} records, {} folders re-read, {} created, {} removed, {} moved, in {:.1} ms; root {} bytes on disk, {} files, {} folders",
+            f.reread.len(),
+            f.created,
+            f.removed,
+            f.moved,
+            f.ms,
+            f.root.disk,
+            f.root.files,
+            f.root.folders
+        );
+        for node in relist {
+            list_level(st, pane, id, node);
+        }
+        rebuild_sizes(st, &app, pane, id);
+    });
+}
+
+/// A re-walk after an overflow is done: its tree replaces the old one, the folders opened in place
+/// stay open (by path), their levels and the root's are listed again.
+fn sizes_rewalked(pane: usize, id: u64, generation: u64, fresh: Arc<std::sync::Mutex<sizeview::Tree>>, ms: u64, ids: usize) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let Some(t) = st.find(pane, id) else { return };
+        let Some(sv) = t.sizeview.as_mut().filter(|s| s.generation == generation) else { return };
+        let open: HashSet<sizeview::Id> = {
+            let (old, new) = (sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner), fresh.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+            let r = *new.root();
+            eprintln!(
+                "[sizeview] pane={pane} gen={generation} re-walk done: {} bytes on disk, {} files, {} folders, {} skipped, in {ms} ms, {ids} file IDs kept",
+                r.disk, r.files, r.folders, r.skipped
+            );
+            sv.open.iter().filter_map(|&n| new.find(&old.rel(n))).collect()
+        };
+        sv.tree = fresh;
+        sv.open = open;
+        sv.files.clear();
+        sv.rewalking = false;
+        let levels: Vec<sizeview::Id> = std::iter::once(0).chain(sv.open.iter().copied()).collect();
+        for node in levels {
+            list_level(st, pane, id, node);
         }
         rebuild_sizes(st, &app, pane, id);
     });
@@ -6611,13 +6793,57 @@ fn rebuild_sizes(st: &mut State, app: &App, pane: usize, id: u64) {
     update_status(st, app, pane);
     st.strip_dirty[pane] = true;
     resolve_view(st, app, pane);
+    fit_sizes_name(st, app, pane);
+}
+
+thread_local! {
+    /// Each pane's wait for its scroll to rest before its sizes view's Name column is fitted again.
+    static NAME_FIT: [slint::Timer; 2] = Default::default();
+}
+
+/// The sizes view's Name column in pane `pane` (P14-M2): as wide as its longest name on screen
+/// needs (`sizeview::name_column`, the names measured as `colfit` measures, one call per depth), so
+/// Share, Size on disk and Files sit beside the names at a wide pane. At a rebuild of its rows and
+/// 150 ms after a scroll.
+fn fit_sizes_name(st: &State, app: &App, pane: usize) {
+    if st.tab(pane).sizeview.is_none() {
+        return;
+    }
+    let rows = if pane == 0 { app.get_left_size_rows() } else { app.get_right_size_rows() };
+    let mut by_depth: std::collections::BTreeMap<u16, Vec<String>> = Default::default();
+    if let Some((first, last)) = visible_rows(st, app, pane) {
+        for r in (first..=last).filter_map(|i| rows.row_data(i)) {
+            by_depth.entry(r.depth.max(0) as u16).or_default().push(r.name.to_string());
+        }
+    }
+    let widths = by_depth.into_iter().map(|(d, names)| (d, app.invoke_measure(names.join("\n").into(), false)));
+    let w = sizeview::name_column(widths, if st.config.thumbnails { 42.0 } else { 28.0 });
+    SIZES_NAME.with(|c| {
+        let mut a = c.get();
+        a[pane] = w;
+        c.set(a);
+    });
+    set_sizes_name(app, pane);
+}
+
+thread_local! {
+    /// Each pane's sizes view Name column as its rows want it (`fit_sizes_name`), before the clamp.
+    static SIZES_NAME: std::cell::Cell<[f32; 2]> = const { std::cell::Cell::new([sizeview::NAME_MIN; 2]) };
+}
+
+/// The Name column set on the pane: what its rows want, within the room its list leaves beside
+/// Share (130 px), Size on disk (100), Files (80) and the rows' 10 px right padding.
+fn set_sizes_name(app: &App, pane: usize) {
+    let (want, list) = (SIZES_NAME.with(|c| c.get())[pane], LIST_W.with(|c| c.get())[pane]);
+    let w = if list > 0.0 { want.min(list - 320.0).max(0.0) } else { want };
+    if pane == 0 { app.set_left_sizes_name_w(w) } else { app.set_right_sizes_name_w(w) }
 }
 
 /// List level `node` of pane `pane`'s sizes tab (its files, each with its size on disk) on a thread
 /// of its own; `land_level` puts them in.
-fn list_level(st: &mut State, pane: usize, node: sizeview::Id) {
-    let t = st.tab_mut(pane);
-    let (id, root) = (t.id, t.path.clone());
+fn list_level(st: &mut State, pane: usize, id: u64, node: sizeview::Id) {
+    let Some(t) = st.find(pane, id) else { return };
+    let root = t.path.clone();
     let Some(sv) = t.sizeview.as_mut() else { return };
     if !sv.listing.insert(node) {
         return;
@@ -6684,7 +6910,7 @@ fn size_toggle(pane: usize, row: usize, open: Option<bool>) {
             let kids = sv.tree.lock().unwrap_or_else(std::sync::PoisonError::into_inner).children(node).count();
             eprintln!("[sizeview] pane={pane} opened {} in place ({kids} children)", path.display());
             if !sv.files.contains_key(&node) {
-                list_level(st, pane, node);
+                list_level(st, pane, id, node);
             }
         } else {
             sv.open.remove(&node);
@@ -6713,7 +6939,8 @@ fn sizes_removed(st: &mut State, job: &Job, results: &[fileops::ItemResult]) -> 
             let Some(sv) = t.sizeview.as_mut() else { continue };
             let mut changed = false;
             for p in &gone {
-                // A move within the root changes none of the root's totals: not followed (F5 walks).
+                // A move within the root changes none of the root's totals: the watch follows it
+                // (P14-M2).
                 if let Job::Move { dest_dir, .. } = job {
                     if sizeview::rel_under(&root, dest_dir).is_some() || same_dir(&root, dest_dir) {
                         continue;
@@ -6738,7 +6965,9 @@ fn sizes_removed(st: &mut State, job: &Job, results: &[fileops::ItemResult]) -> 
 pub fn sizes_view_running() -> bool {
     STATE.with(|s| match s.try_borrow() {
         Ok(g) => g.as_ref().is_some_and(|st| {
-            st.panes.iter().any(|p| p.iter().any(|t| t.sizeview.as_ref().is_some_and(|s| (s.done_ms.is_none() && s.generation != 0) || !s.listing.is_empty())))
+            st.panes.iter().any(|p| {
+                p.iter().any(|t| t.sizeview.as_ref().is_some_and(|s| (s.done_ms.is_none() && s.generation != 0) || !s.listing.is_empty() || s.out > 0 || s.rewalking))
+            })
         }),
         Err(_) => true,
     })
@@ -6925,6 +7154,7 @@ fn list_width(app: &App, pane: usize, w: f32) {
         c.set(a);
     });
     update_shown(app, pane);
+    set_sizes_name(app, pane);
 }
 
 /// The columns pane `pane` shows, from its widths, the Type setting and its list's width

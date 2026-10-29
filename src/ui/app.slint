@@ -292,6 +292,9 @@ export component App inherits Window {
     in property <bool> right-sizes: false;
     in property <[SizeRow]> left-size-rows;
     in property <[SizeRow]> right-size-rows;
+    // The sizes view's Name column (P14-M2, main.rs fit_sizes_name): its widest name on screen.
+    in property <length> left-sizes-name-w: 240px;
+    in property <length> right-sizes-name-w: 240px;
     out property <int> left-grid-cols: left.tiles-per-row;
     out property <int> right-grid-cols: right.tiles-per-row;
     // The grid's icon strip per pane: one image per grid row (main.rs `grid_slots`).
@@ -1118,7 +1121,7 @@ export component App inherits Window {
             left := Pane {
                 x: 0; y: 0; height: parent.height;
                 width: split ? parent.width * split-ratio - 3px : parent.width;
-                rows: left-rows; sizes: left-sizes; size-rows: left-size-rows; grid: left-grid; medium: left-medium; grid-rows: left-grid-rows; strip-rows: left-strip-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
+                rows: left-rows; sizes: left-sizes; size-rows: left-size-rows; sizes-name-w: left-sizes-name-w; grid: left-grid; medium: left-medium; grid-rows: left-grid-rows; strip-rows: left-strip-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
@@ -1199,7 +1202,7 @@ export component App inherits Window {
                 visible: split;
                 x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
                 width: split ? parent.width - self.x : 0px;
-                rows: right-rows; sizes: right-sizes; size-rows: right-size-rows; grid: right-grid; medium: right-medium; grid-rows: right-grid-rows; strip-rows: right-strip-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
+                rows: right-rows; sizes: right-sizes; size-rows: right-size-rows; sizes-name-w: right-sizes-name-w; grid: right-grid; medium: right-medium; grid-rows: right-grid-rows; strip-rows: right-strip-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;

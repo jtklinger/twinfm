@@ -10,8 +10,15 @@
 //! walk (by its file ID, `dirinfo::HardLinks`), a reparse point (a junction, a link) 0 and is not
 //! entered, as folder sizes do. Folders deeper than `SIZE_MAX_DEPTH` are counted and not entered.
 //!
-//! `Tree` and `rows` are pure: the ordering, the opening in place, the share bars' arithmetic and a
-//! removal's totals are unit-tested on a tree built by hand.
+//! Since P14-M2 the view follows changes: each folder keeps the totals of its **own** files beside
+//! its subtree's (`Own`), so a change is applied by reading that one folder again (`Tree::apply`,
+//! one `dirinfo::read`) and adding the difference to every total above it; a subfolder that
+//! appeared is walked (its subtree only), one that went is taken off, a folder renamed keeps its
+//! subtree (`plan`, from the subtree watch's records). `follow` runs a window of records on the
+//! view's own `sizeview` thread.
+//!
+//! `Tree`, `rows`, `apply` and `plan` are pure: the ordering, the opening in place, the share bars'
+//! arithmetic, a removal's totals and a window's changes are unit-tested on a tree built by hand.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -20,7 +27,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT};
 
-use crate::fs::dirinfo;
+use crate::fs::dirinfo::{self, HardLinks};
 use crate::icons::IconKeys;
 use crate::model::{Entry, Kind, LocalZone, PaneModel, format_size};
 use slint::{Model, ModelTracker, SharedString};
@@ -63,6 +70,24 @@ impl Totals {
     }
 }
 
+/// What a folder's own files hold (not its subfolders'), as its last read gave it: `apply`
+/// replaces it and adds the difference above.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Own {
+    pub disk: u64,
+    pub logical: u64,
+    /// Every file name (a hard-linked file's second name too, as the walk counts them).
+    pub files: u32,
+    /// Junctions and directory links: counted as folders, not entered.
+    pub links: u32,
+}
+
+impl Own {
+    fn totals(&self, skipped: bool) -> Totals {
+        Totals { disk: self.disk, logical: self.logical, files: u64::from(self.files), folders: u64::from(self.links), skipped: u64::from(skipped) }
+    }
+}
+
 /// One folder of the walk. Children are a linked list (no Vec per folder: a walk of `C:\` keeps a
 /// few hundred thousand of these).
 pub struct Node {
@@ -77,6 +102,9 @@ pub struct Node {
     gone: bool,
     /// Its listing has been read (its totals below may still grow while the walk runs).
     pub read: bool,
+    /// Its last read failed (counted as skipped).
+    pub skipped: bool,
+    pub own: Own,
     pub totals: Totals,
 }
 
@@ -85,11 +113,13 @@ pub struct Tree {
     pub nodes: Vec<Node>,
     /// The root is This PC: its children are drives, named by their roots.
     pub this_pc: bool,
+    /// Every file met, by its ID, and the folder that counted it.
+    pub links: HardLinks,
 }
 
 impl Tree {
     pub fn new(root_name: &str, this_pc: bool) -> Tree {
-        Tree { nodes: vec![node(root_name, NONE, 0)], this_pc }
+        Tree { nodes: vec![node(root_name, NONE, 0)], this_pc, links: HardLinks::default() }
     }
 
     /// A new folder under `parent`, counted as a folder of every node above it.
@@ -197,7 +227,207 @@ impl Tree {
     pub fn root(&self) -> &Totals {
         &self.nodes[0].totals
     }
+
+    /// The node and every node above it are in the tree (none taken off).
+    pub fn alive(&self, id: Id) -> bool {
+        alive_in(&self.nodes, id)
+    }
+
+    /// Folder `id` read (by the walk, or again after a change): its own files' totals replace the
+    /// last read's, the difference going to every total above it; a subfolder not in the tree is
+    /// added (`Applied::created`, for the caller to walk), one no longer there is taken off. A
+    /// failed read counts the folder as skipped, with nothing of its own.
+    pub fn apply(&mut self, id: Id, l: &Listing) -> Applied {
+        let mut out = Applied::default();
+        if !self.alive(id) {
+            return out;
+        }
+        let skipped = l.err.is_some();
+        let first = !self.nodes[id as usize].read;
+        let mut own = Own::default();
+        if !skipped {
+            own.files = l.files.len() as u32;
+            own.links = l.links;
+            let mut here = HashSet::new();
+            let nodes = &self.nodes;
+            for f in &l.files {
+                if self.links.counts(f.id, id, (!first).then_some(&mut here), |owner| !alive_in(nodes, owner)) {
+                    own.disk += f.disk;
+                    own.logical += f.logical;
+                }
+            }
+        }
+        let n = &self.nodes[id as usize];
+        let (old, was_skipped) = (n.own, n.skipped);
+        if (own, skipped) != (old, was_skipped) {
+            self.take(id, &old.totals(was_skipped));
+            self.add(id, &own.totals(skipped));
+        }
+        let n = &mut self.nodes[id as usize];
+        n.own = own;
+        n.skipped = skipped;
+        n.read = true;
+        if skipped {
+            return out;
+        }
+        if first {
+            // The walk's first read: every subfolder is new.
+            out.created = l.subs.iter().map(|name| self.add_folder(id, name)).collect();
+            return out;
+        }
+        let wanted: HashSet<String> = l.subs.iter().map(|n| n.to_ascii_lowercase()).collect();
+        let have: Vec<Id> = self.children(id).collect();
+        let mut known = HashSet::new();
+        for c in have {
+            let name = self.nodes[c as usize].name.to_ascii_lowercase();
+            if wanted.contains(&name) {
+                known.insert(name);
+            } else {
+                self.remove_folder(c);
+                out.removed += 1;
+            }
+        }
+        out.created = l.subs.iter().filter(|n| !known.contains(&n.to_ascii_lowercase())).map(|name| self.add_folder(id, name)).collect();
+        out
+    }
 }
+
+/// One folder's entries as `Tree::apply` takes them (`Listing::read`).
+#[derive(Default)]
+pub struct Listing {
+    /// The Win32 error when the folder could not be read.
+    pub err: Option<u32>,
+    pub files: Vec<ListedFile>,
+    /// Its subfolders' names (not links).
+    pub subs: Vec<String>,
+    /// Its junctions and directory links.
+    pub links: u32,
+}
+
+/// A file of a `Listing`: its ID and what it counts.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ListedFile {
+    pub id: u64,
+    pub disk: u64,
+    pub logical: u64,
+}
+
+impl Listing {
+    /// Read `dir`'s directory information into the listing (its old contents dropped).
+    pub fn read(&mut self, dir: &Path) {
+        self.files.clear();
+        self.subs.clear();
+        self.links = 0;
+        let (files, subs, links) = (&mut self.files, &mut self.subs, &mut self.links);
+        self.err = dirinfo::read(dir, true, |i| {
+            if i.is_dot() {
+                return;
+            }
+            if i.attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+                if i.attrs & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+                    subs.push(String::from_utf16_lossy(i.name));
+                } else {
+                    // A junction or a directory link: a folder, not entered.
+                    *links += 1;
+                }
+            } else {
+                files.push(ListedFile { id: i.id, disk: file_disk(i.attrs, i.tag, i.disk), logical: i.logical });
+            }
+        })
+        .err();
+    }
+}
+
+/// What `Tree::apply` changed besides the folder's own totals.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// Subfolders added (not read yet).
+    pub created: Vec<Id>,
+    /// Subfolders taken off.
+    pub removed: usize,
+}
+
+const FILE_ACTION_MODIFIED: u32 = 3;
+const FILE_ACTION_RENAMED_OLD_NAME: u32 = 4;
+const FILE_ACTION_RENAMED_NEW_NAME: u32 = 5;
+
+/// A window's records (FILE_ACTION_*, the path under the root) as the folders to read again,
+/// shallowest first: the folder each record is in, or the deepest folder of its path the tree has
+/// (a record inside a folder that appeared in the window: that folder's parent finds it). A
+/// folder's rename (its old name then its new one, in one folder) renames its node, subtree and
+/// all, at once (`moved`). A folder's own entry modified (its times) is no change of its contents;
+/// a record below a folder the walk did not enter (past `SIZE_MAX_DEPTH`) changes nothing it
+/// counts.
+pub fn plan(tree: &mut Tree, records: &[(u32, String)]) -> Plan {
+    let mut out = Plan::default();
+    let mut want: HashSet<Id> = HashSet::new();
+    let mut it = records.iter().peekable();
+    while let Some((action, path)) = it.next() {
+        if *action == FILE_ACTION_RENAMED_OLD_NAME {
+            if let Some((_, to)) = it.next_if(|(a, _)| *a == FILE_ACTION_RENAMED_NEW_NAME) {
+                let (from_dir, _) = parent_rel(path);
+                let (to_dir, to_leaf) = parent_rel(to);
+                match tree.find(path).filter(|&id| id != 0) {
+                    Some(id)
+                        if from_dir.eq_ignore_ascii_case(to_dir)
+                            && tree.child(tree.nodes[id as usize].parent, to_leaf).is_none_or(|c| c == id) =>
+                    {
+                        tree.nodes[id as usize].name = to_leaf.into();
+                        out.moved += 1;
+                    }
+                    // A file renamed: its folder's names change, not its totals; read it again
+                    // anyway (cheap, and right if the pair was not what it seemed).
+                    _ => {
+                        out.add(tree, &mut want, from_dir);
+                        out.add(tree, &mut want, to_dir);
+                    }
+                }
+                continue;
+            }
+        }
+        if *action == FILE_ACTION_MODIFIED && tree.find(path).is_some_and(|id| id != 0) {
+            continue;
+        }
+        out.add(tree, &mut want, parent_rel(path).0);
+    }
+    out.reread.sort_by_key(|&id| tree.nodes[id as usize].depth);
+    out
+}
+
+/// The folders a window reads again (`plan`).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Plan {
+    pub reread: Vec<Id>,
+    /// Folders renamed in place.
+    pub moved: usize,
+}
+
+impl Plan {
+    fn add(&mut self, tree: &Tree, want: &mut HashSet<Id>, dir: &str) {
+        let mut at = 0;
+        for part in split(dir, tree.this_pc) {
+            match tree.child(at, part) {
+                Some(c) => at = c,
+                None => break,
+            }
+        }
+        // Not entered (past the depth cap): nothing counted there. A skipped folder is read again:
+        // readable now, it is walked.
+        let n = &tree.nodes[at as usize];
+        if (n.read || n.skipped) && want.insert(at) {
+            self.reread.push(at);
+        }
+    }
+}
+
+/// `rel`'s folder and its last part (`a\b\c.txt` -> (`a\b`, `c.txt`); a root file's folder is "").
+fn parent_rel(rel: &str) -> (&str, &str) {
+    match rel.trim_end_matches('\\').rsplit_once('\\') {
+        Some((d, l)) => (d, l),
+        None => ("", rel),
+    }
+}
+
 
 impl Default for Tree {
     fn default() -> Tree {
@@ -219,8 +449,20 @@ pub fn rel_under(root: &Path, path: &Path) -> Option<String> {
     (head.eq_ignore_ascii_case(r) && !rest.is_empty()).then(|| rest.trim_end_matches('\\').to_string())
 }
 
+fn alive_in(nodes: &[Node], id: Id) -> bool {
+    let mut at = id;
+    while at != NONE {
+        let n = &nodes[at as usize];
+        if n.gone {
+            return false;
+        }
+        at = n.parent;
+    }
+    true
+}
+
 fn node(name: &str, parent: Id, depth: u16) -> Node {
-    Node { name: name.into(), parent, first_child: NONE, next: NONE, depth, gone: false, read: false, totals: Totals::default() }
+    Node { name: name.into(), parent, first_child: NONE, next: NONE, depth, gone: false, read: false, skipped: false, own: Own::default(), totals: Totals::default() }
 }
 
 pub struct Children<'a> {
@@ -347,6 +589,15 @@ pub fn remove_file(tree: &mut Tree, files: &mut HashMap<Id, Vec<File>>, parent: 
     let f = list.remove(k);
     let counted = f.attrs & FILE_ATTRIBUTE_DIRECTORY == 0;
     let t = Totals { disk: f.disk, logical: f.logical, files: u64::from(counted), folders: u64::from(!counted), skipped: 0 };
+    // Off the folder's own files too, so its next read finds nothing changed.
+    let own = &mut tree.nodes[parent as usize].own;
+    own.disk = own.disk.saturating_sub(f.disk);
+    own.logical = own.logical.saturating_sub(f.logical);
+    if counted {
+        own.files = own.files.saturating_sub(1);
+    } else {
+        own.links = own.links.saturating_sub(1);
+    }
     Some((f.disk, tree.take(parent, &t)))
 }
 
@@ -393,54 +644,32 @@ pub enum Progress {
     Cancelled,
 }
 
-/// Walk `roots` (one root, or This PC's drives under the tree's root) into `tree`, folder by
-/// folder, locking it for each folder's additions only. `progress` is called every
-/// `PARTIAL_EVERY` and at the end.
+/// What a sizes view's thread is asked once its walk is done (P14-M2), in order.
+pub enum Cmd {
+    /// A window of the subtree watch's records (paths under `root`, the view's folder now).
+    Window { root: PathBuf, records: Vec<(u32, String)> },
+    /// Walk the whole root again into a new tree (after an overflow).
+    Rewalk { root: PathBuf },
+}
+
+/// Walk `roots` (one root, or This PC's drives under the tree's root; or, following a change, a
+/// folder that appeared) into `tree`, folder by folder, each read outside the lock and applied
+/// under it (`Tree::apply`). `progress` is called every `PARTIAL_EVERY` and at the end.
 pub fn walk(tree: &Arc<Mutex<Tree>>, roots: &[(Id, PathBuf)], cancel: &AtomicBool, mut progress: impl FnMut(Progress)) {
     let t0 = Instant::now();
     let mut last = Instant::now();
-    let mut links = dirinfo::HardLinks::default();
-    let mut stack: Vec<(Id, PathBuf, usize)> = roots.iter().rev().map(|(id, p)| (*id, p.clone(), 0)).collect();
-    let mut subs: Vec<String> = Vec::new();
-    while let Some((id, dir, depth)) = stack.pop() {
+    let mut stack: Vec<(Id, PathBuf)> = roots.iter().rev().cloned().collect();
+    let mut listing = Listing::default();
+    while let Some((id, dir)) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
             return progress(Progress::Cancelled);
         }
-        subs.clear();
-        let mut t = Totals::default();
-        let res = dirinfo::read(&dir, true, |i| {
-            if i.is_dot() {
-                return;
-            }
-            if i.attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
-                if i.attrs & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-                    subs.push(String::from_utf16_lossy(i.name));
-                } else {
-                    // A junction or a directory link: a folder, not entered.
-                    t.folders += 1;
-                }
-            } else {
-                t.files += 1;
-                if links.first(i.id) {
-                    t.disk += file_disk(i.attrs, i.tag, i.disk);
-                    t.logical += i.logical;
-                }
-            }
-        });
-        if res.is_err() {
-            t.skipped = 1;
-        }
+        listing.read(&dir);
         {
             let mut tr = tree.lock().unwrap_or_else(PoisonError::into_inner);
-            tr.add(id, &t);
-            if let Some(n) = tr.nodes.get_mut(id as usize) {
-                n.read = true;
-            }
-            for name in subs.drain(..) {
-                let c = tr.add_folder(id, &name);
-                if depth < crate::fs::sizes::SIZE_MAX_DEPTH {
-                    stack.push((c, dir.join(&name), depth + 1));
-                }
+            let created = tr.apply(id, &listing).created;
+            if usize::from(tr.nodes[id as usize].depth) < crate::fs::sizes::SIZE_MAX_DEPTH {
+                stack.extend(created.into_iter().map(|c| (c, dir.join(&*tr.nodes[c as usize].name))));
             }
         }
         if last.elapsed() >= crate::fs::sizes::PARTIAL_EVERY {
@@ -448,7 +677,69 @@ pub fn walk(tree: &Arc<Mutex<Tree>>, roots: &[(Id, PathBuf)], cancel: &AtomicBoo
             progress(Progress::Partial);
         }
     }
-    progress(Progress::Done { ms: t0.elapsed().as_millis() as u64, ids: links.len() });
+    let ids = tree.lock().unwrap_or_else(PoisonError::into_inner).links.len();
+    progress(Progress::Done { ms: t0.elapsed().as_millis() as u64, ids });
+}
+
+/// A window of the subtree watch's records applied to the tree (`follow`).
+#[derive(Debug, Default)]
+pub struct Followed {
+    /// Folders read again.
+    pub reread: Vec<Id>,
+    /// Re-read folders whose size on disk changed: (folder, before, after).
+    pub changed: Vec<(Id, u64, u64)>,
+    pub created: usize,
+    pub removed: usize,
+    pub moved: usize,
+    pub ms: f64,
+    /// The root's totals after the window.
+    pub root: Totals,
+}
+
+/// Apply a window of records (`plan`) to the tree of the view on `root`: each folder read again
+/// (outside the lock, `Listing::read`), its difference applied (`Tree::apply`), the folders that
+/// appeared walked. A folder gone before its read (not found) is left to its parent's read.
+pub fn follow(tree: &Arc<Mutex<Tree>>, root: &Path, records: &[(u32, String)], cancel: &AtomicBool) -> Followed {
+    let t0 = Instant::now();
+    let plan = plan(&mut tree.lock().unwrap_or_else(PoisonError::into_inner), records);
+    let mut out = Followed { moved: plan.moved, ..Default::default() };
+    let mut listing = Listing::default();
+    for id in plan.reread {
+        let (dir, before) = {
+            let tr = tree.lock().unwrap_or_else(PoisonError::into_inner);
+            if !tr.alive(id) {
+                continue;
+            }
+            (if id == 0 { root.to_path_buf() } else { root.join(tr.rel(id)) }, tr.nodes[id as usize].totals.disk)
+        };
+        listing.read(&dir);
+        // ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND: gone (or going); its parent's read takes it off.
+        if matches!(listing.err, Some(2 | 3)) {
+            continue;
+        }
+        let walks: Vec<(Id, PathBuf)> = {
+            let mut tr = tree.lock().unwrap_or_else(PoisonError::into_inner);
+            let a = tr.apply(id, &listing);
+            out.removed += a.removed;
+            out.created += a.created.len();
+            if usize::from(tr.nodes[id as usize].depth) < crate::fs::sizes::SIZE_MAX_DEPTH {
+                a.created.into_iter().map(|c| (c, dir.join(&*tr.nodes[c as usize].name))).collect()
+            } else {
+                Vec::new()
+            }
+        };
+        if !walks.is_empty() {
+            walk(tree, &walks, cancel, |_| {});
+        }
+        let after = tree.lock().unwrap_or_else(PoisonError::into_inner).nodes[id as usize].totals.disk;
+        if after != before {
+            out.changed.push((id, before, after));
+        }
+        out.reread.push(id);
+    }
+    out.root = *tree.lock().unwrap_or_else(PoisonError::into_inner).root();
+    out.ms = t0.elapsed().as_secs_f64() * 1e3;
+    out
 }
 
 /// The files of one level (`dir`), each with its size on disk, and the links and junctions the walk
@@ -522,6 +813,16 @@ pub fn entries(tree: &Tree, files: &HashMap<Id, Vec<File>>, root: &Path, rows: &
         extra.push(Extra { depth: r.depth, share: r.share, files: if folder { count(r.files).into() } else { SharedString::default() }, folder, open: r.open });
     }
     (out, extra)
+}
+
+/// The Name column's narrowest width (P14-M2), logical px.
+pub const NAME_MIN: f32 = 240.0;
+
+/// The Name column's width (P14-M2): what its widest row on screen needs, from the row's left edge
+/// (the icon column's `pad`, the depth's indent of 16 px a level, the 16 px chevron) to its name's
+/// end with `cols::fit_width`'s slack, at least `NAME_MIN`. `rows`: (depth, the name's width).
+pub fn name_column(rows: impl IntoIterator<Item = (u16, f32)>, pad: f32) -> f32 {
+    rows.into_iter().map(|(d, w)| pad + f32::from(d) * 16.0 + 16.0 + crate::cols::fit_width(w)).fold(NAME_MIN, f32::max)
 }
 
 /// A count with thousands separated (`12,345`).
@@ -793,5 +1094,186 @@ mod tests {
         let mut names: Vec<&str> = level.iter().map(|f| f.name.as_str()).collect();
         names.sort();
         assert_eq!(names, ["x-link.bin", "y.bin"], "a level's listing has every name");
+    }
+
+    fn listing(files: &[(u64, u64)], subs: &[&str]) -> Listing {
+        Listing { err: None, files: files.iter().map(|&(id, disk)| ListedFile { id, disk, logical: disk }).collect(), subs: subs.iter().map(|s| s.to_string()).collect(), links: 0 }
+    }
+
+    /// Every folder's totals are its own files' and its subfolders' (each counted as a folder).
+    fn sums_hold(t: &Tree) {
+        for (id, n) in t.nodes.iter().enumerate().filter(|(id, _)| t.alive(*id as Id)) {
+            let mut want = n.own.totals(n.skipped);
+            for c in t.children(id as Id) {
+                want.add(&t.nodes[c as usize].totals);
+                want.folders += 1;
+            }
+            assert_eq!(n.totals, want, "{:?}", t.rel(id as Id));
+        }
+    }
+
+    #[test]
+    fn a_folder_read_again_changes_only_what_changed() {
+        let mut t = Tree::new(r"C:\root", false);
+        let created = t.apply(0, &listing(&[(1, 100), (2, 50)], &["a", "b"])).created;
+        let (a, b) = (created[0], created[1]);
+        let deep = t.apply(a, &listing(&[(3, 300)], &["deep"])).created[0];
+        t.apply(b, &listing(&[], &[]));
+        t.apply(deep, &listing(&[(4, 10)], &[]));
+        sums_hold(&t);
+        assert_eq!(*t.root(), Totals { disk: 460, logical: 460, files: 4, folders: 3, skipped: 0 });
+        assert_eq!(t.nodes[a as usize].own, Own { disk: 300, logical: 300, files: 1, links: 0 });
+
+        // A file grown: deep read again, the difference up the chain.
+        assert_eq!(t.apply(deep, &listing(&[(4, 1000)], &[])), Applied::default());
+        assert_eq!((t.root().disk, t.nodes[a as usize].totals.disk), (1450, 1300));
+        sums_hold(&t);
+        // A folder created: added, for the caller to walk; its files once it is read.
+        let got = t.apply(b, &listing(&[], &["new"]));
+        assert_eq!((got.created.len(), got.removed), (1, 0));
+        let new = got.created[0];
+        assert!(!t.nodes[new as usize].read);
+        t.apply(new, &listing(&[(5, 7)], &[]));
+        assert_eq!(t.root().disk, 1457);
+        assert_eq!(t.root().folders, 4);
+        sums_hold(&t);
+        // A folder removed: off every total above it.
+        assert_eq!(t.apply(a, &listing(&[(3, 300)], &[])), Applied { created: Vec::new(), removed: 1 });
+        assert_eq!(*t.root(), Totals { disk: 457, logical: 457, files: 4, folders: 3, skipped: 0 });
+        assert!(t.find(r"a\deep").is_none());
+        sums_hold(&t);
+        // The same listing again: nothing.
+        let before = *t.root();
+        t.apply(0, &listing(&[(1, 100), (2, 50)], &["a", "b"]));
+        assert_eq!(*t.root(), before);
+        // A hard link: a name in the root of a file b\new counted is listed but not counted twice;
+        // b\new read again still counts it.
+        t.apply(0, &listing(&[(1, 100), (2, 50), (5, 7)], &["a", "b"]));
+        assert_eq!((t.root().disk, t.root().files, t.nodes[0].own.files), (457, 5, 3));
+        t.apply(new, &listing(&[(5, 7)], &[]));
+        assert_eq!(t.root().disk, 457);
+        sums_hold(&t);
+        // b\new deleted with the root's name of its file left: the root's next read counts it there.
+        let mut kept = Tree::new("x", false);
+        let ab = kept.apply(0, &listing(&[], &["a", "b"])).created;
+        kept.apply(ab[0], &listing(&[(9, 40)], &[]));
+        kept.apply(ab[1], &listing(&[(9, 40)], &[]));
+        assert_eq!(kept.root().disk, 40, "once, in a");
+        kept.apply(0, &listing(&[], &["b"]));
+        assert_eq!(kept.root().disk, 0, "a went with the name that counted it");
+        kept.apply(ab[1], &listing(&[(9, 40)], &[]));
+        assert_eq!(kept.root().disk, 40, "b's name counts now");
+        sums_hold(&kept);
+        // A folder that cannot be read counts as skipped with nothing of its own; readable again,
+        // it counts again.
+        t.apply(new, &Listing { err: Some(5), ..Default::default() });
+        assert_eq!((t.root().disk, t.root().skipped), (450, 1));
+        sums_hold(&t);
+        t.apply(new, &listing(&[(5, 7)], &[]));
+        assert_eq!((t.root().disk, t.root().skipped), (457, 0));
+        // Taken off by a removal (sizes_removed): reading it changes nothing.
+        let mut files = HashMap::new();
+        files.insert(a, vec![file("x", 300)]);
+        assert!(remove(&mut t, &mut files, r"a\x").is_some());
+        let before = *t.root();
+        t.apply(a, &listing(&[], &[]));
+        assert_eq!(*t.root(), before, "the removal took it off the folder's own files too");
+        sums_hold(&t);
+    }
+
+    #[test]
+    fn a_window_names_the_folders_to_read_again() {
+        let mut t = Tree::new(r"C:\root", false);
+        let ab = t.apply(0, &listing(&[], &["a", "b"])).created;
+        let deep = t.apply(ab[0], &listing(&[], &["deep"])).created[0];
+        t.apply(ab[1], &listing(&[], &[]));
+        t.apply(deep, &listing(&[], &[]));
+        let rec = |v: &[(u32, &str)]| v.iter().map(|&(a, p)| (a, p.to_string())).collect::<Vec<_>>();
+        // A file in a folder, a root file, a file in a folder the window made (its parent reads it),
+        // shallowest first, each once.
+        let p = plan(&mut t, &rec(&[(3, r"a\deep\x.txt"), (1, "top.txt"), (1, r"b\fresh\y.txt"), (2, r"a\deep\z.txt")]));
+        assert_eq!(p, Plan { reread: vec![0, ab[1], deep], moved: 0 });
+        // A folder's own entry modified (its times) is no change.
+        assert_eq!(plan(&mut t, &rec(&[(3, r"a\deep")])), Plan::default());
+        // A folder renamed: its node renamed, subtree and all, nothing read.
+        assert_eq!(plan(&mut t, &rec(&[(4, r"a\deep"), (5, r"a\deeper")])), Plan { reread: Vec::new(), moved: 1 });
+        assert_eq!(t.find(r"a\deeper"), Some(deep));
+        assert!(t.find(r"a\deep").is_none());
+        // A file renamed: its folder read again. A move out of the root is a removal.
+        assert_eq!(plan(&mut t, &rec(&[(4, r"b\f.txt"), (5, r"b\g.txt")])).reread, vec![ab[1]]);
+        assert_eq!(plan(&mut t, &rec(&[(2, r"a\deeper")])).reread, vec![ab[0]]);
+        // Below a folder the walk did not enter: nothing.
+        let capped = t.add_folder(deep, "capped");
+        assert_eq!(plan(&mut t, &rec(&[(1, r"a\deeper\capped\x.txt")])), Plan::default());
+        // A skipped folder is read again (readable now, it is walked).
+        t.apply(capped, &Listing { err: Some(5), ..Default::default() });
+        assert_eq!(plan(&mut t, &rec(&[(1, r"a\deeper\capped\x.txt")])).reread, vec![capped]);
+    }
+
+    #[test]
+    fn the_name_column_fits_its_widest_row() {
+        assert_eq!(name_column([], 28.0), NAME_MIN, "no rows on screen");
+        assert_eq!(name_column([(0, 50.0)], 28.0), NAME_MIN, "short names keep the floor");
+        let fit = crate::cols::fit_width(300.0);
+        assert_eq!(name_column([(0, 300.0), (2, 280.0)], 28.0), (28.0 + 32.0 + 16.0 + crate::cols::fit_width(280.0)).max(28.0 + 16.0 + fit));
+        assert_eq!(name_column([(0, 300.0)], 42.0), 42.0 + 16.0 + fit, "beside thumbnails");
+    }
+
+    #[test]
+    fn a_watched_tree_follows_its_changes() {
+        let dir = std::env::temp_dir().join(format!("twinfm-p14m2-test-{}", std::process::id()));
+        let out = std::env::temp_dir().join(format!("twinfm-p14m2-out-{}", std::process::id()));
+        for d in [&dir, &out] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        std::fs::create_dir_all(dir.join(r"a\deep")).unwrap();
+        std::fs::create_dir_all(dir.join(r"b\inner")).unwrap();
+        std::fs::create_dir_all(dir.join("c")).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(dir.join("top.txt"), vec![1u8; 10_000]).unwrap();
+        std::fs::write(dir.join(r"a\deep\x.bin"), vec![1u8; 100_000]).unwrap();
+        std::fs::write(dir.join(r"a\keep.bin"), vec![1u8; 20_000]).unwrap();
+        std::fs::write(dir.join(r"b\inner\y.bin"), vec![1u8; 5_000]).unwrap();
+        std::fs::write(dir.join(r"c\z.bin"), vec![1u8; 1_000]).unwrap();
+        let tree = Arc::new(Mutex::new(Tree::new(&dir.to_string_lossy(), false)));
+        let never = AtomicBool::new(false);
+        walk(&tree, &[(0, dir.clone())], &never, |_| {});
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let w = crate::fs::watch::Watcher::spawn(tx, || {});
+        w.watch(0, 1, dir.clone(), true, false);
+        w.sync();
+        // A file grown, a folder (with files below it) created, one deleted, one renamed, one moved
+        // out of the root, a root file appended to.
+        std::fs::write(dir.join(r"a\deep\x.bin"), vec![1u8; 300_000]).unwrap();
+        std::fs::create_dir_all(dir.join(r"new\sub")).unwrap();
+        std::fs::write(dir.join(r"new\sub\n.bin"), vec![1u8; 7_000]).unwrap();
+        std::fs::remove_dir_all(dir.join("c")).unwrap();
+        std::fs::rename(dir.join("b"), dir.join("b2")).unwrap();
+        std::fs::rename(dir.join(r"a\deep"), out.join("deep")).unwrap();
+        std::fs::write(dir.join("top.txt"), vec![1u8; 50_000]).unwrap();
+        let end = Instant::now() + std::time::Duration::from_secs(3);
+        let (mut windows, mut moved) = (0, 0);
+        while let Ok(ev) = rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
+            if let crate::fs::watch::Event::Subtree { overflow: false, deep: Some(records), .. } = ev {
+                let f = follow(&tree, &dir, &records, &never);
+                windows += 1;
+                moved += f.moved;
+            }
+        }
+        drop(w);
+        let fresh = Arc::new(Mutex::new(Tree::new(&dir.to_string_lossy(), false)));
+        walk(&fresh, &[(0, dir.clone())], &never, |_| {});
+        for d in [&dir, &out] {
+            std::fs::remove_dir_all(d).unwrap();
+        }
+
+        assert!(windows >= 1, "no window with records");
+        assert_eq!(moved, 1, "b renamed in place");
+        let (t, f) = (tree.lock().unwrap(), fresh.lock().unwrap());
+        sums_hold(&t);
+        assert_eq!(*t.root(), *f.root(), "the followed tree's totals are a fresh walk's");
+        let alive = |x: &Tree| (0..x.nodes.len() as Id).filter(|&i| x.alive(i)).map(|i| (x.rel(i).to_lowercase(), x.nodes[i as usize].totals)).collect::<HashMap<_, _>>();
+        assert_eq!(alive(&t), alive(&f), "every folder as a fresh walk has it");
+        assert!(t.find(r"b2\inner").is_some() && t.find("c").is_none() && t.find(r"a\deep").is_none() && t.find(r"new\sub").is_some());
     }
 }
