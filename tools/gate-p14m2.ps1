@@ -1,5 +1,5 @@
 # P14-M2 gate: target-p14m2 from the P14-M2 PR's head (the sizes view following changes, its Name
-# column fitted) against target-p13close (13cfe82, main's code at the Phase 13 close), the defaults only:
+# column fitted) against target-p14m1 (P14-M1's gate build, main with P14-M1 merged), the defaults only:
 # the scenario never opens the sizes view, so the gate proves only that the rest is untouched (every
 # run's stderr must hold no `[sizeview]` line; the subtree watch's new `deep` records are gathered only
 # by a subtree watch, which the scenario never asks for either). 6 runs, about 9 minutes, then the
@@ -18,9 +18,9 @@
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
 # The head and the tag are set when the coordinating session hands the gate over.
-$Head = 'TBD'
-$Tag = 'TBD'
-$Ref = 'p13close'
+$Head = '1af867b'
+$Tag = 'ab77'
+$Ref = 'p14m1'
 $Cand = 'p14m2'
 $Gate = "$Root\.claude\worktrees\gate-p14m2"
 if ($Head -eq 'TBD' -or $Tag -eq 'TBD') { throw 'Set $Head and $Tag at the top of this script first (the coordinating session gives them).' }
