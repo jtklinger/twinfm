@@ -10,14 +10,9 @@ below, marked P12. Phase 13 took its items at its kickoff (2026-10-27, `phase-13
 view's click-and-drag selection, the TreeSize-style view with size on disk, the owed checks (the dead
 share, Phase 12's console checks; the long soak was run after the Phase 12 close), the styled-text
 memory follow-up and the two small log and soak clean-ups. It closed 2026-10-29 (`phase-13-plan.md` § Phase 13 close); what it put off is below,
-marked P13.
-
-## Asked for in daily use, not scheduled
-
-- **Save a search results tab** (Jeremy, 2026-10-23: "be able to save a search results tab as a
-  custom tab"). Settled first, with Jeremy: whether the query is kept (re-run when opened, as Windows'
-  saved searches do) or the results as found; where it lives (a sidebar row, a restored tab, or
-  both); its name; whether content searches are saved the same way.
+marked P13. Phase 14 took its items at its kickoff (2026-10-29, `phase-14-plan.md`): saving a search
+(as a sidebar group, run again when opened), the sizes view following changes (with its columns' place),
+hover on file rows and tiles, and the scrollbar track's repeat.
 
 ## Look and feel
 
@@ -26,9 +21,9 @@ marked P13.
   (`phase-10-plan.md` § Phase 10 close).
 - **Corners still in the Fluent style**: the list and scroll areas, the About dialog's text (P10 close;
   Phase 12 did the tooltips and the scrollbars).
-- **Hover**: no fade on file rows, tiles, or the sidebar's and the crumb dropdown's rows (they scroll);
-  Slint's tooltip keeps its 500 ms delay and sits under the pointer, not under its control (P12-M1).
-- **Scrollbars**: a press on the track pages once and does not repeat while held; no arrow buttons; the
+- **Hover**: no fade on the sidebar's and the crumb dropdown's rows (they scroll); Slint's tooltip keeps
+  its 500 ms delay and sits under the pointer, not under its control (P12-M1).
+- **Scrollbars**: no arrow buttons; the
   hovered thumb covers the last pixel of the Modified column; a grid pane with under 10 px past its last
   tile shows one tile fewer; a long Markdown file's bar is the list's own estimate, since Phase 8 (P12-M2).
 - **TwinFM's questions**: the dialog has no icon; a drop from another program while a question shows
@@ -65,8 +60,6 @@ marked P13.
   P11 video follow-up names the cause if it returns.
 - **Explorer's other views**: extra large and small icons, list, tiles, content (P4-M1; medium icons
   came in P6-M2).
-- **The sizes view** does not follow changes from elsewhere or a move within its root (F5 walks again);
-  its wide Name column puts Share, Size on disk and Files at a wide pane's far right (P13-M3).
 - **The Size on disk column** is a fixed 100 px, with no grip and no sort (P13-M3).
 - A deleted watched folder stays `Lost`; the subtree watch's overflow could not be forced (the test
   covers its handling); the log's cut timer's per-minute string (a clean-up) (P11 close).

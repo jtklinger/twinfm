@@ -46,6 +46,8 @@ icons, the memory check and the segment heap; § Phase 12 close holds the gates,
 the Phase 13 list). `docs/phase-13-plan.md` is the Phase 13 record (opened 2026-10-27, closed 2026-10-29:
 columns that make way for the name, everything by mouse, the sizes view and the Size on disk column, the owed
 checks with the dead share; § Phase 13 close holds the gates, lessons, what is deferred and the Phase 14 list).
+`docs/phase-14-plan.md` is the Phase 14 record (opened 2026-10-29: saved searches in the sidebar, the sizes view
+following changes, hover on file rows and tiles, the scrollbar track's repeat).
 
 `docs/roadmap.md` is the one list of known bugs and wanted features not built yet (since 2026-10-25).
 Its upkeep, Jeremy's rule (2026-10-26, "add the roadmap rule"): an item leaves the roadmap when a phase's
