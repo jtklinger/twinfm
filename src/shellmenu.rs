@@ -1187,15 +1187,17 @@ fn fill_submenus(cm: &Com, hmenu: HMENU, depth: u32) {
 const SUBMENU_WAIT_MS: u64 = 3000;
 
 /// `fill_submenus`, then, until `found` says yes or `SUBMENU_WAIT_MS` passes, this thread's
-/// messages pumped and the submenus asked again every 50 ms. True when found; logs a late find.
+/// messages pumped and the submenus asked again every 50 ms. True when found; logs a late find
+/// (one the first check missed: the first check's own time is no lateness, P12-M6).
 /// On the verb worker only (its own messages; a `WM_QUIT` met here is posted again and ends the wait).
 fn fill_until(cm: &Com, hmenu: HMENU, what: &str, found: impl Fn() -> bool) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, TranslateMessage, WM_QUIT};
     let t0 = std::time::Instant::now();
+    let mut first = true;
     loop {
         fill_submenus(cm, hmenu, 2);
         if found() {
-            if t0.elapsed().as_millis() >= 50 {
+            if !first {
                 eprintln!("[menu] \"{what}\" found after {} ms (a submenu filled late)", t0.elapsed().as_millis());
             }
             return true;
@@ -1217,6 +1219,7 @@ fn fill_until(cm: &Com, hmenu: HMENU, what: &str, found: impl Fn() -> bool) -> b
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
+        first = false;
     }
 }
 

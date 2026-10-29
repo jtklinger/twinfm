@@ -846,3 +846,80 @@ streams holding. **74 s** for 756 GB on disk (761 GB logical) in 1,273,588 files
 folders unreadable. The `done:` line: working set 178 MB, **+72 MB since the start** (the 150 MB limit
 holds), private 166 MB, 373,423 folders and 1,214,052 file IDs kept. The window's peak working set, sampled
 every 2 s from outside, was 202 MB. 279 `partial` lines (under four a second), no panic.
+
+## P13-M4: the checks still owed, and the small clean-ups
+
+Branch `chore/p13-m4-checks` from main at 6993c76 (P13-M3 merged), the coordinating session.
+
+### Clean-ups
+
+- **The late submenu line** (P12-M6's finding): `fill_until`'s `[menu] "<label>" found after T ms (a
+  submenu filled late)` is written only when the first check missed the command and a later one found it;
+  the first check's own time (51 to 60 ms on `G:`, filling every submenu) is no lateness. Done (035cd98).
+- **The soak's "tabs they opened"** (P12-M5's finding): the count took every `[tab] pane=0 opened tab` line
+  under `src\tree\d0`, the search tabs on `d02` among them (`... for a search`), so it read about twice
+  its label. It leaves them out now: against the last soak's stderr it reads 6 for 3 several-item opens,
+  two per open as the label says. Done (5620999).
+- `cargo test --release`: 336 passed, 1 ignored.
+
+### The dead network share (owed since P5-M1)
+
+The share is the one the Homelab session set up for this (its runbook lives in that private repo), named
+`\\<share-host>\twinfm-test` here, with two switches: `stall`/`unstall` drop TCP 445 at the server,
+`name-off`/`name-on` remove the share host's DNS record. The branch's release build (5620999), driven by `TWINFM_SCRIPT`, no settings file, every stderr
+line stamped as it arrived; the switches flipped from Git Bash at set times; files written into the share
+from outside to see the watch. Both switches were off before and after.
+
+**The name resolves, the server never answers** (`stall`, 2026-10-28 15:48 to 15:55), the share watched
+in pane 0 first (a file written from outside: `records 3 ... fallback: network path: refresh`, as every
+network window):
+
+- 33 s after the stall the watch's read failed: `lost \\<share-host>\twinfm-test: The specified network
+  name is no longer available. (os error 64)`, `watch lost (...): refresh`. That refresh and an F5 before
+  it never answered; each was dropped when a newer listing or a navigation replaced it (a listing runs
+  on a thread of its own, so a hung one holds up nothing, and a refresh keeps the rows already shown).
+- Back on the share: `no watch for ...: stalled: no watch` 3 s after the open (`OPEN_TIMEOUT`); again 12 s
+  later, inside the cool-down, refused at once, before the navigation's own line; again 44 s later, past
+  the 30 s cool-down, one more open and `stalled` 3 s later.
+- **The UI never waited**: the script's `scrollpos` steps, every 5 or 10 s, landed on time throughout
+  (to the millisecond of their schedule, 15:49:39.9 to 15:51:31.9 while the server was dead).
+- `unstall` at 15:51:37: the listing open since the last navigation finished 2 s later (`done: 3
+  entries, worker 15214 ms`). Windows' reconnect back-off (the runbook's 1 to 2 minutes) did not show
+  here. The watch was not opened then: the listing landed 10 s into the cool-down, which refuses at
+  once and logs nothing the second time, and nothing asks again when the cool-down ends, so the tab
+  stayed unwatched until F5 2.5 minutes later (`watching \\<share-host>\twinfm-test`), after which a file written
+  from outside appeared through the watch. Jeremy: "Fix it here".
+
+**The retry when the cool-down ends** (7efb0e3): a tab whose watch is refused inside the cool-down is
+asked for again when the cool-down ends (`Dirwatch::retry`, one open; `[watch] pane=N tab=T stall
+cool-down over: asks again for <path>`). Any later request for the tab replaces the retry, and an unwatch
+drops it. The test `a_share_refused_in_the_stall_cool_down_is_watched_when_it_ends` watches its scratch
+folder through the loopback admin share (`\\localhost\C$\...`; skipped where that is not reachable), with
+the stall backdated by a test-only command so the cool-down ends half a second later. It failed before
+the fix (no change arrived) and passes after. `cargo test --release`: 337 passed, 1 ignored. The stall
+case run again on the share (16:28 to 16:35): the listing came back at 16:31:43, inside the cool-down;
+at 16:32:01, when it ended, `stall cool-down over: asks again`, then `watching`. That was two minutes
+before the script's F5, and a file written from outside appeared through the watch. One retry set earlier
+in that run (a navigation into the dead share inside the cool-down) never ran. A run with temporary log
+lines showed that the UI's unwatch had dropped it 5 s after the navigation. Nothing else ran in that
+window, so the likely cause is that the navigation's listing failed against the dead share; a failed
+listing is not logged, so this is inferred rather than seen. TwinFM does not watch a folder it cannot
+list, so dropping that retry is correct.
+
+**The name does not resolve** (2026-10-28 15:55 to 16:10):
+
+- A name that never existed (the share host's name with `-nosuch` added, same domain): `no watch for ...: The
+  network path was not found. (os error 53)` 84 ms after the navigation; the listing failed, nothing
+  waited. This is what a share whose name has gone shows once Windows has no connection to it.
+- The share watched, then its DNS record removed (`name-off`, `ipconfig /flushdns`): nothing changed in
+  TwinFM. A file written from outside a minute later was listed, a navigation away and back opened the
+  watch again at once, F5 listed in 13 ms: Windows keeps the open SMB connection, and that connection
+  does not need the name (the runbook's finding).
+- After 11 idle minutes the share **still opened by name**: the session's `net use` entries for the share
+  (by name and by address, made when the share was set up) keep Windows' connection from idling out, so
+  the case "a watched share whose name has gone, connection dropped" was not reached this way. It needs
+  `net use \\<share-host>\twinfm-test /delete` first, and Jeremy to type the share's password again
+  afterwards (it is not in Credential Manager). Expected then, not seen here: TwinFM sees
+  the read fail as in the stall case (os error 64) and the reopen fail as the never-existing name does.
+- `name-on`: resolving again at once on the desktop; the share listed and watched, a file written from
+  outside appeared through the watch.

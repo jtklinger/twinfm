@@ -155,6 +155,9 @@ enum Cmd {
     /// Reply once every earlier command has been handled (tests).
     #[cfg(test)]
     Sync(Sender<()>),
+    /// Mark the network root of this path as stalled at that moment (tests).
+    #[cfg(test)]
+    Stall(PathBuf, Instant),
     Quit,
 }
 
@@ -192,6 +195,7 @@ impl Watcher {
                     opening: HashMap::new(),
                     next_req: 0,
                     stalled: HashMap::new(),
+                    retry: HashMap::new(),
                     no_notify: HashSet::new(),
                     cmds: cmd_rx,
                     events: tx,
@@ -447,6 +451,15 @@ struct PendingOpen {
     deadline: Instant,
 }
 
+/// A watch refused in a stall cool-down, asked for again `at` its end.
+struct Retry {
+    pane: usize,
+    path: PathBuf,
+    subtree: bool,
+    parent: bool,
+    at: Instant,
+}
+
 /// The drive or share a path is on (lowercased), for the stall cool-down.
 fn root_of(path: &Path) -> std::ffi::OsString {
     path.components().next().map(|c| c.as_os_str().to_ascii_lowercase()).unwrap_or_default()
@@ -467,6 +480,9 @@ struct Dirwatch<W: Fn()> {
     next_req: u64,
     /// Network roots whose open stalled, and when.
     stalled: HashMap<std::ffi::OsString, Instant>,
+    /// Tabs refused in a stall cool-down, asked again when it ends (P13-M4): a listing that
+    /// lands inside the cool-down would otherwise stay unwatched until F5.
+    retry: HashMap<u64, Retry>,
     /// Volumes that refused a device notification (`volume_of`), not asked again (P12-M6).
     no_notify: HashSet<String>,
     cmds: Receiver<Cmd>,
@@ -707,6 +723,7 @@ impl<W: Fn()> Dirwatch<W> {
                 return self.shutdown();
             }
             self.expire_opens();
+            self.retry_due();
             self.deliver();
         }
     }
@@ -715,7 +732,8 @@ impl<W: Fn()> Dirwatch<W> {
         // SAFETY: every slot is a live watch owned by this thread.
         let due = self.slots.values().filter_map(|&p| unsafe { (*p).due }).min();
         let open = self.opening.values().map(|o| o.deadline).min();
-        due.into_iter().chain(open).min()
+        let retry = self.retry.values().map(|r| r.at).min();
+        due.into_iter().chain(open).chain(retry).min()
     }
 
     fn send(&self, ev: Event) {
@@ -737,6 +755,7 @@ impl<W: Fn()> Dirwatch<W> {
                 Cmd::Watch { pane, tab_id, path, subtree, parent } => self.start(pane, tab_id, path, subtree, parent),
                 Cmd::Unwatch(tab_id) => {
                     self.refused.remove(&tab_id);
+                    self.retry.remove(&tab_id);
                     self.opening.retain(|_, o| o.tab_id != tab_id);
                     if let Some(p) = self.slots.remove(&tab_id) {
                         self.retire(p);
@@ -744,6 +763,7 @@ impl<W: Fn()> Dirwatch<W> {
                 }
                 Cmd::UnwatchPane(pane) => {
                     self.refused.retain(|_, (p, _)| *p != pane);
+                    self.retry.retain(|_, r| r.pane != pane);
                     self.opening.retain(|_, o| o.pane != pane);
                     // SAFETY: every slot is a live watch owned by this thread.
                     let tabs: Vec<u64> = self.slots.iter().filter(|&(_, &p)| unsafe { (*p).pane } == pane).map(|(&t, _)| t).collect();
@@ -794,6 +814,10 @@ impl<W: Fn()> Dirwatch<W> {
                 Cmd::Sync(tx) => {
                     let _ = tx.send(());
                 }
+                #[cfg(test)]
+                Cmd::Stall(path, at) => {
+                    self.stalled.insert(root_of(&path), at);
+                }
                 Cmd::Quit => return false,
             }
         }
@@ -811,6 +835,8 @@ impl<W: Fn()> Dirwatch<W> {
     }
 
     fn start(&mut self, pane: usize, tab_id: u64, path: PathBuf, subtree: bool, parent: bool) {
+        // Any request for the tab replaces a retry it was waiting for.
+        self.retry.remove(&tab_id);
         // A network open in flight for this tab: the same request waits for it; another one
         // supersedes it (its late handle is closed when it arrives).
         if let Some((&req, o)) = self.opening.iter_mut().find(|(_, o)| o.tab_id == tab_id && o.role == Role::Main) {
@@ -860,6 +886,10 @@ impl<W: Fn()> Dirwatch<W> {
             return self.refuse(pane, tab_id, path, why.into());
         }
         if is_remote(&path) {
+            if let Some(&t) = self.stalled.get(&root_of(&path)).filter(|t| t.elapsed() < STALL_COOLDOWN) {
+                let at = t + STALL_COOLDOWN;
+                self.retry.insert(tab_id, Retry { pane, path: path.clone(), subtree, parent, at });
+            }
             if let Err(why) = self.request_open(tab_id, pane, Role::Main, path.clone(), subtree, parent) {
                 self.refuse(pane, tab_id, path, why);
             }
@@ -947,6 +977,18 @@ impl<W: Fn()> Dirwatch<W> {
                     eprintln!("[watch] pane={} tab={} no parent watch for {}: stalled: no watch", po.pane, po.tab_id, po.path.display())
                 }
             }
+        }
+    }
+
+    /// Watches refused in a stall cool-down that has ended: asked for again (one open each; a
+    /// share still dead stalls again and waits for the UI's next request).
+    fn retry_due(&mut self) {
+        let now = Instant::now();
+        let due: Vec<u64> = self.retry.iter().filter(|(_, r)| r.at <= now).map(|(&t, _)| t).collect();
+        for tab_id in due {
+            let Some(r) = self.retry.remove(&tab_id) else { continue };
+            eprintln!("[watch] pane={} tab={tab_id} stall cool-down over: asks again for {}", r.pane, r.path.display());
+            self.start(r.pane, tab_id, r.path, r.subtree, r.parent);
         }
     }
 
@@ -1759,6 +1801,40 @@ mod tests {
         w.sync();
         std::fs::write(dir.0.join("b.txt"), b"x").unwrap();
         assert_eq!(next_changed(&rx).1, 2);
+    }
+
+    #[test]
+    fn a_share_refused_in_the_stall_cool_down_is_watched_when_it_ends() {
+        let dir = Scratch::new("cooldown");
+        // The scratch folder through the loopback admin share: a network path to the watcher.
+        let local = dir.0.to_string_lossy().to_string();
+        let Some(rest) = local.strip_prefix(r"C:\").or_else(|| local.strip_prefix(r"c:\")) else {
+            return eprintln!("skipped: the scratch folder is not on C:");
+        };
+        let unc = PathBuf::from(format!(r"\\localhost\C$\{rest}"));
+        if std::fs::metadata(&unc).is_err() {
+            return eprintln!("skipped: {} is not reachable", unc.display());
+        }
+        assert!(is_remote(&unc));
+        let (w, rx) = watcher();
+        // The share stalled 29.5 s ago: refused at once, the cool-down over in half a second.
+        w.send(Cmd::Stall(unc.clone(), Instant::now() - STALL_COOLDOWN + Duration::from_millis(500)));
+        w.watch(0, 1, unc.clone(), false, false);
+        w.sync();
+        assert!(matches!(rx.try_recv(), Ok(Event::Refused { tab_id: 1, ref why, .. }) if why == "stalled: no watch"));
+        std::thread::sleep(Duration::from_millis(1500));
+        std::fs::write(dir.0.join("a.txt"), b"x").unwrap();
+        let (_, tab, changes, _) = next_changed(&rx);
+        assert_eq!((tab, changes), (1, vec![Change::Added(s("a.txt"))]), "watched again once the cool-down ended");
+        // A tab that moved on in the cool-down is not watched at its end.
+        w.send(Cmd::Stall(unc.clone(), Instant::now() - STALL_COOLDOWN + Duration::from_millis(500)));
+        w.watch(0, 2, unc.clone(), false, false);
+        w.unwatch(2);
+        w.sync();
+        std::thread::sleep(Duration::from_millis(1500));
+        std::fs::write(dir.0.join("b.txt"), b"x").unwrap();
+        let later = collect(&rx, Duration::from_millis(800));
+        assert!(later.iter().all(|e| !matches!(e, Event::Changed { tab_id: 2, .. })), "{later:?}");
     }
 
     #[test]
