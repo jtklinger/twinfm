@@ -651,11 +651,11 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
             s.cancel(fs::enumerate::SEARCH_NAVIGATED);
         }
         // So does a sizes view (P13-M3).
-        if let Some(sv) = t.sizeview.take() {
+        let left_sizes = t.sizeview.take().inspect(|sv| {
             if sv.done_ms.is_none() && !sv.cancel.swap(true, Ordering::Relaxed) {
                 eprintln!("[sizeview] pane={pane} gen={} cancelled (navigated away)", sv.generation);
             }
-        }
+        });
         t.model.search_names.set(false);
         // Another folder starts unfiltered (Explorer's behaviour).
         let filtered = !t.model.filter.borrow().is_empty();
@@ -674,6 +674,13 @@ fn navigate_to(pane: usize, path: PathBuf, push: bool) {
         // Watched from the start, so a change during the listing is not missed; dropped again if
         // the listing fails (Msg::Done).
         st.watch_active(&app, pane);
+        // The pane draws the folder's own list again, not the sizes view's (the 2026-10-29
+        // console check: C:\ drawn as a tree after leaving its sizes view).
+        if left_sizes.is_some() {
+            if pane == 0 { app.set_left_sizes(false) } else { app.set_right_sizes(false) }
+            sync_grid(st, &app, pane);
+            eprintln!("[view] pane={pane} leaves the sizes view");
+        }
         hide_strip(st, &app, pane);
         let shown = path.to_string_lossy().to_string();
         set_path(st, &app, pane);
