@@ -1,7 +1,7 @@
-From 139be82973e2704d363a7f3f7da9c0236ffc7112 Mon Sep 17 00:00:00 2001
+From c1d3a8d0aa2d61d72da6c11501060eb1650674b6 Mon Sep 17 00:00:00 2001
 From: Jeremy Klinger <jtklinger96@gmail.com>
 Date: Fri, 9 Oct 2026 11:36:30 -0400
-Subject: [PATCH 2/2] winit/accesskit: incremental tree updates and stable row
+Subject: [PATCH 2/3] winit/accesskit: incremental tree updates and stable row
  bounds under scroll
 
 Three changes to what a ListView scroll costs the accessibility backend:
@@ -23,6 +23,10 @@ Also exposes ItemRc::map_to_ancestor. Measured with SLINT_ACCESSKIT_STATS=1 on a
 40,000-row ListView scrolled at 60 Hz: nodes sent per update fell from ~168 (every
 row of the scrolling pane) to ~30-55 (rows entering the viewport plus the content
 node); backend CPU per second of scrolling ~15 ms.
+---
+ internal/backends/winit/accesskit.rs | 487 +++++++++++++++++++++------
+ internal/core/item_tree.rs           |   2 +-
+ 2 files changed, 378 insertions(+), 111 deletions(-)
 
 diff --git a/internal/backends/winit/accesskit.rs b/internal/backends/winit/accesskit.rs
 index 780c3e199..a8d36b95c 100644
@@ -681,5 +685,5 @@ index 4aa90b2bf..d9be2ed83 100644
      }
  
 -- 
-2.55.0.windows.3
+2.56.0.windows.3
 
