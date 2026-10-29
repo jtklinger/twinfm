@@ -462,8 +462,8 @@ component FileRows inherits ListView {
             padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -510,8 +510,8 @@ component FileRowsNoType inherits ListView {
             padding-left: 28px;
             padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -612,8 +612,8 @@ component FileRows32 inherits ListView {
             padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -657,8 +657,8 @@ component FileRowsNoType32 inherits ListView {
             padding-left: 42px;
             padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -762,9 +762,9 @@ component FileRowsOnDisk inherits ListView {
             padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
@@ -838,9 +838,9 @@ component FileRowsOnDisk32 inherits ListView {
             padding-right: 10px;
             Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Text { text: row.type-text; width: root.type-w; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
-            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.size; width: root.size-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.modified; width: root.modified-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.ondisk; width: root.ondisk-w; horizontal-alignment: right; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
         }
         TouchArea {
             pointer-event(ev) => { root.row-pointer(i, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }

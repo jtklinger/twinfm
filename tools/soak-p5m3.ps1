@@ -200,9 +200,10 @@
 # several-item opens (one per cycle) and the tabs they opened (two per cycle).
 #
 # P9-M1, after the P8-L1 cycle: in the left pane on src\tree (details, the default widths 120, 90,
-# 140), the Type | Size grip is dragged 30 px right (Type 150, Size 60), the Modified column is
+# 140), the Type | Size grip is dragged 30 px left (Type 90, Size 120; since the 2026-10-29 console
+# fixes Size cannot go under its text, so the drag no longer narrows it), the Modified column is
 # fitted by a double-click on its grip (Size takes the difference), then colwidth sets Modified to
-# 140 and Size to 90, which puts every width back. Reported: drags read back as Size 90 -> 60 (one
+# 140 and Size to 90, which puts every width back. Reported: drags read back as Size 90 -> 120 (one
 # per cycle), fits (one per cycle), and widths lines back at 120, 90, 140 (one per cycle).
 #
 # P9-M4, after the column cycle: thumbnails on (the dialog), the left pane on preview (its rows in
@@ -533,7 +534,7 @@ $cycle = @(
     'view details', 'sleep 300', 'click 0 0', 'shiftclick 0 1', 'key Return', 'sleep 800', 'tab 2', 'sleep 200', 'tab close', 'sleep 300', 'tab 2', 'sleep 200', 'tab close', 'sleep 300',
     'tab 1', 'sleep 300',
     # P9-M1: a grip drag, a fit, and the widths set back (see the header).
-    "nav 0 $src\tree", 'sleep 500', 'splitter 0.6', 'sleep 300', 'coldrag 0 size 30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200', 'splitter 0.5', 'sleep 300',
+    "nav 0 $src\tree", 'sleep 500', 'splitter 0.6', 'sleep 300', 'coldrag 0 size -30', 'colfit 0 modified', 'colwidth 0 modified 140', 'colwidth 0 size 90', 'sleep 200', 'splitter 0.5', 'sleep 300',
     # P9-M4: a thumbnail drag and a search tab with thumbnails (see the header).
     'settings open', 'settings set thumbnails true', 'settings ok', 'sleep 300', "nav 0 $prev", 'sleep 1500', 'click 0 8', 'sleep 800',
     'dragrow 0 8 40 0', 'sleep 400', 'dragcancel', 'sleep 300', 'filter 0 photo', 'sleep 300', 'search 0', 'waitsearch 5000', 'sleep 1500',
@@ -753,7 +754,7 @@ $boxEmpty = @($log | Select-String -SimpleMatch '[search] pane=0 box Return: emp
 $contentDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: (\d+) found in (\d+) files read')
 $contentRead = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[2].Value } | Measure-Object -Sum).Sum
 $contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum).Sum
-$colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 60 px (drag)').Count
+$colDrags = @($log | Select-String -SimpleMatch '[cols] pane=0 size 90 -> 120 px (drag)').Count
 $colFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit modified: ').Count
 $colResets = @($log | Select-String -SimpleMatch '[cols] pane=0 widths reset to 120, 90, 140').Count + @($log | Select-String -SimpleMatch '[cols] pane=1 widths reset to 120, 90, 140').Count
 $histJumps = @($log | Select-String -SimpleMatch '[nav] pane=0 history jump -1:').Count
@@ -829,7 +830,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "archives inside archives: copies out $nestedOut, copies from an archive into a zip $fromShell (one each per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
 "preview: PDFs opened $pvOpened (three per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (four per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0), zooms $pvZooms (four per cycle), copies $pvCopies (two per cycle), copy failures $pvCopyBad (must be 0), files coloured $pvColoured (two per cycle), chunks refused $pvColourBad (must be 0), passwords right $pvPwRight (one per cycle), wrong or refused $pvPwBad (must be 0), password PDFs opened $pvPwOpened (one per cycle)"
-"column widths: drags read back as Size 90 -> 60 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (two per cycle and one at start), resets through the dialog $colResets (two per cycle)"
+"column widths: drags read back as Size 90 -> 120 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (two per cycle and one at start), resets through the dialog $colResets (two per cycle)"
 "thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
 "search box: Return searches $boxReturns (one per cycle), button searches $boxButtons (one per cycle), blank Returns $boxEmpty (one per cycle)"
 "history menu: jumps back one place $histJumps (one per cycle)"

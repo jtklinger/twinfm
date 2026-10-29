@@ -82,6 +82,13 @@ impl Widths {
         Widths { ty: f(self.ty, DEFAULT.ty), size: f(self.size, DEFAULT.size), modified: f(self.modified, DEFAULT.modified) }
     }
 
+    /// A width under its floor back at its default: a file saved before the floors (the left pane
+    /// at Size 62 and Modified 61 in the 2026-10-29 console check) opens with its columns readable.
+    pub fn raised(self, floors: Widths) -> Widths {
+        let f = |w: f32, floor: f32, d: f32| if w < floor { d.max(floor) } else { w };
+        Widths { ty: f(self.ty, floors.ty, DEFAULT.ty), size: f(self.size, floors.size, DEFAULT.size), modified: f(self.modified, floors.modified, DEFAULT.modified) }
+    }
+
     /// What the columns shown take from the row (`shown` in `ALL`'s order).
     pub fn taken(&self, shown: [bool; 3]) -> f32 {
         ALL.iter().zip(shown).filter(|(_, s)| *s).map(|(c, _)| self.get(*c)).sum()
@@ -137,18 +144,28 @@ pub fn left_of(c: Col, shown: [bool; 3]) -> Option<Col> {
     ALL[..i].iter().zip(shown).rev().find(|(_, s)| *s).map(|(c, _)| *c)
 }
 
+/// The narrowest each column may be dragged: Type `FLOOR` (its text ends in "…"), Size and
+/// Modified their longest text plus `FIT_PAD`, so a size or a date is never cut (the 2026-10-29
+/// console check). `measure` gives the widest line of its text in the lists' font.
+pub fn floors(measure: impl Fn(&str) -> f32) -> Widths {
+    // Every digit in every place, as the font's digits may differ in width.
+    let digits = |shape: &str| (0..10).map(|d| shape.replace('d', &d.to_string())).collect::<Vec<_>>().join("\n");
+    let size = ["dddd.d KB", "dddd.d MB", "dddd.dd GB", "dddd B"].map(digits).join("\n");
+    Widths { ty: FLOOR, size: (measure(&size) + FIT_PAD).max(FLOOR), modified: (measure(&digits("dddd-dd-dd dd:dd")) + FIT_PAD).max(FLOOR) }
+}
+
 /// Grip `c` moved `dx` px (right is positive) from the widths at the press, `start`, when Name's
 /// cell was `name` px wide: `c` narrows by dx and its left neighbour widens by dx, the boundary
 /// stopping at the floors (and at MAX).
-pub fn drag(start: Widths, c: Col, dx: f32, shown: [bool; 3], name: f32) -> Widths {
+pub fn drag(start: Widths, c: Col, dx: f32, shown: [bool; 3], name: f32, floors: Widths) -> Widths {
     let w = start.get(c);
-    // c >= FLOOR and c <= MAX.
-    let mut hi = w - FLOOR;
+    // c >= its floor and c <= MAX.
+    let mut hi = w - floors.get(c);
     let mut lo = w - MAX;
     match left_of(c, shown) {
         Some(l) => {
             let lw = start.get(l);
-            lo = lo.max(FLOOR - lw);
+            lo = lo.max(floors.get(l) - lw);
             hi = hi.min(MAX - lw);
         }
         // Name may grow freely and shrink to its floor (or not at all when it is below it).
@@ -164,8 +181,8 @@ pub fn drag(start: Widths, c: Col, dx: f32, shown: [bool; 3], name: f32) -> Widt
 }
 
 /// Column `c` set to `px` by moving its grip (as a drag's end does): `colwidth` and the fit.
-pub fn set_width(start: Widths, c: Col, px: f32, shown: [bool; 3], name: f32) -> Widths {
-    drag(start, c, start.get(c) - px, shown, name)
+pub fn set_width(start: Widths, c: Col, px: f32, shown: [bool; 3], name: f32, floors: Widths) -> Widths {
+    drag(start, c, start.get(c) - px, shown, name, floors)
 }
 
 /// The width a fit gives a column whose cells on screen (and header label) are at most `widest`
@@ -195,6 +212,8 @@ mod tests {
 
     const ALL3: [bool; 3] = [true; 3];
     const NO_TYPE: [bool; 3] = [false, true, true];
+    /// The one 40 px floor every column had before `floors`.
+    const F40: Widths = Widths { ty: FLOOR, size: FLOOR, modified: FLOOR };
 
     #[test]
     fn clamp_pulls_widths_into_range() {
@@ -208,38 +227,38 @@ mod tests {
     #[test]
     fn a_grip_moves_its_boundary_and_stops_at_the_floors() {
         // Size | Modified right by 30: Size grows, Modified gives it up.
-        let w = drag(DEFAULT, Col::Modified, 30.0, ALL3, 300.0);
+        let w = drag(DEFAULT, Col::Modified, 30.0, ALL3, 300.0, F40);
         assert_eq!((w.ty, w.size, w.modified), (120.0, 120.0, 110.0));
         // Too far right: Modified stops at its floor.
-        let w = drag(DEFAULT, Col::Modified, 500.0, ALL3, 300.0);
+        let w = drag(DEFAULT, Col::Modified, 500.0, ALL3, 300.0, F40);
         assert_eq!((w.size, w.modified), (190.0, FLOOR));
         // Too far left: Size stops at its floor.
-        let w = drag(DEFAULT, Col::Modified, -500.0, ALL3, 300.0);
+        let w = drag(DEFAULT, Col::Modified, -500.0, ALL3, 300.0, F40);
         assert_eq!((w.size, w.modified), (FLOOR, 190.0));
         // Name | Type left: Name shrinks to its floor, Type takes it.
-        let w = drag(DEFAULT, Col::Type, -500.0, ALL3, 300.0);
+        let w = drag(DEFAULT, Col::Type, -500.0, ALL3, 300.0, F40);
         assert_eq!(w.ty, 120.0 + 180.0);
         // Name already below its floor: it may grow but not shrink.
-        assert_eq!(drag(DEFAULT, Col::Type, -20.0, ALL3, 100.0), DEFAULT);
-        assert_eq!(drag(DEFAULT, Col::Type, 20.0, ALL3, 100.0).ty, 100.0);
+        assert_eq!(drag(DEFAULT, Col::Type, -20.0, ALL3, 100.0, F40), DEFAULT);
+        assert_eq!(drag(DEFAULT, Col::Type, 20.0, ALL3, 100.0, F40).ty, 100.0);
         // Without the Type column Size's grip is Name | Size, and Type is untouched.
-        let w = drag(DEFAULT, Col::Size, -50.0, NO_TYPE, 300.0);
+        let w = drag(DEFAULT, Col::Size, -50.0, NO_TYPE, 300.0, F40);
         assert_eq!((w.ty, w.size), (120.0, 140.0));
         // The boundary moves by what the pointer moved: the grip stays under it.
         let start = DEFAULT;
-        let after = drag(start, Col::Size, 25.0, ALL3, 300.0);
+        let after = drag(start, Col::Size, 25.0, ALL3, 300.0, F40);
         assert_eq!(grip_x(500.0, after, Col::Size, ALL3) - grip_x(500.0, start, Col::Size, ALL3), 25.0);
     }
 
     #[test]
     fn set_width_and_fit_move_the_same_boundary() {
-        let w = set_width(DEFAULT, Col::Size, 60.0, ALL3, 300.0);
+        let w = set_width(DEFAULT, Col::Size, 60.0, ALL3, 300.0, F40);
         assert_eq!((w.ty, w.size), (150.0, 60.0), "Type takes what Size gave up");
-        let w = set_width(DEFAULT, Col::Type, fit_width(188.0), ALL3, 300.0);
+        let w = set_width(DEFAULT, Col::Type, fit_width(188.0), ALL3, 300.0, F40);
         assert_eq!(w.ty, 200.0, "Name gives the fit its 80 px");
         // A fit wider than Name can give stops at Name's floor.
-        assert_eq!(set_width(DEFAULT, Col::Type, 600.0, ALL3, 300.0).ty, 120.0 + 180.0);
-        assert_eq!(set_width(DEFAULT, Col::Modified, 10.0, ALL3, 300.0).modified, FLOOR);
+        assert_eq!(set_width(DEFAULT, Col::Type, 600.0, ALL3, 300.0, F40).ty, 120.0 + 180.0);
+        assert_eq!(set_width(DEFAULT, Col::Modified, 10.0, ALL3, 300.0, F40).modified, FLOOR);
     }
 
     #[test]
@@ -300,12 +319,12 @@ mod tests {
         // The soak's case: a 499 px list, 461 px of room, Type hidden, so Size's grip is Name | Size.
         let frozen = shown(DEFAULT, true, 461.0);
         assert_eq!(frozen, NO_TYPE);
-        let dragged = drag(DEFAULT, Col::Size, 30.0, frozen, 231.0);
+        let dragged = drag(DEFAULT, Col::Size, 30.0, frozen, 231.0, F40);
         assert_eq!((dragged.ty, dragged.size), (120.0, 60.0), "Name takes what Size gives up; Type untouched");
         // The narrower Size lets Type back in: the release applies that (main.rs `update_shown` waits
         // while the grip is held), so the drag never switches to Type | Size under the pointer.
         assert_eq!(shown(dragged, true, 461.0), ALL3);
-        assert_eq!(drag(DEFAULT, Col::Size, 30.0, ALL3, 231.0).ty, 150.0, "with Type shown the same drag widens Type");
+        assert_eq!(drag(DEFAULT, Col::Size, 30.0, ALL3, 231.0, F40).ty, 150.0, "with Type shown the same drag widens Type");
     }
 
     #[test]
@@ -315,8 +334,25 @@ mod tests {
         assert_eq!(left_of(Col::Modified, only_mod), None);
         assert_eq!(left_of(Col::Modified, ALL3), Some(Col::Size));
         assert_eq!(left_of(Col::Size, NO_TYPE), None);
-        let w = drag(DEFAULT, Col::Modified, -40.0, only_mod, 300.0);
+        let w = drag(DEFAULT, Col::Modified, -40.0, only_mod, 300.0, F40);
         assert_eq!((w.size, w.modified), (90.0, 180.0), "Size's own width untouched");
+    }
+
+    #[test]
+    fn size_and_modified_never_go_under_their_text() {
+        // A measure of 5 px a character, 6 for the digit 8: the widest digit sets each floor.
+        let measure = |s: &str| s.lines().map(|l| l.chars().map(|c| if c == '8' { 6.0 } else { 5.0 }).sum::<f32>()).fold(0.0, f32::max);
+        let f = floors(measure);
+        // "8888.88 GB": 6 eights and 4 others; "8888-88-88 88:88": 12 eights and 4 others.
+        assert_eq!((f.ty, f.size, f.modified), (FLOOR, 36.0 + 20.0 + FIT_PAD, 72.0 + 20.0 + FIT_PAD));
+        // A drag stops at them, and so does the neighbour giving way.
+        assert_eq!(drag(DEFAULT, Col::Modified, 500.0, ALL3, 300.0, f).modified, f.modified);
+        assert_eq!(drag(DEFAULT, Col::Modified, -500.0, ALL3, 300.0, f).size, f.size);
+        assert_eq!(set_width(DEFAULT, Col::Size, 10.0, ALL3, 300.0, f).size, f.size);
+        // The console check's saved widths come back at the defaults; wider ones stay.
+        let saved = Widths { ty: 103.0, size: 62.2, modified: 60.8 };
+        assert_eq!(saved.raised(f), Widths { ty: 103.0, ..DEFAULT });
+        assert_eq!(Widths { ty: 50.0, size: 120.0, modified: 200.0 }.raised(f), Widths { ty: 50.0, size: 120.0, modified: 200.0 });
     }
 
     #[test]
