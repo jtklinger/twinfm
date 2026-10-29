@@ -1010,3 +1010,103 @@ Read: the caches fill in the first ten minutes, then the line holds between 237 
 of 247 MB over the last 10 minutes (Phase 12's soak: 259), a highest 30 s sample of 323 MB (341), no climb
 from 20 to 60 minutes (249 to 248). The merged Phase 13 code holds memory as Phase 12's did, about 12 MB
 lower.
+
+## Phase 13 close
+
+Written 2026-10-29 by the coordinating session, two days after the kickoff. All four milestones are in,
+with the console checks' fixes and a third Slint fork patch, each squash-merged on Jeremy's word. The mouse
+stream (one session) built P13-M1 and P13-M2; the sizes stream (one session) built P13-M3 and the Size on
+disk column; the coordinating session did P13-M4, serialised the machine, allocated the tags, verified every
+gate's inputs, handed each gate to Jeremy and ran the long soak.
+
+| Item | PR, merge | Gate build | Tag | Reference | Medians (WPR, reference / candidate) |
+|---|---|---|---|---|---|
+| P13-M1 columns make way, Two panes | #128, 926f84f | `target-p13m1` 936336a | ab66 | `target-p12seg` | defaults 21.4 / 19.6, cols 20.5 / 19.4 |
+| P13-M3 the sizes view | #129, 34449ee | `target-p13m3` 8cdda35 | ab67 | `target-p12seg` | defaults 21.2 / 21.1 |
+| P13-M2 everything by mouse | #130, ee0677f | `target-p13m2` 2d94fed | ab68 | `target-p13base` 34449ee | defaults 23.3 / 23.8, toolbar-pane 23.5 / 24.5 |
+| The Size on disk column, first try | (not merged) | `target-p13od` c25173c | ab69 | `target-p13base` | defaults 16.6 / 17.4, a gap with the column off |
+| Its own lists ("Zero cost when off") | (not merged) | `target-p13od2` 1824ea8 | ab71 | `target-p13base` | defaults 16.8 / 17.0, the column on 16.8 / 18.0, a gap |
+| Its lists by what shows ("Cut the on cost first") | #131, 6993c76 | `target-p13od3` b5ab1a1 | ab72 | `target-p13base` | defaults 19.3 / 19.7, the column on 19.3 / 19.2 |
+| The Slint fork's ListView fix | #133, 5603e17 | `target-lvtop` | ab73 | `target-p13od3` | defaults 20.1 / 19.7 |
+| The console checks' fixes | #134, d7f7ba0 | `target-p13cf` 4942882 | ab75 | `target-p13main` 5603e17 | defaults 20.6 / 21.5 |
+
+ab70, ab72's first attempt and ab74 ran at about 22 Hz after the move to the console and were set aside
+(each record says so). P13-M4's clean-ups and the dead share's fix (#132, 72adf6b) changed the watcher, the
+menu log and the soak script, which the gate scenario never meets; it had no triplet, and ab73's reference
+was the code before it. Outside the milestones: the kickoff (#127, d29bdac), the memory item's record with
+ab75 (#135, 13cfe82) and the long soak's (#136, c9f4e57). No gap counted in what was merged. P13-M1's lower
+numbers are a narrower draw (Type already hidden in the scenario's 499 px panes), not a saving at equal
+columns; its full-width in-app comparison showed no cost with every column shown. P13-M2's render p50 sat a
+little higher, in the second slot of every pair; an order-swapped rerun was offered and not run. ab75's
+fixes draw about 0.15 ms more per frame (the elided cells), inside the rule.
+
+Jeremy's decisions beyond the kickoff's, his words as each record quotes them: "Zero cost when off" and "Cut
+the on cost first" (the Size on disk column, § Size on disk in the normal list), "Fix it here" (the dead
+share's cool-down, § The dead network share), "Trim, with a floor" and a placeholder row (§ The console
+checks), "Record it drop fix" (§ The memory item), "Run the soak", and each merge.
+
+**Memory**: the long soak of the merged code (§ The long soak of the merged code) held 247 MB private over
+its last 10 minutes against Phase 12's 259, with no climb. The memory follow-up Phase 12 carried here was
+not needed: the styled text is built per block already, and the segment heap gives the big file's memory
+back (§ The memory item). A walk of `C:\` in the sizes view (1.27 million files) held 72 MB more than at
+the start, under the 150 MB the kickoff set.
+
+What Phase 13 answered, against the kickoff's open questions:
+
+- **How a hidden column reaches the rows** (P13-M1): through the widths the rows already read, a hidden
+  column's at 0 px; no row gained a binding.
+- **The bar's overflow** (P13-M2): each bar counts what fits from its own width (`toolbar::fit`) and puts
+  the rest first in More.
+- **Size on disk without a call per file, and hard links** (P13-M3): the directory information
+  (`FileIdBothDirectoryInfo`, 64 KB of entries a call, each with its allocation size and file ID); a
+  hard-linked file counts once per walk, by its file ID.
+- **The share's switches** (P13-M4): `stall` drops TCP 445 at the server, `name-off` removes the host's
+  DNS record; both cases ran, and the stall found the cool-down's missing retry.
+
+Lessons of the phase:
+
+- **Read the frame interval before the medians**: three triplets ran at about 22 Hz after the move to the
+  physical console (ab70, ab72's first attempt, ab74). Each run's interval p50 (16.4 ms at 60 Hz) says which
+  it was; a session at 22 Hz is rerun, not read.
+- **A cost a setting adds can sit where the setting's thing is not shown**: ab71's +1.2 points with the
+  column on came from its cell at 0 px in panes where it had made way. Choosing the lists by what the pane
+  shows, not by the setting, took it to zero (ab72).
+- **Check what the gate's scenario draws**: P13-M1's candidate read two points cheaper because its panes
+  hid Type, which is the feature working, not a speed-up; the full-width run checked the equal case.
+- **Test with a copy of Jeremy's own settings**: his left pane's saved Size and Modified widths (62 and 61
+  px, from before the column floors) cut the text; the defaults never showed it.
+- **A screenshot finds its window by the run's process id**: a title prefix alone found Jeremy's everyday
+  window first (now in `CLAUDE.md`).
+- **The console checks find what the scripts do not**: five findings in eighteen checks, among them the
+  sizes view's list kept after Up, which no scripted step went through.
+- **Merge without `--delete-branch` from a worktree session**: it switched the session's own worktree off
+  its branch and emptied it; the branch is deleted with `git push origin --delete` afterwards.
+
+Deferred, from the milestones and their console checks (each in its section with the reason):
+
+- **The sizes view**: it does not follow changes from elsewhere or a move within its root (F5 walks
+  again); the wide Name column puts Share, Size on disk and Files at a wide pane's far right.
+- **The Size on disk column**: a fixed 100 px, with no grip and no sort.
+- **Keyboard only, recorded** (P13-M2): Shift+Delete (Delete with Shift held), the path entry (the
+  ellipsis glyph switches to it), Tab between the panes (a click on the other pane does it).
+- **The dead share**: a watched share whose name has gone after Windows dropped its connection was not
+  reached (the session's `net use` kept the connection; it needs that entry deleted and the password typed
+  again).
+- **Owed from earlier, still owed**: OneDrive's error mark, drawn only by its test; the Recycle Bin
+  enumeration's shell cache (small).
+- **Not taken at the kickoff**: saving a search tab, the Slint fork's whole-row snap (now the fourth
+  patch) and upstreaming the accessibility patches, accessibility; all on the roadmap.
+
+**Phase 14** (Jeremy chooses; nothing is planned yet), from `docs/roadmap.md`: saving a search tab (asked
+for in daily use); the sizes view following changes; the Slint fork's whole-row snap and upstreaming
+(Jeremy decides when); the look's leftovers (hover on rows, the scrollbar track's repeat); accessibility
+stays deferred for much later.
+
+The fleet at the close: the reference for the next gate is **`target-p13close`** (13cfe82, main's code at
+this close: #135, #136 and this close add documents only), built `--locked` inside the detached
+`gate-p13close` worktree; tags continue from **ab76**. Every other gate build (`target-p12seg`,
+`target-p13base`, `target-p13m1`, `target-p13m2`, `target-p13m3`, `target-p13od`, `target-p13od2`,
+`target-p13od3`, `target-lvtop`, `target-p13main`, `target-p13cf`) has served and was removed with its
+`gate-*` worktree at this close (about 23 GB), with the merged local branches. The mouse stream's worktree
+(`vigilant-montalcini-1d40df`) and `post-release-dev-279edf` stay until Jeremy archives their sessions.
+`target\release` was rebuilt from main after #134 (d7f7ba0); nothing since changed code.

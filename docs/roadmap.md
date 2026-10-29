@@ -9,7 +9,8 @@ kickoff (2026-10-25) and closed 2026-10-27 (`phase-12-plan.md` § Phase 12 close
 below, marked P12. Phase 13 took its items at its kickoff (2026-10-27, `phase-13-plan.md`): the details
 view's click-and-drag selection, the TreeSize-style view with size on disk, the owed checks (the dead
 share, Phase 12's console checks; the long soak was run after the Phase 12 close), the styled-text
-memory follow-up and the two small log and soak clean-ups.
+memory follow-up and the two small log and soak clean-ups. It closed 2026-10-29 (`phase-13-plan.md` § Phase 13 close); what it put off is below,
+marked P13.
 
 ## Asked for in daily use, not scheduled
 
@@ -64,6 +65,9 @@ memory follow-up and the two small log and soak clean-ups.
   P11 video follow-up names the cause if it returns.
 - **Explorer's other views**: extra large and small icons, list, tiles, content (P4-M1; medium icons
   came in P6-M2).
+- **The sizes view** does not follow changes from elsewhere or a move within its root (F5 walks again);
+  its wide Name column puts Share, Size on disk and Files at a wide pane's far right (P13-M3).
+- **The Size on disk column** is a fixed 100 px, with no grip and no sort (P13-M3).
 - A deleted watched folder stays `Lost`; the subtree watch's overflow could not be forced (the test
   covers its handling); the log's cut timer's per-minute string (a clean-up) (P11 close).
 
@@ -74,6 +78,9 @@ memory follow-up and the two small log and soak clean-ups.
 - **Memory**: the Recycle Bin enumeration's shell cache, small (P12 memory check).
 - **A OneDrive folder for the soak**: not approved, since it would upload every cycle's files (P12
   kickoff).
+- **The dead share, one case not reached**: a watched share whose name has gone after Windows dropped
+  its connection (the session's `net use` kept it; the check needs that entry deleted and the share's
+  password typed again) (P13-M4).
 - **OneDrive's error mark** has been drawn only by its test: no file here has reached the error state; a
   refused `_vti_` name stays "sync pending" (P12-M7).
 
