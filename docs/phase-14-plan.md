@@ -277,8 +277,15 @@ test gained the Searches group's rows; More's test its new item).
 
 ### Soak
 
-To come (`soak-p5m3.ps1`, its new cycle: the content search in `src` saved, opened again from the sidebar,
-its tab closed, the row removed).
+2026-10-29, `tools/soak-p5m3.ps1 -Minutes 10` on the branch's release build (code as 28c4e7b), the machine
+handed over by the coordinating session: 10.1 minutes, closed by its script, **exit code 0, 0 panicked
+lines**, three full cycles, 238 jobs done (0 failed, 0 cancelled), and every must-be-0 count 0 (dropped
+drags, toolbar presses refused, menupicks refused, spring tabs, zip jobs not done, picture failures,
+Office unreadable, alt text, waitpreview timeouts, worker panics, copy failures, chunks refused, wrong
+passwords). The new cycle: **saved 3, opened 3, run again and found its file 3, removed 3** (one each per
+cycle); content searches done 6 (two per cycle since: the saved one's run again), 1,208 files read, 6 found.
+Memory: working set 148.9 MB at 5 s, 221.7 MB at 600 s; private 183.9 -> 248.1 MB (a ten-minute run, not
+the phase-end hour; Phase 13's 60-minute soak ended at 247 MB private, flat).
 
 ### Gate
 
