@@ -923,3 +923,40 @@ list, so dropping that retry is correct.
   the read fail as in the stall case (os error 64) and the reopen fail as the never-existing name does.
 - `name-on`: resolving again at once on the desktop; the share listed and watched, a file written from
   outside appeared through the watch.
+
+### The console checks (2026-10-29, Jeremy, unelevated, his everyday build from main at 5603e17)
+
+Eighteen checks, all of Phase 13's milestones and the four owed from Phase 12. Clean, as Jeremy reported
+them: the columns hiding and coming back while the splitter moves slowly, Two panes from the toolbar, both
+toolbar placements, every new button and menu item, the band from below the last row with Ctrl and Shift, a
+file dragged from its name and from its icon, the bar at the window's minimum width, the four P13-M2 calls,
+a OneDrive folder in the sizes view, Type then Size making way for the name, the view not following changes
+from elsewhere, the password question's Tab order (on a test PDF of the preview test's, in TwinFM's
+preview; a double-click opens Brave's own question, which has no Cancel), Tab between the panes, and the
+"Bookmark" drop text drawn by the shell. The 44 px comfortable thumbnail rows are the soak's geometry line.
+Five findings, fixed on `fix/p13-console-findings`:
+
+- **A tab that left its sizes view kept the sizes view's list** (Show sizes on `C:\`, then the Up button or
+  a crumb): the normal listing was drawn with the sizes view's depth, chevrons and columns, so `C:\` looked
+  like two folders holding the rest. `navigate_to` took the view off the tab but never set the pane's
+  `sizes` flag back; it does now, with the grid's state (`sync_grid`), and logs `[view] pane=N leaves the
+  sizes view`. Checked by a scripted run on main's build (the sizes list after Up) and the fix's (the
+  folder's own list).
+- **Undo of a delete took about 10 s** before the file came back: the restore found the item by walking
+  the whole Recycle Bin through the shell (3,475 items here), then ran the bin's Undelete in 274 ms. The
+  bin parses the `$R` path itself (35 ms in a PowerShell check), so `bin_items` asks it for each item by
+  path (`SHCreateItemFromRelativeName`); the restore test takes the verb in 84 ms.
+- **Size and Modified were cut** in the left pane (its saved widths 62 and 61 px, from before these logs:
+  "207.8 KB" ran into "2026-10-2"). Jeremy's choice, "Trim, with a floor": every cell's text ends in an
+  ellipsis where it does not fit, and Size and Modified cannot be dragged narrower than their longest text
+  (`cols::floors`, measured at start in the lists' font: every digit in every place of "dddd.dd GB" and
+  "dddd-dd-dd dd:dd", plus `FIT_PAD`; 88 and 133 px here; Type keeps 40). A saved width under its floor
+  opens at its default (`Widths::raised`): `[cols] floors: type T size S modified M px`, `[cols] pane=N
+  size 62 -> 90 px (under its floor: the default)`. The soak's column drag now goes 30 px left (Size 90 ->
+  120), since the floor stops the old one.
+- **New file and New folder stood over the top row**, its icon, type and size beside the new name. Jeremy's
+  choice, a placeholder row: while the name is typed, the top row (in the grid, the editor's tile) shows a
+  blank item of the kind being made, a folder or a text file icon and "File folder" or "Text Document"; it
+  is made on Return, as before, one Undo step.
+- The sizes view's wide Name column (its Share, Size on disk and Files at the far right of a wide pane) is
+  left as it is: nothing there is cut.
