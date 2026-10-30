@@ -1017,8 +1017,11 @@ component FileGridMediumList inherits FileGridMedium {
 // chevron opens it in place (row-gesture what 8, main.rs). The icon column is the pane's strip, as
 // in the details list; the chevron and the name are indented by the depth after it. Fixed columns:
 // the share bar (130 px), the size on disk (100 px) and the file count (80 px), as the header's.
+// Since P14-M2 the Name column stops at name-w (from the row's left edge to the share bar; main.rs
+// fit_sizes_name, clamped to the room), the rest of the row empty after Files.
 component SizeRows inherits ListView {
     in property <[SizeRow]> rows;
+    in property <length> name-w: 240px;
     in property <int> current-row: -1;
     in property <brush> cursor-color: Theme.cursor;
     in property <length> row-h: 22px;
@@ -1047,6 +1050,7 @@ component SizeRows inherits ListView {
             padding-left: root.pad + row.depth * 16px;
             padding-right: 10px;
             spacing: 0px;
+            alignment: start;
             Rectangle {
                 width: 16px;
                 if row.folder: Image {
@@ -1058,7 +1062,7 @@ component SizeRows inherits ListView {
                     colorize: Theme.fg-muted;
                 }
             }
-            Text { text: row.name; vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
+            Text { text: row.name; width: max(0px, root.name-w - root.pad - row.depth * 16px - 16px); vertical-alignment: center; overflow: elide; color: row.cut ? Theme.fg-faint : Theme.fg; }
             Rectangle {
                 width: 130px;
                 Rectangle {
@@ -1150,6 +1154,7 @@ component FileListHost inherits Rectangle {
     // as rows), in place of the details list; never the grid.
     in property <bool> sizes: false;
     in property <[SizeRow]> size-rows;
+    in property <length> sizes-name-w: 240px;
     out property <length> tile-w: root.medium ? 80px : 96px;
     out property <length> tile-h: root.medium ? 107px : 136px;
     // The tile's name box: two lines of large tiles, three of medium (P8-L1).
@@ -1566,6 +1571,7 @@ component FileListHost inherits Rectangle {
         tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
     }
     if root.sizes: SizeList {
+        name-w: root.sizes-name-w;
         row-h: root.row-h;
         pad: root.thumbnails ? 42px : 28px;
         width: root.width;
@@ -1653,6 +1659,10 @@ export component Pane inherits Rectangle {
     // (`grid` false) whatever the pane's view.
     in property <bool> sizes: false;
     in property <[SizeRow]> size-rows;
+    // Its Name column's width (P14-M2, main.rs fit_sizes_name), within the room the list leaves
+    // beside Share, Size on disk, Files and the rows' 10 px right padding (clamped in Rust, from the
+    // list's reported width: no binding on a width here).
+    in property <length> sizes-name-w: 240px;
     // The toolbar inside the pane, at its top above the tab strip and the path bar (settings
     // `toolbar = "pane"`), its buttons'
     // state and tool(name) for a press (main.rs makes the pane active). A sibling of the
@@ -2260,7 +2270,8 @@ export component Pane inherits Rectangle {
         }
         if root.sizes: HorizontalLayout {
             height: 32px;
-            HeaderCell { label: "Name"; sorted: false; back => { root.back-button(); } forward => { root.forward-button(); } }
+            alignment: start;
+            HeaderCell { label: "Name"; width: root.sizes-name-w; sorted: false; back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Share"; width: 130px; sorted: false; back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Size on disk"; width: 100px; sorted: true; asc: false; back => { root.back-button(); } forward => { root.forward-button(); } }
             HeaderCell { label: "Files"; width: 80px; sorted: false; back => { root.back-button(); } forward => { root.forward-button(); } }
@@ -2283,6 +2294,7 @@ export component Pane inherits Rectangle {
             medium: root.medium;
             sizes: root.sizes;
             size-rows: root.size-rows;
+            sizes-name-w: root.sizes-name-w;
             grid-cols(n) => { root.grid-cols(n); }
             grid-cursor(c) => { root.grid-cursor(c); }
             active: root.active;

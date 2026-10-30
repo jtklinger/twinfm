@@ -316,3 +316,118 @@ saved search whose root was deleted; the settings file read back after a restart
 
 - A middle click on a saved search with one pane turns the second pane on and runs it there.
 - The "saved already" note names the row that holds it, its own title if renamed.
+
+## P14-M2: the sizes view follows changes
+
+Branch `feat/p14-m2-sizes-watch` from main at 29c80dd (the Phase 14 kickoff), the sizes stream.
+
+### Settled first: what the own-files totals cost
+
+Estimated from the P13-M3 `C:\` run (373,474 folders, 1,214,052 file IDs, +72 MB over the start) before
+building, and accepted by the coordinating session (the bar is 150 MB):
+
+- Each `Tree` node keeps its own files' totals (`Own`: size on disk and logical as u64, file names and
+  links as u32) and a `skipped` flag: the node grows from 72 to 104 bytes (Rust's padding), +32 B x 373k =
+  **+12 MB**.
+- To read one folder again correctly a hard-linked file must be counted by the folder that met it, so the
+  walk's file-ID set (`HashSet<u64>`) became an owner map (`HashMap<u64, u32>`, `dirinfo::HardLinks`): at
+  2^21 buckets 19 -> 36 MB, **+17 MB**.
+- A window's records (at most 10,000, `fs::watch::MAX_DEEP`) are held only until they are applied.
+
+So about **+30 MB, near 100 MB over the start** for a walk of `C:\`. Measured in the in-app `C:\` run below: the `done:` line read **+109 MB since
+the start** (P13-M3's walk of the same disk +72 MB: the own totals and the owner map cost about +37 MB, a
+little over the estimate), under the 150 MB bar.
+
+### Items
+
+- **Watched** (done): a sizes view whose walk is done takes a subtree watch on its root (`Tab::follows`,
+  `watch_tabs`: in front with its parent watch, in the background without, the cap of 8 counting it);
+  This PC's view is not watched (no one folder). The subtree watch hands every record of a window
+  (`Event::Subtree`'s `deep`, the path under the root), and the view's own `sizeview` thread, which stays
+  after the walk, takes the windows in order (`sizeview::Cmd`); it ends when the tab drops its sender.
+  TwinFM's own deletes and moves out still come off at once (`sizes_removed`, now also off the folder's own
+  totals), so their window finds nothing changed; a move within the root, not followed before, is followed
+  by the watch now.
+- **What a change does** (done): `sizeview::plan` turns a window's records into the folders to read again
+  (each record's folder, or the deepest folder of its path the tree has; a folder's own entry modified is
+  no change; below a folder not entered, nothing), shallowest first; a rename pair in one folder renames the
+  node, subtree and all. `follow` reads each folder once (`Listing::read`, one `dirinfo::read`, outside the
+  tree's lock) and `Tree::apply` puts the difference of its own files' totals on every total above it, takes
+  off the subfolders that went and adds the ones that came, which are walked (their subtree only). The rows
+  are built again as the walk's are; an open level of a folder read again is listed again. Re-reads run on
+  the `sizeview` thread only, never the UI thread.
+- **Hard links** (done, the coordinating session's point): a hard-linked file counts in the folder that met
+  it first; when that folder is gone (deleted, moved out), the next read that meets another name of the file
+  counts it there (`HardLinks::counts`'s `gone`, tested). **Known undercount until F5**: the name that
+  counted the file deleted while its folder stays (the file's other names are not counted until a new walk).
+- **When it gives up** (done): an overflow, or a window past 10,000 records, walks the whole root again on
+  the same thread, the old figures shown until it is done (the open levels kept by path); the second within
+  a minute stops the following, and the status says "Not following changes: F5 walks again".
+- **The columns' place** (done): the Name column stops at its longest name on screen (`fit_sizes_name`,
+  measured as `colfit` measures, one call per depth, the indent and chevron included; at least 240 px;
+  within the list's reported width less 320 px), at each rebuild of the rows and 150 ms after a scroll
+  rests; Share, Size on disk and Files sit beside the names and the rest of the row is empty. The clamp is
+  done in Rust from the list's reported width, so no Slint binding reads a width (a layout loop otherwise).
+  For the console check.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **A change under a folder the walk could not read reads that one folder again** (readable now, its
+  subtree is walked; still unreadable, nothing), instead of walking the whole root as the plan had it:
+  Windows writes under unreadable folders of `C:\` (System Volume Information and the like) all the time,
+  so the plan's rule would walk all of `C:\` (74 s of disk) again and again. Only overflows and windows
+  past 10,000 records walk the root again. Accepted by the coordinating session.
+- Past 10,000 records in one window (anywhere below the root) counts as an overflow.
+- The `window:` line ends with the root's figures (`; root S bytes on disk, F files, D folders`), which the
+  soak compares with F5's walk.
+
+### Tests
+
+`cargo test --release`: 342 passed, 1 ignored (the measuring test) on the branch; 346 passed, 1 ignored with main (P14-M1) merged in (1af867b). New: `a_folder_read_again_changes_only_what_changed`
+(a file grown, a folder created, removed, the same listing again, a hard link in two folders and re-owned,
+a folder unreadable and readable again, a removal by `sizes_removed` then read again; every folder's totals
+its own plus its subfolders'), `a_window_names_the_folders_to_read_again` (records to folders, a rename, a
+move out, below a folder not entered, a skipped folder), `the_name_column_fits_its_widest_row`, and
+`a_watched_tree_follows_its_changes` (a real subtree watch on `%TEMP%\twinfm-p14m2-test-<pid>\`: a file
+grown, a folder made with files below it, one deleted, one renamed, one moved out, a root file appended;
+the followed tree equals a fresh walk folder by folder); `a_file_counts_once_by_its_id` covers the owner
+map.
+
+### Soak
+
+`tools/soak-p5m3.ps1 -Minutes 10` from the branch, two runs (the coordinating session's slots, after the
+P14-M1 gate):
+
+- **First run** (8612f82's code): exit 0, no panic, 16 cycles, 251 jobs (3 failed), every must-be-0 count 0;
+  the P14-M2 cycle's watching 6 (two per cycle), windows 9, re-walks 0, stopped 0, but **the last window
+  against F5's walk: 0 matches, 3 mismatches**, each 2 files over (202 against 200). The stderr showed the
+  following right (the two `touch`es' window 200 -> 202 files, the rename's 202): the two `rmfile`s' window
+  had not been delivered when F5 walked, as the watch had backed off to a 1 s window, the script slept 700
+  ms, and **`waitsizeview` does not wait for a window the watch has not delivered yet** (now in its
+  CLAUDE.md line). The soak's waits were made 2.3 s, past the watch's longest window (128989c); no code
+  changed. Private 180 -> 238 MB.
+- **Rerun** (128989c): exit 0, no panic, 16 cycles, 245 jobs (0 failed, 0 cancelled), every must-be-0 count
+  0; watching 6, windows 12, **the last window against F5's walk: 3 matches (one per cycle), 0
+  mismatches**, re-walks 0, stopped 0. Working set 149.5 -> 212.8 MB (at most 240.2), private 164.5 -> 217.6
+  MB.
+
+### The in-app `C:\` run
+
+2026-10-29, the coordinating session's slot after the soak: the branch's own `target\release` (8612f82's
+code), a script of `sizeview 0 C:\`, `waitsizeview`, then 10 minutes left open, no settings file, the
+process's memory sampled every 30 s from outside. **97 s** for 349 GB on disk (353 GB logical) in 1,293,565
+files and 334,566 folders, 200 folders unreadable; `done:` working set 214 MB, **+109 MB since the start**,
+private 213 MB, 334,514 folders and 1,232,279 file IDs kept. Over the 10 minutes it followed `C:\`: **319
+windows** (about 32 a minute), 6,899 records, **907 folders read again** (about 91 a minute), 31 created, 7
+removed, the slowest window 29.8 ms on the `sizeview` thread; **no re-walk, no window past the 10,000-record
+cap, no stop**, no panic. Private bytes 153 MB at 30 s, at most 213, **209 MB at the end** (working set
+195).
+
+### Gate
+
+`tools/gate-p14m2.ps1`, tag ab77: the defaults triplet against `target-p14m1` (P14-M1 merged; the scenario never opens the sizes
+view and never asks for a subtree watch; every run's stderr must hold no `[sizeview]` line). 2026-10-29, Jeremy at
+the console, handed over by the coordinating session: 1af867b (`target-p14m2`) against `target-p14m1`; summary
+`C:\traces\gate-ab77-summary.txt`. **Passed**: WPR medians p14m2 20.3% against p14m1 20.6%; runs reference 20.9,
+20.6, 20.5, candidate 20.2, 20.3, 20.4; every reference run below every candidate: no; a gap that counts: no. All
+six at 60 Hz (interval p50 16.34 to 16.46 ms), render p50 3.02 to 3.23 ms in every run (no change of state).

@@ -173,22 +173,48 @@ fn item_of(name: &[u16], attrs: u32, ea: u32, eof: i64, alloc: i64, modified: i6
     }
 }
 
-/// The files met so far with more than one name, by file ID, so a hard-linked file counts once per
-/// walk. Every file's ID goes in (the directory information has no link count), 8 bytes each.
+/// The files met so far, by file ID, and the folder that counted each, so a hard-linked file counts
+/// once per walk, and a folder read again (P14-M2, the sizes view following changes) counts again
+/// the files it counted before. Every file's ID goes in (the directory information has no link
+/// count): 12 bytes and the table's own overhead each.
 #[derive(Default)]
 pub struct HardLinks {
-    seen: std::collections::HashSet<u64>,
+    owner: std::collections::HashMap<u64, u32>,
 }
 
 impl HardLinks {
-    /// True the first time `id` is met (count it); false for a name of a file already counted. An
-    /// ID of 0 (none given) always counts.
-    pub fn first(&mut self, id: u64) -> bool {
-        id == 0 || self.seen.insert(id)
+    /// Whether a name of file `id` read in folder `folder` counts: the first time the file is met
+    /// (it is that folder's from then on), or, when the folder is read again (`again`: the IDs met
+    /// so far in this read of it), in the folder that counted it, once (two names of one file in one
+    /// folder count once). An ID of 0 (none given) always counts. A first read keeps no set: a
+    /// second name there finds the file met already. A file whose folder is gone (`gone`: deleted
+    /// or moved out of the view, P14-M2) is the folder's that meets it next.
+    pub fn counts(&mut self, id: u64, folder: u32, again: Option<&mut std::collections::HashSet<u64>>, gone: impl Fn(u32) -> bool) -> bool {
+        use std::collections::hash_map::Entry;
+        if id == 0 {
+            return true;
+        }
+        match self.owner.entry(id) {
+            Entry::Vacant(v) => {
+                v.insert(folder);
+                if let Some(here) = again {
+                    here.insert(id);
+                }
+                true
+            }
+            Entry::Occupied(mut o) if *o.get() != folder && gone(*o.get()) => {
+                o.insert(folder);
+                if let Some(here) = again {
+                    here.insert(id);
+                }
+                true
+            }
+            Entry::Occupied(o) => *o.get() == folder && again.is_some_and(|here| here.insert(id)),
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.seen.len()
+        self.owner.len()
     }
 }
 
@@ -300,8 +326,21 @@ mod tests {
     #[test]
     fn a_file_counts_once_by_its_id() {
         let mut h = HardLinks::default();
-        assert!(h.first(7) && !h.first(7) && h.first(8) && h.first(0) && h.first(0));
-        assert_eq!(h.len(), 2);
+        let here = |_| false;
+        assert!(h.counts(7, 1, None, here) && !h.counts(7, 1, None, here), "two names in one folder count once");
+        assert!(h.counts(8, 1, None, here) && h.counts(0, 1, None, here) && h.counts(0, 1, None, here));
+        assert!(!h.counts(7, 2, None, here), "another folder's name of a file counted");
+        // Folder 1 read again: its own files count again, once each; another folder's never; a new
+        // file's two names once.
+        let mut again = std::collections::HashSet::new();
+        assert!(h.counts(7, 1, Some(&mut again), here) && !h.counts(7, 1, Some(&mut again), here) && h.counts(8, 1, Some(&mut again), here));
+        assert!(h.counts(9, 1, Some(&mut again), here) && !h.counts(9, 1, Some(&mut again), here));
+        assert!(!h.counts(7, 2, Some(&mut std::collections::HashSet::new()), here));
+        // Folder 1 gone: folder 2's name of file 7 counts there from now on.
+        let one_gone = |f| f == 1;
+        assert!(h.counts(7, 2, Some(&mut std::collections::HashSet::new()), one_gone));
+        assert!(!h.counts(7, 1, Some(&mut std::collections::HashSet::new()), |_| false), "folder 2's now");
+        assert_eq!(h.len(), 3);
     }
 
     /// The settle-first measurement (P13-M3), not a gate: `TWINFM_MEASURE=C:\traces\bigdir;C:\`
@@ -336,7 +375,9 @@ mod tests {
                     let mut wof_check: Vec<(std::path::PathBuf, u64)> = Vec::new();
                     let mut links = HardLinks::default();
                     let mut stack = vec![root.to_path_buf()];
+                    let mut folder = 0u32;
                     while let Some(dir) = stack.pop() {
+                        folder += 1;
                         let r = read(&dir, ids, |i| {
                             if i.is_dot() {
                                 return;
@@ -356,7 +397,7 @@ mod tests {
                                         wof_check.push((dir.join(String::from_utf16_lossy(i.name)), i.disk));
                                     }
                                 }
-                                if links.first(i.id) {
+                                if links.counts(i.id, folder, None, |_| false) {
                                     logical += i.logical;
                                     disk += i.disk;
                                 } else {

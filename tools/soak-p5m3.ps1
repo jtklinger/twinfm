@@ -151,6 +151,13 @@
 # last of its level at 0 bytes); the report counts the walks done, the levels opened in place (two per
 # cycle) and the removals taken off three totals (d01, tree and the root; one per cycle), then the tab
 # is closed.
+# P14-M2: before the tab closes, the view (now watching src, its walk done) follows changes made under
+# it: two empty files made in src (`touch`), one renamed (`mvfile`), both removed (`rmfile`), each
+# step's window waited for (`waitsizeview`); then F5 walks src again. The report counts the watching
+# lines (two per cycle: the first walk's and F5's), the windows (three or more per cycle), and compares
+# the root's figures of the last window before each F5 with that walk's done line (bytes on disk, files,
+# folders): matches one per cycle, mismatches must be 0; re-walks and stops after overflows are counted
+# (0 expected).
 # P13-M3's Size on disk column: each cycle then turns it on through the dialog in src\tree, moves the
 # split line to 0.85 (the left pane wide enough for it beside every column), makes and removes od.txt
 # there (`touch`, `rmfile`, each through the watch's edits), moves the line back to 0.5 (the column the
@@ -575,7 +582,13 @@ $cycle = @(
     # P13-M3: the sizes view, a level opened, a file deleted from it (see the header).
     "nav 0 $src\tree\d01", 'sleep 400', 'touch 0 sz.txt', 'sleep 300', "nav 0 $src", 'sleep 400',
     "sizeview 0 $src", 'waitsizeview 5000', 'sizeopen 0', 'sleep 200', 'sizeopen 1', 'waitsizeview 3000',
-    'click 0 22', 'sdelete', $wait, 'sleep 300', 'tab close', 'sleep 300',
+    'click 0 22', 'sdelete', $wait, 'sleep 300',
+    # P14-M2: the view follows changes under it, then F5 walks again (see the header).
+    # Each wait covers the watch's longest window (2 s once it backs off): waitsizeview waits only for
+    # a window already delivered.
+    'touch 0 sv-a.txt', 'touch 0 sv-b.txt', 'sleep 2300', 'waitsizeview 3000', 'mvfile 0 sv-a.txt sv-c.txt', 'sleep 2300', 'waitsizeview 3000',
+    'rmfile 0 sv-b.txt', 'rmfile 0 sv-c.txt', 'sleep 2300', 'waitsizeview 3000', 'click 0 0', 'key F5', 'sleep 300', 'waitsizeview 5000',
+    'tab close', 'sleep 300',
     'click 0 0', 'sleep 200', 'key Tab', 'sleep 300', 'key ShiftTab', 'sleep 300',
     # P13-M1: Two panes off and on by the toolbar, the split line narrowed and widened (see the header).
     'toolbar 0 split', 'sleep 500', 'toolbar 0 split', 'sleep 1000', 'splitter 0.35', 'sleep 400', 'splitter 0.5', 'sleep 400',
@@ -792,6 +805,20 @@ $tabLeft = @($log | Select-String -SimpleMatch '[focus] pane=0 has the keys by T
 $svDone = @($log | Select-String -Pattern '\[sizeview\] pane=0 gen=\d+ done: ').Count
 $svOpened = @($log | Select-String -Pattern '\[sizeview\] pane=0 opened .* in place').Count
 $svRemoved = @($log | Select-String -Pattern '\[sizeview\] pane=0 removed .*sz\.txt: \d+ bytes off 3 totals').Count
+# P14-M2: the sizes view following changes; the last window's root against F5's walk.
+$svWatching = @($log | Select-String -Pattern '\[sizeview\] pane=0 gen=\d+ watching ').Count
+$svWindows = @($log | Select-String -SimpleMatch '[sizeview] pane=0 window: ').Count
+$svRewalks = @($log | Select-String -SimpleMatch '[sizeview] pane=0 re-walk: ').Count
+$svStopped = @($log | Select-String -SimpleMatch '[sizeview] pane=0 not following changes').Count
+$svLast = $null; $svExpect = $null; $svMatch = 0; $svMismatch = 0
+foreach ($line in $log) {
+    if ($line -match '^\[sizeview\] pane=0 window: .*; root (\d+) bytes on disk, (\d+) files, (\d+) folders') { $svLast = "$($Matches[1]) $($Matches[2]) $($Matches[3])" }
+    elseif ($line -like '`[refresh`] pane=0 sizes view: walked again*') { $svExpect = $svLast; $svLast = $null }
+    elseif ($svExpect -and $line -match '^\[sizeview\] pane=0 gen=\d+ done: (\d+) bytes on disk \(\d+ logical\), (\d+) files, (\d+) folders') {
+        if ("$($Matches[1]) $($Matches[2]) $($Matches[3])" -eq $svExpect) { $svMatch++ } else { $svMismatch++; $failed += "sizes view: followed $svExpect, walked $($Matches[1]) $($Matches[2]) $($Matches[3])" }
+        $svExpect = $null
+    }
+}
 # P13-M3: the Size on disk column.
 $odOn = @($log | Select-String -SimpleMatch '[settings] Size on disk column on').Count
 $odOff = @($log | Select-String -SimpleMatch '[settings] Size on disk column off').Count
@@ -856,6 +883,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
 "sizes view: walks done $svDone, levels opened in place $svOpened (two per cycle), sz.txt taken off three totals $svRemoved (one per cycle)"
+"sizes view following: watching $svWatching (two per cycle), windows $svWindows (three or more per cycle), the last window against F5's walk: matches $svMatch (one per cycle), mismatches $svMismatch (must be 0); re-walks $svRewalks, stopped $svStopped (0 expected)"
 "Size on disk column: on $odOn, off $odOff, left pane shown with it $odShown (one each per cycle), listings read with it $odRead (one per cycle: the right pane is in a.zip then, and an archive level is not read)"
 "mouse: path bar buttons $navButtons (four per cycle), View picks $viewPicks (two per cycle), More picks $morePicks (seven per cycle), details bands done with 2 selected $detailsBands (one per cycle), presses on a row's blank part $blankPresses (one per cycle)"
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
