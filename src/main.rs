@@ -6549,6 +6549,7 @@ fn search_key(pane: usize) {
 /// new search tab starts with its root folder on its back stack (it was searched from there), and a
 /// new search in a search tab pushes the old one.
 fn start_search(pane: usize, pattern: &str, content: bool, at: SearchAt) {
+    let saved = matches!(at, SearchAt::Saved(_));
     let started = with_state(|st| {
         let app = st.app.upgrade()?;
         st.filter_timer[pane].stop();
@@ -6648,9 +6649,10 @@ fn start_search(pane: usize, pattern: &str, content: bool, at: SearchAt) {
         Some(app)
     });
     // The search started from the filter box (Ctrl+Shift+F there, or Return with a search waiting)
-    // or from the list: either way the keys go to the results list now. Outside the state borrow:
-    // moving the focus runs the pane's handlers.
-    if let Some(app) = started {
+    // or from the list: either way the keys go to the results list now. A saved search run from the
+    // sidebar leaves it the keys, as a bookmark's click does, so F2 renames its row. Outside the state
+    // borrow: moving the focus runs the pane's handlers.
+    if let Some(app) = started.filter(|_| !saved) {
         app.invoke_focus_pane(pane as i32);
     }
 }
