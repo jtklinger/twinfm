@@ -426,4 +426,8 @@ cap, no stop**, no panic. Private bytes 153 MB at 30 s, at most 213, **209 MB at
 ### Gate
 
 `tools/gate-p14m2.ps1`, tag ab77: the defaults triplet against `target-p14m1` (P14-M1 merged; the scenario never opens the sizes
-view and never asks for a subtree watch; every run's stderr must hold no `[sizeview]` line). Handed to Jeremy by the coordinating session; the result is recorded here when it is in.
+view and never asks for a subtree watch; every run's stderr must hold no `[sizeview]` line). 2026-10-29, Jeremy at
+the console, handed over by the coordinating session: 1af867b (`target-p14m2`) against `target-p14m1`; summary
+`C:\traces\gate-ab77-summary.txt`. **Passed**: WPR medians p14m2 20.3% against p14m1 20.6%; runs reference 20.9,
+20.6, 20.5, candidate 20.2, 20.3, 20.4; every reference run below every candidate: no; a gap that counts: no. All
+six at 60 Hz (interval p50 16.34 to 16.46 ms), render p50 3.02 to 3.23 ms in every run (no change of state).
