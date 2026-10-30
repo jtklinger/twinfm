@@ -10,6 +10,8 @@ import { Preview, PreviewPage, MdBlock, MdRow, MdCell } from "preview.slint";
 export { Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
 // The fluent Palette, for main.rs's TWINFM_SCHEME override (a scripted screenshot of the other scheme).
 export { Palette } from "std-widgets.slint";
+// The scrollbars' held-press rule (P14-M3, model.rs `track_repeats`).
+export { ScrollRule } from "theme.slint";
 
 // One sidebar row (sidebar.rs Row): kind 0 section header, 1 drive, 2 place, 3 bookmark, 4 a recent
 // folder (P12-M5), 5 a saved search (P14-M1); index is the bookmark's index in the bookmark list (a

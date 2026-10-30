@@ -8435,6 +8435,10 @@ fn main() -> Result<(), slint::PlatformError> {
     app.global::<Paging>().on_grid_target(|cursor, cols, content_y, visible_h, tile_h, len, down| {
         model::grid_page_target(cursor, cols, content_y, visible_h, tile_h, len, down)
     });
+    app.global::<Paging>().on_hover_index(|x, y, content_y, line_h, tile_w, cols, len, grid| {
+        model::hover_index(x, y, content_y, line_h, tile_w, cols, len, grid)
+    });
+    app.global::<ScrollRule>().on_repeats(model::track_repeats);
     app.on_toolbar_tip(|pane, text| {
         let place = if pane < 0 { "top".to_string() } else { format!("pane={pane}") };
         eprintln!("[toolbar] {place} tooltip \"{text}\"");

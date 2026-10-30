@@ -55,7 +55,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (346 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (348 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1343,6 +1343,23 @@ put off, with where it came from.
   search <i> opened: <root> "<pattern>" name|content[ (the other pane)]`, `[sidebar] saved search <i>
   removed: "<title>"`, `[sidebar] saved search <i> renamed "<a>" -> "<b>"`, `[sidebar] saved search moved
   F -> T[ (drag)]`, `[search] pane=N saved search "<pattern>": <root> is not there any more`.
+  Since P14-M3, **hover on file rows and tiles**: the entry under the pointer gets `Theme.muted` (as the
+  sidebar's rows) from **one rectangle per list host** (`FileListHost`, under the lists), never a binding
+  in the rows: the nine list variants sit inside one `TouchArea` (`hover-ta`), which takes no press but
+  sees every pointer event on its way to the rows (Slint's filter before children sets its `mouse-x`,
+  `mouse-y` and `has-hover`), and the index is `model::hover_index` through `Paging.hover-index` (details
+  rows, grid rows and columns; -1 below the last row, in the grid's right gap, after a short last grid
+  row). The rows are transparent unless selected, so the rectangle never shows over a selected row's
+  colour. Off over the scrollbar and the pane's empty-space areas (siblings on top: the wrapper has no
+  hover there), while a button is held (`held`: a press, our own drag, a band) and while a drag is over
+  the pane (`no-hover`, the pane's `drop-here`). No fade. The gate scenario's `wheel` steps move the
+  pointer to the pane's middle (the hover on while they scroll); its `drag` steps leave it on the
+  scrollbar (off). **A held press on a scrollbar's track repeats** (`VScrollBar`, `HScrollBar`): it pages
+  once, then after 500 ms every 50 ms (a Slint `Timer`) while `model::track_repeats` (through the
+  `ScrollRule` global) says the thumb has not reached the pointer, until the release. Driver: `hover <x>
+  <y>` (P7-M4) and `trackhold <pane> <top|bottom> <ms>` (a press on the pane's list track 8 px from its
+  top or bottom end, held `<ms>` through Slint's pointer path): `[auto] trackhold pane=N: content-y A ->
+  B in K pages`. `tools/inapp-p14m3.ps1` runs the in-app pair with the pointer over the scrolling lists.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

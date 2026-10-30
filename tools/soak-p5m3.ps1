@@ -145,6 +145,11 @@
 # from the left list, the keys to the right pane's list and back (the next cycle's scroll scenario
 # lists both panes again, so the cursor Tab may have put on a row goes); the report counts the
 # `[focus]` lines each way (one each per cycle).
+# P14-M3: in the first scroll folder (C:\traces\bigdir) each cycle also moves the pointer over the left
+# list's rows and the right list's (`hover`, the row under it drawn in Theme.muted) and off them, then
+# holds a press on the left list's track 8 px from its bottom end for 1.2 s (`trackhold 0 bottom 1200`:
+# one page, then after 500 ms one every 50 ms) and, after End, from its top; the report counts the held presses
+# that repeated (more than one page, two per cycle).
 # P13-M3: each cycle also makes an empty sz.txt in src\tree\d01 (`touch`), opens the sizes view of src
 # (`sizeview 0 <src>`, `waitsizeview`), opens tree and d01 in place (`sizeopen 0`, `sizeopen 1`), and
 # deletes sz.txt from the view permanently (row 22: tree, d01, its twenty files, then sz.txt, the
@@ -603,6 +608,14 @@ $cycle = @(
     "nav 0 $m2", 'sleep 600', 'band 0 400 11 400 33', 'sleep 300'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
+# P14-M3: the hover across both lists (the pointer over the left list's rows, then the right's, then off
+# the lists), and a held press on the left list's track each way (bottom: pages down past the first
+# page and repeats; top: back up), in the first scroll folder (see the header).
+if ($scroll.Count -ge 1) {
+    $cycle += @('hover 300 200', 'sleep 150', 'hover 300 260', 'sleep 150', 'hover 300 320', 'sleep 150', 'hover 900 260', 'sleep 150',
+        'hover 900 320', 'sleep 150', 'hover 20 20', 'sleep 150',
+        'trackhold 0 bottom 1200', 'sleep 300', 'click 0 1', 'key End', 'sleep 500', 'trackhold 0 top 1200', 'sleep 300')
+}
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
 if ($scroll.Count -ge 3) { $cycle += @("nav 1 $($scroll[2])", 'sleep 1500', 'drag 1 300 1000') }
 # Setup, before the split (the left pane is the active one): bookmark bm (the sidebar's last row),
@@ -775,6 +788,9 @@ $boxEmpty = @($log | Select-String -SimpleMatch '[search] pane=0 box Return: emp
 $contentDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: (\d+) found in (\d+) files read')
 $contentRead = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[2].Value } | Measure-Object -Sum).Sum
 $contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum).Sum
+# P14-M3: held track presses that repeated (more than one page).
+$trackHolds = @($log | Select-String -Pattern '^\[auto\] trackhold pane=0: content-y -?\d+ -> -?\d+ in (\d+) pages')
+$trackRepeated = @($trackHolds | Where-Object { [int]$_.Matches[0].Groups[1].Value -gt 1 }).Count
 # P14-M1: saved searches; a content search done counts as the saved one's when an open came before it.
 $searchSaved = @($log | Select-String -SimpleMatch '[sidebar] saved search added "Text "scratch file 3/7" in ').Count
 $searchOpened = @($log | Select-String -SimpleMatch '[sidebar] saved search 0 opened: ').Count
@@ -887,6 +903,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "Size on disk column: on $odOn, off $odOff, left pane shown with it $odShown (one each per cycle), listings read with it $odRead (one per cycle: the right pane is in a.zip then, and an archive level is not read)"
 "mouse: path bar buttons $navButtons (four per cycle), View picks $viewPicks (two per cycle), More picks $morePicks (seven per cycle), details bands done with 2 selected $detailsBands (one per cycle), presses on a row's blank part $blankPresses (one per cycle)"
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
+"held track presses: $($trackHolds.Count), repeated past one page $trackRepeated (two each per cycle)"
 "content search: done $($contentDone.Count) (two per cycle), files read $contentRead (400 or more per cycle), found $contentFound (two per cycle)"
 "saved searches: saved $searchSaved, opened $searchOpened, run again and found $searchRerun, removed $searchRemoved (one each per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
