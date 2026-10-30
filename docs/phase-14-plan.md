@@ -316,3 +316,86 @@ saved search whose root was deleted; the settings file read back after a restart
 
 - A middle click on a saved search with one pane turns the second pane on and runs it there.
 - The "saved already" note names the row that holds it, its own title if renamed.
+
+## P14-M3: the look's leftovers (hover on file rows and tiles, the track's repeat)
+
+Built by the sidebar and look stream on `feat/p14-m3-look`, 2026-10-29.
+
+### Settled first: the hover's shape (2026-10-29)
+
+**One rectangle per list host, no per-row anything**, the lead's recommendation, settled without building
+the per-row variant (the coordinating session's call: P3-M1 already showed per-row bindings cost points on
+40,000 rows). Read from the Slint fork (a1ce0d8, `internal/core/items/input_items.rs`): a `TouchArea`'s
+filter before its children sets its own `mouse-x`, `mouse-y` and `has-hover` for every pointer event on its
+way to them, and it gets an exit when the pointer moves onto a sibling drawn above it. So `FileListHost`
+wraps its nine list variants in one `TouchArea` (it takes no press: the rows' areas and the ListView's
+flickable take them first), and one `Rectangle` placed before the lists draws the hover; the index is
+`model::hover_index` through `Paging.hover-index`. The rows are transparent unless selected and the Fluent
+ScrollView draws no background, so the rectangle shows through a plain row and is hidden under a selected
+row's colour with nothing to decide. What it costs: on a pointer move, or while the list scrolls under a
+parked pointer, one pure call and one rectangle's place per frame. Measured by the in-app pair below.
+
+### What landed
+
+- **Hover**: `Theme.muted` on the row or tile under the pointer, in every details list variant, both
+  grids and the sizes view; off over the scrollbar and the pane's empty-space areas (siblings on top), while
+  a button is held (a press, our own drag, a band), and while a drag is over the pane (`drop-here`). No fade.
+- **The track's repeat**: in `VScrollBar` and `HScrollBar` (every list and the preview's pages), a press on
+  the track pages once, then after 500 ms every 50 ms (a Slint `Timer`), while `model::track_repeats` says
+  the thumb has not reached the pointer, until the release.
+- Driver `trackhold <pane> <top|bottom> <ms>`; `tools/check-p14m3.ps1` (the scripted check with
+  screenshots), `tools/inapp-p14m3.ps1` (the in-app pair), `tools/gate-p14m3.ps1`; the soak cycle; CLAUDE.md
+  § Measuring lines.
+
+### Scripted checks (2026-10-29, the branch's release build, `tools/check-p14m3.ps1`, `C:\traces\bigdir`, `SLINT_BACKEND=winit-software`, no settings file)
+
+Captured by `PrintWindow` from the run's own process id, once light and once dark: the hover on a plain
+row; with row 4 selected and the pointer on it, only the selection's colour; the hover on the rows below
+it; none with the pointer over the list's scrollbar strip; on a tile in the first and second grid rows of
+the large-icon grid; none once the pointer leaves the lists. The track, held 1.5 s: `[auto] trackhold
+pane=0: content-y 0 -> -12936 in 21 pages` from its bottom end (one page, the 500 ms wait, then twenty at
+50 ms) and, after End, `content-y -879384 -> -866448 in 21 pages` from its top; the same in both runs, no
+panics. Tests: 344 passed (two new: the hover index from a pointer, details and grid, below the rows, the
+grid's gaps; the track's stop rule).
+
+### The in-app pair
+
+`tools/inapp-p14m3.ps1` (the gate scenario with its thumb drags replaced by wheel turns back, so the
+pointer stays over the lists for the whole busy window; `hover` parks it there after the split) against
+`target-p14m1`, three pairs with the order swapped between them, 2026-10-29 after gate ab77, unelevated,
+Narrator off. Every run's frame interval p50 read 16.3 to 16.5 ms (60 Hz), so all six compare:
+
+| Pair | First slot | Second slot |
+|------|-----------|-------------|
+| 1 | ref 21.7 | cand 23.1 |
+| 2 | cand 17.3 | ref 19.2 |
+| 3 | ref 17.8 | cand 18.9 |
+
+Medians: reference 19.2%, candidate 18.9%. Render p50 1.87 to 1.91 ms for the candidate, 1.90 to 2.08 ms
+for the reference. No panics. The second slot read higher in every pair, whichever build sat in it (the
+known run-order bias), and the candidate's median is below the reference's: **no gap, so no console
+triplet beyond the gate** (the coordinator's rule).
+
+### Soak
+
+`tools/soak-p5m3.ps1 -Minutes 10` from 8860749, 2026-10-29 after the in-app pair: 10.1 minutes, the
+window closed by the script, exit code 0, 0 panicked lines, 16 cycles started, 247 jobs done (none
+failed or cancelled), every must-be-0 count at 0 (drags dropped, toolbar presses refused, menupicks
+refused, spring-loaded tabs, zip jobs not done, picture failures, alt text, Office files unreadable,
+waitpreview timeouts, worker panics, copy failures, chunks refused, wrong or refused passwords). The
+P14-M3 cycle: held track presses 6, all 6 repeated past one page (two each per cycle); the hover steps
+log no line of their own (the hover is drawn, not logged). P14-M1's cycle still saved, opened, found and
+removed 3 each. Working set 153.5 -> 236.5 MB (max 256.5), private 165.1 -> 228.5 MB, within the M1
+soak's range (183.9 to 248.1 MB private).
+
+### Gate
+
+To come: `tools/gate-p14m3.ps1`, ab78, the defaults and the grid with thumbnails against `target-p14m1`.
+The gate scenario's `wheel` steps move the pointer to each pane's middle, so the hover is on while they
+scroll (about 4 of the 10 s); its two thumb drags leave the pointer on a scrollbar, where the hover is off.
+So the triplets measure the hover in part, and the in-app pair measures it for the whole window.
+
+### Console checks (for Jeremy, unelevated, after the gate)
+
+Light and dark beside Explorer; the hover under the selection, during a drag, a band and a rename; a held
+press on each list's track.
