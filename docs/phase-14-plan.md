@@ -390,10 +390,46 @@ soak's range (183.9 to 248.1 MB private).
 
 ### Gate
 
-To come: `tools/gate-p14m3.ps1`, ab78, the defaults and the grid with thumbnails against `target-p14m1`.
 The gate scenario's `wheel` steps move the pointer to each pane's middle, so the hover is on while they
 scroll (about 4 of the 10 s); its two thumb drags leave the pointer on a scrollbar, where the hover is off.
 So the triplets measure the hover in part, and the in-app pair measures it for the whole window.
+
+ab78, 2026-10-30, Jeremy at the console: 8860749 (`target-p14m3`, built `--locked` from the detached
+`gate-p14m3` worktree by the coordinating session) against `target-p14m1` (28c4e7b), by
+`tools/gate-p14m3.ps1`, the defaults and the grid with thumbnails (`C:\traces\grid-thumbs.toml`)
+interleaved, p14m1 always in the first slot; summary `C:\traces\gate-ab78-summary.txt`. WPR main-thread busy:
+
+| Setting | Run | p14m1 | p14m3 |
+| --- | --- | --- | --- |
+| Defaults | 1, 2, 3 | 21.4, 20.5, 20.4 | 20.9, 20.7, 20.8 |
+| | Median | 20.5 | 20.8 |
+| Grid with thumbnails | 1, 2, 3 | 12.4, 12.3, 12.3 | 12.5, 12.6, 12.7 |
+| | Median | 12.3 | 12.6 |
+
+The defaults: **no gap** (the runs overlap). The grid with thumbnails: a gap that counts by the rule's first
+test (every reference run below every candidate run), though the medians differ by 0.3 points. Every run at
+60 Hz (interval p50 16.30 to 16.43 ms), the grid runs' render p50 1.62 to 1.67 ms (p14m1) and 1.67 to 1.69
+(p14m3), no state change part-way, every check ok.
+
+The code read before anything else (2026-10-30): P14-M3 adds nothing inside a tile (FileGrid, FileGridMedium
+and every row component unchanged); per pane it adds the `hover-ta` TouchArea, the `hover` binding (one
+`hover_index` call when content-y changes while the pointer is over the list) and the one rounded rectangle
+in its clip. A small cost of that per scrolled frame was plausible, the second slot's bias too (ab53 against
+ab54), so the order-swapped rerun came first, as the rule says.
+
+ab79, 2026-10-30, Jeremy at the console: the same two builds, the grid with thumbnails only, **p14m3 in the
+first slot** of each pair (the coordinating session's `C:\traces\gate-ab79.ps1`); summary
+`C:\traces\gate-ab79-summary.txt`:
+
+| Run | p14m3 (first) | p14m1 (second) |
+| --- | --- | --- |
+| 1, 2, 3 | 11.4, 12.6, 12.6 | 12.4, 12.6, 12.8 |
+| Median | **12.6** | 12.6 |
+
+**No gap**: the runs overlap and the medians are equal. Every run at 60 Hz (interval p50 16.33 to 16.49 ms),
+render p50 1.61 to 1.74 ms but p14m3-1's 1.37 (low, not the costlier state), every check ok. So ab78's grid
+gap was the second slot's bias: swapping the order moved the higher median onto whichever build sat second.
+**P14-M3 holds the gate**; the slimmer hover (no clip, the binding idle while the hover is off) is not needed.
 
 ### Console checks (for Jeremy, unelevated, after the gate)
 
