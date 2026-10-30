@@ -55,7 +55,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (338 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (348 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -72,7 +72,8 @@ put off, with where it came from.
   one, since P11-M6 one more writes encrypted PDFs into one, and since P11-M7 one more writes log
   files into one (and points the process's stderr at them while it runs), and since P13-M3 two
   more write a compressed and a sparse file, and a small tree with a hard link, into scratch folders, and one more lists a folder with the Size on
-  disk column on and off, see below)
+  disk column on and off, and since P14-M2 one more writes a small tree into a scratch folder and watches it
+  change, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches and, since
   2026-10-28, the ListView fix (row 0 kept at the content's top when a scrolled list gets a shorter model) in
@@ -1208,6 +1209,41 @@ put off, with where it came from.
   error E`, `pane=N removed <path>: S bytes off K totals`; `[view] pane=N shows a list (the sizes view) |
   <view>`, `[view] pane=N leaves the sizes view` (a navigation in its tab), `[watch] pane=N no watch for <root>: sizes view`, `[refresh] pane=N sizes view: walked again`.
   `perf::memory_mb` reads the process's working set and private bytes.
+  Since P14-M2, **the sizes view follows changes**: once its walk is done a sizes view (not This PC's)
+  takes a subtree watch on its root (`Tab::follows`; in front with a parent watch, in the background
+  without, the cap of 8 counting it, `watch_tabs`), and the view's own `sizeview` thread, which stays after
+  the walk, takes the watch's windows in order (`sizeview::Cmd`; the thread ends when the tab drops its
+  sender). The subtree watch now hands every record of a window, anywhere below, with the path under the
+  root (`Event::Subtree`'s `deep`; None on an overflow or past `fs::watch::MAX_DEEP`, 10,000 records:
+  `[watch] pane=N tab=T R records below the folder: past the cap`). Each folder in the `Tree` keeps its
+  **own files' totals** (`Own`: size on disk, logical, file names, links; and `skipped`) beside its
+  subtree's, so a window is applied by reading again only the folders its records are in
+  (`sizeview::plan`: each record's folder, or the deepest folder of its path the tree has; a folder's own
+  entry modified is no change; below a folder not entered, nothing) with one `dirinfo::read` each
+  (`Listing::read`), the difference going up the chain (`Tree::apply`); a subfolder that appeared is
+  walked (its subtree only), one that went is taken off, a rename pair (old name then new, one folder)
+  renames the node, subtree and all, a move out is a removal and a move in a creation. A hard-linked file
+  counts in the folder that met it first (`dirinfo::HardLinks` keeps each file ID's folder, so a folder
+  read again counts its own again); another name of it is counted again only by a new walk. A folder the
+  walk could not read is read again when a record falls under it (readable now, it is walked). An
+  overflow (or past `MAX_DEEP`) walks the whole root again on the same thread, the old figures shown
+  until it is done (the open levels kept by path); the second within a minute stops the following, and
+  the status says "Not following changes: F5 walks again". TwinFM's own deletes and moves out still come
+  off at once (`sizes_removed`, which takes a removed file off its folder's own totals too), so their
+  window finds nothing changed. The levels shown of a folder read again are listed again. **The Name
+  column stops at its longest name on screen** (`fit_sizes_name`: the rows on screen measured as
+  `colfit` measures, one call per depth, `sizeview::name_column`: from the row's left edge, indent and
+  chevron included, at least `NAME_MIN`, 240 px; clamped to the list's reported width less 320 px,
+  `set_sizes_name`), at each rebuild of the rows and 150 ms after a scroll rests (`NAME_FIT`), so Share,
+  Size on disk and Files sit beside the names and the rest of the row is empty. Driver: no new step;
+  `waitsizeview` also waits for windows on the view's thread and a re-walk (`touch`, `rmfile`, `mvfile`
+  and the shell's jobs make the changes), **but not for a window the watch has not delivered yet**: sleep
+  past the watch's longest window (2 s once it backs off) after a change before `waitsizeview` (the first
+  P14-M2 soak's three mismatches were F5 walking before the removals' window). `[sizeview]` lines: `pane=N gen=G watching <root>`, `pane=N
+  window: R records, F folders re-read, C created, D removed, M moved, in T ms; root S bytes on disk, F2
+  files, D2 folders`, `pane=N <folder>: S -> S2 bytes on disk (K totals above)` (K the folder's and those
+  above it), `pane=N re-walk: overflow (R records)`, `pane=N gen=G re-walk done: S bytes on disk, F files,
+  D folders, K skipped, in T ms, I file IDs kept`, `pane=N not following changes (two overflows)`.
   Since P13-M2, **everything by mouse** (Jeremy's layout B). **Each pane's path bar starts with Back,
   Forward, Up and Refresh** (pane.slint `NavButton`, Lucide `arrow-left`, `arrow-right`, `arrow-up`,
   `rotate-cw`, 28 px each; the crumbs and the text entry start `dnd::NAV_W`, 116 px, into the bar, which
@@ -1579,7 +1615,11 @@ put off, with where it came from.
   writes a plain, an NTFS-compressed and a sparse file in `%TEMP%\twinfm-p13m3-test-<pid>\`, and
   `sizeview::tests::a_walk_reads_folders_into_the_tree` a small tree with a hard link in
   `%TEMP%\twinfm-p13m3-walk-<pid>\`, and `fs::enumerate::tests::the_size_on_disk_column_is_read_only_while_it_is_on`
-  lists a folder with a file and a subfolder in `%TEMP%\twinfm-p13m3-ondisk-<pid>\`. All remove their folders.
+  lists a folder with a file and a subfolder in `%TEMP%\twinfm-p13m3-ondisk-<pid>\`. Since P14-M2
+  `sizeview::tests::a_watched_tree_follows_its_changes` walks a small tree in
+  `%TEMP%\twinfm-p14m2-test-<pid>\`, watches it (subtree), grows a file, makes, deletes and renames
+  folders, moves one out to `%TEMP%\twinfm-p14m2-out-<pid>\`, and checks the followed tree against a
+  fresh walk. All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols
