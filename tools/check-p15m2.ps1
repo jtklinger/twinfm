@@ -2,7 +2,8 @@
 # target\release\twinfm.exe against a scratch settings file in %TEMP%\twinfm-p15m2-check\ (never
 # Jeremy's). The panes are set up unequal (two tabs on the left, one on the right, the split line at
 # 0.85, then 0.5, then 0.15). Run 1 turns the column on, drags, fits and sets its grip in the left pane
-# (to its floor and Modified's), sorts by it both ways with a watch edit under the sort, narrows the
+# (to its floor; leftwards past Modified's floor into the Name column, down to Name's 120 px, the
+# column still shown at the release; then the widths set back), sorts by it both ways with a watch edit under the sort, narrows the
 # pane until the column makes way (its grip refused, the sort kept), does the same in the right pane,
 # resets the widths through the dialog, and closes through WM_CLOSE, which writes the settings. Run 2
 # reads them back (the saved width, the saved sort) and turns the column off while sorted by it. Run 3
@@ -52,9 +53,9 @@ Run 'run1' @(
     'settings open', 'settings set size_on_disk true', 'settings ok', 'sleep 1000',
     'colfit 0 ondisk', 'sleep 200',
     'splitter 0.85', 'sleep 600', 'rows 0 6',
-    'coldrag 0 ondisk -20', 'sleep 200', 'coldrag 0 ondisk 500', 'sleep 200', 'coldrag 0 ondisk -500', 'sleep 200',
-    'colfit 0 ondisk', 'sleep 200', 'colwidth 0 ondisk 5', 'sleep 200', 'colwidth 0 ondisk 130', 'sleep 200',
-    'coldrag 0 modified 10', 'sleep 200', 'colwidth 0 modified 140', 'sleep 200',
+    'coldrag 0 ondisk -20', 'sleep 200', 'coldrag 0 ondisk 500', 'sleep 200', 'colwidth 0 ondisk 5', 'sleep 200',
+    'coldrag 0 ondisk -2000', 'sleep 400', 'coldrag 0 ondisk -20', 'sleep 200', 'colfit 0 ondisk', 'sleep 200',
+    'colwidth 0 ondisk 130', 'sleep 200', 'colwidth 0 modified 140', 'sleep 200', 'colwidth 0 size 90', 'sleep 200', 'colwidth 0 type 120', 'sleep 200',
     'sort 0 4', 'sleep 500', 'rows 0 6', 'sort 0 4', 'sleep 500', 'rows 0 6',
     'touch 0 watched.txt', 'waitedit 3000', 'sleep 300', 'rows 0 7', 'rmfile 0 watched.txt', 'waitedit 3000', 'sleep 300',
     'splitter 0.5', 'sleep 600', 'colfit 0 ondisk', 'coldrag 0 ondisk 10', 'rows 0 6',

@@ -170,8 +170,10 @@
 # disk (the left pane's; the right one is in a.zip, which is not read) and the left pane shown with the
 # column (one each per cycle). The line's
 # return to 0.5 is one more of P13-M1's name, Size and Modified lines (six per cycle since).
-# P15-M2: while the column shows, each cycle also drags its grip 20 px left (Size on disk wider by what
-# Modified can give above its floor: 100 -> 107 at this machine's 133 px floor), fits it by a double-click, sets it back with `colwidth 0 ondisk 100`, sorts
+# P15-M2: while the column shows, each cycle also drags its grip 20 px left (Size on disk 100 -> 120:
+# from Modified down to its floor, the rest from Name), fits it by a double-click, sets the four widths
+# back (`colwidth 0 ondisk 100`, then Modified, Size and Type, each grip handing the surplus leftwards
+# until Name has it again), sorts
 # by it (`sort 0 4`, the first rows logged by `rows 0 3`) and back by name; the report counts the
 # drags, the fits and the sorts (one each per cycle), and the widths-back lines are three per cycle
 # since.
@@ -590,6 +592,7 @@ $cycle = @(
     'splitter 0.85', 'sleep 500', 'touch 0 od.txt', 'waitwatch 3000', 'rmfile 0 od.txt', 'waitwatch 3000',
     # P15-M2: its grip dragged, fitted and set back, a sort by it and back (see the header).
     'coldrag 0 ondisk -20', 'sleep 200', 'colfit 0 ondisk', 'sleep 200', 'colwidth 0 ondisk 100', 'sleep 200',
+    'colwidth 0 modified 140', 'sleep 200', 'colwidth 0 size 90', 'sleep 200', 'colwidth 0 type 120', 'sleep 200',
     'sort 0 4', 'sleep 400', 'rows 0 3', 'sort 0 0', 'sleep 400',
     'splitter 0.5', 'sleep 400', 'settings open', 'settings set size_on_disk false', 'settings ok', 'sleep 800',
     # P13-M3: the sizes view, a level opened, a file deleted from it (see the header).
