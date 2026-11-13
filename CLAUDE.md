@@ -49,6 +49,10 @@ checks with the dead share; § Phase 13 close holds the gates, lessons, what is 
 `docs/phase-14-plan.md` is the Phase 14 record (opened 2026-10-29, closed 2026-11-13: saved searches in the
 sidebar, the sizes view following changes, hover on file rows and tiles, the scrollbar track's repeat; § Phase 14
 close holds the gates, lessons, what is deferred and the Phase 15 list).
+`docs/phase-15-plan.md` is the Phase 15 record (opened 2026-11-13: Extract in the Windows 11 menu, the tab
+menu, the folder sizes' progress line and the saved search's visible note, the Size on disk column's grip and
+sort, glob classes and `re:` regular expressions in search; its first section quotes Jeremy's kickoff
+decisions, § Calls made lists the lead's).
 
 `docs/roadmap.md` is the one list of known bugs and wanted features not built yet (since 2026-10-25).
 Its upkeep, Jeremy's rule (2026-10-26, "add the roadmap rule"): an item leaves the roadmap when a phase's
