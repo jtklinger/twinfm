@@ -12,7 +12,8 @@ share, Phase 12's console checks; the long soak was run after the Phase 12 close
 memory follow-up and the two small log and soak clean-ups. It closed 2026-10-29 (`phase-13-plan.md` § Phase 13 close); what it put off is below,
 marked P13. Phase 14 took its items at its kickoff (2026-10-29, `phase-14-plan.md`): saving a search
 (as a sidebar group, run again when opened), the sizes view following changes (with its columns' place),
-hover on file rows and tiles, and the scrollbar track's repeat.
+hover on file rows and tiles, and the scrollbar track's repeat. It closed 2026-11-13 (`phase-14-plan.md` §
+Phase 14 close); what it put off is below, marked P14.
 
 ## Look and feel
 
@@ -31,6 +32,8 @@ hover on file rows and tiles, and the scrollbar track's repeat.
 - **Rows and the sidebar**: a third row density (P12-M4 left room for one); the rail's footer has only
   the chevron, with Settings and About on the full sidebar only; a drop into the bookmarks gap from a
   program that allows no link shows the copy cursor and adds nothing (P12-M5).
+- **Notes only in the status bar**: "Saved search …" and "… is saved already" show as the pane's status
+  line, which Jeremy missed at the console check; tabs have no right-click menu, which he reached for (P14).
 - **Symbols outside the UI font draw as empty boxes** in the preview (rare entities such as ∳); the
   characters are right when copied. Font fallback is a Slint question (P11-M4 console check).
 
@@ -41,6 +44,7 @@ hover on file rows and tiles, and the scrollbar track's repeat.
   matches do not appear on their own).
 - The `word in *.ext` syntax, offered and not taken (P11-M1).
 - No folder sizes for search results or for the other drives (P3-M3).
+- Search tabs left open are not restored at start; a saved search in the sidebar is the way to keep one (P14-M1).
 
 ## Preview
 
@@ -61,6 +65,11 @@ hover on file rows and tiles, and the scrollbar track's repeat.
 - **Explorer's other views**: extra large and small icons, list, tiles, content (P4-M1; medium icons
   came in P6-M2).
 - **The Size on disk column** is a fixed 100 px, with no grip and no sort (P13-M3).
+- **Folder sizes show no progress**: after Alt+Shift+Enter (or More's "Size all folders") nothing on screen
+  says the walks have started until the first size lands, which on `C:\` takes a while; a status line such as
+  "Sizing N folders…" (P14 console check).
+- **The sizes view and hard links**: when the name a hard-linked file was counted under is deleted, its other
+  names are not counted until F5 (P14-M2).
 - A deleted watched folder stays `Lost`; the subtree watch's overflow could not be forced (the test
   covers its handling); the log's cut timer's per-minute string (a clean-up) (P11 close).
 

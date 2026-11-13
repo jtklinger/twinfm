@@ -550,3 +550,127 @@ gap was the second slot's bias: swapping the order moved the higher median onto 
 
 Light and dark beside Explorer; the hover under the selection, during a drag, a band and a rename; a held
 press on each list's track.
+
+## The long soak of the merged code (2026-10-30, Jeremy: "Start the soak")
+
+`tools/soak-p5m3.ps1 -Minutes 60` on `target-p14close` (61a905a, main's code with all three milestones; built
+`--locked` inside the detached `gate-p14close` worktree; `[mem] process heap: segment heap` at start), by the
+coordinating session. **The session ran at 125%** (`[dnd] drag threshold 4 x 4 px (scale 1.25)`; Phase 13's
+soak at 100%), so the report's 128 px and 80 px drag image counts read 0: the log has the same images at 160
+and 100 px (36 and 18, with 36 more at 120 px from the thumbnail drags). 60.6 minutes, exit code 0, no
+panics, 91 cycles started, 1,244 jobs (none failed or cancelled), every must-be-0 count 0. Phase 14's own
+steps all ran 18 times: saved searches saved, opened, run again and found, removed (18 each); the sizes view
+following its changes (watching 36, windows 77, **the last window against F5's walk: 18 matches, 0
+mismatches**, re-walks 0, stopped 0); held track presses 36, all repeated past one page. Memory (working set
+/ private bytes, MB, every 300 s):
+
+| s | 5 | 306 | 606 | 906 | 1205 | 1505 | 1805 | 2105 | 2406 | 2706 | 3006 | 3305 | 3600 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| WS | 196 | 268 | 276 | 246 | 248 | 248 | 249 | 250 | 251 | 262 | 253 | 256 | 251 |
+| private | 200 | 253 | 271 | 260 | 266 | 266 | 267 | 268 | 269 | 285 | 273 | 275 | 270 |
+
+Read: the caches fill in the first ten minutes, then the line holds between 260 and 275 MB private (one
+sample at 285 that came back), no climb from 20 to 60 minutes (266 to 270). About 20 MB above Phase 13's 247,
+which is not like for like: at 125% every icon, strip and thumbnail holds about 1.56 times the pixels, and
+the phase added the saved searches and the sizes view's following. No leak.
+
+## The console checks (2026-10-30, Jeremy, unelevated, `target\release` from 61a905a)
+
+Jeremy ran the coordinating session's list of all three milestones' checks. His findings, and what came of
+each:
+
+- **P14-M1, the Searches header's menu**: he looked for it on the search tab ("nothing opened when I clicked
+  on the 'Search: 1099' tab"). The list said "the Searches header's menu" without saying it is the sidebar's
+  header; tabs have no menu (the kickoff's call). The list's wording, not the code.
+- **P14-M1, "saved already"**: saving the same search twice made no second row but showed him no message.
+  A scripted run shows the note (`[fileops] pane=0 note: "f1" in twinfm-sizeall-check is saved already`): it
+  is the pane's status bar line, which is easy to miss. Left as it is, on the roadmap.
+- **P14-M1, F2 on a saved search did nothing** (the row's menu's Rename worked): **a bug**. A click runs the
+  search in a new tab, and `start_search` then gave the keys to the results list, so F2 reached the list
+  (`note: nothing to rename`). Fixed in #143 (opened 2026-10-30, merged 2026-11-13 as eb1f972; Jeremy: "Fix
+  F2 in a small PR"): a search run from
+  the sidebar (`SearchAt::Saved`) leaves the sidebar the keys, as a bookmark's click does. Checked by a
+  scripted run (`sidebar click`, `key F2`, a title typed, `key Return`: `saved search 0 renamed ... -> "z"`;
+  a second click, then `key Down` moved along the sidebar). 348 tests passed. No triplet: the gate scenario
+  never opens a saved search, and the change is the focus call after one.
+- **"Size all folders seems to be broken"**: on `C:\`, "sizes did eventually appear, but when I first
+  clicked, it didn't show that anything was actually happening". Two scripted runs (Alt+Shift+Enter and More's
+  item) sized every folder; `C:\`'s folders take long to walk and nothing on screen says the walks have
+  started. Not a bug; a progress line ("Sizing N folders…") is on the roadmap.
+- **The hover's shade** light and dark beside Explorer: right. Every other check: as expected.
+
+## Phase 14 close
+
+Written 2026-11-13 by the coordinating session. All three milestones are in, with one console-check fix,
+each squash-merged on Jeremy's word. The sidebar and look stream (one session) built P14-M1 and P14-M3; the
+sizes stream (one session) built P14-M2; the coordinating session serialised the machine, allocated the tags,
+built and checked every gate's binaries, handed each gate to Jeremy, ran the long soak and made the fix.
+
+| Item | PR, merge | Gate build | Tag | Reference | Medians (WPR, reference / candidate) |
+|---|---|---|---|---|---|
+| P14-M1 saved searches | #140, a2bbeca | `target-p14m1` 28c4e7b | ab76 | `target-p13close` | defaults 20.7 / 20.1 |
+| P14-M2 the sizes view follows changes | #141, 3d01a12 | `target-p14m2` 1af867b | ab77 | `target-p14m1` | defaults 20.6 / 20.3 |
+| P14-M3 hover, the track's repeat | #142, 61a905a | `target-p14m3` 8860749 | ab78 | `target-p14m1` | defaults 20.5 / 20.8, grid-thumbs 12.3 / 12.6 (a gap) |
+| The same, order swapped | | | ab79 | `target-p14m1` | grid-thumbs 12.6 / 12.6 |
+| F2 on a saved search | #143, eb1f972 | (none) | | | the scenario never meets it |
+
+No gap counted in what was merged. ab78's grid gap (every reference run below every candidate run, 0.3 points
+apart, p14m1 always first) went away with the order swapped (ab79), so it was the second slot's bias, as
+ab53 against ab54 had shown. Every run of the four triplets was at 60 Hz. Outside the milestones: the kickoff
+(#138, 29c80dd).
+
+Jeremy's decisions beyond the kickoff's, his words: "Merge and start", "Yes, merge #140", "Merge both" (#141
+and #142, after ab79), "Start the soak", "Fix F2 in a small PR", "Yes, merge it" (#143), "Write the close".
+
+**Memory**: the long soak of the merged code held 260 to 275 MB private from 20 minutes to the end with no
+climb, at 125% scale (above). The sizes view's walk of `C:\` with the own-files totals and the owner map held
++109 MB over the start (P13-M3's walk of the same disk +72 MB), under the kickoff's 150 MB, and followed `C:\`
+for 10 minutes (319 windows, 907 folders read again) with nothing growing.
+
+What Phase 14 answered, against the kickoff's open questions:
+
+- **Where bookmarks and saved searches share their reorder** (P14-M1): the pure rules in `sidebar.rs` became
+  generic over a group; the drag and its line are measured inside each group (`sidebar::group`), since the
+  bookmarks are no longer the sidebar's last rows.
+- **What the own-files totals cost** (P14-M2): +32 bytes a folder and the hard links' owner map, about +37 MB
+  on a walk of `C:\`, a little over the estimate's +30.
+- **The hover's shape** (P14-M3): one rectangle per list host under a `TouchArea` that sees every pointer
+  event on its way to the rows; nothing in the rows. Held the gate (ab78 with ab79, the in-app pair).
+
+Lessons of the phase:
+
+- **A gap with a fixed order gets the swapped rerun first**: ab78's counted by the rule and was the second
+  slot; the swap (ab79, six runs, nine minutes) settled it before anyone built a slimmer hover.
+- **`waitsizeview` waits only for windows already delivered**: the first P14-M2 soak's three mismatches were
+  F5 walking before the watch handed the removals' window (now in `CLAUDE.md`).
+- **A console-check list says where each thing is on screen**: "the Searches header's menu" sent Jeremy to
+  the search tab; "the sidebar's Searches heading" would not have.
+- **A key that follows a click needs a check of where the keys went**: the saved search's click opened a tab
+  and moved the keys, so F2 missed; the scripted checks had renamed through `searchrename`, not F2.
+- **Record the display scale with a soak's numbers**: at 125% the drag images' counts read 0 and memory sits
+  higher; neither is a change in the code.
+- **Rebuild `target\release` only with Jeremy's window closed**: his open TwinFM locks the exe; ask first.
+
+Deferred, from the milestones and the console checks:
+
+- **Saved searches**: the "saved already" and "Saved search" notes are the status bar's line only; search
+  tabs left open are not restored at start; tabs have no right-click menu (Jeremy reached for one).
+- **The sizes view**: a hard-linked file whose counting name is deleted is not counted under its other names
+  until F5 (P14-M2's known undercount).
+- **Folder sizes**: nothing on screen says Alt+Shift+Enter's walks have started until the first size lands
+  (the console check).
+- **Not taken at the kickoff**: the Slint fork's whole-row snap and upstreaming the accessibility patches,
+  accessibility; on the roadmap.
+
+**Phase 15** (Jeremy chooses; nothing is planned yet), from `docs/roadmap.md`: the folder sizes' progress
+line and a more visible note for saving; the Slint fork's whole-row snap (the fourth patch, proven, with its
+own triplet); the Size on disk column's grip and sort; a tab menu; glob and regular expression patterns in
+search; Explorer's other views (extra large, small, list); accessibility stays deferred for much later.
+
+The fleet at the close: the reference for the next gate is **`target-p14close`** (61a905a, main's code but
+#143's focus call after a saved search opens, which the scenario never meets), built `--locked` inside the
+detached `gate-p14close` worktree; tags continue from **ab80**. Every other gate build (`target-p13close`,
+`target-p14m1`, `target-p14m2`, `target-p14m3`) has served and was removed with its `gate-*` worktree at this
+close. The streams' worktrees (`p14-m2-sizes-watch-e44420`, `post-release-dev-279edf`) and the earlier
+sessions' (`phase-13-planning-3544ed`, `vigilant-montalcini-1d40df`) stay until Jeremy archives their
+sessions. `target\release` was rebuilt from main after #143 (eb1f972).

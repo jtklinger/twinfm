@@ -46,8 +46,9 @@ icons, the memory check and the segment heap; § Phase 12 close holds the gates,
 the Phase 13 list). `docs/phase-13-plan.md` is the Phase 13 record (opened 2026-10-27, closed 2026-10-29:
 columns that make way for the name, everything by mouse, the sizes view and the Size on disk column, the owed
 checks with the dead share; § Phase 13 close holds the gates, lessons, what is deferred and the Phase 14 list).
-`docs/phase-14-plan.md` is the Phase 14 record (opened 2026-10-29: saved searches in the sidebar, the sizes view
-following changes, hover on file rows and tiles, the scrollbar track's repeat).
+`docs/phase-14-plan.md` is the Phase 14 record (opened 2026-10-29, closed 2026-11-13: saved searches in the
+sidebar, the sizes view following changes, hover on file rows and tiles, the scrollbar track's repeat; § Phase 14
+close holds the gates, lessons, what is deferred and the Phase 15 list).
 
 `docs/roadmap.md` is the one list of known bugs and wanted features not built yet (since 2026-10-25).
 Its upkeep, Jeremy's rule (2026-10-26, "add the roadmap rule"): an item leaves the roadmap when a phase's
@@ -1329,8 +1330,8 @@ put off, with where it came from.
   `search` icon (`file-search` for text in files), titled `"<pattern>" in <folder>` or `Text "<text>" in
   <folder>` (`sidebar::search_title`), its root as the tooltip (`SideItem`'s `tip`). A click or Return
   runs it again in a new tab of the active pane (`search_open`, `start_search` with `SearchAt::Saved`: the
-  same refusals, and "<root> is not there any more"); a middle click in the other pane (the split turned
-  on first). Rename (F2, the row's menu; empty goes back to the default title), Move up and down, a drag
+  same refusals, and "<root> is not there any more"), the sidebar keeping the keys as a bookmark's click
+  does (#143: so F2 renames the row); a middle click in the other pane (the split turned on first). Rename (F2, the row's menu; empty goes back to the default title), Move up and down, a drag
   and "Remove saved search" as bookmarks have, through the same rules: `sidebar::remove_at`, `move_by`,
   `move_to` and `drag_target` are generic over the group, and the drag carries its group
   (`side-drag(kind, from, gap)`; each group's first row and count, `sidebar::group`, set as
@@ -1661,7 +1662,7 @@ put off, with where it came from.
   3.2 ms against 2.2 to 2.3 ms in ab23) before reading the medians, and read such a session like for
   like; the gap rule is about a cost, so a candidate's median below the reference's is not a gap.
   The reference binary is the last merged milestone's
-  gate build (`target-p13close`, 13cfe82, main's code at the Phase 13 close, inside the `gate-p13close` worktree; tags from ab76); the previous one is deleted once the new one
+  gate build (`target-p14close`, 61a905a, main's code at the Phase 14 close but #143's one-line focus fix, inside the `gate-p14close` worktree; tags from ab80); the previous one is deleted once the new one
   has served as a reference. When milestones run as parallel sessions, one coordinating session
   serializes the machine: every session reports before a gate build, a soak or a hand-over and waits
   for its reply; one soak at a time (the soaks share `%TEMP%\twinfm-m5` and the fence); nothing
