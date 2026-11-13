@@ -12,6 +12,7 @@ mod fs {
     pub mod dirinfo;
     pub mod enumerate;
     pub mod sizes;
+    pub mod unzip;
     pub mod watch;
     pub mod zipraw;
 }

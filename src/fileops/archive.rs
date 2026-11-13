@@ -102,7 +102,7 @@ pub fn classify(job: &Job) -> Result<Option<Plan>, String> {
         Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => folder(parent),
         Job::Rename { source, .. } => item(source),
         Job::Delete { sources, .. } => sources.iter().any(item),
-        Job::MoveAs { .. } | Job::Restore { .. } | Job::Compress { .. } => false,
+        Job::MoveAs { .. } | Job::Restore { .. } | Job::Compress { .. } | Job::Extract { .. } => false,
     };
     if refused {
         return Err(archive::NESTED_READ_ONLY.into());
@@ -192,6 +192,11 @@ fn classify_inner(job: &Job) -> Result<Option<Plan>, String> {
         Job::MoveAs { .. } | Job::Restore { .. } | Job::Compress { .. } => {
             if job.paths().iter().any(|p| archive::within(p)) { Err("not inside an archive".into()) } else { Ok(None) }
         }
+        // An archive stored in an archive is copied out first, and nothing is extracted into one
+        // (P15-M1; the menu offers neither).
+        Job::Extract { archive: a, dest_dir, .. } => {
+            if archive::within(a) || archive::inside(dest_dir) { Err("not inside an archive".into()) } else { Ok(None) }
+        }
     }
 }
 
@@ -199,8 +204,9 @@ fn names(n: usize) -> String {
     if n == 1 { "1 item".into() } else { format!("{n} items") }
 }
 
-/// The question for files that would replace files in the zip: Replace, Skip them, or Cancel to
-/// stop. One of TwinFM's own questions (`crate::ask`, P12-M3), asked from this worker.
+/// The question for files that would replace files in the zip (or, for an extract, in the folder
+/// it unpacks into, P15-M1): Replace, Skip them, or Cancel to stop. One of TwinFM's own questions
+/// (`crate::ask`, P12-M3), asked from this worker.
 fn ask_conflicts(zip: &Path, clash: &[String]) -> Option<Conflict> {
     let shown: Vec<&str> = clash.iter().take(8).map(String::as_str).collect();
     let more = if clash.len() > shown.len() { format!("\n... and {} more", clash.len() - shown.len()) } else { String::new() };
@@ -478,6 +484,14 @@ fn key_for(zip: &Path, protection: &Protection) -> Result<Option<Key>, String> {
     if let Protection::Unsupported(what) = protection {
         return Err(format!("this zip uses {what}, which TwinFM does not write beside"));
     }
+    Ok(password_for(zip, protection, "to encrypt the files added")?.map(|p| protection.key(&p)))
+}
+
+/// The password of the password-protected `zip`, asked `what_for` (the script's, or the
+/// question's) and checked against an existing entry, asked again while it is wrong. None: the
+/// question was cancelled. A scripted run without a password of the script's is refused, never
+/// shown a dialog.
+fn password_for(zip: &Path, protection: &Protection, what_for: &str) -> Result<Option<String>, String> {
     let method = if matches!(protection, Protection::Aes(_)) { "AES-256" } else { "ZipCrypto" };
     let scripted = std::env::var_os("TWINFM_SCRIPT").is_some();
     let mut wrong = false;
@@ -495,7 +509,7 @@ fn key_for(zip: &Path, protection: &Protection) -> Result<Option<Key>, String> {
                 let prompt = if wrong {
                     format!("That password does not open {name}. Type it again:")
                 } else {
-                    format!("{name} is password-protected. Its password, to encrypt the files added ({method}):")
+                    format!("{name} is password-protected. Its password, {what_for} ({method}):")
                 };
                 match ask_password(&format!("Password for {name}"), &prompt) {
                     Some(p) => (p, false),
@@ -508,7 +522,7 @@ fn key_for(zip: &Path, protection: &Protection) -> Result<Option<Key>, String> {
         };
         if archivewrite::check_password(zip, &password)? {
             eprintln!("[archive] password for {}: right", zip.display());
-            return Ok(Some(protection.key(&password)));
+            return Ok(Some(password));
         }
         eprintln!("[archive] password for {}: wrong", zip.display());
         if scripted || from_script {
@@ -532,6 +546,117 @@ pub(crate) fn ask_password(title: &str, prompt: &str) -> Option<String> {
         cancel: 0,
     });
     (a.button == 1).then_some(a.password)
+}
+
+/// An Extract job on the worker (P15-M1): the whole of the archive `a` into a new folder in
+/// `dest_dir` named after it (`named`; numbered when the name is taken) or its root items into
+/// `dest_dir` itself. A zip is read by TwinFM's own reader (`fs::unzip`): the job's percentage, the
+/// cancel (`cancelled`, asked before each file), TwinFM's password question and, into a folder
+/// that has some of the files, its replace question (replace under `no_confirm`). The other
+/// formats go through the shell as a copy of the root items (Windows' handler is their only
+/// reader), with its progress window and its own questions. Returns the outcome, the results (the
+/// folder made, or the root items that landed: the undo recycles them) and the root items'
+/// destinations that were there before (`undo::forbid_if_replaced`).
+pub fn extract(req: &Request, a: &Path, dest_dir: &Path, named: bool, progress: &Rc<dyn Fn(Progress)>, cancelled: &dyn Fn() -> bool) -> (Outcome, Vec<ItemResult>, Vec<PathBuf>) {
+    let t0 = Instant::now();
+    let fail = |why: String| {
+        eprintln!("[archive] extract {}: {:?} in {} ms", a.display(), Outcome::Error(why.clone()), t0.elapsed().as_millis());
+        (Outcome::Error(why), Vec::new(), Vec::new())
+    };
+    if let Err(why) = classify(&req.job) {
+        eprintln!("[archive] refused on the worker: {why}");
+        return fail(why);
+    }
+    let there = |p: &Path| std::fs::symlink_metadata(p).is_ok();
+    let name = a.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // The root, listed here on the worker (the UI thread reads no archive).
+    let mut unzip = None;
+    let roots = match archive::handler_of(a) {
+        Handler::Zip => crate::fs::unzip::Unzip::open(a).map(|u| {
+            let roots = u.roots();
+            unzip = Some(u);
+            roots
+        }),
+        Handler::Shell => archive::root_names(a),
+    };
+    let roots = match roots {
+        Ok(r) if r.is_empty() => return fail("the archive is empty".into()),
+        Ok(r) => r,
+        Err(e) => return fail(e),
+    };
+    // A zip's password, before anything is made.
+    let mut password = None;
+    if unzip.is_some() {
+        match archivewrite::protection(a) {
+            Err(e) => return fail(e),
+            Ok(Protection::None) => {}
+            Ok(Protection::Unsupported(what)) => return fail(format!("this zip uses {what}, which TwinFM does not read")),
+            Ok(p) => match password_for(a, &p, "to extract it") {
+                Ok(Some(p)) => password = Some(p),
+                Ok(None) => {
+                    eprintln!("[archive] extract {}: Cancelled at the password", a.display());
+                    return (Outcome::Cancelled, Vec::new(), Vec::new());
+                }
+                Err(e) => return fail(e),
+            },
+        }
+    }
+    let dest = if named {
+        let free = archive::extract_folder(dest_dir, &name, there);
+        let made = free.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if made != archive::folder_name(&name) {
+            eprintln!("[archive] extract: folder {} taken: {made}", archive::folder_name(&name));
+        }
+        if let Err(e) = std::fs::create_dir(&free) {
+            return fail(format!("cannot make the folder {}: {e}", free.display()));
+        }
+        free
+    } else {
+        dest_dir.to_path_buf()
+    };
+    let engine = if unzip.is_some() { "TwinFM's reader" } else { "the shell" };
+    eprintln!("[archive] extract {} -> {} ({}): {} root item(s), {engine}", a.display(), dest.display(), if named { "named" } else { "here" }, roots.len());
+    let existed: Vec<PathBuf> = if named { Vec::new() } else { roots.iter().map(|r| dest.join(r)).filter(|p| there(p)).collect() };
+    let (outcome, tail) = match unzip {
+        Some(mut u) => {
+            let clash = if named { Vec::new() } else { u.clashes(&dest) };
+            let conflict = if clash.is_empty() || req.no_confirm { Some(Conflict::Replace) } else { ask_conflicts(&dest, &clash) };
+            match conflict {
+                None => (Outcome::Cancelled, "0 files, 0 bytes".to_string()),
+                Some(c) => {
+                    let mut report = reporter(req.id, progress);
+                    match u.extract(&dest, password.as_deref(), c == Conflict::Skip, &mut report, cancelled) {
+                        Ok((finished, s)) => (if finished { Outcome::Done } else { Outcome::Cancelled }, format!("{} files, {} bytes", s.files, s.bytes)),
+                        Err(e) => (Outcome::Error(e), "stopped at that file".to_string()),
+                    }
+                }
+            }
+        }
+        None => {
+            // A copy of the root items out of the archive, as a copy out of one is, but without
+            // `own_results`' pass over the sink's reports (it is quadratic in the items, and for
+            // these formats the reports come twice or not at all, P8-L3): what landed is read
+            // from the folder below.
+            let sources = roots.iter().map(|r| a.join(r)).collect();
+            let copy = Request { id: req.id, job: Job::Copy { sources, dest_dir: dest.clone() }, hwnd: req.hwnd, no_confirm: req.no_confirm };
+            let mut reports = Vec::new();
+            let outcome = super::outcome_of(super::perform_inner(&copy, progress, &mut reports));
+            (outcome, format!("the sink reported {} item(s)", reports.len()))
+        }
+    };
+    // What landed. An extract that did not finish claims nothing that was there before it.
+    let landed: Vec<&String> = roots.iter().filter(|r| there(&dest.join(r)) && (outcome == Outcome::Done || !existed.contains(&dest.join(r)))).collect();
+    let results = if !named {
+        landed.iter().map(|r| ItemResult { source: a.join(r), dest: Some(dest.join(r)), hr: 0 }).collect()
+    } else if landed.is_empty() {
+        // Nothing came out: the folder made for it goes again.
+        let _ = std::fs::remove_dir(&dest);
+        Vec::new()
+    } else {
+        vec![ItemResult { source: a.to_path_buf(), dest: Some(dest.clone()), hr: 0 }]
+    };
+    eprintln!("[archive] extract {}: {outcome:?} in {} ms, {tail}, {} of {} root item(s) landed", a.display(), t0.elapsed().as_millis(), landed.len(), roots.len());
+    (outcome, results, existed)
 }
 
 /// A Compress job (7z or TAR) on the worker: the archive named after the first item, beside it.
@@ -624,6 +749,13 @@ mod tests {
             Ok(Some(Plan::Delete { zip: a.clone(), inners: vec!["x".into(), r"s\y".into()] }))
         );
         assert_eq!(classify(&Job::Delete { sources: vec![a.clone()], permanent: false }), Ok(None), "the archive file itself");
+        // Extract (P15-M1): an archive on disk into a folder on disk, never one stored in an
+        // archive, never into one.
+        let extract = |archive: PathBuf, dest_dir: PathBuf| Job::Extract { archive, dest_dir, named: true };
+        assert_eq!(classify(&extract(a.clone(), dir.clone())), Ok(None));
+        assert_eq!(classify(&extract(a.join("inner.zip"), dir.clone())).unwrap_err(), "not inside an archive");
+        assert!(classify(&extract(a.clone(), b.clone())).is_err(), "into a zip's root");
+        assert!(classify(&extract(a.clone(), b.join("sub"))).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -711,6 +843,17 @@ mod tests {
                 f.read_to_end(&mut v).unwrap();
                 assert_eq!(v, data, "{name}");
             }
+            // An extract of it (P15-M1) asks for the password too: a wrong one makes no folder,
+            // the right one unpacks it.
+            script_password("nope");
+            let d = run(Job::Extract { archive: pw.clone(), dest_dir: dir.clone(), named: true });
+            assert_eq!(d.outcome, Outcome::Error("the password does not open this zip".into()));
+            assert!(!dir.join("pw").exists(), "nothing is made before the password is right");
+            script_password("x");
+            let d = run(Job::Extract { archive: pw.clone(), dest_dir: dir.clone(), named: true });
+            assert_eq!((d.outcome.clone(), d.results[0].dest.clone()), (Outcome::Done, Some(dir.join("pw"))));
+            assert_eq!(std::fs::read(dir.join("pw").join("f.txt")).unwrap(), b"file");
+            assert_eq!(std::fs::read(dir.join("pw").join("e").join("g.txt")).unwrap(), b"gg");
         }
         // From one zip into another, and within one (P8-L2): entries copied as bytes.
         let z2 = dir.join("t2.zip");
@@ -762,5 +905,170 @@ mod tests {
         assert_eq!(u.job, Job::Delete { sources: vec![dir.join("src").join("f.tar")], permanent: false });
         drop(worker);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Extract jobs through the real worker (P15-M1): a zip by TwinFM's reader into a folder named
+    /// after it (numbered the second time) and into a folder that has one of its items (replaced
+    /// without a question under no-confirm, and then not undone), a 7z and a tar.gz through the
+    /// shell, and the refusals. The undo of each is checked and its items deleted permanently:
+    /// this test leaves the Recycle Bin alone.
+    #[test]
+    fn extracts_on_the_worker() {
+        let dir = std::env::temp_dir().join(format!("twinfm-p15m1-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src").join("tree").join("d")).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let dir = PathBuf::from(dir.to_string_lossy().trim_start_matches(r"\\?\"));
+        let src = dir.join("src");
+        std::fs::write(src.join("top.txt"), b"top").unwrap();
+        std::fs::write(src.join("tree").join("f.txt"), b"file").unwrap();
+        std::fs::write(src.join("tree").join("d").join("g.txt"), b"gg").unwrap();
+        let z = dir.join("a.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&z).unwrap());
+        for (name, data) in [("top.txt", &b"top"[..]), ("tree/f.txt", &b"file"[..]), ("tree/d/g.txt", &b"gg"[..])] {
+            w.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            w.write_all(data).unwrap();
+        }
+        w.finish().unwrap();
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let worker = Worker::spawn(move |d| {
+            let _ = tx.send(d);
+        }, |_| {});
+        let mut id = 0;
+        let mut run = |job: Job| -> Done {
+            id += 1;
+            assert!(worker.submit(Request { id, job, hwnd: 0, no_confirm: true }));
+            rx.recv_timeout(Duration::from_secs(60)).expect("the job finishes within 60 s")
+        };
+        let text = |d: &Done| crate::fileops::status_text(&d.job, &d.outcome, &d.results);
+        let whole = |at: &Path| {
+            assert_eq!(std::fs::read(at.join("top.txt")).unwrap(), b"top", "{}", at.display());
+            assert_eq!(std::fs::read(at.join("tree").join("f.txt")).unwrap(), b"file");
+            assert_eq!(std::fs::read(at.join("tree").join("d").join("g.txt")).unwrap(), b"gg");
+        };
+        let named = |archive: &Path| Job::Extract { archive: archive.to_path_buf(), dest_dir: dir.clone(), named: true };
+
+        // Into a folder named after it; a second time, numbered.
+        let d = run(named(&z));
+        assert_eq!((d.outcome.clone(), text(&d)), (Outcome::Done, "Extracted a.zip to a".to_string()));
+        assert_eq!(d.results, [ItemResult { source: z.clone(), dest: Some(dir.join("a")), hr: 0 }]);
+        whole(&dir.join("a"));
+        assert_eq!(crate::fileops::real_name(&d.job, &d.results), Some("a".into()), "where the cursor goes");
+        let rec = undo::forbid_if_replaced(undo::record_for(&d.job, &d.outcome, &d.results, &text(&d)), &d.existed, &d.results).unwrap();
+        let u = rec.undo.expect("a new folder is undone");
+        assert_eq!((u.job.clone(), u.must_be_empty), (Job::Delete { sources: vec![dir.join("a")], permanent: false }, false), "the folder to the Recycle Bin, full as it is");
+        let d = run(named(&z));
+        assert_eq!(text(&d), "Extracted a.zip to a (2)");
+        whole(&dir.join("a (2)"));
+        let d = run(Job::Delete { sources: vec![dir.join("a"), dir.join("a (2)")], permanent: true });
+        assert_eq!(d.outcome, Outcome::Done);
+
+        // Here: the root items into a folder. One that is there already is replaced (no question
+        // under no-confirm), and the extract is then not undone.
+        let here = dir.join("here");
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::write(here.join("top.txt"), b"mine").unwrap();
+        let d = run(Job::Extract { archive: z.clone(), dest_dir: here.clone(), named: false });
+        assert_eq!((d.outcome.clone(), text(&d)), (Outcome::Done, "Extracted 2 items from a.zip".to_string()));
+        assert_eq!(d.results.iter().map(|r| (r.source.clone(), r.dest.clone().unwrap())).collect::<Vec<_>>(), [(z.join("top.txt"), here.join("top.txt")), (z.join("tree"), here.join("tree"))]);
+        whole(&here);
+        assert_eq!(d.existed, [here.join("top.txt")]);
+        let rec = undo::forbid_if_replaced(undo::record_for(&d.job, &d.outcome, &d.results, &text(&d)), &d.existed, &d.results).unwrap();
+        assert_eq!((rec.undo, rec.cannot), (None, undo::CANNOT_UNDO_REPLACED));
+        // Into an empty folder: undone by recycling the items that landed.
+        let fresh = dir.join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let d = run(Job::Extract { archive: z.clone(), dest_dir: fresh.clone(), named: false });
+        assert!(d.existed.is_empty());
+        let u = undo::forbid_if_replaced(undo::record_for(&d.job, &d.outcome, &d.results, &text(&d)), &d.existed, &d.results).unwrap().undo.unwrap();
+        assert_eq!(u.job, Job::Delete { sources: vec![fresh.join("top.txt"), fresh.join("tree")], permanent: false });
+
+        // The other formats, through the shell: a 7z TwinFM writes, a tar.gz Windows' tar writes.
+        let seven = dir.join("b.7z");
+        crate::fs::archivewrite::compress(&seven, &[src.join("top.txt"), src.join("tree")], crate::fs::archivewrite::Format::SevenZ, &mut |_, _| {}).unwrap();
+        if archive::is_archive_name("b.7z") {
+            let d = run(named(&seven));
+            assert_eq!((d.outcome.clone(), text(&d)), (Outcome::Done, "Extracted b.7z to b".to_string()), "{:?}", d.results);
+            whole(&dir.join("b"));
+            assert_eq!(undo::undo_for(&d.job, &d.results).unwrap().job, Job::Delete { sources: vec![dir.join("b")], permanent: false });
+            let into = dir.join("seven");
+            std::fs::create_dir_all(&into).unwrap();
+            let d = run(Job::Extract { archive: seven.clone(), dest_dir: into.clone(), named: false });
+            assert_eq!((d.outcome.clone(), text(&d)), (Outcome::Done, "Extracted 2 items from b.7z".to_string()));
+            whole(&into);
+            assert!(d.existed.is_empty());
+        } else {
+            eprintln!("ArchiveFolder does not take .7z here: its extract not checked");
+        }
+        let tar = Path::new(r"C:\Windows\System32\tar.exe");
+        if tar.exists() && archive::is_archive_name("c.tar.gz") {
+            let tgz = dir.join("c.tar.gz");
+            let st = std::process::Command::new(tar).arg("-czf").arg(&tgz).arg("-C").arg(&src).args(["top.txt", "tree"]).status().unwrap();
+            assert!(st.success());
+            let d = run(named(&tgz));
+            assert_eq!((d.outcome.clone(), text(&d)), (Outcome::Done, "Extracted c.tar.gz to c".to_string()), "{:?}", d.results);
+            whole(&dir.join("c"));
+        } else {
+            eprintln!("no tar.exe, or ArchiveFolder does not take .gz here: a tar.gz's extract not checked");
+        }
+
+        // Refused: an archive stored in an archive, a destination inside one; a damaged zip makes
+        // no folder; a job cancelled while it waited never runs.
+        let d = run(named(&z.join("inner.zip")));
+        assert_eq!(d.outcome, Outcome::Error("not inside an archive".into()));
+        let d = run(Job::Extract { archive: z.clone(), dest_dir: z.join("tree"), named: true });
+        assert_eq!(d.outcome, Outcome::Error("not inside an archive".into()));
+        let bad = dir.join("bad.zip");
+        std::fs::write(&bad, b"not a zip").unwrap();
+        let d = run(named(&bad));
+        assert!(matches!(&d.outcome, Outcome::Error(e) if e.starts_with("not a readable zip archive")), "{:?}", d.outcome);
+        assert!(!dir.join("bad").exists());
+        worker.cancel_queued(u64::MAX);
+        let d = run(named(&z));
+        assert_eq!(d.outcome, Outcome::Cancelled);
+        assert!(!dir.join("a").exists(), "cancelled before it started");
+        drop(worker);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The P15-M1 probe (not part of the gates: `cargo test --release -- --ignored probe_extract
+    /// --nocapture`): a whole zip (`TWINFM_PROBE_ZIP`, else `C:\traces\bigdir.zip`) unpacked by
+    /// TwinFM's reader through the worker, then by the shell as a copy of its root items on this
+    /// thread, with the time `own_results` takes over what the sink reported.
+    #[test]
+    #[ignore]
+    fn probe_extract_engines() {
+        use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        let zip = std::env::var_os("TWINFM_PROBE_ZIP").map_or_else(|| PathBuf::from(r"C:\traces\bigdir.zip"), PathBuf::from);
+        let dir = std::env::temp_dir().join(format!("twinfm-p15m1-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("own")).unwrap();
+        std::fs::create_dir_all(dir.join("shell")).unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let worker = Worker::spawn(move |d| {
+            let _ = tx.send(d);
+        }, |_| {});
+        let t0 = Instant::now();
+        assert!(worker.submit(Request { id: 1, job: Job::Extract { archive: zip.clone(), dest_dir: dir.join("own"), named: true }, hwnd: 0, no_confirm: true }));
+        let d = rx.recv_timeout(Duration::from_secs(3600)).unwrap();
+        eprintln!("[probe] TwinFM's reader: {:?} in {} ms", d.outcome, t0.elapsed().as_millis());
+        drop(worker);
+        if std::env::var_os("TWINFM_PROBE_NO_SHELL").is_some() {
+            return;
+        }
+        let roots = crate::fs::unzip::Unzip::open(&zip).unwrap().roots();
+        let job = Job::Copy { sources: roots.iter().map(|r| zip.join(r)).collect(), dest_dir: dir.join("shell") };
+        let req = Request { id: 2, job, hwnd: 0, no_confirm: true };
+        // SAFETY: this test thread becomes an STA for the shell's copy engine, as the worker is.
+        unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+        let progress: Rc<dyn Fn(Progress)> = Rc::new(|_| {});
+        let mut reports = Vec::new();
+        let t0 = Instant::now();
+        let res = crate::fileops::perform_inner(&req, &progress, &mut reports);
+        eprintln!("[probe] the shell: {res:?} in {} ms, {} root item(s), the sink reported {} item(s)", t0.elapsed().as_millis(), roots.len(), reports.len());
+        let t0 = Instant::now();
+        let own = crate::fileops::own_results(&req.job, reports);
+        eprintln!("[probe] own_results: {} of {} kept in {} ms", own.len(), roots.len(), t0.elapsed().as_millis());
     }
 }

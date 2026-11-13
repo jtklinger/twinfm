@@ -141,6 +141,31 @@ pub fn is_archive_name(name: &str) -> bool {
     handler_for_name(name).is_some()
 }
 
+/// The folder an archive named `name` is extracted into (P15-M1): the name without its extension
+/// (`a.tar.gz` gives `a`), trailing dots and spaces dropped; the whole name when nothing is left.
+pub fn folder_name(name: &str) -> &str {
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    let stem = match stem.rsplit_once('.') {
+        Some((s, e)) if e.eq_ignore_ascii_case("tar") => s,
+        _ => stem,
+    };
+    let stem = stem.trim_end_matches(['.', ' ']);
+    if stem.is_empty() { name } else { stem }
+}
+
+/// A free path in `dir` for the folder the archive named `name` is extracted into, numbered when
+/// the name is taken: `a`, `a (2)`.
+pub fn extract_folder(dir: &Path, name: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let base = folder_name(name);
+    (1..).map(|k| dir.join(if k == 1 { base.to_string() } else { format!("{base} ({k})") })).find(|p| !exists(p)).expect("an unbounded range finds a free name")
+}
+
+/// The names of the items at an archive's root, files and folders (P15-M1: what an extract through
+/// the shell copies out). Workers only.
+pub fn root_names(archive: &Path) -> Result<Vec<String>, String> {
+    Ok(level_raw(archive, "")?.0.iter().map(|i| i.name.clone()).collect())
+}
+
 fn is_file(p: &Path) -> bool {
     let w: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
     // SAFETY: `w` is a NUL-terminated wide string for the duration of the call.
@@ -833,6 +858,23 @@ mod tests {
         assert_eq!(split(&dir.join("missing.zip").join("b")), None, "nothing there");
         assert_eq!(split(&dir), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn extract_folders_are_named_after_the_archive() {
+        assert_eq!(folder_name("IBMPlexMono.zip"), "IBMPlexMono");
+        assert_eq!(folder_name("a.tar.gz"), "a", "both extensions of a compressed tar");
+        assert_eq!(folder_name("a.TAR.XZ"), "a");
+        assert_eq!(folder_name("report.2024.7z"), "report.2024", "only a tar's second extension");
+        assert_eq!(folder_name("a.tgz"), "a");
+        assert_eq!(folder_name("naïve .zip"), "naïve", "no trailing space or dot in a folder's name");
+        assert_eq!(folder_name("...zip"), "...zip", "nothing left: the whole name");
+        assert_eq!(folder_name("noext"), "noext");
+        let dir = Path::new(r"C:\d");
+        let taken = |names: &'static [&'static str]| move |p: &Path| names.iter().any(|n| p == dir.join(n));
+        assert_eq!(extract_folder(dir, "a.zip", taken(&[])), dir.join("a"));
+        assert_eq!(extract_folder(dir, "a.zip", taken(&["a"])), dir.join("a (2)"), "a file or a folder of that name is in the way");
+        assert_eq!(extract_folder(dir, "a.tar.gz", taken(&["a", "a (2)", "a (3)"])), dir.join("a (4)"));
     }
 
     #[test]
