@@ -7,7 +7,7 @@ without stalling, where Windows' own Files app struggles.
 TwinFM uses the Windows shell for the things Explorer users rely on, so copies, moves, the Recycle
 Bin, the context menu, drag and drop, the clipboard and file icons behave as they do in Explorer.
 
-**Status: 0.4.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
+**Status: 0.5.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
 keep backups as you would with any file manager.
 
 ## Features
@@ -25,9 +25,11 @@ keep backups as you would with any file manager.
   and medium icons, with thumbnails, cloud status marks for OneDrive (syncing and errors too) and
   Google Drive, and a rubber-band selection (in the details view too, from a row's blank part). In a
   narrow pane the columns make way so file names are not cut: Type goes first, then Size, then
-  Modified, each coming back as the pane widens. An optional Size on disk column.
+  Modified, each coming back as the pane widens. An optional Size on disk column. The row or tile
+  under the pointer is highlighted.
 - **Sizes view** (right-click a folder or drive, "Show sizes"): every folder and file biggest first,
-  with share bars and size on disk, opened level by level, for finding what fills a disk.
+  with share bars and size on disk, opened level by level, for finding what fills a disk. It follows
+  changes on disk, so the figures stay right without a refresh.
 - **File operations through the shell** (`IFileOperation`): copy, move, rename, new folder, new
   file, delete to the Recycle Bin or permanently, with Explorer's progress and conflict dialogs,
   and **undo and redo** (Ctrl+Z, Ctrl+Y), including restoring from the Recycle Bin.
@@ -39,20 +41,22 @@ keep backups as you would with any file manager.
   Windows can open (read-only), including archives inside archives.
 - **Filter and search:** the search box filters the listing as you type; Return searches the
   folder tree by name in a new tab. With the box's "Search inside files" button on, Return searches
-  the text of the files instead, and each result shows its matching line.
+  the text of the files instead, and each result shows its matching line. Ctrl+D in a search tab
+  saves the search to the sidebar; opening it there runs it again.
 - **Folder sizes** on demand (Alt+Shift+Enter, or by selecting folders).
 - **Preview pane** (Alt+P): PDF (with zoom, and password-protected files on request), Markdown,
   text and source code (coloured for about 20 languages), pictures (HEIC and AVIF too), HTML, and
   Word, Excel and PowerPoint documents, all rendered by TwinFM itself (no Office or browser
   needed). Right-click a block to copy its text.
-- **Sidebar** with drives, the usual places, recent folders and your bookmarks (drop a folder on
-  Bookmarks to add one, drag bookmarks to reorder them); it collapses to a rail of icons. A
+- **Sidebar** with drives, the usual places, recent folders, your bookmarks (drop a folder on
+  Bookmarks to add one, drag bookmarks to reorder them) and your saved searches; it collapses to a
+  rail of icons. A
   toolbar with Undo, Redo, View, Two panes and a More menu, so every command can be reached with
   the mouse; light and dark themes that follow Windows.
 
 ## Install
 
-Download `twinfm-0.4.0-x86_64-windows.zip` from the
+Download `twinfm-0.5.0-x86_64-windows.zip` from the
 [latest release](https://github.com/jtklinger/twinfm/releases/latest), unzip it anywhere, and run
 `twinfm.exe`. There is no installer; settings are kept in `%APPDATA%\twinfm`.
 
