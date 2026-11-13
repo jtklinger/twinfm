@@ -66,6 +66,12 @@
 # c.txt, each undone (recycled). Reported: archive levels listed by ArchiveFolder, zip jobs done by
 # kind, refusals of writes into the 7z, archives compressed and undone, archive jobs failed (must be
 # 0). Three more Recycle Bin entries per cycle.
+# P15-M1: after the two Compress steps, still in arch, each cycle extracts a.zip into a folder named
+# after it through the Windows 11 menu (`menuopen Extract to`, `menupick a\`: TwinFM's reader) and
+# undoes it, extracts a.zip's root items into arch (`extract 0 here`: a.txt and d) and undoes it, and
+# extracts a.7z into a folder named after it (`extract 0 named`: through the shell) and undoes it.
+# Reported: extracts by TwinFM's reader (two per cycle) and through the shell (one), done (three),
+# not done (must be 0), undone (three). Four more Recycle Bin entries per cycle.
 #
 # P7-M4: the toolbar cycle starts with three hovers over the bar across the window (New file, Copy
 # and Delete, 700 ms each: their tooltips show) and the mouse's Back and Forward over its first
@@ -513,6 +519,10 @@ $cycle = @(
     "nav 0 $arch", 'sleep 500',
     'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick 7z file', $wait, 'undo', $wait,
     'click 0 3', 'rclick 0 3', 'waitmenu 2000', 'menuopen Compress to', 'sleep 200', 'menupick TAR file', $wait, 'undo', $wait,
+    # P15-M1: Extract to (see the header). arch lists a.7z, a.tar.gz, a.zip, c.txt, n.zip, pw.zip.
+    'click 0 2', 'rclick 0 2', 'waitmenu 2000', 'menuopen Extract to', 'sleep 200', 'menupick a\', $wait, 'undo', $wait,
+    'click 0 2', 'extract 0 here', $wait, 'undo', $wait,
+    'click 0 0', 'extract 0 named', $wait, 'undo', $wait,
     # P8-L2: between zips and within one, a password zip among them (see the header). a.zip lists
     # d, then its files; pw.zip its one file.
     "nav 0 $arch\a.zip", "nav 1 $arch\pw.zip", 'sleep 800',
@@ -757,6 +767,13 @@ $fromShell = @($arJobs | Select-String -SimpleMatch '"copy from an archive"' | S
 $arRefused = @($log | Select-String -SimpleMatch 'cannot write into .7z archives' | Select-String -SimpleMatch '[archive] refused').Count
 $arCompressed = @($log | Select-String -SimpleMatch '[archive] compress' | Select-String -SimpleMatch ': Ok(').Count
 $arUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Compressed').Count
+# P15-M1 counts.
+$exLines = @($log | Select-String -SimpleMatch '[archive] extract ')
+$exOwn = @($exLines | Select-String -SimpleMatch "root item(s), TwinFM's reader").Count
+$exShell = @($exLines | Select-String -SimpleMatch 'root item(s), the shell').Count
+$exDone = @($exLines | Select-String -SimpleMatch ': Done in').Count
+$exNotDone = @($exLines | Select-String -Pattern ': (Cancelled|Error\()').Count
+$exUndone = @($log | Select-String -SimpleMatch '[undo] done' | Select-String -SimpleMatch 'Undid: Extracted').Count
 # P8-M1 counts.
 $pvOpened = @($log | Select-String -SimpleMatch '[preview] pane=' | Select-String -SimpleMatch ': pdf, ').Count
 $pvPages = @($log | Select-String -SimpleMatch '[preview] gen=' | Select-String -SimpleMatch ' rendered ').Count
@@ -881,7 +898,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "toolbar tooltips shown $tooltips (three per cycle); Back over the toolbar $toolBack, Forward $toolForward (one each per cycle); sidebar keys $sideKeys (five per cycle), Return $sideReturns (one per cycle)"
 "several-item opens $openMany (one per cycle), tabs they opened $openTabs (two per cycle)"
 "verbs: jobs queued $verbJobs (three per cycle: two of P7-M1's, P7-M2's ZIP), slept $verbSlept, link by verb with S_OK $verbOk; routed deletes $routedDeletes, restored $restores; cuts cancelled by Escape $cutsCancelled"
-"Windows 11 menu: shown $wmShown (seven per cycle, and each rebuild again), rebuilt with the worker's answer $wmRebuilt, picks run $wmPicks (four per cycle), ZIPs made $wmZips, new folders $wmFolders (two per cycle: the menu's and the toolbar's), submenus $wmSubs (two per cycle), classic menus from Show more options $wmMore, menupicks refused $wmRefused (must be 0)"
+"Windows 11 menu: shown $wmShown (eight per cycle with P15-M1's Extract to, and each rebuild again), rebuilt with the worker's answer $wmRebuilt, picks run $wmPicks (five per cycle), ZIPs made $wmZips, new folders $wmFolders (two per cycle: the menu's and the toolbar's), submenus $wmSubs (three per cycle), classic menus from Show more options $wmMore, menupicks refused $wmRefused (must be 0)"
 "spring: armed $springArmed, spring-loaded rows $springRows (navigations into spring\inner: $springInner), tabs $springTabs (must be 0), disarmed $springDisarmed; crumb drops: $dropCrumb; auto-scroll lines: sidebar $sideScrolls, tab strip $stripScrolls"
 "working set: start $($first.working_set_mb) MB at $($first.seconds) s, end $($last.working_set_mb) MB at $($last.seconds) s; private: $($first.private_mb) -> $($last.private_mb) MB"
 "min/max working set: {0} / {1} MB" -f ($samples | Measure-Object working_set_mb -Minimum).Minimum, ($samples | Measure-Object working_set_mb -Maximum).Maximum
@@ -889,6 +906,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "stderr: $stderr"
 "between zips: copies from a zip $fromZip (three per cycle), moves from a zip $fromZipMoves (one per cycle); passwords from the script $pwScript, right $pwRight (one each per cycle)"
 "archives inside archives: copies out $nestedOut, copies from an archive into a zip $fromShell (one each per cycle)"
+"extract: by TwinFM's reader $exOwn (two per cycle), through the shell $exShell (one per cycle), done $exDone (three per cycle), not done $exNotDone (must be 0), undone $exUndone (three per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
 "preview: PDFs opened $pvOpened (three per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (four per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0), zooms $pvZooms (four per cycle), copies $pvCopies (two per cycle), copy failures $pvCopyBad (must be 0), files coloured $pvColoured (two per cycle), chunks refused $pvColourBad (must be 0), passwords right $pvPwRight (one per cycle), wrong or refused $pvPwBad (must be 0), password PDFs opened $pvPwOpened (one per cycle)"
 "column widths: drags read back as Size 90 -> 120 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (two per cycle and one at start), resets through the dialog $colResets (two per cycle)"
