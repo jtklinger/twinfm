@@ -1371,7 +1371,13 @@ put off, with where it came from.
   pair of lists, which read their width as a property already: the four lists without the column gained
   nothing). A fourth grip, `ondisk` (`cols::Col::OnDisk`, pane.slint's `which: 3`), sits on the
   **Modified | Size on disk** boundary while the column shows: a drag narrows Size on disk by what
-  Modified grows, a double-click fits it to its cells on screen and its header; its floor is the Size
+  Modified grows; widened, it takes from Modified down to Modified's floor and then from Name down to
+  a pixel above Name's 120 px floor (121: the name cell is reckoned from the window's layout and the
+  columns shown from the list's reported width, and a fraction of a pixel between them hid the column at
+  the release of a drag to 120 itself; this grip alone, Jeremy 2026-11-13: "Yes, take from Name"; reckoned from the widths at
+  the press, so the same drag taken back gives Name its room first; a later drag right gives it all to
+  Modified, Name having no width of its own); a double-click fits it to its cells on screen and its
+  header by the same rule; its floor is the Size
   column's (`cols::floors`, the same text; a saved width under it opens at 100). The column stays outside
   `cols::ALL` and the `[bool; 3]` of columns shown: it is still the first to make way
   (`cols::ondisk_shown`, at its own width), and `cols::grips` and `grip_x` take whether it shows as a bool.

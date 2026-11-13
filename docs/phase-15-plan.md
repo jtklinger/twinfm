@@ -298,8 +298,10 @@ eight bytes an entry gains (`Entry::ondisk`) are the defaults triplet's question
   grips, the rename editor and the on-disk pair of lists read (`eff-ondisk`). `cols::ondisk_shown` reads its
   own width; the hide order of the three is untouched (tested).
 - **The grip** (done): a fourth `ColGrip` (`which: 3`) on the Modified | Size on disk boundary while the
-  column shows. A drag narrows Size on disk by what Modified grows; a double-click fits it to its cells on
-  screen and its header label; its floor is the Size column's. "Reset column widths" resets it (`[cols]
+  column shows. A drag narrows Size on disk by what Modified grows; widened, it takes from Modified down to
+  Modified's floor and then from Name down to a pixel above Name's 120 px floor (Jeremy's rule, below; `cols::drag`, this grip
+  only); a double-click fits it to its cells on screen and its header label by the same rule; its floor is
+  the Size column's. "Reset column widths" resets it (`[cols]
   pane=N widths reset to 120, 90, 140, 100`).
 - **The sort** (done): a click on the "Size on disk" header (`sort-by(4)`, `SortCol::OnDisk`), by
   `Entry::ondisk`, filled where the text is (the listing's directory read, the watch edit's stat); folders
@@ -408,6 +410,42 @@ finished in 6.65s` (the menus stream was compiling at the same time; no test nee
 `cargo build --release` finished (`twinfm v0.5.0`). The soak and the scripted checks above ran the build
 before the merge; the merge brought no code.
 
+### The grip's rule changed after the PR opened (2026-11-13, Jeremy: "Yes, take from Name")
+
+The soak and the scripted checks above ran the first rule (Modified only). With the new rule, on the same
+day:
+
+- `cargo test --release`: the first run, with the coordinator's P15-M1 gate build compiling at the same
+  time, failed one test, `fs::watch::tests::bursts_are_coalesced` (`349 passed; 1 failed`: a window of the
+  watch held a file's create without its delete, a timing the test does not allow for; not the clipboard
+  or the shell, and not code this branch touches). By itself it passed (`1 passed`), and the whole suite
+  again: `test result: ok. 350 passed; 0 failed; 1 ignored`. After the fix below: `test result: ok. 350
+  passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 6.42s`. `cargo build --release`
+  finished.
+- **What the check found, and the fix.** The first run of `tools/check-p15m2.ps1` with the rule dragged
+  the grip to Name's floor itself, and at the release the column went (`[cols] pane=0 shows name, type,
+  size, modified at 855 px`, `ondisk 88 -> 354 px (drag)`, the name cell then 474 px): the drag's floor is
+  reckoned from the name cell of the window's layout, the columns shown from the list's reported width,
+  and a fraction of a pixel between the two put the room under `NAME_FLOOR`. The grip now stops Name a
+  pixel above its floor (`cols::drag`; a test holds half a pixel of disagreement).
+- The check again, from its output (list 855 px wide, floors `type 40 size 88 modified 133`):
+  - 20 px left from the defaults: `modified 140 -> 133 px (drag)`, `ondisk 100 -> 120 px (drag)`, `(name
+    354 px)` after 367: 7 px from Modified, 13 from Name.
+  - 500 px right: `modified 133 -> 165 px (drag)`, `ondisk 120 -> 88 px (drag)`, the name cell still 354.
+  - 2,000 px left: `modified 165 -> 133 px (drag)`, `ondisk 88 -> 353 px (drag)`, `widths type 120 size 90
+    modified 133 ondisk 353 (name 121 px)`, and no `shows` line: the column stayed. A further 20 px left
+    changed nothing.
+  - The fit from there: `fit ondisk: widest of 6 rows on screen = 57 px`, `modified 133 -> 398 px (fit)`,
+    `ondisk 353 -> 88 px (fit)`, `(name 121 px)`: the room goes to Modified, not back to Name (the call
+    below). The widths were then set back grip by grip (`colwidth` Size on disk, Modified, Size, Type),
+    ending `widths type 120 size 90 modified 140 ondisk 130 (name 337 px)`.
+  - The rest as before: the sorts, the watch edit under the sort, the right pane's grip (`pane=1 ondisk
+    100 -> 120 px (drag)`), the reset to `120, 90, 140, 100`, the saved `col_ondisk_left = 130.0` read
+    back, both fallbacks to name; no `panicked` line.
+- A drag there and back inside one press is the unit test's (`coldrag` moves one way only).
+- No second soak (the coordinator's call); the soak's cycle was changed to set all four widths back after
+  its drag, which the next soak run on main will show.
+
 ### Gate
 
 Two triplets under one tag against `target-p14close`, `tools/gate-p15m2.ps1` (the tag and the head are the
@@ -422,10 +460,11 @@ when it has run.
    column" switch under the Type column's, OK. In a wide pane showing a folder as a details list, the
    header's right end reads "Size on disk" after Modified.
 2. **The grip.** Move the pointer onto the line between the "Modified" and "Size on disk" headers: it
-   becomes the left-right arrow. Drag left: Size on disk widens and Modified narrows by the same amount,
-   until Modified's dates would be cut (that is its floor; from the default widths that is only a few
-   pixels here, see the calls below). Drag right: Size on disk narrows until its own text would be cut.
-   The Name column does not move in either.
+   becomes the left-right arrow. Drag left: Size on disk widens; Modified narrows until its dates would
+   be cut (a few pixels from the default widths), and from there the Name column narrows instead, Type,
+   Size and Modified sliding left as they are, until Name is down to its narrowest (121 px). Without
+   letting go, drag back right: Name widens again first, then Modified. Drag right past the start: Size
+   on disk narrows until its own text would be cut, and Modified takes the room.
 3. **The fit.** Double-click the same line: Size on disk becomes just wide enough for its header and the
    figures on screen.
 4. **The sort.** Click the "Size on disk" header: folders stay on top by name, files go from the least
@@ -442,12 +481,19 @@ when it has run.
 
 ### Calls made in this milestone, for Jeremy to check
 
-- **The grip takes from Modified only, as the plan says, and at the default widths that leaves it 7 px to
-  grow on this machine** (Modified's floor is 133 px, its default 140). To make Size on disk much wider,
-  Modified is widened first with its own grip (which takes from Size, then the Name column through
-  theirs). The other rule would be taking from Name once Modified is at its floor; it was not built,
-  being a different rule from the other three grips'. Jeremy's to change if the console check reads
-  wrong.
+- **The grip takes from Modified, then from Name: Jeremy's decision, 2026-11-13, "Yes, take from Name".**
+  As first built (the plan's rule, the soak above and the first scripted check) the grip took from
+  Modified only, which at the default widths left Size on disk 7 px to grow on this machine (Modified's
+  floor 133 px, its default 140); the question went to Jeremy with the PR. Now a drag that widens Size on
+  disk takes from Modified down to Modified's floor and goes on taking from Name down to the name cell's
+  120 px; the other three grips keep their rule. Every move is reckoned from the widths at the press, so
+  the same drag taken back gives Name its room first, then Modified. A second, separate drag to the
+  right, or a double-click fit that narrows the column, gives all of it to Modified (Name has no width of
+  its own to give back to): the check's fit after a drag to Name's floor left Modified 398 px wide and
+  Name at 121. That is the lead's reading of "from the widths at the press", for Jeremy to check; "Reset
+  column widths" puts all four back.
+- **Name stops a pixel above its floor under this grip** (121 px, not 120), for the reason in the section
+  above.
 - **Files with no figure sort by name** under the column's sort (archive levels and search results, whose
   cells are empty): the click does something sensible rather than nothing.
 - **In a pane too narrow to show the column, a tab sorted by it stays sorted by it** (the plan's rule for
