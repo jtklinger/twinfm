@@ -10,7 +10,9 @@
 //! Since P15-M2 the Size on disk column (the setting `size_on_disk`) has a width and a grip of its
 //! own (`Col::OnDisk`, `Widths::ondisk`). It sits rightmost and makes way first (`ondisk_shown`),
 //! so it stays outside `ALL` and the `[bool; 3]` of columns shown: whether it shows is a bool of
-//! its own, and while it shows every other column the settings allow shows too.
+//! its own, and while it shows every other column the settings allow shows too. Its grip alone
+//! goes on past its neighbour's floor: widened, it takes from Modified down to Modified's floor and
+//! then from Name down to `NAME_FLOOR` (Jeremy, 2026-11-13: "Yes, take from Name").
 
 /// A column with a width of its own; the grip at its left edge is named after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,26 +169,36 @@ pub fn floors(measure: impl Fn(&str) -> f32) -> Widths {
 
 /// Grip `c` moved `dx` px (right is positive) from the widths at the press, `start`, when Name's
 /// cell was `name` px wide: `c` narrows by dx and its left neighbour widens by dx, the boundary
-/// stopping at the floors (and at MAX).
+/// stopping at the floors (and at MAX). Size on disk's grip (P15-M2) goes on leftwards past its
+/// neighbour's floor: the neighbour stays at its floor and Name gives the rest, down to its own.
 pub fn drag(start: Widths, c: Col, dx: f32, shown: [bool; 3], name: f32, floors: Widths) -> Widths {
     let w = start.get(c);
+    // Name may grow freely and shrink to its floor (or not at all when it is below it).
+    let name_lo = NAME_FLOOR.min(name) - name;
     // c >= its floor and c <= MAX.
     let mut hi = w - floors.get(c);
     let mut lo = w - MAX;
+    // How far left the neighbour alone lets the boundary go.
+    let mut left_lo = f32::NEG_INFINITY;
     match left_of(c, shown) {
         Some(l) => {
             let lw = start.get(l);
-            lo = lo.max(floors.get(l) - lw);
+            left_lo = floors.get(l) - lw;
             hi = hi.min(MAX - lw);
+            // A pixel short of Name's floor: the name cell is reckoned from the window's layout and
+            // `ondisk_shown` from the list's reported width, and a fraction of a pixel between them
+            // hid the column at the release of a drag to the floor itself (the P15-M2 check).
+            let name_lo = (NAME_FLOOR + 1.0).min(name) - name;
+            lo = lo.max(if c == Col::OnDisk { left_lo.min(0.0) + name_lo } else { left_lo });
         }
-        // Name may grow freely and shrink to its floor (or not at all when it is below it).
-        None => lo = lo.max(NAME_FLOOR.min(name) - name),
+        None => lo = lo.max(name_lo),
     }
     let dx = if lo > hi || !dx.is_finite() { 0.0 } else { dx.clamp(lo, hi) };
     let mut out = start;
     out.set(c, w - dx);
     if let Some(l) = left_of(c, shown) {
-        out.set(l, start.get(l) + dx);
+        // Past the neighbour's floor (Size on disk's grip only) the rest is Name's.
+        out.set(l, start.get(l) + dx.max(left_lo.min(0.0)));
     }
     out
 }
@@ -392,17 +404,41 @@ mod tests {
     }
 
     #[test]
-    fn the_size_on_disk_grip_moves_against_modified() {
+    fn the_size_on_disk_grip_moves_against_modified_then_name() {
         // P15-M2. Modified | Size on disk right by 30: Modified grows, Size on disk gives it up.
         assert_eq!(left_of(Col::OnDisk, ALL3), Some(Col::Modified));
         assert_eq!(left_of(Col::OnDisk, NO_TYPE), Some(Col::Modified));
         let w = drag(DEFAULT, Col::OnDisk, 30.0, ALL3, 300.0, F40);
         assert_eq!((w.ty, w.size, w.modified, w.ondisk), (120.0, 90.0, 170.0, 70.0));
-        // Too far right: Size on disk stops at its floor; too far left: Modified at its own.
+        // Too far right: Size on disk stops at its floor.
         let w = drag(DEFAULT, Col::OnDisk, 500.0, ALL3, 300.0, F40);
         assert_eq!((w.modified, w.ondisk), (200.0, FLOOR));
+        // Left: from Modified down to its floor (100 px here), then from Name down to a pixel
+        // above its own (179 more of its 300), the other columns untouched.
+        let w = drag(DEFAULT, Col::OnDisk, -60.0, ALL3, 300.0, F40);
+        assert_eq!((w.modified, w.ondisk), (80.0, 160.0), "Modified alone gives the first 100");
+        let w = drag(DEFAULT, Col::OnDisk, -150.0, ALL3, 300.0, F40);
+        assert_eq!((w.ty, w.size, w.modified, w.ondisk), (120.0, 90.0, FLOOR, 250.0), "50 of it from Name");
+        assert_eq!(w.taken(ALL3) + w.ondisk - (DEFAULT.taken(ALL3) + DEFAULT.ondisk), 50.0);
         let w = drag(DEFAULT, Col::OnDisk, -500.0, ALL3, 300.0, F40);
+        assert_eq!((w.modified, w.ondisk), (FLOOR, 100.0 + 100.0 + 179.0), "Name stops at 121");
+        assert!(ondisk_shown(w, true, 300.0 + DEFAULT.taken(ALL3) + DEFAULT.ondisk - 0.5), "and half a pixel of disagreement keeps the column");
+        // Back the other way in the same drag (every move is reckoned from the press): Name gets
+        // its room back first, then Modified.
+        assert_eq!(drag(DEFAULT, Col::OnDisk, -100.0, ALL3, 300.0, F40).modified, FLOOR);
+        assert_eq!(drag(DEFAULT, Col::OnDisk, -40.0, ALL3, 300.0, F40).modified, 100.0);
+        // Modified at its floor already: all of it from Name. Name at or under its floor: only
+        // what Modified has. Both: nothing.
+        let at = Widths { modified: FLOOR, ..DEFAULT };
+        assert_eq!(drag(at, Col::OnDisk, -70.0, ALL3, 300.0, F40), Widths { ondisk: 170.0, ..at });
+        let w = drag(DEFAULT, Col::OnDisk, -500.0, ALL3, 100.0, F40);
         assert_eq!((w.modified, w.ondisk), (FLOOR, 200.0));
+        assert_eq!(drag(at, Col::OnDisk, -70.0, ALL3, 121.0, F40), at);
+        // The fit follows the rule when it needs more than Modified can give.
+        let w = set_width(DEFAULT, Col::OnDisk, 230.0, ALL3, 300.0, F40);
+        assert_eq!((w.modified, w.ondisk), (FLOOR, 230.0));
+        // The other grips keep their rule: Modified's stops where Size is at its floor.
+        assert_eq!(drag(DEFAULT, Col::Modified, -500.0, ALL3, 300.0, F40).modified, 190.0);
         // Its floor is the Size column's (the same text), and a saved width under it comes back at
         // the default.
         let measure = |s: &str| s.lines().map(|l| l.chars().count() as f32 * 5.0).fold(0.0, f32::max);
@@ -410,8 +446,8 @@ mod tests {
         assert_eq!(f.ondisk, f.size);
         assert_eq!(drag(DEFAULT, Col::OnDisk, 500.0, ALL3, 300.0, f).ondisk, f.size);
         assert_eq!(Widths { ondisk: 41.0, ..DEFAULT }.raised(f), DEFAULT);
-        // colwidth and the fit move the same boundary; the three's sum with it stays, so Name's
-        // cell and what the pane shows do not change under the drag.
+        // colwidth and the fit move the same boundary; while Modified can give, the three's sum
+        // with it stays, so Name's cell does not change.
         let w = set_width(DEFAULT, Col::OnDisk, fit_width(108.0), ALL3, 300.0, F40);
         assert_eq!((w.modified, w.ondisk), (120.0, 120.0));
         assert_eq!(w.taken(ALL3) + w.ondisk, DEFAULT.taken(ALL3) + DEFAULT.ondisk);
