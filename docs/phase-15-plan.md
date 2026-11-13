@@ -389,7 +389,21 @@ Compress to, its submenu beside it reads `a\`, `Here`.
 
 ### Soak
 
-SOAK_PENDING
+`tools\soak-p5m3.ps1 -Minutes 10` on the merged branch's release build (505ec9e's code, v0.5.0), 2026-11-13,
+display scale 125%, harness-launched: ran 10.1 min, window closed by the script, exit code 0, 0 panicked
+lines; 234 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0, menupicks refused 0.
+
+```
+extract: by TwinFM's reader 6 (two per cycle), through the shell 3 (one per cycle), done 9 (three per cycle), not done 0 (must be 0), undone 9 (three per cycle)
+Windows 11 menu: shown 60 (eight per cycle with P15-M1's Extract to, and each rebuild again), rebuilt with the worker's answer 0, picks run 51 (five per cycle), ZIPs made 3, new folders 6 (two per cycle: the menu's and the toolbar's), submenus 15 (three per cycle), classic menus from Show more options 3, menupicks refused 0 (must be 0)
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+working set: start 179.7 MB at 5 s, end 256.6 MB at 600 s; private: 199.7 -> 262.9 MB
+```
+
+Every other count read as its "per cycle" figure says (three full cycles). **The right-button drag the lists
+stream's soak saw hang did not show here**: 15 drags started (`DoDragDrop starts`, 6 of them with the right
+button), 15 returned, 15 cancelled, and no `the scripted drag is still running after 20 s` line. The working
+set's rise over ten minutes is the soak's usual one (the phase's 60-minute soak is the memory check).
 
 ### Gate
 
