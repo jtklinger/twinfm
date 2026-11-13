@@ -158,6 +158,9 @@ pub struct Config {
     pub col_type_right: f32,
     pub col_size_right: f32,
     pub col_modified_right: f32,
+    /// Each pane's Size on disk column width (P15-M2), logical px. Missing in an older file: 100.
+    pub col_ondisk_left: f32,
+    pub col_ondisk_right: f32,
     /// Restored only when its title bar would be on a monitor.
     pub window: Option<WindowGeom>,
     /// The folders the panes showed last, newest first, at most `sidebar::RECENT_MAX` (P12-M5): the
@@ -337,6 +340,8 @@ impl Default for Config {
             col_type_right: crate::cols::DEFAULT.ty,
             col_size_right: crate::cols::DEFAULT.size,
             col_modified_right: crate::cols::DEFAULT.modified,
+            col_ondisk_left: crate::cols::DEFAULT.ondisk,
+            col_ondisk_right: crate::cols::DEFAULT.ondisk,
             window: None,
             recent: Vec::new(),
             bookmarks: Vec::new(),
@@ -442,19 +447,19 @@ impl Config {
     /// Pane `pane`'s column widths.
     pub fn cols(&self, pane: usize) -> crate::cols::Widths {
         if pane == 0 {
-            crate::cols::Widths { ty: self.col_type_left, size: self.col_size_left, modified: self.col_modified_left }
+            crate::cols::Widths { ty: self.col_type_left, size: self.col_size_left, modified: self.col_modified_left, ondisk: self.col_ondisk_left }
         } else {
-            crate::cols::Widths { ty: self.col_type_right, size: self.col_size_right, modified: self.col_modified_right }
+            crate::cols::Widths { ty: self.col_type_right, size: self.col_size_right, modified: self.col_modified_right, ondisk: self.col_ondisk_right }
         }
     }
 
     pub fn set_cols(&mut self, pane: usize, w: crate::cols::Widths) {
-        let (t, s, m) = if pane == 0 {
-            (&mut self.col_type_left, &mut self.col_size_left, &mut self.col_modified_left)
+        let (t, s, m, o) = if pane == 0 {
+            (&mut self.col_type_left, &mut self.col_size_left, &mut self.col_modified_left, &mut self.col_ondisk_left)
         } else {
-            (&mut self.col_type_right, &mut self.col_size_right, &mut self.col_modified_right)
+            (&mut self.col_type_right, &mut self.col_size_right, &mut self.col_modified_right, &mut self.col_ondisk_right)
         };
-        (*t, *s, *m) = (w.ty, w.size, w.modified);
+        (*t, *s, *m, *o) = (w.ty, w.size, w.modified, w.ondisk);
     }
 }
 
@@ -510,6 +515,18 @@ pub fn sort_name(c: crate::model::SortCol) -> &'static str {
         SortCol::Size => "size",
         SortCol::Modified => "modified",
         SortCol::Type => "type",
+        SortCol::OnDisk => "ondisk",
+    }
+}
+
+/// The sort a tab may have: a sort by a column its setting has turned off (Type, `show_type`; Size
+/// on disk, `size_on_disk`, P15-M2) is by name instead, as no header click can reach it.
+pub fn sort_allowed(c: crate::model::SortCol, show_type: bool, size_on_disk: bool) -> crate::model::SortCol {
+    use crate::model::SortCol;
+    match c {
+        SortCol::Type if !show_type => SortCol::Name,
+        SortCol::OnDisk if !size_on_disk => SortCol::Name,
+        c => c,
     }
 }
 
@@ -519,6 +536,7 @@ pub fn sort_from_name(s: &str) -> crate::model::SortCol {
         "size" => SortCol::Size,
         "modified" => SortCol::Modified,
         "type" => SortCol::Type,
+        "ondisk" => SortCol::OnDisk,
         _ => SortCol::Name,
     }
 }
@@ -820,12 +838,18 @@ mod tests {
         assert_eq!(Config::parse("split = true
 ").unwrap().cols(1), DEFAULT);
         let mut c = Config::default();
-        c.set_cols(0, Widths { ty: 200.0, size: 110.0, modified: 180.0 });
-        c.set_cols(1, Widths { ty: 64.5, size: 90.0, modified: 300.0 });
+        c.set_cols(0, Widths { ty: 200.0, size: 110.0, modified: 180.0, ondisk: 130.0 });
+        c.set_cols(1, Widths { ty: 64.5, size: 90.0, modified: 300.0, ondisk: 75.5 });
         let text = c.to_toml();
         assert!(text.contains("col_type_left = 200.0") && text.contains("col_modified_right = 300.0"), "{text}");
+        assert!(text.contains("col_ondisk_left = 130.0") && text.contains("col_ondisk_right = 75.5"), "P15-M2: {text}");
         let back = Config::parse(&text).unwrap();
         assert_eq!((back.cols(0), back.cols(1)), (c.cols(0), c.cols(1)));
+        // A file saved before P15-M2 (the three widths, no Size on disk width) loads with 100.
+        let older: String = text.lines().filter(|l| !l.starts_with("col_ondisk_")).map(|l| format!("{l}\n")).collect();
+        let old = Config::parse(&older).unwrap();
+        assert_eq!((old.cols(0).ondisk, old.cols(1).ondisk, old.cols(0).ty), (DEFAULT.ondisk, DEFAULT.ondisk, 200.0));
+        assert_eq!(Config::parse("col_ondisk_left = 1.0\ncol_ondisk_right = 1e9\n").unwrap().cols(0).ondisk, FLOOR);
         let wild = Config::parse("col_type_left = 3.0
 col_size_right = 99999.0
 ").unwrap();
@@ -862,9 +886,16 @@ col_size_right = 99999.0
         assert!(!d.size_on_disk && Config::parse("size_on_disk = true\n").unwrap().size_on_disk, "P13-M3");
         assert_eq!((d.preview_zoom, Config::parse("preview_zoom = 5000\n").unwrap().preview_zoom), (100, 400), "P11-M4");
         use crate::model::SortCol;
-        for c in [SortCol::Name, SortCol::Size, SortCol::Modified, SortCol::Type] {
+        for c in [SortCol::Name, SortCol::Size, SortCol::Modified, SortCol::Type, SortCol::OnDisk] {
             assert_eq!(sort_from_name(sort_name(c)), c);
         }
+        assert_eq!(sort_name(SortCol::OnDisk), "ondisk", "P15-M2");
+        // A sort by a column turned off falls back to the name; any other stays.
+        assert_eq!(sort_allowed(SortCol::OnDisk, true, false), SortCol::Name);
+        assert_eq!(sort_allowed(SortCol::OnDisk, false, true), SortCol::OnDisk);
+        assert_eq!(sort_allowed(SortCol::Type, false, true), SortCol::Name);
+        assert_eq!(sort_allowed(SortCol::Type, true, false), SortCol::Type);
+        assert_eq!(sort_allowed(SortCol::Size, false, false), SortCol::Size);
         assert_eq!(sort_from_name("colour"), SortCol::Name);
         // Malformed text or a wrong type is an error; load turns it into the defaults.
         assert!(Config::parse("split = [").is_err());

@@ -6,6 +6,11 @@
 //!
 //! Since P13-M1 a pane too narrow to give Name `NAME_FLOOR` beside the columns hides them, Type
 //! first, then Size, then Modified (`shown`); a hidden column keeps its width and comes back at it.
+//!
+//! Since P15-M2 the Size on disk column (the setting `size_on_disk`) has a width and a grip of its
+//! own (`Col::OnDisk`, `Widths::ondisk`). It sits rightmost and makes way first (`ondisk_shown`),
+//! so it stays outside `ALL` and the `[bool; 3]` of columns shown: whether it shows is a bool of
+//! its own, and while it shows every other column the settings allow shows too.
 
 /// A column with a width of its own; the grip at its left edge is named after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,6 +18,8 @@ pub enum Col {
     Type,
     Size,
     Modified,
+    /// Size on disk (P15-M2): its grip is the Modified | Size on disk boundary.
+    OnDisk,
 }
 
 impl Col {
@@ -22,6 +29,7 @@ impl Col {
             Col::Type => "type",
             Col::Size => "size",
             Col::Modified => "modified",
+            Col::OnDisk => "ondisk",
         }
     }
 
@@ -30,26 +38,28 @@ impl Col {
             "type" => Some(Col::Type),
             "size" => Some(Col::Size),
             "modified" => Some(Col::Modified),
+            "ondisk" => Some(Col::OnDisk),
             _ => None,
         }
     }
 
-    /// The grips' int in pane.slint (0 type, 1 size, 2 modified).
+    /// The grips' int in pane.slint (0 type, 1 size, 2 modified, 3 size on disk).
     pub fn from_index(i: i32) -> Option<Col> {
-        [Col::Type, Col::Size, Col::Modified].get(usize::try_from(i).ok()?).copied()
+        [Col::Type, Col::Size, Col::Modified, Col::OnDisk].get(usize::try_from(i).ok()?).copied()
     }
 }
 
-/// A pane's three widths, logical px.
+/// A pane's widths, logical px: the three columns of `ALL`, and Size on disk's (P15-M2).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Widths {
     pub ty: f32,
     pub size: f32,
     pub modified: f32,
+    pub ondisk: f32,
 }
 
 /// Today's fixed columns, the widths a settings file without the keys loads.
-pub const DEFAULT: Widths = Widths { ty: 120.0, size: 90.0, modified: 140.0 };
+pub const DEFAULT: Widths = Widths { ty: 120.0, size: 90.0, modified: 140.0, ondisk: 100.0 };
 /// No column narrower than this by a drag; Name's cell no narrower than `NAME_FLOOR` by a drag
 /// (a pane already narrower keeps what it has).
 pub const FLOOR: f32 = 40.0;
@@ -65,6 +75,7 @@ impl Widths {
             Col::Type => self.ty,
             Col::Size => self.size,
             Col::Modified => self.modified,
+            Col::OnDisk => self.ondisk,
         }
     }
 
@@ -73,23 +84,25 @@ impl Widths {
             Col::Type => self.ty = w,
             Col::Size => self.size = w,
             Col::Modified => self.modified = w,
+            Col::OnDisk => self.ondisk = w,
         }
     }
 
     /// Each width pulled into FLOOR..=MAX; a non-finite one takes its default.
     pub fn clamped(self) -> Widths {
         let f = |w: f32, d: f32| if w.is_finite() { w.clamp(FLOOR, MAX) } else { d };
-        Widths { ty: f(self.ty, DEFAULT.ty), size: f(self.size, DEFAULT.size), modified: f(self.modified, DEFAULT.modified) }
+        Widths { ty: f(self.ty, DEFAULT.ty), size: f(self.size, DEFAULT.size), modified: f(self.modified, DEFAULT.modified), ondisk: f(self.ondisk, DEFAULT.ondisk) }
     }
 
     /// A width under its floor back at its default: a file saved before the floors (the left pane
     /// at Size 62 and Modified 61 in the 2026-10-29 console check) opens with its columns readable.
     pub fn raised(self, floors: Widths) -> Widths {
         let f = |w: f32, floor: f32, d: f32| if w < floor { d.max(floor) } else { w };
-        Widths { ty: f(self.ty, floors.ty, DEFAULT.ty), size: f(self.size, floors.size, DEFAULT.size), modified: f(self.modified, floors.modified, DEFAULT.modified) }
+        Widths { ty: f(self.ty, floors.ty, DEFAULT.ty), size: f(self.size, floors.size, DEFAULT.size), modified: f(self.modified, floors.modified, DEFAULT.modified), ondisk: f(self.ondisk, floors.ondisk, DEFAULT.ondisk) }
     }
 
-    /// What the columns shown take from the row (`shown` in `ALL`'s order).
+    /// What the columns shown take from the row (`shown` in `ALL`'s order; Size on disk's width is
+    /// the caller's to add while it shows).
     pub fn taken(&self, shown: [bool; 3]) -> f32 {
         ALL.iter().zip(shown).filter(|(_, s)| *s).map(|(c, _)| self.get(*c)).sum()
     }
@@ -113,16 +126,12 @@ pub fn shown(w: Widths, show_type: bool, room: f32) -> [bool; 3] {
     s
 }
 
-/// The Size on disk column's width (P13-M3, the setting `size_on_disk`): fixed, at the row's right
-/// end after Modified, with no grip and no sort.
-pub const ONDISK_W: f32 = 100.0;
-
-/// Whether a pane with the Size on disk column on shows it (P13-M3): it goes first, before Type, so
-/// only while every other column the setting allows fits beside it with Name at `NAME_FLOOR`. The
-/// others are then `shown(w, show_type, room - ONDISK_W)` when it shows, `shown(w, show_type, room)`
-/// when not.
+/// Whether a pane with the Size on disk column on shows it (P13-M3; at its own width since
+/// P15-M2): it goes first, before Type, so only while every other column the setting allows fits
+/// beside it with Name at `NAME_FLOOR`. The others are then `shown(w, show_type, room - w.ondisk)`
+/// when it shows, `shown(w, show_type, room)` when not.
 pub fn ondisk_shown(w: Widths, show_type: bool, room: f32) -> bool {
-    room - ONDISK_W - w.taken([show_type, true, true]) >= NAME_FLOOR
+    room - w.ondisk - w.taken([show_type, true, true]) >= NAME_FLOOR
 }
 
 /// `shown` as the `[cols]` line names it: "name, size, modified".
@@ -138,20 +147,22 @@ pub fn shown_text(s: [bool; 3]) -> String {
 }
 
 /// The column left of grip `c` among those shown, None for Name (Type hidden, Size's grip is
-/// Name | Size; Size hidden too, Modified's is Name | Modified).
+/// Name | Size; Size hidden too, Modified's is Name | Modified). Size on disk's is the last column
+/// shown, which is Modified whenever it shows.
 pub fn left_of(c: Col, shown: [bool; 3]) -> Option<Col> {
-    let i = ALL.iter().position(|&a| a == c)?;
+    let i = ALL.iter().position(|&a| a == c).unwrap_or(ALL.len());
     ALL[..i].iter().zip(shown).rev().find(|(_, s)| *s).map(|(c, _)| *c)
 }
 
 /// The narrowest each column may be dragged: Type `FLOOR` (its text ends in "…"), Size and
 /// Modified their longest text plus `FIT_PAD`, so a size or a date is never cut (the 2026-10-29
-/// console check). `measure` gives the widest line of its text in the lists' font.
+/// console check); Size on disk the Size column's (the same text). `measure` gives the widest line of its text in the lists' font.
 pub fn floors(measure: impl Fn(&str) -> f32) -> Widths {
     // Every digit in every place, as the font's digits may differ in width.
     let digits = |shape: &str| (0..10).map(|d| shape.replace('d', &d.to_string())).collect::<Vec<_>>().join("\n");
     let size = ["dddd.d KB", "dddd.d MB", "dddd.dd GB", "dddd B"].map(digits).join("\n");
-    Widths { ty: FLOOR, size: (measure(&size) + FIT_PAD).max(FLOOR), modified: (measure(&digits("dddd-dd-dd dd:dd")) + FIT_PAD).max(FLOOR) }
+    let size = (measure(&size) + FIT_PAD).max(FLOOR);
+    Widths { ty: FLOOR, size, modified: (measure(&digits("dddd-dd-dd dd:dd")) + FIT_PAD).max(FLOOR), ondisk: size }
 }
 
 /// Grip `c` moved `dx` px (right is positive) from the widths at the press, `start`, when Name's
@@ -192,18 +203,21 @@ pub fn fit_width(widest: f32) -> f32 {
 }
 
 /// Grip `c`'s centre, in the same coordinates as `right`, the header's right edge (the list's):
-/// the header cells end there, Modified rightmost; a hidden column takes no room.
-pub fn grip_x(right: f32, w: Widths, c: Col, shown: [bool; 3]) -> f32 {
-    let i = ALL.iter().position(|&a| a == c).unwrap_or(0);
+/// the header cells end there, Modified rightmost, or Size on disk after it while that shows
+/// (`ondisk`); a hidden column takes no room.
+pub fn grip_x(right: f32, w: Widths, c: Col, shown: [bool; 3], ondisk: bool) -> f32 {
+    let right = right - if ondisk || c == Col::OnDisk { w.ondisk } else { 0.0 };
+    let Some(i) = ALL.iter().position(|&a| a == c) else { return right };
     let mut from = [false; 3];
     from[i..].copy_from_slice(&shown[i..]);
     from[i] = true;
     right - w.taken(from)
 }
 
-/// The grips a pane's header has: one at the left edge of each column shown.
-pub fn grips(shown: [bool; 3]) -> Vec<Col> {
-    ALL.iter().zip(shown).filter(|(_, s)| *s).map(|(c, _)| *c).collect()
+/// The grips a pane's header has: one at the left edge of each column shown, Size on disk's last
+/// while it shows (`ondisk`).
+pub fn grips(shown: [bool; 3], ondisk: bool) -> Vec<Col> {
+    ALL.iter().zip(shown).filter(|(_, s)| *s).map(|(c, _)| *c).chain(ondisk.then_some(Col::OnDisk)).collect()
 }
 
 #[cfg(test)]
@@ -213,12 +227,13 @@ mod tests {
     const ALL3: [bool; 3] = [true; 3];
     const NO_TYPE: [bool; 3] = [false, true, true];
     /// The one 40 px floor every column had before `floors`.
-    const F40: Widths = Widths { ty: FLOOR, size: FLOOR, modified: FLOOR };
+    const F40: Widths = Widths { ty: FLOOR, size: FLOOR, modified: FLOOR, ondisk: FLOOR };
 
     #[test]
     fn clamp_pulls_widths_into_range() {
-        let w = Widths { ty: 5.0, size: 9000.0, modified: f32::NAN }.clamped();
-        assert_eq!(w, Widths { ty: FLOOR, size: MAX, modified: DEFAULT.modified });
+        let w = Widths { ty: 5.0, size: 9000.0, modified: f32::NAN, ondisk: 3.0 }.clamped();
+        assert_eq!(w, Widths { ty: FLOOR, size: MAX, modified: DEFAULT.modified, ondisk: FLOOR });
+        assert_eq!(Widths { ondisk: f32::INFINITY, ..DEFAULT }.clamped(), DEFAULT);
         assert_eq!(DEFAULT.clamped(), DEFAULT);
         assert_eq!(DEFAULT.taken([true; 3]), 350.0);
         assert_eq!(DEFAULT.taken([false, true, true]), 230.0, "the fixed columns of today, with and without Type");
@@ -247,7 +262,7 @@ mod tests {
         // The boundary moves by what the pointer moved: the grip stays under it.
         let start = DEFAULT;
         let after = drag(start, Col::Size, 25.0, ALL3, 300.0, F40);
-        assert_eq!(grip_x(500.0, after, Col::Size, ALL3) - grip_x(500.0, start, Col::Size, ALL3), 25.0);
+        assert_eq!(grip_x(500.0, after, Col::Size, ALL3, false) - grip_x(500.0, start, Col::Size, ALL3, false), 25.0);
     }
 
     #[test]
@@ -263,18 +278,19 @@ mod tests {
 
     #[test]
     fn grips_and_names() {
-        assert_eq!(grips(ALL3).len(), 3);
-        assert_eq!(grips(NO_TYPE), [Col::Size, Col::Modified]);
-        assert_eq!(grips([false, false, true]), [Col::Modified]);
-        assert_eq!(grip_x(500.0, DEFAULT, Col::Type, ALL3), 150.0);
+        assert_eq!(grips(ALL3, false).len(), 3);
+        assert_eq!(grips(NO_TYPE, false), [Col::Size, Col::Modified]);
+        assert_eq!(grips([false, false, true], false), [Col::Modified]);
+        assert_eq!(grip_x(500.0, DEFAULT, Col::Type, ALL3, false), 150.0);
         // Type hidden: Size's grip where Type's was not, at Size's own left edge.
-        assert_eq!(grip_x(500.0, DEFAULT, Col::Size, NO_TYPE), 270.0);
-        assert_eq!(grip_x(500.0, DEFAULT, Col::Modified, [false, false, true]), 360.0);
-        for c in grips(ALL3) {
+        assert_eq!(grip_x(500.0, DEFAULT, Col::Size, NO_TYPE, false), 270.0);
+        assert_eq!(grip_x(500.0, DEFAULT, Col::Modified, [false, false, true], false), 360.0);
+        for c in grips(ALL3, true) {
             assert_eq!(Col::from_name(c.name()), Some(c));
         }
         assert_eq!(Col::from_index(2), Some(Col::Modified));
-        assert_eq!(Col::from_index(3), None);
+        assert_eq!(Col::from_index(3), Some(Col::OnDisk));
+        assert_eq!(Col::from_index(4), None);
         assert_eq!(Col::from_index(-1), None);
     }
 
@@ -350,20 +366,62 @@ mod tests {
         assert_eq!(drag(DEFAULT, Col::Modified, -500.0, ALL3, 300.0, f).size, f.size);
         assert_eq!(set_width(DEFAULT, Col::Size, 10.0, ALL3, 300.0, f).size, f.size);
         // The console check's saved widths come back at the defaults; wider ones stay.
-        let saved = Widths { ty: 103.0, size: 62.2, modified: 60.8 };
+        let saved = Widths { ty: 103.0, size: 62.2, modified: 60.8, ..DEFAULT };
         assert_eq!(saved.raised(f), Widths { ty: 103.0, ..DEFAULT });
-        assert_eq!(Widths { ty: 50.0, size: 120.0, modified: 200.0 }.raised(f), Widths { ty: 50.0, size: 120.0, modified: 200.0 });
+        assert_eq!(Widths { ty: 50.0, size: 120.0, modified: 200.0, ..DEFAULT }.raised(f), Widths { ty: 50.0, size: 120.0, modified: 200.0, ..DEFAULT });
     }
 
     #[test]
     fn size_on_disk_goes_first_and_comes_back_last() {
         // P13-M3: 100 px after Modified; it shows only while Type, Size and Modified fit beside it.
         let all = DEFAULT.taken(ALL3); // 350
-        assert!(ondisk_shown(DEFAULT, true, NAME_FLOOR + all + ONDISK_W));
-        assert!(!ondisk_shown(DEFAULT, true, NAME_FLOOR + all + ONDISK_W - 1.0), "it goes before Type");
-        assert_eq!(shown(DEFAULT, true, NAME_FLOOR + all + ONDISK_W - 1.0), ALL3, "Type stays while it can");
+        assert_eq!(all, 350.0, "Size on disk is no part of the three");
+        assert!(ondisk_shown(DEFAULT, true, NAME_FLOOR + all + DEFAULT.ondisk));
+        assert!(!ondisk_shown(DEFAULT, true, NAME_FLOOR + all + DEFAULT.ondisk - 1.0), "it goes before Type");
+        assert_eq!(shown(DEFAULT, true, NAME_FLOOR + all + DEFAULT.ondisk - 1.0), ALL3, "Type stays while it can");
         // With the Type column off, Type's width is not asked for.
-        assert!(ondisk_shown(DEFAULT, false, NAME_FLOOR + DEFAULT.taken(NO_TYPE) + ONDISK_W));
+        assert!(ondisk_shown(DEFAULT, false, NAME_FLOOR + DEFAULT.taken(NO_TYPE) + DEFAULT.ondisk));
         assert!(!ondisk_shown(DEFAULT, false, 0.0));
+        // P15-M2: at its own width.
+        let wide = Widths { ondisk: 160.0, ..DEFAULT };
+        assert!(!ondisk_shown(wide, true, NAME_FLOOR + all + 159.0));
+        assert!(ondisk_shown(wide, true, NAME_FLOOR + all + 160.0));
+        // The hide order of the three is as it was, whatever its width.
+        assert_eq!(shown(wide, true, 469.0), NO_TYPE);
+        assert_eq!(shown(wide, true, 470.0), ALL3);
+    }
+
+    #[test]
+    fn the_size_on_disk_grip_moves_against_modified() {
+        // P15-M2. Modified | Size on disk right by 30: Modified grows, Size on disk gives it up.
+        assert_eq!(left_of(Col::OnDisk, ALL3), Some(Col::Modified));
+        assert_eq!(left_of(Col::OnDisk, NO_TYPE), Some(Col::Modified));
+        let w = drag(DEFAULT, Col::OnDisk, 30.0, ALL3, 300.0, F40);
+        assert_eq!((w.ty, w.size, w.modified, w.ondisk), (120.0, 90.0, 170.0, 70.0));
+        // Too far right: Size on disk stops at its floor; too far left: Modified at its own.
+        let w = drag(DEFAULT, Col::OnDisk, 500.0, ALL3, 300.0, F40);
+        assert_eq!((w.modified, w.ondisk), (200.0, FLOOR));
+        let w = drag(DEFAULT, Col::OnDisk, -500.0, ALL3, 300.0, F40);
+        assert_eq!((w.modified, w.ondisk), (FLOOR, 200.0));
+        // Its floor is the Size column's (the same text), and a saved width under it comes back at
+        // the default.
+        let measure = |s: &str| s.lines().map(|l| l.chars().count() as f32 * 5.0).fold(0.0, f32::max);
+        let f = floors(measure);
+        assert_eq!(f.ondisk, f.size);
+        assert_eq!(drag(DEFAULT, Col::OnDisk, 500.0, ALL3, 300.0, f).ondisk, f.size);
+        assert_eq!(Widths { ondisk: 41.0, ..DEFAULT }.raised(f), DEFAULT);
+        // colwidth and the fit move the same boundary; the three's sum with it stays, so Name's
+        // cell and what the pane shows do not change under the drag.
+        let w = set_width(DEFAULT, Col::OnDisk, fit_width(108.0), ALL3, 300.0, F40);
+        assert_eq!((w.modified, w.ondisk), (120.0, 120.0));
+        assert_eq!(w.taken(ALL3) + w.ondisk, DEFAULT.taken(ALL3) + DEFAULT.ondisk);
+        // Its grip sits its width in from the header's right edge, and the others left of it.
+        assert_eq!(grip_x(600.0, DEFAULT, Col::OnDisk, ALL3, true), 500.0);
+        assert_eq!(grip_x(600.0, DEFAULT, Col::Modified, ALL3, true), 360.0);
+        assert_eq!(grip_x(600.0, DEFAULT, Col::Type, ALL3, true), 150.0);
+        assert_eq!(grips(NO_TYPE, true), [Col::Size, Col::Modified, Col::OnDisk]);
+        // A grip of the three is as before beside it: Size's still takes from Type.
+        let w = drag(DEFAULT, Col::Size, 25.0, ALL3, 300.0, F40);
+        assert_eq!((w.ty, w.size, w.ondisk), (145.0, 65.0, 100.0));
     }
 }

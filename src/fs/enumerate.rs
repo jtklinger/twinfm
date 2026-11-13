@@ -134,6 +134,7 @@ fn run(path: PathBuf, pane: usize, generation: u64, thumbnails: bool, cloud: cra
         if let Some(Some(m)) = &disk {
             if e.attrs & FILE_ATTRIBUTE_DIRECTORY == 0 {
                 if let Some(&d) = m.get(e.name.as_str()) {
+                    e.ondisk = d;
                     e.ondisk_text = crate::model::format_size(d).into();
                 }
             }
@@ -1004,6 +1005,8 @@ mod tests {
         let text = |es: &[Entry], n: &str| es.iter().find(|e| e.name == n).unwrap().ondisk_text.to_string();
         assert!(disk >= 100_000, "whole clusters: {disk}");
         assert_eq!(text(&on, "big.bin"), crate::model::format_size(disk));
+        let number = |es: &[Entry], n: &str| es.iter().find(|e| e.name == n).unwrap().ondisk;
+        assert_eq!((number(&on, "big.bin"), number(&on, "sub"), number(&off, "big.bin")), (disk, 0, 0), "P15-M2: the number the sort reads");
         assert_eq!(text(&on, "sub"), "", "a folder has no size on disk in the column");
         assert_eq!((text(&off, "big.bin"), text(&off, "sub")), (String::new(), String::new()), "off: nothing read");
     }
