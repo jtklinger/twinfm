@@ -251,6 +251,7 @@ impl Tab {
         for n in &cancelled {
             eprintln!("[size] cancelled {} (tab in the background)", self.path.join(n).display());
         }
+        self.model.set_sizing(&cancelled.iter().map(String::as_str).collect(), false);
         for n in &stale {
             self.model.set_size(n, None);
             eprintln!("[size] stale {}: tab in the background, size dropped", self.path.join(n).display());
@@ -266,6 +267,7 @@ impl Tab {
         for n in &cancelled {
             eprintln!("[size] cancelled {} ({why})", self.path.join(n).display());
         }
+        self.model.set_sizing(&cancelled.iter().map(String::as_str).collect(), false);
         if cached > 0 || !cancelled.is_empty() {
             eprintln!("[size] cache cleared pane={pane} ({why})");
         }
@@ -863,7 +865,8 @@ fn update_status(st: &State, app: &App, pane: usize) {
         None => {
             // "N of M items" while a name filter is on.
             let of = (!m.filter.borrow().is_empty()).then(|| m.len() + m.filtered_count());
-            statusbar::left_text(&note, m.len(), of, m.hidden_count(), loading, enum_ms, t.timing.error.as_deref())
+            let left = statusbar::left_text(&note, m.len(), of, m.hidden_count(), loading, enum_ms, t.timing.error.as_deref());
+            statusbar::with_sizing(&left, t.sizes.sizing().len())
         }
     };
     let (n, bytes, any_file) = m.selection_summary();
@@ -938,7 +941,7 @@ fn toolbar_clicked(pane: usize, button: &str) {
         }) else {
             return;
         };
-        return open_tool_menu(pane, button, at.0, at.1);
+        return open_tool_menu(pane, button, None, at.0, at.1);
     }
     // The Preview button (P8-M1) is Alt+P's toggle, for the window, not a pane's command.
     if button == "preview" {
@@ -969,7 +972,10 @@ fn toolbar_clicked(pane: usize, button: &str) {
 /// The toolbar's View or More menu (P13-M2) for `pane`, at window point (x, y) (under its button):
 /// TwinFM's own Windows 11 menu, its items `toolbar::view_menu` or `toolbar::more_menu` (the buttons
 /// the pane's bar had no room for first). `[toolbar] menu <name>: <items>`.
-fn open_tool_menu(pane: usize, name: &str, x: f32, y: f32) {
+/// With `tab` (P15-M3: a right click on tab `tab` of the pane, 0-based), that tab's menu
+/// (`toolbar::tab_menu`), whose commands act on that tab, active or not: `[tab] pane=N menu on tab I:
+/// <items>` (I from 1, as the other `[tab]` lines count).
+fn open_tool_menu(pane: usize, name: &str, tab: Option<usize>, x: f32, y: f32) {
     winmenu_close("another menu opens");
     // A toolbar menu runs TwinFM's commands only, so it opens in search results too (P14-M1: More's
     // "Save this search"), where the background's shell menu is refused.
@@ -977,7 +983,13 @@ fn open_tool_menu(pane: usize, name: &str, x: f32, y: f32) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let tools = if pane == 0 { app.get_left_tools() } else { app.get_right_tools() };
-        let (items, own) = if name == "view" {
+        let mut tab_id = None;
+        let (items, own) = if let Some(i) = tab {
+            let tabs = &st.panes[pane];
+            let Some(t) = tabs.iter().nth(i) else { return };
+            tab_id = Some(t.id);
+            (toolbar::tab_menu(i, tabs.len(), t.search.is_some()), 0)
+        } else if name == "view" {
             (toolbar::view_menu(tools.view), 0)
         } else {
             let fit = tool_fit(&app, pane) as usize;
@@ -987,8 +999,12 @@ fn open_tool_menu(pane: usize, name: &str, x: f32, y: f32) {
             (items, own)
         };
         let entries = winmenu::tool_items(&items, own);
+        let what = match tab {
+            Some(i) => format!("[tab] pane={pane} menu on tab {}", i + 1),
+            None => format!("[toolbar] menu {name}"),
+        };
         eprintln!(
-            "[toolbar] menu {name}: {}",
+            "{what}: {}",
             items.iter().map(|i| format!("{}{}{}", i.text, if i.enabled { "" } else { " (off)" }, if i.ticked { " (on)" } else { "" })).collect::<Vec<_>>().join(" | ")
         );
         let wctx = winmenu::Ctx { place: tool_place(st, pane), what: winmenu::What::Background, clipboard_files: st.clip_files, same_type: false, archives: false, other_folder: false };
@@ -1012,6 +1028,7 @@ fn open_tool_menu(pane: usize, name: &str, x: f32, y: f32) {
             sub: None,
             history: None,
             tool: Some((entries, items)),
+            tab: tab_id,
         });
     });
     show_winmenu("the toolbar");
@@ -1030,11 +1047,19 @@ fn tool_fit(app: &App, pane: usize) -> i32 {
 }
 
 /// A View or More menu's item, picked (P13-M2): the command its key or button calls.
-/// `[toolbar] pane=N picks "<item>" -> <command>`.
-fn run_tool(pane: usize, item: &toolbar::MenuItem) {
+/// `[toolbar] pane=N picks "<item>" -> <command>`. A tab menu's item (`tab`: the tab's id) acts on that
+/// tab (`tab_command`).
+fn run_tool(pane: usize, item: &toolbar::MenuItem, tab: Option<u64>) {
     eprintln!("[toolbar] pane={pane} picks \"{}\" -> {}", item.text, item.command);
     let Some(app) = with_state(|st| st.app.upgrade()) else { return };
     match item.command {
+        c if c.starts_with("tab:") => {
+            let i = tab.and_then(|id| with_state(|st| st.panes[pane].iter().position(|t| t.id == id)));
+            match i {
+                Some(i) => tab_command(pane, i, &c[4..]),
+                None => eprintln!("[tab] pane={pane} the menu's tab is gone"),
+            }
+        }
         "view:details" => set_view(pane, settings::View::Details),
         "view:large" => set_view(pane, settings::View::Large),
         "view:medium" => set_view(pane, settings::View::Medium),
@@ -1463,7 +1488,8 @@ fn bookmark_add() {
         let Some(app) = st.app.upgrade() else { return };
         let pane = active_pane(&app);
         if st.is_search(pane) {
-            return save_search(st, &app, pane);
+            let i = st.panes[pane].active_index();
+            return save_search(st, &app, pane, i);
         }
         let folder = st.tab(pane).path.to_string_lossy().to_string();
         let text = if is_this_pc(&folder) {
@@ -1537,11 +1563,11 @@ fn side_drag(kind: i32, from: usize, gap: usize) {
     });
 }
 
-/// Save the search of `pane`'s active tab (P14-M1: Ctrl+D there, More's "Save this search", the
-/// Searches header's): its root, pattern and kind at the end of the Searches group, unless the same
-/// search is saved already.
-fn save_search(st: &mut State, app: &App, pane: usize) {
-    let t = st.tab(pane);
+/// Save the search of `pane`'s tab `i` (P14-M1: Ctrl+D in the active one, More's "Save this search",
+/// the Searches header's; P15-M3: the tab menu's, for any tab): its root, pattern and kind at the end
+/// of the Searches group, unless the same search is saved already.
+fn save_search(st: &mut State, app: &App, pane: usize, i: usize) {
+    let Some(t) = st.panes[pane].iter().nth(i) else { return };
     let Some(s) = &t.search else {
         eprintln!("[sidebar] pane={pane} save search: not a search tab");
         return note(st, app, pane, "Open a search to save it".into());
@@ -1550,12 +1576,14 @@ fn save_search(st: &mut State, app: &App, pane: usize) {
     let text = if let Some(k) = sidebar::saved_at(&st.config.searches, &root, &pattern, content) {
         let title = sidebar::search_title(&st.config.searches[k]);
         eprintln!("[sidebar] \"{title}\" is saved already");
+        flash_search(st, app, k);
         format!("{title} is saved already")
     } else if sidebar::add_search(&mut st.config.searches, &root, &pattern, content) {
         let title = sidebar::search_title(st.config.searches.last().expect("just added"));
         eprintln!("[sidebar] saved search added \"{title}\": {root} \"{pattern}\" {}", if content { "content" } else { "name" });
         rebuild_sidebar(st);
         schedule_save(st);
+        flash_search(st, app, st.config.searches.len() - 1);
         format!("Saved search {title}")
     } else {
         return;
@@ -1563,11 +1591,22 @@ fn save_search(st: &mut State, app: &App, pane: usize) {
     note(st, app, pane, text);
 }
 
+/// Saved search `k`'s sidebar row scrolled into view and shown in the hover colour for 1.5 s (P15-M3:
+/// the save is seen, for a new row and for one saved already; on the rail, its icon's row).
+/// `[sidebar] saved search <k> flashed`.
+fn flash_search(st: &State, app: &App, k: usize) {
+    let row = usize::try_from(app.get_search_first()).unwrap_or(0) + k;
+    let top = sidebar::row_top(&side_rows(st, app).iter().map(|r| r.0).collect::<Vec<_>>(), row);
+    app.invoke_flash_side(row as i32, top);
+    eprintln!("[sidebar] saved search {k} flashed");
+}
+
 /// The driver's `searchsave <pane>` and the menus' "Save this search": `save_search` on that pane.
 pub fn search_save_in(pane: usize) {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
-        save_search(st, &app, pane);
+        let i = st.panes[pane].active_index();
+        save_search(st, &app, pane, i);
     });
 }
 
@@ -1666,6 +1705,8 @@ fn drain() {
                         if !t.sizes.cache.is_empty() {
                             t.model.apply_sizes(|n| t.sizes.cache.get(n).map(|s| s.bytes));
                         }
+                        // And the folders still waiting for theirs (P15-M3).
+                        t.model.set_sizing(&t.sizes.sizing().into_iter().filter(|n| !t.sizes.cache.contains_key(*n)).collect(), true);
                     }
                     t.free = free;
                     let id = t.id;
@@ -2424,6 +2465,11 @@ fn size_all(st: &mut State, app: &App, pane: usize) {
     for (_, n) in rows.iter().rev() {
         queue_size(sizer, pane, t, n, true);
     }
+    // They say they have started (P15-M3): "…" in each one's Size cell, and the status line's count.
+    t.model.set_sizing(&rows.iter().map(|(_, n)| n.as_str()).collect(), true);
+    if !rows.is_empty() {
+        eprintln!("[size] pane={pane} sizing {} folder(s)", t.sizes.sizing().len());
+    }
     st.watch_active(app, pane);
     update_status(st, app, pane);
 }
@@ -2435,6 +2481,8 @@ fn drain_sizes() {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let mut touched = [false; 2];
+        // A folder Alt+Shift+Return asked for landed in the pane's active tab (P15-M3's count).
+        let mut landed = [false; 2];
         while let Ok(r) = st.size_rx.try_recv() {
             let Some(t) = st.find(r.pane, r.tab) else { continue };
             if t.sizes.generation != r.generation {
@@ -2448,6 +2496,7 @@ fn drain_sizes() {
             }
             if p.all {
                 t.sizes.from_all.insert(r.name.clone());
+                landed[r.pane] = true;
             }
             t.sizes.pending.remove(&r.name);
             t.sizes.walk_ms.insert(r.name.clone(), r.ms);
@@ -2455,6 +2504,9 @@ fn drain_sizes() {
             t.model.set_size(&r.name, Some(r.totals.bytes));
         }
         for pane in 0..2 {
+            if landed[pane] && st.tab(pane).sizes.sizing().is_empty() {
+                eprintln!("[size] pane={pane} sizing 0 folder(s)");
+            }
             if touched[pane] {
                 update_status(st, &app, pane);
             }
@@ -4143,6 +4195,8 @@ struct WinMenu {
     history: Option<(Vec<winmenu::Entry>, Vec<isize>)>,
     /// The toolbar's View or More menu (P13-M2): its rows and its items.
     tool: Option<(Vec<winmenu::Entry>, Vec<toolbar::MenuItem>)>,
+    /// A tab's menu (P15-M3): the tab's id, as its index may change while the menu is open.
+    tab: Option<u64>,
 }
 
 /// An open submenu: whose it is, its rows, where it is, its highlight, and whether the keyboard
@@ -4248,6 +4302,7 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
             sub: None,
             history: None,
             tool: None,
+            tab: None,
         });
         Some((seq, waiting))
     });
@@ -4295,6 +4350,7 @@ fn open_history_menu(pane: usize, x: f32, y: f32) {
             sub: None,
             history: Some((winmenu::history_items(&labels), list.iter().map(|(s, _)| *s).collect())),
             tool: None,
+            tab: None,
         });
     });
     show_winmenu("history");
@@ -4658,7 +4714,7 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
         }
         Cmd::Tool(i) => {
             if let Some(item) = m.tool.as_ref().and_then(|(_, items)| items.get(i)) {
-                run_tool(pane, item);
+                run_tool(pane, item, m.tab);
             }
         }
         Cmd::Delete => {
@@ -6287,18 +6343,7 @@ fn close_tab(pane: usize, i: usize) {
             eprintln!("[tab] pane={pane} close tab {}: the last tab stays", i + 1);
             return None;
         };
-        // Late batches and passes for it find no tab with its generation or id, and are dropped.
-        closed.model.generation.set(0);
-        if let Some(s) = &closed.search {
-            s.cancel(fs::enumerate::SEARCH_CLOSED);
-        }
-        if let Some(sv) = &closed.sizeview {
-            if sv.done_ms.is_none() && !sv.cancel.swap(true, Ordering::Relaxed) {
-                eprintln!("[sizeview] pane={pane} gen={} cancelled (tab closed)", sv.generation);
-            }
-        }
-        closed.drop_sizes(pane, "tab closed");
-        st.watch.unwatch(closed.id);
+        tab_closed(st, pane, &mut closed);
         eprintln!("[tab] pane={pane} closed tab {} (id {}), {} left", i + 1, closed.id, st.panes[pane].len());
         schedule_save(st);
         if was_active {
@@ -6315,6 +6360,106 @@ fn close_tab(pane: usize, i: usize) {
     if stale == Some(true) {
         refresh(pane);
     }
+}
+
+/// A tab taken out of its pane: what it had in flight stops.
+fn tab_closed(st: &mut State, pane: usize, closed: &mut Tab) {
+    // Late batches and passes for it find no tab with its generation or id, and are dropped.
+    closed.model.generation.set(0);
+    if let Some(s) = &closed.search {
+        s.cancel(fs::enumerate::SEARCH_CLOSED);
+    }
+    if let Some(sv) = &closed.sizeview {
+        if sv.done_ms.is_none() && !sv.cancel.swap(true, Ordering::Relaxed) {
+            eprintln!("[sizeview] pane={pane} gen={} cancelled (tab closed)", sv.generation);
+        }
+    }
+    closed.drop_sizes(pane, "tab closed");
+    st.watch.unwatch(closed.id);
+}
+
+/// The tab menu's "Close other tabs" and "Close tabs to the right" for tab `i` (P15-M3): one call in
+/// `tabs.rs`, the strip drawn and the tabs saved once. `[tab] pane=N tab I: close others (K closed) |
+/// close to the right (K closed)`.
+fn close_tabs(pane: usize, i: usize, right: bool) {
+    let stale = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let active = st.tab(pane).id;
+        save_view(st, &app, pane);
+        let closed = if right { st.panes[pane].close_right(i) } else { st.panes[pane].close_others(i) };
+        let k = closed.len();
+        for mut c in closed {
+            tab_closed(st, pane, &mut c);
+        }
+        eprintln!("[tab] pane={pane} tab {}: close {} ({k} closed)", i + 1, if right { "to the right" } else { "others" });
+        if k == 0 {
+            return None;
+        }
+        schedule_save(st);
+        if st.tab(pane).id != active {
+            check_gone(st, pane);
+            show_tab(st, &app, pane);
+            Some(st.tab(pane).stale)
+        } else {
+            st.watch_tabs(&app);
+            update_tabs(st, pane);
+            Some(false)
+        }
+    });
+    if stale == Some(true) {
+        refresh(pane);
+    }
+}
+
+/// The tab menu's "Duplicate" for tab `i` (P15-M3): a tab right after it on the same place, shown. A
+/// search tab's duplicate runs the search again, a sizes view's walks again. `[tab] pane=N tab I:
+/// duplicate -> tab J`.
+fn duplicate_tab(pane: usize, i: usize) {
+    let Some((path, search, sizes, n, active)) = with_state(|st| {
+        let tabs = &st.panes[pane];
+        let t = tabs.iter().nth(i)?;
+        Some((t.path.clone(), t.search.as_ref().map(|s| (s.pattern.pattern.clone(), s.content)), t.sizeview.is_some(), tabs.len(), tabs.active_index()))
+    }) else {
+        return;
+    };
+    // Each opens its tab right after the active one and shows it.
+    match search {
+        Some((pattern, content)) => start_search(pane, &pattern, content, SearchAt::Saved(path)),
+        None if sizes => open_sizeview(pane, path),
+        None => open_tab(pane, Some(path)),
+    }
+    with_state(|st| {
+        if st.panes[pane].len() != n + 1 {
+            return eprintln!("[tab] pane={pane} tab {}: duplicate refused", i + 1);
+        }
+        // From after the tab that was active to after the tab duplicated.
+        if st.panes[pane].move_tab(active + 1, i + 1) {
+            update_tabs(st, pane);
+            schedule_save(st);
+        }
+        eprintln!("[tab] pane={pane} tab {}: duplicate -> tab {}", i + 1, i + 2);
+    });
+}
+
+/// A tab menu's command for tab `i` of `pane` (`toolbar::tab_menu`'s, without their `tab:`).
+fn tab_command(pane: usize, i: usize, what: &str) {
+    match what {
+        "close" => close_tab(pane, i),
+        "closeothers" => close_tabs(pane, i, false),
+        "closeright" => close_tabs(pane, i, true),
+        "duplicate" => duplicate_tab(pane, i),
+        "savesearch" => with_state(|st| {
+            if let Some(app) = st.app.upgrade() {
+                save_search(st, &app, pane, i);
+            }
+        }),
+        _ => {}
+    }
+}
+
+/// The driver's `tabmenu <pane> <index>`: the menu a right click on that tab opens, at (x, y).
+pub fn script_tab_menu(pane: usize, index: usize, x: f32, y: f32) {
+    open_tool_menu(pane, "tab", Some(index), x, y);
 }
 
 /// A tab dragged in its strip, or Ctrl+Shift+PageUp/PageDown: move tab `from` to `to`. The active
@@ -8576,7 +8721,12 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_col_drag(|pane, col, dx, phase| col_drag(pane as usize, col, dx, phase));
     app.on_col_fit(|pane, col| col_fit(pane as usize, col));
     app.on_nav_button(|pane, name| nav_button(pane as usize, name.as_str()));
-    app.on_toolbar_menu(|pane, name, x, y| open_tool_menu(pane as usize, name.as_str(), x, y));
+    app.on_toolbar_menu(|pane, name, x, y| open_tool_menu(pane as usize, name.as_str(), None, x, y));
+    app.on_tab_menu(|pane, i, x, y| {
+        if let Ok(i) = usize::try_from(i) {
+            open_tool_menu(pane as usize, "tab", Some(i), x, y);
+        }
+    });
     app.on_toolbar_width({
         let w = app.as_weak();
         move |which, px| {

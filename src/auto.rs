@@ -161,6 +161,10 @@
 //!   tab <new|close|next|prev|N>      Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+N (1..9) through the
 //!                                    Slint key path, on the active pane
 //!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
+//!   tabmenu <pane> <index>           the menu a right click on tab <index> (0-based) opens (P15-M3:
+//!                                    Close, Close other tabs, Close tabs to the right, Duplicate, and
+//!                                    Save this search on a search tab), its items picked with
+//!                                    `toolmenu <text>`; they act on that tab, active or not
 //!   tabdrag <pane> <index> <dx>      press the left button on tab <index> (0-based), move <dx> px
 //!                                    in 8 px steps, release: a tab drag through Slint's pointer path
 //!   colwidth <pane> <type|size|modified|ondisk> <px>
@@ -425,6 +429,7 @@ enum Step {
     CrumbPick(String),
     CrumbClose,
     /// Press the left button on tab `index`'s centre, move `dx` px in 8 px steps, release.
+    TabMenu { pane: usize, index: usize },
     TabDrag { pane: usize, index: usize, dx: f32 },
     /// `colwidth`, `coldrag` and `colfit` (P9-M1): `what` is the width, the drag's dx, or None for
     /// the fit's double-click.
@@ -660,6 +665,7 @@ fn parse(script: &str) -> Vec<Step> {
                     what: (a[0] != "colfit").then(|| a.get(3).and_then(|v| v.parse().ok()).unwrap_or(0.0)),
                     drag: a[0] == "coldrag",
                 },
+                "tabmenu" => Step::TabMenu { pane: num(1) as usize, index: num(2) as usize },
                 "tabdrag" => Step::TabDrag { pane: num(1) as usize, index: num(2) as usize, dx: num(3) as f32 },
                 "band" => Step::Band {
                     pane: num(1) as usize,
@@ -1524,6 +1530,14 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             }
             win.dispatch_event_with_result(WindowEvent::PointerReleased { position: at(x1), button: PointerEventButton::Left }).ok();
             eprintln!("[auto] splitter {:.2} -> {:.2}", l.ratio, app.get_split_ratio());
+            schedule(runner, 1);
+        }
+        Step::TabMenu { pane, index } => {
+            // Under the tab, as a right click on it puts the menu (the strip's place as `tabdrag`'s).
+            let l = crate::window_layout(&app);
+            let (left, _) = crate::dnd::pane_x(&l, pane);
+            let x = left + 3.0 + app.invoke_tab_offset(pane as i32) + index as f32 * app.invoke_tab_width(pane as i32);
+            crate::script_tab_menu(pane, index, x, l.top + l.bar + 32.0);
             schedule(runner, 1);
         }
         Step::TabDrag { pane, index, dx } => {

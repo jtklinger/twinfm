@@ -309,6 +309,14 @@ impl TabSizes {
         Plan { queue, cancel, capped }
     }
 
+    /// The folders Alt+Shift+Return asked for that are waiting or walking, sorted: the status line's
+    /// "Sizing N folders…" and the "…" Size cells (P15-M3).
+    pub fn sizing(&self) -> Vec<&str> {
+        let mut v: Vec<&str> = self.pending.iter().filter(|(_, p)| p.all).map(|(n, _)| n.as_str()).collect();
+        v.sort_unstable();
+        v
+    }
+
     pub fn summary(&self, selected: &[String]) -> DirTotals {
         let mut d = DirTotals { folders: selected.len(), ..Default::default() };
         for n in selected {
@@ -563,6 +571,7 @@ mod tests {
         s.pending.insert("zz".into(), Pending { cancel: Arc::default(), partial: Totals::default(), all: true });
         let d = s.summary(&names);
         assert_eq!(d, DirTotals { folders: 150, bytes: 22, pending: 1, not_sized: 147, updating: 0 });
+        assert_eq!(s.sizing(), ["zz"], "only Alt+Shift+Return's count in the status line");
         // d000 changed: its old size still counts, as updating.
         s.stale.insert("d000".into(), Instant::now());
         assert_eq!(s.summary(&names[..2]), DirTotals { folders: 2, bytes: 15, pending: 0, not_sized: 0, updating: 1 });

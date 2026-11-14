@@ -66,6 +66,12 @@
 # c.txt, each undone (recycled). Reported: archive levels listed by ArchiveFolder, zip jobs done by
 # kind, refusals of writes into the 7z, archives compressed and undone, archive jobs failed (must be
 # 0). Three more Recycle Bin entries per cycle.
+# P15-M3: after the "+" tab, each cycle opens two tabs in the right pane with its "+" (three there),
+# picks the tab menu's Close other tabs on the middle one (`tabmenu 1 1`, `toolmenu Close other tabs`:
+# two closed), Duplicate on the one left and Close on the duplicate, and clicks the left list again.
+# Reported: tab menus (three per cycle), tabs closed by Close other tabs (two per cycle), duplicates
+# and menu closes (one each). More's "Size all folders" in src (P13-M2's step) is counted by its
+# `[size] pane=0 sizing` lines: started and back at none (one each per cycle).
 # P15-M1: after the two Compress steps, still in arch, each cycle extracts a.zip into a folder named
 # after it through the Windows 11 menu (`menuopen Extract to`, `menupick a\`: TwinFM's reader) and
 # undoes it, extracts a.zip's root items into arch (`extract 0 here`: a.txt and d) and undoes it, and
@@ -605,6 +611,11 @@ $cycle = @(
     # P12-M5: a bookmark by a drop, dragged, removed; a tab by the "+" (see the header).
     "dropfiles sidegap 0 auto $src", 'sleep 400', 'bookmark drag 0 1', 'sleep 300', 'bookmark remove 1', 'sleep 300',
     'tab plus 0', 'sleep 400', 'tab close', 'sleep 300',
+    # P15-M3: the tab menu in the right pane (see the header).
+    'tab plus 1', 'sleep 400', 'tab plus 1', 'sleep 400',
+    'tabmenu 1 1', 'waitmenu 2000', 'toolmenu Close other tabs', 'sleep 600',
+    'tabmenu 1 0', 'waitmenu 2000', 'toolmenu Duplicate', 'sleep 800',
+    'tabmenu 1 1', 'waitmenu 2000', 'toolmenu Close', 'sleep 500', 'click 0 0', 'sleep 200',
     # P13-M3: the Size on disk column on, shown, a watch edit, dropped, off (see the header).
     "nav 0 $src\tree", 'sleep 400', 'settings open', 'settings set size_on_disk true', 'settings ok', 'sleep 800',
     'splitter 0.85', 'sleep 500', 'touch 0 od.txt', 'waitwatch 3000', 'rmfile 0 od.txt', 'waitwatch 3000',
@@ -857,6 +868,13 @@ $bmDropped = @($log | Select-String -SimpleMatch "[sidebar] bookmark added $src 
 $bmDragged = @($log | Select-String -SimpleMatch '[sidebar] bookmark moved 0 -> 1 (drag)').Count
 $bmRemoved = @($log | Select-String -SimpleMatch '[sidebar] removed bookmark 1: ').Count
 $plusTabs = @($log | Select-String -SimpleMatch '[tab] pane=0 + button: new tab').Count
+# P15-M3 counts.
+$tmMenus = @($log | Select-String -SimpleMatch '[tab] pane=1 menu on tab ').Count
+$tmOthers = @($log | Select-String -SimpleMatch '[tab] pane=1 tab 2: close others (2 closed)').Count
+$tmDup = @($log | Select-String -SimpleMatch '[tab] pane=1 tab 1: duplicate -> tab 2').Count
+$tmClose = @($log | Select-String -SimpleMatch '[toolbar] pane=1 picks "Close" -> tab:close').Count
+$szNone = @($log | Select-String -SimpleMatch '[size] pane=0 sizing 0 folder(s)').Count
+$szStart = @($log | Select-String -SimpleMatch '[size] pane=0 sizing ').Count - $szNone
 $tabRight = @($log | Select-String -SimpleMatch '[focus] pane=1 has the keys by Tab').Count
 $tabLeft = @($log | Select-String -SimpleMatch '[focus] pane=0 has the keys by Tab').Count
 # P13-M3: the sizes view.
@@ -946,6 +964,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "comfortable rows: on $rowsOn, off $rowsOff, 30 px geometry lines $rows30, 44 px (thumbnails) $rows44 (one each per cycle)"
 "bookmarks by mouse: added by a drop $bmDropped, dragged $bmDragged, removed $bmRemoved; tabs by the + $plusTabs (one each per cycle)"
 "Tab between the panes: to the right $tabRight, back $tabLeft (one each per cycle)"
+"tab menu: opened $tmMenus (three per cycle), Close other tabs closing two $tmOthers, duplicates $tmDup, closes $tmClose (one each per cycle); Size all folders: sizing started $szStart, back at none $szNone (one each per cycle)"
 "sizes view: walks done $svDone, levels opened in place $svOpened (two per cycle), sz.txt taken off three totals $svRemoved (one per cycle)"
 "sizes view following: watching $svWatching (two per cycle), windows $svWindows (three or more per cycle), the last window against F5's walk: matches $svMatch (one per cycle), mismatches $svMismatch (must be 0); re-walks $svRewalks, stopped $svStopped (0 expected)"
 "Size on disk column: on $odOn, off $odOff, left pane shown with it $odShown (one each per cycle), listings read with it $odRead (one per cycle: the right pane is in a.zip then, and an archive level is not read)"

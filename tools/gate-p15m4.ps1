@@ -18,7 +18,7 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = 'SET-BY-THE-COORDINATOR'
+$Head = '8502f1f'
 $Tag = 'ab83'
 $Ref = 'p15m2'
 $Cand = 'p15m4'

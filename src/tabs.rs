@@ -219,6 +219,30 @@ impl<T> Tabs<T> {
         Some(t)
     }
 
+    /// Close every tab but `keep`, which becomes the active one (the tab menu's "Close other tabs",
+    /// P15-M3). The closed tabs, left to right; none when there is no such tab.
+    pub fn close_others(&mut self, keep: usize) -> Vec<T> {
+        if keep >= self.items.len() {
+            return Vec::new();
+        }
+        let mut closed = self.items.split_off(keep + 1);
+        let kept = self.items.pop().expect("keep is in range");
+        closed.splice(0..0, std::mem::replace(&mut self.items, vec![kept]));
+        self.active = 0;
+        closed
+    }
+
+    /// Close the tabs after tab `i` ("Close tabs to the right"). The active tab stays active unless
+    /// it was one of them: then tab `i` is. The closed tabs, left to right.
+    pub fn close_right(&mut self, i: usize) -> Vec<T> {
+        if i >= self.items.len() {
+            return Vec::new();
+        }
+        let closed = self.items.split_off(i + 1);
+        self.active = self.active.min(i);
+        closed
+    }
+
     /// Activate tab `i`; false when there is no such tab.
     pub fn select(&mut self, i: usize) -> bool {
         if i < self.items.len() {
@@ -266,6 +290,32 @@ impl<T> Tabs<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_others_and_to_the_right() {
+        let tabs = |active: usize| Tabs::restored('a', vec!['b', 'c', 'd'], active);
+        // Others: the kept tab is the only one and active, wherever the active one was.
+        for active in 0..4 {
+            let mut t = tabs(active);
+            assert_eq!(t.close_others(1), ['a', 'c', 'd']);
+            assert_eq!((t.iter().copied().collect::<String>(), t.active_index()), ("b".to_string(), 0));
+        }
+        let mut t = tabs(0);
+        assert_eq!(t.close_others(0), ['b', 'c', 'd']);
+        assert_eq!(t.close_others(0), [] as [char; 0], "an only tab has no others");
+        assert_eq!(tabs(0).close_others(4), [] as [char; 0], "no such tab");
+        // To the right: an active tab left of the cut, or the kept one, stays; one that went gives
+        // way to the kept tab.
+        for (active, after) in [(0, 0), (1, 1), (2, 1), (3, 1)] {
+            let mut t = tabs(active);
+            assert_eq!(t.close_right(1), ['c', 'd']);
+            assert_eq!((t.iter().copied().collect::<String>(), t.active_index()), ("ab".to_string(), after), "active {active}");
+        }
+        let mut t = tabs(2);
+        assert_eq!(t.close_right(3), [] as [char; 0], "the last tab has none to its right");
+        assert_eq!((t.len(), t.active_index()), (4, 2));
+        assert_eq!(tabs(0).close_right(4), [] as [char; 0], "no such tab");
+    }
 
     fn p(s: &str) -> Place {
         Place::folder(s)

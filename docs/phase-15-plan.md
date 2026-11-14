@@ -407,7 +407,19 @@ set's rise over ten minutes is the soak's usual one (the phase's 60-minute soak 
 
 ### Gate
 
-Pending. Wrapper `tools/gate-p15m1.ps1`: tag ab80, `target-p15m1` against `target-p14close`, the defaults
+**Passed.** Tag ab80, 2026-11-14 08:09, 505ec9e (`target-p15m1`) against `target-p14close`, the defaults,
+three runs each, interleaved (the figures are the coordinating session's, from the gate's summary):
+
+| Binary | WPR main-thread busy, three runs | Median |
+|---|---|---|
+| `p14close` (reference) | 21.1, 17.9, 18.0 | 18.0 |
+| `p15m1` (candidate) | 17.9, 18.3, 18.5 | 18.3 |
+
+RenderP50 2.04 to 2.22 ms across the six runs (one session state), every run's checks ok. No gap that
+counts: the medians differ by 0.3 points, and the first reference run's 21.1 is the outlier. Jeremy:
+"Merge both"; merged as 81a6101. The console checks below had not been run by Jeremy at the merge.
+
+Wrapper `tools/gate-p15m1.ps1`: tag ab80, `target-p15m1` against `target-p14close`, the defaults
 only (the scenario opens no menu and runs no file job, and the wrapper checks that the candidate's runs log
 no `[archive] extract` line). The gate build and the run are the coordinating session's and Jeremy's.
 
@@ -705,6 +717,174 @@ and this).
 - **The soak's drag count accepts any width over 100** rather than one figure, since the figure depends
   on the machine's measured floors.
 
+## P15-M3: the small items
+
+Branch `feat/p15-m3-small-items`, the menus stream, cut from main at 81a6101 (P15-M1 merged).
+
+### Settled first
+
+Nothing needed measuring. Two things were checked in the code before writing:
+
+- **Where the tab menu's commands find their tab.** The right click does not switch tabs, so the menu
+  keeps the tab's id, not its index (a tab can move or close while the menu is open), and looks the
+  index up at the pick.
+- **The flash cannot ask Slint for the row's place.** Saving a search runs with the app's state
+  borrowed, and the sidebar's `side-row-top` callback borrows it again (a panic). The row's top is
+  reckoned in Rust and handed to `flash-side`.
+
+### What landed
+
+- **A menu on tabs.** A right click on a tab opens TwinFM's menu under it: Close (Ctrl+W), Close other
+  tabs, Close tabs to the right, Duplicate, and on a search tab Save this search (Ctrl+D). Items with
+  nothing to do are greyed (Close on a pane's only tab, Close tabs to the right on the last). The click
+  does not switch tabs; each command acts on the tab clicked. Duplicate opens the copy right after that
+  tab and shows it; a search tab's copy runs the search again, a sizes view's walks again. Closing
+  several is one call in `tabs.rs`, the strip drawn and the tabs saved once. A right click on the strip's
+  empty part does nothing, as before.
+- **Folder sizes say they have started.** After Alt+Shift+Enter (or More's "Size all folders") the
+  pane's status line ends "Sizing N folders…", N counting down as each lands, gone at none; each waiting
+  folder's Size cell reads "…" until its size lands. Sizing a selection keeps its own badge and shows
+  neither.
+- **A saved search is seen to be saved.** Every way of saving one scrolls the sidebar to the search's
+  row and shows it in the hover colour for 1.5 s, for a new row and for "saved already" alike. The
+  status line's note stays. No toast.
+- **A skipped extract says so** (the coordinator's addition, 2026-11-14): Here, with every file there
+  already and Skip answered, reads "Nothing extracted from <zip>: every file was skipped" where it read
+  "Extracted N items from <zip>".
+- Driver: `tabmenu <pane> <index>`, then `toolmenu <text>`. Lines in `CLAUDE.md` § Measuring.
+
+### Tests
+
+`cargo test --release`: `test result: ok. 356 passed; 0 failed; 2 ignored` (353 before), and with main's
+P15-M2 merged in `test result: ok. 358 passed; 0 failed; 2 ignored`. New: the tab
+menu's items for a first, a middle, a last, an only and a search tab (`toolbar`), closing others and to
+the right with the active tab's index after (`tabs`), the status line's text with folders queued
+(`statusbar`); and asserts added to existing tests for the "…" cell (set, kept across a replace, emptied
+on a cancel, never over a landed size), the count taking only Alt+Shift+Enter's requests, and the skipped
+extract's text. The first run had one failure, in the new skipped-extract assert itself (the test's path
+was mistyped); fixed and the whole suite run again. No test was run twice for flakiness. The five
+commits before the docs were split from one tested tree and not tested one by one.
+
+### Scripted checks
+
+`tools/check-p15m3.ps1`, one scripted run in `%TEMP%\twinfm-p15m3-check\`, exit 0, no panic. From its
+stderr:
+
+```
+[tab] pane=0 menu on tab 2: Close | Close other tabs | Close tabs to the right | Duplicate
+[toolbar] pane=0 picks "Close other tabs" -> tab:closeothers
+[tab] pane=0 tab 2: close others (2 closed)
+[tab] pane=0 menu on tab 1: Close (off) | Close other tabs (off) | Close tabs to the right (off) | Duplicate
+[tab] pane=0 opened tab 2 of 2 (id 5) on ...\work
+[tab] pane=0 tab 1: duplicate -> tab 2
+[tab] pane=0 tab 1: close to the right (1 closed)
+[auto] ClickAt { x: 320.0, y: 60.0, right: true }
+[tab] pane=0 menu on tab 1: Close (off) | Close other tabs (off) | Close tabs to the right (off) | Duplicate
+[tab] pane=0 menu on tab 2: Close | Close other tabs | Close tabs to the right (off) | Duplicate | Save this search
+[toolbar] pane=0 picks "Save this search" -> tab:savesearch
+[sidebar] saved search added ""notes" in work": ...\work "notes" name
+[sidebar] saved search 0 flashed
+[sidebar] ""notes" in work" is saved already
+[sidebar] saved search 0 flashed
+[tab] pane=0 opened tab 2 of 3 (id 7) on ...\work for a search
+[search] pane=0 gen=7 start "notes" in ...\work
+[tab] pane=0 tab 2: duplicate -> tab 3
+[size] pane=0 Alt+Shift+Return: 3 of 3 folder(s) to size
+[size] pane=0 sizing 3 folder(s)
+[size] pane=0 sizing 0 folder(s)
+[size] pane=0 Alt+Shift+Return: 42 of 42 folder(s) to size
+[size] pane=0 sizing 42 folder(s)
+[ask] replace answered Skip after 153 ms
+[archive] extract ...\work\a.zip: Done in 158 ms, 0 files, 0 bytes, 1 of 1 root item(s) landed
+[fileops] done id=2 pane=0 tab=3 Done: Nothing extracted from a.zip: every file was skipped
+```
+
+The menu on tab 2 was opened while tab 3 was active, and the search tab's menu while tab 1 was: the
+commands acted on the tab clicked. The `clickat` line is a right click through the real pointer path.
+Three pictures (the software renderer) were looked at: `tabmenu.png` (the menu under the middle tab, the
+third tab still the active one), `flash.png` (the Searches row `"notes" in work` in the hover colour,
+the status line "Saved search "notes" in work | 1 of 5 items"), `sizing.png` (`C:\Program Files`: the
+status line "42 items (4 hidden) | Sizing 31 folders…", ten folders with their sizes and the rest reading
+"…").
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` on the merged branch's release build (c2c541e: main with P15-M2 merged
+in), 2026-11-14, display scale 100%, harness-launched, while the coordinating session rebuilt
+`target\release` on main and the lists stream compiled: ran 10.1 min, window closed by the script, exit
+code 0, 0 panicked lines; 225 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0,
+menupicks refused 0, every "must be 0" count 0.
+
+```
+tab menu: opened 9 (three per cycle), Close other tabs closing two 3, duplicates 3, closes 3 (one each per cycle); Size all folders: sizing started 3, back at none 3 (one each per cycle)
+extract: by TwinFM's reader 6 (two per cycle), through the shell 3 (one per cycle), done 9 (three per cycle), not done 0 (must be 0), undone 9 (three per cycle)
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+working set: start 154.5 MB at 5 s, end 248.2 MB at 600 s; private: 165.4 -> 240.4 MB
+```
+
+Three full cycles. **Right-button drags: 6 started, 6 cancelled, none that never returned** (15 scripted
+drags in all: 15 `DoDragDrop starts`, 15 returned, no `the scripted drag is still running after 20 s`
+line), as in P15-M1's soak; the hang the lists stream's soak saw has not shown in either of this
+stream's.
+
+### Gate
+
+Pending. Wrapper `tools/gate-p15m3.ps1`: tag ab82, `target-p15m3` (c2c541e) against `target-p15m2`
+(8fd8c7d, P15-M2's gate build), the defaults only; it checks that the candidate's runs log no tab menu
+and no `sizing` line. The gate build and the run are the coordinating session's and Jeremy's.
+
+What the gate scenario meets of this milestone: nothing runs. It opens no tab menu, sizes no folder and
+saves no search; the status line gains one call that returns its text unchanged with no folder queued
+(built in `update_status`'s rhythm, on change, never per frame), the rows gain nothing (the "…" is the
+row's existing size text), and the sidebar's rows gain one property read in the background's existing
+binding.
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+1. **The menu on the active tab.** Open three tabs in a pane (the "+" after the tabs). Right-click the
+   tab you are on: a menu opens just under it with Close (Ctrl+W at its right), Close other tabs, Close
+   tabs to the right, Duplicate.
+2. **The menu on a background tab.** Right-click a tab you are not on: the same menu opens under that
+   tab, and the list below does not change (the click does not switch tabs). Pick Close: that tab goes,
+   yours stays.
+3. **Close other tabs, Close tabs to the right.** With three tabs, right-click the first and pick Close
+   tabs to the right: only the first is left. Open more and pick Close other tabs on the middle one: only
+   it is left, and it is shown.
+4. **The only tab.** With one tab, its menu shows Close, Close other tabs and Close tabs to the right
+   greyed; Duplicate works.
+5. **Duplicate.** Right-click a tab, Duplicate: a second tab on the same folder appears right after it
+   and is shown. On a search tab (type in the search box, Enter), Duplicate runs the search again in the
+   new tab.
+6. **Save this search from the tab.** Right-click a search tab: the menu ends with Save this search.
+   Pick it: in the sidebar at the left, the Searches group's row for it shows highlighted for a moment.
+7. **Saved twice, sidebar scrolled away.** Make the window short enough that the sidebar scrolls, scroll
+   it to the top, and save the same search again (Ctrl+D in the search tab): the sidebar scrolls to the
+   search's row and highlights it for a moment; the status bar at the bottom says it is saved already.
+8. **On the rail.** Collapse the sidebar (the chevron at its foot, or F9) and save a search again: the
+   search's icon in the rail is highlighted for a moment.
+9. **Size all folders on `C:\`.** Go to `C:\`, press Alt+Shift+Enter (or the toolbar's More, Size all
+   folders): at once the status bar at the bottom of the pane ends "Sizing N folders…" and every folder's
+   Size cell reads "…". Sizes replace the "…" one by one, N counts down, and the text goes when the last
+   lands.
+10. **Skip everything in an extract.** Extract a zip Here (right-click, Extract to, Here), then again;
+    answer Skip: the status bar reads "Nothing extracted from <zip>: every file was skipped".
+
+### Calls made in this milestone
+
+- **Duplicate shows the new tab**, also when made from a background tab (browsers do; the kickoff said
+  only where it goes).
+- **A duplicated folder tab takes the sort and hidden-files setting of the tab shown**, as Ctrl+T's new
+  tab does, not those of the tab it copies, when the two differ. Say if it should copy the clicked tab's.
+- **Save this search is not offered on a sizes view's tab** (it is no search).
+- **The status text is joined with " | "**, as the note before the item count is: "42 items | Sizing 31
+  folders…".
+- **A re-walk of a folder Alt+Shift+Enter once sized** (after a change below it) counts in "Sizing N
+  folders…" too, but its cell keeps the old size, not "…".
+- **`[tab]` lines count tabs from 1** (as the older `[tab]` lines do); the driver's `tabmenu` index is
+  0-based (as `tabdrag`'s and `dropfiles tab`'s are).
+- **The "sizing 0" line is logged only when the last size lands**, not when a navigation or F5 cancels
+  the walks (their `cancelled` lines say that).
+
 ## P15-M4: search patterns
 
 Built by the lists and search stream on `feat/p15-m4-search-patterns`, cut from main at 73de9e1 (P15-M1 and
@@ -834,11 +1014,22 @@ The run's log, memory samples and summary are kept until the phase closes as `p1
 
 ### Gate
 
-One triplet at the defaults against the last gate build, `tools/gate-p15m4.ps1` (tag ab83, reference
-`target-p15m2`, the coordinating session's to change at build time): the scenario filters and searches
-nothing, so it proves the rest untouched with the crate linked in; the wrapper also checks that no run
-holds a `[filter]` or `[search]` line. The content search's own cost is the timed pair above. The result is
-recorded here when it has run.
+One triplet at the defaults against the last gate build, `tools/gate-p15m4.ps1`: the scenario filters and
+searches nothing, so it proves the rest untouched with the crate linked in; the wrapper also checks that no
+run holds a `[filter]` or `[search]` line. The content search's own cost is the timed pair above.
+
+**Passed.** Tag ab83, 2026-11-14 10:26, 8502f1f (`target-p15m4`) against `target-p15m2`, the defaults, three
+runs each, interleaved (the figures as the coordinating session reported them):
+
+| Binary | WPR main-thread busy, three runs | Median |
+|---|---|---|
+| `p15m2` (reference) | 18.8, 18.1, 18.4 | 18.4 |
+| `p15m4` (candidate) | 18.1, 18.8, 18.6 | 18.6 |
+
+RenderP50 1.99 to 2.14 ms across the six runs, every run's checks ok. No gap that counts: the medians
+differ by 0.2 points and the runs overlap. Jeremy: "Merge both". Main (P15-M3, merged as 180ed0e) was
+taken into the branch after the gate, so the gate's build is the branch before that merge. The console
+checks below had not been run by Jeremy then.
 
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
