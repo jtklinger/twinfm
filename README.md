@@ -41,7 +41,10 @@ keep backups as you would with any file manager.
   Windows can open (read-only), including archives inside archives.
 - **Filter and search:** the search box filters the listing as you type; Return searches the
   folder tree by name in a new tab. With the box's "Search inside files" button on, Return searches
-  the text of the files instead, and each result shows its matching line. Ctrl+D in a search tab
+  the text of the files instead, and each result shows its matching line. Names take `*`, `?` and
+  classes such as `[a-z]` or `[!0-9]` (`*.[ch]`, `report-202[0-9]*`); `re:` starts a regular
+  expression, for names and for text alike (`re:^IMG_\d{4}\.jpe?g$`, `re:TODO|FIXME`; no letter
+  case, unless the expression says `(?-i)`; `\re:` searches for the plain text "re:"). Ctrl+D in a search tab
   saves the search to the sidebar; opening it there runs it again.
 - **Folder sizes** on demand (Alt+Shift+Enter, or by selecting folders).
 - **Preview pane** (Alt+P): PDF (with zoom, and password-protected files on request), Markdown,
