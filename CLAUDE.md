@@ -60,7 +60,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (358 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (362 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1452,6 +1452,36 @@ put off, with where it came from.
   flashed`. **An extract whose every file was skipped** (Here, Skip answered, nothing written) reads
   "Nothing extracted from <zip>: every file was skipped" and records no undo. `tools/check-p15m3.ps1` is
   the scripted check.
+  Since P15-M4, **search patterns** (`model::NameMatch`, `model::typed`, `model::compile`,
+  `fs::content::Needle`). **Glob classes**: in a glob (a pattern with `*` or `?`, as before) `[abc]`,
+  `[a-z]` and `[!abc]` are one character of a class (ranges on the lowercase forms; a `-` first or last
+  and a `]` first are themselves); a `[` with no `]` after at least one character is a plain character,
+  and a pattern with no `*` or `?` is a substring as ever, brackets and all (`notes [draft].txt` typed
+  whole matches itself). A glob with a class also matches what it matched before the classes, its
+  brackets read plainly (`NameMatch`'s `literal`), so no pattern lost a match. **Regular expressions**:
+  the box's text starting `re:` is an expression (the `regex` crate, `=1.13.1`), in the live filter, the
+  name search and the content search; `\re:` is the plain text `re:`. Case-insensitive (`(?-i)` in the
+  expression for a case-sensitive one), found anywhere in the file's own name (never its path under a
+  search's root) or anywhere in a file's text, `^` and `$` at each line's ends (CRLF or LF); compiled
+  size at most 1 MB (`REGEX_SIZE_LIMIT`). The read in one place: `model::typed` (the prefix),
+  `model::compile` (the builder; the error cut to the crate's last line). A content search's row shows
+  the line the match starts in (`content::first_match_regex`, from the match's own place); the 16 MB cap,
+  the binary test and the cloud rules are unchanged, and plain text takes `first_match` as before. **A
+  half-typed expression** (one that does not compile, or nothing after `re:`): the live filter keeps the
+  listing as it was before the edit and the tab's status note reads "Not a pattern yet: <why>"
+  (`main.rs` `NOT_A_PATTERN`, `apply_filter`; cleared when the text is a pattern again or is cleared);
+  Return, the button, Ctrl+Shift+F, a saved search and a history entry with one search nothing and show
+  the same note (`start_search`). The search button's and the content toggle's tooltips are two lines
+  since, naming `*`, `?`, `[a-z]` and `re:`. Driver: no new step. Lines: the `[filter]` pass line's kind
+  reads `glob | substring | regex`; `[filter] pane=N "<text>": not a pattern yet (<why>)`; the search's
+  start lines name the kind after the pattern, `[search] pane=N gen=G start "<pattern>" (glob | substring
+  | regex) in <root>` and `content "<text>" (text | regex) in <root>`; `[search] pane=N "<pattern>": not a
+  pattern yet (<why>)` with the note's `[fileops] pane=N note: Not a pattern yet: <why>`.
+  `tools/check-p15m4.ps1` is the scripted check; `tools/time-p15m4.ps1` times a content search for plain
+  text against the same text as an expression on a 100 MB tree it builds in `%TEMP%\twinfm-p15m4-time`
+  (run with the machine quiet). Since P15-M4 each soak cycle also runs a name search with a class and a
+  content search with an expression in `src`, and the report counts them (one each per cycle) and the
+  not-a-pattern lines (must be 0).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

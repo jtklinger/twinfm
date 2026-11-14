@@ -2262,7 +2262,7 @@ export component Pane inherits Rectangle {
                         }
                     }
                     Tooltip {
-                        TipCard { text: root.content-mode ? "Searching inside files: click for names" : "Search inside files"; }
+                        TipCard { text: (root.content-mode ? "Searching inside files: click for names" : "Search inside files") + "\nPlain text, or re: and a regular expression"; }
                     }
                 }
                 // The search button: this folder and everything under it, for the box's text
@@ -2277,7 +2277,7 @@ export component Pane inherits Rectangle {
                     Image { x: 5px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: @image-url("icons/search.svg"); colorize: Theme.fg; }
                     search-ta := TouchArea { clicked => { root.search-pressed(); } }
                     Tooltip {
-                        TipCard { text: "Search this folder and below (Ctrl+Shift+F)"; }
+                        TipCard { text: "Search this folder and below (Ctrl+Shift+F)\nNames: *, ? and [a-z], or re: and a regular expression"; }
                     }
                 }
             }

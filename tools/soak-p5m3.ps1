@@ -130,6 +130,10 @@
 # content toggle on, the text, Ctrl+Shift+F), closes its tab and turns the toggle off; the report
 # counts content searches done (one per cycle), the files they read (src's 200 at least) and the
 # files they found (one per cycle: tree\d03\f07.txt).
+# P15-M4: each cycle also runs, in src, a name search with a class (`f0[1-3].t?t`: 30 files, three in
+# each of tree's ten folders) and a content search with an expression (`re:^scratch file 3/[78]$`:
+# two files, the `$` before each line's CRLF), each tab closed; the report counts their start lines
+# by kind and their `done` lines (one each per cycle). The content searches are three per cycle since.
 # P14-M1: the content search's tab is saved (`searchsave 0`, Ctrl+D's command) before it closes, the
 # saved search is opened from the sidebar (`searchopen 0`: a new tab of the left pane, the search run
 # again), that tab closed and the row removed (`searchremove 0`); the report counts the searches saved,
@@ -590,6 +594,10 @@ $cycle = @(
     'searchsave 0', 'sleep 300', 'tab close', 'sleep 300', 'searchopen 0', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
     'searchremove 0', 'sleep 300',
     'contentmode 0 off', 'filter 0', 'sleep 300',
+    # P15-M4: a name search with a class and a content search with an expression (see the header).
+    'filter 0 f0[1-3].t?t', 'sleep 300', 'searchreturn 0', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
+    'csearch 0 re:^scratch file 3/[78]$', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
+    'contentmode 0 off', 'filter 0', 'sleep 300',
     # P11-M2: the widths reset through the dialog (see the header), at the 0.6 split since P13-M1, where
     # Type shows (at 0.5 it is hidden, and `colwidth 0 type` is refused).
     "nav 0 $src\tree", 'sleep 500', 'splitter 0.6', 'sleep 300', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300', 'splitter 0.5', 'sleep 300',
@@ -826,6 +834,12 @@ $boxEmpty = @($log | Select-String -SimpleMatch '[search] pane=0 box Return: emp
 # P11-M1: the content searches, the files they read and found.
 $contentDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: (\d+) found in (\d+) files read')
 $contentRead = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[2].Value } | Measure-Object -Sum).Sum
+$classStarts = @($log | Select-String -SimpleMatch '[search] pane=0' | Select-String -SimpleMatch 'start "f0[1-3].t?t" (glob) in ').Count
+# 30 in tree, and two more once the cycle's other steps have left files of those names in src.
+$classDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: 3[0-9] found, ').Count
+$reStarts = @($log | Select-String -SimpleMatch '[search] pane=0' | Select-String -SimpleMatch 'content "re:^scratch file 3/[78]$" (regex) in ').Count
+$reDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: 2 found in ').Count
+$notPattern = @($log | Select-String -SimpleMatch 'not a pattern yet').Count
 $contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum).Sum
 # P14-M3: held track presses that repeated (more than one page).
 $trackHolds = @($log | Select-String -Pattern '^\[auto\] trackhold pane=0: content-y -?\d+ -> -?\d+ in (\d+) pages')
@@ -958,6 +972,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "mouse: path bar buttons $navButtons (four per cycle), View picks $viewPicks (two per cycle), More picks $morePicks (seven per cycle), details bands done with 2 selected $detailsBands (one per cycle), presses on a row's blank part $blankPresses (one per cycle)"
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
 "held track presses: $($trackHolds.Count), repeated past one page $trackRepeated (two each per cycle)"
-"content search: done $($contentDone.Count) (two per cycle), files read $contentRead (400 or more per cycle), found $contentFound (two per cycle)"
+"content search: done $($contentDone.Count) (three per cycle), files read $contentRead (600 or more per cycle), found $contentFound (four per cycle)"
+"search patterns: name searches with a class started $classStarts, done with 30 or more found $classDone; content searches with an expression started $reStarts, done with 2 found $reDone (one each per cycle); not-a-pattern lines $notPattern (must be 0)"
 "saved searches: saved $searchSaved, opened $searchOpened, run again and found $searchRerun, removed $searchRemoved (one each per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
