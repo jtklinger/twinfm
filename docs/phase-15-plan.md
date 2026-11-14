@@ -1106,3 +1106,58 @@ The search box is at the right end of each pane's path bar; Ctrl+F puts the curs
   settle first is the final sigma rule `content::fold` has. For the roadmap unless Jeremy wants it sooner.
 - **`fs::watch::tests::bursts_are_coalesced` failed once under load** during P15-M2 (recorded there): a
   timing the test does not allow for. Not seen in this milestone's runs.
+
+## The blank-part click (a console-check fix, 2026-11-14)
+
+Branch `fix/p15-blank-click`, cut from main at 30aa3f6. Jeremy at the console checks: "If I select a folder
+with mouse, I can't unselect it. Unless I use spacebar.  Everything else seems to work as expected." The
+coordinating session proposed matching Explorer; Jeremy: "Yes, as Explorer".
+
+**What was wrong.** Since P13-M2 a press on a details row's blank part (anywhere but its icon and its
+name's text) released where it went down was a click on that row, so it selected the row. Only the space
+below the last row cleared the selection, and a list whose rows fill the pane has none.
+
+**What changed.** A plain press there released under the drag threshold clears the selection, as the space
+below the rows does (`band::click`, the one rule for both; `band_pointer` in `src/main.rs` calls it). A
+drag from there starts the band as before; the icon and the name's text select and drag as before; the
+grid is not touched. No row gained a binding and nothing runs per frame.
+
+**Calls made, for Jeremy to check.**
+- **Ctrl and Shift on the blank part keep their click on the row** (Ctrl toggles it, Shift selects the
+  range to it), so those work along the whole row. A list view's own rule is that Ctrl or Shift on empty
+  space leaves the selection alone; keeping the click loses nothing and is what P13-M2 gave.
+- **The cursor goes to the row clicked**, with nothing selected. Every press on a row moves the cursor
+  there before Rust is asked where it landed (pane.slint `row-pointer`), and that is left as it is. A
+  list view keeps its focus mark where it was on such a click; here the cursor on the clicked row means
+  Space then selects the row under the pointer. Neither this nor the Ctrl and Shift rule was checked
+  against a running Explorer (a scripted run must not drive Jeremy's desktop): both are from how the
+  Windows list view is known to behave.
+- **The sizes view's rows take the same path** (`SizeList`'s rows call the same `row-pointer`), so a plain
+  click on a blank part clears there too.
+- **No triplet asked for**: the gate scenario never presses a row's blank part, and the change is inside
+  the release of such a press.
+
+**Tests.** `band::tests::a_click_under_the_threshold` (the rule). `cargo test --release`: `test result: ok.
+364 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 6.81s`. `cargo build --release`
+finished.
+
+**Scripted check** (`tools/check-p15-blank-click.ps1`, the branch's release build, twelve files in a
+scratch folder, exit 0, no `panicked` line), from its output:
+- a click on row 1's name: `[select] pane=0 Only row=1 selected=1`
+- a plain click on row 2's blank part: `[band] pane=0 press on row 2 blank: band`, `[select] pane=0 Clear
+  row=0 selected=0`, then `[auto] scrollpos pane=0 content-y 0.0 current-row 2`
+- row 1 selected again, Ctrl on row 2's blank part: `[select] pane=0 Toggle row=2 selected=2`
+- Shift on row 4's blank part: `[select] pane=0 Range row=4 selected=3`
+- a drag from row 2's blank part to row 4: `[band] pane=0 start at (400, 55), Replace`, `[band] pane=0
+  done: 3 selected, cursor 4`
+- a plain click with nothing selected: the press line only.
+
+**The scripts.** The driver's `click` aims at the name's first letters (P13-M2), so no step that clicks a
+row changed. The soak's one press on a blank part per cycle is a drag (`band 0 ...` in `m2`, counted as
+"details bands done with 2 selected"), not a click; no soak or check script relies on a blank-part click
+selecting. No soak was run for this change.
+
+**Console check for Jeremy.** In a details list, click a folder's name: it is selected. Click the same
+row, or any other, to the right of its name (in the empty part of the Name column, or on its Size or
+Modified): nothing is selected any more, and the cursor outline sits on the row clicked. Hold Ctrl and
+click there: that row is added. Drag from there: the band, as before.
