@@ -407,7 +407,19 @@ set's rise over ten minutes is the soak's usual one (the phase's 60-minute soak 
 
 ### Gate
 
-Pending. Wrapper `tools/gate-p15m1.ps1`: tag ab80, `target-p15m1` against `target-p14close`, the defaults
+**Passed.** Tag ab80, 2026-11-14 08:09, 505ec9e (`target-p15m1`) against `target-p14close`, the defaults,
+three runs each, interleaved (the figures are the coordinating session's, from the gate's summary):
+
+| Binary | WPR main-thread busy, three runs | Median |
+|---|---|---|
+| `p14close` (reference) | 21.1, 17.9, 18.0 | 18.0 |
+| `p15m1` (candidate) | 17.9, 18.3, 18.5 | 18.3 |
+
+RenderP50 2.04 to 2.22 ms across the six runs (one session state), every run's checks ok. No gap that
+counts: the medians differ by 0.3 points, and the first reference run's 21.1 is the outlier. Jeremy:
+"Merge both"; merged as 81a6101. The console checks below had not been run by Jeremy at the merge.
+
+Wrapper `tools/gate-p15m1.ps1`: tag ab80, `target-p15m1` against `target-p14close`, the defaults
 only (the scenario opens no menu and runs no file job, and the wrapper checks that the candidate's runs log
 no `[archive] extract` line). The gate build and the run are the coordinating session's and Jeremy's.
 
