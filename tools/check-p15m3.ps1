@@ -53,6 +53,13 @@ $steps = @(
     # Duplicate (the duplicate is shown), then from the background first tab, Close tabs to the right.
     'tabmenu 0 0', 'waitmenu 2000', 'toolmenu Duplicate', 'sleep 800',
     'tabmenu 0 0', 'waitmenu 2000', 'toolmenu Close tabs to the right', 'sleep 600',
+    # Duplicate copies the view of the tab duplicated: the first tab by Modified, descending, with hidden
+    # files; a second tab shown, by name without them; the first duplicated from the background.
+    'click 0 0', 'key CtrlH', 'sleep 300', 'sort 0 2', 'sleep 300', 'sort 0 2', 'sleep 300',
+    'tab new', 'sleep 500', 'click 0 0', 'key CtrlH', 'sleep 300', 'sort 0 0', 'sleep 300',
+    'tabmenu 0 0', 'waitmenu 2000', 'toolmenu Duplicate', 'sleep 800',
+    'tabmenu 0 0', 'waitmenu 2000', 'toolmenu Close other tabs', 'sleep 600',
+    'click 0 0', 'key CtrlH', 'sleep 300', 'sort 0 0', 'sleep 300',
     # The real pointer path: a right click on the first tab.
     "clickat $TabX $TabY right", 'waitmenu 2000', 'menuclose', 'sleep 200',
     # A search tab (the second tab), the first tab shown again; its menu from the background.

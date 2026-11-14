@@ -60,7 +60,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (358 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (359 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1429,7 +1429,8 @@ put off, with where it came from.
   Since P15-M3, the small items. **A menu on tabs**: a right click on a tab opens TwinFM's menu under it
   (the popup View and More use; `toolbar::tab_menu`, `open_tool_menu` with the tab): **Close** (Ctrl+W;
   off for a pane's only tab), **Close other tabs**, **Close tabs to the right** (each off with none to
-  close), **Duplicate** (a tab right after it on the same place, shown; a search tab's runs the search
+  close), **Duplicate** (a tab right after it on the same place, shown, with the sort and the
+  hidden-files switches of the tab duplicated, `PaneModel::take_view`; a search tab's runs the search
   again, a sizes view's walks again), and on a search tab **Save this search** (Ctrl+D). The right click
   does not switch tabs, and each command acts on the tab clicked, active or not (the menu keeps the tab's
   id). Closing several is one call in `tabs.rs` (`Tabs::close_others`, `close_right`), drawn and saved

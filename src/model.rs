@@ -290,6 +290,15 @@ impl PaneModel {
         }
     }
 
+    /// A new tab's sort and hidden-file switches are those of the tab it is opened from: the tab
+    /// shown for Ctrl+T and a search, the tab duplicated for the tab menu's Duplicate.
+    pub fn take_view(&self, from: &PaneModel) {
+        self.sort_col.set(from.sort_col.get());
+        self.sort_asc.set(from.sort_asc.get());
+        self.show_hidden.set(from.show_hidden.get());
+        self.show_protected.set(from.show_protected.get());
+    }
+
     /// The tab's hidden-file switches, as the passes apply them.
     pub fn show(&self) -> Show {
         Show { hidden: self.show_hidden.get(), protected: self.show_protected.get() }
@@ -3188,5 +3197,23 @@ mod tests {
         assert_eq!(m.cut_flags(0, 99), [false, true, false, true], "clamped to the list");
         assert_eq!(m.cut_flags(1, 2), [true, false]);
         assert!(m.cut_flags(4, 9).is_empty(), "past the end");
+    }
+
+    /// A new tab opens sorted, and showing hidden files, as the tab it is opened from does: for the
+    /// tab menu's Duplicate that is the tab duplicated, whichever tab is shown.
+    #[test]
+    fn a_new_tab_takes_the_view_of_the_tab_it_comes_from() {
+        let (shown, clicked) = (PaneModel::default(), PaneModel::default());
+        clicked.sort_col.set(SortCol::Modified);
+        clicked.sort_asc.set(false);
+        clicked.show_hidden.set(true);
+        clicked.show_protected.set(true);
+        let (new, dup) = (PaneModel::default(), PaneModel::default());
+        new.take_view(&shown);
+        dup.take_view(&clicked);
+        let view = |m: &PaneModel| (m.sort_col.get() as i32, m.sort_asc.get(), m.show_hidden.get(), m.show_protected.get());
+        assert_eq!(view(&new), view(&shown));
+        assert_eq!(view(&dup), (SortCol::Modified as i32, false, true, true));
+        assert_ne!(view(&dup), view(&shown), "not the shown tab's");
     }
 }
