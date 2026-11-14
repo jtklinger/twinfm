@@ -176,6 +176,13 @@
 # disk (the left pane's; the right one is in a.zip, which is not read) and the left pane shown with the
 # column (one each per cycle). The line's
 # return to 0.5 is one more of P13-M1's name, Size and Modified lines (six per cycle since).
+# P15-M2: while the column shows, each cycle also drags its grip 20 px left (Size on disk 100 -> 120:
+# from Modified down to its floor, the rest from Name), fits it by a double-click, sets the four widths
+# back (`colwidth 0 ondisk 100`, then Modified, Size and Type, each grip handing the surplus leftwards
+# until Name has it again), sorts
+# by it (`sort 0 4`, the first rows logged by `rows 0 3`) and back by name; the report counts the
+# drags, the fits and the sorts (one each per cycle), and the widths-back lines are three per cycle
+# since.
 # P13-M1: each cycle then hides the second pane with the toolbar's Two panes and shows it again
 # (`toolbar 0 split` twice: the right pane comes back on the left's folder, which the next cycle's
 # `nav 1` replaces), drags the split line to 0.35 of the room, where the left pane is too narrow for
@@ -593,6 +600,10 @@ $cycle = @(
     # P13-M3: the Size on disk column on, shown, a watch edit, dropped, off (see the header).
     "nav 0 $src\tree", 'sleep 400', 'settings open', 'settings set size_on_disk true', 'settings ok', 'sleep 800',
     'splitter 0.85', 'sleep 500', 'touch 0 od.txt', 'waitwatch 3000', 'rmfile 0 od.txt', 'waitwatch 3000',
+    # P15-M2: its grip dragged, fitted and set back, a sort by it and back (see the header).
+    'coldrag 0 ondisk -20', 'sleep 200', 'colfit 0 ondisk', 'sleep 200', 'colwidth 0 ondisk 100', 'sleep 200',
+    'colwidth 0 modified 140', 'sleep 200', 'colwidth 0 size 90', 'sleep 200', 'colwidth 0 type 120', 'sleep 200',
+    'sort 0 4', 'sleep 400', 'rows 0 3', 'sort 0 0', 'sleep 400',
     'splitter 0.5', 'sleep 400', 'settings open', 'settings set size_on_disk false', 'settings ok', 'sleep 800',
     # P13-M3: the sizes view, a level opened, a file deleted from it (see the header).
     "nav 0 $src\tree\d01", 'sleep 400', 'touch 0 sz.txt', 'sleep 300', "nav 0 $src", 'sleep 400',
@@ -857,6 +868,11 @@ $odOn = @($log | Select-String -SimpleMatch '[settings] Size on disk column on')
 $odOff = @($log | Select-String -SimpleMatch '[settings] Size on disk column off').Count
 $odRead = @($log | Select-String -Pattern '\[enum\] pane=\d gen=\d+ size on disk: \d+ entries read').Count
 $odShown = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, type, size, modified, size on disk at ').Count
+# P15-M2: its grip and sort.
+$odDrags = @($log | Select-String -Pattern '^.cols. pane=0 ondisk 100 -> 1\d\d px .drag.$').Count
+$odFits = @($log | Select-String -SimpleMatch '[cols] pane=0 fit ondisk: ').Count
+$odSorts = @($log | Select-String -Pattern '^\[sort\] pane=0 .* by OnDisk asc=true ').Count
+$odRows = @($log | Select-String -SimpleMatch '[auto] rows pane=0: ').Count
 # P13-M1: Two panes and the columns making way.
 $splitPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=0 split -> toggle').Count
 $colsNarrow = @($log | Select-String -SimpleMatch '[cols] pane=0 shows name, modified at ').Count
@@ -909,7 +925,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "extract: by TwinFM's reader $exOwn (two per cycle), through the shell $exShell (one per cycle), done $exDone (three per cycle), not done $exNotDone (must be 0), undone $exUndone (three per cycle)"
 "archives: levels listed by ArchiveFolder $arLevels; zip jobs done: $arKinds (one each per cycle); zip jobs not done $arFailed (must be 0); writes into the 7z refused $arRefused (one per cycle); compressed $arCompressed (two per cycle), undone $arUndone"
 "preview: PDFs opened $pvOpened (three per cycle), pages rendered $pvPages, damaged $pvDamaged (one per cycle), no preview for the type $pvOther (0 since P9-M2), markdown $pvMd (two per cycle), text $pvText (four per cycle), pictures $pvPicture (two per cycle), picture failures $pvPicFailed (must be 0), html $pvHtml (one per cycle), docx $pvDocx, xlsx $pvXlsx (two per cycle), pptx $pvPptx, sheet links $pvSheets (one per cycle), Office files unreadable $pvOfficeBad (must be 0), pictures shown $pvPics (f-readme.md's one, g-big.md's repeats, the file decoded once, j-page.html's one and the Word and PowerPoint files' one each), alt text $pvAlt (must be 0), styled-text fall-backs $pvFell, cut at 2 MB $pvCut (one per cycle), superseded lines $pvSuperseded, waitpreview timeouts $pvTimeouts (must be 0), worker panics $pvPanics (must be 0), zooms $pvZooms (four per cycle), copies $pvCopies (two per cycle), copy failures $pvCopyBad (must be 0), files coloured $pvColoured (two per cycle), chunks refused $pvColourBad (must be 0), passwords right $pvPwRight (one per cycle), wrong or refused $pvPwBad (must be 0), password PDFs opened $pvPwOpened (one per cycle)"
-"column widths: drags read back as Size 90 -> 120 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (two per cycle and one at start), resets through the dialog $colResets (two per cycle)"
+"column widths: drags read back as Size 90 -> 120 $colDrags (one per cycle), fits $colFits (one per cycle), widths back at 120, 90, 140 $colBack (three per cycle and one at start), resets through the dialog $colResets (two per cycle)"
 "thumbnails beyond the listing: drag images from the thumbnail $thumbDrags (one per cycle), searches for photo $thumbSearches (one per cycle)"
 "search box: Return searches $boxReturns (one per cycle), button searches $boxButtons (one per cycle), blank Returns $boxEmpty (one per cycle)"
 "history menu: jumps back one place $histJumps (one per cycle)"
@@ -919,6 +935,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "sizes view: walks done $svDone, levels opened in place $svOpened (two per cycle), sz.txt taken off three totals $svRemoved (one per cycle)"
 "sizes view following: watching $svWatching (two per cycle), windows $svWindows (three or more per cycle), the last window against F5's walk: matches $svMatch (one per cycle), mismatches $svMismatch (must be 0); re-walks $svRewalks, stopped $svStopped (0 expected)"
 "Size on disk column: on $odOn, off $odOff, left pane shown with it $odShown (one each per cycle), listings read with it $odRead (one per cycle: the right pane is in a.zip then, and an archive level is not read)"
+"Size on disk grip and sort: drags read back as wider than 100 $odDrags, fits $odFits, sorts by it $odSorts, rows logged under it $odRows (one each per cycle)"
 "mouse: path bar buttons $navButtons (four per cycle), View picks $viewPicks (two per cycle), More picks $morePicks (seven per cycle), details bands done with 2 selected $detailsBands (one per cycle), presses on a row's blank part $blankPresses (one per cycle)"
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
 "held track presses: $($trackHolds.Count), repeated past one page $trackRepeated (two each per cycle)"

@@ -60,7 +60,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (353 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (355 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1300,7 +1300,7 @@ put off, with where it came from.
   Since P13-M3's follow-up, **the Size on disk column** (setting `size_on_disk`, off by default; the
   dialog's "Size on disk column" switch under the Type column's, applied on OK, which lists the panes
   again, `set_size_on_disk`): a fifth cell at the row's right end after Modified (where Explorer puts a
-  column added), a fixed 100 px (`cols::ONDISK_W`; no grip, no sort, the header "Size on disk"), **only in
+  column added), 100 px by default (a grip, a saved width and a sort of its own since P15-M2, below; the header "Size on disk"), **only in
   lists of its own** (Jeremy's "Zero cost when off", after ab69 measured the cell in every row at 0.8
   points with the column off): `FileListOnDisk` and `FileListOnDisk32` (pane.slint, copies of `FileList`
   and `FileList32` with the cell; the Type cell kept at the pane's Type width, 0 when Type is off or
@@ -1310,7 +1310,7 @@ put off, with where it came from.
   without it, so with the setting off, or in a pane too narrow for it, the rows are main's. A pane crossing
   the threshold (the splitter, the window's size) swaps its list, keeping the cursor and the widths; the
   scroll lands on a whole row, as main's swap for the Type setting does (at most a row's height). The cell
-  reads the width `ondisk-w` (pane.slint `eff-ondisk`, 100 px) and the row's `ondisk` text (`Entry::ondisk_text`, empty for folders, drives,
+  reads the width `ondisk-w` (pane.slint `eff-ondisk`, the pane's `col-ondisk`) and the row's `ondisk` text (`Entry::ondisk_text`, empty for folders, drives,
   archive levels and search results). It is **the first to make way for the name**: `cols::ondisk_shown`
   shows it only while every other column the setting allows fits beside it with Name at `NAME_FLOOR`,
   and the others are then `shown` in the room less its width (main.rs `update_shown`; the `ONDISK`
@@ -1396,6 +1396,36 @@ put off, with where it came from.
   <name (2)>`, `extract <archive>: Cancelled at the password`; `[auto] extract pane=N <to>: K archive(s)`;
   `[fileops] Escape: cancelling K queued operation(s) up to id N, an extract among the jobs` with the note
   "Cancelling the extract" when none waits. `tools/check-p15m1.ps1` is the scripted check.
+  Since P15-M2, **the Size on disk column's grip, width and sort**. Its width is per pane and saved
+  (`col_ondisk_left`, `col_ondisk_right`, default 100, 40 to 2,000; `cols::Widths::ondisk`, the window's
+  `left-col-ondisk` / `right-col-ondisk`, read by the header, the grips, the rename editor and the on-disk
+  pair of lists, which read their width as a property already: the four lists without the column gained
+  nothing). A fourth grip, `ondisk` (`cols::Col::OnDisk`, pane.slint's `which: 3`), sits on the
+  **Modified | Size on disk** boundary while the column shows: a drag narrows Size on disk by what
+  Modified grows; widened, it takes from Modified down to Modified's floor and then from Name down to
+  a pixel above Name's 120 px floor (121: the name cell is reckoned from the window's layout and the
+  columns shown from the list's reported width, and a fraction of a pixel between them hid the column at
+  the release of a drag to 120 itself; this grip alone, Jeremy 2026-11-13: "Yes, take from Name"; reckoned from the widths at
+  the press, so the same drag taken back gives Name its room first; a later drag right gives it all to
+  Modified, Name having no width of its own); a double-click fits it to its cells on screen and its
+  header by the same rule; its floor is the Size
+  column's (`cols::floors`, the same text; a saved width under it opens at 100). The column stays outside
+  `cols::ALL` and the `[bool; 3]` of columns shown: it is still the first to make way
+  (`cols::ondisk_shown`, at its own width), and `cols::grips` and `grip_x` take whether it shows as a bool.
+  "Reset column widths" resets it too. **A click on its header sorts by size on disk**
+  (`model::SortCol::OnDisk`, 4): by `Entry::ondisk` (the number behind `ondisk_text`, filled with it: the
+  listing's directory read and the watch edit's stat; 8 bytes an entry), folders first and by name among
+  themselves, files with no figure (0: archive levels, search results) by name, the name breaking a tie;
+  saved with the tab as `sort = "ondisk"`. With the setting turned off, every tab sorted by it goes to
+  `name` (`set_size_on_disk`, and at start `settings::sort_allowed`), as a `type` sort does without the
+  Type column; in a pane too narrow to show the column the sort stays. Driver: `colwidth`, `coldrag` and
+  `colfit` take `ondisk` (`no such grip` while the column does not show), `sort <pane> 4`, and `rows
+  <pane> [<n>]` logs the pane's first n rows (10) with their Size on disk cells: `[auto] rows pane=N: a.txt
+  [4.0 KB], b.bin [1.0 MB]`. Lines: `[cols] pane=N ondisk W -> W2 px (drag | fit | script | config | reset |
+  under its floor: the default)`, the widths line with a fourth width (`[cols] pane=N widths type T size S
+  modified M ondisk O (name N px)`), `[cols] pane=N widths reset to 120, 90, 140, 100`, `[sort] ... by
+  OnDisk asc=...`, `[settings] pane=N tab T was sorted by Size on disk: sorted by name instead`,
+  `[settings] the Size on disk column is off: sorting by name instead of the saved ondisk sort`.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -1449,7 +1479,8 @@ put off, with where it came from.
   text colour in dark mode; a switch back to system at runtime sets Windows' mode of that moment until
   the next start); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
   the `_right` three (each pane's column widths, logical px, defaults 120, 90, 140, 40 to 2,000;
-  the header grips set them). `SLINT_ACCESSKIT_STATS=1` prints accessibility
+  the header grips set them), since P15-M2 `col_ondisk_left` and `col_ondisk_right` (each pane's Size on
+  disk column width, default 100) and `sort = "ondisk"` in a saved tab. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
 - File operation soak: `tools/soak-m3.ps1 -Minutes N` builds a scratch tree in

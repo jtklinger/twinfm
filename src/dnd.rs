@@ -3384,7 +3384,7 @@ mod tests {
         // 3 px pane padding, 28 px row padding; 1000 - 3 - 10 - 350 = 637 on the right.
         assert_eq!(name_cell(&one, 0, DEFAULT.taken([true; 3])), (31.0, 606.0));
         assert_eq!(name_cell(&one, 0, DEFAULT.taken([false, true, true])), (31.0, 726.0));
-        let wide = Widths { ty: 200.0, size: 110.0, modified: 180.0 };
+        let wide = Widths { ty: 200.0, size: 110.0, modified: 180.0, ..DEFAULT };
         assert_eq!(name_cell(&one, 0, wide.taken([true; 3])), (31.0, 466.0));
         // 32 px rows: 42 px of row padding.
         let tall = Layout { row_px: 32.0, ..one };

@@ -1858,7 +1858,10 @@ fn edit_worker() -> Sender<StatJob> {
                     let mut entry = fs::enumerate::stat_entry(&dir, n, &mut types, &mut keys, &zone);
                     failed |= entry.is_none();
                     if let Some(e) = entry.as_mut().filter(|e| job.ondisk && !e.is_dir()) {
-                        e.ondisk_text = fs::dirinfo::disk_of(&dir.join(n)).map(|d| model::format_size(d).into()).unwrap_or_default();
+                        if let Some(d) = fs::dirinfo::disk_of(&dir.join(n)) {
+                            e.ondisk = d;
+                            e.ondisk_text = model::format_size(d).into();
+                        }
                     }
                     entry
                 });
@@ -7356,9 +7359,9 @@ pub fn search_running() -> bool {
 /// Pane `pane`'s column widths as the window has them (P9-M1).
 fn cols_of(app: &App, pane: usize) -> cols::Widths {
     if pane == 0 {
-        cols::Widths { ty: app.get_left_col_type(), size: app.get_left_col_size(), modified: app.get_left_col_modified() }
+        cols::Widths { ty: app.get_left_col_type(), size: app.get_left_col_size(), modified: app.get_left_col_modified(), ondisk: app.get_left_col_ondisk() }
     } else {
-        cols::Widths { ty: app.get_right_col_type(), size: app.get_right_col_size(), modified: app.get_right_col_modified() }
+        cols::Widths { ty: app.get_right_col_type(), size: app.get_right_col_size(), modified: app.get_right_col_modified(), ondisk: app.get_right_col_ondisk() }
     }
 }
 
@@ -7367,10 +7370,12 @@ fn set_cols(app: &App, pane: usize, w: cols::Widths) {
         app.set_left_col_type(w.ty);
         app.set_left_col_size(w.size);
         app.set_left_col_modified(w.modified);
+        app.set_left_col_ondisk(w.ondisk);
     } else {
         app.set_right_col_type(w.ty);
         app.set_right_col_size(w.size);
         app.set_right_col_modified(w.modified);
+        app.set_right_col_ondisk(w.ondisk);
     }
     update_shown(app, pane);
 }
@@ -7392,7 +7397,7 @@ thread_local! {
     /// state's borrow.
     static ONDISK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The narrowest each column may be dragged (`cols::floors`), measured once at start.
-    static FLOORS: std::cell::Cell<cols::Widths> = const { std::cell::Cell::new(cols::Widths { ty: cols::FLOOR, size: cols::FLOOR, modified: cols::FLOOR }) };
+    static FLOORS: std::cell::Cell<cols::Widths> = const { std::cell::Cell::new(cols::Widths { ty: cols::FLOOR, size: cols::FLOOR, modified: cols::FLOOR, ondisk: cols::FLOOR }) };
 }
 
 /// Pane `pane`'s list is `w` px wide now (a window resize, the splitter, the split, the sidebar, the
@@ -7422,7 +7427,7 @@ fn update_shown(app: &App, pane: usize) {
     let room = w - geom.name_x() - dnd::ROW_PAD_RIGHT;
     let (widths, show_type) = (cols_of(app, pane), app.get_show_type());
     let ondisk = ONDISK.with(|c| c.get()) && cols::ondisk_shown(widths, show_type, room);
-    let s = cols::shown(widths, show_type, room - if ondisk { cols::ONDISK_W } else { 0.0 });
+    let s = cols::shown(widths, show_type, room - if ondisk { widths.ondisk } else { 0.0 });
     if s == shown_of(app, pane) && ondisk == ondisk_of(app, pane) {
         return;
     }
@@ -7447,7 +7452,7 @@ fn ondisk_of(app: &App, pane: usize) -> bool {
 
 /// What the Size on disk column takes from pane `pane`'s row: its width, or 0.
 fn ondisk_px(app: &App, pane: usize) -> f32 {
-    if ondisk_of(app, pane) { cols::ONDISK_W } else { 0.0 }
+    if ondisk_of(app, pane) { cols_of(app, pane).ondisk } else { 0.0 }
 }
 
 /// The width of pane `pane`'s name cell with widths `w`, as the window is laid out now.
@@ -7457,7 +7462,7 @@ fn name_px(app: &App, pane: usize, w: cols::Widths) -> f32 {
 
 /// One `[cols]` line per column whose width differs between `old` and `new`.
 fn log_col_changes(pane: usize, old: cols::Widths, new: cols::Widths, why: &str) {
-    for c in [cols::Col::Type, cols::Col::Size, cols::Col::Modified] {
+    for c in [cols::Col::Type, cols::Col::Size, cols::Col::Modified, cols::Col::OnDisk] {
         if old.get(c) != new.get(c) {
             eprintln!("[cols] pane={pane} {} {:.0} -> {:.0} px ({why})", c.name(), old.get(c), new.get(c));
         }
@@ -7467,10 +7472,11 @@ fn log_col_changes(pane: usize, old: cols::Widths, new: cols::Widths, why: &str)
 fn log_widths(app: &App, pane: usize) {
     let w = cols_of(app, pane);
     eprintln!(
-        "[cols] pane={pane} widths type {:.0} size {:.0} modified {:.0} (name {:.0} px)",
+        "[cols] pane={pane} widths type {:.0} size {:.0} modified {:.0} ondisk {:.0} (name {:.0} px)",
         w.ty,
         w.size,
         w.modified,
+        w.ondisk,
         name_px(app, pane, w)
     );
 }
@@ -7544,6 +7550,7 @@ fn col_fit(pane: usize, col: i32) {
             cols::Col::Type => r.type_text,
             cols::Col::Size => r.size,
             cols::Col::Modified => r.modified,
+            cols::Col::OnDisk => r.ondisk,
         })
         .map(|t| t.to_string())
         .collect();
@@ -7554,6 +7561,7 @@ fn col_fit(pane: usize, col: i32) {
         cols::Col::Type => "Type",
         cols::Col::Size => "Size",
         cols::Col::Modified => "Modified",
+        cols::Col::OnDisk => "Size on disk",
     };
     let label = app.invoke_measure(label.into(), true);
     col_set(&app, pane, c, cols::fit_width(widest.max(label)), "fit");
@@ -7615,6 +7623,24 @@ fn set_size_on_disk(st: &mut State, app: &App, on: bool) -> Vec<usize> {
     eprintln!("[settings] Size on disk column {}", if on { "on" } else { "off" });
     for pane in 0..2 {
         update_shown(app, pane);
+    }
+    // Off, every tab sorted by it is sorted by name instead (P15-M2), as `set_show_type` does for
+    // a Type sort: a header click can no longer reach it.
+    if !on {
+        if settings::sort_from_name(&st.config.sort_column) == SortCol::OnDisk {
+            st.config.sort_column = settings::sort_name(SortCol::Name).into();
+        }
+        let mut resort: Vec<(usize, u64)> = Vec::new();
+        for (pane, tabs) in st.panes.iter().enumerate() {
+            for t in tabs.iter().filter(|t| t.model.sort_col.get() == SortCol::OnDisk) {
+                t.model.sort_col.set(SortCol::Name);
+                resort.push((pane, t.id));
+            }
+        }
+        for (pane, id) in resort {
+            eprintln!("[settings] pane={pane} tab {id} was sorted by Size on disk: sorted by name instead");
+            request_pass(st, pane, id);
+        }
     }
     mark_background_stale(st, true);
     // A sizes view has no such column: it is not walked again for it.
@@ -7840,7 +7866,7 @@ fn settings_closed(ok: bool) {
             for pane in 0..2 {
                 let old = cols_of(&app, pane);
                 set_cols(&app, pane, cols::DEFAULT);
-                eprintln!("[cols] pane={pane} widths reset to {:.0}, {:.0}, {:.0}", cols::DEFAULT.ty, cols::DEFAULT.size, cols::DEFAULT.modified);
+                eprintln!("[cols] pane={pane} widths reset to {:.0}, {:.0}, {:.0}, {:.0}", cols::DEFAULT.ty, cols::DEFAULT.size, cols::DEFAULT.modified, cols::DEFAULT.ondisk);
                 cols_changed(st, &app, pane, old, cols::DEFAULT, "reset");
             }
         });
@@ -8108,6 +8134,11 @@ fn main() -> Result<(), slint::PlatformError> {
         eprintln!("[settings] the Type column is off: sorting by name instead of the saved type sort");
         config.sort_column = settings::sort_name(SortCol::Name).into();
     }
+    // The same with the Size on disk column off (P15-M2).
+    if !config.size_on_disk && settings::sort_from_name(&config.sort_column) == SortCol::OnDisk {
+        eprintln!("[settings] the Size on disk column is off: sorting by name instead of the saved ondisk sort");
+        config.sort_column = settings::sort_name(SortCol::Name).into();
+    }
     // Each pane's tabs: the saved list, or one tab on its start folder. A command-line folder
     // replaces the left pane's tabs; the right pane's are restored only with the split (otherwise
     // F3 opens it on the left pane's folder, as before). Only the active tab navigates below;
@@ -8139,7 +8170,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     t.stale = true;
                 }
                 let sort = settings::sort_from_name(p.sort.as_deref().unwrap_or(&config.sort_column));
-                t.model.sort_col.set(if sort == SortCol::Type && !config.show_type { SortCol::Name } else { sort });
+                t.model.sort_col.set(settings::sort_allowed(sort, config.show_type, config.size_on_disk));
                 t.model.sort_asc.set(p.ascending.unwrap_or(config.sort_ascending));
                 t.model.show_hidden.set(p.hidden.unwrap_or(hidden));
                 t.model.show_protected.set(protected);

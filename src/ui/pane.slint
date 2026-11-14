@@ -383,7 +383,7 @@ component HeaderCell inherits Rectangle {
 }
 
 // A column grip (P9-M1): 6 px over a boundary between two header cells, named by the column on
-// its right (0 type, 1 size, 2 modified; cols::Col). drag(col, dx, phase) reports the pointer's
+// its right (0 type, 1 size, 2 modified, 3 size on disk; cols::Col). drag(col, dx, phase) reports the pointer's
 // travel since the press in window px (from the absolute position, so the grip following the
 // boundary does not feed back into it), phase 0 the press, 1 a move, 2 the release; Rust moves
 // the boundary from the widths at the press. A double-click fits the column (fit).
@@ -1658,6 +1658,8 @@ export component Pane inherits Rectangle {
     in property <length> col-type: 120px;
     in property <length> col-size: 90px;
     in property <length> col-modified: 140px;
+    // The Size on disk column's width (P15-M2, settings `col_ondisk_left` / `_right`).
+    in property <length> col-ondisk: 100px;
     callback col-drag(int, length, int);
     callback col-fit(int);
     // The columns shown (P13-M1, main.rs `update_shown`): a pane too narrow to give Name 120 px
@@ -1675,7 +1677,7 @@ export component Pane inherits Rectangle {
     private property <length> eff-type: root.show-type && root.shows-type ? root.col-type : 0px;
     private property <length> eff-size: root.shows-size ? root.col-size : 0px;
     private property <length> eff-modified: root.shows-modified ? root.col-modified : 0px;
-    private property <length> eff-ondisk: root.shows-ondisk ? 100px : 0px;
+    private property <length> eff-ondisk: root.shows-ondisk ? root.col-ondisk : 0px;
     // Thumbnails (settings `thumbnails`): the 32 px lists (FileListHost); the overlays below read
     // the row height from list.row-h.
     in property <bool> thumbnails: false;
@@ -2300,7 +2302,7 @@ export component Pane inherits Rectangle {
             if !root.grid && root.show-type && root.shows-type: HeaderCell { label: "Type"; width: root.col-type; sorted: sort-col == 3; asc: sort-asc; clicked => { root.sort-by(3); } back => { root.back-button(); } forward => { root.forward-button(); } }
             if !root.grid && root.shows-size: HeaderCell { label: "Size"; width: root.col-size; sorted: sort-col == 1; asc: sort-asc; clicked => { root.sort-by(1); } back => { root.back-button(); } forward => { root.forward-button(); } }
             if !root.grid && root.shows-modified: HeaderCell { label: "Modified"; width: root.col-modified; sorted: sort-col == 2; asc: sort-asc; clicked => { root.sort-by(2); } back => { root.back-button(); } forward => { root.forward-button(); } }
-            if !root.grid && root.shows-ondisk: HeaderCell { label: "Size on disk"; width: root.eff-ondisk; sorted: false; back => { root.back-button(); } forward => { root.forward-button(); } }
+            if !root.grid && root.shows-ondisk: HeaderCell { label: "Size on disk"; width: root.eff-ondisk; sorted: sort-col == 4; asc: sort-asc; clicked => { root.sort-by(4); } back => { root.back-button(); } forward => { root.forward-button(); } }
         }
         if root.sizes: HorizontalLayout {
             height: 32px;
@@ -2565,6 +2567,13 @@ export component Pane inherits Rectangle {
         if root.shows-modified: ColGrip {
             x: parent.width - root.eff-ondisk - root.eff-modified - 3px;
             which: 2;
+            drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
+            fit(c) => { root.col-fit(c); }
+        }
+        // Modified | Size on disk (P15-M2).
+        if root.shows-ondisk: ColGrip {
+            x: parent.width - root.eff-ondisk - 3px;
+            which: 3;
             drag(c, dx, ph) => { root.col-drag(c, dx, ph); }
             fit(c) => { root.col-fit(c); }
         }

@@ -21,7 +21,9 @@
 //!                                    lists that level of the archive)
 //!   up <pane>                        go to the parent directory
 //!   scrollpos <pane>                 log the pane's list scroll (content-y) and cursor row
-//!   sort <pane> <0|1|2|3>            click a column header (name/size/modified/type)
+//!   sort <pane> <0|1|2|3|4>          click a column header (name/size/modified/type/size on disk)
+//!   rows <pane> [<n>]                log the pane's first <n> rows (10) with their Size on disk cells
+//!                                    (P15-M2: what a sort left on screen)
 //!   key <name>                       press a key through the Slint key path; names: F3, F5,
 //!                                    Backspace, Return, Space, AltUp, CtrlShiftRight, CtrlH
 //!                                    (hidden files), CtrlR (refresh), CtrlA, Down, ShiftUp, ShiftDown,
@@ -161,15 +163,15 @@
 //!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
 //!   tabdrag <pane> <index> <dx>      press the left button on tab <index> (0-based), move <dx> px
 //!                                    in 8 px steps, release: a tab drag through Slint's pointer path
-//!   colwidth <pane> <type|size|modified> <px>
+//!   colwidth <pane> <type|size|modified|ondisk> <px>
 //!                                    set a column's width as a grip drag's end does (P9-M1): the
 //!                                    boundary at the column's left edge moves, its left neighbour
 //!                                    (Name for type) taking the difference
-//!   coldrag <pane> <type|size|modified> <dx>
+//!   coldrag <pane> <type|size|modified|ondisk> <dx>
 //!                                    press on that grip's centre in the header (the boundary at the
 //!                                    column's left edge), move <dx> px in 8 px steps, release,
 //!                                    through Slint's pointer path
-//!   colfit <pane> <type|size|modified>
+//!   colfit <pane> <type|size|modified|ondisk>
 //!                                    double-click that grip: the column fitted to its cells on screen
 //!   band <pane> <x0> <y0> <x1> <y1> [ctrl|shift] [hold <ms>]
 //!                                    press the left button at (x0, y0) of the pane's list (px from
@@ -378,6 +380,7 @@ enum Step {
     Nav { pane: usize, path: String },
     Up(usize),
     ScrollPos(usize),
+    Rows(usize, usize),
     Sort { pane: usize, col: i32 },
     Key(String),
     Click { pane: usize, row: usize, modifier: Option<Key> },
@@ -523,6 +526,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "nav" => Step::Nav { pane: num(1) as usize, path: a[2..].join(" ") },
                 "up" => Step::Up(num(1) as usize),
                 "scrollpos" => Step::ScrollPos(num(1) as usize),
+                "rows" => Step::Rows(num(1) as usize, a.get(2).and_then(|v| v.parse().ok()).unwrap_or(10)),
                 "sort" => Step::Sort { pane: num(1) as usize, col: num(2) as i32 },
                 "key" => Step::Key(a.get(1).unwrap_or(&"").to_string()),
                 "click" => Step::Click { pane: num(1) as usize, row: num(2) as usize, modifier: None },
@@ -1277,6 +1281,13 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             eprintln!("[auto] scrollpos pane={pane} content-y {:.1} current-row {row}", app.invoke_get_scroll(pane as i32));
             schedule(runner, 1);
         }
+        Step::Rows(pane, n) => {
+            use slint::Model;
+            let rows = if pane == 0 { app.get_left_rows() } else { app.get_right_rows() };
+            let shown: Vec<String> = (0..n.min(rows.row_count())).filter_map(|i| rows.row_data(i)).map(|r| format!("{} [{}]", r.name, r.ondisk)).collect();
+            eprintln!("[auto] rows pane={pane}: {}", shown.join(", "));
+            schedule(runner, 1);
+        }
         Step::Sort { pane, col } => {
             app.invoke_sort_by(pane as i32, col);
             schedule(runner, 1);
@@ -1536,8 +1547,8 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         Step::Col { pane, col, what, drag } => {
             let l = crate::window_layout(&app);
             match crate::cols::Col::from_name(&col) {
-                None => eprintln!("[auto] col: no column {col:?} (type, size or modified)"),
-                Some(c) if l.grid[pane].is_some() || !crate::cols::grips(crate::shown_of(&app, pane)).contains(&c) => {
+                None => eprintln!("[auto] col: no column {col:?} (type, size, modified or ondisk)"),
+                Some(c) if l.grid[pane].is_some() || !crate::cols::grips(crate::shown_of(&app, pane), crate::ondisk_of(&app, pane)).contains(&c) => {
                     eprintln!("[auto] col pane={pane} {col}: no such grip in this pane's header")
                 }
                 Some(c) if !drag && what.is_some() => crate::col_set(&app, pane, c, what.unwrap_or(0.0), "script"),
@@ -1545,8 +1556,8 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     // The grip's centre: the header's cells end at the list's right edge, and the
                     // header is the 32 px above the list's top less the layout's 2 px spacing.
                     let (_, right) = crate::dnd::pane_x(&l, pane);
-                    let right = right - crate::dnd::PANE_PAD - crate::ondisk_px(&app, pane);
-                    let x0 = crate::cols::grip_x(right, crate::cols_of(&app, pane), c, crate::shown_of(&app, pane));
+                    let right = right - crate::dnd::PANE_PAD;
+                    let x0 = crate::cols::grip_x(right, crate::cols_of(&app, pane), c, crate::shown_of(&app, pane), crate::ondisk_of(&app, pane));
                     let y = crate::dnd::list_top(&l, pane) - 18.0;
                     let at = |x: f32| LogicalPosition::new(x, y);
                     let win = app.window();
