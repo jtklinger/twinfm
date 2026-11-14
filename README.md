@@ -7,7 +7,7 @@ without stalling, where Windows' own Files app struggles.
 TwinFM uses the Windows shell for the things Explorer users rely on, so copies, moves, the Recycle
 Bin, the context menu, drag and drop, the clipboard and file icons behave as they do in Explorer.
 
-**Status: 0.5.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
+**Status: 0.6.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
 keep backups as you would with any file manager.
 
 ## Features
@@ -16,7 +16,8 @@ keep backups as you would with any file manager.
   selection, scroll position and Back/Forward history (Alt+Left, Alt+Right, the mouse's side
   buttons; Alt+Down lists the places to jump to). The "+" after the tabs opens a new one, and Tab
   moves the keyboard to the other pane. Back, Forward, Up and Refresh buttons start each pane's path
-  bar. Tabs with their history, the split and the window are
+  bar. A right click on a tab closes it, the others or those to its right, or duplicates it. Tabs
+  with their history, the split and the window are
   restored at the next start.
 - **Fast listings.** Folders are read on a worker thread and streamed in; icons and thumbnails are
   fetched only for the rows on screen. Folders are watched, so changes made elsewhere appear
@@ -25,7 +26,7 @@ keep backups as you would with any file manager.
   and medium icons, with thumbnails, cloud status marks for OneDrive (syncing and errors too) and
   Google Drive, and a rubber-band selection (in the details view too, from a row's blank part). In a
   narrow pane the columns make way so file names are not cut: Type goes first, then Size, then
-  Modified, each coming back as the pane widens. An optional Size on disk column. The row or tile
+  Modified, each coming back as the pane widens. An optional Size on disk column, with its own width and sort. The row or tile
   under the pointer is highlighted.
 - **Sizes view** (right-click a folder or drive, "Show sizes"): every folder and file biggest first,
   with share bars and size on disk, opened level by level, for finding what fills a disk. It follows
@@ -36,7 +37,7 @@ keep backups as you would with any file manager.
 - **Drag and drop** between the panes, tabs, the sidebar, breadcrumbs and other programs, with
   spring-loaded folders.
 - **A Windows 11 style context menu** with the packaged apps' commands, Open with, Compress to
-  ZIP, 7z or TAR, and "Show more options" for the classic shell menu.
+  ZIP, 7z or TAR, Extract to (a folder, here, or the other pane), and "Show more options" for the classic shell menu.
 - **Archives as folders:** zip (read and written), and 7z, RAR, tar, tar.gz and the other formats
   Windows can open (read-only), including archives inside archives.
 - **Filter and search:** the search box filters the listing as you type; Return searches the
@@ -59,7 +60,7 @@ keep backups as you would with any file manager.
 
 ## Install
 
-Download `twinfm-0.5.0-x86_64-windows.zip` from the
+Download `twinfm-0.6.0-x86_64-windows.zip` from the
 [latest release](https://github.com/jtklinger/twinfm/releases/latest), unzip it anywhere, and run
 `twinfm.exe`. There is no installer; settings are kept in `%APPDATA%\twinfm`.
 
