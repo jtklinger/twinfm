@@ -14,6 +14,8 @@
 //!   permanent delete records nothing.
 //! - Restore: recycle the restored items again.
 //! - Compress (P7-M3): recycle the archive it made.
+//! - Extract (P15-M1): recycle the folder it made, or the root items it put in the folder; one
+//!   that landed on an item already there is not undone (`forbid_if_replaced`, as a copy).
 //! - A write into a zip archive, or an edit inside one (P7-M3): a record that undoes nothing and
 //!   says so (Jeremy, 2026-10-19: a zip has no Recycle Bin, and Explorer cannot undo them either).
 //!
@@ -105,7 +107,7 @@ pub fn undo_for(job: &Job, results: &[ItemResult]) -> Option<Undo> {
             Some(Undo { job: Job::Restore { items: made.iter().map(|(s, d)| (d.clone(), s.clone())).collect() }, expect: dests, must_be_empty: false })
         }
         Job::Restore { .. } => Some(Undo { job: Job::Delete { sources: dests.clone(), permanent: false }, expect: dests, must_be_empty: false }),
-        Job::Copy { .. } => Some(Undo { job: Job::Delete { sources: dests.clone(), permanent: false }, expect: dests, must_be_empty: false }),
+        Job::Copy { .. } | Job::Extract { .. } => Some(Undo { job: Job::Delete { sources: dests.clone(), permanent: false }, expect: dests, must_be_empty: false }),
         Job::Rename { source, .. } => {
             let old = source.file_name()?.to_string_lossy().into_owned();
             let (_, now) = made.into_iter().next()?;

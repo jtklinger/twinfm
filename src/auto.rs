@@ -259,6 +259,12 @@
 //!                                    of the listing (at most 500, nearest the cursor first)
 //!   waitsize <ms>                    wait until no folder size is queued or walking and the last
 //!                                    reply has landed (at most <ms>), then 300 ms more
+//!   extract <pane> <here|named|other> Extract to (P15-M1) for the cursor row's selection of archive
+//!                                    files, without the menu: `named` a folder named after each
+//!                                    beside it, `here` its root items into its folder, `other` a
+//!                                    folder named after each in the other pane's folder; `waitops`
+//!                                    waits for the jobs (in the menu: `menuopen Extract to`, then
+//!                                    `menupick <name>\`, `menupick Here` or `menupick Other pane`)
 //!   sizeview <pane> [<path>]         "Show sizes" (P13-M3): a sizes tab on <path> (the rest of the
 //!                                    step), or on the cursor row's folder, or on the pane's folder
 //!   sizeopen <row>                   the chevron of row <row> in the active pane's sizes view: its
@@ -465,6 +471,7 @@ enum Step {
     ContentSearch { pane: usize, text: String },
     /// Wait until no search tab is still walking (at most `ms`), then 300 ms for the pass.
     WaitSearch(u64),
+    Extract { pane: usize, to: String },
     SizeView { pane: usize, path: Option<String> },
     SizeOpen(usize),
     WaitSizeView(u64),
@@ -714,6 +721,7 @@ fn parse(script: &str) -> Vec<Step> {
                 "waitsearch" => Step::WaitSearch(num(1).max(1) as u64),
                 "sizeall" => Step::SizeAll(num(1) as usize),
                 "waitsize" => Step::WaitSize(num(1).max(1) as u64),
+                "extract" => Step::Extract { pane: num(1) as usize, to: a.get(2).copied().unwrap_or("").to_string() },
                 "sizeview" => Step::SizeView {
                     pane: num(1) as usize,
                     path: Some(s.trim().splitn(3, char::is_whitespace).nth(2).unwrap_or("").trim().to_string()).filter(|p| !p.is_empty()),
@@ -1795,6 +1803,10 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     schedule(r2.clone(), 300);
                 }
             });
+        }
+        Step::Extract { pane, to } => {
+            crate::script_extract(pane, &to);
+            schedule(runner, 1);
         }
         Step::SizeView { pane, path } => {
             eprintln!("[auto] sizeview pane={pane} {}", path.as_deref().unwrap_or("(the cursor row's folder)"));
