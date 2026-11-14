@@ -824,7 +824,8 @@ $boxEmpty = @($log | Select-String -SimpleMatch '[search] pane=0 box Return: emp
 $contentDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: (\d+) found in (\d+) files read')
 $contentRead = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[2].Value } | Measure-Object -Sum).Sum
 $classStarts = @($log | Select-String -SimpleMatch '[search] pane=0' | Select-String -SimpleMatch 'start "f0[1-3].t?t" (glob) in ').Count
-$classDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: 30 found, ').Count
+# 30 in tree, and two more once the cycle's other steps have left files of those names in src.
+$classDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: 3[0-9] found, ').Count
 $reStarts = @($log | Select-String -SimpleMatch '[search] pane=0' | Select-String -SimpleMatch 'content "re:^scratch file 3/[78]$" (regex) in ').Count
 $reDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: 2 found in ').Count
 $notPattern = @($log | Select-String -SimpleMatch 'not a pattern yet').Count
@@ -953,6 +954,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
 "held track presses: $($trackHolds.Count), repeated past one page $trackRepeated (two each per cycle)"
 "content search: done $($contentDone.Count) (three per cycle), files read $contentRead (600 or more per cycle), found $contentFound (four per cycle)"
-"search patterns: name searches with a class started $classStarts, done with 30 found $classDone; content searches with an expression started $reStarts, done with 2 found $reDone (one each per cycle); not-a-pattern lines $notPattern (must be 0)"
+"search patterns: name searches with a class started $classStarts, done with 30 or more found $classDone; content searches with an expression started $reStarts, done with 2 found $reDone (one each per cycle); not-a-pattern lines $notPattern (must be 0)"
 "saved searches: saved $searchSaved, opened $searchOpened, run again and found $searchRerun, removed $searchRemoved (one each per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
