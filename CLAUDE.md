@@ -60,7 +60,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (363 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (364 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1286,7 +1286,9 @@ put off, with where it came from.
   space below the last row; the band touches every row its height overlaps, whatever its width
   (`band::touched_rows`, `cursor_rows`, `Band::rows`), with Ctrl toggling, Shift adding, the edge
   auto-scroll by rows and Escape restoring, as the grid's; a press on a blank part released under the
-  threshold is a click on that row (its two gestures, at the release). `[band] pane=N press on row R
+  threshold clears the selection, as the space below the rows does, the cursor on the row pressed (since
+  the P15 console check, `band::click`; a click on that row before), and with Ctrl or Shift held is that
+  click on the row. `[band] pane=N press on row R
   <icon|name|blank>: drag|band` per press on a row; the grid's `[band]` lines otherwise. **The driver's row
   aim** (`row_pos`, every step that takes a details row: `click`, `dragrow`, `rclick`, `midclick`, `dblclick`,
   `dropfiles <pane> <row>`) is the name's first letters since P13-M2 (the pane's middle before, now a blank

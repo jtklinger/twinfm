@@ -5835,8 +5835,9 @@ fn row_press(app: &App, pane: usize, row: usize, at: (f32, f32), ctrl: bool, shi
 /// (`band-pointer`): kind 0 down, 1 move, 2 up, 3 cancel, at window point `at` (logical px). The band
 /// starts once the pointer leaves the drag threshold, selects the tiles (rows) it touches on every
 /// move, scrolls the list while the pointer sits at its top or bottom edge, and ends on the release; a
-/// press released under the threshold is a click: on a row, the row's (P13-M2); on empty space, it
-/// clears the selection (Explorer) unless Ctrl or Shift is held.
+/// press released under the threshold is a click (`band::click`): it clears the selection (Explorer),
+/// on a row's blank part as on empty space; with Ctrl or Shift held it is that click on the row, and
+/// nothing on empty space.
 fn band_pointer(pane: usize, kind: i32, at: (f32, f32), ctrl: bool, shift: bool) {
     match kind {
         0 => with_state(|st| {
@@ -5863,21 +5864,26 @@ fn band_pointer(pane: usize, kind: i32, at: (f32, f32), ctrl: bool, shift: bool)
                 band_restore(pane, &b, "the pointer grab ended");
             } else if b.active {
                 eprintln!("[band] pane={pane} done: {} selected, cursor {}", with_state(|st| st.model(pane).selected_count()), current_row(&app, pane));
-            } else if let Some(row) = b.row {
-                // A press on a row's blank part released where it went down: a click on the row.
-                let (ctrl, shift) = (b.mode == band::Mode::Toggle, b.mode == band::Mode::Add);
-                row_gesture(pane, row as i32, 0, ctrl, shift);
-                row_gesture(pane, row as i32, 1, ctrl, shift);
-            } else if b.mode == band::Mode::Replace {
-                with_state(|st| {
-                    let model = st.panes[pane].active().model.clone();
-                    if model.selected_count() > 0 {
-                        model.select(SelOp::Clear, 0);
-                        log_select(&model, pane, SelOp::Clear, 0);
-                        size_selection(st, pane);
-                        update_status(st, &app, pane);
+            } else {
+                match band::click(b.row, b.mode) {
+                    // Ctrl or Shift on a row's blank part, released where it went down: that click
+                    // on the row.
+                    band::Click::Row(row) => {
+                        let (ctrl, shift) = (b.mode == band::Mode::Toggle, b.mode == band::Mode::Add);
+                        row_gesture(pane, row as i32, 0, ctrl, shift);
+                        row_gesture(pane, row as i32, 1, ctrl, shift);
                     }
-                });
+                    band::Click::Clear => with_state(|st| {
+                        let model = st.panes[pane].active().model.clone();
+                        if model.selected_count() > 0 {
+                            model.select(SelOp::Clear, 0);
+                            log_select(&model, pane, SelOp::Clear, 0);
+                            size_selection(st, pane);
+                            update_status(st, &app, pane);
+                        }
+                    }),
+                    band::Click::Nothing => {}
+                }
             }
         }
         _ => {}

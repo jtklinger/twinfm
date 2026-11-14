@@ -32,6 +32,29 @@ impl Mode {
     }
 }
 
+/// What a press released under the drag threshold does (`click`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Click {
+    /// A click on that details row, with the keys held.
+    Row(usize),
+    /// The selection is cleared.
+    Clear,
+    Nothing,
+}
+
+/// A band's press released under the threshold, the press on a details row's blank part (`row`) or
+/// on empty space (None): with neither key it clears the selection wherever it landed (Explorer;
+/// until the P15 console check a row's blank part selected the row, so a list whose rows fill the
+/// pane had nowhere to click to unselect); with Ctrl or Shift it is that key's click on the row,
+/// and nothing on empty space.
+pub fn click(row: Option<usize>, mode: Mode) -> Click {
+    match (mode, row) {
+        (Mode::Replace, _) => Click::Clear,
+        (_, Some(row)) => Click::Row(row),
+        (_, None) => Click::Nothing,
+    }
+}
+
 /// The band's rectangle (x, y, w, h) between corners `a` and `b`, in any order.
 pub fn rect(a: (f32, f32), b: (f32, f32)) -> (f32, f32, f32, f32) {
     let (x0, x1) = (a.0.min(b.0), a.0.max(b.0));
@@ -183,8 +206,8 @@ pub struct Band {
     pub before: BTreeSet<usize>,
     /// The pointer has left the drag threshold since the press: the band shows and selects.
     pub active: bool,
-    /// The details row the press landed on (P13-M2): released under the threshold, the press is a
-    /// click on that row.
+    /// The details row the press landed on (P13-M2): released under the threshold with Ctrl or
+    /// Shift held, the press is a click on that row (`click`).
     pub row: Option<usize>,
     /// A band in the details list (P13-M2): its rows' height; it touches rows (`touched_rows`), not
     /// tiles.
@@ -238,6 +261,19 @@ mod tests {
     }
 
     const L: TileGeom = TileGeom::LARGE;
+
+    #[test]
+    fn a_click_under_the_threshold() {
+        // A plain click clears, on a row's blank part as on the space below the rows.
+        assert_eq!(click(Some(3), Mode::Replace), Click::Clear);
+        assert_eq!(click(None, Mode::Replace), Click::Clear);
+        // Ctrl and Shift are their clicks on the row, so ranges work along the whole row.
+        assert_eq!(click(Some(3), Mode::Toggle), Click::Row(3));
+        assert_eq!(click(Some(3), Mode::Add), Click::Row(3));
+        // On empty space they leave the selection alone.
+        assert_eq!(click(None, Mode::Toggle), Click::Nothing);
+        assert_eq!(click(None, Mode::Add), Click::Nothing);
+    }
 
     #[test]
     fn band_cursor_follows_the_moving_corner() {
