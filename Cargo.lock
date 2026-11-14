@@ -4894,6 +4894,7 @@ dependencies = [
  "pulldown-cmark",
  "quick-xml",
  "raw-window-handle",
+ "regex",
  "resvg",
  "roxmltree",
  "serde",

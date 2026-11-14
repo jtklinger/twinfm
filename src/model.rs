@@ -1371,57 +1371,188 @@ pub fn shows(e: &Entry, show: Show) -> bool {
     }
 }
 
+/// What the search box's text asks for (P15-M4), the one place the prefix is read: `re:` and an
+/// expression is a regular expression (true, the expression); `\re:` is the plain text `re:` and
+/// what follows; anything else is plain as typed. Shared by the filter, the name search and the
+/// content search.
+pub fn typed(text: &str) -> (bool, &str) {
+    match text.strip_prefix("re:") {
+        Some(expr) => (true, expr),
+        None => (false, if text.starts_with(r"\re:") { &text[1..] } else { text }),
+    }
+}
+
+/// The compiled size a typed expression may reach: past it the crate refuses it (`a{1000}{1000}`).
+const REGEX_SIZE_LIMIT: usize = 1 << 20;
+
+/// A typed expression compiled: case-insensitive (`(?-i)` in it for a case-sensitive one), `^` and
+/// `$` at each line's ends (a text file's lines, CRLF or LF; a name is one line), its compiled size
+/// capped. The error is one line for the status bar: the crate's reason without its picture of
+/// the expression.
+pub fn compile(expr: &str) -> Result<regex::Regex, String> {
+    if expr.is_empty() {
+        return Err("nothing after re:".into());
+    }
+    regex::RegexBuilder::new(expr).case_insensitive(true).multi_line(true).crlf(true).size_limit(REGEX_SIZE_LIMIT).build().map_err(|e| {
+        let text = e.to_string();
+        let last = text.lines().last().unwrap_or_default().trim();
+        last.strip_prefix("error: ").unwrap_or(last).to_string()
+    })
+}
+
 /// The name filter's pattern, prepared once per pass: case-insensitive (Unicode lowercase on both
-/// sides), a substring of the name, or with `*` or `?` in it a glob over the whole name. Only the
-/// part after the last `\` is tested, so a search tab's relative names (`sub\file.txt`) are
-/// filtered by the file's own name. Shared by the filter and the recursive search.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// sides), a substring of the name, or with `*` or `?` in it a glob over the whole name, in which
+/// `[abc]`, `[a-z]` and `[!abc]` are one character of a class (P15-M4); or, typed `re:<expression>`,
+/// a regular expression found anywhere in the name (`typed`, `compile`). Only the part after the
+/// last `\` is tested, so a search tab's relative names (`sub\file.txt`) are filtered by the file's
+/// own name. Shared by the filter and the recursive search. Two are equal when typed alike.
+#[derive(Clone, Debug, Default)]
 pub struct NameMatch {
     /// What was typed (for the log and the box).
     pub pattern: String,
-    /// Its lowercase form, and the same as characters for a glob.
+    /// The plain text's lowercase form, and the same as tokens for a glob.
     lower: String,
-    glob: Option<Vec<char>>,
+    glob: Option<Vec<Tok>>,
+    /// A glob with a class in it, read as before P15-M4 (its brackets plain characters): a name
+    /// that matched then matches still.
+    literal: Option<Vec<Tok>>,
+    /// A typed expression, or why it does not compile (it then matches nothing).
+    regex: Option<Result<regex::Regex, String>>,
+}
+
+impl PartialEq for NameMatch {
+    fn eq(&self, other: &NameMatch) -> bool {
+        self.pattern == other.pattern
+    }
+}
+
+impl Eq for NameMatch {}
+
+/// One piece of a glob.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Tok {
+    /// `*`: any run of characters, none included.
+    Star,
+    /// `?`: exactly one.
+    Any,
+    Ch(char),
+    /// `[...]`: one character inside one of the ranges (a single character is a range of one), or
+    /// with `!` first, outside them all.
+    Class { not: bool, ranges: Vec<(char, char)> },
+}
+
+impl Tok {
+    fn takes(&self, c: char) -> bool {
+        match self {
+            Tok::Star => false,
+            Tok::Any => true,
+            Tok::Ch(p) => *p == c,
+            Tok::Class { not, ranges } => ranges.iter().any(|&(a, b)| a <= c && c <= b) != *not,
+        }
+    }
+}
+
+/// A glob's tokens (`p` in lowercase). With `classes`, `[` up to the next `]` with something
+/// between (after the `!`) is a class: `a-z` a range, a `-` first or last itself. A `[` with no
+/// such `]` is a plain character.
+fn glob_tokens(p: &[char], classes: bool) -> Vec<Tok> {
+    let mut out = Vec::with_capacity(p.len());
+    let mut i = 0;
+    while i < p.len() {
+        let c = p[i];
+        i += 1;
+        if c == '[' && classes {
+            let not = p.get(i) == Some(&'!');
+            let from = i + not as usize;
+            // The first character after `[` or `[!` is always a member, `]` too.
+            if let Some(len) = p.get(from + 1..).and_then(|rest| rest.iter().position(|&x| x == ']')) {
+                let set = &p[from..from + 1 + len];
+                let mut ranges = Vec::new();
+                let mut k = 0;
+                while k < set.len() {
+                    if k + 2 < set.len() && set[k + 1] == '-' {
+                        ranges.push((set[k], set[k + 2]));
+                        k += 3;
+                    } else {
+                        ranges.push((set[k], set[k]));
+                        k += 1;
+                    }
+                }
+                out.push(Tok::Class { not, ranges });
+                i = from + len + 2;
+                continue;
+            }
+        }
+        out.push(match c {
+            '*' => Tok::Star,
+            '?' => Tok::Any,
+            c => Tok::Ch(c),
+        });
+    }
+    out
 }
 
 impl NameMatch {
     pub fn new(pattern: &str) -> NameMatch {
-        let lower = pattern.to_lowercase();
-        let glob = lower.contains(['*', '?']).then(|| lower.chars().collect());
-        NameMatch { pattern: pattern.to_string(), lower, glob }
+        let (is_regex, text) = typed(pattern);
+        if is_regex {
+            return NameMatch { pattern: pattern.to_string(), regex: Some(compile(text)), ..Default::default() };
+        }
+        let lower = text.to_lowercase();
+        let chars: Vec<char> = lower.chars().collect();
+        let glob = lower.contains(['*', '?']).then(|| glob_tokens(&chars, true));
+        let literal = glob.as_ref().filter(|g| g.iter().any(|t| matches!(t, Tok::Class { .. }))).map(|_| glob_tokens(&chars, false));
+        NameMatch { pattern: pattern.to_string(), lower, glob, literal, regex: None }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.lower.is_empty()
+        self.pattern.is_empty()
     }
 
-    pub fn is_glob(&self) -> bool {
-        self.glob.is_some()
+    /// The `[filter]` and `[search]` lines' word for it.
+    pub fn kind(&self) -> &'static str {
+        match (&self.regex, &self.glob) {
+            (Some(_), _) => "regex",
+            (None, Some(_)) => "glob",
+            (None, None) => "substring",
+        }
+    }
+
+    /// Why a typed expression is no pattern yet (half typed, or past the size cap).
+    pub fn error(&self) -> Option<&str> {
+        self.regex.as_ref()?.as_ref().err().map(String::as_str)
     }
 
     /// An empty pattern matches every name, without lowercasing anything.
     pub fn matches(&self, name: &str) -> bool {
-        if self.lower.is_empty() {
+        if self.pattern.is_empty() {
             return true;
         }
-        let leaf = name.rsplit('\\').next().unwrap_or(name).to_lowercase();
+        let leaf = name.rsplit('\\').next().unwrap_or(name);
+        if let Some(re) = &self.regex {
+            return re.as_ref().is_ok_and(|re| re.is_match(leaf));
+        }
+        let leaf = leaf.to_lowercase();
         match &self.glob {
-            Some(p) => glob_match(p, &leaf.chars().collect::<Vec<char>>()),
+            Some(p) => {
+                let s: Vec<char> = leaf.chars().collect();
+                glob_match(p, &s) || self.literal.as_ref().is_some_and(|l| glob_match(l, &s))
+            }
             None => leaf.contains(self.lower.as_str()),
         }
     }
 }
 
-/// `*` matches any run of characters (none included), `?` exactly one; anchored at both ends.
-/// Iterative, backtracking only to the last `*`.
-fn glob_match(p: &[char], s: &[char]) -> bool {
+/// `*` matches any run of characters (none included), `?` exactly one, a class one of its own;
+/// anchored at both ends. Iterative, backtracking only to the last `*`.
+fn glob_match(p: &[Tok], s: &[char]) -> bool {
     let (mut pi, mut si) = (0, 0);
     let mut star: Option<(usize, usize)> = None;
     while si < s.len() {
-        if pi < p.len() && (p[pi] == '?' || (p[pi] != '*' && p[pi] == s[si])) {
+        if pi < p.len() && p[pi].takes(s[si]) {
             pi += 1;
             si += 1;
-        } else if pi < p.len() && p[pi] == '*' {
+        } else if pi < p.len() && p[pi] == Tok::Star {
             star = Some((pi, si));
             pi += 1;
         } else if let Some((sp, ss)) = star {
@@ -1432,7 +1563,7 @@ fn glob_match(p: &[char], s: &[char]) -> bool {
             return false;
         }
     }
-    p[pi..].iter().all(|&c| c == '*')
+    p[pi..].iter().all(|t| *t == Tok::Star)
 }
 
 /// What a worker pass hands back to the UI thread.
@@ -2082,7 +2213,7 @@ mod tests {
         // Empty: everything; substring anywhere in the name, either case.
         assert!(NameMatch::new("").is_empty() && m("", "anything.txt"));
         assert!(m("port", "Report.DOC") && m("REPORT", "my report.doc") && !m("x", "report.doc"));
-        assert!(!NameMatch::new("port").is_glob() && NameMatch::new("*.txt").is_glob() && NameMatch::new("a?").is_glob());
+        assert_eq!([NameMatch::new("port").kind(), NameMatch::new("*.txt").kind(), NameMatch::new("a?").kind()], ["substring", "glob", "glob"]);
         // Unicode lowercase on both sides.
         assert!(m("ÉTÉ", "Photos été 2024.jpg") && m("straße", "STRASSE-straße.txt") && !m("é", "ete.txt"));
         // Globs are anchored over the whole name.
@@ -2092,6 +2223,75 @@ mod tests {
         assert!(m("a*b*c", "aXbYc") && !m("a*b*c", "aXbYcd") && m("*a", "banana"));
         // A search tab's relative name is matched by its own name only.
         assert!(m("dll", r"sub\kernel32.dll") && !m("sub", r"sub\kernel32.dll") && m("k*.dll", r"a\b\kernel32.dll"));
+    }
+
+    #[test]
+    fn patterns_with_a_bracket_match_what_they_did() {
+        // P15-M4, settled first: every pattern with a `[` that matched a name before the classes
+        // still matches it.
+        let m = |p: &str, n: &str| NameMatch::new(p).matches(n);
+        // No `*` or `?`: a substring as ever, brackets and all, and no glob.
+        assert!(m("notes [draft].txt", "notes [draft].txt") && m("[draft]", "Notes [Draft].txt") && m("[", "a[b") && m("]", "a]b"));
+        assert!(!m("[draft]", "d") && !m("[a-z]", "q.txt"), "no class without a wildcard");
+        assert_eq!(NameMatch::new("[draft]").kind(), "substring");
+        // A glob whose `[` has no `]` after it: a plain character.
+        assert!(m("*[draft*", "notes [draft.txt") && m("a[*", "a[1") && !m("a[*", "ab") && m("*]*[*", "x]y[z"));
+        assert!(m("*[]*", "a[]b") && m("*[!]*", "a[!]b"), "nothing between the brackets: plain");
+        // A glob with a whole class: the names it matched with its brackets read plainly still match.
+        assert!(m("*[draft]*", "notes [draft].txt") && m("[draft]*", "[draft] notes.txt") && m("photo[1]?.jpg", "Photo[1]a.JPG"));
+        assert!(m("*[1-3]*", "copy [1-3] of it") && m("*[!]", "what[!]"));
+    }
+
+    #[test]
+    fn glob_classes() {
+        let m = |p: &str, n: &str| NameMatch::new(p).matches(n);
+        // One character of the set; anchored and case-insensitive as the rest of the glob.
+        assert!(m("*.[ch]", "main.c") && m("*.[ch]", "MAIN.H") && !m("*.[ch]", "main.cpp") && !m("*.[ch]", "main.o"));
+        assert!(m("report-202[0-9]*", "Report-2024-final.docx") && !m("report-202[0-9]*", "report-202x.docx") && !m("report-202[0-9]*", "report-202"));
+        assert!(m("[A-C]*", "beta.txt") && m("[a-c]*", "Beta.txt") && !m("[a-c]*", "delta.txt"));
+        // Negated, several ranges, a `-` first or last and a `]` first as themselves.
+        assert!(m("[!a-c]*", "delta.txt") && !m("[!a-c]*", "alpha.txt") && !m("[!a-c]*", ""));
+        assert!(m("?[0-9a-f][0-9a-f]", "x3f") && !m("?[0-9a-f][0-9a-f]", "x3g"));
+        assert!(m("a[-_]b*", "a-b") && m("a[_-]b*", "a_b") && !m("a[-_]b*", "a.b"));
+        assert!(m("*[]x]", "a]") && m("*[]x]", "ax") && !m("*[]x]", "ab") && m("*[!]]", "ab") && !m("*[!]]", "a]"));
+        // Beside a star the backtracking still finds the class further on.
+        assert!(m("*[0-9].txt", "a1b2.txt") && !m("*[0-9].txt", "a1b.txt") && m("img_[0-9][0-9]*", "IMG_0412.jpg"));
+        assert_eq!(NameMatch::new("*.[ch]").kind(), "glob");
+        // Unicode in a class, lowercase on both sides.
+        assert!(m("[é-ë]*", "Été.txt") && m("*[ßz]", "Straß"));
+    }
+
+    #[test]
+    fn typed_expressions() {
+        assert_eq!(typed("re:^a.b$"), (true, "^a.b$"));
+        assert_eq!(typed(r"\re:x"), (false, "re:x"), "the escape: the plain text re:x");
+        assert_eq!(typed("RE:x"), (false, "RE:x"));
+        assert_eq!(typed(" re:x"), (false, " re:x"));
+        assert_eq!(typed("re:"), (true, ""));
+        assert_eq!(typed("more:x"), (false, "more:x"));
+        let m = |p: &str, n: &str| NameMatch::new(p).matches(n);
+        // Anywhere in the file's own name, case-insensitive; anchors where asked.
+        assert!(m(r"re:^IMG_\d{4}\.jpe?g$", "img_0412.JPG") && m(r"re:^IMG_\d{4}\.jpe?g$", "IMG_0001.jpeg") && !m(r"re:^IMG_\d{4}\.jpe?g$", "IMG_041.jpg"));
+        assert!(m(r"re:\d{4}", "report 2024 final.docx") && !m(r"re:\d{4}", "report 24.docx"));
+        assert!(m("re:(?-i)README", "README.md") && !m("re:(?-i)README", "readme.md"), "case-sensitive when asked");
+        // Its own name only, never the path under a search's root.
+        assert!(m("re:^k.*dll$", r"sub\kernel32.dll") && !m("re:sub", r"sub\kernel32.dll"));
+        // The escape is a plain substring.
+        assert!(m(r"\re:port", "a re:port.txt") && !m(r"\re:port", "report.txt"));
+        let re = NameMatch::new(r"re:\.txt$");
+        assert_eq!((re.kind(), re.error(), re.is_empty()), ("regex", None, false));
+        // Half typed: no pattern yet, one line of why, and it matches nothing.
+        for (p, why) in [("re:", "nothing after re:"), ("re:(", "unclosed group"), ("re:[a-", "unclosed character class"), (r"re:\", "incomplete escape sequence, reached end of pattern prematurely")] {
+            let n = NameMatch::new(p);
+            assert_eq!(n.error(), Some(why), "{p}");
+            assert!(!n.matches("anything") && !n.is_empty() && n.kind() == "regex");
+        }
+        // The size cap: refused, in one line.
+        let big = NameMatch::new("re:(a{1000}){1000}");
+        let why = big.error().expect("over the cap");
+        assert!(why.contains("size limit") && !why.contains('\n'), "{why}");
+        // Equal when typed alike (the filter's "unchanged" test).
+        assert!(NameMatch::new("re:a") == NameMatch::new("re:a") && NameMatch::new("re:a") != NameMatch::new("a") && NameMatch::new("*.txt") == NameMatch::new("*.txt"));
     }
 
     #[test]

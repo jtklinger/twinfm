@@ -354,12 +354,13 @@ impl WalkStats {
     }
 }
 
-/// What a content search looks for (P11-M1): the text, `content::fold`ed, and the sync roots
+/// What a content search looks for (P11-M1): the text, `content::fold`ed, or since P15-M4 a typed
+/// expression (`content::Needle`), and the sync roots
 /// (`cloud::normalise`d) whose folders the walk never enters, since reading a file there could
 /// download it.
 #[derive(Clone, Debug, Default)]
 pub struct Content {
-    pub needle: String,
+    pub needle: crate::fs::content::Needle,
     pub cloud_roots: Vec<String>,
 }
 
@@ -1157,6 +1158,19 @@ mod tests {
         let (cancelled, cancelled_batches) = run(&bulk, false, true);
         let (bulk_all, _) = run(&bulk, false, false);
         let missing = walk(&dir.join("nope"), &hit, crate::model::Show::OFF, false, None, &AtomicU8::new(0), |_| true);
+        // P15-M4: a glob with classes and a typed expression walk the same tree.
+        let names = |pattern: &str| {
+            let mut v: Vec<String> = Vec::new();
+            walk(&root, &NameMatch::new(pattern), crate::model::Show::OFF, false, None, &AtomicU8::new(SEARCH_RUNNING), |b| {
+                v.extend(b.iter().map(|e| e.name.to_string()));
+                true
+            })
+            .unwrap();
+            v.sort();
+            v
+        };
+        let by_class = names("[hm]i[!x]*.t?t");
+        let by_regex = names(r"re:^hit-.*\.txt$");
         // P9-M4: with thumbnails on a result in THUMB_EXTS is keyed by its full path, as a listing's is.
         let pics = dir.join("pics");
         std::fs::create_dir_all(pics.join("sub")).unwrap();
@@ -1212,6 +1226,8 @@ mod tests {
         assert!(cancelled.found > 0 && cancelled.found <= SEARCH_BATCH, "found {}", cancelled.found);
         assert_eq!((cancelled_batches.len(), cancelled_batches.concat().len()), (1, cancelled.found));
         assert!(missing.is_err(), "a root that cannot be listed is an error");
+        assert_eq!(by_class, [r"d1\d2\d3\HIT-deep.txt", "hit-top.txt", "miss.txt"], "not miss.log, nothing hidden, the junction not entered");
+        assert_eq!(by_regex, [r"d1\d2\d3\HIT-deep.txt", "hit-top.txt"], "the file's own name, either case");
     }
 
     #[test]
@@ -1239,7 +1255,7 @@ mod tests {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        let content = Content { needle: crate::fs::content::fold("Needle"), cloud_roots: vec![crate::cloud::normalise(&dir.join("cloudy").to_string_lossy())] };
+        let content = Content { needle: crate::fs::content::Needle::Text(crate::fs::content::fold("Needle")), cloud_roots: vec![crate::cloud::normalise(&dir.join("cloudy").to_string_lossy())] };
         let mut found: Vec<Entry> = Vec::new();
         let stats = walk(&dir, &NameMatch::default(), crate::model::Show::OFF, false, Some(&content), &AtomicU8::new(SEARCH_RUNNING), |b| {
             found.extend(b);
@@ -1251,10 +1267,22 @@ mod tests {
             none.extend(b);
             true
         });
+        // P15-M4: a typed expression, `^` at a line's start and no letter case.
+        let re = Content { needle: crate::fs::content::Needle::Regex(crate::model::compile("^needle|wide N").unwrap()), cloud_roots: content.cloud_roots.clone() };
+        let mut by_re: Vec<Entry> = Vec::new();
+        let re_stats = walk(&dir, &NameMatch::default(), crate::model::Show::OFF, false, Some(&re), &AtomicU8::new(SEARCH_RUNNING), |b| {
+            by_re.extend(b);
+            true
+        });
         set_attrs(&dir.join("offline.txt"), FILE_ATTRIBUTE_ARCHIVE);
         std::fs::remove_dir_all(&dir).unwrap();
 
         assert!(made, "mklink /J failed");
+        let mut re_rows: Vec<(String, String)> = by_re.iter().map(|e| (e.name.to_string(), e.found.to_string())).collect();
+        re_rows.sort();
+        assert_eq!(re_rows, [("a.txt".into(), "needle again".into()), (r"sub\w.txt".into(), "wide needle".into())], "the line the expression matched in, not the first holding the word");
+        let rs = re_stats.unwrap();
+        assert_eq!((rs.found, rs.read, rs.binary, rs.cloud_only, rs.walked), (2, 4, 1, 1, 3), "the same files read and left as for plain text");
         let mut rows: Vec<(String, String)> = found.iter().map(|e| (e.name.to_string(), e.found.to_string())).collect();
         rows.sort();
         assert_eq!(rows, [("a.txt".into(), "the NEEDLE is here".into()), (r"sub\w.txt".into(), "wide needle".into())], "files holding the text, each with its first line; no folder, no name match");

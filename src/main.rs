@@ -765,7 +765,7 @@ fn refresh(pane: usize) {
             s.cancel = Arc::new(AtomicU8::new(fs::enumerate::SEARCH_RUNNING));
             let (pattern, content, cancel, hidden) = (s.pattern.pattern.clone(), s.content, s.cancel.clone(), t.model.show());
             let what = if content { "content" } else { "start" };
-            eprintln!("[search] pane={pane} gen={generation} {what} \"{pattern}\" in {}", path.display());
+            eprintln!("[search] pane={pane} gen={generation} {what} \"{pattern}\" ({}) in {}", search_kind(&pattern, content), path.display());
             let thumbs = search_thumbnails(st, &path);
             let (matcher, content) = search_spec(st, &pattern, content);
             fs::enumerate::spawn_search(path, matcher, hidden, thumbs, content, cancel, pane, generation, st.tx.clone(), wake);
@@ -783,12 +783,27 @@ fn search_thumbnails(st: &mut State, root: &Path) -> bool {
     st.config.thumbnails && st.cloud.of(root) == icons::Cloud::None
 }
 
+/// The `[search]` start lines' word for `pattern`: `regex`, or for a name search `glob` or
+/// `substring`, for a content search `text`.
+fn search_kind(pattern: &str, content: bool) -> &'static str {
+    match (model::typed(pattern).0, content) {
+        (true, _) => "regex",
+        (false, true) => "text",
+        (false, false) => NameMatch::new(pattern).kind(),
+    }
+}
+
 /// The walk's name matcher and content search for a search tab's `pattern`: a name search matches
 /// it against the names; a content search (P11-M1) reads every file for it and stays out of the
-/// sync roots.
+/// sync roots. A typed expression (P15-M4, `model::typed`) is a regular expression in either;
+/// `start_search` has refused one that does not compile.
 fn search_spec(st: &State, pattern: &str, content: bool) -> (NameMatch, Option<fs::enumerate::Content>) {
     if content {
-        (NameMatch::default(), Some(fs::enumerate::Content { needle: fs::content::fold(pattern), cloud_roots: st.cloud.roots() }))
+        let needle = match model::typed(pattern) {
+            (true, expr) => model::compile(expr).map(fs::content::Needle::Regex).unwrap_or_default(),
+            (false, text) => fs::content::Needle::Text(fs::content::fold(text)),
+        };
+        (NameMatch::default(), Some(fs::enumerate::Content { needle, cloud_roots: st.cloud.roots() }))
     } else {
         (NameMatch::new(pattern), None)
     }
@@ -2585,7 +2600,7 @@ fn land_pass(
         eprintln!(
             "[filter] pane={pane} \"{}\" ({}): {} of {} shown, pass {pass_ms:.1} ms",
             filter.pattern,
-            if filter.is_glob() { "glob" } else { "substring" },
+            filter.kind(),
             out.shown.len(),
             out.shown.len() + out.filtered
         );
@@ -6754,12 +6769,30 @@ fn content_toggled(pane: usize, on: bool) {
     apply_filter(pane, id, if on { "" } else { text.as_str() });
 }
 
+/// How the status line's note for a typed expression that does not compile starts (P15-M4).
+const NOT_A_PATTERN: &str = "Not a pattern yet: ";
+
 /// Set tab `id`'s name filter and run its pass (the hidden-file switch's pass: the snapshot, the
 /// worker, cursor and selection restored by name); nothing when the filter is unchanged.
+///
+/// A typed expression that does not compile yet (P15-M4: half typed) changes nothing: the listing
+/// stays as it was before the edit and the status line says why, until the text is a pattern.
 fn apply_filter(pane: usize, id: u64, text: &str) {
     with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
         let Some(t) = st.find(pane, id) else { return };
         let new = NameMatch::new(text);
+        let was_waiting = t.note.starts_with(NOT_A_PATTERN);
+        if let Some(why) = new.error() {
+            eprintln!("[filter] pane={pane} \"{text}\": not a pattern yet ({why})");
+            t.note = format!("{NOT_A_PATTERN}{why}");
+            return update_status(st, &app, pane);
+        }
+        if was_waiting {
+            t.note.clear();
+            update_status(st, &app, pane);
+        }
+        let Some(t) = st.find(pane, id) else { return };
         if *t.model.filter.borrow() == new {
             return;
         }
@@ -6811,6 +6844,12 @@ fn start_search_like(pane: usize, pattern: &str, content: bool, at: SearchAt, li
         };
         if is_this_pc(&root.to_string_lossy()) {
             note(st, &app, pane, "This PC lists drives; open a folder to search in it".into());
+            return None;
+        }
+        // A typed expression that does not compile searches nothing (P15-M4).
+        if let (true, Err(why)) = (model::typed(pattern).0, model::compile(model::typed(pattern).1)) {
+            eprintln!("[search] pane={pane} \"{pattern}\": not a pattern yet ({why})");
+            note(st, &app, pane, format!("{NOT_A_PATTERN}{why}"));
             return None;
         }
         if matches!(at, SearchAt::Saved(_)) && !root.is_dir() && fs::archive::split(&root).is_none() {
@@ -6890,7 +6929,7 @@ fn start_search_like(pane: usize, pattern: &str, content: bool, at: SearchAt, li
         show_tab(st, &app, pane);
         schedule_save(st);
         let what = if content { "content" } else { "start" };
-        eprintln!("[search] pane={pane} gen={generation} {what} \"{pattern}\" in {}", root.display());
+        eprintln!("[search] pane={pane} gen={generation} {what} \"{pattern}\" ({}) in {}", search_kind(pattern, content), root.display());
         let thumbs = search_thumbnails(st, &root);
         fs::enumerate::spawn_search(root, matcher, hidden, thumbs, spec, cancel, pane, generation, st.tx.clone(), wake);
         Some(app)

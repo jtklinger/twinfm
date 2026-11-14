@@ -2,7 +2,8 @@
 //! (`enumerate::walk`) hands every plain file of the tree here; a file over `CONTENT_MAX_BYTES` is
 //! never opened, a binary one is closed after its first `SNIFF_BYTES`, and a text one is decoded by
 //! the preview's rule (a UTF-16 byte order mark, else UTF-8 with invalid bytes replaced) and searched
-//! case-insensitively for a plain substring; the first matching line is kept for the result's row.
+//! case-insensitively for a plain substring, or since P15-M4 for a regular expression (`Needle`);
+//! the first matching line is kept for the result's row.
 //! A cloud-only file (by the listing's attributes) is never opened: reading it would download it.
 
 use std::io::Read;
@@ -35,6 +36,20 @@ pub enum Outcome {
     Binary,
     /// It could not be opened or read (in use, access denied, gone).
     Unreadable,
+}
+
+/// What a content search looks for: plain text, `fold`ed, or a typed expression (P15-M4:
+/// `model::compile`'s, case-insensitive, `^` and `$` at each line's ends).
+#[derive(Clone, Debug)]
+pub enum Needle {
+    Text(String),
+    Regex(regex::Regex),
+}
+
+impl Default for Needle {
+    fn default() -> Needle {
+        Needle::Text(String::new())
+    }
 }
 
 /// The listing's attributes say the file's data is not on this machine (the preview's rule).
@@ -110,6 +125,15 @@ pub fn first_match(text: &str, needle: &str) -> Option<String> {
     text.lines().find(|l| fold(l).contains(needle)).map(|l| cut_line(l, 0))
 }
 
+/// The line of `text` where `re` first matches, as the row shows it: the line the match starts in,
+/// taken from the match's own place (no second pass), cut around it as a plain match's is.
+pub fn first_match_regex(text: &str, re: &regex::Regex) -> Option<String> {
+    let at = re.find(text)?.start();
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    Some(cut_line(&text[start..end], text[start..at].chars().count()))
+}
+
 /// The line for the row: control characters as spaces, trimmed, at most `LINE_MAX_CHARS`
 /// characters; a match at character `at` that would fall past the cut is shown from a little
 /// before it, behind an ellipsis.
@@ -134,8 +158,8 @@ fn cut_line(line: &str, at: usize) -> String {
     s
 }
 
-/// Read the file at `path` (`size` from the listing) and look for `needle` (`fold`ed).
-pub fn search_file(path: &Path, size: u64, needle: &str) -> Outcome {
+/// Read the file at `path` (`size` from the listing) and look for `needle`.
+pub fn search_file(path: &Path, size: u64, needle: &Needle) -> Outcome {
     if size > CONTENT_MAX_BYTES {
         return Outcome::OverCap;
     }
@@ -149,7 +173,12 @@ pub fn search_file(path: &Path, size: u64, needle: &str) -> Outcome {
     if f.take(CONTENT_MAX_BYTES - bytes.len() as u64).read_to_end(&mut bytes).is_err() {
         return Outcome::Unreadable;
     }
-    match first_match(&decode(&bytes, enc), needle) {
+    let text = decode(&bytes, enc);
+    let line = match needle {
+        Needle::Text(t) => first_match(&text, t),
+        Needle::Regex(re) => first_match_regex(&text, re),
+    };
+    match line {
         Some(line) => Outcome::Found(line),
         None => Outcome::Missed,
     }
@@ -158,6 +187,32 @@ pub fn search_file(path: &Path, size: u64, needle: &str) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_expression_shows_the_line_it_matched_in() {
+        // P15-M4: `model::compile`'s expression against a file's text.
+        let re = |e: &str| crate::model::compile(e).unwrap();
+        let text = "first line\r\n  The Needle is here\t(end)  \nneedle at the start\r\nlast";
+        let m = |e: &str| first_match_regex(text, &re(e));
+        assert_eq!(m("needle").as_deref(), Some("The Needle is here (end)"), "no letter case, the line trimmed");
+        assert_eq!(m("(?-i)needle").as_deref(), Some("needle at the start"), "case-sensitive when asked");
+        assert_eq!(m("^needle").as_deref(), Some("needle at the start"), "^ at a line's start");
+        assert_eq!(m(r"line$").as_deref(), Some("first line"), "$ before a CRLF");
+        assert_eq!(m(r"start$").as_deref(), Some("needle at the start"));
+        assert_eq!(m("^last$").as_deref(), Some("last"), "the last line, no line break after it");
+        assert_eq!(m(r"\d+"), None);
+        assert_eq!(m("TODO|here").as_deref(), Some("The Needle is here (end)"));
+        // A dot stays inside its line; an expression that spans lines shows the one it starts in.
+        assert_eq!(m("first.*needle"), None);
+        assert_eq!(m(r"line\s+the").as_deref(), Some("first line"));
+        // A match deep in a long line is shown from a little before it, as plain text's is.
+        let deep = format!("{}needle 42{}", "a".repeat(5000), "b".repeat(5000));
+        let row = first_match_regex(&deep, &re(r"needle \d+")).unwrap();
+        assert_eq!(row.chars().count(), LINE_MAX_CHARS + 2);
+        assert_eq!(row.find("needle 42"), Some('…'.len_utf8() + LINE_LEAD_CHARS));
+        // Characters of several bytes before the match: the cut counts characters.
+        assert_eq!(first_match_regex("x\nİstanbul Needle\n", &re("needle")).as_deref(), Some("İstanbul Needle"));
+    }
 
     #[test]
     fn binary_is_told_by_a_nul_or_the_share_of_control_characters() {
@@ -232,14 +287,18 @@ mod tests {
         let bin = dir.join("b.bin");
         std::fs::write(&bin, b"gamma\x00gamma").unwrap();
         let size = |p: &Path| std::fs::metadata(p).unwrap().len();
-        let found = search_file(&text, size(&text), "gamma");
-        let missed = search_file(&text, size(&text), "delta");
-        let utf16 = search_file(&wide, size(&wide), "drei");
-        let binary = search_file(&bin, size(&bin), "gamma");
-        let over = search_file(&text, CONTENT_MAX_BYTES + 1, "gamma");
-        let gone = search_file(&dir.join("nope.txt"), 1, "gamma");
+        let t = |s: &str| Needle::Text(s.into());
+        let found = search_file(&text, size(&text), &t("gamma"));
+        let missed = search_file(&text, size(&text), &t("delta"));
+        let utf16 = search_file(&wide, size(&wide), &t("drei"));
+        let binary = search_file(&bin, size(&bin), &t("gamma"));
+        let over = search_file(&text, CONTENT_MAX_BYTES + 1, &t("gamma"));
+        let gone = search_file(&dir.join("nope.txt"), 1, &t("gamma"));
+        // P15-M4: a typed expression reads the same file.
+        let by_re = search_file(&text, size(&text), &Needle::Regex(crate::model::compile("^BETA g").unwrap()));
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(found, Outcome::Found("beta Gamma".into()));
+        assert_eq!(by_re, Outcome::Found("beta Gamma".into()));
         assert_eq!(missed, Outcome::Missed);
         assert_eq!(utf16, Outcome::Found("zwei Drei".into()));
         assert_eq!(binary, Outcome::Binary);
