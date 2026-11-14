@@ -251,6 +251,7 @@ impl Tab {
         for n in &cancelled {
             eprintln!("[size] cancelled {} (tab in the background)", self.path.join(n).display());
         }
+        self.model.set_sizing(&cancelled.iter().map(String::as_str).collect(), false);
         for n in &stale {
             self.model.set_size(n, None);
             eprintln!("[size] stale {}: tab in the background, size dropped", self.path.join(n).display());
@@ -266,6 +267,7 @@ impl Tab {
         for n in &cancelled {
             eprintln!("[size] cancelled {} ({why})", self.path.join(n).display());
         }
+        self.model.set_sizing(&cancelled.iter().map(String::as_str).collect(), false);
         if cached > 0 || !cancelled.is_empty() {
             eprintln!("[size] cache cleared pane={pane} ({why})");
         }
@@ -848,7 +850,8 @@ fn update_status(st: &State, app: &App, pane: usize) {
         None => {
             // "N of M items" while a name filter is on.
             let of = (!m.filter.borrow().is_empty()).then(|| m.len() + m.filtered_count());
-            statusbar::left_text(&note, m.len(), of, m.hidden_count(), loading, enum_ms, t.timing.error.as_deref())
+            let left = statusbar::left_text(&note, m.len(), of, m.hidden_count(), loading, enum_ms, t.timing.error.as_deref());
+            statusbar::with_sizing(&left, t.sizes.sizing().len())
         }
     };
     let (n, bytes, any_file) = m.selection_summary();
@@ -1675,6 +1678,8 @@ fn drain() {
                         if !t.sizes.cache.is_empty() {
                             t.model.apply_sizes(|n| t.sizes.cache.get(n).map(|s| s.bytes));
                         }
+                        // And the folders still waiting for theirs (P15-M3).
+                        t.model.set_sizing(&t.sizes.sizing().into_iter().filter(|n| !t.sizes.cache.contains_key(*n)).collect(), true);
                     }
                     t.free = free;
                     let id = t.id;
@@ -2430,6 +2435,11 @@ fn size_all(st: &mut State, app: &App, pane: usize) {
     for (_, n) in rows.iter().rev() {
         queue_size(sizer, pane, t, n, true);
     }
+    // They say they have started (P15-M3): "…" in each one's Size cell, and the status line's count.
+    t.model.set_sizing(&rows.iter().map(|(_, n)| n.as_str()).collect(), true);
+    if !rows.is_empty() {
+        eprintln!("[size] pane={pane} sizing {} folder(s)", t.sizes.sizing().len());
+    }
     st.watch_active(app, pane);
     update_status(st, app, pane);
 }
@@ -2441,6 +2451,8 @@ fn drain_sizes() {
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let mut touched = [false; 2];
+        // A folder Alt+Shift+Return asked for landed in the pane's active tab (P15-M3's count).
+        let mut landed = [false; 2];
         while let Ok(r) = st.size_rx.try_recv() {
             let Some(t) = st.find(r.pane, r.tab) else { continue };
             if t.sizes.generation != r.generation {
@@ -2454,6 +2466,7 @@ fn drain_sizes() {
             }
             if p.all {
                 t.sizes.from_all.insert(r.name.clone());
+                landed[r.pane] = true;
             }
             t.sizes.pending.remove(&r.name);
             t.sizes.walk_ms.insert(r.name.clone(), r.ms);
@@ -2461,6 +2474,9 @@ fn drain_sizes() {
             t.model.set_size(&r.name, Some(r.totals.bytes));
         }
         for pane in 0..2 {
+            if landed[pane] && st.tab(pane).sizes.sizing().is_empty() {
+                eprintln!("[size] pane={pane} sizing 0 folder(s)");
+            }
             if touched[pane] {
                 update_status(st, &app, pane);
             }

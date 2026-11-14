@@ -1285,6 +1285,9 @@ mod tests {
         assert_eq!(status_text(&nuke, &Outcome::Done, &[]), "Deleted 3 items permanently");
         let ren = Job::Rename { source: PathBuf::from("a"), new_name: "b.txt".into() };
         assert_eq!(status_text(&ren, &Outcome::Done, &[]), "Renamed to b.txt");
+        // Here with every file there already and Skip answered: no results (P15-M3).
+        let here = Job::Extract { archive: PathBuf::from("a.zip"), dest_dir: PathBuf::from(r"C:\d"), named: false };
+        assert_eq!(status_text(&here, &Outcome::Done, &[]), "Nothing extracted from a.zip: every file was skipped");
         let nf = Job::NewFolder { parent: PathBuf::new(), name: "New folder".into() };
         assert_eq!(status_text(&nf, &Outcome::Done, &[]), "Created New folder");
         let made = [ItemResult { source: PathBuf::from(r"C:\d"), dest: Some(PathBuf::from(r"C:\d\New folder (2)")), hr: 0 }];
