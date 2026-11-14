@@ -142,6 +142,16 @@ pub fn with_queue(note: &str, queued: usize) -> String {
     if note.is_empty() { q } else { format!("{note}, {q}") }
 }
 
+/// The status line with "Sizing N folders…" at its end while folders Alt+Shift+Enter queued are
+/// waiting or walking (P15-M3); unchanged at none.
+pub fn with_sizing(left: &str, sizing: usize) -> String {
+    match sizing {
+        0 => left.to_string(),
+        1 => format!("{left} | Sizing 1 folder…"),
+        n => format!("{left} | Sizing {n} folders…"),
+    }
+}
+
 /// The running job's note with its percentage after it ("copying 3 items... 42%"); the note
 /// unchanged with no percentage or no note.
 pub fn with_progress(note: &str, percent: Option<u32>) -> String {
@@ -154,6 +164,15 @@ pub fn with_progress(note: &str, percent: Option<u32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sizing_text() {
+        let left = left_text("", 12, None, 0, false, None, None);
+        assert_eq!(with_sizing(&left, 0), "12 items");
+        assert_eq!(with_sizing(&left, 1), "12 items | Sizing 1 folder…");
+        assert_eq!(with_sizing(&left, 37), "12 items | Sizing 37 folders…");
+        assert_eq!(with_sizing(&left_text("copying 2 items...", 12, None, 3, false, None, None), 2), "copying 2 items... | 12 items (3 hidden) | Sizing 2 folders…");
+    }
 
     #[test]
     fn queue_text() {

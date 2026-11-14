@@ -196,6 +196,9 @@ impl SortCol {
     }
 }
 
+/// A folder's Size cell while its size is waited for (`PaneModel::set_sizing`).
+pub const SIZING: &str = "…";
+
 pub struct PaneModel {
     /// Every entry of the listing, unfiltered, in enumeration order.
     all: RefCell<Vec<Entry>>,
@@ -538,6 +541,29 @@ impl PaneModel {
             row
         };
         if let Some(i) = row {
+            self.notify.row_changed(i);
+        }
+    }
+
+    /// Folders waiting for the size Alt+Shift+Return asked for (P15-M3): `on`, their Size cells read
+    /// `SIZING` until `set_size` lands; off (the walks were cancelled), the cells still reading it are
+    /// emptied. The size itself stays 0, so the sort reads them as it reads an empty cell. One pass
+    /// over the listing and the rows; each changed row is notified.
+    pub fn set_sizing(&self, names: &std::collections::HashSet<&str>, on: bool) {
+        if names.is_empty() {
+            return;
+        }
+        let text: SharedString = if on { SIZING.into() } else { SharedString::default() };
+        let wants = |e: &Entry| e.kind == Kind::Directory && names.contains(e.name.as_str()) && (on || e.size_text == SIZING);
+        for e in self.all.borrow_mut().iter_mut().filter(|e| wants(e)) {
+            e.size_text = text.clone();
+        }
+        let mut rows = Vec::new();
+        for (i, e) in self.shown.borrow_mut().iter_mut().enumerate().filter(|(_, e)| wants(e)) {
+            e.size_text = text.clone();
+            rows.push(i);
+        }
+        for i in rows {
             self.notify.row_changed(i);
         }
     }
@@ -2560,6 +2586,19 @@ mod tests {
         assert_eq!(m.snapshot_all().iter().find(|x| x.name == "d1").unwrap().size_text.as_str(), "2.0 KB");
         m.apply_edits(vec![Edit::Rename { from: "d1".into(), entry: e("d2", 0, true) }], -1).unwrap();
         assert_eq!(m.snapshot_all().iter().find(|x| x.name == "d2").unwrap().size_text.as_str(), "");
+        // A folder waiting for its size reads "…" (P15-M3), kept across a replace; the walk
+        // cancelled empties it, and never a size that landed.
+        let text = |n: &str| m.snapshot_all().iter().find(|x| x.name == n).unwrap().size_text.to_string();
+        m.set_sizing(&["d2"].into(), true);
+        assert_eq!(text("d2"), SIZING);
+        m.apply_edits(vec![Edit::Upsert(e("d2", 0, true))], -1).unwrap();
+        assert_eq!(text("d2"), SIZING);
+        m.set_sizing(&["d2"].into(), false);
+        assert_eq!(text("d2"), "");
+        m.set_sizing(&["d2"].into(), true);
+        m.set_size("d2", Some(1024));
+        m.set_sizing(&["d2"].into(), false);
+        assert_eq!(text("d2"), "1.0 KB");
     }
 
     #[test]

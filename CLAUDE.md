@@ -60,7 +60,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (355 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (358 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1426,6 +1426,32 @@ put off, with where it came from.
   modified M ondisk O (name N px)`), `[cols] pane=N widths reset to 120, 90, 140, 100`, `[sort] ... by
   OnDisk asc=...`, `[settings] pane=N tab T was sorted by Size on disk: sorted by name instead`,
   `[settings] the Size on disk column is off: sorting by name instead of the saved ondisk sort`.
+  Since P15-M3, the small items. **A menu on tabs**: a right click on a tab opens TwinFM's menu under it
+  (the popup View and More use; `toolbar::tab_menu`, `open_tool_menu` with the tab): **Close** (Ctrl+W;
+  off for a pane's only tab), **Close other tabs**, **Close tabs to the right** (each off with none to
+  close), **Duplicate** (a tab right after it on the same place, shown; a search tab's runs the search
+  again, a sizes view's walks again), and on a search tab **Save this search** (Ctrl+D). The right click
+  does not switch tabs, and each command acts on the tab clicked, active or not (the menu keeps the tab's
+  id). Closing several is one call in `tabs.rs` (`Tabs::close_others`, `close_right`), drawn and saved
+  once. Driver: `tabmenu <pane> <index>` (0-based; the menu as a right click opens it), then `toolmenu
+  <text>`; `clickat <x> <y> right` on a tab takes the real pointer path. `[tab] pane=N menu on tab I:
+  <items, (off) disabled>` (I from 1, as the other `[tab]` lines count), `[tab] pane=N tab I: close
+  others (K closed) | close to the right (K closed) | duplicate -> tab J | duplicate refused`,
+  `[toolbar] pane=N picks "<item>" -> tab:<command>`. **Folder sizes say they have started**: while
+  folders Alt+Shift+Enter (or More's "Size all folders") queued are waiting or walking, the pane's status
+  line ends ` | Sizing N folders…` (`statusbar::with_sizing`, `TabSizes::sizing`: only requests marked
+  `all`; built in `update_status`, never per frame), and each of those folders' Size cells reads `…`
+  (`model::SIZING`, `PaneModel::set_sizing`: the size stays 0, so the sort reads it as an empty cell;
+  emptied when the walk is cancelled, kept across a watch's refresh) until its size lands. `[size] pane=N
+  sizing K folder(s)` when the count appears and `sizing 0 folder(s)` when the last lands (a navigation
+  or F5 that cancels them logs the `cancelled` lines only). **A saved search is seen to be saved**: every
+  way of saving one (Ctrl+D, More's, the Searches header's, the tab menu's), for a new row and for one
+  saved already, scrolls the sidebar to its row and shows it in the hover colour for 1.5 s (app.slint
+  `flash-side`, `side-flash` and one `Timer`; main.rs `flash_search`, which hands the row's top over
+  because the state is borrowed then); on the rail, the row of its icon. `[sidebar] saved search <i>
+  flashed`. **An extract whose every file was skipped** (Here, Skip answered, nothing written) reads
+  "Nothing extracted from <zip>: every file was skipped" and records no undo. `tools/check-p15m3.ps1` is
+  the scripted check.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

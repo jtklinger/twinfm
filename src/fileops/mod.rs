@@ -270,6 +270,8 @@ pub fn status_text(job: &Job, outcome: &Outcome, results: &[ItemResult]) -> Stri
             }
             Job::Compress { .. } => format!("Compressed {} to {}", items(job.count()), real_name(job, results).unwrap_or_default()),
             Job::Extract { archive, named: true, .. } => format!("Extracted {} to {}", file_name(archive), real_name(job, results).unwrap_or_default()),
+            // Here, with every file there already and Skip answered (`archive::extract`).
+            Job::Extract { archive, .. } if results.is_empty() => format!("Nothing extracted from {}: every file was skipped", file_name(archive)),
             Job::Extract { archive, .. } => format!("Extracted {} from {}", items(results.iter().filter(|r| r.ok()).count()), file_name(archive)),
         },
     }
@@ -1283,6 +1285,9 @@ mod tests {
         assert_eq!(status_text(&nuke, &Outcome::Done, &[]), "Deleted 3 items permanently");
         let ren = Job::Rename { source: PathBuf::from("a"), new_name: "b.txt".into() };
         assert_eq!(status_text(&ren, &Outcome::Done, &[]), "Renamed to b.txt");
+        // Here with every file there already and Skip answered: no results (P15-M3).
+        let here = Job::Extract { archive: PathBuf::from("a.zip"), dest_dir: PathBuf::from(r"C:\d"), named: false };
+        assert_eq!(status_text(&here, &Outcome::Done, &[]), "Nothing extracted from a.zip: every file was skipped");
         let nf = Job::NewFolder { parent: PathBuf::new(), name: "New folder".into() };
         assert_eq!(status_text(&nf, &Outcome::Done, &[]), "Created New folder");
         let made = [ItemResult { source: PathBuf::from(r"C:\d"), dest: Some(PathBuf::from(r"C:\d\New folder (2)")), hr: 0 }];

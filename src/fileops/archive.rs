@@ -617,6 +617,8 @@ pub fn extract(req: &Request, a: &Path, dest_dir: &Path, named: bool, progress: 
     let engine = if unzip.is_some() { "TwinFM's reader" } else { "the shell" };
     eprintln!("[archive] extract {} -> {} ({}): {} root item(s), {engine}", a.display(), dest.display(), if named { "named" } else { "here" }, roots.len());
     let existed: Vec<PathBuf> = if named { Vec::new() } else { roots.iter().map(|r| dest.join(r)).filter(|p| there(p)).collect() };
+    // Every file was there already and the answer was Skip: nothing was written (P15-M3).
+    let mut all_skipped = false;
     let (outcome, tail) = match unzip {
         Some(mut u) => {
             let clash = if named { Vec::new() } else { u.clashes(&dest) };
@@ -626,7 +628,10 @@ pub fn extract(req: &Request, a: &Path, dest_dir: &Path, named: bool, progress: 
                 Some(c) => {
                     let mut report = reporter(req.id, progress);
                     match u.extract(&dest, password.as_deref(), c == Conflict::Skip, &mut report, cancelled) {
-                        Ok((finished, s)) => (if finished { Outcome::Done } else { Outcome::Cancelled }, format!("{} files, {} bytes", s.files, s.bytes)),
+                        Ok((finished, s)) => {
+                            all_skipped = finished && c == Conflict::Skip && s.files == 0;
+                            (if finished { Outcome::Done } else { Outcome::Cancelled }, format!("{} files, {} bytes", s.files, s.bytes))
+                        }
                         Err(e) => (Outcome::Error(e), "stopped at that file".to_string()),
                     }
                 }
@@ -646,7 +651,9 @@ pub fn extract(req: &Request, a: &Path, dest_dir: &Path, named: bool, progress: 
     };
     // What landed. An extract that did not finish claims nothing that was there before it.
     let landed: Vec<&String> = roots.iter().filter(|r| there(&dest.join(r)) && (outcome == Outcome::Done || !existed.contains(&dest.join(r)))).collect();
-    let results = if !named {
+    let results = if all_skipped {
+        Vec::new() // the status line says so (`status_text`)
+    } else if !named {
         landed.iter().map(|r| ItemResult { source: a.join(r), dest: Some(dest.join(r)), hr: 0 }).collect()
     } else if landed.is_empty() {
         // Nothing came out: the folder made for it goes again.
