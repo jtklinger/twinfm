@@ -270,6 +270,8 @@ pub fn status_text(job: &Job, outcome: &Outcome, results: &[ItemResult]) -> Stri
             }
             Job::Compress { .. } => format!("Compressed {} to {}", items(job.count()), real_name(job, results).unwrap_or_default()),
             Job::Extract { archive, named: true, .. } => format!("Extracted {} to {}", file_name(archive), real_name(job, results).unwrap_or_default()),
+            // Here, with every file there already and Skip answered (`archive::extract`).
+            Job::Extract { archive, .. } if results.is_empty() => format!("Nothing extracted from {}: every file was skipped", file_name(archive)),
             Job::Extract { archive, .. } => format!("Extracted {} from {}", items(results.iter().filter(|r| r.ok()).count()), file_name(archive)),
         },
     }
