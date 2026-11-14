@@ -704,3 +704,190 @@ and this).
 - **The gate wrapper asks for one tag for both triplets** (12 runs, about 18 minutes), as Phase 14's did.
 - **The soak's drag count accepts any width over 100** rather than one figure, since the figure depends
   on the machine's measured floors.
+
+## P15-M4: search patterns
+
+Built by the lists and search stream on `feat/p15-m4-search-patterns`, cut from main at 73de9e1 (P15-M1 and
+P15-M2 merged), 2026-11-14.
+
+### Settled first
+
+- **Today's patterns that contain a bracket still match what they did**
+  (`model::tests::patterns_with_a_bracket_match_what_they_did`). Three cases. A pattern with no `*` or `?`
+  is a substring as ever, brackets and all, so `notes [draft].txt` typed whole matches itself and
+  `[draft]` finds it: classes exist only inside a glob. A glob whose `[` has no `]` after at least one
+  character (`*[draft*`, `a[*`, `*[]*`) reads the bracket as a plain character. A glob with a whole pair
+  (`*[draft]*`, `[draft]*`, `photo[1]?.jpg`) is a class now, and would have lost the names it matched
+  with its brackets read plainly (`[draft] notes.txt` does not start with one of d, r, a, f, t): so such a
+  glob is tried both ways, as a class and as it was read before (`NameMatch`'s `literal`), and a name
+  matching either is shown. No pattern lost a match; a glob with a class matches a little more than a
+  strict class would (the lead's call, below).
+- **What the `regex` crate adds to the exe**: `target\release\twinfm.exe` 36,964,864 bytes at main's code
+  (73de9e1) and 38,543,872 with the crate linked in and used: **1,579,008 bytes more, 4.3%**. The crate
+  was in `Cargo.lock` already (1.13.1, a dependency of Slint's build), so the lock gained one line; its
+  default features are kept (Unicode classes such as `\p{L}` work). Trimming the Unicode tables was not
+  measured.
+- **What an expression costs a content search** (`tools/time-p15m4.ps1`, 2026-11-14, the machine quiet,
+  the branch's release build): a tree of 400 text files of 256 KB (100 MB), the text in 8 of them, one
+  search tab searched seven times, a warm-up first, then plain text and the same text as `re:`,
+  alternating:
+
+  | | run 1 | run 2 | run 3 | median |
+  |---|---|---|---|---|
+  | plain text (`quick-needle 2026`) | 934 ms | 968 ms | 980 ms | 968 ms |
+  | the same as `re:quick-needle 2026` | 90 ms | 86 ms | 83 ms | 86 ms |
+
+  Both found 8 in 400 files read every time. The expression is about eleven times faster, not slower: the
+  plain path lowercases the whole text of every file before it looks (`content::first_match`), and the
+  crate searches the text as it is. The plain path stays as it is for a pattern without the prefix (the
+  plan's rule); sending plain text through the crate too would make every content search that much
+  faster, and is a follow-up below, not done here.
+
+### What landed
+
+- **Glob classes** (done): `[abc]`, `[a-z]`, `[!abc]` in a glob (`model::NameMatch`: the glob is tokens
+  now, `Tok::Class`), anchored and case-insensitive as the rest; a `-` first or last and a `]` first are
+  themselves. The filter, the name search and the search inside an archive share it.
+- **Regular expressions** (done): the box's text starting `re:` (`model::typed`, the one place the prefix
+  is read; `\re:` is the plain text) compiled by `model::compile` (case-insensitive, `^` and `$` at each
+  line's ends, CRLF or LF, compiled size at most 1 MB), in the live filter and the name search
+  (`NameMatch`'s `regex`: found anywhere in the file's own name, never its path) and in the content search
+  (`fs::content::Needle::Regex`, `first_match_regex`: the row shows the line the match starts in, cut
+  around it as a plain match's is, from the match's own place). `(?-i)` in the expression makes it
+  case-sensitive. The 16 MB cap, the binary test and the cloud rules are untouched.
+- **A half-typed expression** (done): the live filter keeps the listing as it was before the edit and the
+  status line reads "Not a pattern yet: <the crate's reason, its last line>" (`apply_filter`; the note goes
+  when the text is a pattern again or the box is cleared); Return, the search button, Ctrl+Shift+F, a
+  saved search and a history entry with one search nothing and show the same note (`start_search`). `re:`
+  with nothing after it is one ("nothing after re:").
+- **Tooltips and README** (done): the search button's and the content toggle's tooltips are two lines,
+  naming `*`, `?`, `[a-z]` and `re:`; `README.md`'s filter and search item has both with examples.
+- **Lines** (done): the `[filter]` pass line's kind `glob | substring | regex`; `[filter] pane=N "<text>":
+  not a pattern yet (<why>)`; the search's start lines name the kind after the pattern (`start "<pattern>"
+  (glob | substring | regex) in <root>`, `content "<text>" (text | regex) in <root>`); `[search] pane=N
+  "<pattern>": not a pattern yet (<why>)`. No new driver step.
+- **Tests** (359, four new): `patterns_with_a_bracket_match_what_they_did`, `glob_classes`,
+  `typed_expressions` (the prefix and its escape, names, the path left out, case, four half-typed
+  expressions with their one-line reasons, the size cap, equality by what was typed) in `model`;
+  `an_expression_shows_the_line_it_matched_in` in `fs::content` (case, `^` and `$` with CRLF, a match
+  spanning lines, the cut of a long line); and in the tests there were: the name walker with a class and
+  with an expression, the content walker with an expression (the same files read and left as for plain
+  text), `search_file` with one.
+- **`about.toml` and the packaging** (checked): `tools/package-release.ps1` ran on the branch with no
+  licence refused. `THIRD-PARTY-LICENSES.html` gained four notices against 0.5.0's page: `regex 1.13.1`,
+  `regex-automata 0.4.18` and `regex-syntax 0.8.11` under Apache License 2.0, `aho-corasick 1.1.5` under
+  MIT (`memchr` was there). `about.toml` needed no change.
+- **Commits**: the classes and the expressions are one code commit (9e02fb0: they share `NameMatch`); the
+  tooltips and README, the soak cycle, the scripts, `CLAUDE.md` and this record a commit each.
+
+### Scripted checks (2026-11-14, the branch's release build, `tools/check-p15m4.ps1`, a scratch settings file and tree in `%TEMP%`)
+
+A folder of 13 names and a subfolder of three text files. From the output:
+
+- Brackets as before: `[filter] pane=0 "notes [draft].txt" (substring): 1 of 13 shown`, `"[draft]"
+  (substring): 1 of 13` (the same file), `"half[*" (glob): 1 of 13` (`half[open.txt`), `"*[draft]*" (glob):
+  9 of 13` (every name holding one of the letters, `notes [draft].txt` among them).
+- Classes: `"*.[ch]" (glob): 2 of 13` (`main.c`, `main.h`, not `main.cpp`); `"report-202[0-9]*" (glob): 1 of
+  13` (`report-2024.docx`, not `report-202x.docx` nor `report-2019.docx`); `"[!a-m]*" (glob): 6 of 13`.
+- An expression: `"re:^IMG_\d{4}\.jpe?g$" (regex): 2 of 13` (`IMG_0412.jpg`, `IMG_0413.JPEG`, not
+  `IMG_041.jpg`); `"re:(?-i)img" (regex): 0 of 13`.
+- Half typed: `[filter] pane=0 "re:^IMG_\d{4}\.(jpe?g": not a pattern yet (unclosed group)` and the rows
+  logged after it are the two of before; finished, `"re:^IMG_\d{4}\.(jpe?g|png)$" (regex): 2 of 13`; `"re:":
+  not a pattern yet (nothing after re:)`, the rows kept again.
+- The escape: `"\re:" (substring): 0 of 13` (no file name holds a colon), and the content search `content
+  "\re:port" (text)`: `1 found`, `fixme.c  (sub)  // see re:port 7`.
+- Name searches: `start "*.[ch]" (glob)`: `3 found` (`fixme.c  (sub)`, `main.c`, `main.h`); `start
+  "re:^img_\d+\.jpe?g$" (regex)`: `4 found`, `IMG_0500.jpg  (sub)` among them. Return and the button on
+  `re:img_(`: `[search] pane=0 "re:img_(": not a pattern yet (unclosed group)`, the note, no tab.
+- Content searches: `content "todo" (text)`: 2 found; `content "re:^\s*(TODO|FIXME)" (regex)`: 1 found,
+  `todo.txt  (sub)  TODO: write the docs` (the line in the middle of the file, its indent trimmed; the file
+  whose `todo` is mid-line left out); `content "re:TODO|FIXME" (regex)`: 3 found, each row with its own
+  line (`int x; // fixme later`); `re:TODO|(`: not a pattern yet, no tab.
+- A saved search with a pattern: `[sidebar] saved search added "Text "re:TODO|FIXME" in files"`, the
+  settings' `pattern = "re:TODO|FIXME"`, `content = true`; after a restart `saved search 0 opened`,
+  `content "re:TODO|FIXME" (regex)`, 3 found, the same rows.
+
+No `panicked` line in either run. The check's first version named a file `a re:port.txt`, which Windows
+refuses (a colon); the escape is checked in a content search since.
+
+### Soak (2026-11-14, `tools/soak-p5m3.ps1 -Minutes 10`, the branch's release build at 72a8b48 with the check script's fix)
+
+A remote desktop session, TwinFM at 100% scale this time (the drag images read 128 px, 96 px and 80 px).
+Three full cycles.
+
+- `ran 10.1 min, window closed by script: True, exit code 0`; 0 panicked lines; 226 jobs done, 0 failed, 0
+  cancelled; 0 soak refusals; 0 `waitops` timeouts; every "must be 0" count 0.
+- **The scripted drags** (P15-M2's open finding, a right-button drag that never returned): 15 started, 6 of
+  them with the right button, 15 returned, all 15 `0x00040101 (cancelled)`, none still running after 20 s,
+  none dropped. It did not recur in this run.
+- This milestone's lines: `content search: done 9 (three per cycle), files read 1812 (600 or more per
+  cycle), found 12 (four per cycle)`; name searches with a class started 3 and done 3 (30 found in the
+  first cycle, 32 in the next two: the cycle's other steps leave two more files of those names in `src`;
+  the report's count read "done with 30 found 1" in this run and takes 30 or more since); content searches
+  with an expression started 3, done with 2 found 3; not-a-pattern lines 0.
+- The lines there were, among them: extract 9 done and 9 undone, Size on disk grip drags 3, fits 3, sorts
+  3, widths back at 120, 90, 140 ten times, sizes view mismatches 0.
+- Memory: working set 154.0 MB at 5 s, 244.5 MB at 601 s (largest 250.8); private 165.3 -> 230.7 MB.
+
+The run's log, memory samples and summary are kept until the phase closes as `p15m4-soak-stderr.txt`,
+`p15m4-soak-memory.csv` and `p15m4-soak-summary.txt` in the sessions' shared notes folder.
+
+### Gate
+
+One triplet at the defaults against the last gate build, `tools/gate-p15m4.ps1` (tag ab83, reference
+`target-p15m2`, the coordinating session's to change at build time): the scenario filters and searches
+nothing, so it proves the rest untouched with the crate linked in; the wrapper also checks that no run
+holds a `[filter]` or `[search]` line. The content search's own cost is the timed pair above. The result is
+recorded here when it has run.
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+The search box is at the right end of each pane's path bar; Ctrl+F puts the cursor in it.
+
+1. **A class in the filter.** In a folder of source files (the repo's `src\fs` will do; any folder with
+   `.c`, `.h` or mixed extensions) type `*.[ch]` or, in `twinfm\src`, `[a-c]*.rs`: only the names whose
+   letter at that place is in the brackets stay. In Downloads or Documents, `report-202[0-9]*` (or any name
+   of yours with a year) keeps the 2020s only.
+2. **An expression in the filter.** In Pictures or Downloads type `re:^IMG_\d{4}\.jpe?g$`: the list narrows
+   to the camera's names as you finish typing it.
+3. **Half typed.** Type the same expression slowly, or stop at `re:^IMG_\d{4}\.(jpe`: while the brackets
+   are open the list does not change, and the status bar at the window's foot reads "Not a pattern yet:
+   unclosed group". Finish it and the note goes.
+4. **Return searches below.** With `re:^IMG_\d{4}\.jpe?g$` in the box press Return: a new tab lists every
+   such file in the folder and its subfolders. Press Return on a half-typed one: no tab, the same note.
+5. **Inside files.** In the repo's folder (`C:\Users\jtkli\projects\twinfm`) click the page-shaped button
+   in the search box (it lights up), type `re:TODO|FIXME` and press Return: each result's row shows the line
+   with the word. Then `re:^fn main` : only files with that at the start of a line.
+6. **The tooltips.** Rest the pointer on the search box's two buttons: each tooltip has a second line
+   naming `*`, `?`, `[a-z]` and `re:`. They have not been seen on screen by the session: check that the
+   second line is readable and the tooltip stays inside the window.
+7. **A saved search with a pattern.** In the tab of check 5 press Ctrl+D: the sidebar's Searches group
+   gains `Text "re:TODO|FIXME" in twinfm`. Close TwinFM, start it again, click that row: the search runs
+   again with the same results.
+8. **A name with brackets.** If a folder has a file with square brackets in its name, type the name whole,
+   or just its bracketed part: it is still found, as before.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **A glob with a class also matches what it matched before the classes** (its brackets read as plain
+  characters), so no pattern in use lost a match. The other choice was a strict class, which is tidier and
+  would have broken `[draft]*` for a file named `[draft] notes.txt`.
+- **Classes work only inside a glob** (a pattern with `*` or `?`), as the plan's examples have them:
+  `report-202[0-9]` alone is still the plain text, `report-202[0-9]*` the class.
+- **`re:` with nothing after it is "not a pattern yet"**, not an expression that matches everything.
+- **The reason shown is the crate's own last line** ("unclosed group", "unclosed character class"), in
+  English, without its picture of the expression.
+- **The tooltips are two lines**; one line naming all four would have been wider than a narrow pane.
+- **The crate's default features are kept**, at 1.5 MB of exe.
+- **The search's start lines carry the kind after the pattern** (`start "x" (glob) in ...`), so the soak's
+  and the checks' matches on `start "<pattern>"` still hold.
+- **The classes and the expressions are one code commit**: they are one structure.
+
+### Follow-ups, not done here
+
+- **Plain-text content search through the crate**: the timed pair shows the plain path at about eleven
+  times the expression's time on 100 MB, all of it the lowercasing of each file's whole text. An escaped,
+  case-insensitive expression for plain text would give every content search that speed; one difference to
+  settle first is the final sigma rule `content::fold` has. For the roadmap unless Jeremy wants it sooner.
+- **`fs::watch::tests::bursts_are_coalesced` failed once under load** during P15-M2 (recorded there): a
+  timing the test does not allow for. Not seen in this milestone's runs.
