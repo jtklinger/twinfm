@@ -18,6 +18,9 @@ zip = { version = "=9.0.3", default-features = false, features = ["deflate-flate
 tar = { version = "=0.4.46", default-features = false }
 # Compress to > 7z file (P7-M3): LZMA2 in pure Rust; Apache-2.0; no encryption, bzip2 or ppmd.
 sevenz-rust2 = { version = "=0.24.1", default-features = false, features = ["compress"] }
+# Regular expressions in the filter and the searches (P15-M4: `re:` in the search box); MIT OR
+# Apache-2.0, linear time, in the tree already through Slint's dependencies.
+regex = "=1.13.1"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 raw-window-handle = "0.6"
