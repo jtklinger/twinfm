@@ -277,6 +277,192 @@ on `bigdir.zip`, and whether the progress sink's results hold for a root's full 
 `[` still match what they did (P15-M4); whether the eight bytes an entry gains show in the defaults triplet
 (P15-M2's gate answers it).
 
+## P15-M1: Extract in the menu
+
+Branch `feat/p15-m1-extract`, the menus stream.
+
+### Settled first
+
+**Which engine unpacks a zip.** Both were timed on `C:\traces\bigdir.zip` (40,000 files at its root) by the
+ignored test `fileops::archive::tests::probe_extract_engines` (never part of the gates), each into an empty
+folder under `%TEMP%`, one after the other, 2026-11-13, with the coordinating session's clearance:
+
+| Engine | Time | What it reported |
+|---|---|---|
+| TwinFM's own reader (`fs::unzip`, the `zip` crate) | 23.1 s | Done |
+| The shell (a copy of the 40,000 root items out of the zip folder, `IFileOperation`) | 802.6 s | done, 40,000 root items, the sink reported 40,000 items |
+
+The shell is about 35 times slower, far past the kickoff's "more than twice": **a zip is unpacked by TwinFM's
+own reader**, and the other formats go through the shell, which is the only thing that reads them.
+
+**Whether the progress sink's results hold for a root's full item list.** What is known: for 40,000 root
+items the sink reported 40,000 items, one per root item, so the count holds. What is not known: whether
+`own_results` (the pass that keeps, of the sink's items, those that are the job's own top-level items) keeps
+all 40,000. That was the probe's third step, and it did not finish: it compares every result against every
+item, and after 54 minutes at full CPU (about 68 minutes of processor time) it was still running, so it was
+stopped and no figure exists for it. The Extract job does not depend on the answer: for the shell's formats
+it never runs that pass and reads the items that landed from the disk (the root's names, looked for in the
+destination), and for a zip the reader knows what it wrote. The same pass still runs for ordinary copies and
+moves, where a job of tens of thousands of top-level items would spend a long time in it after the shell had
+finished; that is older than this milestone and is listed below as a follow-up, not fixed here.
+
+### What landed
+
+- **Extract to** in the Windows 11 menu, a submenu above Compress to, when every selected item is a file
+  TwinFM opens as a folder (in a folder or a search tab; not inside an archive, not on This PC, not for a
+  selection with anything else in it): **`<name>\`** (several archives: "A folder each"), **Here**, and
+  **Other pane** when two panes show and the other is on a folder.
+- **The folder's name**: the archive's without its extension (`a.tar.gz` gives `a`), numbered when taken
+  (`a (2)`): `fs::archive::folder_name`, `extract_folder`.
+- **The job**: `Job::Extract { archive, dest_dir, named }` on the file operation worker, one per archive
+  (`fileops::archive::extract`). The worker lists the root and makes the folder; the UI thread reads no
+  archive.
+- **A zip by TwinFM's own reader** (`src/fs/unzip.rs`): the job's percentage in the status bar, TwinFM's
+  password question, TwinFM's replace question for Here, each file given its entry's time. Names are split
+  at `/` and `\` with empty, `.` and `..` parts dropped, so nothing lands outside the destination; a zip
+  holding a name with `:` is refused whole.
+- **The other formats through the shell**: a copy of the root items, with Windows' own progress window and
+  its own replace and password questions.
+- **Escape stops a running extract** before its next file, also when it is the only job; what was written
+  stays.
+- **Undo** recycles the folder made, or for Here the root items that landed; an extract that landed on an
+  item already there is not undone (P11-M3's rule).
+- **The cursor** of each pane showing the folder a named extract was made in goes to the new folder.
+- **Open in other pane** for one archive file.
+- **Driver**: `menuopen Extract to` then `menupick <name>\ | Here | Other pane`; `extract <pane>
+  <here|named|other>`. Lines in `CLAUDE.md` § Measuring.
+- **The soak** (`tools/soak-p5m3.ps1`) gains an extract cycle; `tools/check-p15m1.ps1` is the scripted check.
+
+### Tests
+
+`cargo test --release`: `test result: ok. 353 passed; 0 failed; 2 ignored` (348 before; the two ignored are
+the probe above and the older `measure_walks`). New: `fs::unzip`'s two (names kept below the destination; a
+zip unpacked with its folders, times and password), `fs::archive`'s folder names, `winmenu`'s Extract to
+items, `fileops::archive::extracts_on_the_worker` (a zip, a 7z and a tar.gz through the real worker), and a
+password zip's extract inside `zip_jobs_on_the_worker`. No test was run twice.
+
+### Scripted checks
+
+`tools/check-p15m1.ps1`, one scripted run in `%TEMP%\twinfm-p15m1-check\`; it ran to its `quit` step with no
+panic and no timeout (the exit code printed blank in that run; the script has waited for the exit since).
+From its stderr:
+
+```
+[winmenu] pane=0 seq=1 shown after 250 ms (...): [Cut Copy Rename Share Delete] Open | Open with > | Open in other pane | Open in terminal | --- | Extract to > | Compress to > | Copy path | Properties | --- | Show more options
+[winmenu] submenu "Extract to" at (495, 494): [] a\ | Here
+[archive] extract ...\work\a.zip -> ...\work\a (named): 2 root item(s), TwinFM's reader
+[archive] extract ...\work\a.zip: Done in 12 ms, 3 files, 19 bytes, 2 of 2 root item(s) landed
+[undo] recorded "Extracted a.zip to a": Some(Delete { sources: ["...\\work\\a"], permanent: false })
+[auto] scrollpos pane=0 content-y 0.0 current-row 0
+[undo] done id=2 Done: Undid: Extracted a.zip to a
+[archive] extract ...\work\a.zip -> ...\work (here): 2 root item(s), TwinFM's reader
+[undo] recorded "Extracted 2 items from a.zip": Some(Delete { sources: ["...\\work\\top.txt", "...\\work\\tree"], permanent: false })
+[winmenu] submenu "Extract to" at (495, 494): [] a\ | Here | Other pane
+[archive] extract ...\work\a.zip -> ...\other\a (named): 2 root item(s), TwinFM's reader
+[auto] scrollpos pane=1 content-y 0.0 current-row 0
+[archive] extract: folder a taken: a (2)
+[archive] extract ...\work\b.7z -> ...\other\b (named): 2 root item(s), the shell
+[archive] extract ...\work\b.7z: Done in 145 ms, the sink reported 8 item(s), 2 of 2 root item(s) landed
+[archive] extract ...\work\c.tar.gz: Done in 116 ms, the sink reported 8 item(s), 2 of 2 root item(s) landed
+[winmenu] submenu "Extract to" at (495, 530): [] A folder each | Here | Other pane
+[fileops] done id=11 pane=0 tab=1 Done: Extracted a.zip to a
+[fileops] done id=12 pane=0 tab=1 Done: Extracted d.zip to d
+[archive] extract ...\work\pw.zip: Error("this zip is password-protected and the script gave no password") in 7 ms
+[archive] password for ...\work\pw.zip (ZipCrypto): from the script
+[archive] password for ...\work\pw.zip: right
+[archive] extract ...\work\pw.zip: Done in 6 ms, 1 files, 5 bytes, 1 of 1 root item(s) landed
+[ask] shown replace "Replace files in work?" (from fileops, 0 waiting)
+[ask] replace answered Skip after 154 ms
+[archive] 3 file(s) already in ...\work: skip
+[ask] replace answered Replace after 155 ms
+[archive] 3 file(s) already in ...\work: replace
+[fileops] pane=0 note: Cannot undo: it replaced a file, which cannot be brought back
+[menu] open in other pane: ...\work\a.zip
+[archive] extract C:\traces\bigdir.zip -> ...\other\bigdir (named): 40000 root item(s), TwinFM's reader
+[fileops] Escape: cancelling 0 queued operation(s) up to id 20, an extract among the jobs
+[archive] extract C:\traces\bigdir.zip: Cancelled in 3226 ms, 4820 files, 4820 bytes, 4820 of 40000 root item(s) landed
+```
+
+The menu for a zip and a text file together showed no Extract to. The picture of the menu with the submenu
+open (`%TEMP%\twinfm-p15m1-check\menu.png`, the software renderer) was looked at: Extract to sits above
+Compress to, its submenu beside it reads `a\`, `Here`.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` on the merged branch's release build (505ec9e's code, v0.5.0), 2026-11-13,
+display scale 125%, harness-launched: ran 10.1 min, window closed by the script, exit code 0, 0 panicked
+lines; 234 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0, menupicks refused 0.
+
+```
+extract: by TwinFM's reader 6 (two per cycle), through the shell 3 (one per cycle), done 9 (three per cycle), not done 0 (must be 0), undone 9 (three per cycle)
+Windows 11 menu: shown 60 (eight per cycle with P15-M1's Extract to, and each rebuild again), rebuilt with the worker's answer 0, picks run 51 (five per cycle), ZIPs made 3, new folders 6 (two per cycle: the menu's and the toolbar's), submenus 15 (three per cycle), classic menus from Show more options 3, menupicks refused 0 (must be 0)
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+working set: start 179.7 MB at 5 s, end 256.6 MB at 600 s; private: 199.7 -> 262.9 MB
+```
+
+Every other count read as its "per cycle" figure says (three full cycles). **The right-button drag the lists
+stream's soak saw hang did not show here**: 15 drags started (`DoDragDrop starts`, 6 of them with the right
+button), 15 returned, 15 cancelled, and no `the scripted drag is still running after 20 s` line. The working
+set's rise over ten minutes is the soak's usual one (the phase's 60-minute soak is the memory check).
+
+### Gate
+
+Pending. Wrapper `tools/gate-p15m1.ps1`: tag ab80, `target-p15m1` against `target-p14close`, the defaults
+only (the scenario opens no menu and runs no file job, and the wrapper checks that the candidate's runs log
+no `[archive] extract` line). The gate build and the run are the coordinating session's and Jeremy's.
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+1. **A zip to its own folder.** In a folder with a zip (Downloads will do), right-click the zip. The menu
+   shows "Extract to" just above "Compress to"; point at it and pick the first entry, the zip's name with a
+   backslash. A folder of that name appears in the same list with the cursor on it, and the status bar reads
+   "Extracted <zip> to <name>".
+2. **Ctrl+Z after it.** The folder goes (to the Recycle Bin); the status bar reads "Undid: Extracted ...".
+3. **Here.** Right-click the zip, Extract to, Here: the zip's top-level items appear beside it in the same
+   list. Ctrl+Z takes them away again.
+4. **Other pane.** With two panes showing (the toolbar's Two panes, or F3) and the other pane on any folder,
+   Extract to has a third entry, "Other pane": the new folder appears in the other pane, cursor on it.
+5. **The same folder twice.** Extract the same zip to its folder twice without undoing: the second folder is
+   named `<name> (2)`.
+6. **A 7z and a tar.gz** (`C:\traces\bigdir.7z` is large; any small one is better): Extract to, the name.
+   Windows' own progress window may flash; the folder appears as for a zip.
+7. **Several zips.** Select two or more zips, right-click one: the first entry reads "A folder each", and a
+   folder per zip appears. Ctrl+Z, once per zip, removes them.
+8. **A zip and another file together.** Select a zip and a text file, right-click: no "Extract to" in the menu.
+9. **A password zip** (`C:\traces\password-twinfm.zip`, password `twinfm`): Extract to its folder. TwinFM's
+   own password question appears in the middle of the window; a wrong password asks again, Cancel leaves
+   nothing behind but an empty status, the right one unpacks.
+10. **Here into a folder that already has the files.** Do Here twice: the second time TwinFM asks "Replace
+    files in <folder>?" with Cancel, Skip, Replace. After Replace, Ctrl+Z says "Cannot undo: it replaced a
+    file, which cannot be brought back".
+11. **Escape during a large one.** Extract `C:\traces\bigdir.zip` to the other pane (on a scratch folder);
+    the status bar counts up a percentage. Press Escape with the keys in a file list: the status bar reads
+    "Cancelling the extract", then "Cancelled", and the folder holds the files written so far.
+12. **Open in other pane on a zip.** Right-click a zip, "Open in other pane": the other pane shows the zip's
+    contents as a folder.
+
+### Calls made in this milestone
+
+- **Extract to sits above Compress to**; both show for an archive file.
+- **Escape stops a running extract** (the kickoff did not say). The files written so far stay; a stopped or
+  failed extract leaves its partly filled folder and records no undo.
+- **One bad entry stops a zip's extract** with an error rather than being skipped, and a zip with a `:` in
+  any name is refused before anything is written.
+- **For the shell's formats, what landed is read from the disk**, not from the sink's list (see Settled
+  first).
+- **Other pane is hidden**, not greyed, unless two panes show and the other is on a real folder.
+- **Open in other pane** is offered for one archive anywhere a file menu shows; Extract only in a folder or
+  a search tab.
+- **After "Skip" for every file** the status still reads "Extracted N items from <zip>" though nothing was
+  written (nothing to undo is recorded). Left as it is; say if it should read otherwise.
+- The password question names "AES-256" for any AES zip (128 and 192 too), as the zip writer's does.
+
+### Follow-ups, not done here
+
+- `own_results` is quadratic in a job's top-level items (Settled first): an ordinary copy or move of tens of
+  thousands of items out of one folder would spend many minutes in it after the shell had finished. For the
+  roadmap unless Jeremy wants it sooner.
+
 ## P15-M2: the Size on disk column's grip and sort
 
 Built by the lists and search stream on `feat/p15-m2-ondisk`, 2026-11-13.
@@ -448,11 +634,24 @@ day:
 
 ### Gate
 
-Two triplets under one tag against `target-p14close`, `tools/gate-p15m2.ps1` (the tag and the head are the
-coordinating session's to set): the defaults, whose question is the eight bytes every entry gained, and
-`C:\traces\ondisk.toml` (`size_on_disk = true`), whose lists read the column's width from the pane's
-setting. The wrapper also checks that no defaults run reads a size on disk. The result is recorded here
-when it has run.
+Two triplets under one tag against `target-p14close`, `tools/gate-p15m2.ps1`: the defaults, whose question
+is the eight bytes every entry gained, and `C:\traces\ondisk.toml` (`size_on_disk = true`), whose lists
+read the column's width from the pane's setting. The wrapper also checks that no defaults run reads a size
+on disk.
+
+**Tag ab81, 2026-11-14 08:28, 8fd8c7d against `target-p14close`** (the figures as the coordinating session
+reported them): every run's checks ok, the render p50 1.98 to 2.28 ms across the twelve runs (no run in
+the costlier state).
+
+| WPR main-thread busy, % | p14close | p15m2 |
+|---|---|---|
+| The defaults | 18.8, 18.4, 18.5 (median 18.5) | 18.5, 18.5, 18.0 (median 18.5) |
+| The column on (`ondisk.toml`) | 18.6, 19.2, 18.4 (median 18.6) | 18.3, 18.8, 19.2 (median 18.8) |
+
+No gap that counts in either: the runs interleave and the medians differ by 0.0 and 0.2 points. The eight
+bytes an entry gained do not show in the defaults triplet (the kickoff's open question), and the column's
+lists cost nothing more for reading their width from the pane. Jeremy, on the gate: "Merge both" (P15-M1
+and this).
 
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 

@@ -60,7 +60,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (350 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (355 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -78,7 +78,8 @@ put off, with where it came from.
   files into one (and points the process's stderr at them while it runs), and since P13-M3 two
   more write a compressed and a sparse file, and a small tree with a hard link, into scratch folders, and one more lists a folder with the Size on
   disk column on and off, and since P14-M2 one more writes a small tree into a scratch folder and watches it
-  change, see below)
+  change, and since P15-M1 two more write zips, a 7z and a tar.gz into scratch folders and unpack them
+  there, see below)
 - `cargo build --release` (Slint comes from the `rustfm` branch of the jtklinger/slint fork,
   pinned by rev in `Cargo.toml`: master a1ce0d8 plus the two accessibility patches and, since
   2026-10-28, the ListView fix (row 0 kept at the content's top when a scrolled list gets a shorter model) in
@@ -1365,6 +1366,36 @@ put off, with where it came from.
   <y>` (P7-M4) and `trackhold <pane> <top|bottom> <ms>` (a press on the pane's list track 8 px from its
   top or bottom end, held `<ms>` through Slint's pointer path): `[auto] trackhold pane=N: content-y A ->
   B in K pages`. `tools/inapp-p14m3.ps1` runs the in-app pair with the pointer over the scrolling lists.
+  Since P15-M1, **Extract in the Windows 11 menu**: with archive files selected (one or several, every one
+  a file TwinFM opens as a folder, `main.rs` `is_archive_entry`: `fs::archive::is_archive_name` on its
+  name), in a folder or a search tab, the menu has an **Extract to** submenu above Compress to
+  (`winmenu::Cmd::Extract`, `extract_items`): **`<name>\`** (several: "A folder each"), a new folder beside
+  each archive named after it without its extension (`fs::archive::folder_name`: `a.tar.gz` gives `a`;
+  numbered when taken, `extract_folder`: `a (2)`), **Here** (the archive's root items into the folder it is
+  in) and **Other pane** (two panes showing, the other on a folder: a folder named after each archive
+  there). Not offered inside an archive, on This PC, or for a selection with anything else in it. Each
+  archive is one `Job::Extract { archive, dest_dir, named }` on the file operation worker
+  (`fileops::archive::extract`, called from `run_loop`), which lists the root itself (the UI thread reads no
+  archive) and makes the folder. **A zip is unpacked by TwinFM's own reader** (`src/fs/unzip.rs`, the `zip`
+  crate; names split at `/` and `\` with empty, `.` and `..` parts dropped, a zip holding a name with `:`
+  refused whole; each file given its entry's time): the job's percentage, TwinFM's password question
+  (`password_for`; `zippassword` in a script, and a script that gave none is refused), TwinFM's replace
+  question for Here into a folder that has some of the files (Replace, Skip, Cancel; replace under
+  `TWINFM_SOAK`), and **Escape stops it before its next file** (`cancel_queued` also when an extract is the
+  only job: `JobInfo::extract`; what was written stays). **The other formats go through the shell** as a
+  copy of the root items (its progress window, its own replace and password questions). Undo recycles the
+  folder made, or for Here the root items that landed; an extract that landed on an item already there is
+  not undone (P11-M3's rule, `Done::existed` from the worker). After a named extract the cursor of each
+  pane showing the folder it was made in goes to the new folder. **Open in other pane** shows for one
+  archive file too (`MenuContext::other`). Driver: `menuopen Extract to`, then `menupick <name>\`,
+  `menupick Here` or `menupick Other pane` (file jobs: a script may pick them); `extract <pane>
+  <here|named|other>` for the cursor row's selection without the menu; `waitops` waits for the jobs.
+  `[archive]` lines: `extract <archive> -> <dest> (named | here): N root item(s), TwinFM's reader | the
+  shell`, `extract <archive>: Done | Cancelled | Error("<why>") in T ms, F files, B bytes | the sink
+  reported K item(s) | stopped at that file, L of N root item(s) landed`, `extract: folder <name> taken:
+  <name (2)>`, `extract <archive>: Cancelled at the password`; `[auto] extract pane=N <to>: K archive(s)`;
+  `[fileops] Escape: cancelling K queued operation(s) up to id N, an extract among the jobs` with the note
+  "Cancelling the extract" when none waits. `tools/check-p15m1.ps1` is the scripted check.
   Since P15-M2, **the Size on disk column's grip, width and sort**. Its width is per pane and saved
   (`col_ondisk_left`, `col_ondisk_right`, default 100, 40 to 2,000; `cols::Widths::ondisk`, the window's
   `left-col-ondisk` / `right-col-ondisk`, read by the header, the grips, the rename editor and the on-disk
@@ -1655,7 +1686,14 @@ put off, with where it came from.
   `sizeview::tests::a_watched_tree_follows_its_changes` walks a small tree in
   `%TEMP%\twinfm-p14m2-test-<pid>\`, watches it (subtree), grows a file, makes, deletes and renames
   folders, moves one out to `%TEMP%\twinfm-p14m2-out-<pid>\`, and checks the followed tree against a
-  fresh walk. All remove their folders.
+  fresh walk. Since P15-M1 `fs::unzip::tests::a_zip_is_unpacked_with_its_folders_times_and_password`
+  writes zips into `%TEMP%\twinfm-p15m1-unzip-<pid>\` and unpacks them there, and
+  `fileops::archive::tests::extracts_on_the_worker` makes a zip, a 7z (TwinFM's writer) and a tar.gz
+  (Windows' `tar.exe`) in `%TEMP%\twinfm-p15m1-test-<pid>\` and extracts them through the real worker
+  (the 7z and the tar.gz through the shell's copy engine; no Recycle Bin: the undo jobs are checked, not
+  run), and `zip_jobs_on_the_worker` also extracts its password zip with the script's password. The
+  ignored `probe_extract_engines` (never part of the gates) unpacks `C:\traces\bigdir.zip` by both
+  engines into `%TEMP%\twinfm-p15m1-probe-<pid>\` and leaves it there. All remove their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

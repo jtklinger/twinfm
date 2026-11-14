@@ -83,6 +83,9 @@ pub enum Job {
     /// A new 7z or TAR archive of the items in `dest_dir` (Compress to, P7-M3), named after the
     /// first item by the worker.
     Compress { sources: Vec<PathBuf>, dest_dir: PathBuf, format: crate::fs::archivewrite::Format },
+    /// Unpack the whole of `archive` (P15-M1's Extract to): into a new folder in `dest_dir` named
+    /// after it by the worker (`named`), or its root items into `dest_dir` itself.
+    Extract { archive: PathBuf, dest_dir: PathBuf, named: bool },
 }
 
 impl Job {
@@ -92,7 +95,7 @@ impl Job {
             Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } | Job::Compress { sources, .. } => sources.len(),
             Job::MoveAs { items, .. } => items.len(),
             Job::Restore { items } => items.len(),
-            Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } => 1,
+            Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } | Job::Extract { .. } => 1,
         }
     }
 
@@ -108,6 +111,7 @@ impl Job {
             Job::Restore { items } => items.iter().map(|(_, original)| original.as_path()).collect(),
             Job::Rename { source, .. } => vec![source.as_path()],
             Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => vec![parent.as_path()],
+            Job::Extract { archive, dest_dir, .. } => vec![archive.as_path(), dest_dir.as_path()],
         }
     }
 }
@@ -187,10 +191,11 @@ fn long_path(path: &Path) -> PathBuf {
 }
 
 /// The name the shell really gave a renamed item, a new folder or a new file ("New folder (2)"),
-/// if the sink reported it; None for the other jobs.
+/// if the sink reported it (and the archive a Compress made, the folder an Extract made); None for
+/// the other jobs.
 pub fn real_name(job: &Job, results: &[ItemResult]) -> Option<String> {
     match job {
-        Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } | Job::Compress { .. } => results
+        Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } | Job::Compress { .. } | Job::Extract { named: true, .. } => results
             .iter()
             .filter(|r| r.ok())
             .find_map(|r| r.dest.as_ref()?.file_name().map(|n| n.to_string_lossy().into_owned())),
@@ -233,6 +238,11 @@ pub fn flags(job: &Job, no_confirm: bool) -> u32 {
     f
 }
 
+/// A path's last component, for a status line.
+fn file_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 fn items(n: usize) -> String {
     if n == 1 { "1 item".into() } else { format!("{n} items") }
 }
@@ -259,6 +269,8 @@ pub fn status_text(job: &Job, outcome: &Outcome, results: &[ItemResult]) -> Stri
                 format!("Created {}", real_name(job, results).unwrap_or_else(|| name.clone()))
             }
             Job::Compress { .. } => format!("Compressed {} to {}", items(job.count()), real_name(job, results).unwrap_or_default()),
+            Job::Extract { archive, named: true, .. } => format!("Extracted {} to {}", file_name(archive), real_name(job, results).unwrap_or_default()),
+            Job::Extract { archive, .. } => format!("Extracted {} from {}", items(results.iter().filter(|r| r.ok()).count()), file_name(archive)),
         },
     }
 }
@@ -274,6 +286,7 @@ pub fn running_text(job: &Job) -> String {
         Job::NewFolder { .. } => "creating folder...".into(),
         Job::NewFile { .. } => "creating file...".into(),
         Job::Compress { format, .. } => format!("compressing {} to {}...", items(job.count()), format.ext()),
+        Job::Extract { archive, .. } => format!("extracting {}...", file_name(archive)),
     }
 }
 
@@ -412,7 +425,8 @@ impl Worker {
 
     /// Cancel every job with an id up to `id` that has not started: the worker reports each as
     /// `Cancelled` without running it. A job already running is not touched (its own dialog
-    /// cancels it).
+    /// cancels it), except an Extract (P15-M1), which TwinFM's own reader runs with no dialog: it
+    /// stops before its next file.
     pub fn cancel_queued(&self, id: u64) {
         self.cancel_upto.fetch_max(id, std::sync::atomic::Ordering::AcqRel);
     }
@@ -438,11 +452,20 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
         }
         if msg.hwnd.is_null() && msg.message == WM_RUN {
             while let Ok(req) = rx.try_recv() {
-                let existed = existing_dests(&req.job);
-                let (outcome, results) = if req.id <= cancel_upto.load(std::sync::atomic::Ordering::Acquire) {
+                let mut existed = existing_dests(&req.job);
+                let cancelled = || req.id <= cancel_upto.load(std::sync::atomic::Ordering::Acquire);
+                let (outcome, results) = if cancelled() {
                     (Outcome::Cancelled, Vec::new()) // cancelled while queued: never started
                 } else if com >= 0 {
-                    perform(&req, &progress)
+                    match &req.job {
+                        // It lists the archive's root itself, so it says what was there before.
+                        Job::Extract { archive, dest_dir, named } => {
+                            let (outcome, results, there) = archive::extract(&req, archive, dest_dir, *named, &progress, &cancelled);
+                            existed = there;
+                            (outcome, results)
+                        }
+                        _ => perform(&req, &progress),
+                    }
                 } else {
                     (Outcome::Failed(com), Vec::new())
                 };
@@ -803,7 +826,7 @@ fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
         Job::MoveAs { items, .. } => items.iter().map(|(p, _)| p.as_path()).collect(),
         Job::Rename { source, .. } => vec![source.as_path()],
         Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => vec![parent.as_path()],
-        Job::Restore { .. } | Job::Compress { .. } => return all, // one result per item, made by `restore` or `archive`
+        Job::Restore { .. } | Job::Compress { .. } | Job::Extract { .. } => return all, // one result per item, made by `restore` or `archive`
     };
     // Top-level items share a parent with a source; checking the parent first keeps the
     // canonicalising comparison off a folder's contents.
@@ -830,13 +853,18 @@ fn perform(req: &Request, progress: &Rc<dyn Fn(Progress)>) -> (Outcome, Vec<Item
         Ok(None) => {}
     }
     let mut results = Vec::new();
-    let outcome = match perform_inner(req, progress, &mut results) {
+    let outcome = outcome_of(perform_inner(req, progress, &mut results));
+    (outcome, own_results(&req.job, results))
+}
+
+/// What `perform_inner`'s answer means for the job.
+fn outcome_of(res: Result<bool, HRESULT>) -> Outcome {
+    match res {
         Ok(false) => Outcome::Done,
         Ok(true) => Outcome::Cancelled,
         Err(hr) if hr == COPYENGINE_E_USER_CANCELLED || hr == HR_CANCELLED => Outcome::Cancelled,
         Err(hr) => Outcome::Failed(hr),
-    };
-    (outcome, own_results(&req.job, results))
+    }
 }
 
 /// Ok(aborted) or the first failing HRESULT; the sink's results go to `results` either way.
@@ -906,6 +934,7 @@ fn perform_inner(req: &Request, progress: &Rc<dyn Fn(Progress)>, results: &mut V
         }
         Job::Restore { .. } => unreachable!("restored above"),
         Job::Compress { .. } => unreachable!("compressed in `perform`"),
+        Job::Extract { .. } => unreachable!("extracted in `run_loop`"),
     }
     // The sink, advised for this one PerformOperations and unadvised right after. `sink` holds
     // our own reference; the operation takes its own in Advise and drops it in Unadvise (or

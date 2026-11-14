@@ -6,7 +6,8 @@
 //! The layout mirrors Explorer's Windows 11 menu, as Jeremy approved it on 2026-10-18
 //! (`docs/phase-7-plan.md` § P7-M2): a row of icon buttons (Cut, Copy, Rename, Share, Delete where
 //! they apply), Open, Open with, TwinFM's own Open in other pane and Open in terminal, the packaged
-//! apps' commands, Compress to, Copy path, Properties, and Show more options for the classic menu.
+//! apps' commands, Extract to (archive files, P15-M1), Compress to, Copy path, Properties, and Show
+//! more options for the classic menu.
 //! Every item calls the command its key, its toolbar button or its P7-M1 route calls.
 
 use crate::explorercmd::{Command, Pixels};
@@ -52,6 +53,13 @@ pub enum Cmd {
     Sizes,
     NewFolder,
     NewFile,
+    /// The Extract to submenu (P15-M1), on archive files, and its items: a folder named after each
+    /// archive beside it, the archive's root items into its own folder, a folder named after each
+    /// in the other pane's folder.
+    Extract,
+    ExtractNamed,
+    ExtractHere,
+    ExtractOther,
     /// Open with's "Choose another app" (the shell's dialog).
     ChooseApp,
     /// The packaged command at that index of the worker's answer.
@@ -67,7 +75,7 @@ pub enum Cmd {
 }
 
 impl Cmd {
-    const FIXED: [Cmd; 22] = [
+    const FIXED: [Cmd; 26] = [
         Cmd::Cut,
         Cmd::Copy,
         Cmd::Rename,
@@ -90,9 +98,13 @@ impl Cmd {
         Cmd::Tar,
         Cmd::Bookmark,
         Cmd::Sizes,
+        Cmd::Extract,
+        Cmd::ExtractNamed,
+        Cmd::ExtractHere,
+        Cmd::ExtractOther,
     ];
 
-    /// The id the Slint model carries: 1 to 22 for the fixed commands, 100 + i for a packaged
+    /// The id the Slint model carries: 1 to 26 for the fixed commands, 100 + i for a packaged
     /// command, 500 + k for an app, 1000 + 100 i + j for a command's own command, 10000 + k for a
     /// history place, 20000 + k for a toolbar menu's item.
     pub fn id(self) -> i32 {
@@ -108,7 +120,7 @@ impl Cmd {
 
     pub fn from_id(id: i32) -> Option<Cmd> {
         match id {
-            1..=22 => Some(Cmd::FIXED[id as usize - 1]),
+            1..=26 => Some(Cmd::FIXED[id as usize - 1]),
             100..=499 => Some(Cmd::Packaged(id as usize - 100)),
             500..=999 => Some(Cmd::App(id as usize - 500)),
             20_000.. => Some(Cmd::Tool(id as usize - 20_000)),
@@ -157,6 +169,11 @@ pub struct Ctx {
     pub clipboard_files: bool,
     /// Every item is a file of one type (`same_type`): Open with applies.
     pub same_type: bool,
+    /// Every item is an archive file, one TwinFM opens as a folder (P15-M1): Extract to applies,
+    /// and one of them opens in the other pane as a folder does.
+    pub archives: bool,
+    /// Two panes show and the other one is on a folder: Extract to's "Other pane" applies.
+    pub other_folder: bool,
 }
 
 /// The items are files of one type, so Open with applies (P8-L1): one file, or several whose
@@ -196,7 +213,7 @@ pub struct Entry {
 
 impl Entry {
     fn item(cmd: Cmd, text: &str, glyph: &'static str, key: &'static str) -> Entry {
-        Entry { cmd: Some(cmd), text: text.into(), glyph, icon: None, key, sub: matches!(cmd, Cmd::OpenWith | Cmd::Compress), enabled: true }
+        Entry { cmd: Some(cmd), text: text.into(), glyph, icon: None, key, sub: matches!(cmd, Cmd::OpenWith | Cmd::Compress | Cmd::Extract), enabled: true }
     }
 
     fn sep() -> Entry {
@@ -338,7 +355,8 @@ pub fn items(ctx: &Ctx, commands: &[Command]) -> Vec<Entry> {
             if files == n && ctx.same_type && !archive && ctx.place != Place::ThisPc {
                 open.push(Entry::item(Cmd::OpenWith, "Open with", G_OPEN_WITH, ""));
             }
-            if n == 1 && files == 0 {
+            // One folder or drive, or one archive file, which opens as a folder (P15-M1).
+            if n == 1 && (files == 0 || ctx.archives) {
                 open.push(Entry::item(Cmd::OpenOther, "Open in other pane", G_OTHER_PANE, ""));
             }
             if !archive {
@@ -349,6 +367,10 @@ pub fn items(ctx: &Ctx, commands: &[Command]) -> Vec<Entry> {
                 open.push(Entry::item(Cmd::Sizes, "Show sizes", G_SIZES, ""));
             }
             let mut last = packaged;
+            // Not inside an archive: an archive stored in one is copied out first.
+            if ctx.archives && files == n && matches!(ctx.place, Place::Folder | Place::Search) {
+                last.push(Entry::item(Cmd::Extract, "Extract to", G_ZIP, ""));
+            }
             if matches!(ctx.place, Place::Folder | Place::Search) && drives == 0 {
                 last.push(Entry::item(Cmd::Compress, "Compress to", G_ZIP, ""));
             }
@@ -405,6 +427,17 @@ pub fn sub_items(cmd: Cmd, commands: &[Command], apps: &[crate::explorercmd::App
         }),
         _ => Vec::new(),
     }
+}
+
+/// Extract to's rows (P15-M1): the folder named after the archive (`folder`, for one archive; for
+/// several, a folder each), Here, and Other pane when `other` (two panes, the other on a folder).
+pub fn extract_items(folder: Option<&str>, other: bool) -> Vec<Entry> {
+    let named = folder.map_or_else(|| "A folder each".to_string(), |f| format!("{f}\\"));
+    let mut out = vec![Entry::item(Cmd::ExtractNamed, &named, G_NEW_FOLDER, ""), Entry::item(Cmd::ExtractHere, "Here", G_ZIP, "")];
+    if other {
+        out.push(Entry::item(Cmd::ExtractOther, "Other pane", G_OTHER_PANE, ""));
+    }
+    out
 }
 
 /// Each row's top in the list, and the list's height.
@@ -521,7 +554,7 @@ mod tests {
     fn ctx(place: Place, what: What) -> Ctx {
         // One file (Open with's case until P8-L1) is of one type; several are not unless a test says so.
         let same_type = matches!(what, What::Items { files: 1, dirs: 0, drives: 0 });
-        Ctx { place, what, clipboard_files: false, same_type }
+        Ctx { place, what, clipboard_files: false, same_type, archives: false, other_folder: false }
     }
 
     fn files(n: usize) -> What {
@@ -602,7 +635,7 @@ mod tests {
         let found = ctx(Place::Search, files(1));
         assert_eq!(tool_texts(&tools(&found)), ["Cut", "Copy", "Rename", "Share", "Delete"]);
         assert_eq!(texts(&items(&found, &[]))[..2], ["Open", "Open with"]);
-        let bg = Ctx { place: Place::Folder, what: What::Background, clipboard_files: true, same_type: false };
+        let bg = Ctx { clipboard_files: true, ..ctx(Place::Folder, What::Background) };
         assert_eq!(tool_texts(&tools(&bg)), ["Paste"]);
         assert!(tools(&ctx(Place::Folder, What::Background)).is_empty(), "nothing to paste");
         assert_eq!(
@@ -611,6 +644,42 @@ mod tests {
         );
         assert_eq!(texts(&items(&ctx(Place::ThisPc, What::Background), &[])), ["Show sizes", "---", "Properties", "---", "Show more options"]);
         assert_eq!(texts(&items(&ctx(Place::Archive, What::Background), &[])), ["Copy path", "---", "Show more options"]);
+    }
+
+    #[test]
+    fn archive_files_get_extract_to() {
+        let one = Ctx { archives: true, ..ctx(Place::Folder, files(1)) };
+        let it = items(&one, &[cmd("Edit in Notepad")]);
+        assert_eq!(
+            texts(&it),
+            ["Open", "Open with", "Open in other pane", "Open in terminal", "---", "Edit in Notepad", "Extract to", "Compress to", "Copy path", "Properties", "---", "Show more options"],
+            "an archive opens in the other pane as a folder does; Extract to above Compress to"
+        );
+        assert!(it.iter().find(|e| e.cmd == Some(Cmd::Extract)).unwrap().sub);
+        // Several archives: Extract to, but no Open in other pane (which takes one place).
+        let several = Ctx { archives: true, ..ctx(Place::Folder, files(3)) };
+        assert_eq!(texts(&items(&several, &[])), ["Open", "Open in terminal", "---", "Extract to", "Compress to", "Copy path", "Properties", "---", "Show more options"]);
+        // A mix of archives and other files (the caller says so), or a folder among them: none.
+        let mix = ctx(Place::Folder, files(2));
+        assert!(!texts(&items(&mix, &[])).contains(&"Extract to".to_string()));
+        let with_dir = Ctx { archives: true, ..ctx(Place::Folder, What::Items { files: 1, dirs: 1, drives: 0 }) };
+        assert!(!texts(&items(&with_dir, &[])).contains(&"Extract to".to_string()));
+        // A search tab's results: as in a folder.
+        let found = Ctx { archives: true, ..ctx(Place::Search, files(1)) };
+        assert_eq!(texts(&items(&found, &[]))[4..6], ["---", "Extract to"]);
+        // A zip stored inside an archive: no Extract to (it is copied out first), but it opens in
+        // the other pane as a folder there does.
+        for place in [Place::Zip, Place::Archive] {
+            let inside = Ctx { archives: true, ..ctx(place, files(1)) };
+            assert_eq!(texts(&items(&inside, &[])), ["Open", "Open in other pane", "---", "Copy path", "---", "Show more options"], "{place:?}");
+        }
+        // The submenu: the folder's name with a backslash, Here, and Other pane with a second pane on a folder.
+        assert_eq!(texts(&extract_items(Some("IBMPlexMono"), false)), [r"IBMPlexMono\", "Here"]);
+        assert_eq!(texts(&extract_items(Some("a"), true)), [r"a\", "Here", "Other pane"]);
+        let each = extract_items(None, true);
+        assert_eq!(texts(&each), ["A folder each", "Here", "Other pane"]);
+        assert_eq!((each[0].cmd, each[1].cmd, each[2].cmd), (Some(Cmd::ExtractNamed), Some(Cmd::ExtractHere), Some(Cmd::ExtractOther)));
+        assert!(!Cmd::ExtractNamed.on_worker() && !Cmd::ExtractHere.on_worker() && !Cmd::ExtractOther.on_worker(), "file jobs: a script may pick them");
     }
 
     #[test]
@@ -644,7 +713,7 @@ mod tests {
             assert_eq!(Cmd::from_id(c.id()), Some(c), "{c:?}");
         }
         assert_eq!(Cmd::from_id(0), None);
-        assert_eq!(Cmd::from_id(23), None);
+        assert_eq!(Cmd::from_id(27), None);
         assert_eq!(Cmd::Cut.key_command(), Some("cx"));
         assert_eq!(Cmd::Properties.key_command(), Some("properties"), "Alt+Enter's command");
         assert_eq!(Cmd::Share.key_command(), None);

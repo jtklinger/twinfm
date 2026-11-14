@@ -12,6 +12,7 @@ mod fs {
     pub mod dirinfo;
     pub mod enumerate;
     pub mod sizes;
+    pub mod unzip;
     pub mod watch;
     pub mod zipraw;
 }
@@ -292,6 +293,8 @@ struct JobInfo {
     replay: Option<(Replay, fileops::undo::Record)>,
     /// The note `submit` showed for it: its percentage shows only beside that note.
     running: String,
+    /// An extract (P15-M1): Escape stops it while it runs, as it cancels a job still waiting.
+    extract: bool,
 }
 
 /// Which stack a replayed record came from: Ctrl+Z's or Ctrl+Y's.
@@ -973,7 +976,7 @@ fn open_tool_menu(pane: usize, name: &str, x: f32, y: f32) {
             "[toolbar] menu {name}: {}",
             items.iter().map(|i| format!("{}{}{}", i.text, if i.enabled { "" } else { " (off)" }, if i.ticked { " (on)" } else { "" })).collect::<Vec<_>>().join(" | ")
         );
-        let wctx = winmenu::Ctx { place: tool_place(st, pane), what: winmenu::What::Background, clipboard_files: st.clip_files, same_type: false };
+        let wctx = winmenu::Ctx { place: tool_place(st, pane), what: winmenu::What::Background, clipboard_files: st.clip_files, same_type: false, archives: false, other_folder: false };
         st.winmenu_seq += 1;
         st.winmenu = Some(WinMenu {
             seq: st.winmenu_seq,
@@ -3148,13 +3151,14 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
     let id = st.next_job;
     let hwnd = main_hwnd(st, app);
     let running = fileops::running_text(&job);
+    let extract = matches!(job, Job::Extract { .. });
     eprintln!("[fileops] submit id={id} pane={pane} hwnd={hwnd:#x} {job:?}");
     if !st.ops.submit(fileops::Request { id, job, hwnd, no_confirm: st.soak.is_some() }) {
         note(st, app, pane, "the file operation worker has stopped".into());
         return None;
     }
     let tab = st.tab(pane).id;
-    st.jobs.insert(id, JobInfo { pane, tab, fallback: None, replay: None, running: running.clone() });
+    st.jobs.insert(id, JobInfo { pane, tab, fallback: None, replay: None, running: running.clone(), extract });
     DIALOG_TIMER.with(|t| {
         if !t.running() {
             t.start(slint::TimerMode::Repeated, Duration::from_millis(500), raise_job_dialogs);
@@ -3486,7 +3490,8 @@ fn replay_text(replay: Replay, done: bool, orig: &str, status: &str) -> String {
 }
 
 /// Escape in a pane's list: cancel every queued job that has not started (each reports
-/// `Cancelled` through `job_done`); the running one goes on.
+/// `Cancelled` through `job_done`); the running one goes on, unless it is an extract (P15-M1: one
+/// by TwinFM's own reader has no dialog to cancel it in, and stops before its next file).
 fn cancel_queued(pane: usize) -> bool {
     with_state(|st| {
         // Escape in a search tab's list also stops its walk; the results so far stay.
@@ -3498,13 +3503,15 @@ fn cancel_queued(pane: usize) -> bool {
             stopped = true;
         }
         let queued = st.jobs.len().saturating_sub(1);
-        if queued == 0 {
+        let extracting = st.jobs.values().any(|j| j.extract);
+        if queued == 0 && !extracting {
             return stopped;
         }
         st.ops.cancel_queued(st.next_job);
-        eprintln!("[fileops] Escape: cancelling {queued} queued operation(s) up to id {}", st.next_job);
+        eprintln!("[fileops] Escape: cancelling {queued} queued operation(s) up to id {}{}", st.next_job, if extracting { ", an extract among the jobs" } else { "" });
         if let Some(app) = st.app.upgrade() {
-            note(st, &app, pane, format!("Cancelling {queued} queued operation{}", if queued == 1 { "" } else { "s" }));
+            let text = if queued == 0 { "Cancelling the extract".to_string() } else { format!("Cancelling {queued} queued operation{}", if queued == 1 { "" } else { "s" }) };
+            note(st, &app, pane, text);
         }
         true
     })
@@ -3686,7 +3693,7 @@ fn mark_background_stale(st: &mut State, watched_too: bool) {
 fn job_done(d: fileops::Done) {
     let mut clear_clipboard = None;
     let panes = with_state(|st| {
-        let info = st.jobs.remove(&d.id).unwrap_or(JobInfo { pane: 0, tab: 0, fallback: None, replay: None, running: String::new() });
+        let info = st.jobs.remove(&d.id).unwrap_or(JobInfo { pane: 0, tab: 0, fallback: None, replay: None, running: String::new(), extract: false });
         let (pane, tab) = (info.pane, info.tab);
         if st.progress.is_some_and(|(id, _)| id == d.id) {
             st.progress = None;
@@ -3752,6 +3759,18 @@ fn job_done(d: fileops::Done) {
             }
             t.note = text;
         }
+        // An extract into a new folder (P15-M1): the cursor of each pane that shows the folder it
+        // was made in goes to it, as a new folder's does.
+        if let (Outcome::Done, Job::Extract { dest_dir, named: true, .. }) = (&d.outcome, &d.job) {
+            if let Some(made) = fileops::real_name(&d.job, &d.results) {
+                for p in 0..2 {
+                    let t = st.tab_mut(p);
+                    if !t.results() && t.sizeview.is_none() && same_dir(&t.path, dest_dir) {
+                        t.focus_name = Some(made.as_str().into());
+                    }
+                }
+            }
+        }
         if st.paste_move == Some(d.id) {
             st.paste_move = None;
             if d.outcome == Outcome::Done {
@@ -3800,8 +3819,11 @@ fn job_progress(p: fileops::Progress) {
 /// What `context_menu` needs after the menu closes, taken out of the state before it opens.
 struct MenuContext {
     hwnd: isize,
-    /// The directory "Open in other pane" and "Open in terminal" use.
+    /// The directory "Open in terminal" uses.
     dir: PathBuf,
+    /// The place "Open in other pane" opens: that directory, or the one archive file the menu is
+    /// for, which opens as a folder (P15-M1).
+    other: PathBuf,
     /// The full paths "Copy path" puts on the clipboard.
     paths: Vec<PathBuf>,
 }
@@ -3864,8 +3886,16 @@ fn menu_request_for(pane: usize, row: i32, x: f32, y: f32, extended: bool, tool:
             note(st, &app, pane, "search results have no folder menu; right-click a result".into());
             return None;
         }
+        // One archive file opens in the other pane as a folder does (P15-M1).
+        let other = match targets.as_slice() {
+            [one] if is_archive_entry(one) => Some(folder.join(one.name.as_str())),
+            _ => None,
+        };
         let (own, dir, paths) = match targets.as_slice() {
             [] if this_pc => (Vec::new(), folder.clone(), Vec::new()),
+            [one] if other.is_some() => {
+                (vec![shellmenu::OwnItem::OpenOther, shellmenu::OwnItem::Terminal, shellmenu::OwnItem::CopyPath], folder.clone(), vec![folder.join(one.name.as_str())])
+            }
             [] => (vec![shellmenu::OwnItem::OpenOther, shellmenu::OwnItem::Terminal, shellmenu::OwnItem::CopyPath], folder.clone(), vec![folder.clone()]),
             [one] if one.is_dir() => {
                 let dir = folder.join(one.name.as_str());
@@ -3880,7 +3910,8 @@ fn menu_request_for(pane: usize, row: i32, x: f32, y: f32, extended: bool, tool:
         let (sx, sy) = shellmenu::to_screen(hwnd, x, y, app.window().scale_factor());
         eprintln!("[menu] pane={pane} row={row} {} target(s) at ({x:.0}, {y:.0}) -> screen ({sx}, {sy})", names.len());
         let req = shellmenu::Request { hwnd, folder, names, own, x: sx, y: sy, extended };
-        Some((req, MenuContext { hwnd, dir, paths }))
+        let other = other.unwrap_or_else(|| dir.clone());
+        Some((req, MenuContext { hwnd, dir, other, paths }))
     })
 }
 
@@ -4109,6 +4140,14 @@ struct SubMenu {
     keys: bool,
 }
 
+/// The entry is an archive file, one TwinFM opens as a folder (P15-M1: Extract to, and Open in
+/// other pane). By its name alone (a search result's is its path under the root); a folder named
+/// like one is a folder.
+fn is_archive_entry(e: &model::Entry) -> bool {
+    let name = e.name.as_str();
+    !e.is_dir() && e.kind != Kind::Drive && fs::archive::is_archive_name(name.rsplit('\\').next().unwrap_or(name))
+}
+
 /// What the manifests' item types call one entry of the selection.
 fn menu_target(e: &model::Entry) -> explorercmd::Target {
     if e.kind == Kind::Drive {
@@ -4171,7 +4210,9 @@ fn open_winmenu(pane: usize, row: i32, x: f32, y: f32) {
             req.folder.display(),
             if waiting { "query queued on the verb worker" } else { "no query" }
         );
-        let wctx = winmenu::Ctx { place, what, clipboard_files: st.clip_files, same_type };
+        let archives = !entries.is_empty() && entries.iter().all(is_archive_entry);
+        let other_folder = app.get_split() && tool_place(st, 1 - pane) == toolbar::Place::Folder;
+        let wctx = winmenu::Ctx { place, what, clipboard_files: st.clip_files, same_type, archives, other_folder };
         let placed = winmenu::Placed { x, y, h: 0.0, scrolls: false, left: false, up: false };
         st.winmenu = Some(WinMenu {
             seq,
@@ -4218,7 +4259,7 @@ fn open_history_menu(pane: usize, x: f32, y: f32) {
         let list = t.history.list(&here);
         let labels: Vec<(String, bool)> = list.iter().map(|(steps, p)| (p.label(), *steps == 0)).collect();
         eprintln!("[nav] pane={pane} history menu: {} entries ({} back, {} forward)", list.len(), t.history.back_len(), t.history.forward_len());
-        let wctx = winmenu::Ctx { place: tool_place(st, pane), what: winmenu::What::Background, clipboard_files: st.clip_files, same_type: false };
+        let wctx = winmenu::Ctx { place: tool_place(st, pane), what: winmenu::What::Background, clipboard_files: st.clip_files, same_type: false, archives: false, other_folder: false };
         st.winmenu_seq += 1;
         st.winmenu = Some(WinMenu {
             seq: st.winmenu_seq,
@@ -4356,8 +4397,8 @@ fn winmenu_close(why: &str) -> Option<WinMenu> {
     Some(m)
 }
 
-/// The item with this id opens a submenu (Open with, Compress to, a packaged command with its own
-/// commands).
+/// The item with this id opens a submenu (Open with, Extract to, Compress to, a packaged command
+/// with its own commands).
 fn opens_sub(items: &[winmenu::Entry], cmd: winmenu::Cmd) -> bool {
     items.iter().any(|e| e.cmd == Some(cmd) && e.sub)
 }
@@ -4377,7 +4418,16 @@ fn winmenu_open_sub(cmd: winmenu::Cmd, keys: bool) {
         }
         let Some(i) = m.items.iter().position(|e| e.cmd == Some(cmd)) else { return };
         let several = matches!(m.wctx.what, winmenu::What::Items { files, .. } if files > 1);
-        let items = winmenu::sub_items(cmd, &m.answer.commands, &m.answer.apps, several);
+        let items = if cmd == winmenu::Cmd::Extract {
+            // One archive: the folder it would make, by name.
+            let folder = match m.req.names.as_slice() {
+                [one] => Some(fs::archive::folder_name(one.rsplit('\\').next().unwrap_or(one))),
+                _ => None,
+            };
+            winmenu::extract_items(folder, m.wctx.other_folder)
+        } else {
+            winmenu::sub_items(cmd, &m.answer.commands, &m.answer.apps, several)
+        };
         let (ys, _) = winmenu::rows_y(&m.items);
         let list_top = m.placed.y + winmenu::PAD + if m.tools.is_empty() { 0.0 } else { winmenu::TOOLS_H + winmenu::SEP_H };
         let item_y = list_top + ys[i] + app.get_wm_scroll();
@@ -4541,6 +4591,45 @@ fn compress(pane: usize, folder: &Path, names: &[String], format: fs::archivewri
     });
 }
 
+/// Extract to (P15-M1): one file job per archive (`names` in `folder`), queued in order. `to`:
+/// `named`, a new folder beside each archive (a search result's own folder) named after it;
+/// `here`, its root items into the folder it is in; `other`, a folder named after each in the
+/// other pane's folder. The worker lists each archive and makes its folder.
+fn extract(pane: usize, folder: &Path, names: &[String], to: &str) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let other = match to {
+            "other" if app.get_split() && tool_place(st, 1 - pane) == toolbar::Place::Folder => Some(st.tab(1 - pane).path.clone()),
+            "other" => return note(st, &app, pane, "Extract: the other pane shows no folder".into()),
+            _ => None,
+        };
+        for n in names {
+            let archive = folder.join(n);
+            let Some(dest_dir) = other.clone().or_else(|| archive.parent().map(Path::to_path_buf)) else { continue };
+            submit(st, &app, pane, Job::Extract { archive, dest_dir, named: to != "here" });
+        }
+    });
+}
+
+/// The driver's `extract <pane> <here|named|other>`: Extract to's item for the cursor row's
+/// selection, without the menu.
+pub fn script_extract(pane: usize, to: &str) {
+    let Some((folder, names)) = with_state(|st| {
+        let app = st.app.upgrade()?;
+        let targets = st.model(pane).targets(current_row(&app, pane));
+        let applies = matches!(tool_place(st, pane), toolbar::Place::Folder | toolbar::Place::Search) && !targets.is_empty() && targets.iter().all(is_archive_entry);
+        if !applies || !matches!(to, "here" | "named" | "other") {
+            eprintln!("[auto] extract pane={pane} {to}: not archive files in a folder or a search tab (or no such item)");
+            return None;
+        }
+        Some((st.tab(pane).path.clone(), targets.iter().map(|e| e.name.to_string()).collect::<Vec<String>>()))
+    }) else {
+        return;
+    };
+    eprintln!("[auto] extract pane={pane} {to}: {} archive(s)", names.len());
+    extract(pane, &folder, &names, to);
+}
+
 /// Run a picked item, after its menu closed.
 fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
     use winmenu::Cmd;
@@ -4597,6 +4686,9 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
             let format = if cmd == Cmd::SevenZ { fs::archivewrite::Format::SevenZ } else { fs::archivewrite::Format::Tar };
             compress(pane, &m.req.folder, &m.req.names, format);
         }
+        Cmd::ExtractNamed => extract(pane, &m.req.folder, &m.req.names, "named"),
+        Cmd::ExtractHere => extract(pane, &m.req.folder, &m.req.names, "here"),
+        Cmd::ExtractOther => extract(pane, &m.req.folder, &m.req.names, "other"),
         Cmd::ChooseApp => queue_verb(pane, verb_request(&m.req, "openas", "Choose another app", false), None),
         Cmd::More => {
             // After a frame, so the window is drawn without the menu before the classic one's
@@ -4624,7 +4716,7 @@ fn run_winmenu_pick(m: WinMenu, cmd: winmenu::Cmd) {
             });
         }
         // Submenus open; they are never run.
-        Cmd::OpenWith | Cmd::Compress => {}
+        Cmd::OpenWith | Cmd::Compress | Cmd::Extract => {}
         _ => {}
     }
 }
@@ -4703,8 +4795,8 @@ fn own_item(pane: usize, item: shellmenu::OwnItem, ctx: MenuContext) {
             if !app.get_split() {
                 app.invoke_toggle_split();
             }
-            eprintln!("[menu] open in other pane: {}", ctx.dir.display());
-            navigate(1 - pane, ctx.dir);
+            eprintln!("[menu] open in other pane: {}", ctx.other.display());
+            navigate(1 - pane, ctx.other);
         }
         shellmenu::OwnItem::Terminal => {
             // CreateProcessW outside the state borrow, like every other call that can block.
@@ -8713,7 +8805,7 @@ mod tests {
 
     #[test]
     fn progress_shows_beside_the_running_jobs_own_note() {
-        let job = |pane, tab, running: &str| JobInfo { pane, tab, fallback: None, replay: None, running: s(running) };
+        let job = |pane, tab, running: &str| JobInfo { pane, tab, fallback: None, replay: None, running: s(running), extract: false };
         let jobs: HashMap<u64, JobInfo> = [(7, job(0, 3, "copying 3 items...")), (8, job(1, 4, "moving 1 item..."))].into_iter().collect();
         let p = Some((7, 42));
         assert_eq!(progress_for(p, &jobs, 0, 3, "copying 3 items..."), Some(42), "its pane, its tab, its note");
