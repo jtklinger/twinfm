@@ -16,7 +16,8 @@ hover on file rows and tiles, and the scrollbar track's repeat. It closed 2026-1
 Phase 14 close); what it put off is below, marked P14. Phase 15 took its items at its kickoff (2026-11-13,
 `phase-15-plan.md`): Extract in the Windows 11 menu (new, from Jeremy's screenshot, never on this list), the
 tab menu and the visible note for a saved search, the folder sizes' progress line, the Size on disk column's
-grip and sort, and glob classes and regular expressions in search.
+grip and sort, and glob classes and regular expressions in search. It closed 2026-11-14 (`phase-15-plan.md` §
+Phase 15 close); what it put off is below, marked P15.
 
 ## Look and feel
 
@@ -45,6 +46,9 @@ grip and sort, and glob classes and regular expressions in search.
   matches do not appear on their own).
 - The `word in *.ext` syntax, offered and not taken (P11-M1).
 - No folder sizes for search results or for the other drives (P3-M3).
+- Plain-text content search on the regex engine: the plain path took 968 ms where a `re:` expression took
+  86 ms on a 100 MB tree, all of it the lowercasing of each file's text; the final sigma rule of
+  `content::fold` to settle first (P15-M4).
 - Search tabs left open are not restored at start; a saved search in the sidebar is the way to keep one (P14-M1).
 
 ## Preview
@@ -67,6 +71,11 @@ grip and sort, and glob classes and regular expressions in search.
   came in P6-M2).
 - **The sizes view and hard links**: when the name a hard-linked file was counted under is deleted, its other
   names are not counted until F5 (P14-M2).
+- **A copy or move of tens of thousands of items out of one folder** would spend minutes after the shell
+  had finished: `own_results` is quadratic in a job's top-level items (P15-M1).
+- **The cursor outline after a click on a row's blank part** goes to the row clicked, where a Windows list
+  keeps it where it was; that and the Ctrl and Shift rule there were not checked against a running
+  Explorer (P15 console-check fix, #153).
 - A deleted watched folder stays `Lost`; the subtree watch's overflow could not be forced (the test
   covers its handling); the log's cut timer's per-minute string (a clean-up) (P11 close).
 
@@ -80,6 +89,11 @@ grip and sort, and glob classes and regular expressions in search.
 - **The dead share, one case not reached**: a watched share whose name has gone after Windows dropped
   its connection (the session's `net use` kept it; the check needs that entry deleted and the share's
   password typed again) (P13-M4).
+- **A scripted right-button drag that never returned**, once: P15-M2's ten-minute soak, about 590 s in,
+  after 15 clean drags (`[auto] the scripted drag is still running after 20 s: posting Escape`). Not seen
+  in three later ten-minute soaks nor in the Phase 15 hour's 90 drags; not reproduced (P15 close).
+- **`fs::watch::tests::bursts_are_coalesced` failed once under load** (P15-M2): a timing the test does not
+  allow for.
 - **OneDrive's error mark** has been drawn only by its test: no file here has reached the error state; a
   refused `_vti_` name stays "sync pending" (P12-M7).
 
