@@ -82,6 +82,7 @@ $env:SLINT_BACKEND = 'winit-software'
 Remove-Item Env:TWINFM_CONFIG -ErrorAction SilentlyContinue
 try {
     $proc = Start-Process -FilePath $Exe -PassThru -RedirectStandardError $err
+    $null = $proc.Handle # kept, or ExitCode reads blank after the exit
 } finally {
     Remove-Item Env:TWINFM_SCRIPT, Env:SLINT_BACKEND -ErrorAction SilentlyContinue
 }
