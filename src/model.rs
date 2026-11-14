@@ -95,6 +95,9 @@ pub struct Entry {
     /// A file's size on disk (P13-M3, the Size on disk column), filled by the listing's second read
     /// while the setting `size_on_disk` is on; empty for folders and everywhere else.
     pub ondisk_text: SharedString,
+    /// The number `ondisk_text` shows (P15-M2), for the sort by Size on disk; 0 wherever the text
+    /// is empty.
+    pub ondisk: u64,
 }
 
 impl Entry {
@@ -132,6 +135,7 @@ impl Entry {
             cut: false,
             found: SharedString::default(),
             ondisk_text: SharedString::default(),
+            ondisk: 0,
         }
     }
 
@@ -152,6 +156,7 @@ impl Entry {
             cut: false,
             found: SharedString::default(),
             ondisk_text: SharedString::default(),
+            ondisk: 0,
         }
     }
 
@@ -175,6 +180,8 @@ pub enum SortCol {
     Size = 1,
     Modified = 2,
     Type = 3,
+    /// Size on disk (P15-M2): its header cell, in the lists with that column.
+    OnDisk = 4,
 }
 
 impl SortCol {
@@ -183,6 +190,7 @@ impl SortCol {
             1 => SortCol::Size,
             2 => SortCol::Modified,
             3 => SortCol::Type,
+            4 => SortCol::OnDisk,
             _ => SortCol::Name,
         }
     }
@@ -1728,6 +1736,7 @@ pub fn cmp_entries(a: &Entry, b: &Entry, col: SortCol, asc: bool) -> std::cmp::O
         SortCol::Size => a.size.cmp(&b.size).then_with(|| cmp_names(&a.name, &b.name)),
         SortCol::Modified => a.modified.cmp(&b.modified).then_with(|| cmp_names(&a.name, &b.name)),
         SortCol::Type => natural_cmp(&a.type_text, &b.type_text).then_with(|| cmp_names(&a.name, &b.name)),
+        SortCol::OnDisk => a.ondisk.cmp(&b.ondisk).then_with(|| cmp_names(&a.name, &b.name)),
     };
     if asc { o } else { o.reverse() }
 }
@@ -2688,7 +2697,7 @@ mod tests {
             Entry::new(format!("f_{}", (i * 37) % 101).into(), (i * 13) % 5, ((i * 11) % 4) as i64, attrs, ty.into())
         };
         let v: Vec<Entry> = (0..101).map(mk).collect();
-        for col in [SortCol::Name, SortCol::Size, SortCol::Modified, SortCol::Type] {
+        for col in [SortCol::Name, SortCol::Size, SortCol::Modified, SortCol::Type, SortCol::OnDisk] {
             for asc in [true, false] {
                 let mut a = v.clone();
                 sort_entries(&mut a, col, asc);
@@ -2810,6 +2819,24 @@ mod tests {
         let names: Vec<&str> = v.iter().map(|x| x.name.as_str()).collect();
         assert_eq!(names, ["dir", "b.txt", "a.txt", "z.png"]);
         assert_eq!(SortCol::from_i32(3), SortCol::Type);
+    }
+
+    #[test]
+    fn sort_by_size_on_disk_then_name() {
+        // P15-M2: by the number, never the text ("1.0 MB" against "900.0 KB"); folders first and by
+        // name among themselves, files with no figure (0) by name, the name breaking a tie.
+        let d = |name: &str, size: u64, ondisk: u64| Entry { ondisk, ondisk_text: if ondisk > 0 { format_size(ondisk).into() } else { SharedString::default() }, ..e(name, size, false) };
+        let mut v = vec![d("big-sparse.bin", 9_000_000, 4096), d("b.txt", 10, 4096), d("mid.bin", 5, 921_600), d("large.bin", 1, 1_048_576), d("none-b", 7, 0), d("none-a", 9, 0), e("zdir", 0, true), e("adir", 0, true)];
+        let names = |v: &[Entry]| v.iter().map(|x| x.name.to_string()).collect::<Vec<_>>();
+        sort_entries(&mut v, SortCol::OnDisk, true);
+        assert_eq!(names(&v), ["adir", "zdir", "none-a", "none-b", "b.txt", "big-sparse.bin", "mid.bin", "large.bin"]);
+        sort_entries(&mut v, SortCol::OnDisk, false);
+        assert_eq!(names(&v), ["zdir", "adir", "large.bin", "mid.bin", "big-sparse.bin", "b.txt", "none-b", "none-a"], "descending: folders still first, as the Size sort has them");
+        // The Size sort of the same entries differs: the sparse file is the biggest by size.
+        sort_entries(&mut v, SortCol::Size, false);
+        assert_eq!(names(&v)[2], "big-sparse.bin");
+        assert_eq!(SortCol::from_i32(4), SortCol::OnDisk);
+        assert_eq!(SortCol::from_i32(5), SortCol::Name);
     }
 
     #[test]

@@ -350,6 +350,9 @@ export component App inherits Window {
     in property <length> right-col-type: 120px;
     in property <length> right-col-size: 90px;
     in property <length> right-col-modified: 140px;
+    // The Size on disk column's width (P15-M2).
+    in property <length> left-col-ondisk: 100px;
+    in property <length> right-col-ondisk: 100px;
     // col-drag(pane, col, dx, phase) and col-fit(pane, col): a header grip (pane.slint ColGrip).
     callback col-drag(int, int, length, int);
     callback col-fit(int, int);
@@ -1222,6 +1225,7 @@ export component App inherits Window {
                 col-type: root.left-col-type;
                 col-size: root.left-col-size;
                 col-modified: root.left-col-modified;
+                col-ondisk: root.left-col-ondisk;
                 col-drag(c, dx, ph) => { root.col-drag(0, c, dx, ph); }
                 col-fit(c) => { root.col-fit(0, c); }
                 shows-type: root.left-shows-type;
@@ -1304,6 +1308,7 @@ export component App inherits Window {
                 col-type: root.right-col-type;
                 col-size: root.right-col-size;
                 col-modified: root.right-col-modified;
+                col-ondisk: root.right-col-ondisk;
                 col-drag(c, dx, ph) => { root.col-drag(1, c, dx, ph); }
                 col-fit(c) => { root.col-fit(1, c); }
                 shows-type: root.right-shows-type;

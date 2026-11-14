@@ -475,6 +475,247 @@ no `[archive] extract` line). The gate build and the run are the coordinating se
   thousands of items out of one folder would spend many minutes in it after the shell had finished. For the
   roadmap unless Jeremy wants it sooner.
 
+## P15-M2: the Size on disk column's grip and sort
+
+Built by the lists and search stream on `feat/p15-m2-ondisk`, 2026-11-13.
+
+### Settled first: how the fourth column sits in `cols.rs`
+
+The column hides first but stands rightmost, so it could not join `cols::ALL` (left to right, which is also
+the hide order) without breaking one of the two. It stays apart: `Widths` gained `ondisk`, `Col` gained
+`OnDisk`, and whether it shows remains a bool of its own beside the `[bool; 3]` of the three
+(`cols::grips` and `grip_x` take it; `left_of` answers "the last column shown" for it, which is Modified
+whenever it shows, since it shows only while every other column the settings allow fits). `drag`,
+`set_width` and the floors work through `get` and `set`, so the grip's rule needed no second copy. The
+eight bytes an entry gains (`Entry::ondisk`) are the defaults triplet's question.
+
+### What landed
+
+- **The width** (done): `col_ondisk_left` / `col_ondisk_right`, default 100, 40 to 2,000 on load, a file
+  without the keys loading 100; the window's `left-col-ondisk` / `right-col-ondisk`, which the header, the
+  grips, the rename editor and the on-disk pair of lists read (`eff-ondisk`). `cols::ondisk_shown` reads its
+  own width; the hide order of the three is untouched (tested).
+- **The grip** (done): a fourth `ColGrip` (`which: 3`) on the Modified | Size on disk boundary while the
+  column shows. A drag narrows Size on disk by what Modified grows; widened, it takes from Modified down to
+  Modified's floor and then from Name down to a pixel above Name's 120 px floor (Jeremy's rule, below; `cols::drag`, this grip
+  only); a double-click fits it to its cells on screen and its header label by the same rule; its floor is
+  the Size column's. "Reset column widths" resets it (`[cols]
+  pane=N widths reset to 120, 90, 140, 100`).
+- **The sort** (done): a click on the "Size on disk" header (`sort-by(4)`, `SortCol::OnDisk`), by
+  `Entry::ondisk`, filled where the text is (the listing's directory read, the watch edit's stat); folders
+  first and by name among themselves, the name breaking a tie; saved as `sort = "ondisk"`. With the setting
+  turned off every tab sorted by it goes to name (`set_size_on_disk`), and a file that names the sort with
+  the column off starts by name (`settings::sort_allowed`, and the last-sort key). In a pane too narrow to
+  show the column the sort stays.
+- **Zero cost when off** (checked and found right): `FileList`, `FileListNoType`, `FileList32` and
+  `FileListNoType32` are not in the diff; `FileListOnDisk` and `FileListOnDisk32` are not either (they read
+  `ondisk-w` as a property since P13-M3). pane.slint's diff is the pane's property, `eff-ondisk`, the
+  header cell and the grip.
+- **Driver**: `colwidth`, `coldrag`, `colfit` take `ondisk`; `sort <pane> 4`; and one step the plan did not
+  list, `rows <pane> [<n>]`, which logs the first rows with their Size on disk cells (no line told a
+  sort's order before; the check and the soak use it).
+- **Tests** (350, two new): `cols::tests::the_size_on_disk_grip_moves_against_modified` (drag, both
+  floors, the Size column's floor, a saved width under it, colwidth and fit, the grips' places, a grip of
+  the three unchanged beside it), `model::tests::sort_by_size_on_disk_then_name` (folders, files with no
+  figure, a sparse file whose size and size on disk disagree, both directions); and in the tests there
+  were: the hide order with a wide Size on disk, the clamp, `Col::from_index(3)`, the settings round trip
+  with an old file and out-of-range values, `sort_allowed`, the sort's name round trip, the listing test
+  reading the number, the sort-stability test over five columns.
+- **Commits**: the width, the grip and the sort are one code commit (2978069): they change the same
+  structures in the same files (`Widths`, `Entry`, the header line), and the tests ran on the whole. The
+  soak cycle, the check script, the gate wrapper and `CLAUDE.md` are a commit each.
+
+### Scripted checks (2026-11-13, the branch's release build, `tools/check-p15m2.ps1`, a scratch settings file in `%TEMP%`)
+
+Three runs, the panes unequal (two tabs left, one right; the split line at 0.85, 0.5, 0.15, 0.85), a
+folder with a 2 MB sparse file holding nothing, two plain files and a tiny one. This machine's floors:
+`[cols] floors: type 40 size 88 modified 133 px`. From the output:
+
+- With the setting on and the pane too narrow: `[auto] col pane=0 ondisk: no such grip in this pane's
+  header`. At 0.85: `[cols] pane=0 shows name, type, size, modified, size on disk at 610 px`.
+- The grip: a 20 px drag left gave `modified 140 -> 133 px (drag)`, `ondisk 100 -> 107 px (drag)` (Modified
+  stops at its floor); 500 px right `ondisk 107 -> 88` (its own floor, the Size column's); the fit `fit
+  ondisk: widest of 6 rows on screen = 57 px`, `ondisk 107 -> 88 px (fit)` (the header label is the wider);
+  `colwidth 0 ondisk 5` changed nothing (at the floor already); the name cell stayed 367 px through all of
+  it. The right pane's grip at 0.15 did the same (`pane=1 ondisk 100 -> 107 px (drag)`, the fit to 88).
+- The sort: by name `adir, zdir, plain-mid.bin [296.0 KB], plain-small.bin [52.0 KB], sparse-big.bin [0 B],
+  tiny.txt [8 B]`; `[sort] ... by OnDisk asc=true`: `adir, zdir, sparse-big.bin [0 B], tiny.txt [8 B],
+  plain-small.bin [52.0 KB], plain-mid.bin [296.0 KB]`; descending: `zdir, adir, plain-mid.bin,
+  plain-small.bin, tiny.txt, sparse-big.bin`. A file made under the descending sort landed in its place
+  through the watch's edit (`applied: +1 -0 ~0`; `... tiny.txt [8 B], watched.txt [0 B], sparse-big.bin [0
+  B]`). With the pane narrowed to 0.5 the column went and the order stayed.
+- The reset: `[cols] pane=0 widths reset to 120, 90, 140, 100`, `ondisk 107 -> 100 px (reset)`, and the
+  right pane's `ondisk 88 -> 100 px (reset)`.
+- Saved and read back: `col_ondisk_left = 107.0`, `col_ondisk_right = 100.0`, `sort = "ondisk"`,
+  `sort_column = "ondisk"`; run 2 started with `[cols] pane=0 ondisk 100 -> 107 px (config)` and `[sort]
+  pane=0 ... by OnDisk asc=true`.
+- The setting off while sorted by it (run 2): `[settings] Size on disk column off`, `[settings] pane=0 tab 2
+  was sorted by Size on disk: sorted by name instead`, the rows by name with empty cells, and the file then
+  held `sort = "name"` throughout.
+- A file naming the sort with the column off (run 3): `[settings] the Size on disk column is off: sorting by
+  name instead of the saved ondisk sort`, `[sort] pane=0 ... by Name asc=true`.
+
+No `panicked` line in any run.
+
+### Soak (2026-11-13, `tools/soak-p5m3.ps1 -Minutes 10`, the branch's release build at 098287b, before main's 0.5.0 bump was merged in)
+
+A remote desktop session, TwinFM at 125% scale (the drag images read 160 px and 120 px, 128 and 96 times
+1.25, so the script's "128 px drag images" and "80 px drag images" counts read 0, as at that scale
+before). Three full cycles; the fourth had started when the time ran out.
+
+- 0 panicked lines; 225 jobs done, 0 failed, 0 cancelled; 0 soak refusals; 0 `waitops` timeouts; every
+  "must be 0" count 0.
+- This milestone's line: `Size on disk grip and sort: drags read back as wider than 100 3, fits 3, sorts by
+  it 3, rows logged under it 3 (one each per cycle)`. The drag is counted as any width over 100: here
+  Modified's floor (133 px against its default 140) lets the column grow by 7 px only.
+- The lines there were: Size 90 -> 120 drags 3, fits 3, widths back at 120, 90, 140 ten times (three per
+  cycle and one at start), resets through the dialog 6; Size on disk on 3, off 3, listings read with it 3.
+- Memory: working set 154.9 MB at 5 s, 241.6 MB at 600 s (largest 273.1); private 184.6 -> 244.6 MB,
+  between 230 and 258 from 126 s on but for one sample of 277.6 at 576 s.
+
+**An open finding: the window was killed by the script** (`ran 11.1 min, window closed by script: killed,
+exit code -1`). At the start of the fourth cycle, about 590 s in (15:41:20; the log's last write is
+15:41:40), the cycle's first right-button scripted drag (`dragrow 0 0 0 60 right`, `sleep 300`,
+`dragcancel`, P2-M4's step) did not end. The log's last lines:
+
+```
+[dnd] pane=0 row=0: dragging 1 item(s) with the right button
+[auto] in drag (pump thread, t=0 ms): Sleep(300)
+[dnd] drag image 120x120 px, 80 px icon, 1 item(s), icon from the worker, composed in 0.7 ms: InitializeFromBitmap = 0x00000000
+[dnd] DoDragDrop starts (right button): 1 item(s) from C:\Users\jtkli\AppData\Local\Temp\twinfm-m5\src
+[dnd] first QueryContinueDrag inside the drag loop: app state free=true
+[dnd] cursor: OLE's default cursors
+[auto] in drag (pump thread, t=307 ms): DragCancel
+[auto] the scripted drag is still running after 20 s: posting Escape
+```
+
+No `DoDragDrop returned` follows either Escape. The fifteen scripted drags before it in the run each
+returned `0x00040101 (cancelled)` 300 to 431 ms after they started. The script's `WM_CLOSE` at 600 s did
+not get through the drag loop, and it killed the process after its 60 s wait; no TwinFM process was left.
+The session's last real input was about two minutes before (`quser`'s idle time), so nobody touched the
+mouse during it. P15-M2 changed neither `src/dnd.rs`'s drag source nor the driver's drag pump
+(`auto.rs` `spawn_drag_pump`), and no earlier soak's record ends this way; the cause is not found. The
+coordinator's call (2026-11-13): go on and record it; the menus stream's soak runs the same step next and
+shows whether it recurs without this branch's code. The run's log, memory samples and summary are kept
+until the phase closes as `p15m2-soak-stderr.txt`, `p15m2-soak-memory.csv` and `p15m2-soak-summary.txt`
+in the sessions' shared notes folder
+(`%APPDATA%\Claude\side-session-notes\local_f23aa116-809d-42b9-bbdd-fa209f529935\`).
+
+### After main's 0.5.0 bump was merged in (c20efad; `Cargo.toml`, `Cargo.lock`, `README.md` only)
+
+`cargo test --release`: `test result: ok. 350 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out;
+finished in 6.65s` (the menus stream was compiling at the same time; no test needed a second run), then
+`cargo build --release` finished (`twinfm v0.5.0`). The soak and the scripted checks above ran the build
+before the merge; the merge brought no code.
+
+### The grip's rule changed after the PR opened (2026-11-13, Jeremy: "Yes, take from Name")
+
+The soak and the scripted checks above ran the first rule (Modified only). With the new rule, on the same
+day:
+
+- `cargo test --release`: the first run, with the coordinator's P15-M1 gate build compiling at the same
+  time, failed one test, `fs::watch::tests::bursts_are_coalesced` (`349 passed; 1 failed`: a window of the
+  watch held a file's create without its delete, a timing the test does not allow for; not the clipboard
+  or the shell, and not code this branch touches). By itself it passed (`1 passed`), and the whole suite
+  again: `test result: ok. 350 passed; 0 failed; 1 ignored`. After the fix below: `test result: ok. 350
+  passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 6.42s`. `cargo build --release`
+  finished.
+- **What the check found, and the fix.** The first run of `tools/check-p15m2.ps1` with the rule dragged
+  the grip to Name's floor itself, and at the release the column went (`[cols] pane=0 shows name, type,
+  size, modified at 855 px`, `ondisk 88 -> 354 px (drag)`, the name cell then 474 px): the drag's floor is
+  reckoned from the name cell of the window's layout, the columns shown from the list's reported width,
+  and a fraction of a pixel between the two put the room under `NAME_FLOOR`. The grip now stops Name a
+  pixel above its floor (`cols::drag`; a test holds half a pixel of disagreement).
+- The check again, from its output (list 855 px wide, floors `type 40 size 88 modified 133`):
+  - 20 px left from the defaults: `modified 140 -> 133 px (drag)`, `ondisk 100 -> 120 px (drag)`, `(name
+    354 px)` after 367: 7 px from Modified, 13 from Name.
+  - 500 px right: `modified 133 -> 165 px (drag)`, `ondisk 120 -> 88 px (drag)`, the name cell still 354.
+  - 2,000 px left: `modified 165 -> 133 px (drag)`, `ondisk 88 -> 353 px (drag)`, `widths type 120 size 90
+    modified 133 ondisk 353 (name 121 px)`, and no `shows` line: the column stayed. A further 20 px left
+    changed nothing.
+  - The fit from there: `fit ondisk: widest of 6 rows on screen = 57 px`, `modified 133 -> 398 px (fit)`,
+    `ondisk 353 -> 88 px (fit)`, `(name 121 px)`: the room goes to Modified, not back to Name (the call
+    below). The widths were then set back grip by grip (`colwidth` Size on disk, Modified, Size, Type),
+    ending `widths type 120 size 90 modified 140 ondisk 130 (name 337 px)`.
+  - The rest as before: the sorts, the watch edit under the sort, the right pane's grip (`pane=1 ondisk
+    100 -> 120 px (drag)`), the reset to `120, 90, 140, 100`, the saved `col_ondisk_left = 130.0` read
+    back, both fallbacks to name; no `panicked` line.
+- A drag there and back inside one press is the unit test's (`coldrag` moves one way only).
+- No second soak (the coordinator's call); the soak's cycle was changed to set all four widths back after
+  its drag, which the next soak run on main will show.
+
+### Gate
+
+Two triplets under one tag against `target-p14close`, `tools/gate-p15m2.ps1`: the defaults, whose question
+is the eight bytes every entry gained, and `C:\traces\ondisk.toml` (`size_on_disk = true`), whose lists
+read the column's width from the pane's setting. The wrapper also checks that no defaults run reads a size
+on disk.
+
+**Tag ab81, 2026-11-14 08:28, 8fd8c7d against `target-p14close`** (the figures as the coordinating session
+reported them): every run's checks ok, the render p50 1.98 to 2.28 ms across the twelve runs (no run in
+the costlier state).
+
+| WPR main-thread busy, % | p14close | p15m2 |
+|---|---|---|
+| The defaults | 18.8, 18.4, 18.5 (median 18.5) | 18.5, 18.5, 18.0 (median 18.5) |
+| The column on (`ondisk.toml`) | 18.6, 19.2, 18.4 (median 18.6) | 18.3, 18.8, 19.2 (median 18.8) |
+
+No gap that counts in either: the runs interleave and the medians differ by 0.0 and 0.2 points. The eight
+bytes an entry gained do not show in the defaults triplet (the kickoff's open question), and the column's
+lists cost nothing more for reading their width from the pane. Jeremy, on the gate: "Merge both" (P15-M1
+and this).
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+1. **Turn the column on.** Settings (Ctrl+, or "Settings" at the foot of the sidebar), the "Size on disk
+   column" switch under the Type column's, OK. In a wide pane showing a folder as a details list, the
+   header's right end reads "Size on disk" after Modified.
+2. **The grip.** Move the pointer onto the line between the "Modified" and "Size on disk" headers: it
+   becomes the left-right arrow. Drag left: Size on disk widens; Modified narrows until its dates would
+   be cut (a few pixels from the default widths), and from there the Name column narrows instead, Type,
+   Size and Modified sliding left as they are, until Name is down to its narrowest (121 px). Without
+   letting go, drag back right: Name widens again first, then Modified. Drag right past the start: Size
+   on disk narrows until its own text would be cut, and Modified takes the room.
+3. **The fit.** Double-click the same line: Size on disk becomes just wide enough for its header and the
+   figures on screen.
+4. **The sort.** Click the "Size on disk" header: folders stay on top by name, files go from the least
+   space taken to the most, and an arrow shows in the header. Click again: the most first. A OneDrive
+   folder with cloud-only files, or a folder with a compressed file, shows the point: the order differs
+   from the Size column's.
+5. **It is kept.** Close TwinFM and start it again: the column's width and the sort are as left.
+6. **A narrow pane.** With two panes (F3), drag the split line until the Size on disk column goes: its
+   grip goes with it, the other three columns' grips work as before, and the rows keep their order.
+7. **The setting off.** Sort a tab by Size on disk, then turn the switch off in Settings: the tab is
+   sorted by name, and no "Size on disk" header shows.
+8. **Reset column widths** (Settings, under the Type column switch): Size on disk is back at its default
+   width with the other three.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The grip takes from Modified, then from Name: Jeremy's decision, 2026-11-13, "Yes, take from Name".**
+  As first built (the plan's rule, the soak above and the first scripted check) the grip took from
+  Modified only, which at the default widths left Size on disk 7 px to grow on this machine (Modified's
+  floor 133 px, its default 140); the question went to Jeremy with the PR. Now a drag that widens Size on
+  disk takes from Modified down to Modified's floor and goes on taking from Name down to the name cell's
+  120 px; the other three grips keep their rule. Every move is reckoned from the widths at the press, so
+  the same drag taken back gives Name its room first, then Modified. A second, separate drag to the
+  right, or a double-click fit that narrows the column, gives all of it to Modified (Name has no width of
+  its own to give back to): the check's fit after a drag to Name's floor left Modified 398 px wide and
+  Name at 121. That is the lead's reading of "from the widths at the press", for Jeremy to check; "Reset
+  column widths" puts all four back.
+- **Name stops a pixel above its floor under this grip** (121 px, not 120), for the reason in the section
+  above.
+- **Files with no figure sort by name** under the column's sort (archive levels and search results, whose
+  cells are empty): the click does something sensible rather than nothing.
+- **In a pane too narrow to show the column, a tab sorted by it stays sorted by it** (the plan's rule for
+  the setting turned off is about the setting, not the room): narrowing a pane never reorders its rows.
+- **The width, the grip and the sort are one code commit**, not one each (they change the same structures
+  and lines; a split would have left commits that do not build).
+- **A driver step the plan did not list, `rows <pane> [<n>]`**: no stderr line told the order of the rows
+  before, so a sort could not be proved by a script.
+- **The gate wrapper asks for one tag for both triplets** (12 runs, about 18 minutes), as Phase 14's did.
+- **The soak's drag count accepts any width over 100** rather than one figure, since the figure depends
+  on the machine's measured floors.
 ## P15-M3: the small items
 
 Branch `feat/p15-m3-small-items`, the menus stream, cut from main at 81a6101 (P15-M1 merged).
