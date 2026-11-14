@@ -829,9 +829,19 @@ stream's.
 
 ### Gate
 
-Pending. Wrapper `tools/gate-p15m3.ps1`: tag ab82, `target-p15m3` (c2c541e) against `target-p15m2`
-(8fd8c7d, P15-M2's gate build), the defaults only; it checks that the candidate's runs log no tab menu
-and no `sizing` line. The gate build and the run are the coordinating session's and Jeremy's.
+Wrapper `tools/gate-p15m3.ps1`: `target-p15m3` (c2c541e) against `target-p15m2` (8fd8c7d, P15-M2's gate
+build), the defaults only; it checks that the candidate's runs log no tab menu and no `sizing` line.
+
+**Tag ab82, 2026-11-14 10:17, c2c541e against `target-p15m2`** (the figures as the coordinating session
+reported them): every run's checks ok, the render p50 2.04 to 2.14 ms across the six runs (no run in the
+costlier state).
+
+| WPR main-thread busy, % | p15m2 | p15m3 |
+|---|---|---|
+| The defaults | 18.2, 17.8, 18.1 (median 18.1) | 18.0, 18.1, 18.5 (median 18.1) |
+
+No gap that counts: the runs interleave and the medians are equal. Jeremy, on the gate: "Merge both"
+(P15-M4 and this). Merged as 180ed0e.
 
 What the gate scenario meets of this milestone: nothing runs. It opens no tab menu, sizes no folder and
 saves no search; the status line gains one call that returns its text unchanged with no folder queued
@@ -875,6 +885,20 @@ binding.
   only where it goes).
 - **A duplicated folder tab takes the sort and hidden-files setting of the tab shown**, as Ctrl+T's new
   tab does, not those of the tab it copies, when the two differ. Say if it should copy the clicked tab's.
+  **Superseded 2026-11-14** (the coordinating session's call, told to Jeremy twice and not objected to;
+  his to reverse at the console check): the copy takes the sort, its direction and the hidden-files and
+  protected-files switches **of the tab duplicated**, a search tab's copy too (a sizes view has its own
+  order). The follow-up on `fix/p15-duplicate-tab`: the rule is `PaneModel::take_view` (`model.rs`, with
+  its test; Ctrl+T and a new search tab use it with the tab shown), and `open_tab_like` and
+  `start_search_like` take the tab to copy. No triplet: a tab command's handler, nothing the gate
+  scenario runs. `cargo test --release`: `test result: ok. 359 passed; 0 failed; 2 ignored`. Scripted check
+  (`tools/check-p15m3.ps1`, which gained the steps; exit 0, no panic): the first tab sorted by Modified,
+  descending, a second tab shown and sorted by name, the first duplicated from the background: the shown
+  tab's last pass `[sort] pane=0 5 of 5 entries by Name asc=true`, then `[tab] pane=0 tab 1: duplicate ->
+  tab 2` and the copy's `[sort] pane=0 5 of 5 entries by Modified asc=false`. The hidden-files switch has
+  no line of its own on a new tab; the test covers it.
+  Console check 5 gains: sort a background tab by Modified, descending, and duplicate it from another
+  tab: the copy is sorted the same way.
 - **Save this search is not offered on a sizes view's tab** (it is no search).
 - **The status text is joined with " | "**, as the note before the item count is: "42 items | Sizing 31
   folders…".

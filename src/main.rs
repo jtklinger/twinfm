@@ -6307,19 +6307,25 @@ fn switch_tab(pane: usize, pick: impl FnOnce(&mut Tabs<Tab>)) {
 /// Ctrl+T: a new tab after the active one, on the same folder (or `path`), sorted and filtered
 /// like it.
 fn open_tab(pane: usize, path: Option<PathBuf>) {
+    open_tab_like(pane, path, None);
+}
+
+/// The tab of `pane` a new tab takes its sort and hidden-file switches from: tab `like` (the tab
+/// menu's Duplicate: the tab duplicated), else the tab shown.
+fn view_source(st: &State, pane: usize, like: Option<usize>) -> &Tab {
+    like.and_then(|i| st.panes[pane].iter().nth(i)).unwrap_or_else(|| st.tab(pane))
+}
+
+/// `open_tab`, the new tab's sort and hidden-file switches taken from tab `like` when given.
+fn open_tab_like(pane: usize, path: Option<PathBuf>, like: Option<usize>) {
     let path = with_state(|st| {
         let app = st.app.upgrade()?;
         save_view(st, &app, pane);
         // Leaves the foreground, watched in the background if the set has room (see switch_tab).
         st.tab_mut(pane).background_sizes(pane);
-        let cur = st.tab(pane);
-        let (col, asc, show) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show());
-        let path = path.unwrap_or_else(|| cur.path.clone());
+        let path = path.unwrap_or_else(|| st.tab(pane).path.clone());
         let t = st.new_tab(path.clone());
-        t.model.sort_col.set(col);
-        t.model.sort_asc.set(asc);
-        t.model.show_hidden.set(show.hidden);
-        t.model.show_protected.set(show.protected);
+        t.model.take_view(&view_source(st, pane, like).model);
         let id = t.id;
         st.panes[pane].open(t);
         show_tab(st, &app, pane);
@@ -6422,11 +6428,12 @@ fn duplicate_tab(pane: usize, i: usize) {
     }) else {
         return;
     };
-    // Each opens its tab right after the active one and shows it.
+    // Each opens its tab right after the active one and shows it, sorted and showing hidden files
+    // as the tab duplicated does (a sizes view has its own order).
     match search {
-        Some((pattern, content)) => start_search(pane, &pattern, content, SearchAt::Saved(path)),
+        Some((pattern, content)) => start_search_like(pane, &pattern, content, SearchAt::Saved(path), Some(i)),
         None if sizes => open_sizeview(pane, path),
-        None => open_tab(pane, Some(path)),
+        None => open_tab_like(pane, Some(path), Some(i)),
     }
     with_state(|st| {
         if st.panes[pane].len() != n + 1 {
@@ -6822,6 +6829,11 @@ fn search_key(pane: usize) {
 /// new search tab starts with its root folder on its back stack (it was searched from there), and a
 /// new search in a search tab pushes the old one.
 fn start_search(pane: usize, pattern: &str, content: bool, at: SearchAt) {
+    start_search_like(pane, pattern, content, at, None);
+}
+
+/// `start_search`, a new search tab's sort and hidden-file switches taken from tab `like` when given.
+fn start_search_like(pane: usize, pattern: &str, content: bool, at: SearchAt, like: Option<usize>) {
     let saved = matches!(at, SearchAt::Saved(_));
     let started = with_state(|st| {
         let app = st.app.upgrade()?;
@@ -6876,13 +6888,8 @@ fn start_search(pane: usize, pattern: &str, content: bool, at: SearchAt) {
             // Leaves the foreground, watched in the background if the set has room (see
             // switch_tab).
             st.tab_mut(pane).background_sizes(pane);
-            let cur = st.tab(pane);
-            let (col, asc, show) = (cur.model.sort_col.get(), cur.model.sort_asc.get(), cur.model.show());
             let mut t = st.new_tab(root.clone());
-            t.model.sort_col.set(col);
-            t.model.sort_asc.set(asc);
-            t.model.show_hidden.set(show.hidden);
-            t.model.show_protected.set(show.protected);
+            t.model.take_view(&view_source(st, pane, like).model);
             if t.history.push(&Place::folder(root.clone()), &to(&root)) {
                 eprintln!("[nav] pane={pane} history push {} ({} back)", root.display(), t.history.back_len());
             }
