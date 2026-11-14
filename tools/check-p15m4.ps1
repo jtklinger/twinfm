@@ -2,7 +2,8 @@
 # scratch settings file and tree in %TEMP%\twinfm-p15m4-check\ (never Jeremy's). Run 1: the live
 # filter with a substring that has brackets, a glob whose bracket has no partner, classes, an
 # expression, a half-typed one (the listing kept, the note), the expression finished, the `\re:`
-# escape; name searches with a class and with an expression; Return on a half-typed expression; a
+# escape (no file name holds a colon: none shown, as a substring; the content search finds the
+# text); name searches with a class and with an expression; Return on a half-typed expression; a
 # content search for plain text, for an expression and for a half-typed one; the expression's
 # search saved, its tab closed, and the window closed through WM_CLOSE (which writes the settings).
 # Run 2 reads the settings back and opens the saved search from the sidebar. Prints the [filter],
@@ -14,10 +15,10 @@ if (Test-Path $root) { Remove-Item -Recurse -Force $root }
 $files = Join-Path $root 'files'
 New-Item -ItemType Directory -Force $files, (Join-Path $files 'sub') | Out-Null
 $names = 'main.c', 'main.h', 'main.cpp', 'notes [draft].txt', 'notes d.txt', 'report-2019.docx', 'report-2024.docx', 'report-202x.docx',
-    'IMG_0412.jpg', 'IMG_0413.JPEG', 'IMG_041.jpg', 'a re:port.txt', 'half[open.txt'
+    'IMG_0412.jpg', 'IMG_0413.JPEG', 'IMG_041.jpg', 'half[open.txt'
 foreach ($n in $names) { [System.IO.File]::WriteAllText((Join-Path $files $n), "file $n`r`n") }
 [System.IO.File]::WriteAllText((Join-Path $files 'sub\todo.txt'), "first line`r`n  TODO: write the docs`r`nlast`r`n")
-[System.IO.File]::WriteAllText((Join-Path $files 'sub\fixme.c'), "int x; // fixme later`r`n// nothing`r`n")
+[System.IO.File]::WriteAllText((Join-Path $files 'sub\fixme.c'), "int x; // fixme later`r`n// see re:port 7`r`n")
 [System.IO.File]::WriteAllText((Join-Path $files 'sub\IMG_0500.jpg'), "not a picture: todo is mid-line here`r`n")
 $config = Join-Path $root 'config.toml'
 
@@ -47,6 +48,7 @@ Run 'run1' (@('sleep 1500', "nav 0 $files", 'sleep 600', 'split', 'sleep 400') +
       'filter 0 re:^img_\d+\.jpe?g$', 'sleep 300', 'searchreturn 0', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'tab close', 'sleep 300',
       'filter 0 re:img_(', 'sleep 300', 'searchreturn 0', 'sleep 500', 'search 0', 'sleep 500', 'filter 0', 'sleep 300',
       'csearch 0 todo', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'tab close', 'sleep 300',
+      'csearch 0 \re:port', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'tab close', 'sleep 300',
       'csearch 0 re:^\s*(TODO|FIXME)', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'tab close', 'sleep 300',
       'csearch 0 re:TODO|FIXME', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'searchsave 0', 'sleep 300', 'tab close', 'sleep 300',
       'csearch 0 re:TODO|(', 'sleep 500', 'contentmode 0 off', 'sleep 300', 'filter 0', 'sleep 300',
