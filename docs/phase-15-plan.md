@@ -754,7 +754,8 @@ Nothing needed measuring. Two things were checked in the code before writing:
 
 ### Tests
 
-`cargo test --release`: `test result: ok. 356 passed; 0 failed; 2 ignored` (353 before). New: the tab
+`cargo test --release`: `test result: ok. 356 passed; 0 failed; 2 ignored` (353 before), and with main's
+P15-M2 merged in `test result: ok. 358 passed; 0 failed; 2 ignored`. New: the tab
 menu's items for a first, a middle, a last, an only and a search tab (`toolbar`), closing others and to
 the right with the active tab's index after (`tabs`), the status line's text with folders queued
 (`statusbar`); and asserts added to existing tests for the "…" cell (set, kept across a replace, emptied
@@ -807,11 +808,29 @@ status line "42 items (4 hidden) | Sizing 31 folders…", ten folders with their
 
 ### Soak
 
-SOAK_PENDING
+`tools\soak-p5m3.ps1 -Minutes 10` on the merged branch's release build (c2c541e: main with P15-M2 merged
+in), 2026-11-14, display scale 100%, harness-launched, while the coordinating session rebuilt
+`target\release` on main and the lists stream compiled: ran 10.1 min, window closed by the script, exit
+code 0, 0 panicked lines; 225 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0,
+menupicks refused 0, every "must be 0" count 0.
+
+```
+tab menu: opened 9 (three per cycle), Close other tabs closing two 3, duplicates 3, closes 3 (one each per cycle); Size all folders: sizing started 3, back at none 3 (one each per cycle)
+extract: by TwinFM's reader 6 (two per cycle), through the shell 3 (one per cycle), done 9 (three per cycle), not done 0 (must be 0), undone 9 (three per cycle)
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+working set: start 154.5 MB at 5 s, end 248.2 MB at 600 s; private: 165.4 -> 240.4 MB
+```
+
+Three full cycles. **Right-button drags: 6 started, 6 cancelled, none that never returned** (15 scripted
+drags in all: 15 `DoDragDrop starts`, 15 returned, no `the scripted drag is still running after 20 s`
+line), as in P15-M1's soak; the hang the lists stream's soak saw has not shown in either of this
+stream's.
 
 ### Gate
 
-GATE_PENDING
+Pending. Wrapper `tools/gate-p15m3.ps1`: tag ab82, `target-p15m3` (c2c541e) against `target-p15m2`
+(8fd8c7d, P15-M2's gate build), the defaults only; it checks that the candidate's runs log no tab menu
+and no `sizing` line. The gate build and the run are the coordinating session's and Jeremy's.
 
 What the gate scenario meets of this milestone: nothing runs. It opens no tab menu, sizes no folder and
 saves no search; the status line gains one call that returns its text unchanged with no folder queued
