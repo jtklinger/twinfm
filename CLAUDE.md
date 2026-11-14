@@ -49,10 +49,11 @@ checks with the dead share; § Phase 13 close holds the gates, lessons, what is 
 `docs/phase-14-plan.md` is the Phase 14 record (opened 2026-10-29, closed 2026-11-13: saved searches in the
 sidebar, the sizes view following changes, hover on file rows and tiles, the scrollbar track's repeat; § Phase 14
 close holds the gates, lessons, what is deferred and the Phase 15 list).
-`docs/phase-15-plan.md` is the Phase 15 record (opened 2026-11-13: Extract in the Windows 11 menu, the tab
+`docs/phase-15-plan.md` is the Phase 15 record (opened 2026-11-13, closed 2026-11-14: Extract in the Windows 11 menu, the tab
 menu, the folder sizes' progress line and the saved search's visible note, the Size on disk column's grip and
 sort, glob classes and `re:` regular expressions in search; its first section quotes Jeremy's kickoff
-decisions, § Calls made lists the lead's).
+decisions, § Calls made lists the lead's, § Phase 15 close holds the gates, the long soak, the console checks,
+lessons, what is deferred and the Phase 16 list).
 
 `docs/roadmap.md` is the one list of known bugs and wanted features not built yet (since 2026-10-25).
 Its upkeep, Jeremy's rule (2026-10-26, "add the roadmap rule"): an item leaves the roadmap when a phase's
@@ -1794,7 +1795,7 @@ put off, with where it came from.
   3.2 ms against 2.2 to 2.3 ms in ab23) before reading the medians, and read such a session like for
   like; the gap rule is about a cost, so a candidate's median below the reference's is not a gap.
   The reference binary is the last merged milestone's
-  gate build (`target-p14close`, 61a905a, main's code at the Phase 14 close but #143's one-line focus fix, inside the `gate-p14close` worktree; tags from ab80); the previous one is deleted once the new one
+  gate build (`target-p15close`, 4d335b7, main's code at the Phase 15 close, inside the `gate-p15close` worktree; tags from ab84); the previous one is deleted once the new one
   has served as a reference. When milestones run as parallel sessions, one coordinating session
   serializes the machine: every session reports before a gate build, a soak or a hand-over and waits
   for its reply; one soak at a time (the soaks share `%TEMP%\twinfm-m5` and the fence); nothing

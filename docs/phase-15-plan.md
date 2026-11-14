@@ -1161,3 +1161,144 @@ selecting. No soak was run for this change.
 row, or any other, to the right of its name (in the empty part of the Name column, or on its Size or
 Modified): nothing is selected any more, and the cursor outline sits on the row clicked. Hold Ctrl and
 click there: that row is added. Drag from there: the band, as before.
+
+## The long soak of the merged code (2026-11-14, Jeremy: "Start the soak")
+
+`tools/soak-p5m3.ps1 -Minutes 60` on `target-p15close` as first built (30aa3f6, main's code with all four
+milestones and the Duplicate follow-up, before the blank-part click fix; built `--locked` inside the detached
+`gate-p15close` worktree), by the coordinating session, 11:21 to 12:22. **The session ran at 100%** (`[dnd]
+drag threshold 4 x 4 px (scale 1)`), as Phase 13's soak did; Phase 14's ran at 125%. 60.7 minutes, the window
+closed by the script, exit code 0, no panics, 1,347 jobs (none failed or cancelled), no soak refusal, no
+`waitops` timeout, every must-be-0 count 0. The report's "cycles started: 87" counts navigations to the
+source folder, several per cycle: by the per-cycle counts 18 cycles started and 17 finished. Phase 15's own
+steps: extracts 54 done and 54 undone (36 by TwinFM's reader, 18 through the shell), 0 not done; the tab menu
+opened 51 times, with 17 each of Close other tabs, Duplicate and Close; "Sizing N folders…" started 17 and
+back at none 17; the Size on disk grip's drags, fits, sorts and logged rows 17 each; 18 name searches with a
+class (each with 30 or more found) and 18 content searches with an expression (each with 2 found), 0
+not-a-pattern lines. **The scripted drag that never returned in P15-M2's soak did not recur**: 36 right-button
+and 54 left-button drags started, 90 cancelled, 0 dropped, and no `the scripted drag is still running` line.
+Memory (working set / private bytes, MB, every 300 s):
+
+| s | 5 | 306 | 606 | 906 | 1205 | 1506 | 1806 | 2105 | 2406 | 2706 | 3006 | 3305 | 3600 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| WS | 192 | 261 | 276 | 265 | 262 | 265 | 263 | 264 | 263 | 267 | 264 | 267 | 267 |
+| private | 180 | 228 | 251 | 241 | 238 | 241 | 243 | 245 | 243 | 249 | 244 | 248 | 247 |
+
+Read: the caches fill in the first ten minutes, then private bytes hold between 238 and 249 MB with no climb
+that continues (241 at 15 minutes, 247 at 60; the working set's largest sample was 321 MB). Phase 13's soak,
+at the same scale, ended at 247 MB private. No leak.
+
+The soak was not run again after the blank-part click fix (#153): the change is inside the release of a
+press on a row's blank part under the drag threshold, and the soak makes no such click (its one press there
+per cycle is a band's drag).
+
+## The console checks (2026-11-14, Jeremy, unelevated, `target\release` from 30aa3f6)
+
+Jeremy asked for the list ("give me the list of checks") and ran the four milestones' 38 checks from the
+coordinating session's copy of them. His report, whole: "If I select a folder with mouse, I can't unselect
+it. Unless I use spacebar.  Everything else seems to work as expected."
+
+- **A row selected by mouse could not be unselected by mouse**: not Phase 15's doing. Since P13-M2 a plain
+  click anywhere on a details row selected it, and only the space below the last row cleared, which a full
+  list does not have. Jeremy chose Explorer's rule ("Yes, as Explorer"); fixed in #153 (§ The blank-part
+  click), merged as 4d335b7 on his "Merge when green" after both CI checks passed. Its own console check
+  had not been run by Jeremy at this close.
+- **Every other check: as expected.** The coordinating session reads that as the calls the milestones left
+  for him standing as built (it told him so and he did not object): Extract to as a submenu above Compress
+  to, Duplicate copying the duplicated tab's sort and hidden switches, a class only inside a glob and such a
+  glob still matching literal brackets, the `re:` prefix, the two-line tooltips, and the Size on disk grip's
+  give-back to Modified. He named none of them one by one.
+
+## Phase 15 close
+
+Written 2026-11-14 by the coordinating session. All four milestones are in, with one follow-up and one
+console-check fix, each squash-merged on Jeremy's word. The menus stream (one session) built P15-M1 and
+P15-M3 and the Duplicate follow-up; the lists and search stream (one session) built P15-M2 and P15-M4 and
+the blank-part click fix; the coordinating session serialised the machine, allocated the tags, built and
+checked every gate's binaries, handed the gates to Jeremy in two sittings of two, released 0.5.0, and ran the
+long soak.
+
+| Item | PR, merge | Gate build | Tag | Reference | Medians (WPR, reference / candidate) |
+|---|---|---|---|---|---|
+| P15-M1 Extract in the menu | #149, 81a6101 | `target-p15m1` 505ec9e | ab80 | `target-p14close` | defaults 18.0 / 18.3 |
+| P15-M2 the Size on disk column's grip and sort | #148, 73de9e1 | `target-p15m2` 8fd8c7d | ab81 | `target-p14close` | defaults 18.5 / 18.5, the column on 18.6 / 18.8 |
+| P15-M3 the tab menu and the small items | #150, 180ed0e | `target-p15m3` c2c541e | ab82 | `target-p15m2` | defaults 18.1 / 18.1 |
+| P15-M4 search patterns | #151, fe09d5f | `target-p15m4` 8502f1f | ab83 | `target-p15m2` | defaults 18.4 / 18.6 |
+| Duplicate copies the duplicated tab's view | #152, 30aa3f6 | (none) | | | the scenario never meets it |
+| The blank-part click | #153, 4d335b7 | (none) | | | the scenario never meets it |
+
+No gap counted in any triplet: in each the runs interleave and the medians differ by 0.3 points at most. The
+render p50 sat between 1.98 and 2.28 ms in all thirty runs, so no run was in the costlier state. Outside the
+milestones: the kickoff (#146, 400fe1c) and the 0.5.0 release of Phase 14's work (#147, c20efad; the tag
+v0.5.0 on it, the zip's SHA-256 e747d9672c3d39d31be71ca2549ae92e8af4d06609ef1c08107c6194f70dd05d).
+
+Jeremy's decisions beyond the kickoff's, his words: "proceed with recommended scope", "Merge and start" (the
+kickoff), "Merge and publish" (0.5.0), "proceed", "Yes, take from Name" (the Size on disk grip), "Merge both"
+(#149 and #148, after ab80 and ab81), "Merge both" (#150 and #151, after ab82 and ab83), "merge it" and
+"merge both when ready" (the merges that waited for CI on a new head, #152 among them), "Start the soak", "Yes, as Explorer" and "Merge when green" (#153), "Write
+the close".
+
+**Memory**: the long soak of the merged code held 238 to 249 MB private from ten minutes to the end with no
+climb, at 100% scale (above); Phase 13's, at the same scale, 247 MB.
+
+What Phase 15 answered, against the kickoff's open questions:
+
+- **Which engine unpacks a zip** (P15-M1): TwinFM's own `zip` reader. `bigdir.zip`'s 40,000 files took 23.1 s
+  through it and 803 s through the shell's zip folder. The other formats go through Windows' handler, and
+  for them what landed is read from the disk, not from the progress sink's list.
+- **What the `regex` crate costs** (P15-M4): 1,579,008 bytes of exe (4.3%). A content search with an
+  expression read a 100 MB tree in 86 ms against the plain path's 968 ms, so the plain path is the slow one
+  (deferred, below). A saved glob containing `[` still matches what it matched.
+- **Whether the eight bytes an entry gained show** (P15-M2): not in the defaults triplet (18.5 / 18.5).
+
+Lessons of the phase:
+
+- **Two gates in one sitting work**: a wrapper that runs two milestones' triplets one after the other
+  (`C:\traces\gate-p15-m1-m2.ps1`, `gate-p15-m3-m4.ps1`) cost Jeremy two trips to the console in place of
+  four, and all thirty runs sat in one render state.
+- **Check the machine before answering "are we waiting"**: the first time Jeremy asked, the gate had not been
+  run, Files and Task Manager were open and the session was on RDP. The answer comes from the processes and
+  the summary files, not from what was last said.
+- **A rule that leaves a control 7 px of travel is a question for Jeremy before the gate build**: the Size on
+  disk grip took from Modified only, as the plan said, and at the default widths that was all the room it
+  had. Asked with the PR, answered ("Yes, take from Name"), rebuilt before the triplet.
+- **A PR behind main shows the old head's CI**: #151 after #150, #148 and #152 the same; the stream merges
+  main in, tests again, and the merge waits for CI on the new head.
+- **A release packages on a quiet machine**: 0.5.0's zip waited for the menus stream's `bigdir.zip` timing to
+  finish.
+- **A console check finds what no milestone touched**: the mouse could not unselect since Phase 13, and it
+  took Jeremy selecting a folder to check something else to meet it. The scripted checks click names, never
+  a blank part, so no script would have.
+- **A scripted failure seen once goes on the record with its counts**: the right-button drag that never
+  returned (P15-M2's soak, about 590 s in, after 15 clean drags) was not seen in three later ten-minute soaks
+  nor in the hour's 90 drags. It stays on the roadmap as not reproduced.
+
+Deferred, from the milestones and the console checks:
+
+- **Plain-text content search on the regex engine**: about eleven times faster on 100 MB; the final sigma
+  rule of `content::fold` to settle first (P15-M4).
+- **`own_results` is quadratic in a job's top-level items**: a copy or move of tens of thousands of items out
+  of one folder would spend minutes in it after the shell had finished (P15-M1).
+- **The scripted right-button drag that never returned**, once, not reproduced (P15-M2's soak).
+- **`fs::watch::tests::bursts_are_coalesced` failed once under load** (P15-M2): a timing the test does not
+  allow for.
+- **The cursor outline after a click on a row's blank part** goes to the row clicked, where a Windows list
+  keeps it where it was; and neither that nor the Ctrl and Shift rule there was checked against a running
+  Explorer (#153's calls, Jeremy's to reverse).
+- **Not taken at the kickoff**: the Slint fork's whole-row snap, Explorer's other views, the preview's gaps,
+  upstreaming the accessibility patches, accessibility; on the roadmap as before.
+
+**Phase 16** (Jeremy chooses; nothing is planned yet), from `docs/roadmap.md`: plain content search on the
+regex engine (small, measured); the Slint fork's whole-row snap (the fourth patch, proven, with its own
+triplet); Explorer's other views (extra large, small, list); the search index; the preview's gaps (zoom
+beyond PDFs, the old Office formats); accessibility stays deferred for much later. A 0.6.0 release of this
+phase's work is Jeremy's to call; the hour's soak ran on the merged code before #153.
+
+The fleet at the close: the reference for the next gate is **`target-p15close`** (4d335b7, main's code at
+this close, rebuilt after #153), built `--locked` inside the detached `gate-p15close` worktree; tags continue
+from **ab84**. Every other gate build (`target-p14close`, `target-p15m1`, `target-p15m2`, `target-p15m3`,
+`target-p15m4`) has served and was removed with its `gate-*` worktree at this close. The streams' worktrees
+(`vigilant-montalcini-1d40df`, `p15-m2-ondisk-396957`) and the earlier sessions' (`phase-13-planning-3544ed`,
+`phase-14-80780e`, `p14-m2-sizes-watch-e44420`, `post-release-dev-279edf`, and the release subagent's
+`agent-aedeca0607fde2433`) stay until Jeremy archives their sessions. `target\release` was rebuilt from main
+after #153 (4d335b7, 2026-11-14 14:47).
