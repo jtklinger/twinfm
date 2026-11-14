@@ -1302,3 +1302,27 @@ from **ab84**. Every other gate build (`target-p14close`, `target-p15m1`, `targe
 `phase-14-80780e`, `p14-m2-sizes-watch-e44420`, `post-release-dev-279edf`, and the release subagent's
 `agent-aedeca0607fde2433`) stay until Jeremy archives their sessions. `target\release` was rebuilt from main
 after #153 (4d335b7, 2026-11-14 14:47).
+
+## After the close (2026-11-14): the click fix checked, the hour's soak on 4d335b7
+
+Jeremy, after the close was merged: "proceed with the hour soak. click fix works." So #153's console check
+is done (a click on a row's blank part clears the selection), and the hour's soak was run again on the code
+with the fix.
+
+`tools/soak-p5m3.ps1 -Minutes 60` on `target-p15close` as rebuilt for the close (4d335b7, main's code with
+#153), by the coordinating session, 15:52 to 16:53, at 100% (`[dnd] drag threshold 4 x 4 px (scale 1)`). 60.8
+minutes, the window closed by the script, exit code 0, no panics, 1,347 jobs (none failed or cancelled), no
+soak refusal, no `waitops` timeout, every must-be-0 count 0; 18 cycles started and 17 finished, as in the
+first hour. Phase 15's steps as before: extracts 54 done and 54 undone, 0 not done; the tab menu opened 51
+times; sizing started 17 and back at none 17; the Size on disk grip's drags, fits and sorts 17 each; 17 name
+searches with a class and 17 content searches with an expression, 0 not-a-pattern lines. 36 right-button and
+54 left-button drags, 90 cancelled, no `the scripted drag is still running` line. Memory (working set /
+private bytes, MB, every 300 s):
+
+| s | 5 | 306 | 605 | 906 | 1205 | 1506 | 1806 | 2106 | 2406 | 2705 | 3005 | 3306 | 3600 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| WS | 154 | 234 | 246 | 231 | 214 | 216 | 216 | 219 | 217 | 217 | 216 | 221 | 218 |
+| private | 174 | 222 | 242 | 228 | 231 | 245 | 244 | 249 | 245 | 246 | 245 | 251 | 246 |
+
+Read: private bytes hold between 244 and 251 MB from 25 minutes to the end (246 at 60 minutes; the first
+hour's run ended at 247). No leak. The code a 0.6.0 would ship has now had its hour.
