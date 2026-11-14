@@ -508,6 +508,8 @@ export component App inherits Window {
     // tab-select(pane, index), tab-close(pane, index): a click or middle-click in a tab strip.
     callback tab-select(int, int);
     callback tab-close(int, int);
+    // tab-menu(pane, index, x, y): a right click on a tab (P15-M3).
+    callback tab-menu(int, int, length, length);
     // tab-move(pane, from, to): a tab dragged within its strip.
     callback tab-move(int, int, int);
     // strip-resized(pane): the pane's tab strip changed width; Rust reveals the active tab again.
@@ -1159,6 +1161,7 @@ export component App inherits Window {
                 drop-crumb: root.drop-crumb-pane == 0 ? root.drop-crumb : -1;
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
+                tab-menu(i, x, y) => { root.tab-menu(0, i, x, y); }
                 tab-plus => { root.tab-key(0, "plus"); }
                 tab-move(f, t) => { root.tab-move(0, f, t); }
                 strip-resized => { root.strip-resized(0); }
@@ -1240,6 +1243,7 @@ export component App inherits Window {
                 drop-crumb: root.drop-crumb-pane == 1 ? root.drop-crumb : -1;
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
+                tab-menu(i, x, y) => { root.tab-menu(1, i, x, y); }
                 tab-plus => { root.tab-key(1, "plus"); }
                 tab-move(f, t) => { root.tab-move(1, f, t); }
                 strip-resized => { root.strip-resized(1); }

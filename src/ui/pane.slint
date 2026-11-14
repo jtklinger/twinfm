@@ -269,6 +269,8 @@ component TabButton inherits Rectangle {
     callback released();
     callback drag-moved(length);
     callback close();
+    // menu(x, y): a right click (P15-M3), at window coordinates of the tab's bottom-left corner.
+    callback menu(length, length);
     background: transparent;
     // The segment, 2 px inside the slot the strip and dnd.rs TAB_H give the tab (P10-M1).
     Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: Theme.radius; background: root.active ? Theme.tab-active : (ta.has-hover ? Theme.ring-soft : transparent); animate background { duration: 100ms; } }
@@ -278,6 +280,7 @@ component TabButton inherits Rectangle {
             if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) { root.pressed(); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) { root.released(); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) { root.close(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right) { root.menu(root.absolute-position.x, root.absolute-position.y + root.height); }
         }
         moved => {
             if (self.pressed) { root.drag-moved(self.mouse-x); }
@@ -1751,6 +1754,8 @@ export component Pane inherits Rectangle {
     callback focus-requested();
     callback tab-clicked(int);
     callback tab-close(int);
+    // tab-menu(index, x, y): a right click on a tab (P15-M3).
+    callback tab-menu(int, length, length);
     // The "+" after the tab strip (P12-M5).
     callback tab-plus();
     // tab-move(from, to): a tab dragged past a neighbour's midpoint.
@@ -2032,6 +2037,7 @@ export component Pane inherits Rectangle {
                         }
                     }
                     close => { root.tab-close(i); }
+                    menu(x, y) => { root.tab-menu(i, x, y); }
                 }
                 // Drop highlight on tab `drop-tab` (a drag would drop into its folder): an overlay over
                 // the tab's slot, no input handling and no accessibility node.

@@ -115,6 +115,22 @@ pub fn view_menu(view: i32) -> Vec<MenuItem> {
     ]
 }
 
+/// The menu on a tab (P15-M3, a right click on it): tab `index` of `count` in its pane, `search` a
+/// search tab. Close is off for a pane's only tab, Close other tabs with no others, Close tabs to the
+/// right for the last one.
+pub fn tab_menu(index: usize, count: usize, search: bool) -> Vec<MenuItem> {
+    let mut out = vec![
+        item("Close", "Ctrl+W", "tab:close", count > 1, false),
+        item("Close other tabs", "", "tab:closeothers", count > 1, false),
+        item("Close tabs to the right", "", "tab:closeright", index + 1 < count, false),
+        item("Duplicate", "", "tab:duplicate", true, false),
+    ];
+    if search {
+        out.push(item("Save this search", "Ctrl+D", "tab:savesearch", true, false));
+    }
+    out
+}
+
 /// The toolbar's buttons that can overflow into More, in the bar's order, by the name `tool(name)`
 /// reports; a separator stands before each in `SEP_BEFORE`. More itself never overflows.
 pub const BUTTONS: [&str; 12] = ["newfile", "newfolder", "cut", "copy", "paste", "rename", "delete", "undo", "redo", "view", "split", "preview"];
@@ -203,6 +219,19 @@ pub fn clipboard_has_files() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tab_menu_by_the_tabs_place() {
+        let read = |index, count, search| tab_menu(index, count, search).iter().map(|i| format!("{}{}", i.text, if i.enabled { "" } else { " (off)" })).collect::<Vec<_>>().join(" | ");
+        assert_eq!(read(0, 3, false), "Close | Close other tabs | Close tabs to the right | Duplicate", "a first tab");
+        assert_eq!(read(1, 3, false), "Close | Close other tabs | Close tabs to the right | Duplicate", "a middle tab");
+        assert_eq!(read(2, 3, false), "Close | Close other tabs | Close tabs to the right (off) | Duplicate", "a last tab");
+        assert_eq!(read(0, 1, false), "Close (off) | Close other tabs (off) | Close tabs to the right (off) | Duplicate", "an only tab");
+        assert_eq!(read(1, 2, true), "Close | Close other tabs | Close tabs to the right (off) | Duplicate | Save this search", "a search tab");
+        let m = tab_menu(0, 2, true);
+        assert_eq!(m.iter().map(|i| i.command).collect::<Vec<_>>(), ["tab:close", "tab:closeothers", "tab:closeright", "tab:duplicate", "tab:savesearch"]);
+        assert_eq!((m[0].key, m[4].key), ("Ctrl+W", "Ctrl+D"));
+    }
 
     fn on(t: ToolState) -> [bool; 6] {
         [t.new, t.cut, t.copy, t.paste, t.rename, t.delete]
