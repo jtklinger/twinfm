@@ -32,6 +32,8 @@ component SideRow inherits Rectangle {
     in property <bool> editing;
     // The row was clicked last and the sidebar has the keys (F2 renames a bookmark row).
     in property <bool> current;
+    // The row is shown in the hover colour for a moment (P15-M3: a search just saved).
+    in property <bool> flash;
     // The collapsed sidebar, the icons-only rail (P12-M5): the icon centred, the name its tooltip, a
     // header a hairline.
     in property <bool> rail;
@@ -55,7 +57,7 @@ component SideRow inherits Rectangle {
     accessible-role: list-item;
     accessible-label: item.label;
     // The fill, inset 4 px and rounded, inside the row's slot (P10-M1).
-    Rectangle { x: 4px; width: parent.width - 8px; border-radius: Theme.radius; background: root.current ? Theme.selection : item.kind != 0 && ta.has-hover ? Theme.muted-half : transparent; }
+    Rectangle { x: 4px; width: parent.width - 8px; border-radius: Theme.radius; background: root.current ? Theme.selection : item.kind != 0 && (ta.has-hover || root.flash) ? Theme.muted-half : transparent; }
     HorizontalLayout {
         visible: !root.editing && !root.rail;
         padding-left: item.kind == 0 ? 8px : 10px;
@@ -582,6 +584,25 @@ export component App inherits Window {
     // as Explorer's navigation pane takes them (P6-M3): F2 on a bookmark opens its title editor,
     // Escape and Tab give the keys back to the active pane's list, and a click in a list takes them.
     private property <int> side-current: -1;
+    // The sidebar row shown in the hover colour for 1.5 s (-1: none), scrolled into view first
+    // (P15-M3: a saved search's row, so the save is seen; main.rs `flash_search`).
+    private property <int> side-flash: -1;
+    side-flash-timer := Timer {
+        interval: 1.5s;
+        running: false;
+        triggered => {
+            root.side-flash = -1;
+            self.stop();
+        }
+    }
+    // `top`: the row's top in the list's content, from the caller (Rust has the state borrowed when
+    // it calls this, and `side-row-top` would ask for it again).
+    public function flash-side(i: int, top: length) {
+        if (top + side-list.content-y < 0px) { side-list.content-y = -top; }
+        if (top + 32px + side-list.content-y > side-list.visible-height) { side-list.content-y = side-list.visible-height - top - 32px; }
+        root.side-flash = i;
+        side-flash-timer.restart();
+    }
     // A sidebar row's left click (and the driver's `sidebar click`): the row becomes current, the
     // sidebar takes the keys, the row's folder opens in the active pane.
     public function side-click(i: int) {
@@ -1019,6 +1040,7 @@ export component App inherits Window {
                         rail: !root.sidebar-visible;
                         editing: i == root.side-edit;
                         current: i == root.side-current && side-keys.has-focus;
+                        flash: i == root.side-flash;
                         clicked(middle) => {
                             if (middle) { root.side-clicked(i, true); } else { root.side-click(i); }
                         }

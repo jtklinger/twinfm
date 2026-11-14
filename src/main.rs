@@ -1561,17 +1561,29 @@ fn save_search(st: &mut State, app: &App, pane: usize, i: usize) {
     let text = if let Some(k) = sidebar::saved_at(&st.config.searches, &root, &pattern, content) {
         let title = sidebar::search_title(&st.config.searches[k]);
         eprintln!("[sidebar] \"{title}\" is saved already");
+        flash_search(st, app, k);
         format!("{title} is saved already")
     } else if sidebar::add_search(&mut st.config.searches, &root, &pattern, content) {
         let title = sidebar::search_title(st.config.searches.last().expect("just added"));
         eprintln!("[sidebar] saved search added \"{title}\": {root} \"{pattern}\" {}", if content { "content" } else { "name" });
         rebuild_sidebar(st);
         schedule_save(st);
+        flash_search(st, app, st.config.searches.len() - 1);
         format!("Saved search {title}")
     } else {
         return;
     };
     note(st, app, pane, text);
+}
+
+/// Saved search `k`'s sidebar row scrolled into view and shown in the hover colour for 1.5 s (P15-M3:
+/// the save is seen, for a new row and for one saved already; on the rail, its icon's row).
+/// `[sidebar] saved search <k> flashed`.
+fn flash_search(st: &State, app: &App, k: usize) {
+    let row = usize::try_from(app.get_search_first()).unwrap_or(0) + k;
+    let top = sidebar::row_top(&side_rows(st, app).iter().map(|r| r.0).collect::<Vec<_>>(), row);
+    app.invoke_flash_side(row as i32, top);
+    eprintln!("[sidebar] saved search {k} flashed");
 }
 
 /// The driver's `searchsave <pane>` and the menus' "Save this search": `save_search` on that pane.
