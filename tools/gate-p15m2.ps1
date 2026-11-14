@@ -18,8 +18,8 @@
 # step below is a no-op check.
 $ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\jtkli\projects\twinfm'
-$Head = 'SET-BY-THE-COORDINATOR'
-$Tag = 'SET-BY-THE-COORDINATOR'
+$Head = '8fd8c7d'
+$Tag = 'ab81'
 $Ref = 'p14close'
 $Cand = 'p15m2'
 $Gate = "$Root\.claude\worktrees\gate-p15m2"
