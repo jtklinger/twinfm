@@ -803,24 +803,44 @@ unsafe extern "system" fn sink_post_new(
     0
 }
 
+/// A path as `own_results` compares it first: lowercase, no trailing separator (`same_dir`'s rule).
+fn lower_key(p: &Path) -> String {
+    p.to_string_lossy().trim_end_matches('\\').to_lowercase()
+}
+
 /// `a` names the same file as `b`: equal ignoring case, or equal once both parents are
 /// canonicalised (the shell hands back long paths; `%TEMP%` can be an 8.3 path).
 fn same_path(a: &Path, b: &Path) -> bool {
-    let lower = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
-    if lower(a) == lower(b) {
+    if lower_key(a) == lower_key(b) {
         return true;
     }
-    let canon = |p: &Path| -> Option<String> {
+    let mut dirs = CanonDirs::default();
+    matches!((dirs.key(a), dirs.key(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// A path as `own_results` compares it on a miss: its lowercase name under its canonicalised
+/// folder (the shell hands back long paths; `%TEMP%` can be an 8.3 path). Each folder is
+/// canonicalised once; None for a path with no name or in a folder that is not there.
+#[derive(Default)]
+struct CanonDirs(std::collections::HashMap<String, Option<String>>);
+
+impl CanonDirs {
+    fn key(&mut self, p: &Path) -> Option<String> {
         let name = p.file_name()?.to_string_lossy().to_lowercase();
-        let dir = std::fs::canonicalize(p.parent()?).ok()?;
-        Some(format!("{}\\{name}", dir.to_string_lossy().trim_end_matches('\\').to_lowercase()))
-    };
-    matches!((canon(a), canon(b)), (Some(x), Some(y)) if x == y)
+        let parent = p.parent()?;
+        let dir = self.0.entry(lower_key(parent)).or_insert_with(|| std::fs::canonicalize(parent).ok().map(|d| lower_key(&d)));
+        Some(format!("{}\\{name}", dir.as_ref()?))
+    }
 }
 
 /// Keep the results for the job's own items: the shell also reports the contents of a copied,
-/// moved or deleted folder one by one.
+/// moved or deleted folder one by one. A result is an item's when its folder is the folder of one
+/// of the items and it names one of them, each compared ignoring case and then canonicalised.
+/// Linear in the items and the results (P16-M2): both are looked up in sets built once, the
+/// canonicalised ones only when a result first misses (every result against every item before,
+/// with file system calls among them, which kept a move of thousands of files waiting).
 fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
+    use std::collections::HashSet;
     let mine: Vec<&Path> = match job {
         Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } => {
             sources.iter().map(PathBuf::as_path).collect()
@@ -830,14 +850,38 @@ fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
         Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => vec![parent.as_path()],
         Job::Restore { .. } | Job::Compress { .. } | Job::Extract { .. } => return all, // one result per item, made by `restore` or `archive`
     };
-    // Top-level items share a parent with a source; checking the parent first keeps the
-    // canonicalising comparison off a folder's contents.
-    let parents: Vec<&Path> = mine.iter().filter_map(|p| p.parent()).collect();
-    let is_top = |r: &ItemResult| match job {
-        Job::NewFolder { .. } | Job::NewFile { .. } => true,
-        _ => r.source.parent().is_some_and(|rp| parents.iter().any(|p| same_dir(p, rp) || same_path(p, rp))),
-    };
-    all.into_iter().filter(|r| is_top(r) && mine.iter().any(|m| same_path(m, &r.source))).collect()
+    // A new item's result names the folder it was made in: no parent to check.
+    let any_folder = matches!(job, Job::NewFolder { .. } | Job::NewFile { .. });
+    let items: HashSet<String> = mine.iter().map(|m| lower_key(m)).collect();
+    let parents: HashSet<String> = mine.iter().filter_map(|m| m.parent()).map(lower_key).collect();
+    let mut dirs = CanonDirs::default();
+    let mut canon_parents: Option<HashSet<String>> = None;
+    let mut canon_items: Option<HashSet<String>> = None;
+    let mut own = Vec::new();
+    for r in all {
+        // Top-level items share a parent with an item; checking the parent first keeps the
+        // canonicalising off a folder's contents.
+        let top = any_folder
+            || r.source.parent().is_some_and(|rp| {
+                parents.contains(&lower_key(rp))
+                    || dirs.key(rp).is_some_and(|k| {
+                        let set = canon_parents.get_or_insert_with(|| mine.iter().filter_map(|m| dirs.key(m.parent()?)).collect());
+                        set.contains(&k)
+                    })
+            });
+        if !top {
+            continue;
+        }
+        let is_item = items.contains(&lower_key(&r.source))
+            || dirs.key(&r.source).is_some_and(|k| {
+                let set = canon_items.get_or_insert_with(|| mine.iter().filter_map(|m| dirs.key(m)).collect());
+                set.contains(&k)
+            });
+        if is_item {
+            own.push(r);
+        }
+    }
+    own
 }
 
 /// Run one job on this (STA, pumping) thread: TwinFM's own archive writers for a Compress job and
@@ -1223,6 +1267,167 @@ fn move_back(req: &Request, r: &Path, original: &Path, progress: &Rc<dyn Fn(Prog
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// `own_results` as it was until P16-M2 (every result against every item): what the sets must
+    /// still answer.
+    fn own_results_pairwise(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
+        fn same_path(a: &Path, b: &Path) -> bool {
+            let lower = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
+            if lower(a) == lower(b) {
+                return true;
+            }
+            let canon = |p: &Path| -> Option<String> {
+                let name = p.file_name()?.to_string_lossy().to_lowercase();
+                let dir = std::fs::canonicalize(p.parent()?).ok()?;
+                Some(format!("{}\\{name}", dir.to_string_lossy().trim_end_matches('\\').to_lowercase()))
+            };
+            matches!((canon(a), canon(b)), (Some(x), Some(y)) if x == y)
+        }
+        let mine: Vec<&Path> = match job {
+            Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } => {
+                sources.iter().map(PathBuf::as_path).collect()
+            }
+            Job::MoveAs { items, .. } => items.iter().map(|(p, _)| p.as_path()).collect(),
+            Job::Rename { source, .. } => vec![source.as_path()],
+            Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => vec![parent.as_path()],
+            Job::Restore { .. } | Job::Compress { .. } | Job::Extract { .. } => return all,
+        };
+        let parents: Vec<&Path> = mine.iter().filter_map(|p| p.parent()).collect();
+        let is_top = |r: &ItemResult| match job {
+            Job::NewFolder { .. } | Job::NewFile { .. } => true,
+            _ => r.source.parent().is_some_and(|rp| parents.iter().any(|p| same_dir(p, rp) || same_path(p, rp))),
+        };
+        all.into_iter().filter(|r| is_top(r) && mine.iter().any(|m| same_path(m, &r.source))).collect()
+    }
+
+    fn result_for(source: PathBuf) -> ItemResult {
+        ItemResult { source, dest: None, hr: 0 }
+    }
+
+    /// P16-M2, the big-copy slowdown: 20,000 items of one folder, one of them a folder whose
+    /// 20,000 files the shell reports too. Pure (the folder does not exist, so nothing
+    /// canonicalises). Every result against every item is 400 million comparisons; the bound is
+    /// one no such loop meets.
+    #[test]
+    fn own_results_is_linear_in_the_items() {
+        const N: usize = 20_000;
+        let dir = PathBuf::from(r"C:\twinfm-p16m2-no-such-folder\Big Folder");
+        let sources: Vec<PathBuf> = (0..N).map(|i| dir.join(format!("item-{i:05}.txt"))).collect();
+        // The shell's reports: each item (its name in another case), and after the first, a
+        // folder, its contents one by one.
+        let mut all = Vec::with_capacity(2 * N);
+        for (i, s) in sources.iter().enumerate() {
+            all.push(result_for(PathBuf::from(s.to_string_lossy().to_uppercase())));
+            if i == 0 {
+                all.extend((0..N).map(|k| result_for(s.join(format!("inside-{k:05}.bin")))));
+            }
+        }
+        let want: Vec<ItemResult> = sources.iter().map(|s| result_for(PathBuf::from(s.to_string_lossy().to_uppercase()))).collect();
+        let job = Job::Copy { sources, dest_dir: PathBuf::from(r"D:\dest") };
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let own = own_results(&job, all);
+            let _ = tx.send((own, t0.elapsed()));
+        });
+        let (own, took) = rx.recv_timeout(Duration::from_secs(10)).expect("20,000 items' results are sorted out within 10 s");
+        eprintln!("[test] own_results: {} of {} kept in {} ms", own.len(), 2 * N, took.as_millis());
+        assert_eq!(own.len(), N, "a copied folder's contents are not reported");
+        assert!(own == want, "the items' own results, in the shell's order");
+    }
+
+    /// P16-M2: the sets keep what the pairwise loop kept, on real folders where a miss
+    /// canonicalises (the folders above the items' own by their 8.3 names when the volume has
+    /// them, as the CI runner's %TEMP% is, and a `.` in the path where it has none).
+    #[test]
+    fn own_results_keeps_what_the_pairwise_loop_kept() {
+        let root = std::env::temp_dir().join(format!("twinfm-p16m2-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let long = root.join("A Long Folder Name");
+        std::fs::create_dir_all(long.join("sub folder").join("deeper")).unwrap();
+        std::fs::create_dir_all(root.join("other")).unwrap();
+        for f in ["a.txt", "b.txt", "sub folder\\in.txt", "sub folder\\deeper\\d.txt"] {
+            std::fs::write(long.join(f), b"x").unwrap();
+        }
+        let short_of = |p: &Path| {
+            let w = wide(p.as_os_str());
+            let mut buf = vec![0u16; 1024];
+            // SAFETY: NUL-terminated input; `buf` holds its length in u16s.
+            let n = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+            if n == 0 || n >= buf.len() { p.to_path_buf() } else { PathBuf::from(String::from_utf16_lossy(&buf[..n])) }
+        };
+        // The items' folder under its long name below an 8.3 path, which canonicalising follows,
+        // and wholly by 8.3 names, which it does not (the folder's own name is compared as text).
+        let short = short_of(&root).join("A Long Folder Name");
+        let all_short = short_of(&long);
+        let dotted = root.join(".").join("A Long Folder Name");
+        let both = |job: &Job, all: Vec<ItemResult>| {
+            let old = own_results_pairwise(job, all.clone());
+            assert_eq!(own_results(job, all), old, "{job:?}");
+            old
+        };
+        let names = |rs: &[ItemResult]| rs.iter().map(|r| r.source.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let dest_dir = root.join("other");
+
+        // The items named one way, the shell's reports another: 8.3, a `.` in the path, another
+        // case, a trailing separator on the folder. A folder's contents, at two depths, and a
+        // result from elsewhere are dropped each time.
+        for said in [&long, &short, &dotted] {
+            for reported in [&long, &short, &dotted, &PathBuf::from(long.to_string_lossy().to_uppercase())] {
+                let sources = vec![said.join("a.txt"), said.join("sub folder"), said.join("B.TXT")];
+                let all = vec![
+                    result_for(reported.join("a.txt")),
+                    result_for(reported.join("sub folder")),
+                    result_for(reported.join("sub folder").join("in.txt")),
+                    result_for(reported.join("sub folder").join("deeper")),
+                    result_for(reported.join("sub folder").join("deeper").join("d.txt")),
+                    result_for(reported.join("b.txt")),
+                    result_for(reported.join("not an item.txt")),
+                    result_for(root.join("other").join("a.txt")),
+                ];
+                for job in [
+                    Job::Copy { sources: sources.clone(), dest_dir: dest_dir.clone() },
+                    Job::Move { sources: sources.clone(), dest_dir: dest_dir.clone() },
+                    Job::Delete { sources: sources.clone(), permanent: true },
+                ] {
+                    assert_eq!(names(&both(&job, all.clone())), ["a.txt", "sub folder", "b.txt"], "{said:?} against {reported:?}");
+                }
+            }
+            let all = vec![result_for(all_short.join("a.txt")), result_for(all_short.join("sub folder").join("in.txt"))];
+            both(&Job::Copy { sources: vec![said.join("a.txt")], dest_dir: dest_dir.clone() }, all);
+        }
+        // Items of two folders, one of them inside the other: its file is an item, its
+        // neighbour is not.
+        let sources = vec![long.join("a.txt"), long.join("sub folder").join("in.txt")];
+        let all = vec![
+            result_for(short.join("a.txt")),
+            result_for(short.join("sub folder").join("in.txt")),
+            result_for(short.join("sub folder").join("deeper")),
+            result_for(short.join("b.txt")),
+        ];
+        assert_eq!(names(&both(&Job::Copy { sources, dest_dir: dest_dir.clone() }, all)), ["a.txt", "in.txt"]);
+        // The other jobs.
+        let all = vec![result_for(dotted.join("a.txt")), result_for(dotted.join("b.txt"))];
+        let job = Job::Rename { source: long.join("a.txt"), new_name: "c.txt".into() };
+        assert_eq!(names(&both(&job, all.clone())), ["a.txt"]);
+        let job = Job::MoveAs { items: vec![(long.join("b.txt"), "z.txt".into())], dest_dir: dest_dir.clone() };
+        assert_eq!(names(&both(&job, all.clone())), ["b.txt"]);
+        // A new item's result names the folder it was made in.
+        let all = vec![result_for(short.clone()), result_for(root.join("other"))];
+        let job = Job::NewFolder { parent: long.clone(), name: "n".into() };
+        assert_eq!(both(&job, all.clone()).len(), 1);
+        let job = Job::NewFile { parent: long.clone(), name: "n.txt".into() };
+        assert_eq!(both(&job, all.clone()).len(), 1);
+        // A drive's root has no name to compare; items in folders that are not there never
+        // canonicalise.
+        let job = Job::Delete { sources: vec![PathBuf::from(r"C:\"), PathBuf::from(r"C:\twinfm-p16m2-gone\x.txt")], permanent: true };
+        let all = vec![result_for(PathBuf::from(r"c:\")), result_for(PathBuf::from(r"C:\TWINFM-P16M2-GONE\X.TXT\")), result_for(PathBuf::from(r"C:\twinfm-p16m2-gone\.\x.txt"))];
+        assert_eq!(both(&job, all).len(), 1);
+        // One result per item already: all kept.
+        let all = vec![result_for(root.join("other")), result_for(long.join("a.txt"))];
+        assert_eq!(both(&Job::Restore { items: vec![] }, all).len(), 2);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn restore_moves_only_out_of_the_bin() {
