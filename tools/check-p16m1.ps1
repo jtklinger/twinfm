@@ -13,8 +13,6 @@
 param(
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
     [string]$Out = (Join-Path $env:TEMP 'twinfm-p16m1-check\shots'),
-    # MOCK-UPS (removed once Jeremy has picked): 1 the badge on the target, 2 a banner, 3 the badge and a tinted highlight.
-    [int]$Mock = 1,
     [string]$Scheme = '',
     [int]$SideRow = 2
 )
@@ -83,16 +81,15 @@ $script = Join-Path $root 'script.txt'
 $err = Join-Path $root 'stderr.txt'
 $env:TWINFM_SCRIPT = "@$script"
 $env:SLINT_BACKEND = 'winit-software'
-$env:TWINFM_CUE_MOCK = "$Mock"
 if ($Scheme) { $env:TWINFM_SCHEME = $Scheme }
 Remove-Item Env:TWINFM_CONFIG -ErrorAction SilentlyContinue
 try {
     $proc = Start-Process -FilePath $Exe -PassThru -RedirectStandardError $err
     $null = $proc.Handle # kept, or ExitCode reads blank after the exit
 } finally {
-    Remove-Item Env:TWINFM_SCRIPT, Env:SLINT_BACKEND, Env:TWINFM_CUE_MOCK, Env:TWINFM_SCHEME -ErrorAction SilentlyContinue
+    Remove-Item Env:TWINFM_SCRIPT, Env:SLINT_BACKEND, Env:TWINFM_SCHEME -ErrorAction SilentlyContinue
 }
-$tag = "m$Mock" + $(if ($Scheme) { "-$Scheme" } else { '' })
+$tag = if ($Scheme) { $Scheme } else { 'cue' }
 $shots = [ordered]@{
     'ms: 901' = "$tag-move-row.png"; 'ms: 902' = "$tag-copy-row.png"; 'ms: 903' = "$tag-move-list.png"
     'ms: 904' = "$tag-copy-list.png"; 'ms: 905' = "$tag-ask-right.png"; 'ms: 906' = "$tag-ask-setting.png"

@@ -998,6 +998,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "held track presses: $($trackHolds.Count), repeated past one page $trackRepeated (two each per cycle)"
 "content search: done $($contentDone.Count) (three per cycle), files read $contentRead (600 or more per cycle), found $contentFound (four per cycle)"
 "search patterns: name searches with a class started $classStarts, done with 30 or more found $classDone; content searches with an expression started $reStarts, done with 2 found $reDone (one each per cycle); not-a-pattern lines $notPattern (must be 0)"
-"drag cue: Move here $cueMove, Copy here $cueCopy, Choose on drop $cueAsk, none $cueNone lines; Ctrl hovers over inner read as a copy $cueCtrl; Always copy on $dragCopyOn, off $dragCopyOff; drops onto inner with no key that copied $dragCopied (one each per cycle)"
+"drag cue: Move here $cueMove, Copy here $cueCopy, Choose on drop $cueAsk, none $cueNone lines; Ctrl hovers over inner read as a copy $cueCtrl; Always copy on $dragCopyOn, off $dragCopyOff; drops onto inner with no key that copied $dragCopied (the Ctrl hover, the setting each way and that drop: one each per cycle)"
 "saved searches: saved $searchSaved, opened $searchOpened, run again and found $searchRerun, removed $searchRemoved (one each per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

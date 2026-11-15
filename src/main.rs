@@ -6117,16 +6117,6 @@ fn drop_cue(app: &App, at: Option<(usize, dnd::Mark)>, cue: Option<&dnd::Cue>, s
         app.set_cue_y(y);
         app.set_cue_align(align.index());
     }
-    // MOCK-UPS (P16-M1, removed once Jeremy has picked): TWINFM_CUE_MOCK=2 is a banner across the
-    // foot of the list of the pane the drop is noted in, 3 the highlight filled in the effect's colour.
-    let mock: i32 = std::env::var("TWINFM_CUE_MOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-    app.set_cue_mock(mock);
-    if let (2, Some((pane, _))) = (mock, at) {
-        let r = dnd::row_rect(&window_layout(app), pane, -1, 0.0);
-        app.set_cue_x(r.x);
-        app.set_cue_y(r.y + r.h - 30.0);
-        app.set_cue_w(r.w);
-    }
     app.set_cue_shown(anchor.is_some());
     app.set_cue_kind(cue.map_or(0, |c| c.kind.index()));
     dnd::repaint_during_own_drag();

@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (364 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (368 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1490,6 +1490,46 @@ put off, with where it came from.
   (run with the machine quiet). Since P15-M4 each soak cycle also runs a name search with a class and a
   content search with an expression in `src`, and the report counts them (one each per cycle) and the
   not-a-pattern lines (must be 0).
+  Since P16-M1, **a drag says what it will do**. While a drag is over a spot that takes it, the drop
+  target reckons a cue beside the effect (`dnd::cue`, pure; `DropTarget::cue_for`): **"Move here"**,
+  **"Copy here"** or **"Choose on drop"** (the drop will open the Move here / Copy here / Cancel menu: a
+  right-button drag, or the "ask" setting with no deciding key held), a hint naming the key that gives
+  the other ("Ctrl copies", "Shift moves", "Let go of Ctrl to move", "Ctrl copies, Shift moves"; none
+  where no key would change it), and the same in words for the status line ("Drop moves 3 items to
+  Documents", `dnd::cue_status`). It is built again only when the spot, the effect or the deciding keys
+  held (Ctrl, Alt, Shift, the right button) change, never per DragOver, and handed with the spot to
+  `main.rs` `drop_highlight(at, cue)`, whose `drop_cue` sets, on change only (`CUE_SHOWN`): the window's
+  `cue-kind` (0 none, 1 move, 2 copy, 3 ask), which colours every drop highlight's border
+  (`Theme.cue-move` amber, `cue-copy` green, `cue-ask` violet; the panes' `drop-color`) and **the one
+  badge the window has** (app.slint, an element of the window laid over it, never in a row: `cue-shown`,
+  `cue-title`, `cue-hint`, and its place `cue-x`, `cue-y`, `cue-align` from `dnd::cue_anchor` over the
+  target's rectangle, `main.rs` `mark_rect`, `dnd::row_rect`: a details row's right end, a tile's lower
+  edge, the whole list's top middle, under a tab or a crumb, right of a sidebar row), and
+  `left-drop-cue` / `right-drop-cue`, the words the status line of the pane the drop is noted in shows
+  in place of its text while the drag hovers. No cue over the Bookmarks gap (its "Bookmark"), nor for a
+  refused drop. The Windows label by the pointer is unchanged. **The setting `drag_default`**
+  (`settings::DragDefault`; the dialog's "Dragging files": As Explorer, Always copy, Always move, Always
+  ask; applied on OK, `dnd::set_drag_default`, an atomic the drop target reads): what a drop onto TwinFM
+  does with no key held, from its own panes and from other programs (`dnd::decide_effect`'s `default`).
+  Ctrl (and Alt) still copy and Shift still moves under every choice, and the right button still asks.
+  "explorer" is move on the same volume and copy across; "ask" hovers as Explorer's rule (the menu's bold
+  item) and a left-button drop of files with no deciding key opens the right button's menu
+  (`dnd::asks`); items that are only ever copied (virtual files, items out of an archive) are never
+  asked about by the setting; into an archive "move" does not reach (`dnd::default_into`: a copy unless
+  Shift). Driver: `dragover ... <ms> keys <none|ctrl|shift|alt|right>[,...] <paths>` holds those keys
+  while it hovers (several sets, comma-separated, share the time equally, in order: a key pressed or let
+  go mid-drag); `dropfiles`' mode `auto` takes the setting, and `dropfiles ... ask <copy|move|cancel>
+  <paths>` is a left-button drop under "ask" with the menu's item picked from the in-menu timer (under
+  "ask" a plain `auto` picks Cancel, so no script waits for a person); `settings set drag_default
+  explorer|copy|move|ask`. Lines: `[dnd] cue: Move here | Copy here | Choose on drop | none (pane N |
+  sidebar)` when the cue's words or place change (`cue: none` alone when the drag leaves or drops),
+  `[dnd] drop menu: asked by the setting`, `[settings] dialog: drag_default <old> -> <new>`; the `[dnd]
+  over ...` line is now also logged when a deciding key changes over the same spot with the same effect.
+  A hover of 1000 ms or more over a folder row, a tab, a crumb or a sidebar row spring-loads it, so a
+  script that reads the cue there hovers for less. `tools/check-p16m1.ps1` is the scripted check (it
+  takes the pictures too). Since P16-M1 each soak cycle also hovers `spring`'s row with the cue read as
+  a move and, with Ctrl, as a copy, drops under "Always copy" on the same drive and puts the setting
+  back; the report counts them.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -1543,7 +1583,8 @@ put off, with where it came from.
   text colour in dark mode; a switch back to system at runtime sets Windows' mode of that moment until
   the next start); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
   the `_right` three (each pane's column widths, logical px, defaults 120, 90, 140, 40 to 2,000;
-  the header grips set them), since P15-M2 `col_ondisk_left` and `col_ondisk_right` (each pane's Size on
+  the header grips set them), since P16-M1 `drag_default` (`"explorer"`, the
+  default, `"copy"`, `"move"` or `"ask"`, in the dialog's "Dragging files" row), since P15-M2 `col_ondisk_left` and `col_ondisk_right` (each pane's Size on
   disk column width, default 100) and `sort = "ondisk"` in a saved tab. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).

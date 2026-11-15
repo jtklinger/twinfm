@@ -316,7 +316,6 @@ component CrumbButton inherits HorizontalLayout {
     // A drag over the label would drop into this crumb's folder (P5-M3): lit as a tab is.
     in property <bool> drop-here: false;
     in property <brush> drop-color: Theme.cursor;
-    in property <brush> drop-fill: Theme.selection;
     // The current folder's crumb: full text at weight 500; the others muted links (P10-M1).
     in property <bool> last: false;
     // geometry(x, width): the crumb's x in the crumb row and its label's width, for the drop
@@ -327,7 +326,7 @@ component CrumbButton inherits HorizontalLayout {
     changed x => { root.geometry(root.x, label-box.width); }
     label-box := Rectangle {
         border-radius: Theme.radius;
-        background: root.drop-here ? root.drop-fill : ta.has-hover ? Theme.muted : transparent;
+        background: root.drop-here ? Theme.selection : ta.has-hover ? Theme.muted : transparent;
         animate background { duration: 100ms; }
         border-width: root.drop-here ? 2px : 0px;
         border-color: root.drop-color;
@@ -1796,10 +1795,9 @@ export component Pane inherits Rectangle {
     in property <int> drop-tab: -1;
     // A drag is over crumb `drop-crumb` of the breadcrumb and would drop into its folder (-1: none).
     in property <int> drop-crumb: -1;
-    // What that drop would do (P16-M1): the highlight's border (and fill) in the effect's colour,
-    // and the words the status line shows in place of its text while the drag hovers ("" none).
+    // What that drop would do (P16-M1): the highlight's border in the effect's colour, and the
+    // words the status line shows in place of its text while the drag hovers ("" none).
     in property <brush> drop-color: Theme.cursor;
-    in property <brush> drop-fill: Theme.selection;
     in property <string> drop-cue;
     // crumb-geometry(index, x, width): crumb `index`'s x in the crumb row and its label's width, or
     // with index -1 the crumb row's offset in the bar and the bar's width (the drop target's hit
@@ -2055,7 +2053,7 @@ export component Pane inherits Rectangle {
                     y: 0px;
                     width: root.tab-w;
                     height: 30px;
-                    background: root.drop-fill;
+                    background: Theme.selection;
                     border-width: 2px;
                     border-color: root.drop-color;
                 }
@@ -2156,7 +2154,6 @@ export component Pane inherits Rectangle {
                         last: i == root.crumbs.length - 1;
                         drop-here: i == root.drop-crumb;
                         drop-color: root.drop-color;
-                        drop-fill: root.drop-fill;
                         geometry(x, w) => { root.crumb-geometry(i, x, w); }
                         clicked => { root.crumb-clicked(i); }
                         menu(x, y) => { root.crumb-menu(i, x, y); }
@@ -2445,13 +2442,13 @@ export component Pane inherits Rectangle {
             y: list.content-y + list.line-of(root.drop-row) * list.row-h;
             width: root.grid ? list.tile-w : parent.width;
             height: list.row-h;
-            background: root.drop-fill;
+            background: Theme.selection;
             border-width: 2px;
             border-color: root.drop-color;
         }
         Rectangle {
             visible: root.drop-row < 0;
-            background: root.drop-fill;
+            background: Theme.selection;
             border-width: 3px;
             border-color: root.drop-color;
         }
