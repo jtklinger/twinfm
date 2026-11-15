@@ -17,7 +17,11 @@ Phase 14 close); what it put off is below, marked P14. Phase 15 took its items a
 `phase-15-plan.md`): Extract in the Windows 11 menu (new, from Jeremy's screenshot, never on this list), the
 tab menu and the visible note for a saved search, the folder sizes' progress line, the Size on disk column's
 grip and sort, and glob classes and regular expressions in search. It closed 2026-11-14 (`phase-15-plan.md` §
-Phase 15 close); what it put off is below, marked P15.
+Phase 15 close); what it put off is below, marked P15. Phase 16 took its items at its kickoff (2026-11-15,
+`phase-16-plan.md`): a drag that says whether it will move or copy (new, from Jeremy's daily use, never on
+this list), Explorer's extra large icons, small icons and List views, plain content search on the regex
+engine, a new match in an open search tab, the `own_results` slowdown, the mouse's Back and Forward over the
+tab strip, a text box and the scrollbars, and the check of the blank-part click against Explorer.
 
 ## Look and feel
 
@@ -42,13 +46,8 @@ Phase 15 close); what it put off is below, marked P15.
 ## Search
 
 - An index (a search of `C:\Windows` takes about 39 s).
-- A new match in an open search tab needs F5 (its rows on screen follow changes since P11-M2; new
-  matches do not appear on their own).
 - The `word in *.ext` syntax, offered and not taken (P11-M1).
 - No folder sizes for search results or for the other drives (P3-M3).
-- Plain-text content search on the regex engine: the plain path took 968 ms where a `re:` expression took
-  86 ms on a 100 MB tree, all of it the lowercasing of each file's text; the final sigma rule of
-  `content::fold` to settle first (P15-M4).
 - Search tabs left open are not restored at start; a saved search in the sidebar is the way to keep one (P14-M1).
 
 ## Preview
@@ -62,20 +61,13 @@ Phase 15 close); what it put off is below, marked P15.
 
 ## Files, folders and watching
 
-- **The mouse's Back and Forward over a text box, the tab strip or the list's scrollbar** do nothing
-  (P2-M3, P3-M1).
 - **Thumbnails inside archives**: Windows has no thumbnail provider there; carried since Phase 9.
 - **A cold `.mp4` thumbnail miss** on Jeremy's Downloads, not reproduced; the log line added in the
   P11 video follow-up names the cause if it returns.
-- **Explorer's other views**: extra large and small icons, list, tiles, content (P4-M1; medium icons
-  came in P6-M2).
+- **Explorer's other views**: tiles, content (P4-M1; medium icons came in P6-M2; Phase 16 took extra
+  large, small and list).
 - **The sizes view and hard links**: when the name a hard-linked file was counted under is deleted, its other
   names are not counted until F5 (P14-M2).
-- **A copy or move of tens of thousands of items out of one folder** would spend minutes after the shell
-  had finished: `own_results` is quadratic in a job's top-level items (P15-M1).
-- **The cursor outline after a click on a row's blank part** goes to the row clicked, where a Windows list
-  keeps it where it was; that and the Ctrl and Shift rule there were not checked against a running
-  Explorer (P15 console-check fix, #153).
 - A deleted watched folder stays `Lost`; the subtree watch's overflow could not be forced (the test
   covers its handling); the log's cut timer's per-minute string (a clean-up) (P11 close).
 
