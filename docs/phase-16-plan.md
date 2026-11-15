@@ -18,6 +18,9 @@ What Jeremy decided at the kickoff (2026-11-15):
   small mouse and search leftovers (Back and Forward over the tab strip, a text box or a scrollbar; a new
   match in an open search tab; the cursor outline after a click on a row's blank part, checked against
   Explorer).
+- **The view keys**: "Match Explorer" (asked with the kickoff PR, 2026-11-15): Ctrl+Shift+1 extra large, 2
+  large, 3 medium, 4 small, 6 details, which moves the three keys in use until now (1 details, 2 large, 3
+  medium).
 - **Not taken** (in the recommendation, not objected to): the search index (a phase of its own, with a design
   discussion first), the preview's gaps, the Slint fork's whole-row snap, accessibility.
 
@@ -127,8 +130,9 @@ host and overlays, app.slint's drop properties and settings dialog, `src/auto.rs
      arithmetic, `set_left_medium` and the right's, `settings::View`, the saved `tile_left` / `tile_right`
      strings `"xlarge"`, `"large"`, `"medium"`, `"small"`), chosen once per pane as today. The toolbar's View
      menu, the settings dialog's View row and the keys list them in Explorer's order: Ctrl+Shift+1 extra
-     large, 2 large, 3 medium, 4 small, and details moves to Ctrl+Shift+6 as in Explorer. **This renumbers
-     three keys Jeremy has today** (1 details, 2 large, 3 medium): his call, below.
+     large, 2 large, 3 medium, 4 small, and details moves to Ctrl+Shift+6 as in Explorer (Jeremy:
+     "Match Explorer"; it renumbers the three keys of today, 1 details, 2 large, 3 medium). List takes
+     Ctrl+Shift+5, Explorer's, when P16-M5 lands.
    - **Settled first**: what a 256 px strip costs in memory and per composed grid row (a trace of the
      scripted scroll before anything else is built), and the drag image's size out of each new tile.
    - Driver: `view xlarge|large|medium|small|details` (`icons` stays as large). Lines: the `[view]` lines
@@ -253,9 +257,6 @@ Decisions Jeremy did not make and the lead settled, each reversible before its m
   it is built.
 - The setting applies to every drop onto TwinFM, from other programs too; Ctrl, Shift and the right button
   work as today under every choice.
-- **The view keys follow Explorer's numbering** (Ctrl+Shift+1 extra large, 2 large, 3 medium, 4 small, 6
-  details), which moves the three keys in use today. The alternative keeps 1, 2 and 3 as they are and gives
-  the new views 4 and 5 (and List 6).
 - Small icons is Explorer's Small icons (cells across, scrolled up and down); **List is a milestone of its
   own, last, behind a spike**, and goes back to the roadmap if it cannot hold the gate. Explorer's Tiles and
   Content views are not taken.
