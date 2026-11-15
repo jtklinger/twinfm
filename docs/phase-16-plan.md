@@ -361,6 +361,11 @@ Per item: done, checked and found right, or left with the reason.
   alone (`2 passed`), and the second and third full runs were `366 passed; 0 failed; 2 ignored` (the
   second before item 1's commit, the third before item 2's). The cause of the first run's two failures
   was not found; nothing in this change touches those tests' cleanup.
+- **The docs commit (4609832) went in and was pushed without the gates run before it**, against the
+  rule (it changed the record, `CLAUDE.md` and the soak script, no code; the coordinating session's
+  reminder crossed with the push). They were run on 4609832 right after: `cargo test --release`, `test
+  result: ok. 366 passed; 0 failed; 2 ignored` (a fourth full run, with the other stream building at
+  the same time), and `cargo build --release` finished; then this note was committed.
 
 ### Scripted checks
 
