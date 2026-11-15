@@ -54,6 +54,10 @@ menu, the folder sizes' progress line and the saved search's visible note, the S
 sort, glob classes and `re:` regular expressions in search; its first section quotes Jeremy's kickoff
 decisions, § Calls made lists the lead's, § Phase 15 close holds the gates, the long soak, the console checks,
 lessons, what is deferred and the Phase 16 list).
+`docs/phase-16-plan.md` is the Phase 16 record (opened 2026-11-15: a drag that says whether it will move or
+copy, with a setting for the default; extra large icons, small icons and the List view; plain content search
+on the regex engine; a search tab that picks up new matches; the small items; its first section quotes
+Jeremy's kickoff decisions, § Calls made lists the lead's, § Open questions what each brief settles first).
 
 `docs/roadmap.md` is the one list of known bugs and wanted features not built yet (since 2026-10-25).
 Its upkeep, Jeremy's rule (2026-10-26, "add the roadmap rule"): an item leaves the roadmap when a phase's
