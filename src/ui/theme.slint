@@ -53,6 +53,13 @@ export global Theme {
     out property <brush> accent: Palette.accent-background;
     out property <brush> cursor: Palette.accent-background;
     out property <brush> selection: dark ? Palette.accent-background.transparentize(72%) : Palette.accent-background.transparentize(78%);
+    // What a drag's drop would do (P16-M1), told apart without reading: a move amber, a copy
+    // green, a drop that asks violet; each the badge's fill and the highlight's border, with
+    // `on-cue` the text on the fill (at least 4.5:1 on each in both schemes).
+    out property <brush> cue-move: dark ? #FBBF24 : #B45309;
+    out property <brush> cue-copy: dark ? #4ADE80 : #15803D;
+    out property <brush> cue-ask: dark ? #A78BFA : #6D28D9;
+    out property <brush> on-cue: dark ? #0A0A0A : #FFFFFF;
     out property <length> radius: 6px;
     out property <length> radius-md: 8px;
     out property <length> radius-lg: 10px;

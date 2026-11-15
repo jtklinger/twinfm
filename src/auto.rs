@@ -420,7 +420,7 @@ enum Step {
     /// archive.
     DropVirtual { pane: usize, row: i32, zip: bool, own: bool, idlist: bool, asynced: bool, items: Vec<String> },
     /// Hover a drag of `paths` at `at` for `ms`, then leave.
-    DragOver { at: HoverAt, ms: u64, paths: Vec<String> },
+    DragOver { at: HoverAt, ms: u64, keys: Vec<u32>, paths: Vec<String> },
     Crumb { pane: usize, index: i32 },
     Toolbar { pane: usize, button: String },
     MenuVerb { pane: usize, verb: String },
@@ -598,8 +598,9 @@ fn parse(script: &str) -> Vec<Step> {
                     let m = if matches!(a.get(1), Some(&"tab" | &"crumb" | &"point")) { 4 } else { 3 };
                     // `sidegap <index>` (P12-M5) takes the side row's place.
                     let mode = a.get(m).unwrap_or(&"auto").to_string();
-                    // `menu <copy|move|cancel>` takes one more word before the paths.
-                    let (pick, first) = if mode == "menu" { (a.get(m + 1).unwrap_or(&"cancel").to_string(), m + 2) } else { (String::new(), m + 1) };
+                    // `menu <copy|move|cancel>` takes one more word before the paths, and so does
+                    // `ask <copy|move|cancel>` (P16-M1: a left-button drop under the "ask" setting).
+                    let (pick, first) = if mode == "menu" || mode == "ask" { (a.get(m + 1).unwrap_or(&"cancel").to_string(), m + 2) } else { (String::new(), m + 1) };
                     // The spot: `<pane> <row>`, `side <row>`, `tab <pane> <index>` or `crumb <pane> <index>`.
                     let at = match a.get(1).copied() {
                         Some("side") => DropAt::Side(num(2) as i32),
@@ -643,9 +644,26 @@ fn parse(script: &str) -> Vec<Step> {
                         Some("side") => (HoverAt::Side(a.get(2) == Some(&"top")), 3),
                         _ => (HoverAt::Edge(num(1) as usize, a.get(2) == Some(&"top")), 3),
                     };
+                    // `keys <none|ctrl|shift|alt|right>[,...]` after the time (P16-M1): the keys held
+                    // while it hovers; several, comma-separated, share the time equally, in order
+                    // (a key pressed or let go mid-drag).
+                    let ms_at = m;
+                    let (keys, m): (Vec<u32>, usize) = if a.get(m + 1) == Some(&"keys") {
+                        let held = |w: &str| match w {
+                            "ctrl" => MK_CONTROL,
+                            "shift" => MK_SHIFT,
+                            "alt" => crate::dnd::KEY_ALT,
+                            "right" => MK_RBUTTON,
+                            _ => 0,
+                        };
+                        (a.get(m + 2).unwrap_or(&"").split(',').map(held).collect(), m + 2)
+                    } else {
+                        (vec![0], m)
+                    };
                     Step::DragOver {
                         at,
-                        ms: num(m).max(1) as u64,
+                        ms: num(ms_at).max(1) as u64,
+                        keys,
                         paths: a.get(m + 1..).unwrap_or(&[]).join(" ").split('|').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
                     }
                 }
@@ -2043,7 +2061,7 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 }));
             });
         }
-        Step::DragOver { at, ms, paths } => {
+        Step::DragOver { at, ms, keys, paths } => {
             // A drag hovering at one point (an edge that scrolls, a spot that springs open):
             // DragEnter, a DragOver every 20 ms from a Slint timer (OLE calls DragOver on its own
             // timer for another program's drag, outside any modal loop of ours), then DragLeave.
@@ -2055,12 +2073,13 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             };
             let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), pos.x, pos.y, app.window().scale_factor());
             let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-            if !crate::dnd::hover_begin(&paths, sx, sy) {
+            if !crate::dnd::hover_begin(&paths, keys[0], sx, sy) {
                 eprintln!("[auto] dragover: no drop target registered yet");
                 schedule(runner, 1);
                 return;
             }
-            let deadline = std::time::Instant::now() + Duration::from_millis(ms);
+            let started = std::time::Instant::now();
+            let deadline = started + Duration::from_millis(ms);
             let r2 = runner.clone();
             runner.borrow().sub.start(TimerMode::Repeated, Duration::from_millis(20), move || {
                 if std::time::Instant::now() >= deadline {
@@ -2068,7 +2087,9 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                     r2.borrow().sub.stop();
                     schedule(r2.clone(), 1);
                 } else {
-                    crate::dnd::hover_over(sx, sy);
+                    // The keys held now: each of the step's sets for an equal share of its time.
+                    let k = (started.elapsed().as_millis() as usize * keys.len() / ms.max(1) as usize).min(keys.len() - 1);
+                    crate::dnd::hover_over(keys[k], sx, sy);
                 }
             });
         }
@@ -2092,18 +2113,21 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 "copy" => crate::dnd::MENU_LABELS[1],
                 _ => crate::dnd::MENU_LABELS[2],
             };
-            if mode == "menu" {
+            // The same under the "ask" setting for a left-button drop with no key (P16-M1: mode
+            // `ask <pick>`; under that setting `auto` picks Cancel, so no script waits for a person).
+            let menu = mode == "menu" || (keys == 0 && crate::dnd::drag_default() == crate::settings::DragDefault::Ask);
+            if menu {
                 arm_menu_steps(&app, vec![Step::Sleep(300), Step::MenuPick(label.into())]);
             }
             let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
             let result = crate::dnd::drop_direct(&paths, keys, sx, sy);
-            if mode == "menu" {
+            if menu {
                 disarm_menu_steps();
             }
             match result {
                 Some((enter, dropped)) => eprintln!(
                     "[auto] dropfiles {at:?} {mode}{}: {} path(s), DragEnter effect {}, Drop reported {}",
-                    if mode == "menu" { format!(" {pick}") } else { String::new() },
+                    if mode == "menu" || mode == "ask" { format!(" {pick}") } else { String::new() },
                     paths.len(),
                     crate::dnd::effect_name(enter),
                     crate::dnd::effect_name(dropped)

@@ -6012,9 +6012,10 @@ fn band_restore(pane: usize, b: &band::Band, why: &str) {
 }
 
 /// For the drop target: highlight what a drop would land on (a pane's row, or with row -1 its
-/// whole list; a tab; a sidebar row; a crumb), or nothing. Sets the properties only when they
-/// change.
-pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
+/// whole list; a tab; a sidebar row; a crumb), or nothing, and since P16-M1 say what the drop
+/// would do there (`cue`: the badge on the target, the highlight's colour and the pane's status
+/// line). Sets the properties only when they change.
+pub fn drop_highlight(at: Option<(usize, dnd::Mark)>, cue: Option<&dnd::Cue>) {
     // The sidebar row's place, under a short borrow (only for a sidebar mark).
     let found = STATE.with(|s| {
         let guard = s.try_borrow().ok()?;
@@ -6030,6 +6031,7 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
         Some((app, side))
     });
     let Some((app, side)) = found else { return };
+    drop_cue(&app, at, cue, side.map(|s| (s.1, s.2)));
     let (pane, row, tab_pane, tab, crumb_pane, crumb) = match at {
         Some((p, dnd::Mark::Row(r))) => (p as i32, r, -1, -1, -1, -1),
         Some((p, dnd::Mark::Tab(i))) => (-1, -1, p as i32, i as i32, -1, -1),
@@ -6059,6 +6061,74 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
     app.set_drop_side_y(side_y);
     app.set_drop_side_h(side_h);
     app.set_drop_side_row(side_row);
+    dnd::repaint_during_own_drag();
+}
+
+thread_local! {
+    /// The target and cue `drop_cue` last showed, so a DragOver that changes neither sets nothing.
+    static CUE_SHOWN: RefCell<(Option<(usize, dnd::Mark)>, Option<dnd::Cue>)> = const { RefCell::new((None, None)) };
+}
+
+/// The window rectangle of a highlighted drop target, for the cue's badge (`side`: a sidebar
+/// row's top in its list and its height). None for the Bookmarks gap and a crumb not on screen.
+fn mark_rect(app: &App, pane: usize, mark: dnd::Mark, side: Option<(f32, f32)>) -> Option<dnd::Rect> {
+    let l = window_layout(app);
+    let (a, _) = dnd::pane_x(&l, pane);
+    Some(match mark {
+        dnd::Mark::Row(r) => dnd::row_rect(&l, pane, r, app.invoke_get_scroll(pane as i32)),
+        dnd::Mark::Tab(i) => {
+            let w = app.invoke_tab_width(pane as i32);
+            dnd::Rect { x: a + dnd::PANE_PAD + app.invoke_tab_offset(pane as i32) + i as f32 * w, y: dnd::tab_top(&l), w, h: dnd::TAB_H }
+        }
+        dnd::Mark::Crumb(i) => {
+            let (row, crumbs) = crumb_geometry_now(app);
+            let (x, w) = *crumbs[pane].get(i)?;
+            dnd::Rect { x: a + dnd::PANE_PAD + dnd::NAV_W + row[pane].0 + x, y: dnd::crumb_top(&l, pane), w, h: dnd::CRUMB_H }
+        }
+        dnd::Mark::Side(_) => {
+            let (top, h) = side?;
+            let w = if app.get_sidebar_visible() { app.get_sidebar_width() } else { dnd::RAIL_W };
+            dnd::Rect { x: 0.0, y: dnd::side_top(&l) + app.invoke_side_scroll() + top, w, h }
+        }
+        dnd::Mark::Gap(_) => return None,
+    })
+}
+
+/// The drop cue (P16-M1): the one badge the window has, placed on the highlighted target; its
+/// kind, which colours the badge and the highlight; and the words in the status line of the pane
+/// the drop is noted in. Set when the target or the cue changes, never per DragOver.
+fn drop_cue(app: &App, at: Option<(usize, dnd::Mark)>, cue: Option<&dnd::Cue>, side: Option<(f32, f32)>) {
+    let cue = cue.filter(|_| at.is_some());
+    if CUE_SHOWN.with(|c| c.borrow().0 == at && c.borrow().1.as_ref() == cue) {
+        return;
+    }
+    CUE_SHOWN.with(|c| *c.borrow_mut() = (at, cue.cloned()));
+    let anchor = at.zip(cue).and_then(|((pane, mark), _)| {
+        let grid = window_layout(app).grid[pane].is_some();
+        dnd::cue_anchor(mark, mark_rect(app, pane, mark, side)?, grid)
+    });
+    let status = |pane: usize| cue.filter(|_| at.is_some_and(|a| a.0 == pane)).map_or_else(Default::default, |c| c.status.as_str().into());
+    app.set_left_drop_cue(status(0));
+    app.set_right_drop_cue(status(1));
+    app.set_cue_title(cue.map_or("", |c| c.title).into());
+    app.set_cue_hint(cue.map_or("", |c| c.hint).into());
+    if let Some((x, y, align)) = anchor {
+        app.set_cue_x(x);
+        app.set_cue_y(y);
+        app.set_cue_align(align.index());
+    }
+    // MOCK-UPS (P16-M1, removed once Jeremy has picked): TWINFM_CUE_MOCK=2 is a banner across the
+    // foot of the list of the pane the drop is noted in, 3 the highlight filled in the effect's colour.
+    let mock: i32 = std::env::var("TWINFM_CUE_MOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    app.set_cue_mock(mock);
+    if let (2, Some((pane, _))) = (mock, at) {
+        let r = dnd::row_rect(&window_layout(app), pane, -1, 0.0);
+        app.set_cue_x(r.x);
+        app.set_cue_y(r.y + r.h - 30.0);
+        app.set_cue_w(r.w);
+    }
+    app.set_cue_shown(anchor.is_some());
+    app.set_cue_kind(cue.map_or(0, |c| c.kind.index()));
     dnd::repaint_during_own_drag();
 }
 
@@ -7897,6 +7967,7 @@ fn settings_open() {
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
             toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
+            drag_default: settings::DragDefault::from_name(&st.config.drag_default).name().into(),
             theme: st.config.theme.clone(),
             preview: app.get_preview(),
             syntax_colours: app.get_syntax_colours(),
@@ -7926,6 +7997,7 @@ fn settings_open() {
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
+    app.set_dlg_drag_default(settings::DragDefault::from_name(&d.drag_default).index());
     app.set_dlg_theme(settings::ThemeMode::from_name(&d.theme).index());
     app.set_dlg_preview(d.preview);
     app.set_dlg_start_warning("".into());
@@ -8045,6 +8117,7 @@ fn settings_closed(ok: bool) {
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
         toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
+        drag_default: settings::DragDefault::from_index(app.get_dlg_drag_default()).name().into(),
         theme: settings::ThemeMode::from_index(app.get_dlg_theme()).name().into(),
         preview: app.get_dlg_preview(),
         syntax_colours: app.get_dlg_syntax_colours(),
@@ -8107,6 +8180,11 @@ fn settings_closed(ok: bool) {
                 let t = settings::Toolbar::from_name(&staged.toolbar);
                 app.set_toolbar(t.index());
                 with_state(|st| st.config.toolbar = t.name().into());
+            }
+            "drag_default" => {
+                let d = settings::DragDefault::from_name(&staged.drag_default);
+                dnd::set_drag_default(d);
+                with_state(|st| st.config.drag_default = d.name().into());
             }
             "theme" => {
                 let m = settings::ThemeMode::from_name(&staged.theme);
@@ -8415,6 +8493,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
     app.set_toolbar(settings::Toolbar::from_name(&config.toolbar).index());
+    dnd::set_drag_default(settings::DragDefault::from_name(&config.drag_default));
     // A system setting sets nothing at start (the style follows the OS live); the title bar is
     // set when the handle is first fetched.
     if settings::ThemeMode::from_name(&config.theme) != settings::ThemeMode::System {
