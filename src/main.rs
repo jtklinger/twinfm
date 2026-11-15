@@ -800,8 +800,8 @@ fn search_kind(pattern: &str, content: bool) -> &'static str {
 fn search_spec(st: &State, pattern: &str, content: bool) -> (NameMatch, Option<fs::enumerate::Content>) {
     if content {
         let needle = match model::typed(pattern) {
-            (true, expr) => model::compile(expr).map(fs::content::Needle::Regex).unwrap_or_default(),
-            (false, text) => fs::content::Needle::Text(fs::content::fold(text)),
+            (true, expr) => model::compile(expr).ok(),
+            (false, text) => fs::content::plain(text).ok(),
         };
         (NameMatch::default(), Some(fs::enumerate::Content { needle, cloud_roots: st.cloud.roots() }))
     } else {
