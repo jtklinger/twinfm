@@ -598,3 +598,178 @@ milestone; none of them runs per frame.
   with `grid-small.toml`. **Console checks**: the view in Downloads and in a folder of thousands of
   files; the wheel, the scrollbar and the keys; rename, new folder and a long name; a band, a drag
   out, a drop onto a folder's cell; the view kept across a restart.
+
+### What landed
+
+- **The List view**: Ctrl+Shift+5, and "List" between Small icons and Details in the toolbar's View
+  menu and the settings dialog's View row. A 16 px icon and the name on one line, in columns 220 px
+  wide filled from top to bottom, then the next column; scrolled sideways by the wheel, by its own
+  scrollbar along the list's foot and by the keys. Saved as `view_left` / `view_right` `"list"` (an
+  older build reads that as details); the saved tile size is left alone, so the pane's last icon size
+  is still there for the next icon view.
+- **The grid's machinery with the axes exchanged**, where the kickoff expected new machinery. The
+  pane's "tiles to a grid row" become the rows a column holds (the list's height, less its
+  scrollbar, over 22 px), so the grid model's rows are the columns, and the pane's one scroll runs
+  sideways. With that, the icon requests, the ring of composed strips, the saved and restored scroll
+  of a tab, the view switch's "same first entry" rule and the driver's `scrollpos` needed no list
+  form of their own.
+- **The component** is the spike's: no `ListView`, a ring of slots holding only the columns on
+  screen (and one each side), each a column rectangle with its cells and one 24 px wide image of its
+  icons. A scroll moves the column rectangles; a column that comes into view is one slot's data set.
+  Selection, cursor and cut marks reach a column only while it is on screen. No cell reads a runtime
+  property beyond its own data.
+- **The sideways forms**, each beside its up-and-down form: the hit test, the drag auto-scroll (at
+  the list's left and right edges, a column at a time), the band (the grid's arithmetic with x and y
+  exchanged), hover, paging (PageDown and PageUp move a screenful of columns, the cursor keeping its
+  row), the arrow keys (Up and Down along the column and on into the next; Left and Right a column
+  across; Right from the last full column lands on the last entry), Home and End, bringing the
+  cursor's cell into view, the keyboard menu's point, the drop highlight, the rename box (beside the
+  icon, on the cursor's cell) and the new item's box (on the list's first cell).
+- **Empty space**: right of the last column and under the last entry of a short last column. The
+  band starts there and a right click opens the folder's background menu, as below the rows of the
+  other views.
+- Driver: `view list`; every step that takes a row aims at the list's cells; `drag` drags the list's
+  own scrollbar thumb sideways; `rclickempty` aims under the last entry of a short last column.
+  Lines in `CLAUDE.md` § Measuring.
+
+### Tests
+
+`cargo test --release`: `test result: ok. 367 passed; 0 failed; 2 ignored` (366 on P16-M3's branch; one
+new test), on 5ff2e60; the suite ran twice on this branch, both clean. New:
+`model::the_list_views_ring_holds_the_columns_on_screen` (the column each slot holds for a window,
+round the ring; the ring over a pane's model: a column's cells and first entry, the short last
+column, an empty slot, a column's image kept to that column, selection and cursor reaching a cell,
+the ring emptied). Added to existing tests: the hit test in the column-major layout (down a column,
+across, scrolled sideways, below a column's last row, past the last entry) with the layout's line
+size and extent and the drag's left and right edges; the band's touched cells and cursor with the
+axes exchanged (two columns, down one column, right of the last, the short last column); the keyboard
+menu's point for a cell, scrolled and clamped; the settings round trip (`"list"` saved and read, an
+older tile size kept); the View menu's six items with Explorer's keys. Paging uses the grid's own
+function with its arguments exchanged, which its existing tests cover.
+
+### Scripted checks
+
+`tools/check-p16m5.ps1` (2026-11-15, the branch's release build, no settings file, the software
+renderer), one scripted run in `%TEMP%\twinfm-p16m5-check\`: three folders and 400 files, 403 entries.
+Exit 0, no panic. From its stderr (the scratch folder's path cut to `...`):
+
+```
+[view] pane=0 details -> list (27 rows to a column, 15 columns), scroll 0 -> 0 (entry 0 first)
+[auto] scrollpos pane=0 content-y 0.0 current-row 5
+[auto] scrollpos pane=0 content-y 0.0 current-row 32
+[auto] scrollpos pane=0 content-y 0.0 current-row 5
+[auto] scrollpos pane=0 content-y 0.0 current-row 86
+[auto] scrollpos pane=0 content-y -530.0 current-row 167
+[auto] scrollpos pane=0 content-y -530.0 current-row 86
+[auto] scrollpos pane=0 content-y -2290.0 current-row 402
+[band] pane=0 done: 3 selected, cursor 400
+[auto] scrollpos pane=0 content-y 0.0 current-row 0
+[auto] scrollpos pane=0 content-y -300.0 current-row 0
+[auto] scrollpos pane=0 content-y -492.0 current-row 0
+[dnd] Drop at pane 0 row 1 (...\work\Beta) keys=0x8 allowed=0x3: 1 file(s), effect copy (reported to the source: copy)
+[fileops] done id=1 pane=0 tab=1 Done: Copied 1 item
+[dnd] over pane 0 row 1 (...\work\Beta) keys=0x0 allowed=0x3 -> effect move
+[dnd] drag image 96x96 px, 64 px icon, 1 item(s), icon from the worker, composed in 1.9 ms: InitializeFromBitmap = 0x00000000
+[winmenu] pane=0 seq=1 background menu for 0 item(s) in ...\work: query queued on the verb worker
+[settings] dialog: view_left details -> list
+[view] pane=0 details -> list (27 rows to a column, 15 columns), scroll 0 -> 0 (entry 0 first)
+[view] pane=0 list -> small icons (4 tiles to a row, 101 grid rows), scroll 0 -> 0 (entry 0 first)
+[view] pane=0 small icons -> list (27 rows to a column, 15 columns), scroll 0 -> 0 (entry 0 first)
+```
+
+(`scrollpos` prints the pane's scroll under its old name; in the list it is the sideways one.) Read
+from it: 27 rows to a column in a 616 px list, 15 columns. From entry 4, Down goes to 5, Right to 32
+(a column across, the same row), Left back to 5; PageDown to 86 (three columns on, the last one whole
+on screen), again to 167 with the list scrolled 530 px, PageUp back to 86; End to entry 402 with the
+scroll at -2290 (the list's 1010 px less fifteen columns of 220: the last column whole), Home to 0.
+The band from under the short last column's 25 entries took its last three, the cursor on the one
+under the band's corner. The wheel scrolled 300 px sideways and a drag of the list's own scrollbar
+thumb 492 px. A drop onto the Beta folder's cell copied; a hover there lit the cell; a drag out
+carried the list's image and was cancelled; a right click under the last column opened the folder's
+background menu. The view came by its key, by the settings dialog and from small icons and back. Six
+pictures were taken and looked at (`list.png`, `list-end.png`, `list-drop.png`, `list-rename.png`,
+`list-newfolder.png`, `list-menu.png`): the columns, the last column whole after End with the
+scrollbar clear of the cells, the lit cell, the rename box beside the icon on the cursor's cell.
+
+The first run of the check found one fault, fixed before this record: at the view switch the rows to
+a column were read a step before the pane knew it showed the list, so the first line read "4 rows to
+a column" and the list was laid out again a moment later.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` on the branch's release build (5ff2e60), 2026-11-15, display scale
+100%, harness-launched, with the coordinating session's "soak go" and nothing else running: ran 10.1
+min, window closed by the script, exit code 0, 0 panicked lines; 231 jobs done (failed 0, cancelled
+0), soak refusals 0, waitops timeouts 0, menupicks refused 0, every "must be 0" count 0.
+
+```
+list view: small to list 3, list to medium 3, bands done with 1 selected and the cursor on entry 1: 3 (one each per cycle)
+grid: switched on 8, off 8; tile drops: 15 (five per cycle: large, medium, extra large, small and the list); 128 px drag images: 9 (left-button drags started: 17); bands: 15 started, 6 done with 2 selected (two per cycle), 0 cancelled
+extra large and small icons: medium to extra large 3, extra large to small 3 (one each per cycle); bands done with 1 selected on tile 0: 6 (two per cycle); 96 px drag images (the list's, and out of small tiles): 11
+right-button drags: 6; drags cancelled: 23, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 23
+working set: start 155.3 MB at 5 s, end 223.3 MB at 601 s; private: 165.6 -> 227.7 MB
+```
+
+The list's steps ran in all three cycles the run reached. In each the right pane went on from small
+icons to the list and then to medium tiles: a drop onto the list's first cell, a drag out of it
+cancelled, and the band from under the column's last entry took the second cell alone, the cursor on
+it. The 96 px drag images are eleven where P16-M3's soak had nine: the list's three more, less one
+drag late in the third cycle that the ten minutes cut off (the cycle is longer by the list's steps).
+P16-M3's counts for extra large and small icons are as in its own soak, and the 23 scripted drags all
+returned with none dropped.
+
+### Gate
+
+Two triplets, to be run by Jeremy from the coordinating session's hand-over, after P16-M3's sitting
+(which carries the spike's own triplet): the defaults against the reference; and
+`C:\traces\grid-list.toml` (made for this milestone: read-only, both panes on the list) against the
+reference with `C:\traces\grid-small.toml`.
+
+What the defaults scenario meets of this milestone: the host's scroll is reported through two
+properties (`scroll`, `extent`) that are its `content-y` and height in every view but the list, so
+the same handlers fire at the same moments; the model's grid notifications pass through one more
+function that reads a cell (the list's window, empty) before returning; the hover asks which of two
+calls to make by a bool. No row or tile has a new binding, and no list component of 0.6.0 changed.
+
+### Console checks (for Jeremy, after the gates, TwinFM started unelevated)
+
+1. **The key and the menu.** In Downloads press Ctrl+Shift+5: the files show as a small icon and a
+   name each, in columns that fill from the top down. The toolbar's View menu lists List between
+   Small icons and Details, ticked.
+2. **Scrolling sideways.** In a folder with a few thousand files (or `C:\Windows\System32`): turn
+   the wheel: the columns move sideways. Drag the scrollbar along the bottom of the list. It should
+   feel as smooth as small icons.
+3. **The keys.** Down and Up run along a column and on into the next; Right and Left jump a column
+   across on the same row; PageDown and PageUp jump a screenful of columns; End shows the last
+   column whole at the right, Home the first.
+4. **A long name** ends in "…" (Explorer widens the column there; TwinFM keeps one width).
+5. **Rename and new folder.** F2 on a file: the box sits beside the icon on that file. New folder on
+   the toolbar: a placeholder at the list's first cell; Return makes it and the cursor goes to it,
+   scrolling sideways if needed.
+6. **Mouse.** Click, Ctrl+click, Shift+click; drag a band from the empty space right of the last
+   column (scroll to the end first) across some cells; right-click a file (its menu) and the empty
+   space (the folder's menu: New, Paste, Properties).
+7. **Drag and drop.** Drag a file to the other pane; drag one from the other pane onto a folder's
+   cell (it lights up; held a second, the folder opens); hold a drag at the list's left or right edge:
+   it scrolls a column at a time.
+8. **Two panes.** One pane in List and the other in details: each keeps its own view; narrow the
+   List pane: fewer columns show, nothing else changes.
+9. **The window's height.** Make the window shorter and taller: the columns refill with fewer or
+   more rows.
+10. **Restart.** Close TwinFM in List and start it again: the pane comes back in List.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The spike was read as a go by the coordinating session**, Jeremy not yet asked (above); its
+  console triplet can still stop the milestone.
+- **One column width, 220 px**, where Explorer sizes each column to its longest name. A long name
+  elides. Variable columns would need a measuring pass per column and a running sum in place of one
+  division; say if the fixed width bothers you in daily use.
+- **A new item's box sits on the list's first cell**, not in the cursor's column, as the other views
+  put it on the top row.
+- **With thumbnails on, the list shows 16 px thumbnails**, as small icons does (P16-M3's call).
+- **The wheel scrolls the list sideways** (Explorer's List does the same); Shift+wheel does nothing
+  different there.
+- **A drag out of the list carries the details list's image** (as out of small icons).
+- **`scrollpos` keeps printing "content-y"** for the list's sideways scroll, so no script that reads
+  the line changes.
