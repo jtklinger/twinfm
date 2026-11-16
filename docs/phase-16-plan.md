@@ -459,6 +459,53 @@ counter per icon it hands a strip (when a strip is composed, never per frame), a
 takes a lock once more on the worker (none in the defaults: thumbnails are off), and the host carries
 one more Timer that never runs in a details list. The rows are untouched.
 
+**Result (ab87, 2026-11-16, Jeremy at the console, `target-p16m3` 57b5a9e against `target-p15close`),
+main-thread busy, %:**
+
+| Triplet | Reference | Candidate | Medians |
+|---|---|---|---|
+| defaults | p15close 20.4, 20.3, 20.2 | p16m3 20.1, 21.1, 20.9 | 20.3 against 20.9 |
+| extra large against large | p15close, `grid.toml`: 12.4, 12.6, 12.5 | `grid-xlarge.toml`: 8.9, 9.2, 9.2 | 12.5 against 9.2 |
+| small against large | p15close, `grid.toml`: 12.4, 12.6, 12.5 | `grid-small.toml`: 11.5, 11.5, 11.6 | 12.5 against 11.5 |
+
+Defaults: the runs interleave (the candidate's first run is the lowest of the six) and the medians
+differ by 0.6: no gap. Extra large and small both read below large. The sitting was in the costlier
+state throughout (render p50 2.6 to 2.8 ms on the defaults).
+
+**The small figure is two seconds of scrolling short** (found on 2026-11-16 while reading P16-M5's
+gap, below in P16-M5's record). The scenario's two `drag` steps press 17 px below the list's top,
+where the scrollbar's thumb sits in every view measured before. In small icons the pane's content is
+shorter (20,000 grid rows of 22 px, 440,000 px, where the details list has 880,000), so the 14,400 px
+the wheel steps scrolled first had moved the thumb to about 21 px: the press landed on the track
+above it, paged once, and the two seconds of dragging scrolled nothing. The stderr shows it: 272
+frames in the run where every other view drew 381, and the viewport's `resolve` count stopped at 250
+where the others reached 374. Small icons' honest figure for the whole scenario is nearer 16 than
+11.5 (109 frames more at its 4.2 ms a frame is about 4.6 points). It stays under the 20% bar and the
+milestone's reading stands, but the number must not serve as a reference as it is. The driver's aim
+is the fault, not the view.
+
+**Regate (ab88, 2026-11-16 08:10, Jeremy at the console, `target-p16m3` c5184fd against
+`target-p15close`), main-thread busy, %.** Run after the driver's fix, so every run dragged the thumb
+(`resolve` 374 to 376 calls in all 18 runs of the sitting); the sitting was in the normal state
+(render p50 about 2.0 ms on the defaults).
+
+| Triplet | Reference | Candidate | Medians |
+|---|---|---|---|
+| defaults | p15close 18.6, 17.5, 17.9 | p16m3 17.9, 17.3, 17.7 | 17.9 against 17.7 |
+| small against large | p15close, `grid.toml`: 11.5, 11.1, 11.6 | `grid-small.toml`: 14.8, 15.5, 15.1 | 11.5 against 15.1 |
+
+Defaults: interleaved, the candidate's median the lower: no gap. **Small against large: every large
+run below every small run, 3.6 points: a gap by the rule**, and the figure ab87 could not give. Small
+icons cost more than large icons and less than the details list (15.1 against 17.7 to 17.9 on the
+defaults in the same sitting), every run under 20%. Where the 3.6 points are, from the symbolised
+main-thread stacks (sampled ms in the 10 s, medians of three): the whole is 1,508 against 1,153;
+drawing text 502 against 295 (a pane of small icons shows two cells across and 27 down, 54 names,
+where large icons show about 25), the ListView's rows 82 against 36 (a 22 px row comes into view six
+times as often as a 136 px one over the same scroll), the accessibility tree 139 against 99 (more
+items in it). It is the cost of showing twice the files, as Explorer's Small icons does; nothing in
+it is per frame beyond what the large grid has. Extra large was not run again: its ab87 runs dragged
+the thumb (374 `resolve` calls) and stand.
+
 ### Console checks (for Jeremy, after the gates, TwinFM started unelevated)
 
 "View" is the button on the toolbar at the top; the keys work in either pane's list.
