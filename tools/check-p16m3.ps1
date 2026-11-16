@@ -8,9 +8,12 @@
 # new views a click on a tile, PageDown and PageUp, a band from the gap after the last tile, a drop
 # onto a folder tile (a copy), a cancelled drag out of a tile, F2 (the rename editor) and Escape, and a
 # new folder named from the toolbar; then thumbnails on (the settings dialog) and extra large again
-# (the pictures as thumbnails), small again, and back to details.
+# (the pictures as thumbnails), small again, and back to details. Last, the thumbnail memory budget:
+# the run has TWINFM_THUMB_MB=1 (a budget of four 256 px thumbnails; the 64 drawn most recently
+# always stay), and the left pane pages through pics (150 small JPEGs made here) in extra large icons
+# to its end, Home, and End again: thumbnails give their pixels back and return at their own index.
 # Prints the [view], [grid], [band] done, [dnd] drag image and Drop lines, the [fileops] done lines and
-# the [icons] list geometry lines.
+# the [icons] list geometry lines, the thumbnail memory line and the last [icons] line's table.
 param(
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
     [string]$Out = (Join-Path $env:TEMP 'twinfm-p16m3-check\shots'),
@@ -38,6 +41,19 @@ $jpegs = @(Get-ChildItem 'C:\Windows\Web' -Recurse -Filter *.jpg -ErrorAction Si
 $k = 0
 foreach ($j in $jpegs) { $k++; Copy-Item $j.FullName (Join-Path $work ("photo-{0:00}.jpg" -f $k)) }
 
+$pics = Join-Path $root 'pics'
+if (-not (Test-Path $pics)) {
+    New-Item -ItemType Directory -Force $pics | Out-Null
+    for ($i = 1; $i -le 150; $i++) {
+        $bmp = New-Object System.Drawing.Bitmap 320, 240
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.Clear([System.Drawing.Color]::FromArgb(255, ($i * 37) % 256, ($i * 91) % 256, ($i * 53) % 256))
+        $g.Dispose()
+        $bmp.Save((Join-Path $pics ("pic-{0:000}.jpg" -f $i)), [System.Drawing.Imaging.ImageFormat]::Jpeg)
+        $bmp.Dispose()
+    }
+}
+
 # work lists Alpha, Beta, Gamma, then the files by name (rows 0 to 2 are the folders).
 $wait = 'waitops 60000'
 $new = {
@@ -60,6 +76,12 @@ $steps += @(
     'settings open', 'sleep 300', 'settings set thumbnails true', 'settings ok', 'sleep 800',
     'view xlarge', 'sleep 2503', 'key End', 'sleep 2504',
     'view small', 'sleep 1505', 'view details', 'sleep 500',
+    # The budget: every picture of pics drawn once (a page is one grid row here), Home, End.
+    "nav 0 $pics", 'sleep 800', 'click 0 0', 'view xlarge', 'sleep 800'
+)
+1..50 | ForEach-Object { $steps += 'key PageDown'; $steps += 'sleep 120' }
+$steps += @(
+    'sleep 1500', 'key Home', 'sleep 2000', 'key End', 'sleep 2000', 'scrollpos 0', 'view details', 'sleep 400', "nav 0 $work", 'sleep 600',
     'settings open', 'sleep 300', 'settings set view_left xlarge', 'settings ok', 'sleep 600',
     'settings open', 'sleep 300', 'settings set view_left details', 'settings set thumbnails false', 'settings ok', 'sleep 600',
     'quit'
@@ -69,13 +91,14 @@ $script = Join-Path $root 'script.txt'
 $err = Join-Path $root 'stderr.txt'
 $env:TWINFM_SCRIPT = "@$script"
 $env:SLINT_BACKEND = 'winit-software'
+$env:TWINFM_THUMB_MB = '1'
 if ($Scheme) { $env:TWINFM_SCHEME = $Scheme }
 Remove-Item Env:TWINFM_CONFIG -ErrorAction SilentlyContinue
 try {
     $proc = Start-Process -FilePath $Exe -PassThru -RedirectStandardError $err
     $null = $proc.Handle # kept, or ExitCode reads blank after the exit
 } finally {
-    Remove-Item Env:TWINFM_SCRIPT, Env:SLINT_BACKEND, Env:TWINFM_SCHEME -ErrorAction SilentlyContinue
+    Remove-Item Env:TWINFM_SCRIPT, Env:SLINT_BACKEND, Env:TWINFM_SCHEME, Env:TWINFM_THUMB_MB -ErrorAction SilentlyContinue
 }
 $shots = [ordered]@{
     '[auto] Sleep(1501)' = 'xlarge.png'; '[auto] Sleep(1502)' = 'small.png'; '[auto] Sleep(2503)' = 'xlarge-thumbs.png'
@@ -84,7 +107,7 @@ $shots = [ordered]@{
     '[auto] Sleep(1602)' = 'small-rename.png'; '[auto] Sleep(1702)' = 'small-newfolder.png'
 }
 $taken = @{}
-$deadline = (Get-Date).AddSeconds(180)
+$deadline = (Get-Date).AddSeconds(240)
 while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 100
     $text = if (Test-Path $err) { Get-Content $err -Raw -ErrorAction SilentlyContinue } else { '' }
@@ -111,4 +134,6 @@ while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
 if (-not $proc.HasExited) { $proc.Kill(); 'timed out' }
 $proc.WaitForExit()
 Get-Content $err | Where-Object { $_ -match '^\[view\]|^\[grid\]|^\[band\] pane=\d+ done|^\[dnd\] (drag image|Drop at)|^\[fileops\] done|^\[icons\] (list geometry|thumbnail memory)|^\[settings\] dialog: (view|thumb)|^\[auto\] .*(no such|refused|disabled)|panicked' } | ForEach-Object { $_ -replace [regex]::Escape($root), '...' }
+(Get-Content $err | Where-Object { $_ -match '^\[icons\] \+' } | Select-Object -Last 1) -replace ', worker.*', ''
+Get-Content $err | Where-Object { $_ -match 'scrollpos pane' }
 "exit $($proc.ExitCode)"

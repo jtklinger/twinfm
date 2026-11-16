@@ -193,6 +193,14 @@
 # by it (`sort 0 4`, the first rows logged by `rows 0 3`) and back by name; the report counts the
 # drags, the fits and the sorts (one each per cycle), and the widths-back lines are three per cycle
 # since.
+# P16-M3: inside the medium-grid cycle, before its band, the right pane goes on to extra large icons
+# (`view xlarge`, Ctrl+Shift+1) and then small icons (`view small`, Ctrl+Shift+4), and in each: a
+# drop onto tile 0, a left-button drag out of it cancelled (out of an extra large tile the large
+# tile's 128 px image, out of a small one the list's 96 px image), and a band that touches tile 0
+# alone (from the gap right of the one extra large column; from below the small cells); then back to
+# medium tiles for that cycle's own band. Reported: the three switches (medium to extra large, extra
+# large to small, small to medium: one each per cycle), the bands done with 1 selected (two per
+# cycle); the tile drops are four per cycle since and the 128 px drag images two.
 # P13-M1: each cycle then hides the second pane with the toolbar's Two panes and shows it again
 # (`toolbar 0 split` twice: the right pane comes back on the left's folder, which the next cycle's
 # `nav 1` replaces), drags the split line to 0.35 of the room, where the left pane is too narrow for
@@ -481,6 +489,12 @@ $cycle = @(
     'click 1 0', 'view medium', 'sleep 300',
     "dropfiles 1 0 copy $pick", $wait,
     'dragrow 1 0 0 40', 'sleep 300', 'dragcancel', 'sleep 300',
+    # P16-M3: extra large and small icons, inside the medium cycle (see the header).
+    'view xlarge', 'sleep 400', "dropfiles 1 0 copy $pick", $wait,
+    'dragrow 1 0 0 40', 'sleep 300', 'dragcancel', 'sleep 300', 'band 1 300 60 5 10', 'sleep 200',
+    'view small', 'sleep 400', "dropfiles 1 0 copy $pick", $wait,
+    'dragrow 1 0 0 12', 'sleep 300', 'dragcancel', 'sleep 300', 'band 1 100 70 5 5', 'sleep 200',
+    'view medium', 'sleep 400',
     'band 1 202 40 5 10', 'sleep 200',
     'key ShiftRight', 'sleep 200',
     'view details', 'sdelete', $wait,
@@ -742,6 +756,12 @@ $mediumOff = @($log | Select-String -SimpleMatch 'medium icons -> details').Coun
 $mediumImages = @($log | Select-String -SimpleMatch 'drag image 80x80 px, 48 px icon').Count
 $bandsCursor = @($log | Select-String -SimpleMatch '[band] pane=1 done: 2 selected, cursor 0').Count
 $shiftFromCursor = @($log | Select-String -SimpleMatch '[select] pane=1 Range row=1 selected=2').Count
+# P16-M3 counts.
+$xlargeOn = @($log | Select-String -SimpleMatch 'medium icons -> extra large icons').Count
+$smallOn = @($log | Select-String -SimpleMatch 'extra large icons -> small icons').Count
+$smallOff = @($log | Select-String -SimpleMatch 'small icons -> medium icons').Count
+$bandsOne = @($log | Select-String -SimpleMatch '[band] pane=1 done: 1 selected, cursor 0').Count
+$listImages = @($log | Select-String -SimpleMatch 'drag image 96x96 px, 64 px icon').Count
 # P6-M3 counts.
 $toolPresses = @($log | Select-String -SimpleMatch '[toolbar] pane=' | Select-String -SimpleMatch -NotMatch ' tooltip "' | Select-String -SimpleMatch -NotMatch ' picks "' | Select-String -SimpleMatch -NotMatch ' fits ').Count
 $toolDisabled = @($log | Select-String -SimpleMatch 'disabled, not pressed').Count
@@ -940,7 +960,8 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "drop menus: $dropMenus (loops that found the app state busy: $dropMenuBusy)"
 "right-button drags: $rightDrags; drags cancelled: $dragsCancelled, dropped: $dragsDropped (must be 0); drag loops that found the state busy: $dragBusy; drag images set: $images"
 "menus opened and closed: $menus; in-menu ticks: $($ticks.Count), with state or driver busy: $ticksBusy"
-"grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (two per cycle: large and medium); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
+"grid: switched on $gridOn, off $gridOff; tile drops: $dropTile (four per cycle: large, medium, extra large and small); 128 px drag images: $tileImages (left-button drags started: $leftDrags); bands: $bandsStarted started, $bandsDone done with 2 selected (two per cycle), $bandsCancelled cancelled"
+"extra large and small icons: medium to extra large $xlargeOn, extra large to small $smallOn, small to medium $smallOff (one each per cycle); bands done with 1 selected on tile 0: $bandsOne (two per cycle); 96 px drag images (the list's, and out of small tiles): $listImages"
 "medium grid: switched on $mediumOn, off $mediumOff; 80 px drag images: $mediumImages; bands done with the cursor on tile 0: $bandsCursor (two per cycle); Shift+Right from the band's cursor: $shiftFromCursor"
 "toolbar: presses $toolPresses (twelve per cycle: P6-M3's eight, P13-M1's two Two panes, P13-M2's Undo and Redo), refused as disabled $toolDisabled (must be 0); new files $newFiles, undone $newFilesUndone; renamed to t $renamedT"
 "toolbar tooltips shown $tooltips (three per cycle); Back over the toolbar $toolBack, Forward $toolForward (one each per cycle); sidebar keys $sideKeys (five per cycle), Return $sideReturns (one per cycle)"

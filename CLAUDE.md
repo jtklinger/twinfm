@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (364 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (366 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -594,8 +594,8 @@ put off, with where it came from.
   (`thumbs 0 avg 0.00 ms dropped 0` with thumbnails off). Fixture: `%TEMP%\twinfm-p3m5-thumbs\`
   (200 copies of `C:\Windows\Web\Wallpaper`, `Screen` and `4K` JPEGs, `photo-000.jpg` on; made
   by hand, not in the repo; a new copy is cold in the system thumbnail cache).
-  Since P4-M1, the large-icon grid: `view details|icons` presses Ctrl+Shift+1 / Ctrl+Shift+2 on the
-  active pane (key names `CtrlShift1`, `CtrlShift2`; the setting is per pane, `view_left` /
+  Since P4-M1, the large-icon grid: `view details|icons` presses the view's key on the active pane
+  (Ctrl+Shift+6 and Ctrl+Shift+2 since P16-M3, Explorer's; Ctrl+Shift+1 and 2 before; the setting is per pane, `view_left` /
   `view_right`, so a gate run with the grid on takes `TWINFM_CONFIG=C:\traces\grid.toml`, read-only,
   both panes `"icons"`). In the grid every step that takes a row (`click`, `ctrlclick`, `shiftclick`,
   `dblclick`, `midclick`, `rclick`, `dropfiles <pane> <row>`) aims at the tile of visible entry
@@ -662,7 +662,7 @@ put off, with where it came from.
   `slow`), and the once-a-second line's `cloud N` (lookups made in the period, after `dropped D`);
   `overlays N` counts every icon drawn with a mark or an overlay, so a refresh of a cloud folder
   whose keys are known shows `cloud N` lookups and `overlays 0`.
-  Since P6-M2, the views finished: `view medium` presses Ctrl+Shift+3 on the active pane (key name
+  Since P6-M2, the views finished: `view medium` presses Ctrl+Shift+3 on the active pane (as since; key name
   `CtrlShift3`): the grid at medium tiles, 80 x 107 px (72 until P7-M4, 88 until P8-L1) with the shell's 48 px icon
   (`icons::TileGeom`, `MEDIUM`; `LARGE` is P4-M1's 96 x 136 with 96 px, 120 until P7-M4), chosen per
   pane and saved as `tile_left` /
@@ -1490,6 +1490,46 @@ put off, with where it came from.
   (run with the machine quiet). Since P15-M4 each soak cycle also runs a name search with a class and a
   content search with an expression in `src`, and the report counts them (one each per cycle) and the
   not-a-pattern lines (must be 0).
+  Since P16-M3, **extra large and small icons, and Explorer's view keys**. The grid's tile is one of four
+  sizes (`icons::TileSize`, a bool for medium before; the app's `left-tile` / `right-tile` and the host's
+  `tile`: 0 extra large, 1 large, 2 medium, 3 small): **extra large** (`TileGeom::XLARGE`, 260 x 296 px
+  with the shell's 256 px icon and the name under it on two lines, pane.slint `FileGridXL`) and **small**
+  (`TileGeom::SMALL`, Explorer's Small icons: 220 x 22 px cells across the pane, a 16 px icon at the
+  cell's left, `icon_left`, with the name beside it on one line, elided; `FileGridSmall`), each a copy of
+  the grid component with its constants, chosen once per pane by `FileListHost` as large and medium are.
+  In small tiles the rename editor and the new item's placeholder sit beside the icon, and the cursor
+  tile's whole-name overlay is not shown. **The keys are Explorer's**: Ctrl+Shift+1 extra large icons, 2
+  large, 3 medium, 4 small, 6 details (5 is kept for List; until P16-M3: 1 details, 2 large, 3 medium), and
+  the toolbar's View menu and the dialog's View row list the views in that order (`settings::View::ALL`,
+  whose place is `set-view`'s int, the dialog's choice and the menu's tick; the menu's commands are
+  `view:` and `View::name`). Saved as before: `view_left` / `view_right` `"icons"` with `tile_left` /
+  `tile_right` `"xlarge"`, `"large"`, `"medium"` or `"small"` (an older file reads as it did). A drag out of
+  an extra large tile carries the large tile's 128 px image (the picture fitted down to 96 px), out of a
+  small tile the details list's 96 px image (`main.rs` `drag_tile`). With `thumbnails` on, extra large
+  tiles ask for 256 px thumbnails and small ones for 16 px. **A far jump in the grid is aimed twice**
+  (pane.slint `bring-into-view`, `aim`, the host's `reaim` Timer): after a jump of more than a viewport
+  (End, Home, a new item's tile) Slint's ListView starts a whole grid row at the viewport's top, up to a
+  row's height short of the cursor's row, so the same arithmetic runs once more 16 ms later (unseen with
+  22 px rows; with 296 px tiles End left the cursor's tile nearly off the list). **The thumbnail memory
+  budget** (`icons::THUMB_BYTES_CAP`, 768 MB, beside the count cap of 20,000, which at 100% is reached
+  first for every size up to large tiles): past it `IconTable::evict` takes the thumbnails drawn longest
+  ago (`used`, a counter set by `fitted` and at arrival) down to nine tenths of it, never the 64 drawn
+  most recently (`EVICT_KEEP`): each keeps its index (a one-pixel buffer stands in, `fitted` hands out one
+  shared blank), its key goes from `index` to `evicted` and its index into `stale`, so its rows ask again
+  when a resolve next looks at them; the answer puts the pixels back at that index (`take_revived`, and
+  `drain_icons` marks the strips showing it). The workers give a delivered thumbnail's key back
+  (`pool.taken`), or the second ask would be skipped for ever. `TWINFM_THUMB_MB=<n>` sets a smaller budget
+  for a check or a soak (not a setting). Lines: `[view]` names `extra large icons` and `small icons`;
+  `[icons] thumbnail memory at its cap (N MB): the K drawn longest ago gave their pixels back, asked again
+  when shown` once; and from then the once-a-second `[icons]` line reads `table N images (T thumbnails in
+  M MB, G given back)`. Driver: `view xlarge|large|medium|small|details` (`icons` stays the large icons;
+  key names `CtrlShift1` to `CtrlShift4` and `CtrlShift6`); every step that takes a row aims at the new
+  tiles as at the others. Gate settings files: `C:\traces\grid-xlarge.toml` and `C:\traces\grid-small.toml`
+  (read-only, both panes on that view). `tools/check-p16m3.ps1` is the scripted check (the pictures, and
+  the budget with `TWINFM_THUMB_MB=1`); `tools/measure-p16m3.ps1` the in-app measurement (the gate's
+  scenario per view, and the thumbnail memory run). Since P16-M3 each soak cycle also takes the right pane
+  from medium tiles to extra large and small and back, with a tile drop, a cancelled drag and a band in
+  each; the report counts them.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -1513,7 +1553,7 @@ put off, with where it came from.
   `FileGridList`, chosen under the same per-pane `if`s; Ctrl+Shift+1 / Ctrl+Shift+2 set and save it;
   since P4-M2 a grid pane with `thumbnails` on shows thumbnails in its tiles, at the grid's icon size,
   through the same workers and table); since P6-M2 `tile_left` and `tile_right` (`"large"`, the
-  default, or `"medium"`: a sixth list component, `FileGridMedium`; Ctrl+Shift+3 sets medium, and a
+  default, or `"medium"`, and since P16-M3 `"xlarge"` or `"small"`: a sixth list component, `FileGridMedium`, and two more, `FileGridXL` and `FileGridSmall`; Ctrl+Shift+3 sets medium, and a
   pane on details keeps its tile size), and the view (details, large icons, medium icons) is in the
   settings dialog; since P6-M3 `toolbar` (`"top"`, the default, `"pane"` or `"none"`, in the
   dialog), `show_protected_left` / `show_protected_right` (default false, in the dialog), and

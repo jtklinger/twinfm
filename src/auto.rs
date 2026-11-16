@@ -73,9 +73,11 @@
 //!                                    px of the window, through Slint's pointer path (P12-M5: TwinFM's
 //!                                    own popups, such as the sidebar headers' menus)
 //!   history <back|forward>           Alt+Left / Alt+Right through the Slint key path, on the active pane
-//!   view <details|icons>             Ctrl+Shift+1 / Ctrl+Shift+2 (key names CtrlShift1, CtrlShift2): the
-//!                                    active pane's view, the details list or the large-icon grid
-//!                                    (P4-M1); `[view]` lines on stderr. Key names Up, Down, Left,
+//!   view <xlarge|large|medium|small|details>
+//!                                    the active pane's view by Explorer's keys (P16-M3): Ctrl+Shift+1
+//!                                    extra large icons, 2 large (`icons` too), 3 medium, 4 small, 6
+//!                                    details (key names CtrlShift1 to CtrlShift4 and CtrlShift6);
+//!                                    `[view]` lines on stderr. Key names Up, Down, Left,
 //!                                    Right, PageUp, PageDown, Home, End (and ShiftLeft, ShiftRight)
 //!                                    move the cursor in the focused list
 //!   rclick <pane> <row> [shift]      right-click a visible row: press, 60 ms for a frame, release;

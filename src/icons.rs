@@ -1784,6 +1784,11 @@ pub const THUMB_TABLE_CAP: usize = 20_000;
 /// screen (from Windows' thumbnail cache, so quickly).
 pub const THUMB_BYTES_CAP: usize = 768 * 1024 * 1024;
 
+/// The thumbnails drawn most recently that never give their pixels back, whatever the budget: more
+/// than both panes show at once with the rows asked for around them, so a budget smaller than a
+/// screenful (a test's, or a very large screen's) cannot make the pictures on screen go and come.
+pub const EVICT_KEEP: usize = 64;
+
 /// The extension key a thumbnail key falls back to past `THUMB_TABLE_CAP`. Thumbnail
 /// extensions are never keyed by full path, so this is the key the file has with thumbnails off.
 pub fn thumb_fallback(key: &str) -> SharedString {
@@ -1826,6 +1831,7 @@ pub struct IconTable {
     thumbs: HashMap<u16, (u32, SharedString)>,
     thumb_bytes: usize,
     budget: usize,
+    keep: usize,
     used: Vec<u64>,
     tick: u64,
     evicted: usize,
@@ -1917,6 +1923,7 @@ impl Default for IconTable {
             pictures: HashMap::new(),
             thumbs: HashMap::new(),
             thumb_bytes: 0,
+            keep: EVICT_KEEP,
             // `TWINFM_THUMB_MB` (the soak and the checks): a smaller budget, so a short run reaches it.
             budget: std::env::var("TWINFM_THUMB_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(THUMB_BYTES_CAP, |mb| mb * 1024 * 1024),
             used: Vec::new(),
@@ -2098,6 +2105,8 @@ impl IconTable {
     fn evict(&mut self, keep: u16) {
         let mut by_use: Vec<(u64, u16)> = self.thumbs.keys().filter(|&&i| i != keep).map(|&i| (self.used.get(i as usize).copied().unwrap_or(0), i)).collect();
         by_use.sort_unstable();
+        // The most recently drawn stay (`EVICT_KEEP`).
+        by_use.truncate(by_use.len().saturating_sub(self.keep));
         let target = self.budget / 10 * 9;
         let mut n = 0;
         for (_, i) in by_use {
@@ -2139,10 +2148,12 @@ impl IconTable {
         (self.thumbs.len(), self.thumb_bytes, self.evicted)
     }
 
-    /// For the tests: a smaller budget than `THUMB_BYTES_CAP`.
+    /// For the tests: a smaller budget than `THUMB_BYTES_CAP`, and how many of the most recently
+    /// drawn stay whatever it is.
     #[cfg(test)]
-    pub fn set_budget(&mut self, bytes: usize) {
+    pub fn set_budget(&mut self, bytes: usize, keep: usize) {
         self.budget = bytes;
+        self.keep = keep;
     }
 }
 
@@ -2615,7 +2626,7 @@ mod tests {
         let thumb = || Outcome::Pixels(SharedPixelBuffer::new(8, 8));
         let key = |k: usize| SharedString::from(format!("thumb:C:\\p\\a{k}.jpg|1|1"));
         let mut t = IconTable::default();
-        t.set_budget(4 * 256);
+        t.set_budget(4 * 256, 0);
         for k in 0..4 {
             assert!(t.complete(key(k), 8, thumb()));
         }
@@ -2646,6 +2657,16 @@ mod tests {
         // An icon that is no thumbnail never counts and never goes.
         assert!(t.complete("ext:.txt".into(), 8, thumb()));
         assert_eq!(t.thumb_memory().0, 4);
+        // The most recently drawn stay whatever the budget: with three kept beside the arrival, a
+        // budget of one thumbnail still holds four, and only the rest go.
+        let mut t = IconTable::default();
+        t.set_budget(256, 3);
+        for k in 0..6 {
+            assert!(t.complete(key(k), 8, thumb()));
+        }
+        assert_eq!(t.thumb_memory(), (4, 1024, 2));
+        assert_eq!((at(&mut t, 0), at(&mut t, 1)), (KeyState::Missing, KeyState::Missing));
+        assert!((2..6).all(|k| matches!(at(&mut t, k), KeyState::Ready(_))));
     }
 
     #[test]
