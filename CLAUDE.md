@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (364 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (367 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1490,6 +1490,42 @@ put off, with where it came from.
   (run with the machine quiet). Since P15-M4 each soak cycle also runs a name search with a class and a
   content search with an expression in `src`, and the report counts them (one each per cycle) and the
   not-a-pattern lines (must be 0).
+  Since P16-M6, **a finished search tab follows changes** (`src/searchfollow.rs` the pure part and
+  the look; `main.rs` `search_window`, `follow_search`, `land_follow`, `stop_following`). Once its
+  walk has run to the end (not stopped by Escape), a search tab takes a **subtree watch on its root**
+  (`Tab::search_follows`; in front with a parent watch, in the background only after every folder
+  tab has its watch, `WatchCand::spare`, inside the cap of 8), never for a root in a cloud location or
+  inside an archive (`Follow::able`). Each window's records (`Event::Subtree`'s `deep`) wait in the
+  tab (`Follow::pending`) and are looked at one batch at a time on a thread: `searchfollow::plan`
+  nets them into the paths to look at (created, renamed to; for a content search modified too) and
+  the paths that went (removed, renamed away); `searchfollow::look` stats each path to look at and
+  tests it as the walk would (its own name against the matcher; no folder on the way that the
+  hidden-file switches keep out, no link, no sync root for a content search; a content search reads
+  the file, `Content::holds`), and walks a folder that **arrived** (one moved or renamed in comes as
+  one record; a folder only modified, because an entry in it came or went, is not walked). On the UI
+  thread the rows at and below a path that went are removed (`PaneModel::names_where`,
+  `searchfollow::under_any`) and the matches added or updated in their sorted places (`apply_edits`);
+  a row found again under the same name keeps its place. A listing sorted or filtered since keeps the
+  records for the next try (the re-stat's 5 s tick asks again); F5 or a new search drops them. P11-M2's
+  re-stat of the rows on screen stays (a name search hears nothing of a modified file). **The
+  following ends**, with the status line's "Not following changes: F5 searches again", at the first
+  window whose records are not known (the watch's buffer overflowed, or past `MAX_DEEP`, 10,000),
+  with more than 10,000 records waiting, when the watch is refused or lost (the search is never run
+  again by the watch), and when a followed tab loses its watch (past the cap in the background, its
+  pane hidden). Driver: no new step (`touch`, `rmfile`, `mvfile` in a search tab act in its root;
+  `waitwatch` returns when a window has landed). Lines: `[search] pane=N gen=G watching <root>`,
+  `[search] pane=N window: R records, A added, D removed, C changed[, F files read], in T ms (applied
+  in U ms)` (T the thread's time, U the UI thread's), `[search] pane=N window: R records, not applied
+  (<why>)`, `[search] pane=N window: not applied (the listing changed), kept for the next`, `[search]
+  pane=N K records in one window`, `[search] pane=N not following changes (the changes came faster
+  than they could be read | too many changes at once | too many changes waiting | its folder cannot
+  be watched | its folder's watch was lost | not watched any more)`, `[watch] pane=N tab=T watch lost
+  (<error>): a search tab, not run again`. The `[watch] ... no watch for <root>: search results` line
+  is still written while the search walks (and for a tab that does not follow). `tools/check-p16m6.ps1`
+  is the scripted check; `tools/time-p16m6.ps1` measures what following costs while files are written
+  under the root (run with the machine quiet). Since P16-M6 each soak cycle also leaves a name search
+  open in `src` while a matching file is made and removed, and the report counts the tabs that took a
+  watch, the windows, the row added and taken off, and the tabs that stopped following (0 expected).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -1757,7 +1793,10 @@ put off, with where it came from.
   (the 7z and the tar.gz through the shell's copy engine; no Recycle Bin: the undo jobs are checked, not
   run), and `zip_jobs_on_the_worker` also extracts its password zip with the script's password. The
   ignored `probe_extract_engines` (never part of the gates) unpacks `C:\traces\bigdir.zip` by both
-  engines into `%TEMP%\twinfm-p15m1-probe-<pid>\` and leaves it there. All remove their folders.
+  engines into `%TEMP%\twinfm-p15m1-probe-<pid>\` and leaves it there. Since P16-M6
+  `searchfollow::tests::looked_at_paths_match_as_the_walk_does` makes a small tree with a hidden folder
+  (`attrib +h`) and a junction (`cmd /c mklink /J`) in `%TEMP%\twinfm-p16m6-look-<pid>\`. All remove
+  their folders.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols
