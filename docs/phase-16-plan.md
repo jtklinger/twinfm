@@ -731,6 +731,88 @@ the same handlers fire at the same moments; the model's grid notifications pass 
 function that reads a cell (the list's window, empty) before returning; the hover asks which of two
 calls to make by a bool. No row or tile has a new binding, and no list component of 0.6.0 changed.
 
+**Result (ab87, 2026-11-16, Jeremy at the console, `target-p16m5` 5ff2e60 against `target-p16m3`
+57b5a9e), main-thread busy, %:**
+
+| Triplet | Reference | Candidate | Medians |
+|---|---|---|---|
+| defaults | p16m3 20.1, 21.1, 20.9 | p16m5 21.2, 21.1, 20.2 | 20.9 against 21.1 |
+| the list against small icons | p16m3, `grid-small.toml`: 11.5, 11.5, 11.6 | `grid-list.toml`: 16.1, 16.5, 16.7 | 11.5 against 16.5 |
+
+Defaults: interleaved, 0.2 apart: no gap. **The list against small icons: every list run above every
+small run, five points: a gap by the rule.** Render per frame is level (p50 2.53 to 2.55 ms against
+2.56 to 2.59).
+
+**Where the five points are: the two runs did not do the same work.** Read from the six runs'
+stderr and the symbolised main-thread stacks, no new run:
+
+- The list drew **381 frames** in each run (381, 381, 380), as the details list and the large and
+  extra large grids did in the same sitting. Small icons drew **272** in each. The cost of a frame is
+  level: 4.31, 4.56, 4.08 ms of UI thread a frame in the list's second five seconds against 4.18,
+  4.65, 4.10 in small's. 109 frames at about 4.3 ms is 470 ms, 4.7 of the 5.0 points.
+- The 109 frames are the scenario's two `drag` steps (two seconds). **In neither view did they drag
+  the thumb.** In small icons the press missed the thumb (P16-M3's record, above) and landed on the
+  scrollbar's track, outside the list's hover area: nothing changed on screen, so nothing was drawn.
+  In the list the press missed in the same way (the thumb had moved 21 px along the foot; the aim was
+  17 px), and the pointer then travelled 400 px along the scrollbar at the list's foot. That
+  scrollbar is inside the list component and so inside the pane's hover area (P14-M3's one `TouchArea`
+  round the lists), where every pointer move marks the hover dirty and a frame is drawn, whether or
+  not the hovered cell changed. Two seconds of pointer moves, 120 frames of an unchanged list. The
+  viewport's `resolve` count shows that neither view scrolled: 246 calls when the wheel steps ended in
+  both, 250 and 253 at the end, where the views whose thumb was hit reached 374.
+- So the gate compared a list drawing for six seconds with small icons drawing for four. Over the
+  four seconds both scrolled by the wheel, the stacks differ by less: the accessibility tree's
+  rebuilds read 178 ms in the list against 67 in small icons (each column that comes into view
+  remakes its 27 cells, where the grid's ListView remakes a row of two tiles, 51 ms under its own
+  heading), about a point net, and a point is the rule's own margin.
+
+**What was done about it** (2026-11-16, with the coordinating session's leave): the driver's `drag`
+follows the thumb (`dnd::thumb_aim`: 17 px along the bar, the aim since the first gate, wherever that
+is on the thumb; the thumb's middle where the scroll has carried it past), on P16-M3's branch
+(c5184fd) and merged here; the list's scrollbar moved out of the list component into the host, beside
+the other views' `VScrollBar` and outside the hover area (ac5a84d). Of 155 earlier gate runs with a
+grid or thumbnails settings file, none missed the thumb (each reached 372 `resolve` calls or more):
+only ab87's small icons and list runs did, so the details list's scenario and every earlier grid
+gate's are unchanged. Tests 368 passed, 0 failed, 2 ignored; `tools/check-p16m5.ps1` exit 0, its
+lines as before. The gate's scenario in-app on the new build (harness-launched, one run each, about
+21 Hz, so no busy figure to read): the list and small icons each 383 frames and 376 `resolve` calls,
+both panes scrolled by the drags. The list against small icons is to be run again as a triplet; the
+accessibility rebuilds are looked at after it, if it still shows a gap. Not measured: that a pointer
+on the moved scrollbar draws no frame (read from the code; the regate will show it).
+
+**Regate (ab88, 2026-11-16 08:10, Jeremy at the console, `target-p16m5` ac5a84d against
+`target-p16m3` c5184fd), main-thread busy, %.** Every run dragged the thumb (`resolve` 374 to 376
+calls in all 18 runs of the sitting); the sitting was in the normal state (render p50 about 2.0 ms on
+the defaults).
+
+| Triplet | Reference | Candidate | Medians |
+|---|---|---|---|
+| defaults | p16m3 17.9, 17.3, 17.7 | p16m5 17.8, 18.0, 17.4 | 17.7 against 17.8 |
+| the list against small icons | p16m3, `grid-small.toml`: 14.8, 15.5, 15.1 | `grid-list.toml`: 17.9, 18.1, 17.8 | 15.1 against 17.9 |
+
+Defaults: interleaved, 0.1 apart: no gap. **The list against small icons: every small run below every
+list run, 2.8 points: a gap by the rule**, where one point was expected from ab87's four seconds. The
+list sits level with the details list in the same sitting (17.9 against 17.7 to 17.9) and every run
+is under 20%. The moved scrollbar holds: the list drew 380 frames, as small icons did.
+
+Where the 2.8 points are, from the symbolised main-thread stacks (sampled ms in the 10 s, medians of
+three, the list against small icons; the whole is 1,786 against 1,508, 278 more):
+
+- **The accessibility tree, 341 against 139, about 200 of the 278.** Its full rebuilds are 277 against
+  101. The list's ring holds the columns on screen and one each side, each of 27 cells that are list
+  items in the tree (four to five columns, 108 to 135 items, in a pane that shows under three), where
+  small icons' ListView holds 28 rows of two cells; and each scroll step that brings a column in
+  rebuilds the tree with them.
+- **Drawing, 1,111 against 1,038, about 70.** Text inside it is 703 against 502: a pane of the list
+  shows part of a third column, so about 80 names are drawn where small icons draw 54.
+- The ListView's rows, 82 in small icons, are not in the list at all, and about 90 more sit in the
+  timers outside these headings (the slots' data set as columns come in).
+
+So two thirds of the gap is the accessibility tree and not drawing. It could be made smaller (the
+columns outside the window left out of the tree, or a ring one column narrower), at the price of a
+change to P16-M5's structure and a third sitting; whether the list at the details list's cost is
+accepted as it is was put to Jeremy by the coordinating session on 2026-11-16.
+
 ### Console checks (for Jeremy, after the gates, TwinFM started unelevated)
 
 1. **The key and the menu.** In Downloads press Ctrl+Shift+5: the files show as a small icon and a
