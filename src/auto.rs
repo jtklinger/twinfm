@@ -848,9 +848,22 @@ fn list_top(app: &App, pane: usize) -> f32 {
 /// Where the pane's vertical scrollbar thumb sits with content-y = 0 (right edge of the list,
 /// just under the path bar and column header). Since P12-M2 the thumb is TwinFM's own
 /// (`VScrollBar`, 2 px below the list's top, at least 24 px long): the same aim lands on it.
+/// Since 2026-11-16 the aim follows the thumb when the scroll has carried it past the 17 px (small
+/// icons after the gate's wheel steps: the press landed on the track and the drag scrolled nothing,
+/// ab87); where 17 px is on the thumb, the aim is the one it always was.
 fn thumb(app: &App, pane: usize) -> LogicalPosition {
-    let (_, right_edge) = crate::dnd::pane_x(&crate::window_layout(app), pane);
-    LogicalPosition::new(right_edge - 10.0, list_top(app, pane) + 17.0)
+    use slint::Model;
+    let l = crate::window_layout(app);
+    let (_, right_edge) = crate::dnd::pane_x(&l, pane);
+    let rows = if pane == 0 { app.get_left_rows().row_count() } else { app.get_right_rows().row_count() };
+    let lines = match l.grid[pane] {
+        None => rows,
+        Some(cols) => crate::model::grid_rows(rows, cols),
+    };
+    let top = list_top(app, pane);
+    let visible = l.height - crate::dnd::LIST_BOTTOM_GAP - top;
+    let aim = crate::dnd::thumb_aim(app.invoke_get_scroll(pane as i32), lines as f32 * l.row_px_of(pane), visible);
+    LogicalPosition::new(right_edge - 10.0, top + aim)
 }
 
 /// A visible row's name (its first letters since P13-M2; the row's centre before): rows start under the 3 px padding, the tab strip when there is one,

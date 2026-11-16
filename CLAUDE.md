@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (366 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (367 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1529,7 +1529,13 @@ put off, with where it came from.
   the budget with `TWINFM_THUMB_MB=1`); `tools/measure-p16m3.ps1` the in-app measurement (the gate's
   scenario per view, and the thumbnail memory run). Since P16-M3 each soak cycle also takes the right pane
   from medium tiles to extra large and small and back, with a tile drop, a cancelled drag and a band in
-  each; the report counts them.
+  each; the report counts them. **The driver's `drag` follows the thumb** (2026-11-16, `dnd::thumb_aim`):
+  it presses 17 px along the scrollbar, as since the first gate, wherever that is on the thumb, and the
+  thumb's middle where the scroll has carried the thumb past it. In small icons the gate's wheel steps
+  had (a pane of 20,000 grid rows of 22 px), so ab87's small runs pressed the track and their two `drag`
+  seconds scrolled nothing (272 frames where every other view drew about 380): no small-icons figure
+  from ab87 is a reference. The details list and the large, medium and extra large grids keep the old
+  aim in the gate's scenario.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
