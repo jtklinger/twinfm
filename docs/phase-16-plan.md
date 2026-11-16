@@ -493,7 +493,9 @@ one more Timer that never runs in a details list. The rows are untouched.
 ### Calls made in this milestone, for Jeremy to check
 
 - **The thumbnail memory budget**, 768 MB with the least recently drawn handed back (above): put to
-  Jeremy by the coordinating session as a call of this stream.
+  Jeremy by the coordinating session as a call of this stream, with the 934 MB peak in extra large
+  icons and 384 MB as the alternative. His decision (2026-11-15): **"Use 768mb"**. `icons::THUMB_BYTES_CAP`
+  stays as built.
 - **With thumbnails on, small icons show 16 px thumbnails**, where Explorer's Small icons shows type
   icons. It follows the one setting ("thumbnails on" means pictures everywhere); say if small icons
   should always show type icons.
