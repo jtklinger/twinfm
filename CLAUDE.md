@@ -1527,14 +1527,22 @@ put off, with where it came from.
   of the four buttons; `DropSpot::springs` as the button is enabled) goes back or up in that pane
   (`main.rs` `spring_nav`; the pane does not become active), the button drawn lit meanwhile (the window's
   `drop-nav-pane` / `drop-nav`, NavButton's `lit`); no drop lands there (`effect_at` gives none, which is
-  all Drop reads; no cue), and the spot's `dest` is the folder the button goes to, so each folder reached
-  arms it again (held on, Up climbs a level a second). Since the second console check DragOver shows the
+  all Drop reads; no cue), and the spot's `dest` is the folder the button goes to, which the spring leaves
+  out of its target (`dnd::spring_key`), so **a button fires once per hover**: the pointer leaves it and
+  comes back to go again (the third console check; held on, Up had climbed a level a second). Since the second console check DragOver shows the
   source an effect there (`bookmark_effect`: a link, or the copy TwinFM's own drag gets) with the
   description "Up to <folder>" / "Back to <folder>" (`dnd::nav_description`), so the pointer is not the
   refusal sign; a release there still copies and moves nothing. **A drop that will open the menu is
   described "Choose on drop"** as the tag reads, with the effect's image (`dnd::description`'s `asks`;
   the shell draws a description only with the effect's image, P12-M5), and the description's change
-  check reads its text too. Forward and Refresh are the pane, as before. **A sidebar row held under TwinFM's own drag
+  check reads its text too. **Inside TwinFM's own drag nothing asks Slint for a frame** but the drop
+  highlight (`dnd::repaint_during_own_drag`): the event loop's posted work runs there (a listing lands, a
+  watch's edits apply, measured with a real held drag) and stays unseen, so `drain`, `drain_icons`,
+  `land_edits` and the spring's three closures ask for one (`dnd::frame_during_own_drag`, a no-op
+  outside our own drag; the third console check: a bookmark opened in the other pane showed only when
+  the pointer moved back over a pane). A scripted `dragover` runs no OLE loop and cannot show this; a
+  real `dragrow` with a file made in the other pane's folder meanwhile does (`N frame(s) rendered inside
+  the drag loop`). Forward and Refresh are the pane, as before. **A sidebar row held under TwinFM's own drag
   opens in the other pane** with two showing (`dnd::side_spring_pane`, the pane the drag left kept in
   `dnd::DRAG_FROM` around `dnd::drag`; the second console check: P11-M3's active pane is the pane the
   files are leaving, whose listing went away under the drag); with one pane, or another program's drag,

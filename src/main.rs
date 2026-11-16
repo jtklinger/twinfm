@@ -1669,6 +1669,8 @@ fn search_move(i: usize, up: bool) {
 }
 
 fn drain() {
+    // A listing landing while our own drag holds the loop is drawn (P16-M1: `dnd::frame_during_own_drag`).
+    dnd::frame_during_own_drag();
     // Panes whose active tab refreshes once the state borrow is released.
     let again = with_state(|st| {
         let mut again: Vec<usize> = Vec::new();
@@ -2218,6 +2220,7 @@ fn unknown_name(why: &str) -> Option<&str> {
 /// under a path the tab no longer has (the folder renamed since), falls back.
 fn land_edits(job: StatJob, edits: Vec<model::Edit>, gone: Vec<String>, folder_gone: bool, stat_ms: f64) {
     let StatJob { pane, tab: tab_id, path, records, generation, pass, young, .. } = job;
+    dnd::frame_during_own_drag();
     let again = with_state(|st| {
         let mut again = Vec::new();
         let app = st.app.upgrade()?;
@@ -2990,6 +2993,7 @@ fn sync_grid(st: &mut State, app: &App, pane: usize) {
 /// Take every icon reply the worker has sent, intern the images, then re-resolve both panes'
 /// visible rows once (one walk over a screenful per pane, however many replies arrived).
 fn drain_icons() {
+    dnd::frame_during_own_drag();
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let mut any = false;
@@ -6222,7 +6226,10 @@ pub fn drop_files(pane: usize, sources: Vec<PathBuf>, dest: PathBuf, effect: u32
 /// runs from the event loop, as the closures that loop already runs do (they take `with_state`
 /// and open no modal loop).
 pub fn spring_open(pane: usize, dest: PathBuf) {
-    let _ = slint::invoke_from_event_loop(move || navigate(pane, dest));
+    let _ = slint::invoke_from_event_loop(move || {
+        navigate(pane, dest);
+        dnd::frame_during_own_drag();
+    });
 }
 
 /// The pane a sidebar row opens in when a drag is held over it (`dnd::side_spring_pane`): `active`
@@ -6235,11 +6242,14 @@ pub fn side_spring_pane(active: usize) -> usize {
 /// A drag held over the path bar's Back or Up (P16-M1): that pane goes back or up, as the button
 /// does, without becoming the active pane; through the event loop as `spring_open` does.
 pub fn spring_nav(pane: usize, nav: dnd::Nav) {
-    let _ = slint::invoke_from_event_loop(move || match nav {
-        dnd::Nav::Back => history_move(pane, false),
-        dnd::Nav::Up => {
-            go_up(pane);
+    let _ = slint::invoke_from_event_loop(move || {
+        match nav {
+            dnd::Nav::Back => history_move(pane, false),
+            dnd::Nav::Up => {
+                go_up(pane);
+            }
         }
+        dnd::frame_during_own_drag();
     });
 }
 
@@ -6249,7 +6259,8 @@ pub fn spring_tab(pane: usize, index: usize) {
     let _ = slint::invoke_from_event_loop(move || {
         switch_tab(pane, |t| {
             t.select(index);
-        })
+        });
+        dnd::frame_during_own_drag();
     });
 }
 

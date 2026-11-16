@@ -2004,8 +2004,20 @@ pub struct DropSpot {
     /// that is not the pane's active one, and since P11-M3 a sidebar row (in the active pane) and a
     /// crumb other than the folder shown; since P16-M1 the path bar's Back and Up where they have
     /// somewhere to go (`Mark::Nav`, the one spot that springs without taking a drop; its `dest` is
-    /// the folder the button goes to, so each folder it reaches arms it again).
+    /// the folder the button goes to, which the spring leaves out of its target, `spring_key`).
     pub springs: bool,
+}
+
+/// What the spring takes a spot for: the spot itself, but the path bar's Back or Up without
+/// the folder it goes to, so the button is one target whatever the pane shows and fires once per
+/// hover (P16-M1's third console check: held on, Up had gone a second level, from
+/// `G:\My Drive\x` past `G:\My Drive` to `G:\`; the pointer must leave the button and come back
+/// to go again, as a row's spring).
+pub fn spring_key(spot: &DropSpot) -> DropSpot {
+    match spot.mark {
+        Mark::Nav(_) => DropSpot { dest: PathBuf::new(), ..spot.clone() },
+        _ => spot.clone(),
+    }
 }
 
 /// How long a drag must hover a folder row, a tile or a tab before it opens there (Explorer's is
@@ -2311,7 +2323,7 @@ impl DropTarget {
         let mut spring = self.spring.borrow_mut();
         match target {
             Some(t) => {
-                if spring.arm(t.clone(), now) {
+                if spring.arm(spring_key(t), now) {
                     eprintln!("[dnd] spring armed: {}", describe(&Some(t.clone())));
                 }
             }
@@ -2336,7 +2348,9 @@ impl DropTarget {
                 crate::spring_open(pane, t.dest);
             }
             Mark::Nav(n) => {
-                eprintln!("[dnd] spring-loaded: pane {} goes {} to {} after {ms} ms", t.pane, if n == Nav::Back { "back" } else { "up" }, t.dest.display());
+                // The key carries no folder (`spring_key`): where it goes is the spot's, still under the pointer.
+                let to = target.map(|s| s.dest.display().to_string()).unwrap_or_default();
+                eprintln!("[dnd] spring-loaded: pane {} goes {} to {to} after {ms} ms", t.pane, if n == Nav::Back { "back" } else { "up" });
                 crate::spring_nav(t.pane, n);
             }
             _ => {
@@ -2698,6 +2712,18 @@ pub fn repaint_during_own_drag() {
         }
     });
     // SAFETY: our own window; RDW_INTERNALPAINT only queues a WM_PAINT.
+    unsafe { RedrawWindow(hwnd as HWND, std::ptr::null(), std::ptr::null_mut(), RDW_INTERNALPAINT) };
+}
+
+/// Something away from the pointer changed (a listing landed, a watch's edits, a pane a held drag
+/// opened elsewhere): inside our own drag, ask for a frame, since nothing else does there (the
+/// work itself runs: OLE's loop dispatches the event loop's posted closures, but Slint's own
+/// redraw request waits for the loop that is not turning). The third console check of P16-M1: a
+/// bookmark held under a drag opened in the other pane, unseen until the pointer moved back over
+/// a pane and the highlight asked for a frame. Nothing outside our own drag.
+pub fn frame_during_own_drag() {
+    let Some((hwnd, _)) = OWN_DRAG.with(Cell::get) else { return };
+    // SAFETY: as in `repaint_during_own_drag`.
     unsafe { RedrawWindow(hwnd as HWND, std::ptr::null(), std::ptr::null_mut(), RDW_INTERNALPAINT) };
 }
 
@@ -4188,6 +4214,23 @@ mod tests {
         assert_eq!((hit(&s, 17.0, 5.0), hit(&s, 70.0, 36.0)), (Spot::Pane(0), Spot::Pane(0)), "the bar's padding");
         assert_eq!(hit(&s, 115.9, 20.0), Spot::Pane(0), "the gap before the crumbs");
         assert_eq!((Nav::Back.index(), Nav::Up.index()), (0, 2));
+        // Up fires once per hover: its spot after the pane went up (another folder to go to) is the
+        // same spring target, so the spring that fired for it does not arm again until it is left.
+        let up = |to: &str| DropSpot { pane: 1, mark: Mark::Nav(Nav::Up), dest: p(to), springs: true };
+        assert_eq!(spring_key(&up(r"G:\My Drive")), spring_key(&up(r"G:\")));
+        assert_ne!(spring_key(&up(r"G:\")), spring_key(&DropSpot { mark: Mark::Nav(Nav::Back), ..up(r"G:\") }));
+        assert_ne!(spring_key(&up(r"G:\")), spring_key(&DropSpot { pane: 0, ..up(r"G:\") }));
+        let row = |to: &str| DropSpot { pane: 1, mark: Mark::Row(0), dest: p(to), springs: true };
+        assert_ne!(spring_key(&row(r"C:\a")), spring_key(&row(r"C:\b")), "a row's folder is part of its target");
+        let t0 = std::time::Instant::now();
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+        let mut sp: Spring<DropSpot> = Spring::default();
+        assert!(sp.arm(spring_key(&up(r"G:\My Drive")), at(0)));
+        assert!(sp.check(at(SPRING_MS)).is_some());
+        assert!(!sp.arm(spring_key(&up(r"G:\")), at(SPRING_MS + 20)), "held on: not armed again");
+        assert!(sp.check(at(3 * SPRING_MS)).is_none());
+        sp.disarm();
+        assert!(sp.arm(spring_key(&up(r"G:\")), at(3 * SPRING_MS + 20)), "left and come back: armed again");
         // A sidebar row held under a drag opens in the pane the drag did not leave, with two panes
         // showing; else in the active pane (one pane, or another program's drag).
         assert_eq!((side_spring_pane(Some(0), 0, true), side_spring_pane(Some(1), 1, true)), (1, 0));

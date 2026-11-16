@@ -585,9 +585,37 @@ Drop reported none" with no file job after it); a ten-minute soak exit 0, no pan
 failed, no scripted drag dropped, every must-be-0 count at 0, Up held by a drag went up in each full
 cycle (2), working set 156 to 231 MB.
 
+### The third console check (2026-11-16, c630fb3): the other pane drawn late, and Up going twice
+
+Check 9 passed ("Works!": the label with its picture is accepted). Two findings.
+
+**G. The bookmark opened in the other pane, but was not seen.** "The right pane does open, but not
+immediately. I have to drag the file back to the left pane and then the right pane will change to the
+bookmark I was dragging to." Which it was, measured before anything was changed, with a real drag held
+by the script (`dragrow`, cancelled after four seconds) and a file made in the other pane's folder a
+second and a half in: the folder watch's edit was applied 270 ms later, inside the drag (`[watch] pane=1
+... applied: +1 -0 ~0`), and the run reported **"0 frame(s) rendered inside the drag loop"**. So the work
+runs and is not drawn: while Windows runs a drag for TwinFM, TwinFM's own request for a new frame is not
+served, and the only thing that asked Windows for one directly was the drop highlight changing, which is
+why moving back over a pane made the bookmark's folder appear. The row and tab springs had never shown
+it because their result is under the pointer. Fixed where such work lands: a listing arriving, icons
+arriving, a watch's edits and the three springs now ask for a frame while TwinFM's own drag is running
+(`dnd::frame_during_own_drag`; nothing outside a drag). The same run on the new build: 2 frames in the
+drag loop, for the edit and its icon. This also draws a watched folder changing under any held drag,
+which it did not before. The held drag over the sidebar row itself could not be scripted here (in this
+remote session Windows sends a drag-leave every eighth of a second to a scripted drag, so no spring
+ripens): Jeremy's check 16.
+
+**H. Up went two levels.** "If I drag to g:\my drive\wireguard then drag to up arrow, I would expect the
+up arrow to take me to g:\my drive, not g:\". That was this record's call ("held on, Up climbs one level
+a second"), and it is withdrawn: **Up and Back fire once per hover**. To go again the pointer leaves the
+button and comes back, as a folder row's spring (`dnd::spring_key`, tested: the button is one target
+whatever folder it would go to). The scripted check holds Up for 2.6 s and the pane goes up once.
+
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
-Revised after the first console check: 2, 3, 7, 8 and 9 changed, 14 and 15 are new; 16 after the second.
+Revised after the first console check: 2, 3, 7, 8 and 9 changed, 14 and 15 are new; 16 after the second;
+15 and 16 again after the third.
 
 Two panes showing (the toolbar's Two panes). "The tag" is the small coloured label that appears on the
 thing under the pointer while you drag; "the status line" is the text at the bottom left of the pane you
@@ -632,12 +660,12 @@ are dragging into.
 15. **Back out of a folder mid-drag.** Drag a file over a folder's row in the other pane and hold until
     it opens. Still holding, move the pointer onto that pane's Up arrow (left of the path) and hold: the
     arrow lights, the pointer stays an arrow with "Up to <folder>" beside the picture (no red
-    circle), and after a second the pane goes back up to the parent. Hold on and it climbs another
-    level. Do the same on the Back arrow. Then drop the file in a list as usual. Letting go over the
+    circle), and after a second the pane goes back up to the parent, once: holding on does nothing
+    more. Move off the arrow and back onto it to go up again. Do the same on the Back arrow. Then drop the file in a list as usual. Letting go over the
     arrows themselves drops nothing.
 16. **A bookmark held under a drag.** Two panes showing. Drag a file from the left pane onto a bookmark
-    (or a drive) in the sidebar and hold it there a second: the folder opens in the RIGHT pane, and the
-    left pane still shows the folder the file came from. Move into the right pane's list and drop, or
+    (or a drive) in the sidebar and hold it there a second, without moving: the folder appears in the
+    RIGHT pane at once, and the left pane still shows the folder the file came from. Move into the right pane's list and drop, or
     press Escape. The same from the right pane opens it in the left.
 
 ### Calls made in this milestone, for Jeremy to check
@@ -649,8 +677,8 @@ are dragging into.
   no key is named (the keys do not skip the menu for the right button).
 - **After the first console check** (above, B to D): Shift and Alt keep working without being named;
   Ctrl+Shift stays a copy; a drop into a zip is left out of the Ctrl rule; Up and Back take no drop,
-  where a file let go over them used to land in the folder shown; a drag held on over Up keeps climbing,
-  one level a second; a pane reached by Up or Back during a drag does not become the active pane.
+  where a file let go over them used to land in the folder shown; a drag held on over Up kept climbing,
+  one level a second (withdrawn after the third console check: once per hover); a pane reached by Up or Back during a drag does not become the active pane.
 - **A scripted left-button drop under "Always ask" with no pick given picks Cancel**, so that no script
   ever waits at a menu for a person.
 - **No cue over the Bookmarks gap** in the sidebar: that spot already says "Bookmark" by the pointer and
