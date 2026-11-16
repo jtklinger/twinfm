@@ -810,8 +810,12 @@ three, the list against small icons; the whole is 1,786 against 1,508, 278 more)
 
 So two thirds of the gap is the accessibility tree and not drawing. It could be made smaller (the
 columns outside the window left out of the tree, or a ring one column narrower), at the price of a
-change to P16-M5's structure and a third sitting; whether the list at the details list's cost is
-accepted as it is was put to Jeremy by the coordinating session on 2026-11-16.
+change to P16-M5's structure and a third sitting.
+
+**Accepted as it is (Jeremy, 2026-11-16).** Asked by the coordinating session "Accept the List view
+at the details list's cost (17.9%)?", he answered "Accept it". The 2.8 points are known and not
+hunted in this milestone; the accessibility tree's share of them (the list's off-window columns in
+the tree) is a roadmap candidate for the phase close.
 
 ### Console checks (for Jeremy, after the gates, TwinFM started unelevated)
 
