@@ -103,6 +103,11 @@ impl History {
         self.back.len()
     }
 
+    /// The place Back goes to, if any.
+    pub fn back_place(&self) -> Option<&Place> {
+        self.back.last()
+    }
+
     pub fn forward_len(&self) -> usize {
         self.forward.len()
     }

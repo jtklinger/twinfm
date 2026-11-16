@@ -160,6 +160,9 @@
 //!                                    over a folder row, a tile or a tab, the spring-load opens it);
 //!                                    `nav <pane> <back|up>` hovers the centre of that path bar
 //!                                    button (P16-M1: held 1000 ms or more, the pane goes there)
+//!   dragfrom <pane|none>             the dragover and dropfiles steps after it count as TwinFM's
+//!                                    own drag out of that pane (a sidebar row held then opens in
+//!                                    the other pane), or with `none` as another program's again
 //!   tab <new|close|next|prev|N>      Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+N (1..9) through the
 //!                                    Slint key path, on the active pane
 //!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
@@ -416,6 +419,8 @@ enum Step {
     /// Press a row (the right button with `right`), move `dx`,`dy`: an OLE drag past the threshold.
     DragRow { pane: usize, row: usize, dx: f32, dy: f32, right: bool },
     DragCancel,
+    /// The drops and hovers after it are TwinFM's own drag out of that pane (None: another program's).
+    DragFrom(Option<usize>),
     /// Drop `paths` on a row (or, row -1, the pane's folder) through our drop target directly.
     /// Mode `menu` is a right-button drop whose menu gets `pick` (copy, move or cancel).
     DropFiles { at: DropAt, mode: String, pick: String, paths: Vec<String> },
@@ -596,10 +601,13 @@ fn parse(script: &str) -> Vec<Step> {
                     right: a.get(5) == Some(&"right"),
                 },
                 "dragcancel" => Step::DragCancel,
+                // `dragfrom <pane|none>` (P16-M1): the `dragover` and `dropfiles` steps after it
+                // count as TwinFM's own drag out of that pane, or as another program's again.
+                "dragfrom" => Step::DragFrom(a.get(1).and_then(|v| v.parse().ok())),
                 "dropfiles" => {
                     // `tab <pane> <index>` and `crumb <pane> <index>` take one word more than
                     // `<pane> <row>` and `side <row>`.
-                    let m = if matches!(a.get(1), Some(&"tab" | &"crumb" | &"point")) { 4 } else { 3 };
+                    let m = if matches!(a.get(1), Some(&"tab" | &"crumb" | &"point" | &"nav")) { 4 } else { 3 };
                     // `sidegap <index>` (P12-M5) takes the side row's place.
                     let mode = a.get(m).unwrap_or(&"auto").to_string();
                     // `menu <copy|move|cancel>` takes one more word before the paths, and so does
@@ -612,6 +620,8 @@ fn parse(script: &str) -> Vec<Step> {
                         Some("tab") => DropAt::Tab(num(2) as usize, num(3) as usize),
                         Some("crumb") => DropAt::Crumb(num(2) as usize, num(3) as i32),
                         Some("point") => DropAt::Point(num(2) as f32, num(3) as f32),
+                        // `nav <pane> <back|up>` (P16-M1): a release on that button, which takes no drop.
+                        Some("nav") => DropAt::Nav(num(2) as usize, a.get(3) == Some(&"up")),
                         _ => DropAt::Row(num(1) as usize, num(2) as i32),
                     };
                     Step::DropFiles {
@@ -2027,6 +2037,10 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
         | Step::MenuClose
         | Step::DragCancel => {
             eprintln!("[auto] {step:?} outside a menu or drag (it belongs after rclick, rclickempty or dragrow); skipped");
+            schedule(runner, 1);
+        }
+        Step::DragFrom(pane) => {
+            crate::dnd::set_drag_from(pane);
             schedule(runner, 1);
         }
         Step::DragRow { pane, row, dx, dy, right } => {

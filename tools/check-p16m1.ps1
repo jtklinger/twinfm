@@ -12,7 +12,10 @@
 # drive), "Always move" (Ctrl gives a copy), "Always ask" (the hover reads Choose on drop, with Ctrl
 # held too; every left-button drop opens the menu, a key held or not), and back to Explorer's rule;
 # last the path bar's Up and Back, each held 1300 ms by a drag (the right pane goes from Documents up
-# to right and back to Documents; nothing is dropped there).
+# to right and back to Documents; nothing is dropped there), and a sidebar row (row 1, the system
+# drive) held 1300 ms by a drag counted as TwinFM's own out of the left pane (`dragfrom 0`): it opens
+# in the right pane, the one the drag did not leave. A release on Up (`dropfiles nav 1 up`) must read
+# "DragEnter effect copy, Drop reported none" with no [fileops] line after it.
 # Prints the [dnd] cue, drop menu, spring and Drop lines, the [settings] dialog lines, the [nav] history
 # lines and the [fileops] done lines. The window is the scripted default, 1200 x 800: the dialog's
 # Cancel is at (744, 743) and its OK at (800, 743).
@@ -88,6 +91,10 @@ $steps = @(
     "nav 1 $(Join-Path $right 'Documents')", 'sleep 600',
     "dragover nav 1 up 1300 $files", 'sleep 500',
     "dragover nav 1 back 1300 $files", 'sleep 500',
+    # Let go on Up: the source was shown an effect (no refusal sign), and nothing is copied or moved.
+    "dropfiles nav 1 up auto $(Join-Path $left 'b.txt')", $wait,
+    # A sidebar row held by TwinFM's own drag out of the left pane opens in the right pane.
+    'dragfrom 0', "dragover side 1 1300 $files", 'sleep 600', 'dragfrom none',
     'sleep 300', 'quit'
 )
 $script = Join-Path $root 'script.txt'

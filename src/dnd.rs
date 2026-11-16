@@ -247,6 +247,31 @@ pub fn drag_default() -> DragDefault {
     DragDefault::from_index(DRAG_DEFAULT.load(Ordering::Relaxed) as i32)
 }
 
+thread_local! {
+    /// The pane TwinFM's own drag left (set around `drag` by `crate::run_pending_drag`, and by the
+    /// driver's `dragfrom`); None for another program's drag.
+    static DRAG_FROM: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+pub fn set_drag_from(pane: Option<usize>) {
+    DRAG_FROM.with(|d| d.set(pane));
+}
+
+pub fn drag_from() -> Option<usize> {
+    DRAG_FROM.with(Cell::get)
+}
+
+/// The pane a sidebar row opens in when a drag is held over it (P11-M3: the active pane). For a
+/// drag out of one of TwinFM's own panes with both showing it is the other pane (P16-M1's console
+/// check: the active pane is then the one the files are leaving, and its listing went away under
+/// the drag); with one pane, or a drag from another program, the active pane as before.
+pub fn side_spring_pane(from: Option<usize>, active: usize, split: bool) -> usize {
+    match from {
+        Some(p) if split => 1 - p.min(1),
+        _ => active,
+    }
+}
+
 /// Alt in `grfKeyState`, for the driver's `dragover ... keys alt`.
 pub const KEY_ALT: u32 = MK_ALT;
 
@@ -469,16 +494,31 @@ pub fn gap_description(effect: u32) -> Description {
     Description { kind, message: "Bookmark", insert: String::new() }
 }
 
+/// The description over the path bar's Back or Up where it has somewhere to go (P16-M1, the second
+/// console check: the refusal sign there read as "this does nothing"): "Up to %1" or "Back to %1"
+/// with the folder it goes to, its image the effect shown there (`bookmark_effect`: a link, or the
+/// copy a source without links gets, TwinFM's own among them), as the gap's. Nothing is dropped
+/// there whatever the image: `effect_at` gives no effect for the spot, which is all Drop reads.
+pub fn nav_description(nav: Nav, shown: u32, to: &Path) -> Description {
+    let kind = if shown == LINK { DROPIMAGE_LINK } else { DROPIMAGE_COPY };
+    Description { kind, message: if nav == Nav::Back { "Back to %1" } else { "Up to %1" }, insert: folder_label(to) }
+}
+
 /// The description for a drop with `effect` into `dest`: "Move to %1" or "Copy to %1" with the
-/// folder's name; for none (or no folder), `DROPIMAGE_NONE` with no text, so the shell shows its
-/// own "not allowed" image.
-pub fn description(effect: u32, dest: Option<&Path>) -> Description {
+/// folder's name, or, for a drop that will open the menu (`asks`: the right button, the "ask"
+/// setting), "Choose on drop" as the tag reads (the second console check: "Copy to" beside a
+/// violet tag was confusing), still with the effect's image, the only one the shell draws a
+/// description with; for none (or no folder), `DROPIMAGE_NONE` with no text, so the shell shows
+/// its own "not allowed" image.
+pub fn description(effect: u32, dest: Option<&Path>, asks: bool) -> Description {
     let (kind, message) = match effect {
+        MOVE | COPY if asks => (if effect == MOVE { DROPIMAGE_MOVE } else { DROPIMAGE_COPY }, CUE_ASK),
         MOVE => (DROPIMAGE_MOVE, "Move to %1"),
         COPY => (DROPIMAGE_COPY, "Copy to %1"),
         _ => (DROPIMAGE_NONE, ""),
     };
     match dest {
+        Some(_) if message == CUE_ASK => Description { kind, message, insert: String::new() },
         Some(d) if kind != DROPIMAGE_NONE => Description { kind, message, insert: folder_label(d) },
         _ => Description { kind: DROPIMAGE_NONE, message: "", insert: String::new() },
     }
@@ -1964,7 +2004,7 @@ pub struct DropSpot {
     /// that is not the pane's active one, and since P11-M3 a sidebar row (in the active pane) and a
     /// crumb other than the folder shown; since P16-M1 the path bar's Back and Up where they have
     /// somewhere to go (`Mark::Nav`, the one spot that springs without taking a drop; its `dest` is
-    /// the folder the pane shows, so each folder it reaches arms it again).
+    /// the folder the button goes to, so each folder it reaches arms it again).
     pub springs: bool,
 }
 
@@ -2045,7 +2085,7 @@ struct DropTarget {
     data: Cell<*mut c_void>,
     /// The drop description last set on it (type, insert), so it is set on change only, and
     /// whether a SetData failure was logged this drag.
-    described: RefCell<Option<(i32, String)>>,
+    described: RefCell<Option<(i32, &'static str, String)>>,
     describe_failed: Cell<bool>,
     /// The sources' volume (`volume_key` of the first file), looked up at DragEnter, and the
     /// last destination's, looked up once per distinct folder.
@@ -2170,10 +2210,10 @@ impl DropTarget {
     /// error: the image then shows no text.
     fn describe(&self, d: Description) {
         let data = self.data.get();
-        if data.is_null() || self.described.borrow().as_ref().is_some_and(|(k, i)| *k == d.kind && *i == d.insert) {
+        if data.is_null() || self.described.borrow().as_ref().is_some_and(|(k, m, i)| *k == d.kind && *m == d.message && *i == d.insert) {
             return;
         }
-        *self.described.borrow_mut() = Some((d.kind, d.insert.clone()));
+        *self.described.borrow_mut() = Some((d.kind, d.message, d.insert.clone()));
         let hr = set_block(data, CFSTR_DROPDESCRIPTION, &description_block(&d));
         if hr < 0 {
             if !self.describe_failed.replace(true) {
@@ -2183,6 +2223,10 @@ impl DropTarget {
         }
         match d.kind {
             _ if d.message == "Bookmark" => eprintln!("[dnd] drop description: Bookmark"),
+            _ if d.message == CUE_ASK => eprintln!("[dnd] drop description: Choose on drop"),
+            _ if d.message.starts_with("Up to") || d.message.starts_with("Back to") => {
+                eprintln!("[dnd] drop description: {}", d.message.replace("%1", &format!("\"{}\"", d.insert)))
+            }
             DROPIMAGE_MOVE => eprintln!("[dnd] drop description: Move to \"{}\"", d.insert),
             DROPIMAGE_COPY => eprintln!("[dnd] drop description: Copy to \"{}\"", d.insert),
             DROPIMAGE_INVALID => eprintln!("[dnd] drop description: cleared"),
@@ -2229,13 +2273,22 @@ impl DropTarget {
         // Before the target helper's DragEnter/DragOver, which read it. The Bookmarks gap's reads
         // "Bookmark" (P12-M5).
         let gap = spot.as_ref().is_some_and(|s| matches!(s.mark, Mark::Gap(_)));
-        self.describe(if gap && e != NONE {
-            gap_description(e)
-        } else {
-            description(e, spot.as_ref().map(|s| s.dest.as_path()))
-        });
+        // Over Back or Up with somewhere to go, the source is shown an effect, so the cursor is
+        // not the refusal sign, and a description saying where it goes. `e` stays none: Drop
+        // reckons it again from `effect_at`, so a release there copies and moves nothing.
+        let shown = if spot.as_ref().is_some_and(|s| nav(&s)) { bookmark_effect(allowed) } else { e };
+        let d = match spot.as_ref() {
+            Some(DropSpot { mark: Mark::Nav(n), dest, .. }) if shown != NONE => nav_description(*n, shown, dest),
+            _ if gap && e != NONE => gap_description(e),
+            _ => {
+                let asks = e != NONE && asks(keys & MK_RBUTTON != 0, drag_default(), matches!(&*self.offered.borrow(), Offer::Files(_)));
+                description(e, spot.as_ref().map(|s| s.dest.as_path()), asks)
+            }
+        };
+        self.describe(d);
         if changed {
-            eprintln!("[dnd] over {} keys=0x{keys:x} allowed=0x{allowed:x} -> effect {}", describe(&spot), effect_name(e));
+            let as_shown = if shown == e { String::new() } else { format!(" (the source is shown {}: no refusal sign)", effect_name(shown)) };
+            eprintln!("[dnd] over {} keys=0x{keys:x} allowed=0x{allowed:x} -> effect {}{as_shown}", describe(&spot), effect_name(e));
         }
         self.spring_over(spot.as_ref().filter(|s| s.springs && (e != NONE || nav(s))));
         if changed {
@@ -2243,7 +2296,7 @@ impl DropTarget {
         }
         if !effect.is_null() {
             // SAFETY: as above.
-            unsafe { *effect = e };
+            unsafe { *effect = shown };
         }
     }
 
@@ -2276,8 +2329,14 @@ impl DropTarget {
                 eprintln!("[dnd] spring-loaded: pane {} shows tab {i} after {ms} ms", t.pane);
                 crate::spring_tab(t.pane, i);
             }
+            Mark::Side(_) => {
+                let pane = crate::side_spring_pane(t.pane);
+                let why = if pane == t.pane { "" } else { " (the pane the drag did not leave)" };
+                eprintln!("[dnd] spring-loaded: pane {pane} opens {} after {ms} ms{why}", t.dest.display());
+                crate::spring_open(pane, t.dest);
+            }
             Mark::Nav(n) => {
-                eprintln!("[dnd] spring-loaded: pane {} goes {} from {} after {ms} ms", t.pane, if n == Nav::Back { "back" } else { "up" }, t.dest.display());
+                eprintln!("[dnd] spring-loaded: pane {} goes {} to {} after {ms} ms", t.pane, if n == Nav::Back { "back" } else { "up" }, t.dest.display());
                 crate::spring_nav(t.pane, n);
             }
             _ => {
@@ -2305,7 +2364,7 @@ fn describe(spot: &Option<DropSpot>) -> String {
             Mark::Side(i) => format!("sidebar row {i} ({}), noted in pane {}", s.dest.display(), s.pane),
             Mark::Crumb(i) => format!("pane {} crumb {i} ({})", s.pane, s.dest.display()),
             Mark::Gap(k) => format!("sidebar bookmarks gap {k}"),
-            Mark::Nav(n) => format!("pane {} {} button (in {})", s.pane, if n == Nav::Back { "Back" } else { "Up" }, s.dest.display()),
+            Mark::Nav(n) => format!("pane {} {} button (to {})", s.pane, if n == Nav::Back { "Back" } else { "Up" }, s.dest.display()),
         },
     }
 }
@@ -3705,22 +3764,31 @@ mod tests {
     #[test]
     fn drop_descriptions() {
         assert_eq!(
-            description(MOVE, Some(&p(r"C:\Users\me\Documents"))),
+            description(MOVE, Some(&p(r"C:\Users\me\Documents")), false),
             Description { kind: DROPIMAGE_MOVE, message: "Move to %1", insert: "Documents".into() }
         );
-        assert_eq!(description(COPY, Some(&p(r"D:\"))), Description { kind: DROPIMAGE_COPY, message: "Copy to %1", insert: "D:".into() });
-        assert_eq!(description(COPY, Some(&p(r"C:\dir\"))).insert, "dir", "a trailing separator");
-        assert_eq!(description(MOVE, Some(&p(r"\\server\share"))).insert, "share", "a UNC share root");
-        assert_eq!(description(MOVE, Some(&p(r"\\server\share\"))).insert, "share");
-        assert_eq!(description(MOVE, Some(&p(r"\\server\share\dir"))).insert, "dir");
-        assert_eq!(description(COPY, Some(&p(r"\\?\C:\"))).insert, "C:");
+        assert_eq!(description(COPY, Some(&p(r"D:\")), false), Description { kind: DROPIMAGE_COPY, message: "Copy to %1", insert: "D:".into() });
+        assert_eq!(description(COPY, Some(&p(r"C:\dir\")), false).insert, "dir", "a trailing separator");
+        assert_eq!(description(MOVE, Some(&p(r"\\server\share")), false).insert, "share", "a UNC share root");
+        assert_eq!(description(MOVE, Some(&p(r"\\server\share\")), false).insert, "share");
+        assert_eq!(description(MOVE, Some(&p(r"\\server\share\dir")), false).insert, "dir");
+        assert_eq!(description(COPY, Some(&p(r"\\?\C:\")), false).insert, "C:");
         let none = Description { kind: DROPIMAGE_NONE, message: "", insert: String::new() };
-        assert_eq!(description(NONE, Some(&p(r"C:\dst"))), none, "refused: the shell's own image, no text");
-        assert_eq!(description(MOVE, None), none, "nowhere to drop");
+        assert_eq!(description(NONE, Some(&p(r"C:\dst")), false), none, "refused: the shell's own image, no text");
+        assert_eq!(description(MOVE, None, false), none, "nowhere to drop");
         assert_eq!(Description::cleared().kind, DROPIMAGE_INVALID);
+        // A drop that will open the menu reads as the tag does, with the effect's image; a refused one stays refused.
+        assert_eq!(description(COPY, Some(&p(r"C:\dst")), true), Description { kind: DROPIMAGE_COPY, message: "Choose on drop", insert: String::new() });
+        assert_eq!(description(MOVE, Some(&p(r"C:\dst")), true), Description { kind: DROPIMAGE_MOVE, message: "Choose on drop", insert: String::new() });
+        assert_eq!(description(NONE, Some(&p(r"C:\dst")), true), none);
+        assert_eq!(description(MOVE, None, true), none);
+        // Over Up and Back: where it goes, with the image of the effect shown (a link, or a copy).
+        assert_eq!(nav_description(Nav::Up, LINK, &p(r"C:\Users")), Description { kind: DROPIMAGE_LINK, message: "Up to %1", insert: "Users".into() });
+        assert_eq!(nav_description(Nav::Back, COPY, &p(r"D:\")), Description { kind: DROPIMAGE_COPY, message: "Back to %1", insert: "D:".into() });
+        assert_eq!(nav_description(Nav::Up, COPY, &p("This PC")).insert, "This PC");
 
         // The DROPDESCRIPTION block: the type, then 260 wide characters each for message and insert.
-        let b = description_block(&description(COPY, Some(&p(r"C:\dst"))));
+        let b = description_block(&description(COPY, Some(&p(r"C:\dst")), false));
         assert_eq!(b.len(), 1044);
         assert_eq!(b.len(), std::mem::size_of::<windows_sys::Win32::UI::Shell::DROPDESCRIPTION>());
         assert_eq!(i32::from_le_bytes(b[0..4].try_into().unwrap()), DROPIMAGE_COPY);
@@ -4120,6 +4188,12 @@ mod tests {
         assert_eq!((hit(&s, 17.0, 5.0), hit(&s, 70.0, 36.0)), (Spot::Pane(0), Spot::Pane(0)), "the bar's padding");
         assert_eq!(hit(&s, 115.9, 20.0), Spot::Pane(0), "the gap before the crumbs");
         assert_eq!((Nav::Back.index(), Nav::Up.index()), (0, 2));
+        // A sidebar row held under a drag opens in the pane the drag did not leave, with two panes
+        // showing; else in the active pane (one pane, or another program's drag).
+        assert_eq!((side_spring_pane(Some(0), 0, true), side_spring_pane(Some(1), 1, true)), (1, 0));
+        assert_eq!((side_spring_pane(Some(0), 1, true), side_spring_pane(Some(1), 0, true)), (1, 0), "whichever is active");
+        assert_eq!((side_spring_pane(Some(0), 0, false), side_spring_pane(Some(1), 0, false)), (0, 0), "one pane");
+        assert_eq!((side_spring_pane(None, 0, true), side_spring_pane(None, 1, true)), (0, 1), "another program's drag");
         // A row right-aligned in a narrow bar (offset -60, 100 px shown): This PC is clipped off,
         // "C:" sits at 13..37 and "Users" (53..113) is cut at the bar's end (x 103).
         let narrow = Strips { crumb_row: [(-60.0, 100.0), (0.0, 0.0)], ..s };
@@ -4284,7 +4358,7 @@ mod tests {
             set_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT, MOVE);
             assert_eq!(read_dword(data.0, CFSTR_LOGICALPERFORMEDDROPEFFECT), Some(MOVE));
             // So is a drop description (P5-M3): the shell's data object takes the 1044-byte block.
-            let d = description(COPY, Some(&root));
+            let d = description(COPY, Some(&root), false);
             assert_eq!(set_block(data.0, CFSTR_DROPDESCRIPTION, &description_block(&d)), S_OK);
             let back = read_hglobal(data.0, registered_format(CFSTR_DROPDESCRIPTION)).expect("DropDescription stored");
             assert_eq!(&back[..1044], description_block(&d).as_slice());

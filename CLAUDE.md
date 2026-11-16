@@ -1526,9 +1526,21 @@ put off, with where it came from.
   held `SPRING_MS` over one that has somewhere to go (`dnd::Spot::Nav`, `Mark::Nav`, the first and third
   of the four buttons; `DropSpot::springs` as the button is enabled) goes back or up in that pane
   (`main.rs` `spring_nav`; the pane does not become active), the button drawn lit meanwhile (the window's
-  `drop-nav-pane` / `drop-nav`, NavButton's `lit`); no drop lands there (effect none, no cue), and the
-  spot's `dest` is the folder shown, so each folder reached arms it again (held on, Up climbs a level a
-  second). Forward and Refresh are the pane, as before. **The settings dialog is 750 px tall** (710
+  `drop-nav-pane` / `drop-nav`, NavButton's `lit`); no drop lands there (`effect_at` gives none, which is
+  all Drop reads; no cue), and the spot's `dest` is the folder the button goes to, so each folder reached
+  arms it again (held on, Up climbs a level a second). Since the second console check DragOver shows the
+  source an effect there (`bookmark_effect`: a link, or the copy TwinFM's own drag gets) with the
+  description "Up to <folder>" / "Back to <folder>" (`dnd::nav_description`), so the pointer is not the
+  refusal sign; a release there still copies and moves nothing. **A drop that will open the menu is
+  described "Choose on drop"** as the tag reads, with the effect's image (`dnd::description`'s `asks`;
+  the shell draws a description only with the effect's image, P12-M5), and the description's change
+  check reads its text too. Forward and Refresh are the pane, as before. **A sidebar row held under TwinFM's own drag
+  opens in the other pane** with two showing (`dnd::side_spring_pane`, the pane the drag left kept in
+  `dnd::DRAG_FROM` around `dnd::drag`; the second console check: P11-M3's active pane is the pane the
+  files are leaving, whose listing went away under the drag); with one pane, or another program's drag,
+  the active pane as before: `[dnd] spring-loaded: pane N opens <folder> after T ms (the pane the drag
+  did not leave)`; driver `dragfrom <pane|none>` makes the `dragover` and `dropfiles` steps after it
+  count as TwinFM's own drag out of that pane. **The settings dialog is 750 px tall** (710
   until the Dragging files row: a popup takes no click outside its rectangle, so the row's 40 px had
   pushed OK and Cancel out of the mouse's reach; a row added there needs its height added too). Driver: `dragover ... <ms> keys <none|ctrl|shift|alt|right>[,...] <paths>` holds those keys
   while it hovers (several sets, comma-separated, share the time equally, in order: a key pressed or let
@@ -1537,9 +1549,10 @@ put off, with where it came from.
   "ask" every other mode picks Cancel, so no script waits for a person); `dropfiles`' mode `copy` holds
   Alt since the console check (Ctrl would move where the default copies); `dragover nav <pane> <back|up>
   <ms> <paths>` hovers that path bar button's centre; `settings set drag_default
-  explorer|copy|move|ask`. Lines: `[dnd] over pane N Back|Up button (in <folder>) ... -> effect none`,
-  `[dnd] spring armed: pane N Back|Up button (in <folder>)`, `[dnd] spring-loaded: pane N goes back|up
-  from <folder> after T ms`; `[dnd] cue: Move here | Copy here | Choose on drop | none (pane N |
+  explorer|copy|move|ask`. Lines: `[dnd] over pane N Back|Up button (to <folder>) ... -> effect none (the source is
+  shown copy|link: no refusal sign)`, `[dnd] spring armed: pane N Back|Up button (to <folder>)`, `[dnd]
+  spring-loaded: pane N goes back|up to <folder> after T ms`, `[dnd] drop description: Choose on drop |
+  Up to "<folder>" | Back to "<folder>"`; `[dnd] cue: Move here | Copy here | Choose on drop | none (pane N |
   sidebar)` when the cue's words or place change (`cue: none` alone when the drag leaves or drops),
   `[dnd] drop menu: asked by the setting`, `[settings] dialog: drag_default <old> -> <new>`; the `[dnd]
   over ...` line is now also logged when a deciding key changes over the same spot with the same effect.

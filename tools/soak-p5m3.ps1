@@ -862,7 +862,7 @@ $cueMove = @($log | Select-String -SimpleMatch '[dnd] cue: Move here').Count
 $cueCopy = @($log | Select-String -SimpleMatch '[dnd] cue: Copy here').Count
 $cueAsk = @($log | Select-String -SimpleMatch '[dnd] cue: Choose on drop').Count
 $cueNone = @($log | Select-String -SimpleMatch '[dnd] cue: none').Count
-$navUp = @($log | Select-String -Pattern '^\[dnd\] spring-loaded: pane 1 goes up from ').Count
+$navUp = @($log | Select-String -Pattern '^\[dnd\] spring-loaded: pane 1 goes up to ').Count
 $inner = Join-Path $spring 'inner'
 $cueCtrl = @($log | Select-String -SimpleMatch "[dnd] over pane 1 row 0 ($inner) keys=0x8 " | Select-String -SimpleMatch '-> effect copy').Count
 $dragCopyOn = @($log | Select-String -SimpleMatch '[settings] dialog: drag_default explorer -> copy').Count

@@ -541,9 +541,47 @@ ten-minute soak of 6c8d369 (`tools/soak-p5m3.ps1 -Minutes 10`): exit 0, no panic
 failed, no scripted drag dropped, every must-be-0 count at 0, the drag cue's lines as before and the
 path bar's Up held by a drag went up once in each full cycle (2); working set 156 to 231 MB.
 
+### The second console check (2026-11-16, 6c8d369): a bookmark opened in the pane being dragged from
+
+Checks 3, 7 and 8 passed on the retest. One more finding, Jeremy's words: "When dragging to a bookmark
+from a pane, the bookmark path is opened in the pane where I started the click and drag." It is the
+sidebar row's spring-load (P11-M3: a drag held a second over a drive, a place or a bookmark opens it),
+not the drop: a drop onto a sidebar row copies or moves and navigates nothing (`drop_files`). The spring
+opened the folder in the active pane, and for a drag out of a TwinFM pane the active pane is the one
+the press was in, so the listing the files were leaving was replaced under the drag. Changed (the
+coordinating session's call, told to Jeremy): **for a drag that started in a TwinFM pane, with two panes
+showing, a sidebar row held opens in the other pane**; with one pane, or a drag from another program,
+it opens in the active pane as before. The source pane is known at the spring: `run_pending_drag` has
+it and keeps it for the length of the drag (`dnd::DRAG_FROM`); the rule is `dnd::side_spring_pane`,
+tested. The tag and the status line for a sidebar row still show against the active pane, as before.
+The scripted check gained the case (`dragfrom 0`, then a sidebar row held 1300 ms: the right pane opens
+it).
+
+Two more from the same retest (9, 14 and 15 otherwise worked; all fifteen were then reported):
+
+**E. The drag's own label under Always ask.** "Works but needs a visual tweak if possible. When dragging,
+the pane is violet, but the file shows 'copy to', which is confusing." The label Windows draws beside
+the dragged picture read "Copy to <folder>" (or "Move to") while the drop was going to ask. It now reads
+**"Choose on drop"**, as the tag does, for every drop that will open the menu (Always ask, and the right
+button). Its small picture is still the copy's plus or the move's arrow, whichever the menu's bold item
+is: Windows draws a label only with the picture of the effect in play (found in P12-M5), and TwinFM's
+own drag offers only copy and move, so no neutral picture is to be had without changing what the drag
+offers other programs. Not checked by a script: the scripted drag's data refuses labels; Jeremy's eyes.
+
+**F. The no-entry sign over Up and Back.** "Works, but when dragging onto the up arrow, it shows a red
+circle with slash through it. dragging to the path (breadcrumbs) line is more intuitive." Over an Up or
+Back that has somewhere to go, the pointer is now the plain arrow and the label reads **"Up to
+<folder>"** or **"Back to <folder>"**. It is done safely: while the drag hovers, the source is told an
+effect (a link where the source offers one, as Explorer does; a copy for TwinFM's own drag), which is
+what removes the sign; when the button is let go there, the drop is reckoned again from the rule that
+gives those two buttons no effect, so nothing is copied or moved and the source is told "none" (the
+scripted check lets nothing go there; the rule is `effect_at`, and Drop reads only that). The label's
+small picture is the link's arrow or the copy's plus, for the reason in E. A greyed button keeps the
+no-entry sign. The crumbs stay the more direct way, as before.
+
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
-Revised after the first console check: 2, 3, 7, 8 and 9 changed, 14 and 15 are new.
+Revised after the first console check: 2, 3, 7, 8 and 9 changed, 14 and 15 are new; 16 after the second.
 
 Two panes showing (the toolbar's Two panes). "The tag" is the small coloured label that appears on the
 thing under the pointer while you drag; "the status line" is the text at the bottom left of the pane you
@@ -573,7 +611,7 @@ are dragging into.
 8. **Always move.** The same with Always move, onto another drive: amber "Move here", "Ctrl copies",
    and Ctrl copies.
 9. **Always ask.** With Always ask, drag a file to the other pane: a violet tag "Choose on drop" and
-   nothing beside it. Let go: a small menu Move here / Copy here / Cancel opens at the pointer; pick
+   nothing beside it, and the label by the dragged picture reads "Choose on drop" too. Let go: a small menu Move here / Copy here / Cancel opens at the pointer; pick
    one. Drag again with Ctrl held: still "Choose on drop", and the menu opens all the same.
 10. **The right button.** Under any setting, drag a file with the right mouse button: violet "Choose on
     drop", and the menu on release, as before.
@@ -587,9 +625,14 @@ are dragging into.
     applied.
 15. **Back out of a folder mid-drag.** Drag a file over a folder's row in the other pane and hold until
     it opens. Still holding, move the pointer onto that pane's Up arrow (left of the path) and hold: the
-    arrow lights and after a second the pane goes back up to the parent. Hold on and it climbs another
+    arrow lights, the pointer stays an arrow with "Up to <folder>" beside the picture (no red
+    circle), and after a second the pane goes back up to the parent. Hold on and it climbs another
     level. Do the same on the Back arrow. Then drop the file in a list as usual. Letting go over the
     arrows themselves drops nothing.
+16. **A bookmark held under a drag.** Two panes showing. Drag a file from the left pane onto a bookmark
+    (or a drive) in the sidebar and hold it there a second: the folder opens in the RIGHT pane, and the
+    left pane still shows the folder the file came from. Move into the right pane's list and drop, or
+    press Escape. The same from the right pane opens it in the left.
 
 ### Calls made in this milestone, for Jeremy to check
 

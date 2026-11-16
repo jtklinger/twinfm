@@ -5319,7 +5319,9 @@ pub fn run_pending_drag() {
     });
     // MODAL LOOP: no borrow held (see dnd). A drop on our own other pane comes back through our
     // drop target from inside this call, and its job is posted to the event loop.
+    dnd::set_drag_from(Some(pane));
     let res = dnd::drag(&req);
+    dnd::set_drag_from(None);
     let dropped = res == Ok(true);
     with_state(|st| {
         st.gesture[pane].drag_ended();
@@ -5494,13 +5496,17 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             dnd::Spot::Row(p, r) => (p, Some(r)),
             // The path bar's Back and Up (P16-M1): no drop there; a drag held over one that has
             // somewhere to go (as the button is enabled, `toolbar::with_facts`) goes back or up.
+            // The spot's folder is where the button goes (the description names it, and each
+            // folder reached arms the spring again); the folder shown for a button with nowhere to go.
             dnd::Spot::Nav(p, n) => {
                 let tab = st.tab(p);
-                let springs = match n {
-                    dnd::Nav::Back => tab.history.back_len() > 0,
-                    dnd::Nav::Up => !is_this_pc(&tab.path.to_string_lossy()),
+                let to = match n {
+                    dnd::Nav::Back => tab.history.back_place().map(|b| b.path.clone()),
+                    dnd::Nav::Up if is_this_pc(&tab.path.to_string_lossy()) => None,
+                    dnd::Nav::Up => Some(tab.path.parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf())),
                 };
-                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Nav(n), dest: tab.path.clone(), springs });
+                let springs = to.is_some();
+                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Nav(n), dest: to.unwrap_or_else(|| tab.path.clone()), springs });
             }
             // The Bookmarks gap (P12-M5): the folders dropped are bookmarked there, nothing copied.
             dnd::Spot::SideGap(k) => {
@@ -6217,6 +6223,13 @@ pub fn drop_files(pane: usize, sources: Vec<PathBuf>, dest: PathBuf, effect: u32
 /// and open no modal loop).
 pub fn spring_open(pane: usize, dest: PathBuf) {
     let _ = slint::invoke_from_event_loop(move || navigate(pane, dest));
+}
+
+/// The pane a sidebar row opens in when a drag is held over it (`dnd::side_spring_pane`): `active`
+/// if the state is busy (not expected, as in `drop_highlight`).
+pub fn side_spring_pane(active: usize) -> usize {
+    let split = STATE.with(|s| Some(s.try_borrow().ok()?.as_ref()?.app.upgrade()?.get_split()));
+    split.map_or(active, |split| dnd::side_spring_pane(dnd::drag_from(), active, split))
 }
 
 /// A drag held over the path bar's Back or Up (P16-M1): that pane goes back or up, as the button
