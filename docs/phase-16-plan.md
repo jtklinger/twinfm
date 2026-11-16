@@ -511,3 +511,90 @@ one more Timer that never runs in a details list. The rows are untouched.
 - **`TWINFM_THUMB_MB`** is a test knob for the check script, not a setting.
 - **No WPR trace for the settle-first question**: the plan said "a trace"; the in-app pair at 60 Hz
   showed both views under large icons, so the elevated trace was left to the gate's triplets.
+
+## P16-M5: the List view
+
+Branch `feat/p16-m5-list-view`, the drag and views stream, cut from `feat/p16-m3-icon-sizes` (P16-M3,
+PR #161, not yet merged): it builds on the tile size of four and the beside-the-icon overlays.
+
+### Settled first, by a spike: a sideways list of 40,000 entries holds in-app
+
+The question the kickoff set: does a list filled column by column and scrolled sideways hold the gate
+with 40,000 entries, or does the view go back to the roadmap? A throwaway build answered it in-app
+(`spike/p16-m5-list`, f2d5782, never to merge): the small view drawn as columns, switched on by an
+environment variable, with drawing, wheel scrolling and icons only.
+
+**The design the spike tested, and the milestone keeps.** Slint's `ListView` scrolls up and down only,
+and a plain `for` over 1,429 columns of 28 cells would build all 40,000 cells. So the list is its own
+container: **a ring of slots that holds only the columns on screen** (the pane's width over the 220
+px column, plus two: seven at the default window), each slot a column rectangle placed by its column
+index and the scroll, holding that column's cells and one image of its icons, 24 px wide and the
+column's height. The grid's own model serves the columns: its "tiles to a grid row" become the rows a
+column holds (the list's height over 22 px), so entry `i` is column `i / rows`, row `i % rows`. A
+scroll moves a handful of rectangles; a column that comes into view is one slot's data set (28 cells
+and one image). Nothing is bound per cell to a runtime property.
+
+**The in-app pair** (2026-11-15, the same exe for both, both with `C:\traces\grid-small.toml` on
+`C:\traces\bigdir`, the gate's scenario with wheel turns only so the pointer stays over the lists,
+three pairs with the order swapped in the second; unelevated, harness-launched, the machine quiet by
+the coordinating session's hold; every run at 60 Hz, frame interval p50 16.38 to 16.44 ms, 504 or 505
+frames; display scale 100%, Narrator off, no other TwinFM window open):
+
+| Run | In-app busy, % | Render p50, ms | Peak private, MB |
+|---|---|---|---|
+| small-1 | 18.0 | 1.94 | 165.3 |
+| list-1 | 18.9 | 2.21 | 153.3 |
+| list-2 | 16.2 | 2.20 | 153.8 |
+| small-2 | 17.5 | 1.98 | 165.1 |
+| small-3 | 17.7 | 1.96 | 165.3 |
+| list-3 | 15.8 | 2.18 | 154.7 |
+
+Small icons 18.0, 17.5, 17.7 (median 17.7); the sideways list 18.9, 16.2, 15.8 (median 16.2). The
+runs interleave and the list's median is lower: no cost shows. Its frames take 0.24 ms longer to
+render (five columns of 28 cells on screen against four cells across in 28 rows) and it holds 11 MB
+less (a narrow icon image per column, where the small grid's row images span the pane).
+
+**Read as a go by the coordinating session** ("go on with P16-M5 now, at the risk the console triplet
+later says otherwise"); **Jeremy has not been asked yet**. The spike's own console triplet
+(`target-p16m5spike`, built with `TWINFM_SPIKE_LIST_ALWAYS` set, run as
+`p16m5spike@C:\traces\grid-small.toml` against P16-M3's gate build with the same file) rides in the
+second sitting with P16-M3's gate. If it shows a cost the milestone stops, the record says why, and
+the view goes back to the roadmap, as the kickoff says.
+
+What the spike was not: it had no clicks, keys, band, hover, drops or rename. Those are this
+milestone; none of them runs per frame.
+
+### The plan, written before it is built (the kickoff left this section to the spike)
+
+- **The view**: Explorer's List. A 16 px icon and the name on one line, in columns 220 px wide filled
+  from top to bottom, then the next column; scrolled sideways by the wheel (a wheel turn scrolls
+  sideways there, as in Explorer), by a horizontal scrollbar at the list's foot, and by the keys. The
+  column width is fixed at the small cell's 220 px (a call: Explorer sizes each column to its longest
+  name, which needs a measuring pass per column; the fixed width keeps the arithmetic one division,
+  and long names elide as in small icons).
+- **A view, not a tile size**: `settings::View::List`, Ctrl+Shift+5 (Explorer's), between small icons
+  and details in the View menu and the dialog. Saved as `view_left = "list"` (an older build reads
+  that as details). It draws the small tile's cell, so the tile size stays four.
+- **x-axis forms** of everything that assumed rows scrolled up and down, each in the one place its
+  y-axis form lives: the hit test (`dnd::hit`), the band (`band.rs`: the cells a rectangle touches,
+  column-major), hover, paging (PageDown and PageUp move by a screenful of columns, the cursor keeping
+  its row), the arrow keys (Up and Down along the column and on into the next, Left and Right a column
+  across), Home and End, bringing the cursor's cell into view, the keyboard menu's point, the drag
+  auto-scroll (at the list's left and right edges), the drop highlight, the rename box and the new
+  item's placeholder (beside the icon, as in small icons), the saved and restored scroll of a tab, and
+  the view switch's "same first entry" rule.
+- **Selection, cursor and cut marks** reach the visible columns through the pane's model: the ring is
+  a model of its own over the grid model (`model::ColsModel`), told of a changed column only when that
+  column is on screen.
+- **Driver**: `view list` (key name `CtrlShift5`); every step that takes a row aims at the list's
+  cells; `drag <pane> <d> <ms>` drags the list's own (horizontal) scrollbar thumb there; `scrollpos`
+  reads the sideways scroll. Lines: `[view]` names `list`; `[list] pane=N R rows to a column, C
+  columns` when that changes.
+- **Tests** (pure): the hit test, the band's touched cells and cursor, hover, paging and the arrow
+  keys' targets in the column-major layout; the columns on screen and their slots for a scroll; the
+  settings round trip with an older file. **Soak**: per cycle the list switched to, a drop onto a
+  cell, a band, a cancelled drag out, a scroll, back to details. **Gate**: the defaults triplet, and a
+  triplet with `C:\traces\grid-list.toml` (read-only, both panes on the list) against the reference
+  with `grid-small.toml`. **Console checks**: the view in Downloads and in a folder of thousands of
+  files; the wheel, the scrollbar and the keys; rename, new folder and a long name; a band, a drag
+  out, a drop onto a folder's cell; the view kept across a restart.
