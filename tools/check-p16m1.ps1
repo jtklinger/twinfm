@@ -5,11 +5,17 @@
 # The steps: both panes shown, the left on left, the right on right; a drag of left's three files
 # hovers (dragover: DragEnter, DragOver, DragLeave, never a drop) the right pane's Documents row (a
 # move, then with Ctrl a copy, then Ctrl let go and Shift pressed inside one hover), the right pane's
-# list below its rows, a sidebar row, the right pane's tab and its parent crumb; then the setting:
-# "Always copy" (the hover reads Copy, a dropfiles auto copies on the same drive), "Always move",
-# "Always ask" (the hover reads Choose on drop; a left-button drop opens the menu, Copy here picked;
-# Ctrl held does not ask), and back to Explorer's rule.
-# Prints the [dnd] cue, drop menu and Drop lines, the [settings] dialog lines and the [fileops] done lines.
+# list below its rows, a sidebar row, the right pane's tab and its parent crumb; then the setting,
+# staged with `settings set` and closed by a click on the dialog's real Cancel and OK (`clickat`: the
+# buttons sat outside the dialog's rectangle, out of the mouse's reach, until the console check's
+# fix): "Always copy" (the hover reads Copy, Ctrl gives a move, a dropfiles auto copies on the same
+# drive), "Always move" (Ctrl gives a copy), "Always ask" (the hover reads Choose on drop, with Ctrl
+# held too; every left-button drop opens the menu, a key held or not), and back to Explorer's rule;
+# last the path bar's Up and Back, each held 1300 ms by a drag (the right pane goes from Documents up
+# to right and back to Documents; nothing is dropped there).
+# Prints the [dnd] cue, drop menu, spring and Drop lines, the [settings] dialog lines, the [nav] history
+# lines and the [fileops] done lines. The window is the scripted default, 1200 x 800: the dialog's
+# Cancel is at (744, 743) and its OK at (800, 743).
 param(
     [string]$Exe = (Join-Path $PSScriptRoot '..\target\release\twinfm.exe'),
     [string]$Out = (Join-Path $env:TEMP 'twinfm-p16m1-check\shots'),
@@ -54,17 +60,21 @@ $steps = @(
     "dragover crumb 1 -2 909 $files", 'sleep 200',
     # The right button asks whatever the setting.
     "dragover row 1 0 905 keys right $files", 'sleep 200',
-    # Always copy: the hover reads Copy on the same drive, Shift still moves, and a drop copies.
-    'settings open', 'sleep 300', 'settings set drag_default copy', 'settings ok', 'sleep 300',
+    # The dialog's own buttons by the mouse: Cancel discards a staged change, OK applies one.
+    'settings open', 'sleep 300', 'settings set drag_default move', 'clickat 744 743', 'sleep 300',
+    # Always copy: the hover reads Copy on the same drive, Ctrl gives the move, Shift still moves,
+    # and a drop copies.
+    'settings open', 'sleep 300', 'settings set drag_default copy', 'clickat 800 743', 'sleep 300',
     "dragover row 1 0 600 $files", 'sleep 200',
+    "dragover row 1 0 600 keys ctrl $files", 'sleep 200',
     "dragover row 1 0 600 keys shift $files", 'sleep 200',
     "dropfiles 1 0 auto $one", $wait,
     # Always move: Ctrl still copies.
     'settings open', 'sleep 300', 'settings set drag_default move', 'settings ok', 'sleep 300',
     "dragover row 1 0 600 $files", 'sleep 200',
     "dragover row 1 0 600 keys ctrl $files", 'sleep 200',
-    # Always ask: the hover says so; a left-button drop opens the menu (Cancel, then Copy here picked);
-    # Ctrl held does not ask.
+    # Always ask: the hover says so, with Ctrl held too; every left-button drop opens the menu
+    # (Cancel, then Copy here picked; then one with a key held, which asks all the same: Cancel).
     'settings open', 'sleep 300', 'settings set drag_default ask', 'settings ok', 'sleep 300',
     "dragover row 1 0 906 $files", 'sleep 200',
     "dragover row 1 0 600 keys ctrl $files", 'sleep 200',
@@ -73,7 +83,11 @@ $steps = @(
     "dropfiles 1 1 copy $(Join-Path $left 'c.txt')", $wait,
     # Back to Explorer's rule.
     'settings open', 'sleep 300', 'settings set drag_default explorer', 'settings ok', 'sleep 300',
-    "dragover row 1 0 600 $files",
+    "dragover row 1 0 600 $files", 'sleep 200',
+    # The path bar's Up and Back, held by a drag: up out of Documents, then back into it.
+    "nav 1 $(Join-Path $right 'Documents')", 'sleep 600',
+    "dragover nav 1 up 1300 $files", 'sleep 500',
+    "dragover nav 1 back 1300 $files", 'sleep 500',
     'sleep 300', 'quit'
 )
 $script = Join-Path $root 'script.txt'
@@ -122,5 +136,5 @@ while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
 }
 if (-not $proc.HasExited) { $proc.Kill(); 'timed out' }
 $proc.WaitForExit()
-Get-Content $err | Where-Object { $_ -match '^\[dnd\] (cue|drop menu|Drop at|over |drop into)|^\[settings\] dialog|^\[fileops\] done|^\[auto\] (dragover|dropfiles)|panicked' }
+Get-Content $err | Where-Object { $_ -match '^\[dnd\] (cue|drop menu|Drop at|over |drop into|spring)|^\[settings\] dialog|^\[nav\] pane=\d history|^\[fileops\] done|^\[auto\] (dragover|dropfiles)|panicked' }
 "exit $($proc.ExitCode)"

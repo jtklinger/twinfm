@@ -200,7 +200,9 @@
 # onto inner (a copy on the same drive, where Explorer's rule would move), the setting put back, and
 # the copy in inner removed (Shift+Delete). The report counts the cue lines by their words, the Ctrl
 # hovers over inner that read as a copy, the setting's changes each way and the drops onto inner with
-# no key that copied (one each per cycle).
+# no key that copied (one each per cycle). Since the console check the cycle ends in inner, where the path
+# bar's Up, held by a drag for 1300 ms (`dragover nav 1 up`), takes the right pane back to spring; the
+# report counts those (one per cycle).
 # P13-M1: each cycle then hides the second pane with the toolbar's Two panes and shows it again
 # (`toolbar 0 split` twice: the right pane comes back on the left's folder, which the next cycle's
 # `nav 1` replaces), drags the split line to 0.35 of the room, where the left pane is too narrow for
@@ -659,7 +661,8 @@ $cycle = @(
     "nav 1 $spring", 'sleep 500', "dragover row 1 0 500 $cueFile", 'sleep 200', "dragover row 1 0 500 keys ctrl $cueFile", 'sleep 200',
     'settings open', 'settings set drag_default copy', 'settings ok', 'sleep 300', "dropfiles 1 0 auto $cueFile", $wait,
     'settings open', 'settings set drag_default explorer', 'settings ok', 'sleep 300',
-    "nav 1 $spring\inner", 'sleep 500', 'click 1 0', 'sdelete', $wait, "nav 1 $spring", 'sleep 300'
+    # ... and from inner the path bar's Up, held by a drag, takes the right pane back to spring.
+    "nav 1 $spring\inner", 'sleep 500', 'click 1 0', 'sdelete', $wait, "dragover nav 1 up 1300 $cueFile", 'sleep 500'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 # P14-M3: the hover across both lists (the pointer over the left list's rows, then the right's, then off
@@ -859,6 +862,7 @@ $cueMove = @($log | Select-String -SimpleMatch '[dnd] cue: Move here').Count
 $cueCopy = @($log | Select-String -SimpleMatch '[dnd] cue: Copy here').Count
 $cueAsk = @($log | Select-String -SimpleMatch '[dnd] cue: Choose on drop').Count
 $cueNone = @($log | Select-String -SimpleMatch '[dnd] cue: none').Count
+$navUp = @($log | Select-String -Pattern '^\[dnd\] spring-loaded: pane 1 goes up from ').Count
 $inner = Join-Path $spring 'inner'
 $cueCtrl = @($log | Select-String -SimpleMatch "[dnd] over pane 1 row 0 ($inner) keys=0x8 " | Select-String -SimpleMatch '-> effect copy').Count
 $dragCopyOn = @($log | Select-String -SimpleMatch '[settings] dialog: drag_default explorer -> copy').Count
@@ -998,6 +1002,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "held track presses: $($trackHolds.Count), repeated past one page $trackRepeated (two each per cycle)"
 "content search: done $($contentDone.Count) (three per cycle), files read $contentRead (600 or more per cycle), found $contentFound (four per cycle)"
 "search patterns: name searches with a class started $classStarts, done with 30 or more found $classDone; content searches with an expression started $reStarts, done with 2 found $reDone (one each per cycle); not-a-pattern lines $notPattern (must be 0)"
-"drag cue: Move here $cueMove, Copy here $cueCopy, Choose on drop $cueAsk, none $cueNone lines; Ctrl hovers over inner read as a copy $cueCtrl; Always copy on $dragCopyOn, off $dragCopyOff; drops onto inner with no key that copied $dragCopied (the Ctrl hover, the setting each way and that drop: one each per cycle)"
+"drag cue: Move here $cueMove, Copy here $cueCopy, Choose on drop $cueAsk, none $cueNone lines; Ctrl hovers over inner read as a copy $cueCtrl; Always copy on $dragCopyOn, off $dragCopyOff; drops onto inner with no key that copied $dragCopied (the Ctrl hover, the setting each way and that drop: one each per cycle); the path bar's Up held by a drag went up $navUp (one per cycle)"
 "saved searches: saved $searchSaved, opened $searchOpened, run again and found $searchRerun, removed $searchRemoved (one each per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

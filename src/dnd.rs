@@ -250,31 +250,31 @@ pub fn drag_default() -> DragDefault {
 /// Alt in `grfKeyState`, for the driver's `dragover ... keys alt`.
 pub const KEY_ALT: u32 = MK_ALT;
 
-/// A key that decides the effect is held: Ctrl or Alt (a copy) or Shift (a move).
-pub fn forced(keys: u32) -> bool {
-    keys & (MK_CONTROL | MK_ALT | MK_SHIFT) != 0
-}
-
 /// The effect for a drop, from the modifier keys (`grfKeyState`), the effects the source allows,
-/// whether source and destination share a volume, and the `drag_default` setting (P16-M1). Ctrl
-/// forces a copy and Shift a move under every setting. Ctrl+Shift and Alt ask Explorer for a
-/// shortcut; TwinFM makes no shortcuts and copies instead. With no key held: Explorer's rule (move
-/// on the same volume, copy across volumes), always a copy, or always a move; "ask" takes
-/// Explorer's rule for the effect shown while hovering and for the menu's bold item (the drop
-/// then asks, `asks`). A wish the source does not allow falls back to the other effect it allows
-/// (copy first).
-pub fn decide_effect(keys: u32, allowed: u32, same_volume: bool, default: DragDefault) -> u32 {
-    let want = if keys & (MK_CONTROL | MK_ALT) != 0 {
+/// whether source and destination share a volume, and the `drag_default` setting (P16-M1). With no
+/// key held: Explorer's rule (move on the same volume, copy across volumes), always a copy, or
+/// always a move; "ask" takes Explorer's rule for the menu's bold item (the drop then asks, `asks`).
+/// **Ctrl alone gives the other effect** of that, whatever it is (Jeremy's console check,
+/// 2026-11-16: one key, where Explorer's Ctrl is always a copy), unless `ctrl_copies` (a drop into
+/// an archive, which stays a copy). Shift alone forces a move, as in Explorer. Alt and Ctrl+Shift
+/// ask Explorer for a shortcut; TwinFM makes no shortcuts and copies instead. A wish the source
+/// does not allow falls back to the other effect it allows (copy first).
+pub fn decide_effect(keys: u32, allowed: u32, same_volume: bool, default: DragDefault, ctrl_copies: bool) -> u32 {
+    let unforced = match default {
+        DragDefault::Copy => COPY,
+        DragDefault::Move => MOVE,
+        DragDefault::Explorer | DragDefault::Ask if same_volume => MOVE,
+        DragDefault::Explorer | DragDefault::Ask => COPY,
+    };
+    let (ctrl, shift) = (keys & MK_CONTROL != 0, keys & MK_SHIFT != 0);
+    let want = if keys & MK_ALT != 0 || (ctrl && shift) {
         COPY
-    } else if keys & MK_SHIFT != 0 {
+    } else if shift {
         MOVE
+    } else if ctrl {
+        if ctrl_copies || unforced == MOVE { COPY } else { MOVE }
     } else {
-        match default {
-            DragDefault::Copy => COPY,
-            DragDefault::Move => MOVE,
-            DragDefault::Explorer | DragDefault::Ask if same_volume => MOVE,
-            DragDefault::Explorer | DragDefault::Ask => COPY,
-        }
+        unforced
     };
     if allowed & want != 0 {
         want
@@ -290,8 +290,8 @@ pub fn decide_effect(keys: u32, allowed: u32, same_volume: bool, default: DragDe
 /// The whole decision for dropping `sources` into `dest`: none for an empty list or a refused
 /// drop, else `decide_effect`. `same_volume`: the first source and `dest` share a volume (the
 /// drop target decides it from its cached `volume_key`s).
-pub fn effect_for(sources: &[PathBuf], dest: &Path, keys: u32, allowed: u32, same_volume: bool, default: DragDefault) -> u32 {
-    if sources.is_empty() || refused(sources, dest) { NONE } else { decide_effect(keys, allowed, same_volume, default) }
+pub fn effect_for(sources: &[PathBuf], dest: &Path, keys: u32, allowed: u32, same_volume: bool, default: DragDefault, ctrl_copies: bool) -> u32 {
+    if sources.is_empty() || refused(sources, dest) { NONE } else { decide_effect(keys, allowed, same_volume, default, ctrl_copies) }
 }
 
 /// The setting as it applies to a drop into an archive (a zip): "always move" does not reach
@@ -301,11 +301,12 @@ pub fn default_into(default: DragDefault, into_archive: bool) -> DragDefault {
 }
 
 /// Whether the drop opens the Move here / Copy here / Cancel menu: a right-button drop always
-/// (`right`), a left-button drop of files under the "ask" setting with no deciding key held.
-/// Virtual files and items out of an archive are only ever copied, so the setting never asks
-/// for them.
-pub fn asks(right: bool, keys: u32, default: DragDefault, files: bool) -> bool {
-    right || (files && default == DragDefault::Ask && !forced(keys))
+/// (`right`), and every drop of files under the "ask" setting, whatever key is held (Jeremy's
+/// console check, 2026-11-16: "Always ask" asks with the mouse only, as the right button does; a
+/// held key decided without asking before). Virtual files and items out of an archive are only
+/// ever copied, so the setting never asks for them.
+pub fn asks(right: bool, default: DragDefault, files: bool) -> bool {
+    right || (files && default == DragDefault::Ask)
 }
 
 /// What the cue says a drop will do (P16-M1): the app's `cue-kind` is `index`.
@@ -343,29 +344,23 @@ pub const CUE_COPY: &str = "Copy here";
 pub const CUE_ASK: &str = "Choose on drop";
 
 /// The cue for a drop with `effect` (none for no effect, and for a bookmark's link). `keys` are
-/// the keys held, `allowed` what the source allows, `unforced` the effect with no key held (what
-/// letting go of Ctrl gives), `asks` whether the drop opens the menu, `movable` whether these
-/// items can be moved at all (plain files; virtual files and items out of an archive are only
-/// copied), `count` the items dragged and `dest` the folder they would land in. The hint names a
-/// key only when pressing it (or letting it go) really gives the other effect.
-#[allow(clippy::too_many_arguments)]
-pub fn cue(effect: u32, keys: u32, allowed: u32, unforced: u32, asks: bool, movable: bool, count: usize, dest: &Path) -> Option<Cue> {
-    let both = movable && allowed & COPY != 0 && allowed & MOVE != 0;
+/// the keys held, `other` the effect Ctrl's other state gives at this spot (with Ctrl alone held:
+/// what letting it go gives; with no key held: what pressing it gives; unread otherwise), `asks`
+/// whether the drop opens the menu, `count` the items dragged and `dest` the folder they would
+/// land in. The hint names Ctrl, the one key advertised (Jeremy's console check, 2026-11-16), and
+/// only when pressing it or letting it go really gives the other effect; Shift and Alt still act
+/// and the title says what they do, but no hint names them. A drop that asks has no hint.
+pub fn cue(effect: u32, keys: u32, other: u32, asks: bool, count: usize, dest: &Path) -> Option<Cue> {
+    let held = keys & (MK_CONTROL | MK_ALT | MK_SHIFT);
+    let hint = |to: u32, press: &'static str, let_go: &'static str| match held {
+        0 if other == to => press,
+        MK_CONTROL if other == to => let_go,
+        _ => "",
+    };
     let (kind, title, hint) = match effect {
-        MOVE | COPY if asks => (CueKind::Ask, CUE_ASK, if both && keys & MK_RBUTTON == 0 { "Ctrl copies, Shift moves" } else { "" }),
-        MOVE => (CueKind::Move, CUE_MOVE, if allowed & COPY != 0 { "Ctrl copies" } else { "" }),
-        COPY => {
-            let hint = if keys & MK_CONTROL != 0 {
-                if unforced == MOVE { "Let go of Ctrl to move" } else { "" }
-            } else if keys & MK_ALT != 0 {
-                if unforced == MOVE { "Let go of Alt to move" } else { "" }
-            } else if both {
-                "Shift moves"
-            } else {
-                ""
-            };
-            (CueKind::Copy, CUE_COPY, hint)
-        }
+        MOVE | COPY if asks => (CueKind::Ask, CUE_ASK, ""),
+        MOVE => (CueKind::Move, CUE_MOVE, hint(COPY, "Ctrl copies", "Let go of Ctrl to copy")),
+        COPY => (CueKind::Copy, CUE_COPY, hint(MOVE, "Ctrl moves", "Let go of Ctrl to move")),
         _ => return None,
     };
     Some(Cue { kind, title, hint, status: cue_status(kind, count, dest) })
@@ -425,7 +420,7 @@ pub fn cue_anchor(mark: Mark, r: Rect, grid: bool) -> Option<(f32, f32, Align)> 
         Mark::Row(_) => (r.x + r.w - 20.0, mid, Align::Right),
         Mark::Tab(_) | Mark::Crumb(_) => (r.x, r.y + r.h + 2.0, Align::Left),
         Mark::Side(_) => (r.x + r.w + 6.0, mid, Align::Left),
-        Mark::Gap(_) => return None,
+        Mark::Gap(_) | Mark::Nav(_) => return None,
     })
 }
 
@@ -608,6 +603,9 @@ pub enum Spot {
     /// and a bookmark row's top `GAP_PX`), after bookmark `.0 - 1` (its bottom `GAP_PX`), or after the
     /// last (`.0` the bookmark count: below the last row).
     SideGap(usize),
+    /// Over pane `.0`'s Back or Up button in its path bar (P16-M1: a drag held there goes back or
+    /// up; no drop lands there). Forward and Refresh are the pane, as before.
+    Nav(usize, Nav),
     /// Over tab `.1` in pane `.0`'s tab strip.
     Tab(usize, usize),
     /// Over breadcrumb button `.1` of pane `.0`'s path bar.
@@ -635,6 +633,24 @@ pub const CRUMB_H: f32 = 30.0;
 /// 4 px gap (pane.slint `nav-w`); the crumb row and the text entry start this far into the bar.
 pub const NAV_W: f32 = 116.0;
 pub const NAV_BUTTON: f32 = 28.0;
+
+/// The path bar's two buttons a drag can hold over (P16-M1, Jeremy's console check: a way back
+/// out of a folder a drag sprang into by mistake).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Nav {
+    Back,
+    Up,
+}
+
+impl Nav {
+    /// The button's place among the four (Back, Forward, Up, Refresh), and the app's `drop-nav`.
+    pub fn index(self) -> usize {
+        match self {
+            Nav::Back => 0,
+            Nav::Up => 2,
+        }
+    }
+}
 
 /// The top of pane `pane`'s breadcrumb buttons, in window px.
 pub fn crumb_top(l: &Layout, pane: usize) -> f32 {
@@ -719,6 +735,14 @@ pub fn hit_all(l: &Layout, s: &Strips, x: f32, y: f32, content_y: [f32; 2], len:
         let top = crumb_top(l, pane);
         let (row_x, shown_w) = s.crumb_row[pane];
         let bx = x - a - PANE_PAD - NAV_W;
+        // Back and Up, the first and third of the four buttons before the crumbs.
+        if bx < 0.0 && x < b - PANE_PAD && y >= top && y < top + CRUMB_H {
+            match ((bx + NAV_W) / NAV_BUTTON).floor() as i32 {
+                0 => return Spot::Nav(pane, Nav::Back),
+                2 => return Spot::Nav(pane, Nav::Up),
+                _ => {}
+            }
+        }
         if x < b - PANE_PAD && bx >= 0.0 && bx < shown_w && y >= top && y < top + CRUMB_H {
             let cx = bx - row_x;
             if let Some(i) = s.crumbs[pane].iter().position(|&(cx0, w)| cx >= cx0 && cx < cx0 + w) {
@@ -1925,6 +1949,8 @@ pub enum Mark {
     Crumb(usize),
     /// The Bookmarks gap (P12-M5): an insertion line, and a drop bookmarks the folders.
     Gap(usize),
+    /// The path bar's Back or Up button (P16-M1): no drop lands there; held, it goes back or up.
+    Nav(Nav),
 }
 
 /// Where a drop at a window point goes, as the app decides it (`crate::drop_spot`).
@@ -1936,7 +1962,9 @@ pub struct DropSpot {
     pub dest: PathBuf,
     /// A drag held here opens it (`Spring`): a folder row or tile (`Mark::Row` with a row), a tab
     /// that is not the pane's active one, and since P11-M3 a sidebar row (in the active pane) and a
-    /// crumb other than the folder shown.
+    /// crumb other than the folder shown; since P16-M1 the path bar's Back and Up where they have
+    /// somewhere to go (`Mark::Nav`, the one spot that springs without taking a drop; its `dest` is
+    /// the folder the pane shows, so each folder it reaches arms it again).
     pub springs: bool,
 }
 
@@ -2083,7 +2111,9 @@ impl DropTarget {
                 if *self.has_folder.borrow_mut().get_or_insert_with(|| s.iter().any(|p| p.is_dir())) { bookmark_effect(allowed) } else { NONE }
             }
             (_, Some(DropSpot { mark: Mark::Gap(_), .. })) => NONE,
-            (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed, !into_archive && self.same_volume(&spot.dest), default),
+            // The path bar's Back and Up take no drop (P16-M1).
+            (_, Some(DropSpot { mark: Mark::Nav(_), .. })) => NONE,
+            (Offer::Files(s), Some(spot)) => effect_for(s, &spot.dest, keys, allowed, !into_archive && self.same_volume(&spot.dest), default, into_archive),
             (Offer::Virtual(_) | Offer::Archive(_), Some(_)) if !into_archive => virtual_effect(allowed),
             _ => NONE,
         }
@@ -2099,10 +2129,15 @@ impl DropTarget {
             Offer::Archive(p) => (false, p.len()),
             Offer::Nothing => return None,
         };
-        // What letting go of the keys would give, asked only while one is held.
-        let unforced = if forced(keys) { self.effect_at(spot, keys & !(MK_CONTROL | MK_ALT | MK_SHIFT), allowed) } else { e };
-        let asks = asks(keys & MK_RBUTTON != 0, keys, drag_default(), movable);
-        cue(e, keys, allowed, unforced, asks, movable, count, &s.dest)
+        // What Ctrl's other state would give here: asked only where the hint can name it.
+        let held = keys & (MK_CONTROL | MK_ALT | MK_SHIFT);
+        let other = match held {
+            0 => self.effect_at(spot, keys | MK_CONTROL, allowed),
+            MK_CONTROL => self.effect_at(spot, keys & !MK_CONTROL, allowed),
+            _ => e,
+        };
+        let asks = asks(keys & MK_RBUTTON != 0, drag_default(), movable);
+        cue(e, keys, other, asks, count, &s.dest)
     }
 
     /// Log the cue when its words or its place change: `[dnd] cue: Move here (pane 1)`. `place`
@@ -2177,7 +2212,9 @@ impl DropTarget {
         // SAFETY: COM contract: `effect` is a valid in/out pointer (checked for null).
         let allowed = if effect.is_null() { NONE } else { unsafe { *effect } };
         let (spot, e) = self.evaluate(keys, pt, allowed);
-        let highlight = spot.as_ref().filter(|_| e != NONE).map(|s| (s.pane, s.mark));
+        // Back and Up light up where holding the drag there will go somewhere (P16-M1).
+        let nav = |s: &&DropSpot| s.springs && matches!(s.mark, Mark::Nav(_));
+        let highlight = spot.as_ref().filter(|s| e != NONE || nav(s)).map(|s| (s.pane, s.mark));
         // The keys that change what the drop does (P16-M1): the cue follows them as they are
         // pressed and let go, and is built again only when they, the spot or the effect change.
         let deciding = keys & (MK_CONTROL | MK_ALT | MK_SHIFT | MK_RBUTTON);
@@ -2200,7 +2237,7 @@ impl DropTarget {
         if changed {
             eprintln!("[dnd] over {} keys=0x{keys:x} allowed=0x{allowed:x} -> effect {}", describe(&spot), effect_name(e));
         }
-        self.spring_over(spot.as_ref().filter(|s| s.springs && e != NONE));
+        self.spring_over(spot.as_ref().filter(|s| s.springs && (e != NONE || nav(s))));
         if changed {
             *self.last.borrow_mut() = Some((spot, e, deciding));
         }
@@ -2211,7 +2248,8 @@ impl DropTarget {
     }
 
     /// The spring-loaded folder: arm it over a spot that opens (one a drop would land on: a
-    /// refused spot neither lights up nor opens), open it once the hover has lasted `SPRING_MS`.
+    /// refused spot neither lights up nor opens; and the path bar's Back and Up, which take no
+    /// drop), open it once the hover has lasted `SPRING_MS`.
     /// The open runs from the event loop, as the closures the drag loop already runs do, so
     /// nothing here touches the app state; the next DragOver evaluates the spot against whatever
     /// the pane then shows.
@@ -2238,6 +2276,10 @@ impl DropTarget {
                 eprintln!("[dnd] spring-loaded: pane {} shows tab {i} after {ms} ms", t.pane);
                 crate::spring_tab(t.pane, i);
             }
+            Mark::Nav(n) => {
+                eprintln!("[dnd] spring-loaded: pane {} goes {} from {} after {ms} ms", t.pane, if n == Nav::Back { "back" } else { "up" }, t.dest.display());
+                crate::spring_nav(t.pane, n);
+            }
             _ => {
                 eprintln!("[dnd] spring-loaded: pane {} opens {} after {ms} ms", t.pane, t.dest.display());
                 crate::spring_open(t.pane, t.dest);
@@ -2263,6 +2305,7 @@ fn describe(spot: &Option<DropSpot>) -> String {
             Mark::Side(i) => format!("sidebar row {i} ({}), noted in pane {}", s.dest.display(), s.pane),
             Mark::Crumb(i) => format!("pane {} crumb {i} ({})", s.pane, s.dest.display()),
             Mark::Gap(k) => format!("sidebar bookmarks gap {k}"),
+            Mark::Nav(n) => format!("pane {} {} button (in {})", s.pane, if n == Nav::Back { "Back" } else { "Up" }, s.dest.display()),
         },
     }
 }
@@ -2490,7 +2533,7 @@ unsafe extern "system" fn dt_drop(this: *mut c_void, data: *mut c_void, keys: u3
     // The shell takes its drag image down (before the menu, as Explorer does).
     target_helper_call(HelperCall::Drop(data), pt, e);
     let gap = spot.as_ref().and_then(|s| if let Mark::Gap(k) = s.mark { Some(k) } else { None });
-    if asks(right, keys, drag_default(), matches!(fresh, Offer::Files(_))) && e != NONE && spot.is_some() && gap.is_none() {
+    if asks(right, drag_default(), matches!(fresh, Offer::Files(_))) && e != NONE && spot.is_some() && gap.is_none() {
         // A right-button drop asks: Move here, Copy here or Cancel, the default in bold; so does
         // a left-button drop of files under the "ask" setting with no deciding key held (P16-M1).
         // A modal loop inside Drop (itself inside the source's DoDragDrop): nothing is borrowed
@@ -3422,15 +3465,15 @@ mod tests {
     /// `effect_for` with the string rule's volumes (`path_volume_key`), no file-system call.
     fn eff(sources: &[PathBuf], dest: &Path, keys: u32, allowed: u32) -> u32 {
         let same = sources.first().is_some_and(|f| path_volume_key(f) == path_volume_key(dest));
-        effect_for(sources, dest, keys, allowed, same, DragDefault::Explorer)
+        effect_for(sources, dest, keys, allowed, same, DragDefault::Explorer, false)
     }
 
     #[test]
-    fn the_drag_default_setting_decides_only_with_no_key_held() {
+    fn the_setting_decides_with_no_key_held_and_ctrl_gives_the_other() {
         use DragDefault::{Ask, Copy, Explorer, Move};
         let both = COPY | MOVE;
         // (setting, same volume) with no key: Explorer's rule, always a copy, always a move; "ask"
-        // hovers as Explorer's rule (the menu's bold item).
+        // takes Explorer's rule (the menu's bold item).
         for (default, same, want) in [
             (Explorer, true, MOVE),
             (Explorer, false, COPY),
@@ -3441,67 +3484,75 @@ mod tests {
             (Ask, true, MOVE),
             (Ask, false, COPY),
         ] {
-            assert_eq!(decide_effect(0, both, same, default), want, "{default:?}, same volume {same}");
-            assert_eq!(decide_effect(MK_LBUTTON, both, same, default), want, "the button held is no deciding key");
-            // Ctrl, Alt and Ctrl+Shift copy and Shift moves, under every setting, on either volume.
-            assert_eq!(decide_effect(MK_CONTROL, both, same, default), COPY, "{default:?} Ctrl");
-            assert_eq!(decide_effect(MK_ALT, both, same, default), COPY, "{default:?} Alt");
-            assert_eq!(decide_effect(MK_CONTROL | MK_SHIFT, both, same, default), COPY, "{default:?} Ctrl+Shift");
-            assert_eq!(decide_effect(MK_SHIFT, both, same, default), MOVE, "{default:?} Shift");
+            let other = if want == MOVE { COPY } else { MOVE };
+            assert_eq!(decide_effect(0, both, same, default, false), want, "{default:?}, same volume {same}");
+            assert_eq!(decide_effect(MK_LBUTTON, both, same, default, false), want, "the button held is no deciding key");
+            // Ctrl alone gives the other effect, whatever the setting gave (Jeremy, 2026-11-16).
+            assert_eq!(decide_effect(MK_CONTROL, both, same, default, false), other, "{default:?} Ctrl, same volume {same}");
+            // Shift moves, and Alt and Ctrl+Shift copy, under every setting, on either volume.
+            assert_eq!(decide_effect(MK_SHIFT, both, same, default, false), MOVE, "{default:?} Shift");
+            assert_eq!(decide_effect(MK_ALT, both, same, default, false), COPY, "{default:?} Alt");
+            assert_eq!(decide_effect(MK_CONTROL | MK_SHIFT, both, same, default, false), COPY, "{default:?} Ctrl+Shift");
         }
-        // A wish the source does not allow falls back to what it allows, under every setting.
-        assert_eq!(decide_effect(0, COPY, true, Move), COPY);
-        assert_eq!(decide_effect(0, MOVE, false, Copy), MOVE);
-        assert_eq!(decide_effect(0, NONE, true, Move), NONE);
+        // A wish the source does not allow falls back to what it allows, under every setting, and
+        // Ctrl cannot give an effect the source refuses.
+        assert_eq!(decide_effect(0, COPY, true, Move, false), COPY);
+        assert_eq!(decide_effect(0, MOVE, false, Copy, false), MOVE);
+        assert_eq!(decide_effect(0, NONE, true, Move, false), NONE);
+        assert_eq!(decide_effect(MK_CONTROL, COPY, false, Explorer, false), COPY);
+        assert_eq!(decide_effect(MK_CONTROL, MOVE, true, Explorer, false), MOVE);
         // A refused drop stays refused whatever the setting.
-        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\src"), 0, both, true, Copy), NONE);
-        // Into an archive "always move" does not reach: a copy unless Shift asks for a move.
+        assert_eq!(effect_for(&[p(r"C:\src\a")], &p(r"C:\src"), 0, both, true, Copy, false), NONE);
+        // Into an archive "always move" does not reach, and Ctrl copies there as it always did: a
+        // copy unless Shift asks for a move.
         assert_eq!(default_into(Move, true), Explorer);
         assert_eq!(default_into(Move, false), Move);
         assert_eq!((default_into(Copy, true), default_into(Ask, true), default_into(Explorer, true)), (Copy, Ask, Explorer));
-        assert_eq!(decide_effect(0, both, false, default_into(Move, true)), COPY);
-        assert_eq!(decide_effect(MK_SHIFT, both, false, default_into(Move, true)), MOVE);
+        for default in [Explorer, Copy, Move, Ask] {
+            let d = default_into(default, true);
+            assert_eq!(decide_effect(0, both, false, d, true), COPY, "{default:?} into an archive");
+            assert_eq!(decide_effect(MK_CONTROL, both, false, d, true), COPY, "{default:?} Ctrl into an archive");
+            assert_eq!(decide_effect(MK_SHIFT, both, false, d, true), MOVE, "{default:?} Shift into an archive");
+        }
 
-        // The menu: the right button always; the "ask" setting for files with no deciding key.
-        assert!(asks(true, 0, Explorer, true) && asks(true, MK_CONTROL, Copy, false));
-        assert!(asks(false, 0, Ask, true) && asks(false, MK_LBUTTON, Ask, true));
-        assert!(!asks(false, MK_CONTROL, Ask, true) && !asks(false, MK_SHIFT, Ask, true) && !asks(false, MK_ALT, Ask, true));
-        assert!(!asks(false, 0, Ask, false), "virtual files are only copied: nothing to ask");
-        assert!(!asks(false, 0, Explorer, true) && !asks(false, 0, Copy, true) && !asks(false, 0, Move, true));
+        // The menu: the right button always; under "ask" every drop of files, a key held or not.
+        assert!(asks(true, Explorer, true) && asks(true, Copy, false));
+        assert!(asks(false, Ask, true));
+        assert!(!asks(false, Ask, false), "virtual files are only copied: nothing to ask");
+        assert!(!asks(false, Explorer, true) && !asks(false, Copy, true) && !asks(false, Move, true));
     }
 
     #[test]
-    fn the_cue_says_what_the_drop_does_and_how_to_get_the_other() {
-        let both = COPY | MOVE;
+    fn the_cue_says_what_the_drop_does_and_names_ctrl_for_the_other() {
         let docs = p(r"C:\Users\j\Documents");
-        let say = |effect, keys, allowed, unforced, asks, movable, count| {
-            cue(effect, keys, allowed, unforced, asks, movable, count, &docs).map(|c| (c.kind, c.title, c.hint, c.status))
-        };
-        // A move and a copy, one item and several.
-        assert_eq!(say(MOVE, 0, both, MOVE, false, true, 3), Some((CueKind::Move, "Move here", "Ctrl copies", "Drop moves 3 items to Documents".into())));
-        assert_eq!(say(MOVE, 0, both, MOVE, false, true, 1), Some((CueKind::Move, "Move here", "Ctrl copies", "Drop moves 1 item to Documents".into())));
-        assert_eq!(say(COPY, 0, both, COPY, false, true, 3), Some((CueKind::Copy, "Copy here", "Shift moves", "Drop copies 3 items to Documents".into())));
-        assert_eq!(say(COPY, 0, both, COPY, false, true, 1), Some((CueKind::Copy, "Copy here", "Shift moves", "Drop copies 1 item to Documents".into())));
-        // Ctrl held where the drop would have moved: letting go moves. Where it would have copied
-        // anyway, Shift does not move while Ctrl is down, so no key is named.
-        assert_eq!(say(COPY, MK_CONTROL, both, MOVE, false, true, 2).map(|c| c.2), Some("Let go of Ctrl to move"));
-        assert_eq!(say(COPY, MK_CONTROL, both, COPY, false, true, 2).map(|c| c.2), Some(""));
-        assert_eq!(say(COPY, MK_ALT, both, MOVE, false, true, 2).map(|c| c.2), Some("Let go of Alt to move"));
-        // Shift held: Ctrl still copies.
-        assert_eq!(say(MOVE, MK_SHIFT, both, COPY, false, true, 2).map(|c| (c.1, c.2)), Some(("Move here", "Ctrl copies")));
-        // A source that allows one effect only, and items that are only ever copied: no key named.
-        assert_eq!(say(MOVE, 0, MOVE, MOVE, false, true, 1).map(|c| c.2), Some(""));
-        assert_eq!(say(COPY, 0, COPY, COPY, false, true, 1).map(|c| c.2), Some(""));
-        assert_eq!(say(COPY, 0, both, COPY, false, false, 4), Some((CueKind::Copy, "Copy here", "", "Drop copies 4 items to Documents".into())));
-        // A drop that asks: by the setting (the keys still decide), by the right button (they do not).
-        assert_eq!(
-            say(MOVE, 0, both, MOVE, true, true, 3),
-            Some((CueKind::Ask, "Choose on drop", "Ctrl copies, Shift moves", "Drop asks whether to move or copy 3 items to Documents".into()))
-        );
-        assert_eq!(say(COPY, MK_RBUTTON, both, COPY, true, true, 1).map(|c| (c.0, c.1, c.2)), Some((CueKind::Ask, "Choose on drop", "")));
+        let say = |effect, keys, other, asks, count| cue(effect, keys, other, asks, count, &docs).map(|c| (c.kind, c.title, c.hint, c.status));
+        // A move and a copy, one item and several: Ctrl gives the other.
+        assert_eq!(say(MOVE, 0, COPY, false, 3), Some((CueKind::Move, "Move here", "Ctrl copies", "Drop moves 3 items to Documents".into())));
+        assert_eq!(say(MOVE, 0, COPY, false, 1), Some((CueKind::Move, "Move here", "Ctrl copies", "Drop moves 1 item to Documents".into())));
+        assert_eq!(say(COPY, 0, MOVE, false, 3), Some((CueKind::Copy, "Copy here", "Ctrl moves", "Drop copies 3 items to Documents".into())));
+        assert_eq!(say(COPY, 0, MOVE, false, 1), Some((CueKind::Copy, "Copy here", "Ctrl moves", "Drop copies 1 item to Documents".into())));
+        // Ctrl held: letting go gives the other back.
+        assert_eq!(say(COPY, MK_CONTROL, MOVE, false, 2).map(|c| c.2), Some("Let go of Ctrl to move"));
+        assert_eq!(say(MOVE, MK_CONTROL, COPY, false, 2).map(|c| c.2), Some("Let go of Ctrl to copy"));
+        // The left button held with it, as in every real DragOver, changes nothing.
+        assert_eq!(say(MOVE, MK_LBUTTON, COPY, false, 2).map(|c| c.2), Some("Ctrl copies"));
+        assert_eq!(say(COPY, MK_LBUTTON | MK_CONTROL, MOVE, false, 2).map(|c| c.2), Some("Let go of Ctrl to move"));
+        // Where Ctrl changes nothing (a source that allows one effect, items only ever copied, a
+        // drop into an archive): no key named.
+        assert_eq!(say(MOVE, 0, MOVE, false, 1).map(|c| c.2), Some(""));
+        assert_eq!(say(COPY, 0, COPY, false, 4), Some((CueKind::Copy, "Copy here", "", "Drop copies 4 items to Documents".into())));
+        assert_eq!(say(COPY, MK_CONTROL, COPY, false, 1).map(|c| c.2), Some(""));
+        // Shift and Alt still act, and the title says so, but no hint names them or Ctrl then.
+        assert_eq!(say(MOVE, MK_SHIFT, COPY, false, 2).map(|c| (c.1, c.2)), Some(("Move here", "")));
+        assert_eq!(say(COPY, MK_ALT, MOVE, false, 2).map(|c| (c.1, c.2)), Some(("Copy here", "")));
+        assert_eq!(say(COPY, MK_CONTROL | MK_SHIFT, MOVE, false, 2).map(|c| (c.1, c.2)), Some(("Copy here", "")));
+        // A drop that asks, by the setting or the right button: no key is named, held or not.
+        assert_eq!(say(MOVE, 0, COPY, true, 3), Some((CueKind::Ask, "Choose on drop", "", "Drop asks whether to move or copy 3 items to Documents".into())));
+        assert_eq!(say(COPY, MK_CONTROL, MOVE, true, 3).map(|c| (c.0, c.1, c.2)), Some((CueKind::Ask, "Choose on drop", "")));
+        assert_eq!(say(COPY, MK_RBUTTON, COPY, true, 1).map(|c| (c.0, c.1, c.2)), Some((CueKind::Ask, "Choose on drop", "")));
         // No effect, and a bookmark's link: no cue.
-        assert_eq!(say(NONE, 0, both, NONE, false, true, 1), None);
-        assert_eq!(say(LINK, 0, both | LINK, LINK, false, true, 1), None);
+        assert_eq!(say(NONE, 0, NONE, false, 1), None);
+        assert_eq!(say(LINK, 0, LINK, false, 1), None);
         // The folder's name as the Windows label has it: a drive root by its letter.
         assert_eq!(cue_status(CueKind::Copy, 2, &p(r"D:\")), "Drop copies 2 items to D:");
         assert_eq!((CueKind::Move.index(), CueKind::Copy.index(), CueKind::Ask.index()), (1, 2, 3));
@@ -3636,9 +3687,9 @@ mod tests {
         let both = COPY | MOVE;
         let src = fake(&p(r"C:\src\a.txt"));
         let (dest, _) = c.key(&p(r"C:\mnt\data\sub"), fake);
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\mnt\data\sub"), 0, both, src == dest, DragDefault::Explorer), COPY);
+        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\mnt\data\sub"), 0, both, src == dest, DragDefault::Explorer, false), COPY);
         let (dest, _) = c.key(&p(r"C:\dst"), fake);
-        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\dst"), 0, both, src == dest, DragDefault::Explorer), MOVE);
+        assert_eq!(effect_for(&[p(r"C:\src\a.txt")], &p(r"C:\dst"), 0, both, src == dest, DragDefault::Explorer, false), MOVE);
     }
 
     #[test]
@@ -4061,7 +4112,14 @@ mod tests {
         assert_eq!(hit(&s, n + 80.0, 5.0), Spot::Pane(0), "above the crumbs: the padding");
         assert_eq!(hit(&s, n + 80.0, 36.0), Spot::Pane(0), "below them: the bar's padding");
         assert_eq!(hit(&s, n + 80.0, 80.0), Spot::Row(0, 0), "the list as before");
-        assert_eq!(hit(&s, 50.0, 20.0), Spot::Pane(0), "the path bar's own buttons: the pane");
+        assert_eq!(hit(&s, 50.0, 20.0), Spot::Pane(0), "Forward: the pane");
+        assert_eq!(hit(&s, 100.0, 20.0), Spot::Pane(0), "Refresh: the pane");
+        // Back and Up (P16-M1), the first and third 28 px after the pane's padding, the crumbs' height.
+        assert_eq!((hit(&s, 3.0, 6.0), hit(&s, 30.9, 35.9)), (Spot::Nav(0, Nav::Back), Spot::Nav(0, Nav::Back)));
+        assert_eq!((hit(&s, 59.0, 20.0), hit(&s, 86.9, 20.0)), (Spot::Nav(0, Nav::Up), Spot::Nav(0, Nav::Up)));
+        assert_eq!((hit(&s, 17.0, 5.0), hit(&s, 70.0, 36.0)), (Spot::Pane(0), Spot::Pane(0)), "the bar's padding");
+        assert_eq!(hit(&s, 115.9, 20.0), Spot::Pane(0), "the gap before the crumbs");
+        assert_eq!((Nav::Back.index(), Nav::Up.index()), (0, 2));
         // A row right-aligned in a narrow bar (offset -60, 100 px shown): This PC is clipped off,
         // "C:" sits at 13..37 and "Users" (53..113) is cut at the bar's end (x 103).
         let narrow = Strips { crumb_row: [(-60.0, 100.0), (0.0, 0.0)], ..s };

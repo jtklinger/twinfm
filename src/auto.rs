@@ -157,7 +157,9 @@
 //!                                    strip's end (their auto-scroll); `row <pane> <row>`, `tab
 //!                                    <pane> <index>` and `crumb <pane> <index>` hover the centre of
 //!                                    that spot, as `dropfiles` aims at it (held 1000 ms or more
-//!                                    over a folder row, a tile or a tab, the spring-load opens it)
+//!                                    over a folder row, a tile or a tab, the spring-load opens it);
+//!                                    `nav <pane> <back|up>` hovers the centre of that path bar
+//!                                    button (P16-M1: held 1000 ms or more, the pane goes there)
 //!   tab <new|close|next|prev|N>      Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+N (1..9) through the
 //!                                    Slint key path, on the active pane
 //!   tab <moveleft|moveright>         Ctrl+Shift+PageUp / Ctrl+Shift+PageDown: move the active tab
@@ -356,6 +358,8 @@ enum DropAt {
     SideGap(usize),
     Tab(usize, usize),
     Crumb(usize, i32),
+    /// The path bar's Back (false) or Up (true) button of pane `.0` (P16-M1).
+    Nav(usize, bool),
     /// A window point, logical px: whatever the hit test finds there.
     Point(f32, f32),
 }
@@ -638,6 +642,8 @@ fn parse(script: &str) -> Vec<Step> {
                         Some("row") => (HoverAt::At(DropAt::Row(num(2) as usize, num(3) as i32)), 4),
                         Some("tab") => (HoverAt::At(DropAt::Tab(num(2) as usize, num(3) as usize)), 4),
                         Some("crumb") => (HoverAt::At(DropAt::Crumb(num(2) as usize, num(3) as i32)), 4),
+                        // `nav <pane> <back|up>` (P16-M1): the centre of that path bar button.
+                        Some("nav") => (HoverAt::At(DropAt::Nav(num(2) as usize, a.get(3) == Some(&"up"))), 4),
                         Some("strip") => (HoverAt::Strip(num(2) as usize, a.get(3) == Some(&"right")), 4),
                         // `side <row>` (P11-M3): a sidebar row's centre, as `dropfiles side <row>`.
                         Some("side") if a.get(2).is_some_and(|v| v.parse::<i32>().is_ok()) => (HoverAt::At(DropAt::Side(num(2) as i32)), 3),
@@ -1045,6 +1051,12 @@ fn drop_point(app: &App, at: DropAt) -> Option<LogicalPosition> {
             Some(LogicalPosition::new(x, crate::dnd::tab_top(&l) + crate::dnd::TAB_H / 2.0))
         }
         DropAt::Crumb(pane, index) => crate::crumb_centre(app, pane, index),
+        DropAt::Nav(pane, up) => {
+            let l = crate::window_layout(app);
+            let (left, _) = crate::dnd::pane_x(&l, pane);
+            let k = if up { crate::dnd::Nav::Up } else { crate::dnd::Nav::Back }.index() as f32;
+            Some(LogicalPosition::new(left + crate::dnd::PANE_PAD + (k + 0.5) * crate::dnd::NAV_BUTTON, crate::dnd::crumb_top(&l, pane) + crate::dnd::CRUMB_H / 2.0))
+        }
         DropAt::Point(x, y) => Some(LogicalPosition::new(x, y)),
     }
 }
@@ -2101,7 +2113,9 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
             };
             let (sx, sy) = crate::shellmenu::to_screen(hwnd_of(&app), pos.x, pos.y, app.window().scale_factor());
             let keys = match mode.as_str() {
-                "copy" => MK_CONTROL,
+                // Alt, which copies under every setting: Ctrl gives the other effect of the
+                // setting's since P16-M1's console check, so it would move where the default copies.
+                "copy" => crate::dnd::KEY_ALT,
                 "move" => MK_SHIFT,
                 "menu" => MK_RBUTTON,
                 _ => 0,
@@ -2113,9 +2127,10 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 "copy" => crate::dnd::MENU_LABELS[1],
                 _ => crate::dnd::MENU_LABELS[2],
             };
-            // The same under the "ask" setting for a left-button drop with no key (P16-M1: mode
-            // `ask <pick>`; under that setting `auto` picks Cancel, so no script waits for a person).
-            let menu = mode == "menu" || (keys == 0 && crate::dnd::drag_default() == crate::settings::DragDefault::Ask);
+            // The same under the "ask" setting for every left-button drop, a key held or not
+            // (P16-M1: mode `ask <pick>`; under that setting every other mode picks Cancel, so no
+            // script waits for a person).
+            let menu = mode == "menu" || crate::dnd::drag_default() == crate::settings::DragDefault::Ask;
             if menu {
                 arm_menu_steps(&app, vec![Step::Sleep(300), Step::MenuPick(label.into())]);
             }

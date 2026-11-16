@@ -455,6 +455,10 @@ export component App inherits Window {
     // A drag would drop on crumb `drop-crumb` of pane `drop-crumb-pane`'s breadcrumb (-1: none).
     in-out property <int> drop-crumb-pane: -1;
     in-out property <int> drop-crumb: -1;
+    // A drag is held over pane `drop-nav-pane`'s path bar button `drop-nav` (0 Back, 2 Up; -1 none),
+    // which will go back or up when it has been held there (P16-M1): the button is drawn lit.
+    in-out property <int> drop-nav-pane: -1;
+    in-out property <int> drop-nav: -1;
     // What the drop would do (P16-M1, main.rs `drop_cue`, on change only): cue-kind 0 none, 1 a
     // move, 2 a copy, 3 the drop asks; it colours the highlight's border and the one badge the
     // window has, shown (cue-shown) with its cue-align point (0 its left end, 1 its right end, 2
@@ -1203,6 +1207,7 @@ export component App inherits Window {
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
                 drop-crumb: root.drop-crumb-pane == 0 ? root.drop-crumb : -1;
+                drop-nav: root.drop-nav-pane == 0 ? root.drop-nav : -1;
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
                 tab-menu(i, x, y) => { root.tab-menu(0, i, x, y); }
@@ -1288,6 +1293,7 @@ export component App inherits Window {
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;
                 drop-crumb: root.drop-crumb-pane == 1 ? root.drop-crumb : -1;
+                drop-nav: root.drop-nav-pane == 1 ? root.drop-nav : -1;
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
                 tab-menu(i, x, y) => { root.tab-menu(1, i, x, y); }
@@ -1800,9 +1806,12 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 710px) / 2);
+        // 750 px holds every row and the buttons: a popup takes no click outside its rectangle, so
+        // a row added without its 40 px here pushes OK and Cancel out of the mouse's reach (the
+        // Dragging files row did, P16-M1's console check).
+        y: max(10px, (root.height - 750px) / 2);
         width: 480px;
-        height: 710px;
+        height: 750px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Theme.card;

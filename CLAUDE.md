@@ -1493,9 +1493,10 @@ put off, with where it came from.
   Since P16-M1, **a drag says what it will do**. While a drag is over a spot that takes it, the drop
   target reckons a cue beside the effect (`dnd::cue`, pure; `DropTarget::cue_for`): **"Move here"**,
   **"Copy here"** or **"Choose on drop"** (the drop will open the Move here / Copy here / Cancel menu: a
-  right-button drag, or the "ask" setting with no deciding key held), a hint naming the key that gives
-  the other ("Ctrl copies", "Shift moves", "Let go of Ctrl to move", "Ctrl copies, Shift moves"; none
-  where no key would change it), and the same in words for the status line ("Drop moves 3 items to
+  right-button drag, or the "ask" setting), a hint naming Ctrl, the one key advertised, where it gives
+  the other ("Ctrl copies", "Ctrl moves", "Let go of Ctrl to move", "Let go of Ctrl to copy"; none where
+  Ctrl would change nothing, none while Shift or Alt is held, none for a drop that asks), and the same in
+  words for the status line ("Drop moves 3 items to
   Documents", `dnd::cue_status`). It is built again only when the spot, the effect or the deciding keys
   held (Ctrl, Alt, Shift, the right button) change, never per DragOver, and handed with the spot to
   `main.rs` `drop_highlight(at, cue)`, whose `drop_cue` sets, on change only (`CUE_SHOWN`): the window's
@@ -1511,25 +1512,44 @@ put off, with where it came from.
   (`settings::DragDefault`; the dialog's "Dragging files": As Explorer, Always copy, Always move, Always
   ask; applied on OK, `dnd::set_drag_default`, an atomic the drop target reads): what a drop onto TwinFM
   does with no key held, from its own panes and from other programs (`dnd::decide_effect`'s `default`).
-  Ctrl (and Alt) still copy and Shift still moves under every choice, and the right button still asks.
-  "explorer" is move on the same volume and copy across; "ask" hovers as Explorer's rule (the menu's bold
-  item) and a left-button drop of files with no deciding key opens the right button's menu
-  (`dnd::asks`); items that are only ever copied (virtual files, items out of an archive) are never
-  asked about by the setting; into an archive "move" does not reach (`dnd::default_into`: a copy unless
-  Shift). Driver: `dragover ... <ms> keys <none|ctrl|shift|alt|right>[,...] <paths>` holds those keys
+  "explorer" is move on the same volume and copy across. **Ctrl alone gives the other effect of that,
+  whatever it is** (Jeremy's console check, 2026-11-16, over the kickoff's "Match Explorer", where Ctrl
+  is always a copy: on one drive Ctrl copies, across drives Ctrl moves, under Always copy Ctrl moves,
+  under Always move Ctrl copies); Shift alone still moves and Alt and Ctrl+Shift still copy, with the
+  title saying so and no hint naming them; the right button still asks. **"ask" opens the right button's
+  menu on every left-button drop of files, a key held or not** (`dnd::asks`; the same console check: a
+  held key decided without asking before), its bold item the effect the keys would give; items that are
+  only ever copied (virtual files, items out of an archive) are never asked about by the setting; into an
+  archive "move" does not reach (`dnd::default_into`) and Ctrl copies as it always did
+  (`decide_effect`'s `ctrl_copies`): a copy unless Shift, no hint. **The path bar's Back and Up
+  spring-load** (the same console check: a way out of a folder a drag sprang into by mistake): a drag
+  held `SPRING_MS` over one that has somewhere to go (`dnd::Spot::Nav`, `Mark::Nav`, the first and third
+  of the four buttons; `DropSpot::springs` as the button is enabled) goes back or up in that pane
+  (`main.rs` `spring_nav`; the pane does not become active), the button drawn lit meanwhile (the window's
+  `drop-nav-pane` / `drop-nav`, NavButton's `lit`); no drop lands there (effect none, no cue), and the
+  spot's `dest` is the folder shown, so each folder reached arms it again (held on, Up climbs a level a
+  second). Forward and Refresh are the pane, as before. **The settings dialog is 750 px tall** (710
+  until the Dragging files row: a popup takes no click outside its rectangle, so the row's 40 px had
+  pushed OK and Cancel out of the mouse's reach; a row added there needs its height added too). Driver: `dragover ... <ms> keys <none|ctrl|shift|alt|right>[,...] <paths>` holds those keys
   while it hovers (several sets, comma-separated, share the time equally, in order: a key pressed or let
   go mid-drag); `dropfiles`' mode `auto` takes the setting, and `dropfiles ... ask <copy|move|cancel>
   <paths>` is a left-button drop under "ask" with the menu's item picked from the in-menu timer (under
-  "ask" a plain `auto` picks Cancel, so no script waits for a person); `settings set drag_default
-  explorer|copy|move|ask`. Lines: `[dnd] cue: Move here | Copy here | Choose on drop | none (pane N |
+  "ask" every other mode picks Cancel, so no script waits for a person); `dropfiles`' mode `copy` holds
+  Alt since the console check (Ctrl would move where the default copies); `dragover nav <pane> <back|up>
+  <ms> <paths>` hovers that path bar button's centre; `settings set drag_default
+  explorer|copy|move|ask`. Lines: `[dnd] over pane N Back|Up button (in <folder>) ... -> effect none`,
+  `[dnd] spring armed: pane N Back|Up button (in <folder>)`, `[dnd] spring-loaded: pane N goes back|up
+  from <folder> after T ms`; `[dnd] cue: Move here | Copy here | Choose on drop | none (pane N |
   sidebar)` when the cue's words or place change (`cue: none` alone when the drag leaves or drops),
   `[dnd] drop menu: asked by the setting`, `[settings] dialog: drag_default <old> -> <new>`; the `[dnd]
   over ...` line is now also logged when a deciding key changes over the same spot with the same effect.
   A hover of 1000 ms or more over a folder row, a tab, a crumb or a sidebar row spring-loads it, so a
   script that reads the cue there hovers for less. `tools/check-p16m1.ps1` is the scripted check (it
-  takes the pictures too). Since P16-M1 each soak cycle also hovers `spring`'s row with the cue read as
+  takes the pictures too, and closes the dialog by `clickat` on its real Cancel and OK, which a `settings
+  ok` step would not have caught). Since P16-M1 each soak cycle also hovers `spring`'s row with the cue read as
   a move and, with Ctrl, as a copy, drops under "Always copy" on the same drive and puts the setting
-  back; the report counts them.
+  back, and from `inner` holds a drag over the path bar's Up, which takes the right pane back to
+  `spring`; the report counts them.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

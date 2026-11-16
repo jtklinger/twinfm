@@ -487,7 +487,60 @@ property. No row, tile, tab or sidebar row has a new binding.
 The runs interleave and the medians differ by 0.1: no gap. The sitting was in the costlier state
 throughout (render p50 2.62 to 2.74 ms in every run of both binaries), so it reads like for like.
 
+### The first console check (2026-11-16, `target-p16m1` 2132c70): four changes
+
+Checks 1, 2, 5, 6, 8, 10, 11, 12 and 13 passed ("Works as expected"). Four things came back, relayed by
+the coordinating session with its reading; Jeremy's words are quoted.
+
+**A. The settings dialog's OK and Cancel took no mouse click.** "first issue is the settings screen. If
+I make a change, the cancel/ok buttons no longer accept mouse input. Keyboard esc/enter are still
+working." Reproduced in the gate build with a real click (`clickat` on OK: the dialog stayed open), and
+without any change staged: the buttons were dead from the moment the dialog opened. It is this
+milestone's fault, not 0.6.0's: the same click closes the dialog in `target-p15close`. The dialog is a
+popup with a fixed height (710 px), a popup takes no click outside its own rectangle, and the new
+"Dragging files" row made the content 40 px taller, which pushed the two buttons below the popup's lower
+edge: drawn, but out of the mouse's reach. Escape and Enter go through the keyboard and never noticed.
+The scripted check had not caught it because its `settings ok` step calls the button's function rather
+than clicking it. Fixed by the dialog's height (750 px); `tools/check-p16m1.ps1` now closes the dialog
+with real clicks on Cancel and on OK, which fail on the old build. The small grey note under the buttons
+still sits on the dialog's lower edge, as it does in 0.6.0 (left as it is).
+
+**B. One key for the other effect.** "This works, but wouldn't it make sense to have the same key either
+control or shift, used for #2 and #3?" and "just have it use the control button to toggle". Ctrl is now
+the one key the tag names, and Ctrl alone gives the other effect of whatever a plain drop would do: on
+one drive "Ctrl copies", across drives "Ctrl moves", under Always copy "Ctrl moves", under Always move
+"Ctrl copies"; held, the tag reads "Let go of Ctrl to move" (or "to copy"). Shift still forces a move and
+Alt (and Ctrl+Shift) a copy, for Explorer habits: the tag's title says what will happen, but no hint
+names them. Into a zip a drop stays a copy with no hint, and Ctrl changes nothing there. **This departs
+from Explorer**, where Ctrl is always a copy (across drives Ctrl now moves): Jeremy's choice over the
+kickoff's "Match Explorer", the coordinating session's reading of his words.
+
+**C. Always ask asks with the mouse only.** "Change the 'Always Ask' process to not prompt for a key-use
+only the mouse copy/move/cancel. This will help resolve #3, and just have a single button." and, of the
+right button's menu, "this is how #9 should work." Under Always ask the tag reads "Choose on drop" with
+no key named, and every drop opens the Move here / Copy here / Cancel menu, Ctrl or Shift held or not,
+as a right-button drag does (a held key had skipped the menu). The menu's bold item is still the effect
+the keys would have given. The optional Ctrl toggle under Always ask is not built.
+
+**D. A way back out of a spring-loaded folder.** "Works, but needs a way to go back up the folder tree
+if I accidently go into the wrong subfolder--without having to cancel the whole copy/move." The folder
+names in the path bar already open when a drag is held over them (P11-M3). Added: **the path bar's Back
+and Up buttons** do the same. Hold the drag over Up for a second and the pane goes to the parent; over
+Back, back to where it was; the button is lit while the drag is over it. A greyed button does nothing,
+and nothing can be dropped on either (the pointer shows the no-drop sign there). Held on, Up climbs one
+level a second. It was sound in the hit test: the two buttons became spots of their own (`Spot::Nav`),
+where they had counted as the pane's own folder, so a drop let go over Back or Up, which used to land
+in the folder shown, now lands nowhere. Forward and Refresh are unchanged.
+
+The driver's `dropfiles ... copy` holds Alt now (Ctrl would move where the default copies), and
+`dragover nav <pane> <back|up>` hovers a button. Tests 368 passed, 0 failed, 2 ignored (the two rule
+tests rewritten for B and C, the crumb hit test extended for D). The scripted check: exit 0; its lines
+show Cancel and OK by the mouse, "Move here" for Ctrl under Always copy, "Choose on drop" and the menu
+with a key held under Always ask, and the right pane going up out of Documents and back into it.
+
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+Revised after the first console check: 2, 3, 7, 8 and 9 changed, 14 and 15 are new.
 
 Two panes showing (the toolbar's Two panes). "The tag" is the small coloured label that appears on the
 thing under the pointer while you drag; "the status line" is the text at the bottom left of the pane you
@@ -497,11 +550,12 @@ are dragging into.
    pane over an empty part of the right pane's list: the list gets an amber border, an amber tag "Move
    here" with "Ctrl copies" beside it shows at the top middle of the list, and the right pane's status
    line reads "Drop moves 1 item to <folder>" in amber. Let go: the file moves.
-2. **Ctrl and Shift mid-drag.** Start the same drag and, still holding the mouse button, press Ctrl:
-   the tag turns green, "Copy here", "Let go of Ctrl to move", and the status line "Drop copies…". Let
-   go of Ctrl: amber "Move here" again. Press Escape to cancel the drag.
-3. **Across two drives.** The right pane on another drive (a USB stick, or `G:`). Drag a file from `C:`
-   over it: green "Copy here", "Shift moves". Hold Shift: amber "Move here", "Ctrl copies". Escape.
+2. **Ctrl mid-drag.** Start the same drag and, still holding the mouse button, press Ctrl: the tag
+   turns green, "Copy here", "Let go of Ctrl to move", and the status line "Drop copies…". Let go of
+   Ctrl: amber "Move here" again. Press Escape to cancel the drag.
+3. **Across two drives: the same key.** The right pane on another drive (a USB stick, or `G:`). Drag a
+   file from `C:` over it: green "Copy here", "Ctrl moves". Hold Ctrl: amber "Move here", "Let go of
+   Ctrl to copy". (Shift also moves, as in Explorer, but the tag no longer mentions it.) Escape.
 4. **Onto a folder row.** Drag a file over a folder's row in the other pane: the row gets the coloured
    border and the tag sits at the row's right end (over that row's date, which is expected). Hold it
    there a second: the folder opens, as before, and the tag moves to the top of the list.
@@ -511,13 +565,13 @@ are dragging into.
    names that folder). Escape each time.
 6. **Several files.** Select three files and drag them: the status line says "3 items".
 7. **Always copy.** Settings (Ctrl+comma, or Settings at the sidebar's foot), "Dragging files", Always
-   copy, OK. Drag a file between two folders of `C:`: green "Copy here", and letting go copies. With
-   Shift held it still reads "Move here" and moves.
-8. **Always move.** The same with Always move, onto another drive: amber "Move here" with no key, and
-   Ctrl still copies.
-9. **Always ask.** With Always ask, drag a file to the other pane: a violet tag "Choose on drop", "Ctrl
-   copies, Shift moves". Let go: a small menu Move here / Copy here / Cancel opens at the pointer; pick
-   one. Drag again with Ctrl held: green "Copy here" and no menu.
+   copy, OK (click OK with the mouse). Drag a file between two folders of `C:`: green "Copy here",
+   "Ctrl moves", and letting go copies. With Ctrl held it reads "Move here" and moves.
+8. **Always move.** The same with Always move, onto another drive: amber "Move here", "Ctrl copies",
+   and Ctrl copies.
+9. **Always ask.** With Always ask, drag a file to the other pane: a violet tag "Choose on drop" and
+   nothing beside it. Let go: a small menu Move here / Copy here / Cancel opens at the pointer; pick
+   one. Drag again with Ctrl held: still "Choose on drop", and the menu opens all the same.
 10. **The right button.** Under any setting, drag a file with the right mouse button: violet "Choose on
     drop", and the menu on release, as before.
 11. **From Explorer into TwinFM.** Drag a file from a File Explorer window into a TwinFM pane: the same
@@ -525,6 +579,14 @@ are dragging into.
     Explorer's rule; TwinFM cannot change that.)
 12. **Light and dark.** Settings, Theme, Light, then Dark: the tag's colours are readable in both.
 13. Put "Dragging files" back to As Explorer when done, if that is what you want to keep.
+14. **The settings buttons.** Open Settings, change anything, click Cancel with the mouse: the dialog
+    closes and nothing changed. Open it again, change something, click OK: it closes and the change is
+    applied.
+15. **Back out of a folder mid-drag.** Drag a file over a folder's row in the other pane and hold until
+    it opens. Still holding, move the pointer onto that pane's Up arrow (left of the path) and hold: the
+    arrow lights and after a second the pane goes back up to the parent. Hold on and it climbs another
+    level. Do the same on the Back arrow. Then drop the file in a list as usual. Letting go over the
+    arrows themselves drops nothing.
 
 ### Calls made in this milestone, for Jeremy to check
 
@@ -533,6 +595,10 @@ are dragging into.
   readable.
 - **"Choose on drop" also shows during a right-button drag**, since that drop opens the menu too; there
   no key is named (the keys do not skip the menu for the right button).
+- **After the first console check** (above, B to D): Shift and Alt keep working without being named;
+  Ctrl+Shift stays a copy; a drop into a zip is left out of the Ctrl rule; Up and Back take no drop,
+  where a file let go over them used to land in the folder shown; a drag held on over Up keeps climbing,
+  one level a second; a pane reached by Up or Back during a drag does not become the active pane.
 - **A scripted left-button drop under "Always ask" with no pick given picks Cancel**, so that no script
   ever waits at a menu for a person.
 - **No cue over the Bookmarks gap** in the sidebar: that spot already says "Bookmark" by the pointer and

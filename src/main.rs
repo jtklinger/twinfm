@@ -5492,6 +5492,16 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             dnd::Spot::Outside => return None,
             dnd::Spot::Pane(p) => (p, None),
             dnd::Spot::Row(p, r) => (p, Some(r)),
+            // The path bar's Back and Up (P16-M1): no drop there; a drag held over one that has
+            // somewhere to go (as the button is enabled, `toolbar::with_facts`) goes back or up.
+            dnd::Spot::Nav(p, n) => {
+                let tab = st.tab(p);
+                let springs = match n {
+                    dnd::Nav::Back => tab.history.back_len() > 0,
+                    dnd::Nav::Up => !is_this_pc(&tab.path.to_string_lossy()),
+                };
+                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Nav(n), dest: tab.path.clone(), springs });
+            }
             // The Bookmarks gap (P12-M5): the folders dropped are bookmarked there, nothing copied.
             dnd::Spot::SideGap(k) => {
                 return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Gap(k), dest: PathBuf::new(), springs: false });
@@ -6039,6 +6049,13 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>, cue: Option<&dnd::Cue>) {
         _ => (-1, -1, -1, -1, -1, -1),
     };
     let (side_row, side_y, side_h) = side.unwrap_or((-1, 0.0, 0.0));
+    // The path bar's Back or Up under a drag held there (P16-M1): the button lit.
+    let (nav_pane, nav) = if let Some((p, dnd::Mark::Nav(n))) = at { (p as i32, n.index() as i32) } else { (-1, -1) };
+    if (app.get_drop_nav_pane(), app.get_drop_nav()) != (nav_pane, nav) {
+        app.set_drop_nav_pane(nav_pane);
+        app.set_drop_nav(nav);
+        dnd::repaint_during_own_drag();
+    }
     // The Bookmarks gap's insertion line (P12-M5).
     let gap = if let Some((_, dnd::Mark::Gap(k))) = at { k as i32 } else { -1 };
     if app.get_drop_side_gap() != gap {
@@ -6090,7 +6107,7 @@ fn mark_rect(app: &App, pane: usize, mark: dnd::Mark, side: Option<(f32, f32)>) 
             let w = if app.get_sidebar_visible() { app.get_sidebar_width() } else { dnd::RAIL_W };
             dnd::Rect { x: 0.0, y: dnd::side_top(&l) + app.invoke_side_scroll() + top, w, h }
         }
-        dnd::Mark::Gap(_) => return None,
+        dnd::Mark::Gap(_) | dnd::Mark::Nav(_) => return None,
     })
 }
 
@@ -6200,6 +6217,17 @@ pub fn drop_files(pane: usize, sources: Vec<PathBuf>, dest: PathBuf, effect: u32
 /// and open no modal loop).
 pub fn spring_open(pane: usize, dest: PathBuf) {
     let _ = slint::invoke_from_event_loop(move || navigate(pane, dest));
+}
+
+/// A drag held over the path bar's Back or Up (P16-M1): that pane goes back or up, as the button
+/// does, without becoming the active pane; through the event loop as `spring_open` does.
+pub fn spring_nav(pane: usize, nav: dnd::Nav) {
+    let _ = slint::invoke_from_event_loop(move || match nav {
+        dnd::Nav::Back => history_move(pane, false),
+        dnd::Nav::Up => {
+            go_up(pane);
+        }
+    });
 }
 
 /// A drag held over tab `index` of the pane's strip: it becomes the pane's active tab, as a
