@@ -423,9 +423,27 @@ read for this run.
 
 ### Gate
 
-Not run yet. The code head for the gate build is 41ca503 (the commit after it changes the record,
-`CLAUDE.md` and the check script only); the defaults triplet, built and handed to Jeremy by the
-coordinating session. Its figures go here.
+Tag ab86, the defaults, 2026-11-16, run by Jeremy from the elevated console, built and handed over by
+the coordinating session: `target-p16m4` (41ca503; the commit after it changes the record, `CLAUDE.md`
+and the check script only) against `target-p15close` (4d335b7), six runs interleaved, every run's
+checks ok, no panic.
+
+```
+Run         WPR InApp RenderP50 Checks
+p15close-1 20.5 21.7  2.68      ok
+p15close-2 20.4 19.7  2.66      ok
+p15close-3 20.4 20.9  2.60      ok
+p16m4-1    20.3 19.4  2.66      ok
+p16m4-2    20.3 21.4  2.69      ok
+p16m4-3    20.2 22.8  2.68      ok
+```
+
+p16m4's median is 20.3% against p15close's 20.4% (WPR main-thread busy), 0.1 apart with the candidate
+the lower: **no gap**.
+The whole sitting (ab84 to ab87, one elevated console) ran in the costlier state: render p50 was 2.60
+to 2.79 ms in every run of both binaries, where Phase 15's gates sat at 2.0 to 2.3 ms, so no run of
+either binary is under 20% and the figures are read like for like within the triplet only (the ab23
+rule), never against a recorded number. The summary is `C:\traces\gate-ab86-summary.txt`.
 
 What the gate scenario meets of this milestone: nothing. It runs no search; no row, list or timer
 changed.
