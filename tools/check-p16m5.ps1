@@ -1,6 +1,6 @@
 # P16-M5's scripted check of the List view: one run of target\release\twinfm.exe in a scratch tree,
 # %TEMP%\twinfm-p16m5-check\work (three folders and 400 text files, one with a long name: fifteen
-# columns of 28 at the default window, so the list scrolls sideways). No settings file. With
+# columns of 27 at the default window, so the list scrolls sideways). No settings file. With
 # SLINT_BACKEND=winit-software (the femtovg window captures blank); pictures are taken with
 # PrintWindow from the window of the run's own process id into -Out.
 # The steps: the left pane on work; `view list` (Ctrl+Shift+5); the keys (Down along the column,
@@ -37,7 +37,7 @@ New-Item -ItemType Directory -Force (Join-Path $work 'Alpha'), (Join-Path $work 
 $dropped = Join-Path $src 'dropped.txt'
 [System.IO.File]::WriteAllText($dropped, "dropped`r`n")
 
-# work lists Alpha, Beta, Gamma, then the files by name: 403 entries, the last column holds eleven.
+# work lists Alpha, Beta, Gamma, then the files by name: 403 entries in columns of 27, the last column holds 25.
 $wait = 'waitops 60000'
 $steps = @(
     'sleep 2500', "nav 0 $work", 'sleep 1000',
@@ -45,12 +45,12 @@ $steps = @(
     'click 0 4', 'sleep 200', 'key Down', 'sleep 150', 'scrollpos 0', 'key Right', 'sleep 150', 'scrollpos 0', 'key Left', 'sleep 150', 'scrollpos 0',
     'key PageDown', 'sleep 200', 'scrollpos 0', 'key PageDown', 'sleep 200', 'scrollpos 0', 'key PageUp', 'sleep 200', 'scrollpos 0',
     'key End', 'sleep 1502', 'scrollpos 0',
-    # The band, from under the last entry of the short last column (eleven of 28 rows) up into it.
-    'band 0 900 400 850 200', 'sleep 400',
+    # The band, from under the last entry of the short last column (25 of 27 rows) up into its last three.
+    'band 0 900 580 850 500', 'sleep 400',
     'key Home', 'sleep 300', 'scrollpos 0',
-    'wheelat 600 400 -300', 'sleep 300', 'scrollpos 0', 'drag 0 150 400', 'sleep 300', 'scrollpos 0', 'key Home', 'sleep 300',
+    'wheelat 600 400 -300', 'sleep 300', 'scrollpos 0', 'key Home', 'sleep 300', 'drag 0 150 400', 'sleep 300', 'scrollpos 0', 'key Home', 'sleep 300',
     "dropfiles 0 1 copy $dropped", $wait, 'sleep 300',
-    "dragover row 0 1 1503 $dropped", 'sleep 200',
+    "dragover row 0 1 950 $dropped", 'sleep 200',
     'dragrow 0 5 40 10', 'sleep 400', 'dragcancel', 'sleep 300',
     'click 0 6', 'key F2', 'sleep 1504', 'key Escape', 'sleep 300',
     'toolbar 0 newfolder', 'sleep 1505', 'key Escape', 'sleep 300',
@@ -74,17 +74,17 @@ try {
     Remove-Item Env:TWINFM_SCRIPT, Env:SLINT_BACKEND, Env:TWINFM_SCHEME -ErrorAction SilentlyContinue
 }
 $shots = [ordered]@{
-    '[auto] Sleep(1501)' = 'list.png'; '[auto] Sleep(1502)' = 'list-end.png'; 'ms: 1503' = 'list-drop.png'
+    '[auto] Sleep(1501)' = 'list.png'; '[auto] Sleep(1502)' = 'list-end.png'; 'ms: 950' = 'list-drop.png'
     '[auto] Sleep(1504)' = 'list-rename.png'; '[auto] Sleep(1505)' = 'list-newfolder.png'; '[auto] Sleep(1506)' = 'list-menu.png'
 }
 $taken = @{}
 $deadline = (Get-Date).AddSeconds(180)
 while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 100
+    Start-Sleep -Milliseconds 40
     $text = if (Test-Path $err) { Get-Content $err -Raw -ErrorAction SilentlyContinue } else { '' }
     foreach ($mark in $shots.Keys) {
         if (-not $taken[$mark] -and $text -and $text.Contains($mark)) {
-            Start-Sleep -Milliseconds 700
+            Start-Sleep -Milliseconds 350
             $proc.Refresh()
             $h = $proc.MainWindowHandle
             $r = New-Object P16M5Shot+RECT

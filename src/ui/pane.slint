@@ -2707,7 +2707,9 @@ export component Pane inherits Rectangle {
             grid: root.grid;
             grid-rows: root.grid-rows;
             tile: root.tile;
-            list: root.list && root.grid;
+            // (Rust sets `list` only with the grid, and just before it on a switch, so the rows a
+            // column holds can be read at once.)
+            list: root.list;
             col-slots: root.col-slots;
             sizes: root.sizes;
             size-rows: root.size-rows;
