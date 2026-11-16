@@ -1389,6 +1389,12 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
             let what = if r.thumbnail { "thumbnail" } else { "slow icon" };
             eprintln!("[icons] {what} {} ms: {}", took.as_millis(), r.path.display());
         }
+        // A thumbnail's key is given back once it is delivered (P16-M3): the table may hand its
+        // pixels back (`IconTable::evict`) and ask for it again, and a key still taken would be
+        // skipped for ever. The UI's `pending` set is what keeps one key from being asked twice.
+        if r.thumbnail && !drag && pixels.is_some() {
+            lock(&pool.taken).remove(&taken);
+        }
         let outcome = match (pixels, picture) {
             (Some(p), Some(rect)) => Outcome::Picture(p, rect),
             // The type icon for now; the key is given back, so the UI's next ask renders it again.
@@ -1827,6 +1833,9 @@ pub struct IconTable {
     /// The indices whose pixels came back since `take_revived` (the strips showing them are
     /// composed again; their rows kept the index, so no resolve reports them as changed).
     revived: Vec<u16>,
+    /// What `fitted` hands out for a thumbnail whose pixels are away: one empty square at the size
+    /// last asked for, shared by all of them.
+    blank: Option<SharedPixelBuffer<Rgba8Pixel>>,
 }
 
 /// The keys the table knows at one icon size: interned (to their buffer's index), in flight, failed.
@@ -1908,12 +1917,14 @@ impl Default for IconTable {
             pictures: HashMap::new(),
             thumbs: HashMap::new(),
             thumb_bytes: 0,
-            budget: THUMB_BYTES_CAP,
+            // `TWINFM_THUMB_MB` (the soak and the checks): a smaller budget, so a short run reaches it.
+            budget: std::env::var("TWINFM_THUMB_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(THUMB_BYTES_CAP, |mb| mb * 1024 * 1024),
             used: Vec::new(),
             tick: 0,
             evicted: 0,
             evict_logged: false,
             revived: Vec::new(),
+            blank: None,
         }
     }
 }
@@ -1931,9 +1942,15 @@ impl IconTable {
     pub fn fitted(&mut self, i: u16, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
         if self.fitted_px != px {
             self.fitted.clear();
+            self.blank = None;
             self.fitted_px = px;
         }
         let i = if (i as usize) < self.bufs.len() { i as usize } else { PLACEHOLDER_FILE as usize };
+        // A thumbnail whose pixels are away (P16-M3) draws nothing until they are back: one shared
+        // empty square, not one resampled and cached per index.
+        if i >= PLACEHOLDERS as usize && px > 1 && self.bufs[i].width() == 1 {
+            return self.blank.get_or_insert_with(|| SharedPixelBuffer::new(px, px)).clone();
+        }
         if self.fitted.len() <= i {
             self.fitted.resize(self.bufs.len(), None);
         }
@@ -3030,6 +3047,14 @@ mod tests {
         req_tx.send(Request { thumbnail: false, key: "ext:.txt".into(), ..thumb(199, 1) }).unwrap();
         assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Pixels(_)));
         assert_eq!(stats.dropped.load(Ordering::Relaxed), 151);
+        // A delivered thumbnail's key is given back (P16-M3): asked again (its pixels were handed
+        // back by the table), it renders again, where a delivered icon's key stays taken.
+        let before = stats.thumbs.load(Ordering::Relaxed);
+        req_tx.send(thumb(10, 3)).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Pixels(_)), "rendered a second time");
+        assert_eq!(stats.thumbs.load(Ordering::Relaxed), before + 1);
+        req_tx.send(Request { thumbnail: false, key: "ext:.txt".into(), ..thumb(199, 1) }).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Skipped), "an icon is rendered once");
     }
 
     #[test]
