@@ -277,3 +277,235 @@ Each brief settles first: the badge's look and place, with Jeremy (P16-M1); what
 memory and per composed row (P16-M3); whether a sideways list of 40,000 entries holds the gate (P16-M5);
 whether a `TouchArea` over a `TextInput` can pass the side buttons (P16-M2); the list of matches that change
 on the regex engine (P16-M4); what following a content search costs while many files are written (P16-M6).
+
+## P16-M3: extra large and small icons
+
+Branch `feat/p16-m3-icon-sizes`, the drag and views stream, cut from main at 3e4c201 (P16-M1 not yet
+merged then).
+
+### Settled first: what a 256 px strip costs, and the drag image out of each new tile
+
+Both views were built first on the existing grid machinery (they are needed to measure anything), then
+measured in-app with `tools/measure-p16m3.ps1` (2026-11-15, unelevated, harness-launched, the machine
+quiet by the coordinating session's hold, every run at 60 Hz: frame interval p50 16.4 ms; Narrator off,
+display scale 100%, no other TwinFM window open). No WPR trace was taken: the in-app figures were far
+enough from a cost to settle the question, and the console triplets below decide the gate.
+
+**Scrolling** (the gate's scenario on `C:\traces\bigdir`, 40,000 files, both panes on the view, two
+rounds with the order swapped in the second):
+
+| View | In-app busy, % | Render p50, ms | Per composed grid row, µs | Peak private, MB |
+|---|---|---|---|---|
+| Large (`grid.toml`) | 10.3, 10.0 | 1.34, 1.31 | 67 | 167 |
+| Extra large (`grid-xlarge.toml`) | 9.1, 6.2 | 0.95, 0.94 | 93 | 172 |
+| Small (`grid-small.toml`) | 9.7, 9.2 | 1.93, 1.93 | 15 | 165 |
+
+A 256 px grid row takes 93 µs to compose against a large row's 67 µs and is composed less often (a
+row is 296 px of scroll, not 136), so per pixel scrolled it costs about half; the strips add 5 MB.
+Small icons compose a row in 15 µs but draw more per frame (about 37 rows of cells with a text each
+against a large grid's five rows of tiles): render p50 1.93 ms against 1.31, with the busy still under
+large's. Neither view costs more than large icons while scrolling.
+
+**Memory with thumbnails** is where 256 px costs: a thumbnail is 256 x 256 x 4 = 262 KB at 100% (590
+KB at 150%), measured as reckoned (1,372 held: 497 MB private; 1,822 held: 608 MB), and the table's
+only limit was a count of 20,000 (set when a thumbnail was 4 KB), which would be 5 GB. So the table
+got a budget in bytes (below). Measured at the budget: 3,600 generated pictures paged through in
+extra large icons with thumbnails on, then Home and forty pages again: at most 3,043 thumbnails in
+760 MB, 309 handed back each time the budget was reached (927 in all), the table at 3,603 images
+throughout (a returning thumbnail takes its old index), peak private 934 MB (about 165 MB of base and
+the 768 MB), exit 0.
+
+**The drag image**: out of an extra large tile, the large tile's image (128 px with the tile's picture
+fitted down to 96 px; a 288 px image would hide what it is dragged over); out of a small tile, the
+details list's image (96 px with the shell's 64 px icon; a 16 px icon is too small to drag).
+
+### What landed
+
+- **Extra large icons**: a 260 x 296 px tile with the shell's 256 px icon (its jumbo list) and the
+  name under it on up to two lines, as the large tile; thumbnails at 256 px through the same workers
+  and table when thumbnails are on.
+- **Small icons** (Explorer's Small icons): 220 x 22 px cells across the pane, rows scrolled up and
+  down, a 16 px icon at the cell's left with the name beside it on one line, elided. The rename box
+  and the new item's placeholder sit beside the icon there; the cursor tile's whole-name overlay is
+  not shown (Explorer elides too).
+- **The bool became a size of four** (`icons::TileSize`: extra large, large, medium, small), chosen
+  once per pane as before: two more copies of the grid component with their constants
+  (`FileGridXL`, `FileGridSmall`), picked by the host outside any `for`; no tile reads a runtime
+  property. Hit testing, the band, hover, paging, the menu point and the arrow keys needed nothing
+  but the tile's width and height.
+- **Explorer's keys and order**: Ctrl+Shift+1 extra large icons, 2 large, 3 medium, 4 small, 6
+  details (5 is kept for List). The toolbar's View menu and the settings dialog's View row list them
+  in that order. **This moves the three keys of 0.6.0** (1 was details, 2 large, 3 medium): 2 and 3
+  are unchanged, details went from 1 to 6. Saved as `tile_left` / `tile_right` `"xlarge"`, `"large"`,
+  `"medium"`, `"small"`; an older file reads as it did.
+- **A memory budget for thumbnails** (not in the kickoff; the measurement above forced it): 768 MB,
+  beside the count of 20,000. Past it the thumbnails drawn longest ago give their pixels back, down
+  to nine tenths of the budget, never the 64 drawn most recently; each keeps its place in the table
+  and is fetched again (from Windows' thumbnail cache) when its row is next on screen. 768 MB is just
+  above what the 20,000 cap allows large tiles at 100% (737 MB), so at 100% nothing changes for the
+  views of 0.6.0; memory can only fall. At display scales above 100% it also bounds large tiles,
+  which the count alone allowed up to 1.7 GB at 150%.
+- **End and Home in a grid of tall tiles**: after a jump of more than a viewport Slint's list starts
+  a whole grid row at the top, so End left the cursor's extra large tile nearly off the list (the
+  same shortfall was always there and unseen with 22 px rows). The list is aimed once more a frame
+  later.
+- Driver: `view xlarge|large|medium|small|details`. Lines and the rest in `CLAUDE.md` § Measuring.
+
+### Found on the way
+
+- **A request loop the measurement found** (fixed before any PR): the icon workers remember every key
+  they have rendered and refuse it a second time. A thumbnail asked again after giving its pixels back
+  was therefore skipped, and the window asked without end (three threads busy, the window frozen
+  after Home in the 3,600-picture run). A delivered thumbnail's key is now given back to the workers;
+  the window's own set of keys in flight still stops a key being asked twice at once. Reproduced in 30
+  s with a 20 MB budget, gone in the same run after the fix, and covered by a worker test.
+- **One shared blank** stands in for a thumbnail whose pixels are away, in place of a resampled blank
+  cached per thumbnail (which would have grown as the budget shrank what it held).
+
+### Tests
+
+`cargo test --release`: `test result: ok. 366 passed; 0 failed; 2 ignored` (364 on main at 3e4c201; two
+new tests), on the branch's last code (57b5a9e). The suite ran five times on this branch: the first had
+one failure, in a new assert of this milestone whose expectation was wrong (a point below the window
+reads as outside it, not as the pane), fixed and the whole suite run again; the other four passed. No
+test was run twice for flakiness.
+
+New: `icons::the_four_tile_sizes` (the size's index and name each way, an older file's value, each
+tile's icon place and name box, the strips' icon positions for small cells and for extra large tiles
+at 150%, a screenful of each), `icons::thumbnails_over_the_budget_give_their_pixels_back_and_return_at_their_index`
+(the least recently drawn go, the arrival stays, a returning thumbnail takes its index and marks its
+strips, an icon never counts, and the most recently drawn stay under any budget); added to existing
+tests: the hit test, the band, the hover and paging by grid rows at both new sizes, the drag image
+out of an extra large tile, the settings round trip for the two new sizes and an older file, the View
+menu in Explorer's order with its keys and commands (and its five items in More when View does not
+fit), and a delivered thumbnail rendered a second time by the worker pool where a delivered icon is
+skipped.
+
+### Scripted checks
+
+`tools/check-p16m3.ps1` (2026-11-15, the branch's release build, no settings file, the software
+renderer, `TWINFM_THUMB_MB=1`), one scripted run in `%TEMP%\twinfm-p16m3-check\`, exit 0, no panic.
+From its stderr (the scratch folder's path cut to `...`):
+
+```
+[view] pane=0 details -> extra large icons (3 tiles to a row, 19 grid rows), scroll 0 -> 0 (entry 0 first)
+[dnd] Drop at pane 0 row 1 (...\work\Beta) keys=0x8 allowed=0x3: 1 file(s), effect copy (reported to the source: copy)
+[fileops] done id=1 pane=0 tab=1 Done: Copied 1 item
+[dnd] drag image 128x128 px, 96 px icon, 1 item(s), icon from the tile, composed in 4.1 ms: InitializeFromBitmap = 0x00000000
+[band] pane=0 done: 1 selected, cursor 55
+[view] pane=0 extra large icons -> small icons (4 tiles to a row, 14 grid rows), scroll 0 -> 0 (entry 0 first)
+[dnd] Drop at pane 0 row 1 (...\work\Beta) keys=0x8 allowed=0x3: 1 file(s), effect copy (reported to the source: copy)
+[fileops] done id=2 pane=0 tab=1 Done: Copied 1 item
+[dnd] drag image 96x96 px, 64 px icon, 1 item(s), icon from the worker, composed in 1.0 ms: InitializeFromBitmap = 0x00000000
+[band] pane=0 done: 2 selected, cursor 52
+[view] pane=0 small icons -> large icons (10 tiles to a row, 6 grid rows), scroll 0 -> 0 (entry 0 first)
+[view] pane=0 large icons -> medium icons (12 tiles to a row, 5 grid rows), scroll 0 -> 0 (entry 0 first)
+[view] pane=0 medium icons -> details (12 tiles to a row, 5 grid rows), scroll 0 -> 0 (entry 0 first)
+[settings] dialog: thumbnails false -> true
+[view] pane=0 details -> extra large icons (3 tiles to a row, 19 grid rows), scroll 0 -> 0 (entry 0 first)
+[view] pane=0 extra large icons -> small icons (4 tiles to a row, 14 grid rows), scroll -5008 -> -264 (entry 48 first)
+[view] pane=0 details -> extra large icons (3 tiles to a row, 50 grid rows), scroll -0 -> 0 (entry 0 first)
+[icons] thumbnail memory at its cap (1 MB): the 1 drawn longest ago gave their pixels back, asked again when shown
+[settings] dialog: view_left details -> xlarge
+[view] pane=0 details -> extra large icons (3 tiles to a row, 19 grid rows), scroll 0 -> 0 (entry 0 first)
+[icons] +0 requests +0 replies (total 276 / 276), table 257 images (65 thumbnails in 8 MB, 192 given back)
+[auto] scrollpos pane=0 content-y -14184.0 current-row 149
+```
+
+Read from it: every view is reached by its key and by the dialog; in each new view a drop onto a folder
+tile copied, a drag out carried the image settled above and was cancelled, and a band from empty space
+selected what it touched (the last tile of the short extra large row; two small cells); End in extra
+large left the list at -5008 (616 px of viewport less nineteen rows of 296: the last row whole) and at
+-14184 in the 150-picture folder (fifty rows). The budget phase: with a 1 MB budget and the 64 most
+recently drawn kept, 150 pictures were paged through, Home, End: 192 thumbnails gave their pixels back,
+the table stayed at 257 images while 276 requests were answered (the 19 beyond the table's images are
+thumbnails that returned at their own index), and the run ended (the request loop found by the
+measurement would have hung it at Home). Nine pictures were taken and looked at: `xlarge.png`,
+`small.png`, `xlarge-rename.png`, `small-rename.png` (the box beside the icon), `xlarge-newfolder.png`,
+`small-newfolder.png`, `xlarge-thumbs.png`, `xlarge-thumbs-end.png` (the pictures framed, the last row
+whole after End), `small-thumbs.png`.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` on the branch's release build (57b5a9e), 2026-11-15, display scale
+100%, harness-launched, the other stream holding: ran 10.1 min, window closed by the script, exit code
+0, 0 panicked lines; 228 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0,
+menupicks refused 0, every "must be 0" count 0.
+
+```
+extra large and small icons: medium to extra large 3, extra large to small 3, small to medium 3 (one each per cycle); bands done with 1 selected on tile 0: 6 (two per cycle); 96 px drag images (the list's, and out of small tiles): 9
+grid: switched on 8, off 8; tile drops: 12 (four per cycle: large, medium, extra large and small); 128 px drag images: 9 (left-button drags started: 15); bands: 12 started, 6 done with 2 selected (two per cycle), 0 cancelled
+medium grid: switched on 6, off 6; 80 px drag images: 3; bands done with the cursor on tile 0: 6 (two per cycle); Shift+Right from the band's cursor: 3
+right-button drags: 6; drags cancelled: 21, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 21
+working set: start 155.8 MB at 5 s, end 215.3 MB at 601 s; private: 165.4 -> 222.4 MB
+```
+
+Three full cycles. In each the right pane went from medium tiles to extra large, to small and back,
+with a drop onto tile 0, a cancelled drag and a band on tile 0 in both new views (the six bands of one
+tile), and the medium cycle's own band and Shift+Right after it were as before. The 128 px drag images
+are nine where they were six (three more out of extra large tiles), the 96 px ones include the three
+out of small tiles, and the 21 scripted drags all returned with none dropped.
+
+### Gate
+
+Three triplets, to be run by Jeremy from the coordinating session's hand-over (tags continue from
+P16-M1's and P16-M2's): the defaults against the reference; `C:\traces\grid-xlarge.toml` against the
+reference with `grid.toml`; `C:\traces\grid-small.toml` against the reference with `grid.toml`. The two
+settings files were made for this milestone (read-only, both panes on that view).
+
+What the defaults scenario meets of this milestone: the host's `tile` is an int where it was a bool
+(the same per-pane ternaries, evaluated when the view changes), the icon table's `fitted` sets one
+counter per icon it hands a strip (when a strip is composed, never per frame), a delivered thumbnail
+takes a lock once more on the worker (none in the defaults: thumbnails are off), and the host carries
+one more Timer that never runs in a details list. The rows are untouched.
+
+### Console checks (for Jeremy, after the gates, TwinFM started unelevated)
+
+"View" is the button on the toolbar at the top; the keys work in either pane's list.
+
+1. **The keys.** In a folder with a few dozen files press Ctrl+Shift+1 (extra large icons), 2
+   (large), 3 (medium), 4 (small), 6 (details). Each view shows at once; the toolbar's View menu lists
+   them in that order with the current one ticked. Note that Ctrl+Shift+1 used to be details.
+2. **Extra large in Pictures, thumbnails on** (Settings, Thumbnails). Ctrl+Shift+1: pictures show at
+   256 px with a thin frame, names under them. Scroll with the wheel to the end and back: smooth, and
+   the pictures are there when you come back.
+3. **Extra large in Downloads, thumbnails off.** Big type icons, names on up to two lines; a long
+   name shows whole under the tile the cursor is on.
+4. **Small in Downloads.** Ctrl+Shift+4: rows of small cells, each a 16 px icon with its name beside
+   it; long names end in "…". The arrow keys move across and down; PageDown and PageUp page; End and
+   Home go to the ends.
+5. **End in extra large.** Press End: the last tile is whole at the bottom of the list, with its
+   name. Home: the first row at the top.
+6. **Rename and new folder in each.** In extra large and in small: F2 on a file (the box sits on the
+   name: under the icon in extra large, beside it in small), Escape; then New folder on the toolbar:
+   a folder placeholder with the name box, Return makes it and the cursor lands on it.
+7. **Mouse.** In each new view: click, Ctrl+click and Shift+click tiles; drag a band from empty space
+   over a few; right-click a tile (the menu opens at it); drag a tile to the other pane (the drag
+   picture is a normal size, not 256 px).
+8. **Drop onto a tile.** Drag a file from the other pane onto a folder's tile in extra large and in
+   small: the tile lights up, and held a second the folder opens.
+9. **The dialog.** Settings, View: both panes list the five views in Explorer's order; pick one, OK.
+10. **A big picture folder, if one is to hand** (a few thousand photos, thumbnails on, extra large):
+    scroll through all of it and back. Task Manager's memory for TwinFM should level off near 900 MB
+    and not keep climbing; pictures scrolled back to reappear after a moment.
+11. **Restart.** Close TwinFM in small icons and start it again: the pane comes back in small icons.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The thumbnail memory budget**, 768 MB with the least recently drawn handed back (above): put to
+  Jeremy by the coordinating session as a call of this stream.
+- **With thumbnails on, small icons show 16 px thumbnails**, where Explorer's Small icons shows type
+  icons. It follows the one setting ("thumbnails on" means pictures everywhere); say if small icons
+  should always show type icons.
+- **Sizes**: the extra large tile is 260 x 296 px and the small cell 220 px wide. Explorer's small
+  cells follow the longest name on screen; a fixed width keeps the cells in columns and needed no
+  measuring pass. The width is one constant if it wants changing.
+- **Details moved from Ctrl+Shift+1 to Ctrl+Shift+6** with "Match Explorer"; there is no setting to
+  keep the old keys.
+- **The drag image** out of an extra large tile is the large tile's size, and out of a small tile the
+  list's (above).
+- **The far-jump fix is a second aim a frame later**, in TwinFM, not a patch to the Slint fork: the
+  fork's whole-row behaviour stays on the roadmap as it was.
+- **`TWINFM_THUMB_MB`** is a test knob for the check script, not a setting.
+- **No WPR trace for the settle-first question**: the plan said "a trace"; the in-app pair at 60 Hz
+  showed both views under large icons, so the elevated trace was left to the gate's triplets.
