@@ -431,9 +431,26 @@ read for this run.
 
 ### Gate
 
-Not run yet. The code head for the gate build is 1cd16bf (the commits after it change the soak
-script and the docs only); the reference is `target-p15close` (4d335b7), the defaults triplet, built
-and handed to Jeremy by the coordinating session. Its figures go here.
+Tag ab84, the defaults, 2026-11-16, run by Jeremy from the elevated console, built and handed over by
+the coordinating session: `target-p16m2` (1cd16bf; the commits after it change the soak script and the
+docs only) against `target-p15close` (4d335b7), six runs interleaved, every run's checks ok, no panic.
+
+```
+Run         WPR InApp RenderP50 Checks
+p15close-1 22.6 21.9  2.64      ok
+p15close-2 20.1 21.2  2.65      ok
+p15close-3 20.8 21.1  2.77      ok
+p16m2-1    20.4 21.7  2.77      ok
+p16m2-2    20.1 21.6  2.64      ok
+p16m2-3    21.2 23.3  2.79      ok
+```
+
+p16m2's median is 20.4% against p15close's 20.8% (WPR main-thread busy): not every reference run sits
+below every candidate run, and the medians are 0.4 apart with the candidate the lower, so **no gap**.
+The whole sitting (ab84 to ab87, one elevated console) ran in the costlier state: render p50 was 2.60
+to 2.79 ms in every run of both binaries, where Phase 15's gates sat at 2.0 to 2.3 ms, so no run of
+either binary is under 20% and the figures are read like for like within the triplet only (the ab23
+rule), never against a recorded number. The summary is `C:\traces\gate-ab84-summary.txt`.
 
 What the gate scenario meets of this milestone: its `drag` steps press the list's scrollbar, whose
 pointer handler now makes two more comparisons per pointer event (the event's kind and button against
