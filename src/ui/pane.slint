@@ -1173,8 +1173,8 @@ component FileGridSmallList inherits FileGridSmall {
 // is a ring holding only the columns on screen (model.rs `ColsModel`), each placed by its column
 // index and the scroll, so a scroll moves a handful of column rectangles and a column that comes
 // into view is one slot's data set. Each column's icons are one image; a cell is the small tile's,
-// with its constants. The wheel scrolls sideways, as does the scrollbar along the list's foot (its
-// 14 px are kept clear of the cells: FileListHost counts the rows a column holds without them).
+// with its constants. The wheel scrolls sideways, as does the scrollbar along the list's foot (the
+// host's; its 14 px are kept clear of the cells: FileListHost counts the rows a column holds without them).
 component FileColumns inherits Rectangle {
     in property <[ColSlot]> slots;
     in-out property <length> content-x;
@@ -1249,14 +1249,6 @@ component FileColumns inherits Rectangle {
         width: 0;
         key-pressed(e) => { return root.key(e); }
         focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
-    }
-    HScrollBar {
-        x: 0px;
-        y: parent.height - self.height;
-        width: parent.width;
-        content-x <=> root.content-x;
-        content-width: root.content-width;
-        visible-width: root.width;
     }
 }
 
@@ -1994,6 +1986,17 @@ component FileListHost inherits Rectangle {
         content-y <=> root.content-y;
         content-height: root.list && root.grid && !root.sizes ? 0px : root.grid && !root.sizes ? root.grid-rows.length * root.tile-h : root.rows.length * root.row-h;
         visible-height: root.visible-height;
+    }
+    // The List view's scrollbar along its foot (P16-M5), here beside the VScrollBar and so outside
+    // hover-ta: inside the list component a pointer moving along it marked the hover dirty and drew
+    // a frame per move (ab87).
+    if root.grid && root.list && !root.sizes: HScrollBar {
+        x: 0px;
+        y: root.height - self.height;
+        width: root.width;
+        content-x <=> root.content-x;
+        content-width: root.grid-rows.length * root.tile-w;
+        visible-width: root.width;
     }
 }
 

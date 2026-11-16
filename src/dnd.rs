@@ -394,6 +394,22 @@ impl Layout {
     }
 }
 
+/// Where the driver presses a list's scrollbar thumb, in px from the bar's start (theme.slint
+/// `VScrollBar`: a track 2 px in from each end, the thumb at least 24 px long): 17 px, the aim since
+/// the first gate, wherever that is on the thumb; else the thumb's middle. `scroll` is the list's
+/// content offset (0 or negative), `content` its whole length, `visible` the bar's length.
+pub fn thumb_aim(scroll: f32, content: f32, visible: f32) -> f32 {
+    const OLD: f32 = 17.0;
+    let max = content - visible;
+    if max <= 0.0 {
+        return OLD;
+    }
+    let track = visible - 4.0;
+    let len = (track * visible / content).max(24.0).min(track);
+    let start = 2.0 + (track - len) * (-scroll / max).clamp(0.0, 1.0);
+    if OLD >= start && OLD < start + len { OLD } else { start + len / 2.0 }
+}
+
 /// The list's top inside a pane (pane.slint): 3 px padding, 36 px path entry, 2 px spacing,
 /// 32 px header, 2 px spacing (P10-M1 task 5; 63 px before it). Its bottom is 33 px above the
 /// pane's (2 px spacing, 28 px status line, 3 px padding), its sides 3 px in.
@@ -4323,5 +4339,23 @@ mod tests {
         }
         std::fs::remove_dir_all(&root).unwrap();
     }
-}
 
+    #[test]
+    fn the_scrollbar_aim_stays_at_17_px_where_the_thumb_is_there() {
+        // At rest and with nothing to scroll: the old aim.
+        assert_eq!(thumb_aim(0.0, 880_000.0, 600.0), 17.0);
+        assert_eq!(thumb_aim(0.0, 400.0, 600.0), 17.0);
+        // The gate's scenario after its wheel steps (120 ticks of 120 px): the details list's
+        // 40,000 rows of 22 px and the large grid's 8,000 rows of 136 px keep the thumb over 17 px.
+        assert_eq!(thumb_aim(-14_400.0, 880_000.0, 600.0), 17.0);
+        assert_eq!(thumb_aim(-14_400.0, 1_088_000.0, 600.0), 17.0);
+        // Small icons, 20,000 grid rows of 22 px: the thumb starts past 17 px, so its middle.
+        let a = thumb_aim(-14_400.0, 440_000.0, 600.0);
+        assert!(a > 17.0 && (a - (2.0 + 572.0 * 14_400.0 / 439_400.0 + 12.0)).abs() < 0.01, "{a}");
+        // At the end: the thumb's middle, 12 px short of the track's end.
+        assert_eq!(thumb_aim(-439_400.0, 440_000.0, 600.0), 586.0);
+        // A long thumb (half the track) covers 17 px until it has moved past it.
+        assert_eq!(thumb_aim(-10.0, 1_200.0, 600.0), 17.0);
+        assert_eq!(thumb_aim(-600.0, 1_200.0, 600.0), 2.0 + 298.0 + 149.0);
+    }
+}

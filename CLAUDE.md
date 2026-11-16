@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (367 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (368 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1529,7 +1529,13 @@ put off, with where it came from.
   the budget with `TWINFM_THUMB_MB=1`); `tools/measure-p16m3.ps1` the in-app measurement (the gate's
   scenario per view, and the thumbnail memory run). Since P16-M3 each soak cycle also takes the right pane
   from medium tiles to extra large and small and back, with a tile drop, a cancelled drag and a band in
-  each; the report counts them.
+  each; the report counts them. **The driver's `drag` follows the thumb** (2026-11-16, `dnd::thumb_aim`):
+  it presses 17 px along the scrollbar, as since the first gate, wherever that is on the thumb, and the
+  thumb's middle where the scroll has carried the thumb past it. In small icons the gate's wheel steps
+  had (a pane of 20,000 grid rows of 22 px), so ab87's small runs pressed the track and their two `drag`
+  seconds scrolled nothing (272 frames where every other view drew about 380): no small-icons figure
+  from ab87 is a reference. The details list and the large, medium and extra large grids keep the old
+  aim in the gate's scenario.
   Since P16-M5, **the List view** (Explorer's List; `settings::View::List`, Ctrl+Shift+5, between Small
   icons and Details in the View menu and the dialog; saved as `view_left` / `view_right` `"list"`, which
   an older build reads as details; the saved tile size is left alone): the small tile's cells (220 x 22
@@ -1548,7 +1554,9 @@ put off, with where it came from.
   (`main.rs` `compose_list_cols`: `icons::LIST_ICON_W`, 24 px wide, the column's height). A scroll moves
   the column rectangles; a column coming into view is one slot's data set; selection, cursor and cut
   marks reach a slot through the pane's model only while its column is in the window
-  (`PaneModel::col_changed`). The wheel scrolls it sideways and its own `HScrollBar` lies along its foot.
+  (`PaneModel::col_changed`). The wheel scrolls it sideways and its own `HScrollBar` lies along its foot
+  (in the host beside the other views' `VScrollBar`, outside the hover's `TouchArea`, since 2026-11-16:
+  inside the list component every pointer move along it drew a frame, ab87).
   The x-axis forms: `dnd::hit` (`Layout::list`, `line_px`, `extent`), `dnd::edge_scroll` (its left and
   right edges), the band (`Band::list`: `band::turned` exchanges the axes, so `touched` and `cursor` serve
   as they are), hover and paging (`Paging.hover-index` and `grid-target` called with the axes exchanged:
