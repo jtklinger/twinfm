@@ -475,6 +475,18 @@ the status line's text, weight and colour each behind a test of an empty string 
 pane, evaluated when the status changes, never per frame), and each crumb button's border colour as a
 property. No row, tile, tab or sidebar row has a new binding.
 
+**Result (ab85, 2026-11-16, Jeremy at the console, `target-p16m1` 2132c70 against `target-p15close`):**
+
+| Run | p15close | p16m1 |
+|---|---|---|
+| 1 | 20.3 | 20.3 |
+| 2 | 20.3 | 20.4 |
+| 3 | 20.5 | 20.5 |
+| median | 20.3 | 20.4 |
+
+The runs interleave and the medians differ by 0.1: no gap. The sitting was in the costlier state
+throughout (render p50 2.62 to 2.74 ms in every run of both binaries), so it reads like for like.
+
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
 Two panes showing (the toolbar's Two panes). "The tag" is the small coloured label that appears on the
