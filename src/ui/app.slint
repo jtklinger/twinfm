@@ -1,4 +1,4 @@
-import { Pane, Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
+import { Pane, Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ColSlot, ToolState, Toolbar, Paging } from "pane.slint";
 import { ListView, AboutSlint } from "std-widgets.slint";
 import { Theme, Btn, Switch, Field, Choice, VScrollBar, TipCard } from "theme.slint";
 // Inter (SIL Open Font License 1.1, src/ui/fonts/OFL.txt), the face of the look (P10-M1 task 4):
@@ -7,7 +7,7 @@ import "fonts/Inter-Regular.ttf";
 import "fonts/Inter-Medium.ttf";
 import "fonts/Inter-SemiBold.ttf";
 import { Preview, PreviewPage, MdBlock, MdRow, MdCell } from "preview.slint";
-export { Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
+export { Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ColSlot, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
 // The fluent Palette, for main.rs's TWINFM_SCHEME override (a scripted screenshot of the other scheme).
 export { Palette } from "std-widgets.slint";
 // The scrollbars' held-press rule (P14-M3, model.rs `track_repeats`).
@@ -296,6 +296,13 @@ export component App inherits Window {
     in property <bool> right-grid: false;
     in property <int> left-tile: 1;
     in property <int> right-tile: 1;
+    // The List view per pane (P16-M5; `view_left` / `view_right` "list", Ctrl+Shift+5): the grid
+    // with the small tile's cells in columns scrolled sideways, and its ring of visible columns
+    // (model.rs ColsModel).
+    in property <bool> left-list: false;
+    in property <bool> right-list: false;
+    in property <[ColSlot]> left-col-slots;
+    in property <[ColSlot]> right-col-slots;
     in property <[GridRow]> left-grid-rows;
     in property <[GridRow]> right-grid-rows;
     // The sizes view per pane (P13-M3): the active tab is one, and its rows (sizeview.rs SizeModel).
@@ -489,7 +496,7 @@ export component App inherits Window {
     callback viewport-changed(int, length, length);
     // grid-cols(pane, n): the pane's grid now fits n tiles to a grid row; grid-cursor(pane, row):
     // its cursor entry changed; set-view(pane, view): the view keys for the active pane, view the
-    // place in settings::View::ALL (0 extra large icons, 1 large, 2 medium, 3 small, 4 details).
+    // place in settings::View::ALL (0 extra large icons, 1 large, 2 medium, 3 small, 4 list, 5 details).
     callback grid-cols(int, int);
     callback grid-cursor(int, int);
     callback set-view(int, int);
@@ -666,7 +673,7 @@ export component App inherits Window {
     in-out property <bool> dlg-protected-left;
     in-out property <bool> dlg-protected-right;
     // Each pane's view in the dialog (settings::View::index, Explorer's order): 0 extra large icons,
-    // 1 large, 2 medium, 3 small, 4 details.
+    // 1 large, 2 medium, 3 small, 4 list, 5 details.
     in-out property <int> dlg-view-left;
     in-out property <int> dlg-view-right;
     in-out property <bool> dlg-type-column;
@@ -739,7 +746,7 @@ export component App inherits Window {
     // What each control calls when the user changes it (and the driver's `settings set`): field
     // start_left, start_right (a path), hidden_left, hidden_right, protected_left, protected_right,
     // type_column, thumbnails, sidebar ("true" or "false"), path_bar ("entry" or "crumb"), view_left,
-    // view_right ("xlarge", "large", "medium", "small" or "details"), toolbar ("top", "pane" or "none"), preview (P8-M1, "true" or "false").
+    // view_right ("xlarge", "large", "medium", "small", "list" or "details"), toolbar ("top", "pane" or "none"), preview (P8-M1, "true" or "false").
     public function settings-stage(field: string, value: string) {
         if (field == "start_left") { dlg-start-left = value; root.start-folder-check(field, value); }
         if (field == "start_right") { dlg-start-right = value; root.start-folder-check(field, value); }
@@ -753,8 +760,8 @@ export component App inherits Window {
         if (field == "row_height") { dlg-row-height = value == "comfortable" ? 1 : 0; }
         if (field == "sidebar") { dlg-sidebar = value == "true"; }
         if (field == "path_bar") { dlg-crumbs = value != "entry"; }
-        if (field == "view_left") { dlg-view-left = value == "xlarge" ? 0 : value == "large" ? 1 : value == "medium" ? 2 : value == "small" ? 3 : 4; }
-        if (field == "view_right") { dlg-view-right = value == "xlarge" ? 0 : value == "large" ? 1 : value == "medium" ? 2 : value == "small" ? 3 : 4; }
+        if (field == "view_left") { dlg-view-left = value == "xlarge" ? 0 : value == "large" ? 1 : value == "medium" ? 2 : value == "small" ? 3 : value == "list" ? 4 : 5; }
+        if (field == "view_right") { dlg-view-right = value == "xlarge" ? 0 : value == "large" ? 1 : value == "medium" ? 2 : value == "small" ? 3 : value == "list" ? 4 : 5; }
         if (field == "toolbar") { dlg-toolbar = value == "none" ? 0 : value == "pane" ? 2 : 1; }
         if (field == "theme") { dlg-theme = value == "light" ? 1 : value == "dark" ? 2 : 0; }
         if (field == "preview") { dlg-preview = value == "true"; }
@@ -945,13 +952,14 @@ export component App inherits Window {
             }
             // Explorer's view keys. With Shift held a US keyboard reports the digit's shifted
             // character ("!", "@" and "#"); the driver sends the digit.
-            // P16-M3: Explorer's digits too (1 extra large, 2 large, 3 medium, 4 small, 6 details; 5 is
-            // kept for List), "$" and "^" the shifted 4 and 6.
+            // P16-M3: Explorer's digits too (1 extra large, 2 large, 3 medium, 4 small, 5 list since
+            // P16-M5, 6 details), "$", "%" and "^" the shifted 4, 5 and 6.
             if (e.modifiers.control && e.modifiers.shift && (e.text == "1" || e.text == "!")) { root.set-view(active-pane, 0); return accept; }
             if (e.modifiers.control && e.modifiers.shift && (e.text == "2" || e.text == "@")) { root.set-view(active-pane, 1); return accept; }
             if (e.modifiers.control && e.modifiers.shift && (e.text == "3" || e.text == "#")) { root.set-view(active-pane, 2); return accept; }
             if (e.modifiers.control && e.modifiers.shift && (e.text == "4" || e.text == "$")) { root.set-view(active-pane, 3); return accept; }
-            if (e.modifiers.control && e.modifiers.shift && (e.text == "6" || e.text == "^")) { root.set-view(active-pane, 4); return accept; }
+            if (e.modifiers.control && e.modifiers.shift && (e.text == "5" || e.text == "%")) { root.set-view(active-pane, 4); return accept; }
+            if (e.modifiers.control && e.modifiers.shift && (e.text == "6" || e.text == "^")) { root.set-view(active-pane, 5); return accept; }
             if (e.modifiers.control && (e.text == "l" || e.text == "L")) { root.set-path-mode(active-pane, true); return accept; }
             // The preview's zoom, with the pointer over the column (P11-M4); "=" is plus unshifted.
             if (e.modifiers.control && !e.modifiers.alt && root.preview && (e.text == "+" || e.text == "=" || e.text == "-" || e.text == "0")) {
@@ -1185,7 +1193,7 @@ export component App inherits Window {
             left := Pane {
                 x: 0; y: 0; height: parent.height;
                 width: split ? parent.width * split-ratio - 3px : parent.width;
-                rows: left-rows; sizes: left-sizes; size-rows: left-size-rows; sizes-name-w: left-sizes-name-w; grid: left-grid; tile: left-tile; grid-rows: left-grid-rows; strip-rows: left-strip-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
+                rows: left-rows; sizes: left-sizes; size-rows: left-size-rows; sizes-name-w: left-sizes-name-w; grid: left-grid; tile: left-tile; list: left-list; col-slots: left-col-slots; grid-rows: left-grid-rows; strip-rows: left-strip-rows; path: left-path; status: left-status; tabs: left-tabs; crumbs: left-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
@@ -1268,7 +1276,7 @@ export component App inherits Window {
                 visible: split;
                 x: parent.width * split-ratio + 3px; y: 0; height: parent.height;
                 width: split ? parent.width - self.x : 0px;
-                rows: right-rows; sizes: right-sizes; size-rows: right-size-rows; sizes-name-w: right-sizes-name-w; grid: right-grid; tile: right-tile; grid-rows: right-grid-rows; strip-rows: right-strip-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
+                rows: right-rows; sizes: right-sizes; size-rows: right-size-rows; sizes-name-w: right-sizes-name-w; grid: right-grid; tile: right-tile; list: right-list; col-slots: right-col-slots; grid-rows: right-grid-rows; strip-rows: right-strip-rows; path: right-path; status: right-status; tabs: right-tabs; crumbs: right-crumbs;
                 entry-sticky: root.path-entry-sticky;
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;
@@ -1838,16 +1846,16 @@ export component App inherits Window {
                             HorizontalLayout {
                                 spacing: 12px;
                                 Choice {
-                                    model: ["Left: extra large icons", "Left: large icons", "Left: medium icons", "Left: small icons", "Left: details"];
+                                    model: ["Left: extra large icons", "Left: large icons", "Left: medium icons", "Left: small icons", "Left: list", "Left: details"];
                                     current-index: root.dlg-view-left;
                                     label: "View in the left pane";
-                                    selected => { root.settings-stage("view_left", self.current-index == 0 ? "xlarge" : self.current-index == 1 ? "large" : self.current-index == 2 ? "medium" : self.current-index == 3 ? "small" : "details"); }
+                                    selected => { root.settings-stage("view_left", self.current-index == 0 ? "xlarge" : self.current-index == 1 ? "large" : self.current-index == 2 ? "medium" : self.current-index == 3 ? "small" : self.current-index == 4 ? "list" : "details"); }
                                 }
                                 Choice {
-                                    model: ["Right: extra large icons", "Right: large icons", "Right: medium icons", "Right: small icons", "Right: details"];
+                                    model: ["Right: extra large icons", "Right: large icons", "Right: medium icons", "Right: small icons", "Right: list", "Right: details"];
                                     current-index: root.dlg-view-right;
                                     label: "View in the right pane";
-                                    selected => { root.settings-stage("view_right", self.current-index == 0 ? "xlarge" : self.current-index == 1 ? "large" : self.current-index == 2 ? "medium" : self.current-index == 3 ? "small" : "details"); }
+                                    selected => { root.settings-stage("view_right", self.current-index == 0 ? "xlarge" : self.current-index == 1 ? "large" : self.current-index == 2 ? "medium" : self.current-index == 3 ? "small" : self.current-index == 4 ? "list" : "details"); }
                                 }
                             }
                         }

@@ -380,6 +380,12 @@ struct State {
     /// visible grid rows plus the margin, so no two covered rows share a slot). `grid_slots[k]`
     /// says which grid row slot k holds, at which icon size, and whether an icon in it changed.
     grid_slots: [Vec<Option<GridSlot>>; 2],
+    /// Each pane shows the List view (P16-M5; settings `view_left` / `view_right` "list",
+    /// Ctrl+Shift+5): the grid's machinery with the small cell, its lines the columns (`grid_n` the
+    /// rows a column holds) and its scroll sideways; and the ring of visible columns its
+    /// `FileColumns` shows (`model::ColsModel` over the active tab's model).
+    list: [bool; 2],
+    cols: [Rc<model::ColsModel>; 2],
     strip_rows: [Rc<VecModel<StripRow>>; 2],
     /// Each pane's left-button gesture on a row (click, drag, double-click), dnd::Gesture.
     gesture: [dnd::Gesture; 2],
@@ -2654,10 +2660,17 @@ struct GridSlot {
 /// grid) and the line's height.
 fn line_of(st: &State, pane: usize, row: usize) -> (usize, f32) {
     if st.grid[pane] {
-        (row / st.model(pane).grid_n(), st.tile[pane].geom().h)
+        (row / st.model(pane).grid_n(), grid_line_px(st, pane))
     } else {
         (row, list_geom(st).row_px)
     }
+}
+
+/// The size of one line of the pane's grid along its scroll: a grid row's height, or in the List
+/// view (P16-M5) a column's width.
+fn grid_line_px(st: &State, pane: usize) -> f32 {
+    let t = st.tile[pane].geom();
+    if st.list[pane] { t.w } else { t.h }
 }
 
 /// Fetch or apply icons for the rows on screen (plus a margin) in one pane, then recompose
@@ -2676,8 +2689,11 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     let grid = st.grid[pane];
     let n = if grid { model.grid_n() } else { 1 };
     let grid_geom = icons::GridGeom::new(scale, n, st.tile[pane].geom());
+    // In the List view (P16-M5) the lines are columns, `y` and `h` the sideways scroll and the
+    // list's width.
+    let list = grid && st.list[pane];
     let (lines, line_px, size_px) = if grid {
-        (model.grid_len(), grid_geom.tile.h, grid_geom.icon_px)
+        (model.grid_len(), if list { grid_geom.tile.w } else { grid_geom.tile.h }, grid_geom.icon_px)
     } else {
         (model.len(), geom.list.row_px, geom.icon_px)
     };
@@ -2738,7 +2754,9 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     c.requests += sent;
     c.resolves += 1;
     c.resolve_ns += t0.elapsed().as_nanos() as u64;
-    if grid {
+    if list {
+        compose_list_cols(st, pane, visible, h, &grid_geom);
+    } else if grid {
         compose_grid_rows(st, pane, visible, h, &grid_geom);
     } else if icons::needs_recompose(st.strip[pane], visible, lines, size_px, st.strip_dirty[pane]) {
         compose_strip(st, app, pane, visible, &geom);
@@ -2818,9 +2836,53 @@ fn compose_grid_rows(st: &mut State, pane: usize, visible: (usize, usize), visib
     }
 }
 
+/// `compose_grid_rows` for the List view (P16-M5): the columns on screen plus the margin, each as
+/// one image of its icons (24 px wide, the column's height: `geom.cols` rows of the small cell),
+/// handed with the column to the ring of slots (`model::ColsModel`), which the list's `FileColumns`
+/// shows. `extent` is the list's width; the ring holds a viewport of columns, a partial one at each
+/// end and the margin. A column already in its slot with no icon changed is left alone, so a
+/// scroll of one column composes one image and sets one slot.
+fn compose_list_cols(st: &mut State, pane: usize, visible: (usize, usize), extent: f32, geom: &icons::GridGeom) {
+    let model = st.panes[pane].active().model.clone();
+    let cols_model = st.cols[pane].clone();
+    let (first, last) = icons::grid_strip_range(visible, model.grid_len());
+    let slots = (extent.max(0.0) / geom.tile.w).ceil() as usize + 1 + 2 * icons::GRID_MARGIN_ROWS;
+    if st.grid_slots[pane].len() != slots || st.strip_dirty[pane] {
+        st.grid_slots[pane] = vec![None; slots];
+        st.strip_dirty[pane] = false;
+    }
+    cols_model.set_window(first, last, slots);
+    let n = geom.cols;
+    // The column's own strip: its icons one under the other.
+    let col_geom = icons::GridGeom::new(geom.scale, 1, icons::TileGeom { w: icons::LIST_ICON_W, ..geom.tile });
+    for g in first..=last {
+        let k = g % slots;
+        let want = GridSlot { row: g, icon_px: geom.icon_px, dirty: false };
+        if st.grid_slots[pane][k] == Some(want) {
+            continue;
+        }
+        let t0 = Instant::now();
+        let (bufs, frames): (Vec<_>, Vec<_>) = {
+            let mut table = st.icons.borrow_mut();
+            model.icon_indices(g * n, (g + 1) * n - 1).into_iter().map(|i| (table.fitted(i, geom.icon_px), table.picture(i, geom.icon_px))).unzip()
+        };
+        let img = icons::compose_grid(&bufs, &model.cut_flags(g * n, (g + 1) * n - 1), &frames, &col_geom, bufs.len().max(1));
+        st.icon_counts.composes += 1;
+        st.icon_counts.compose_ns += t0.elapsed().as_nanos() as u64;
+        let (w, h) = (img.width() as f32 / geom.scale, img.height() as f32 / geom.scale);
+        cols_model.set_col(g, Image::from_rgba8_premultiplied(img), w, h);
+        st.grid_slots[pane][k] = Some(want);
+    }
+}
+
 /// Hide the pane's icon strip (empty list, or a navigation under way): the details strip, and the
 /// grid's slots (their images are dropped; the next resolve fills the ring again).
 fn hide_strip(st: &mut State, app: &App, pane: usize) {
+    // The List view's ring empties with it (P16-M5).
+    st.cols[pane].clear();
+    if st.list[pane] {
+        st.grid_slots[pane].clear();
+    }
     if st.strip[pane].take().is_some() {
         app.invoke_set_strip(pane as i32, Image::default(), 0.0, 0.0, 0.0, 0.0, false);
     }
@@ -2868,7 +2930,11 @@ fn on_grid_cols(pane: usize, n: usize) {
         let Some(st) = guard.as_mut() else { return false };
         st.grid_n[pane] = n.max(1);
         if st.grid[pane] && st.model(pane).set_grid_n(n) {
-            eprintln!("[grid] pane={pane} {n} tiles to a row, {} grid rows", st.model(pane).grid_len());
+            if st.list[pane] {
+                eprintln!("[list] pane={pane} {n} rows to a column, {} columns", st.model(pane).grid_len());
+            } else {
+                eprintln!("[grid] pane={pane} {n} tiles to a row, {} grid rows", st.model(pane).grid_len());
+            }
             st.strip_dirty[pane] = true;
             if let Some(app) = st.app.upgrade() {
                 resolve_view(st, &app, pane);
@@ -2896,7 +2962,13 @@ fn on_grid_cursor(pane: usize, row: i32) {
 
 /// The pane's view now (details, or the grid at its tile size).
 fn view_of(st: &State, pane: usize) -> settings::View {
-    if st.grid[pane] { settings::View::of_tile(st.tile[pane]) } else { settings::View::Details }
+    if st.grid[pane] && st.list[pane] {
+        settings::View::List
+    } else if st.grid[pane] {
+        settings::View::of_tile(st.tile[pane])
+    } else {
+        settings::View::Details
+    }
 }
 
 /// Ctrl+Shift+1 (extra large icons), 2 (large), 3 (medium), 4 (small) or 6 (details) on the active
@@ -2922,13 +2994,16 @@ fn set_view(pane: usize, view: settings::View) {
         let model = st.panes[pane].active().model.clone();
         let y = st.view[pane].0;
         let list_px = list_geom(st).row_px;
-        let (old_px, old_n) = if old.is_grid() { (st.tile[pane].geom().h, model.grid_n()) } else { (list_px, 1) };
+        let (old_px, old_n) = if old.is_grid() { (grid_line_px(st, pane), model.grid_n()) } else { (list_px, 1) };
         let first_entry = ((-y).max(0.0) / old_px).floor() as usize * old_n;
         let grid = view.is_grid();
         if let Some(t) = view.tile() {
             st.tile[pane] = t;
         }
         if pane == 0 { app.set_left_tile(st.tile[pane].index()) } else { app.set_right_tile(st.tile[pane].index()) }
+        // The List view (P16-M5): set before the count is read, which is then the rows a column holds.
+        st.list[pane] = view.is_list();
+        if pane == 0 { app.set_left_list(st.list[pane]) } else { app.set_right_list(st.list[pane]) }
         let cols = (if pane == 0 { app.get_left_grid_cols() } else { app.get_right_grid_cols() }).max(1) as usize;
         st.grid[pane] = grid;
         st.grid_n[pane] = cols;
@@ -2936,7 +3011,7 @@ fn set_view(pane: usize, view: settings::View) {
         model.set_grid_n(cols);
         model.set_grid_cursor(current_row(&app, pane));
         if pane == 0 { app.set_left_grid(grid) } else { app.set_right_grid(grid) }
-        let (new_px, new_n) = if grid { (st.tile[pane].geom().h, cols) } else { (list_px, 1) };
+        let (new_px, new_n) = if grid { (grid_line_px(st, pane), cols) } else { (list_px, 1) };
         let to = if first_entry == 0 { 0.0 } else { -((first_entry / new_n) as f32 * new_px) };
         app.invoke_set_scroll(pane as i32, to);
         hide_strip(st, &app, pane);
@@ -2945,12 +3020,21 @@ fn set_view(pane: usize, view: settings::View) {
         for t in st.panes[pane].iter() {
             t.model.forget_icons();
         }
-        eprintln!(
-            "[view] pane={pane} {} -> {} ({cols} tiles to a row, {} grid rows), scroll {y:.0} -> {to:.0} (entry {first_entry} first)",
-            old.label(),
-            view.label(),
-            model.grid_len()
-        );
+        if view.is_list() {
+            eprintln!(
+                "[view] pane={pane} {} -> {} ({cols} rows to a column, {} columns), scroll {y:.0} -> {to:.0} (entry {first_entry} first)",
+                old.label(),
+                view.label(),
+                model.grid_len()
+            );
+        } else {
+            eprintln!(
+                "[view] pane={pane} {} -> {} ({cols} tiles to a row, {} grid rows), scroll {y:.0} -> {to:.0} (entry {first_entry} first)",
+                old.label(),
+                view.label(),
+                model.grid_len()
+            );
+        }
         resolve_view(st, &app, pane);
         schedule_save(st);
     });
@@ -2969,6 +3053,8 @@ fn sync_grid(st: &mut State, app: &App, pane: usize) {
         st.tile[pane] = t;
     }
     if pane == 0 { app.set_left_tile(st.tile[pane].index()) } else { app.set_right_tile(st.tile[pane].index()) }
+    st.list[pane] = want && view.is_list();
+    if pane == 0 { app.set_left_list(st.list[pane]) } else { app.set_right_list(st.list[pane]) }
     let cols = (if pane == 0 { app.get_left_grid_cols() } else { app.get_right_grid_cols() }).max(1) as usize;
     st.grid[pane] = want;
     st.grid_n[pane] = cols;
@@ -4173,12 +4259,14 @@ fn verb_done(d: verbs::Done) {
 /// Shift+F10 or the Menu key in a pane's list: the menu for the cursor row's selection, under
 /// that row (already scrolled into view), or the background menu when there is no cursor row.
 fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, visible_h: f32) {
-    let (len, g, grid) = with_state(|st| {
-        (st.model(pane).len(), list_geom(st), st.grid[pane].then(|| (st.model(pane).grid_n(), st.tile[pane].geom())))
+    let (len, g, grid, list) = with_state(|st| {
+        (st.model(pane).len(), list_geom(st), st.grid[pane].then(|| (st.model(pane).grid_n(), st.tile[pane].geom())), st.list[pane])
     });
     match usize::try_from(row).ok().filter(|&r| r < len) {
         Some(r) => {
             let (x, y) = match grid {
+                // The List view (P16-M5): the pane hands its sideways scroll and its width.
+                Some((rows, tile)) if list => shellmenu::cell_menu_point(list_x, list_y, content_y, visible_h, r, rows, tile),
                 Some((cols, tile)) => shellmenu::tile_menu_point(list_x, list_y, content_y, visible_h, r, cols, tile),
                 None => shellmenu::row_menu_point(list_x, list_y, content_y, visible_h, r, g),
             };
@@ -5454,6 +5542,7 @@ pub fn window_layout(app: &App) -> dnd::Layout {
         tile: [icons::TileSize::from_index(app.get_left_tile()).geom(), icons::TileSize::from_index(app.get_right_tile()).geom()],
         top: if app.get_toolbar() == settings::Toolbar::Top.index() { dnd::TOP_BAR } else { 0.0 },
         bar: if app.get_toolbar() == settings::Toolbar::Pane.index() { dnd::PANE_BAR } else { 0.0 },
+        list: [app.get_left_grid() && app.get_left_list(), app.get_right_grid() && app.get_right_list()],
     }
 }
 
@@ -5771,7 +5860,8 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
     match scroll {
         AutoScroll::List(line) => {
             let Some((pane, dir, from, to)) = scroll_line(line) else { return false };
-            eprintln!("[dnd] auto-scroll pane {pane} {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
+            let (way, axis) = scroll_words(pane, dir);
+            eprintln!("[dnd] auto-scroll pane {pane} {way}: {axis} {from:.0} -> {to:.0}");
         }
         AutoScroll::Side(app, dir) => {
             // The ListView's own content height (an estimate for rows of mixed heights, a px or
@@ -5804,12 +5894,13 @@ pub fn drop_autoscroll(px: i32, py: i32) -> bool {
 type EdgeLine = (App, usize, i32, usize, f32, f32);
 
 fn edge_line(st: &State, app: &App, layout: &dnd::Layout, pane: usize, dir: i32) -> EdgeLine {
-    let visible = layout.height - dnd::LIST_BOTTOM_GAP - dnd::list_top(layout, pane);
+    // In the List view (P16-M5) the lines are columns and the viewport is the list's width.
+    let visible = layout.extent(pane);
     let lines = match layout.grid[pane] {
         Some(cols) => model::grid_rows(st.model(pane).len(), cols),
         None => st.model(pane).len(),
     };
-    (app.clone_strong(), pane, dir, lines, visible, layout.row_px_of(pane))
+    (app.clone_strong(), pane, dir, lines, visible, layout.line_px(pane))
 }
 
 /// Scroll the line `edge_line` described; the pane, direction and content-y before and after,
@@ -5824,14 +5915,30 @@ fn scroll_line((app, pane, dir, len, visible, line_px): EdgeLine) -> Option<(usi
     Some((pane, dir, from, to))
 }
 
+/// For the auto-scroll lines: the direction's word and the scroll's name, sideways in the List
+/// view (P16-M5).
+fn scroll_words(pane: usize, dir: i32) -> (&'static str, &'static str) {
+    let list = with_state(|st| st.grid[pane] && st.list[pane]);
+    match (list, dir < 0) {
+        (false, true) => ("up", "content-y"),
+        (false, false) => ("down", "content-y"),
+        (true, true) => ("left", "content-x"),
+        (true, false) => ("right", "content-x"),
+    }
+}
+
 // --- The rubber band (P4-M3) --------------------------------------------------------------------
 
 /// A window point as content coordinates of `pane`'s list (x from the list's left edge, y from
 /// the top of the first grid row).
 fn band_point(app: &App, layout: &dnd::Layout, pane: usize, at: (f32, f32)) -> (f32, f32) {
     let (left, _) = dnd::pane_x(layout, pane);
-    let content_y = app.invoke_get_scroll(pane as i32);
-    (at.0 - left - dnd::PANE_PAD, at.1 - dnd::list_top(layout, pane) - content_y)
+    let scroll = app.invoke_get_scroll(pane as i32);
+    // The List view scrolls sideways (P16-M5): its content's x moves, its y does not.
+    if layout.list[pane] {
+        return (at.0 - left - dnd::PANE_PAD - scroll, at.1 - dnd::list_top(layout, pane));
+    }
+    (at.0 - left - dnd::PANE_PAD, at.1 - dnd::list_top(layout, pane) - scroll)
 }
 
 /// A left press on details row `row` of `pane` at window point `at` (P13-M2, `row-press`): on the
@@ -5878,6 +5985,7 @@ fn band_pointer(pane: usize, kind: i32, at: (f32, f32), ctrl: bool, shift: bool)
             let mut b = band::Band::press(pane, p, band::Mode::from_keys(ctrl, shift), st.model(pane).selected_set());
             // The details list's band touches rows (P13-M2).
             b.rows = layout.grid[pane].is_none().then_some(layout.row_px);
+            b.list = layout.list[pane];
             st.band = Some(b);
             st.band_at = at;
             st.band_logged = None;
@@ -5942,7 +6050,14 @@ fn band_moved(pane: usize, at: (f32, f32)) {
         // At the list's top or bottom edge, or beyond it: scroll a grid row every SCROLL_EVERY
         // until the pointer leaves the edge or the button comes up; each scroll moves the band's
         // far edge.
-        match band::edge(dnd::list_top(&layout, pane), layout.height - dnd::LIST_BOTTOM_GAP, at.1) {
+        // (In the List view, P16-M5, at its left or right edge: a column at a time.)
+        let at_edge = if layout.list[pane] {
+            let (a, b) = dnd::pane_x(&layout, pane);
+            band::edge(a + dnd::PANE_PAD, b - dnd::PANE_PAD, at.0)
+        } else {
+            band::edge(dnd::list_top(&layout, pane), layout.height - dnd::LIST_BOTTOM_GAP, at.1)
+        };
+        match at_edge {
             Some(dir) => {
                 if !st.band_timer.running() {
                     st.band_timer.start(slint::TimerMode::Repeated, dnd::SCROLL_EVERY, move || band_tick(pane));
@@ -5956,7 +6071,8 @@ fn band_moved(pane: usize, at: (f32, f32)) {
         }
     });
     if let Some((_, dir, from, to)) = edge.and_then(scroll_line) {
-        eprintln!("[band] auto-scroll pane {pane} {}: content-y {from:.0} -> {to:.0}", if dir < 0 { "up" } else { "down" });
+        let (way, axis) = scroll_words(pane, dir);
+        eprintln!("[band] auto-scroll pane {pane} {way}: {axis} {from:.0} -> {to:.0}");
         // The content moved under the pointer: the band's far edge and the touched tiles with it.
         with_state(|st| {
             let Some(app) = st.app.upgrade() else { return };
@@ -6260,6 +6376,10 @@ fn show_tab(st: &mut State, app: &App, pane: usize) {
     model.set_grid_cursor(cursor);
     let grid = ModelRc::new(GridModel::new(model.clone()));
     if pane == 0 { app.set_left_grid_rows(grid) } else { app.set_right_grid_rows(grid) }
+    // The List view's ring follows the tab shown (P16-M5).
+    st.cols[pane].clear();
+    st.cols[pane] = Rc::new(model::ColsModel::new(model.clone()));
+    if pane == 0 { app.set_left_col_slots(ModelRc::from(st.cols[pane].clone())) } else { app.set_right_col_slots(ModelRc::from(st.cols[pane].clone())) }
     let (col, asc) = (model.sort_col.get() as i32, model.sort_asc.get());
     if pane == 0 {
         app.set_left_sort_col(col);
@@ -7566,7 +7686,7 @@ fn visible_rows(st: &State, app: &App, pane: usize) -> Option<(usize, usize)> {
     let (y, h) = st.view[pane];
     let n = if st.grid[pane] { model.grid_n() } else { 1 };
     let (lines, line_px) = if st.grid[pane] {
-        (model.grid_len(), icons::GridGeom::new(app.window().scale_factor(), n, st.tile[pane].geom()).tile.h)
+        (model.grid_len(), if st.list[pane] { st.tile[pane].geom().w } else { icons::GridGeom::new(app.window().scale_factor(), n, st.tile[pane].geom()).tile.h })
     } else {
         (model.len(), list_geom(st).row_px)
     };
@@ -8436,6 +8556,16 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_right_grid(grid[1]);
     app.set_left_tile(tile[0].index());
     app.set_right_tile(tile[1].index());
+    // The List view (P16-M5) draws the small cell.
+    let list = views.map(settings::View::is_list);
+    let tile = [if list[0] { icons::TileSize::Small } else { tile[0] }, if list[1] { icons::TileSize::Small } else { tile[1] }];
+    app.set_left_tile(tile[0].index());
+    app.set_right_tile(tile[1].index());
+    app.set_left_list(list[0]);
+    app.set_right_list(list[1]);
+    let cols = [Rc::new(model::ColsModel::new(panes[0].active().model.clone())), Rc::new(model::ColsModel::new(panes[1].active().model.clone()))];
+    app.set_left_col_slots(ModelRc::from(cols[0].clone()));
+    app.set_right_col_slots(ModelRc::from(cols[1].clone()));
     for (pane, v) in views.iter().enumerate() {
         if v.is_grid() {
             eprintln!("[view] pane={pane} starts as {}", v.label());
@@ -8537,6 +8667,8 @@ fn main() -> Result<(), slint::PlatformError> {
             grid_n: [1; 2],
             tile,
             grid_slots: Default::default(),
+            list,
+            cols,
             strip_rows,
             gesture: Default::default(),
             drag_icon: None,

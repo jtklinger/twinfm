@@ -205,6 +205,15 @@ pub fn row_menu_point(list_x: f32, list_y: f32, content_y: f32, visible_h: f32, 
 
 /// `row_menu_point` for the icon grid: under the tile of entry `row` in a grid of `cols` tiles of
 /// `tile` to a grid row, 2 px into the tile (the name's left edge), kept inside the viewport.
+/// The List view's point (P16-M5): under the cell of entry `row`, `rows` cells to a column,
+/// scrolled sideways by `scroll`; 24 px into the cell (the name's left edge), kept inside a
+/// viewport `visible_w` wide.
+pub fn cell_menu_point(list_x: f32, list_y: f32, scroll: f32, visible_w: f32, row: usize, rows: usize, tile: crate::icons::TileGeom) -> (f32, f32) {
+    let (col, r) = crate::model::grid_cell(row, rows);
+    let x = list_x + scroll + col as f32 * tile.w + 24.0;
+    (x.clamp(list_x, list_x + visible_w.max(0.0)), list_y + (r as f32 + 1.0) * tile.h)
+}
+
 pub fn tile_menu_point(list_x: f32, list_y: f32, content_y: f32, visible_h: f32, row: usize, cols: usize, tile: crate::icons::TileGeom) -> (f32, f32) {
     let (r, c) = crate::model::grid_cell(row, cols);
     let bottom = list_y + content_y + (r as f32 + 1.0) * tile.h;
@@ -1567,6 +1576,13 @@ mod tests {
         assert_eq!(tile_menu_point(10.0, 63.0, -1360.0, 600.0, 0, 5, L).1, 63.0);
         assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 500, 5, L).1, 663.0);
         assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 3, 1, L), (12.0, 63.0 + 4.0 * 136.0));
+        // P16-M5, the List view: entry 23 of ten rows to a column is column 2, row 3; scrolled a
+        // column sideways it moves left with it, and a column scrolled off stays at the list's edge.
+        let s = crate::icons::TileGeom::SMALL;
+        assert_eq!(cell_menu_point(10.0, 63.0, 0.0, 900.0, 23, 10, s), (10.0 + 440.0 + 24.0, 63.0 + 4.0 * 22.0));
+        assert_eq!(cell_menu_point(10.0, 63.0, -220.0, 900.0, 23, 10, s), (10.0 + 220.0 + 24.0, 63.0 + 88.0));
+        assert_eq!(cell_menu_point(10.0, 63.0, -880.0, 900.0, 23, 10, s).0, 10.0);
+        assert_eq!(cell_menu_point(10.0, 63.0, 0.0, 300.0, 23, 10, s).0, 310.0);
         // Medium tiles, 80 x 107 px (P6-M2; 72 before P7-M4, 88 before P8-L1): entry 7 of five to a row is grid row 1, column 2.
         let m = crate::icons::TileGeom::MEDIUM;
         assert_eq!(tile_menu_point(10.0, 63.0, 0.0, 600.0, 7, 5, m), (10.0 + 2.0 * 80.0 + 2.0, 63.0 + 214.0));

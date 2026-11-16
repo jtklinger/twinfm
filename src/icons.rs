@@ -206,6 +206,10 @@ impl TileGeom {
     }
 }
 
+/// The width of a List view column's own icon strip (P16-M5), logical px: the small cell's icon
+/// and its 4 px either side, so the image holds the icons and nothing of the names' width.
+pub const LIST_ICON_W: f32 = 24.0;
+
 /// Grid rows composed into the strip above and below the visible ones: one 136 px row, about the
 /// details strip's 88 px (4 rows of 22) of scroll before a recompose, at a fraction of the size.
 pub const GRID_MARGIN_ROWS: usize = 1;
