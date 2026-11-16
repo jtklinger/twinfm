@@ -536,7 +536,10 @@ The driver's `dropfiles ... copy` holds Alt now (Ctrl would move where the defau
 `dragover nav <pane> <back|up>` hovers a button. Tests 368 passed, 0 failed, 2 ignored (the two rule
 tests rewritten for B and C, the crumb hit test extended for D). The scripted check: exit 0; its lines
 show Cancel and OK by the mouse, "Move here" for Ctrl under Always copy, "Choose on drop" and the menu
-with a key held under Always ask, and the right pane going up out of Documents and back into it.
+with a key held under Always ask, and the right pane going up out of Documents and back into it. A
+ten-minute soak of 6c8d369 (`tools/soak-p5m3.ps1 -Minutes 10`): exit 0, no panic, 227 jobs done, none
+failed, no scripted drag dropped, every must-be-0 count at 0, the drag cue's lines as before and the
+path bar's Up held by a drag went up once in each full cycle (2); working set 156 to 231 MB.
 
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
