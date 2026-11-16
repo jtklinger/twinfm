@@ -2686,9 +2686,11 @@ impl ImageGeom {
 
     /// Out of the grid (P4-M3): the tile's picture at the tile's icon size (96 px at 100%, 48 px
     /// out of medium tiles, P6-M2), with the inset doubled so the badge still fits inside the
-    /// square: 128 px, or 80 px.
+    /// square: 128 px, or 80 px. Out of extra large tiles (P16-M3) the picture is fitted down to
+    /// the large tile's 96 px: a 288 px image would hide what it is dragged over.
     pub fn tile(scale: f32, tile: crate::icons::TileGeom) -> ImageGeom {
-        Self::sized(scale, tile.icon_px + 32.0, tile.icon_px, 16.0)
+        let icon = tile.icon_px.min(crate::icons::TileGeom::LARGE.icon_px);
+        Self::sized(scale, icon + 32.0, icon, 16.0)
     }
 
     fn sized(scale: f32, size: f32, icon: f32, inset: f32) -> ImageGeom {
@@ -3449,6 +3451,19 @@ mod tests {
         assert_eq!(hit(&medium, 3.0 + 80.0, 75.0 + 107.0, none, [100, 0]), Spot::Row(0, 13));
         assert_eq!(hit(&medium, 3.0 + 79.9, 75.0 + 106.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
         assert_eq!(hit(&medium, 3.0 + 12.0 * 80.0 + 1.0, 80.0, none, [100, 0]), Spot::Pane(0), "right of the tiles");
+        // P16-M3: extra large tiles (260 x 296) and small ones (220 x 22 cells across the pane).
+        let xl = Layout { grid: [Some(3), None], tile: [crate::icons::TileGeom::XLARGE, crate::icons::TileGeom::LARGE], ..one };
+        assert_eq!(xl.row_px_of(0), 296.0);
+        assert_eq!(hit(&xl, 3.0 + 260.0, 75.0 + 296.0, none, [10, 0]), Spot::Row(0, 4));
+        assert_eq!(hit(&xl, 3.0 + 259.9, 75.0 + 295.9, none, [10, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(hit(&xl, 3.0 + 3.0 * 260.0 + 1.0, 80.0, none, [10, 0]), Spot::Pane(0), "right of the tiles");
+        assert_eq!(hit(&xl, 3.0 + 300.0, 75.0 + 296.0 + 5.0, none, [4, 0]), Spot::Pane(0), "past the last entry");
+        let small = Layout { grid: [Some(4), None], tile: [crate::icons::TileGeom::SMALL, crate::icons::TileGeom::LARGE], ..one };
+        assert_eq!(small.row_px_of(0), 22.0);
+        assert_eq!(hit(&small, 3.0 + 10.0, 75.0 + 5.0, none, [100, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&small, 3.0 + 220.0 * 2.0 + 10.0, 75.0 + 22.0 * 3.0 + 5.0, none, [100, 0]), Spot::Row(0, 14));
+        assert_eq!(hit(&small, 3.0 + 10.0, 75.0 + 5.0, [-44.0, 0.0], [100, 0]), Spot::Row(0, 8), "scrolled two rows of cells");
+        assert_eq!(hit(&small, 3.0 + 220.0 * 4.0 + 1.0, 80.0, none, [100, 0]), Spot::Pane(0), "right of the cells");
         // With the split, each pane has its own view: the right pane stays a 22 px list.
         let both = Layout { split: true, grid: [Some(5), None], ..one };
         assert_eq!(hit(&both, 50.0, 220.0, none, [12, 7]), Spot::Row(0, 5));
@@ -3966,6 +3981,10 @@ mod tests {
         assert_eq!((m.size, m.icon, m.inset), (80, 48, 16));
         let (mx, my) = m.badge_centre();
         assert!(mx + m.badge_r < m.size as f32 && my + m.badge_r < m.size as f32, "the badge fits");
+        // Out of extra large tiles (P16-M3): the picture fitted down to the large tile's image.
+        let x = ImageGeom::tile(1.0, crate::icons::TileGeom::XLARGE);
+        assert_eq!((x.size, x.icon, x.inset), (128, 96, 16));
+        assert_eq!(ImageGeom::tile(1.5, crate::icons::TileGeom::XLARGE).icon, 144);
         let blue = slint::Rgba8Pixel { r: 0, g: 0, b: 255, a: 255 };
         let pic = vec![blue; 96 * 96];
         let one = compose_image(&g, Some(&pic), 1, None);

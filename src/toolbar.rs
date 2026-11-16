@@ -68,7 +68,8 @@ pub struct Facts {
     /// Jobs queued behind the running one (Escape cancels them).
     pub waiting: usize,
     pub hidden: bool,
-    /// The pane's view: 0 details, 1 large icons, 2 medium icons (`settings::View::index`).
+    /// The pane's view (`settings::View::index`, Explorer's order: 0 extra large icons, 1 large, 2
+    /// medium, 3 small, 4 details).
     pub view: i32,
 }
 
@@ -106,12 +107,16 @@ fn item(text: &'static str, key: &'static str, command: &'static str, enabled: b
     MenuItem { text, key, command, enabled, ticked }
 }
 
-/// The View menu: Details, Large icons, Medium icons, the pane's own ticked (Ctrl+Shift+1/2/3).
+/// The View menu, Explorer's views in its order with its keys (P16-M3): Extra large icons, Large
+/// icons, Medium icons, Small icons, Details, the pane's own ticked. Each command is `view:` and
+/// the view's `settings::View::name`.
 pub fn view_menu(view: i32) -> Vec<MenuItem> {
     vec![
-        item("Details", "Ctrl+Shift+1", "view:details", true, view == 0),
+        item("Extra large icons", "Ctrl+Shift+1", "view:xlarge", true, view == 0),
         item("Large icons", "Ctrl+Shift+2", "view:large", true, view == 1),
         item("Medium icons", "Ctrl+Shift+3", "view:medium", true, view == 2),
+        item("Small icons", "Ctrl+Shift+4", "view:small", true, view == 3),
+        item("Details", "Ctrl+Shift+6", "view:details", true, view == 4),
     ]
 }
 
@@ -274,7 +279,19 @@ mod tests {
     #[test]
     fn the_menus_tick_and_disable_as_their_keys_would() {
         let names = |v: &[MenuItem]| v.iter().map(|i| (i.text, i.enabled, i.ticked)).collect::<Vec<_>>();
-        assert_eq!(names(&view_menu(2)), [("Details", true, false), ("Large icons", true, false), ("Medium icons", true, true)]);
+        assert_eq!(
+            names(&view_menu(2)),
+            [("Extra large icons", true, false), ("Large icons", true, false), ("Medium icons", true, true), ("Small icons", true, false), ("Details", true, false)]
+        );
+        // The menu is `settings::View::ALL` in its order: each command names its view, each tick is
+        // the view's index, and the keys are Explorer's (1 to 4, and 6 for details).
+        let menu = view_menu(4);
+        for (v, i) in crate::settings::View::ALL.into_iter().zip(&menu) {
+            assert_eq!(i.command.to_string(), format!("view:{}", v.name()));
+            assert_eq!(i.ticked, v == crate::settings::View::Details);
+        }
+        assert_eq!(menu.len(), crate::settings::View::ALL.len());
+        assert_eq!(menu.iter().map(|i| i.key).collect::<Vec<_>>(), ["Ctrl+Shift+1", "Ctrl+Shift+2", "Ctrl+Shift+3", "Ctrl+Shift+4", "Ctrl+Shift+6"]);
         let mut t = with_facts(state(Place::Folder, 1, false), &Facts { hidden: true, ..Facts::default() });
         let all = more_menu(&t, BUTTONS.len(), true, Place::Folder, false);
         assert_eq!(
@@ -293,13 +310,13 @@ mod tests {
         assert!(!one[2].enabled && !one[3].enabled, "one pane: nothing to copy to");
         assert!(!one[4].enabled, "no folder sizes in search results");
         assert!(all.iter().all(|i| i.command != "savesearch"), "a folder has no search to save");
-        // Three buttons past the bar's edge come first, in the bar's order, View as its three items.
+        // Three buttons past the bar's edge come first, in the bar's order, View as its five items.
         t.view = 0;
         let over = more_menu(&t, BUTTONS.len() - 3, true, Place::Folder, false);
-        let texts: Vec<_> = over.iter().take(5).map(|i| i.text).collect();
-        assert_eq!(texts, ["Details", "Large icons", "Medium icons", "Two panes", "Preview pane"]);
-        assert!(over[3].ticked, "Two panes ticked while split");
-        assert_eq!(over.len(), 5 + 6);
+        let texts: Vec<_> = over.iter().take(7).map(|i| i.text).collect();
+        assert_eq!(texts, ["Extra large icons", "Large icons", "Medium icons", "Small icons", "Details", "Two panes", "Preview pane"]);
+        assert!(over[5].ticked, "Two panes ticked while split");
+        assert_eq!(over.len(), 7 + 6);
     }
 
     #[test]

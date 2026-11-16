@@ -555,10 +555,13 @@ fn parse(script: &str) -> Vec<Step> {
                 "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true, at: a.get(2).map(|s| s.to_string()) },
                 "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
                 "view" => Step::Key(
+                    // Explorer's keys (P16-M3): `icons` stays the large icons.
                     match a.get(1).copied() {
-                        Some("icons") => "CtrlShift2",
+                        Some("xlarge") => "CtrlShift1",
+                        Some("icons" | "large") => "CtrlShift2",
                         Some("medium") => "CtrlShift3",
-                        _ => "CtrlShift1",
+                        Some("small") => "CtrlShift4",
+                        _ => "CtrlShift6",
                     }
                     .into(),
                 ),
@@ -1216,6 +1219,8 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlShift1" => vec![k(Key::Control), k(Key::Shift), "1".into()],
         "CtrlShift2" => vec![k(Key::Control), k(Key::Shift), "2".into()],
         "CtrlShift3" => vec![k(Key::Control), k(Key::Shift), "3".into()],
+        "CtrlShift4" => vec![k(Key::Control), k(Key::Shift), "4".into()],
+        "CtrlShift6" => vec![k(Key::Control), k(Key::Shift), "6".into()],
         "ShiftF5" => vec![k(Key::Shift), k(Key::F5)],
         "ShiftF6" => vec![k(Key::Shift), k(Key::F6)],
         "ShiftDelete" => vec![k(Key::Shift), k(Key::Delete)],
