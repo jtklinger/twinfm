@@ -380,6 +380,11 @@ struct State {
     /// visible grid rows plus the margin, so no two covered rows share a slot). `grid_slots[k]`
     /// says which grid row slot k holds, at which icon size, and whether an icon in it changed.
     grid_slots: [Vec<Option<GridSlot>>; 2],
+    /// SPIKE (P16-M5): the small view drawn as the sideways list (TWINFM_SPIKE_LIST), each pane's
+    /// list viewport (content-x, width, height) and its ring of visible columns.
+    list: bool,
+    list_view: [(f32, f32, f32); 2],
+    col_slots: [Rc<VecModel<ColSlot>>; 2],
     strip_rows: [Rc<VecModel<StripRow>>; 2],
     /// Each pane's left-button gesture on a row (click, drag, double-click), dnd::Gesture.
     gesture: [dnd::Gesture; 2],
@@ -2666,6 +2671,9 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     if pane == 1 && !app.get_split() {
         return;
     }
+    if is_list(st, pane) {
+        return resolve_list(st, app, pane);
+    }
     let t = st.panes[pane].active();
     let model = t.model.clone();
     let (y, h) = st.view[pane];
@@ -2742,6 +2750,126 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
         compose_grid_rows(st, pane, visible, h, &grid_geom);
     } else if icons::needs_recompose(st.strip[pane], visible, lines, size_px, st.strip_dirty[pane]) {
         compose_strip(st, app, pane, visible, &geom);
+    }
+}
+
+/// SPIKE (P16-M5): the pane shows the sideways list.
+fn is_list(st: &State, pane: usize) -> bool {
+    st.list && st.grid[pane] && st.tile[pane] == icons::TileSize::Small && st.tab(pane).sizeview.is_none()
+}
+
+/// SPIKE (P16-M5): the list's viewport changed (a scroll, a resize, the list made).
+fn on_list_viewport(pane: usize, x: f32, w: f32, h: f32) {
+    let busy = STATE.with(|s| {
+        let Ok(mut guard) = s.try_borrow_mut() else { return true };
+        let Some(st) = guard.as_mut() else { return false };
+        st.list_view[pane] = (x, w, h);
+        if let Some(app) = st.app.upgrade() {
+            resolve_view(st, &app, pane);
+        }
+        false
+    });
+    if busy {
+        slint::Timer::single_shot(Duration::ZERO, move || on_list_viewport(pane, x, w, h));
+    }
+}
+
+/// SPIKE (P16-M5): `resolve_view` for the sideways list. The grid model's "grid rows" are the
+/// list's columns (`grid_n` = the rows a column holds, from the viewport's height); the columns on
+/// screen sit in a ring of slots (`col_slots`), each with its cells and its icons composed into one
+/// image 24 px wide. A scroll inside a column sets nothing here but the icons asked for; a column
+/// that comes into view is one slot's data set.
+fn resolve_list(st: &mut State, app: &App, pane: usize) {
+    let t = st.panes[pane].active();
+    let model = t.model.clone();
+    let (x, w, h) = st.list_view[pane];
+    let tile = icons::TileGeom::SMALL;
+    let rows = ((h / tile.h).floor() as usize).max(1);
+    if model.set_grid_n(rows) {
+        st.strip_dirty[pane] = true;
+    }
+    let cols = model.grid_len();
+    let content_w = cols as f32 * tile.w;
+    if pane == 0 {
+        if app.get_left_list_w() != content_w {
+            app.set_left_list_w(content_w);
+        }
+    } else if app.get_right_list_w() != content_w {
+        app.set_right_list_w(content_w);
+    }
+    if cols == 0 || w <= 0.0 || model.len() == 0 {
+        if st.col_slots[pane].row_count() > 0 {
+            st.col_slots[pane].set_vec(Vec::new());
+            st.grid_slots[pane].clear();
+        }
+        return;
+    }
+    let left = (-x).max(0.0);
+    let first_col = ((left / tile.w).floor() as usize).min(cols - 1);
+    let last_col = ((((left + w) / tile.w).ceil() as usize).max(1) - 1).min(cols - 1).max(first_col);
+    let (first, last) = (first_col * rows, ((last_col + 1) * rows - 1).min(model.len() - 1));
+    if std::env::var("TWINFM_SPIKE_TRACE").is_ok() {
+        eprintln!("[spike] pane={pane} x {x:.0} w {w:.0} h {h:.0}: rows {rows}, columns {first_col}..={last_col} of {cols}");
+    }
+    let t0 = Instant::now();
+    let scale = app.window().scale_factor();
+    let geom = icons::GridGeom::new(scale, 1, icons::TileGeom { w: 24.0, ..tile });
+    let size_px = geom.icon_px;
+    let generation = model.generation.get();
+    let (folder, tx) = (&t.path, &st.icon_tx);
+    let mut sent = 0;
+    let ask = |i: usize, e: &model::Entry| {
+        let path = if e.kind == Kind::Drive { PathBuf::from(e.name.as_str()) } else { folder.join(e.name.as_str()) };
+        let overlay = icons::wants_overlay(e.kind, e.attrs, &e.name);
+        let row = if icons::is_look_key(&e.icon_key) { i } else { 0 };
+        let mark = icons::key_mark(&e.icon_key);
+        let _ = tx.send(icons::Request { generation, pane, key: e.icon_key.clone(), path, size_px, overlay, thumbnail: false, row, wanted: 0, mark });
+        sent += 1;
+    };
+    let changed = model.resolve_icons(first.saturating_sub(ICON_MARGIN_ROWS), last + ICON_MARGIN_ROWS, size_px, ask);
+    let c = &mut st.icon_counts;
+    c.requests += sent;
+    c.resolves += 1;
+    c.resolve_ns += t0.elapsed().as_nanos() as u64;
+    let slots = (w / tile.w).ceil() as usize + 2;
+    let reset = st.grid_slots[pane].len() != slots || st.strip_dirty[pane];
+    if reset {
+        st.grid_slots[pane] = vec![None; slots];
+        // Emptied slots sit off screen (column -10) until a column takes them.
+        st.col_slots[pane].set_vec(vec![ColSlot { col: -10, ..ColSlot::default() }; slots]);
+        st.strip_dirty[pane] = false;
+    }
+    for &i in &changed {
+        if let Some(Some(s)) = st.grid_slots[pane].get_mut((i / rows) % slots) {
+            if s.row == i / rows {
+                s.dirty = true;
+            }
+        }
+    }
+    let grid_model = GridModel::new(model.clone());
+    for g in first_col..=last_col {
+        let k = g % slots;
+        let want = GridSlot { row: g, icon_px: size_px, dirty: false };
+        if st.grid_slots[pane][k] == Some(want) {
+            continue;
+        }
+        let t0 = Instant::now();
+        let bufs: Vec<_> = {
+            let mut table = st.icons.borrow_mut();
+            model.icon_indices(g * rows, (g + 1) * rows - 1).into_iter().map(|i| table.fitted(i, size_px)).collect()
+        };
+        let img = icons::compose_grid(&bufs, &model.cut_flags(g * rows, (g + 1) * rows - 1), &[], &geom, bufs.len().max(1));
+        st.icon_counts.composes += 1;
+        st.icon_counts.compose_ns += t0.elapsed().as_nanos() as u64;
+        let (iw, ih) = (img.width() as f32 / scale, img.height() as f32 / scale);
+        let Some(row) = slint::Model::row_data(&grid_model, g) else { continue };
+        st.col_slots[pane].set_row_data(k, ColSlot { col: g as i32, first: row.first, tiles: row.tiles, img: Image::from_rgba8_premultiplied(img), img_w: iw, img_h: ih });
+        st.grid_slots[pane][k] = Some(want);
+    }
+    if std::env::var("TWINFM_SPIKE_TRACE").is_ok() {
+        use slint::Model;
+        let held: Vec<String> = st.col_slots[pane].iter().map(|s| format!("{}:{}", s.col, s.tiles.row_count())).collect();
+        eprintln!("[spike] pane={pane} slots {}", held.join(" "));
     }
 }
 
@@ -2867,6 +2995,10 @@ fn on_grid_cols(pane: usize, n: usize) {
         let Ok(mut guard) = s.try_borrow_mut() else { return true };
         let Some(st) = guard.as_mut() else { return false };
         st.grid_n[pane] = n.max(1);
+        // SPIKE (P16-M5): the list's "tiles to a row" are its rows to a column, set by `resolve_list`.
+        if is_list(st, pane) {
+            return false;
+        }
         if st.grid[pane] && st.model(pane).set_grid_n(n) {
             eprintln!("[grid] pane={pane} {n} tiles to a row, {} grid rows", st.model(pane).grid_len());
             st.strip_dirty[pane] = true;
@@ -8436,6 +8568,18 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_right_grid(grid[1]);
     app.set_left_tile(tile[0].index());
     app.set_right_tile(tile[1].index());
+    // SPIKE (P16-M5).
+    // At run time by TWINFM_SPIKE_LIST, or for a gate build by building with TWINFM_SPIKE_LIST_ALWAYS set
+    // (the triplet script sets no variable of its own).
+    let spike_list = std::env::var("TWINFM_SPIKE_LIST").is_ok() || option_env!("TWINFM_SPIKE_LIST_ALWAYS").is_some();
+    let col_slots: [Rc<VecModel<ColSlot>>; 2] = Default::default();
+    app.set_left_list(spike_list);
+    app.set_right_list(spike_list);
+    app.set_left_col_slots(ModelRc::from(col_slots[0].clone()));
+    app.set_right_col_slots(ModelRc::from(col_slots[1].clone()));
+    if spike_list {
+        eprintln!("[spike] the small view is the sideways list");
+    }
     for (pane, v) in views.iter().enumerate() {
         if v.is_grid() {
             eprintln!("[view] pane={pane} starts as {}", v.label());
@@ -8537,6 +8681,9 @@ fn main() -> Result<(), slint::PlatformError> {
             grid_n: [1; 2],
             tile,
             grid_slots: Default::default(),
+            list: spike_list,
+            list_view: [(0.0, 0.0, 0.0); 2],
+            col_slots,
             strip_rows,
             gesture: Default::default(),
             drag_icon: None,
@@ -8610,6 +8757,7 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     app.on_viewport_changed(|pane, y, h| on_viewport(pane as usize, y, h));
     app.on_grid_cols(|pane, n| on_grid_cols(pane as usize, n.max(1) as usize));
+    app.on_list_viewport(|pane, x, w, h| on_list_viewport(pane as usize, x, w, h));
     app.on_grid_cursor(|pane, row| on_grid_cursor(pane as usize, row));
     app.on_set_view(|pane, view| set_view(pane as usize, settings::View::from_index(view)));
 

@@ -1,4 +1,4 @@
-import { Pane, Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Toolbar, Paging } from "pane.slint";
+import { Pane, Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ColSlot, ToolState, Toolbar, Paging } from "pane.slint";
 import { ListView, AboutSlint } from "std-widgets.slint";
 import { Theme, Btn, Switch, Field, Choice, VScrollBar, TipCard } from "theme.slint";
 // Inter (SIL Open Font License 1.1, src/ui/fonts/OFL.txt), the face of the look (P10-M1 task 4):
@@ -7,7 +7,7 @@ import "fonts/Inter-Regular.ttf";
 import "fonts/Inter-Medium.ttf";
 import "fonts/Inter-SemiBold.ttf";
 import { Preview, PreviewPage, MdBlock, MdRow, MdCell } from "preview.slint";
-export { Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
+export { Row, SizeRow, TabInfo, Crumb, StatusInfo, GridRow, Tile, StripRow, ColSlot, ToolState, Paging, PreviewPage, MdBlock, MdRow, MdCell }
 // The fluent Palette, for main.rs's TWINFM_SCHEME override (a scripted screenshot of the other scheme).
 export { Palette } from "std-widgets.slint";
 // The scrollbars' held-press rule (P14-M3, model.rs `track_repeats`).
@@ -296,6 +296,14 @@ export component App inherits Window {
     in property <bool> right-grid: false;
     in property <int> left-tile: 1;
     in property <int> right-tile: 1;
+    // SPIKE (P16-M5): the small view drawn as the sideways list (TWINFM_SPIKE_LIST).
+    in property <bool> left-list: false;
+    in property <bool> right-list: false;
+    in property <[ColSlot]> left-col-slots;
+    in property <[ColSlot]> right-col-slots;
+    in property <length> left-list-w;
+    in property <length> right-list-w;
+    callback list-viewport(int, length, length, length);
     in property <[GridRow]> left-grid-rows;
     in property <[GridRow]> right-grid-rows;
     // The sizes view per pane (P13-M3): the active tab is one, and its rows (sizeview.rs SizeModel).
@@ -1206,6 +1214,8 @@ export component App inherits Window {
                 navigate(p) => { root.navigate(0, p); }
                 select(op, i) => { root.select(0, op, i); }
                 viewport-changed(y, h) => { root.viewport-changed(0, y, h); }
+                list: root.left-list; col-slots: root.left-col-slots; list-content-w: root.left-list-w;
+                list-viewport(x, w, h) => { root.list-viewport(0, x, w, h); }
                 grid-cols(n) => { root.grid-cols(0, n); }
                 grid-cursor(c) => { root.grid-cursor(0, c); }
                 command(c) => { root.command(0, c); }
@@ -1289,6 +1299,8 @@ export component App inherits Window {
                 navigate(p) => { root.navigate(1, p); }
                 select(op, i) => { root.select(1, op, i); }
                 viewport-changed(y, h) => { root.viewport-changed(1, y, h); }
+                list: root.right-list; col-slots: root.right-col-slots; list-content-w: root.right-list-w;
+                list-viewport(x, w, h) => { root.list-viewport(1, x, w, h); }
                 grid-cols(n) => { root.grid-cols(1, n); }
                 grid-cursor(c) => { root.grid-cursor(1, c); }
                 command(c) => { root.command(1, c); }
