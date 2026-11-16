@@ -49,6 +49,11 @@ Run 'run1' (@('sleep 1500', "nav 0 $files", 'sleep 600', 'split', 'sleep 400') +
       'filter 0 re:img_(', 'sleep 300', 'searchreturn 0', 'sleep 500', 'search 0', 'sleep 500', 'filter 0', 'sleep 300',
       'csearch 0 todo', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'tab close', 'sleep 300',
       'csearch 0 \re:port', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'tab close', 'sleep 300',
+      # P16-M4: plain text is searched for as itself on the engine: "TODO|FIXME" typed plainly finds
+      # nothing (no file holds that text; as an expression it finds three files), and "X. //" nothing
+      # either (fixme.c holds "x; //", which a dot read as "any character" would find).
+      'csearch 0 TODO|FIXME', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'tab close', 'sleep 300',
+      'csearch 0 X. //', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'tab close', 'sleep 300',
       'csearch 0 re:^\s*(TODO|FIXME)', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'tab close', 'sleep 300',
       'csearch 0 re:TODO|FIXME', 'waitsearch 5000', 'sleep 500', 'rows 0 20', 'searchsave 0', 'sleep 300', 'tab close', 'sleep 300',
       'csearch 0 re:TODO|(', 'sleep 500', 'contentmode 0 off', 'sleep 300', 'filter 0', 'sleep 300',

@@ -277,3 +277,183 @@ Each brief settles first: the badge's look and place, with Jeremy (P16-M1); what
 memory and per composed row (P16-M3); whether a sideways list of 40,000 entries holds the gate (P16-M5);
 whether a `TouchArea` over a `TextInput` can pass the side buttons (P16-M2); the list of matches that change
 on the regex engine (P16-M4); what following a content search costs while many files are written (P16-M6).
+
+## P16-M4: plain content search on the fast engine
+
+Branch `feat/p16-m4-content-search`, the search and files stream, cut from main at 3e4c201 (the kickoff;
+it does not depend on P16-M2).
+
+### Settled first: what changes in what matches
+
+Measured, not recalled: the ignored test `fs::content::tests::probe_plain_against_the_engine` searched
+for each of the 3,078 characters that have an upper or lower case form in every one of the 1,112,064
+characters there are, by the comparison used until now (each character's lowercase, a final sigma as a
+sigma, the text a substring) and by the engine (the text escaped, case-insensitive), and then tried 33
+words. **194 letter pairs differ, in three groups; nothing differs for English text, punctuation or
+accents.**
+
+1. **The Turkish dotted capital İ (1 letter, 2 pairs).** Until now a plain `i` (or `I`) found a line
+   whose only i is `İ`, so `ali` found `ALİ`; on the engine it does not. The old answer was half a
+   rule: `istanbul` did not find `İSTANBUL` before either (İ lowercases to an i and a separate dot, so
+   only a text ending in i matched). On the engine `İ` is found only by `İ`.
+2. **Other shapes of the same letter (96 pairs): the engine finds more.** `s` and the long `ſ`; the
+   Greek `μ` and the micro sign `µ`; the Greek symbol forms `ϐ ϑ ϕ ϖ ϰ ϱ ϵ` with `β θ φ π κ ρ ε`; the
+   iota forms (`ι`, the combining iota below, U+1FBE); two accented Greek letters with their second
+   code points; the old Cyrillic shapes U+1C80 to U+1C88 with `в д о с т ъ ѣ ꙋ`; `ṡ` and `ẛ`; the two
+   st ligatures with each other. Before, each was found only by typing that exact shape.
+3. **Letters whose case pairs are newer than the engine's tables (48 capital and small pairs, 96 pairs
+   counted both ways):** the Beria Erfe script (U+16EA0 to U+16ED3, 25 pairs), Latin phonetic letters
+   at U+1DF40 to U+1DF7F (16 pairs) and seven more Latin pairs (U+A7CE/A7CF, A7D2/A7D3, A7D4/A7D5,
+   U+0277/A7DD, U+027C/A7E2, U+AB4B/AB6C, U+AB4C/AB6D). Rust's own tables know them and the `regex`
+   crate's (1.13.1) do not yet, so a small one no longer finds its capital until the crate is bumped.
+
+The same before and after (the probe's words): ordinary letters in either case, accents (`é` finds
+`É`), `ß` and `ẞ`, the final sigma rule (`ς`, `σ` and `Σ` find each other), the Kelvin and Ångström
+signs, the digraphs `ǆ ǅ`, Georgian, Cherokee, and every punctuation character typed as itself (`a.b`
+finds `A.B` and not `AxB`). Neither treats `ss` as `ß`, `fi` as the ligature `ﬁ`, or `é` as e and a
+separate accent.
+
+One more visible change: a matching line with a character that lowercases to another length before the
+match (`İ`) was shown from the line's start; it is now shown around the match, as every other line.
+
+**Jeremy's decision** (2026-11-15; the three groups went to him through the coordinating session,
+with the lean to take the engine's answers, before the change left its branch; asked "Take the new
+engine's answers for the content-search letters?"): **"Yes, take them"**. So the change stands as
+built: no extra letter for `İ`, the other shapes found, the newest letters left to the crate.
+
+### What landed
+
+- **Plain text is an expression** (41ca503). The box's plain text is compiled once as an escaped,
+  case-insensitive expression (`fs::content::plain`: `regex::escape`, then `model::compile`, the
+  builder `re:` uses) and each file's text is searched as it is; until now the text of every file was
+  lowercased into a new string first. The row's line comes from the match's own place. `content::fold`,
+  the old `first_match` and the `Needle` enum are gone: one function finds the line
+  (`content::first_match`, P15-M4's `first_match_regex` renamed) and a content search's needle is a
+  compiled expression (`enumerate::Content::needle`, an `Option<regex::Regex>`; none, which nothing
+  builds today, finds nothing).
+- **Not touched**: the live filter and the name search (names are short), the 16 MB cap, the binary
+  test, the cloud rules, the `[search]` lines (a plain content search still logs `(text)`), saved
+  searches and history entries (they keep the typed text and compile it when run).
+- **The probe stays** as an ignored test (about two seconds; `cargo test --release -- --ignored
+  probe_plain_against_the_engine --nocapture`), with the old comparison written out inside it, so the
+  list can be measured again after a bump of the `regex` crate or of Rust.
+
+### Timing
+
+`tools/time-p15m4.ps1` (the 100 MB tree in `%TEMP%\twinfm-p15m4-time`, 400 files of about 256 KB, the
+text in every fiftieth; one scripted run, a warm-up, then plain text and `re:` three times each,
+alternating), 2026-11-15, the machine quiet both times (the coordinating session held the other
+stream), 400 files read and 8 found in every search, 0 panicked lines.
+
+| The search's `done` time, ms | plain text | `re:` |
+|---|---|---|
+| Before (main, 3e4c201) | 982, 985, 983 (median 983) | 99, 93, 107 (median 99) |
+| After (41ca503) | 104, 120, 88 (median 104) | 100, 107, 89 (median 100) |
+
+Plain text went from 983 ms to 104 ms and is level with `re:`. The before run's warm-up was 4,379 ms
+(the files not yet in the file cache), the after run's 123 ms (cached from the before run), so the two
+warm-ups are not compared. Phase 15 measured 968 against 86 on the same tree.
+
+### Tests
+
+`cargo test --release`: **365 tests** (364 before), `test result: ok. 365 passed; 0 failed; 3 ignored`
+(the third ignored test is the probe); two full runs, one before the code commit and one before the
+docs commit, no failure in either; `cargo build --release` finished.
+
+- `fs::content::tests::plain_text_is_an_escaped_expression` (new): every typed character is itself
+  (`a.b`, brackets, braces, `|`, `*`, `+`, `?`, `^`, `$`, a backslash, `$5.00 (usd)`); the cases that
+  stay the same (accents, `ẞ`; `ss`, the `ﬁ` ligature and a separate accent not unfolded); **the
+  differing cases pinned to the engine's answers**: the long s, the micro sign and mu, two Greek symbol
+  forms found; `İ` not found by `i`, `ALİ` not by `ali`, found by `İ`. Group 3 is not pinned (it
+  changes back by itself when the crate's tables catch up; the probe lists it).
+- `the_first_matching_line_is_kept_and_cut` (kept, on the new path): the first line, trimmed; either
+  letter case of the needle; Greek both ways (the sigma test the kickoff asked to keep); a line with
+  `İ` before the match; the cuts of long lines.
+- `files_are_read_up_to_the_cap` and the walker's
+  `content_search_reads_text_files_and_stays_out_of_links_and_clouds` (kept): their plain needles are
+  built by `plain`.
+- The differing answers were not first seen failing as a test: they were measured on the old code by
+  the probe before the change (its 194 pairs and the words marked DIFFERENT), and the new test pins
+  what the probe showed for the engine.
+
+### Scripted checks
+
+`tools/check-p15m4.ps1` (P15-M4's, two runs in `%TEMP%\twinfm-p15m4-check\`, with two plain searches
+added), 41ca503's release build, no `panicked` line. The plain content searches, from its output:
+
+```
+[search] pane=0 gen=6 content "todo" (text) in ...\files
+[search] pane=0 gen=6 done: 2 found in 15 files read, 0 skipped (...), 2 folders walked, ... in 15 ms
+[auto] rows pane=0: IMG_0500.jpg  (sub)  not a picture: todo is mid-line here [], todo.txt  (sub)  TODO: write the docs []
+[search] pane=0 gen=7 content "\re:port" (text) in ...\files
+[search] pane=0 gen=7 done: 1 found in 15 files read, ...
+[auto] rows pane=0: fixme.c  (sub)  // see re:port 7 []
+[search] pane=0 gen=8 content "TODO|FIXME" (text) in ...\files
+[search] pane=0 gen=8 done: 0 found in 15 files read, ...
+[search] pane=0 gen=9 content "X. //" (text) in ...\files
+[search] pane=0 gen=9 done: 0 found in 15 files read, ...
+[search] pane=0 gen=11 content "re:TODO|FIXME" (regex) in ...\files
+[search] pane=0 gen=11 done: 3 found in 15 files read, ...
+```
+
+`todo` and `\re:port` find the rows P15-M4's record shows. The two new ones show that typed characters
+are themselves: `TODO|FIXME` typed plainly finds nothing where the expression finds three files, and
+`X. //` nothing where a dot read as "any character" would find `int x; // fixme later`. The rest of
+the script (the filter, the name searches, the expressions, the saved search and its reopening) printed
+what it did in P15-M4. The script prints blank exit codes, as it did then.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` (the branch's own script, unchanged: each cycle already runs three
+plain content searches, which now take the new path) on 41ca503's release build, 2026-11-15,
+harness-launched, with the coordinating session's leave and the other stream holding: ran 10.1 min,
+window closed by the script, exit code 0, 0 panicked lines; 223 jobs done (failed 0, cancelled 0), soak
+refusals 0, waitops timeouts 0, menupicks refused 0, every "must be 0" count 0.
+
+```
+content search: done 9 (three per cycle), files read 1812 (600 or more per cycle), found 12 (four per cycle)
+search patterns: name searches with a class started 3, done with 30 or more found 3; content searches with an expression started 3, done with 2 found 3 (one each per cycle); not-a-pattern lines 0 (must be 0)
+saved searches: saved 3, opened 3, run again and found 3, removed 3 (one each per cycle)
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+working set: start 154.6 MB at 5 s, end 233.9 MB at 601 s; private: 165 -> 225.1 MB
+```
+
+The content search counts are the ones P15-M4's soak gave (9 done, 12 found). The display scale was not
+read for this run.
+
+### Gate
+
+Not run yet. The code head for the gate build is 41ca503 (the commit after it changes the record,
+`CLAUDE.md` and the check script only); the defaults triplet, built and handed to Jeremy by the
+coordinating session. Its figures go here.
+
+What the gate scenario meets of this milestone: nothing. It runs no search; no row, list or timer
+changed.
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+1. **A word in the repo.** In `C:\Users\jtkli\projects\twinfm`, click the small page icon at the left
+   of the search box (right end of the path bar) so it lights up, type `scroll`, Enter. A tab "Text:
+   scroll" fills with files, each row showing the line with the word. With logging on (Settings, Log),
+   the log's `[search] ... done: ... in T ms` line gives the time; do the same in 0.6.0 for the figure
+   to compare.
+2. **A word in Documents.** The same in `Documents` with a word you know is in some files: the same
+   files as 0.6.0 finds, sooner.
+3. **Capitals do not matter.** Search `SCROLL` in the repo: the same rows as `scroll`.
+4. **Punctuation is itself.** Search `fn main(` in the repo: only lines with exactly that text. Search
+   `a.b`: lines with a real dot between a and b, not `axb`.
+5. **The long line.** A match far along a very long line shows `…`, 40 characters of lead, then the
+   match, as before.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The engine's answers are taken in all three groups**, the kickoff's lean and Jeremy's decision
+  above. Keeping `i` finding `İ` would be one more letter in the expression built for a plain search; it was
+  not done because the old rule was already half a rule.
+- **Group 3 is left to the `regex` crate**: no table of TwinFM's own for 48 pairs of letters nobody
+  here will meet; the probe says when they are back.
+- **The probe is kept in the test module** (ignored, never part of the gates), as P15-M1's extract
+  probe is.
+- **No new soak cycle**: each cycle already runs three plain content searches, which now take the new
+  path; the counts are the old ones.
+- **`first_match_regex` is now `first_match`** (one function is left; the old name's reason is gone).
