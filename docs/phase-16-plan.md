@@ -612,6 +612,10 @@ a second"), and it is withdrawn: **Up and Back fire once per hover**. To go agai
 button and comes back, as a folder row's spring (`dnd::spring_key`, tested: the button is one target
 whatever folder it would go to). The scripted check holds Up for 2.6 s and the pane goes up once.
 
+For the two (f8c342c): tests 368 passed, 0 failed, 2 ignored; the scripted check exit 0; a ten-minute soak
+exit 0, no panic, 227 jobs done, none failed, no scripted drag dropped, no drag loop that found the state
+busy, every must-be-0 count at 0, working set 156 to 231 MB.
+
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
 Revised after the first console check: 2, 3, 7, 8 and 9 changed, 14 and 15 are new; 16 after the second;
