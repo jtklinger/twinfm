@@ -579,6 +579,12 @@ scripted check lets nothing go there; the rule is `effect_at`, and Drop reads on
 small picture is the link's arrow or the copy's plus, for the reason in E. A greyed button keeps the
 no-entry sign. The crumbs stay the more direct way, as before.
 
+For the three (c630fb3): tests 368 passed, 0 failed, 2 ignored; the scripted check exit 0 (a sidebar row
+held under a drag out of the left pane opened in the right; a release on Up read "DragEnter effect copy,
+Drop reported none" with no file job after it); a ten-minute soak exit 0, no panic, 227 jobs done, none
+failed, no scripted drag dropped, every must-be-0 count at 0, Up held by a drag went up in each full
+cycle (2), working set 156 to 231 MB.
+
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
 Revised after the first console check: 2, 3, 7, 8 and 9 changed, 14 and 15 are new; 16 after the second.
