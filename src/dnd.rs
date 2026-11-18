@@ -3104,7 +3104,9 @@ pub struct DragRequest {
 pub fn drag(req: &DragRequest) -> Result<bool, String> {
     shellmenu::ensure_com()?;
     let hwnd = req.hwnd as HWND;
+    let began = std::time::Instant::now();
     let (folder_pidl, folder, children) = shellmenu::parse_items(hwnd, &req.folder, &req.names)?;
+    let parsed = began.elapsed();
     let archive = crate::fs::archive::inside(&req.folder);
     let data = if archive {
         // The zip folder's own data object: virtual files (FileGroupDescriptorW + FileContents),
@@ -3122,6 +3124,8 @@ pub fn drag(req: &DragRequest) -> Result<bool, String> {
         }
         Com(p)
     };
+    // On the UI thread, before the drag loop (P16-M2's timing of the big move's drag).
+    eprintln!("[dnd] {} items parsed in {} ms, their data object made in {} ms", req.names.len(), parsed.as_millis(), (began.elapsed() - parsed).as_millis());
     if let Some(img) = &req.image {
         attach_drag_image(data.0, img);
     }

@@ -116,6 +116,53 @@ impl Job {
     }
 }
 
+/// A job of more items than this is logged in its short form (`brief`), and only this many of its
+/// item lines are (`item_lines`).
+pub const LOG_ITEMS: usize = 20;
+
+/// A job for a log line: its `Debug` form, or for more than `LOG_ITEMS` items the kind, the count,
+/// the first item and where they go. One String either way, so the line is one write: stderr is
+/// unbuffered and a path's `Debug` form is written a character at a time, which made a 40,000-item
+/// job's line 1.5 million writes on the UI thread (P16-M2, the big move).
+pub fn brief(job: &Job) -> String {
+    if job.count() <= LOG_ITEMS {
+        return format!("{job:?}");
+    }
+    let n = job.count();
+    match job {
+        Job::Copy { sources, dest_dir } => format!("Copy {{ {n} sources, first {:?}, dest_dir: {dest_dir:?} }}", sources[0]),
+        Job::Move { sources, dest_dir } => format!("Move {{ {n} sources, first {:?}, dest_dir: {dest_dir:?} }}", sources[0]),
+        Job::MoveAs { items, dest_dir } => format!("MoveAs {{ {n} items, first {:?}, dest_dir: {dest_dir:?} }}", items[0]),
+        Job::Delete { sources, permanent } => format!("Delete {{ {n} sources, first {:?}, permanent: {permanent} }}", sources[0]),
+        Job::Restore { items } => format!("Restore {{ {n} items, first {:?} }}", items[0]),
+        Job::Compress { sources, dest_dir, format } => format!("Compress {{ {n} sources, first {:?}, dest_dir: {dest_dir:?}, format: {format:?} }}", sources[0]),
+        Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } | Job::Extract { .. } => format!("{job:?}"),
+    }
+}
+
+/// A finished job's item lines for the log, as one String (one write): every item of a job of up
+/// to `LOG_ITEMS`; of a larger one the first `LOG_ITEMS`, then the first `LOG_ITEMS` failed ones
+/// after those, then how many are not listed.
+pub fn item_lines(results: &[ItemResult]) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let line = |out: &mut String, r: &ItemResult| {
+        let to = r.dest.as_ref().map_or_else(|| "-".to_string(), |p| p.display().to_string());
+        let _ = writeln!(out, "[fileops]   item 0x{:08X} {} -> {to}", r.hr as u32, r.source.display());
+    };
+    let head = results.len().min(LOG_ITEMS);
+    results[..head].iter().for_each(|r| line(&mut out, r));
+    let rest = &results[head..];
+    if rest.is_empty() {
+        return out;
+    }
+    let failed = rest.iter().filter(|r| !r.ok()).count();
+    rest.iter().filter(|r| !r.ok()).take(LOG_ITEMS).for_each(|r| line(&mut out, r));
+    let listed = failed.min(LOG_ITEMS);
+    let _ = writeln!(out, "[fileops]   {} more item(s) not listed ({} ok, {} failed)", rest.len() - listed, rest.len() - failed, failed - listed);
+    out
+}
+
 pub struct Request {
     pub id: u64,
     pub job: Job,
@@ -161,6 +208,9 @@ pub struct Done {
     /// A copy's or move's destination paths that were there before it ran (P11-M3): an item that
     /// landed on one replaced that file (`undo::forbid_if_replaced`).
     pub existed: Vec<PathBuf>,
+    /// An undo or redo job its check refused before anything ran (`Worker::submit_checked`):
+    /// `outcome` is `Error` with the reason, and there are no results.
+    pub refused: bool,
 }
 
 /// The destination paths a copy or move would land on that are there already (P11-M3), looked at
@@ -384,7 +434,7 @@ pub fn hidden_dialogs() -> Vec<(isize, String)> {
 /// Handle to the worker. Dropping it ends the worker's message loop.
 pub struct Worker {
     tid: u32,
-    tx: Sender<Request>,
+    tx: Sender<(Request, Option<undo::Undo>)>,
     /// Jobs with an id up to this one that have not started yet are cancelled unrun (Escape).
     cancel_upto: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
@@ -393,7 +443,7 @@ impl Worker {
     /// Start the worker. `done` is called on the worker thread after each job, `progress` on the
     /// worker thread while one runs (throttled by `ProgressGate`).
     pub fn spawn(done: impl Fn(Done) + Send + 'static, progress: impl Fn(Progress) + Send + 'static) -> Worker {
-        let (tx, rx) = unbounded::<Request>();
+        let (tx, rx) = unbounded::<(Request, Option<undo::Undo>)>();
         let (tid_tx, tid_rx) = crossbeam_channel::bounded(1);
         let cancel_upto = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let cancel = cancel_upto.clone();
@@ -417,8 +467,17 @@ impl Worker {
     }
 
     /// Queue a job. False if the worker is gone.
+    #[cfg(test)]
     pub fn submit(&self, r: Request) -> bool {
-        if self.tx.send(r).is_err() {
+        self.submit_checked(r, None)
+    }
+
+    /// Queue an undo or redo job with the record it replays: the worker runs `undo::check` on it
+    /// as the job's first step and refuses the job (`Done::refused`) when the items are no longer
+    /// where the original left them. On the worker because the check asks the file system about
+    /// every item (40,000 calls on the UI thread for the big move, P16-M2).
+    pub fn submit_checked(&self, r: Request, check: Option<undo::Undo>) -> bool {
+        if self.tx.send((r, check)).is_err() {
             return false;
         }
         // SAFETY: posting to a thread id; fails harmlessly if the thread has exited.
@@ -441,7 +500,7 @@ impl Drop for Worker {
     }
 }
 
-fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, done: impl Fn(Done), progress: Rc<dyn Fn(Progress)>) {
+fn run_loop(rx: Receiver<(Request, Option<undo::Undo>)>, cancel_upto: &std::sync::atomic::AtomicU64, done: impl Fn(Done), progress: Rc<dyn Fn(Progress)>) {
     // SAFETY: initialises COM for this thread as an STA; balanced by CoUninitialize below.
     let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     // SAFETY: a zeroed MSG is a valid out-buffer for GetMessageW.
@@ -453,9 +512,15 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
             break;
         }
         if msg.hwnd.is_null() && msg.message == WM_RUN {
-            while let Ok(req) = rx.try_recv() {
-                let mut existed = existing_dests(&req.job);
+            while let Ok((req, check)) = rx.try_recv() {
                 let cancelled = || req.id <= cancel_upto.load(std::sync::atomic::Ordering::Acquire);
+                if !cancelled() {
+                    if let Some(Err(why)) = check.as_ref().map(undo::check) {
+                        done(Done { id: req.id, job: req.job, outcome: Outcome::Error(why), results: Vec::new(), existed: Vec::new(), refused: true });
+                        continue;
+                    }
+                }
+                let mut existed = existing_dests(&req.job);
                 let (outcome, results) = if cancelled() {
                     (Outcome::Cancelled, Vec::new()) // cancelled while queued: never started
                 } else if com >= 0 {
@@ -471,7 +536,7 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
                 } else {
                     (Outcome::Failed(com), Vec::new())
                 };
-                done(Done { id: req.id, job: req.job, outcome, results, existed });
+                done(Done { id: req.id, job: req.job, outcome, results, existed, refused: false });
             }
             continue;
         }
@@ -652,6 +717,18 @@ struct Sink {
     id: u64,
     progress: Rc<dyn Fn(Progress)>,
     gate: std::cell::Cell<ProgressGate>,
+    /// When `PerformOperations` was called, until the first item's callback has logged how long
+    /// the shell took to reach it (P16-M2's timing lines).
+    called: std::cell::Cell<Option<Instant>>,
+}
+
+/// Log, once per job, how long after `PerformOperations` the shell reached its first item.
+unsafe fn first_item(this: *mut c_void) {
+    // SAFETY: `this` is our Sink, called on the worker.
+    let sink = unsafe { &*(this as *const Sink) };
+    if let Some(t0) = sink.called.take() {
+        eprintln!("[fileops] id={}: the shell's first item {} ms after PerformOperations", sink.id, t0.elapsed().as_millis());
+    }
 }
 
 static SINK_VTBL: SinkVtbl = SinkVtbl {
@@ -743,13 +820,19 @@ unsafe extern "system" fn sink_ok0(_: *mut c_void) -> HRESULT {
 unsafe extern "system" fn sink_finish(_: *mut c_void, _: HRESULT) -> HRESULT {
     0
 }
-unsafe extern "system" fn sink_pre_rename(_: *mut c_void, _: u32, _: Item, _: Wstr) -> HRESULT {
+unsafe extern "system" fn sink_pre_rename(this: *mut c_void, _: u32, _: Item, _: Wstr) -> HRESULT {
+    // SAFETY: called by the shell through the pointer we advised.
+    unsafe { first_item(this) };
     0
 }
-unsafe extern "system" fn sink_pre_move_copy(_: *mut c_void, _: u32, _: Item, _: Item, _: Wstr) -> HRESULT {
+unsafe extern "system" fn sink_pre_move_copy(this: *mut c_void, _: u32, _: Item, _: Item, _: Wstr) -> HRESULT {
+    // SAFETY: as above.
+    unsafe { first_item(this) };
     0
 }
-unsafe extern "system" fn sink_pre_delete(_: *mut c_void, _: u32, _: Item) -> HRESULT {
+unsafe extern "system" fn sink_pre_delete(this: *mut c_void, _: u32, _: Item) -> HRESULT {
+    // SAFETY: as above.
+    unsafe { first_item(this) };
     0
 }
 unsafe extern "system" fn sink_progress(this: *mut c_void, total: u32, sofar: u32) -> HRESULT {
@@ -935,6 +1018,7 @@ fn perform_inner(req: &Request, progress: &Rc<dyn Fn(Progress)>, results: &mut V
     }
     // Items stay alive until after PerformOperations (the operation also holds its own references).
     let mut keep: Vec<Com> = Vec::new();
+    let handing = Instant::now();
     match &req.job {
         Job::Copy { sources, dest_dir } | Job::Move { sources, dest_dir } => {
             let dest = shell_item(dest_dir)?;
@@ -992,7 +1076,9 @@ fn perform_inner(req: &Request, progress: &Rc<dyn Fn(Progress)>, results: &mut V
         id: req.id,
         progress: progress.clone(),
         gate: std::cell::Cell::new(ProgressGate::new()),
+        called: std::cell::Cell::new(Some(Instant::now())),
     })) as *mut c_void);
+    eprintln!("[fileops] id={}: {} item(s) handed to the shell in {} ms", req.id, req.job.count(), handing.elapsed().as_millis());
     let mut cookie = 0u32;
     let advised = unsafe { (v.advise)(op.0, sink.0, &mut cookie) } >= 0;
     let performed = unsafe { (v.perform_operations)(op.0) };
@@ -1475,6 +1561,72 @@ mod tests {
         assert_eq!(flags(&nf, false), base | FOF_RENAMEONCOLLISION);
         let file = Job::NewFile { parent: PathBuf::from(r"C:\d"), name: NEW_FILE_NAME.into() };
         assert_eq!(flags(&file, false), base | FOF_RENAMEONCOLLISION, "a new file is numbered as a new folder is");
+    }
+
+    /// P16-M2 (the big move): a job's log form and its item lines stay small whatever its size.
+    #[test]
+    fn large_jobs_are_logged_in_short() {
+        let small = Job::Move { sources: vec![r"C:\a\x.txt".into(), r"C:\a\y.txt".into()], dest_dir: r"C:\b".into() };
+        assert_eq!(brief(&small), format!("{small:?}"), "up to LOG_ITEMS items: the Debug form, as before");
+        let twenty = Job::Delete { sources: (0..LOG_ITEMS).map(|i| format!(r"C:\a\f{i}").into()).collect(), permanent: true };
+        assert_eq!(brief(&twenty), format!("{twenty:?}"));
+        let sources: Vec<PathBuf> = (0..40_000).map(|i| format!(r"C:\a\file_{i}.txt").into()).collect();
+        let big = Job::Move { sources: sources.clone(), dest_dir: r"C:\b".into() };
+        assert_eq!(brief(&big), r#"Move { 40000 sources, first "C:\\a\\file_0.txt", dest_dir: "C:\\b" }"#);
+        assert_eq!(brief(&Job::Copy { sources: sources.clone(), dest_dir: r"C:\b".into() }), r#"Copy { 40000 sources, first "C:\\a\\file_0.txt", dest_dir: "C:\\b" }"#);
+        assert_eq!(brief(&Job::Delete { sources: sources.clone(), permanent: false }), r#"Delete { 40000 sources, first "C:\\a\\file_0.txt", permanent: false }"#);
+        let items: Vec<(PathBuf, String)> = sources.iter().take(21).map(|s| (s.clone(), "n".to_string())).collect();
+        assert_eq!(brief(&Job::MoveAs { items, dest_dir: r"C:\b".into() }), r#"MoveAs { 21 items, first ("C:\\a\\file_0.txt", "n"), dest_dir: "C:\\b" }"#);
+        let items: Vec<(PathBuf, PathBuf)> = sources.iter().take(21).map(|s| (s.clone(), s.clone())).collect();
+        assert!(brief(&Job::Restore { items }).starts_with(r#"Restore { 21 items, first ("C:\\a\\file_0.txt", "#));
+
+        let ok = |i: usize| ItemResult { source: format!(r"C:\a\f{i}").into(), dest: Some(format!(r"C:\b\f{i}").into()), hr: 0 };
+        let bad = |i: usize| ItemResult { source: format!(r"C:\a\f{i}").into(), dest: None, hr: -2147024894 };
+        // Up to LOG_ITEMS: every item, no count line.
+        let few: Vec<ItemResult> = (0..LOG_ITEMS).map(ok).collect();
+        let text = item_lines(&few);
+        assert_eq!(text.lines().count(), LOG_ITEMS);
+        assert_eq!(text.lines().next(), Some(r"[fileops]   item 0x00000000 C:\a\f0 -> C:\b\f0"));
+        assert_eq!(item_lines(&[]), "");
+        // 40,000, all well: the first twenty and the count.
+        let many: Vec<ItemResult> = (0..40_000).map(ok).collect();
+        let text = item_lines(&many);
+        assert_eq!(text.lines().count(), LOG_ITEMS + 1);
+        assert_eq!(text.lines().last(), Some("[fileops]   39980 more item(s) not listed (39980 ok, 0 failed)"));
+        // Failures after the first twenty stay findable: the first twenty of them, then the count.
+        let mixed: Vec<ItemResult> = (0..1000).map(|i| if i >= 100 && i % 10 == 0 { bad(i) } else { ok(i) }).collect();
+        let text = item_lines(&mixed);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), LOG_ITEMS + LOG_ITEMS + 1);
+        assert_eq!(lines[LOG_ITEMS], r"[fileops]   item 0x80070002 C:\a\f100 -> -");
+        assert_eq!(lines[2 * LOG_ITEMS - 1], r"[fileops]   item 0x80070002 C:\a\f290 -> -");
+        assert_eq!(lines[2 * LOG_ITEMS], "[fileops]   960 more item(s) not listed (890 ok, 70 failed)");
+    }
+
+    /// P16-M2: an undo job's check runs on the worker. One whose items are gone is refused before
+    /// anything runs; one whose items are there runs.
+    #[test]
+    fn the_worker_checks_an_undo_before_it_runs() {
+        let root = std::env::temp_dir().join(format!("twinfm-p16m2-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("back")).unwrap();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let (tx, rx) = unbounded();
+        let worker = Worker::spawn(move |d| {
+            let _ = tx.send(d);
+        }, |_| {});
+        let job = |name: &str| Job::Move { sources: vec![root.join(name)], dest_dir: root.join("back") };
+        let record = |name: &str| undo::Undo { job: job(name), expect: vec![root.join(name)], must_be_empty: false };
+        assert!(worker.submit_checked(Request { id: 1, job: job("gone.txt"), hwnd: 0, no_confirm: true }, Some(record("gone.txt"))));
+        let d = rx.recv_timeout(Duration::from_secs(30)).expect("the refused job reports");
+        assert_eq!((d.id, d.refused, d.results.len()), (1, true, 0));
+        assert_eq!(d.outcome, Outcome::Error("Cannot undo: gone.txt is no longer there".into()));
+        assert!(worker.submit_checked(Request { id: 2, job: job("a.txt"), hwnd: 0, no_confirm: true }, Some(record("a.txt"))));
+        let d = rx.recv_timeout(Duration::from_secs(30)).expect("the job reports");
+        assert_eq!((d.id, d.refused, d.outcome.clone()), (2, false, Outcome::Done));
+        assert!(root.join("back").join("a.txt").is_file() && !root.join("a.txt").exists());
+        drop(worker);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -3200,6 +3200,12 @@ fn raise_job_dialogs() {
 /// Queue a job on the worker; the source pane's active tab shows its progress note. Returns the
 /// job id.
 fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
+    submit_checked(st, app, pane, job, None)
+}
+
+/// `submit`, with the record an undo or redo job replays: the worker checks it before it runs
+/// anything (`fileops::Worker::submit_checked`).
+fn submit_checked(st: &mut State, app: &App, pane: usize, job: Job, check: Option<fileops::undo::Undo>) -> Option<u64> {
     if let Some(roots) = &st.soak {
         if let Some(p) = job.paths().into_iter().find(|p| !roots.iter().any(|r| inside(p, r))) {
             let shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
@@ -3219,8 +3225,8 @@ fn submit(st: &mut State, app: &App, pane: usize, job: Job) -> Option<u64> {
     let hwnd = main_hwnd(st, app);
     let running = fileops::running_text(&job);
     let extract = matches!(job, Job::Extract { .. });
-    eprintln!("[fileops] submit id={id} pane={pane} hwnd={hwnd:#x} {job:?}");
-    if !st.ops.submit(fileops::Request { id, job, hwnd, no_confirm: st.soak.is_some() }) {
+    eprintln!("[fileops] submit id={id} pane={pane} hwnd={hwnd:#x} {}", fileops::brief(&job));
+    if !st.ops.submit_checked(fileops::Request { id, job, hwnd, no_confirm: st.soak.is_some() }, check) {
         note(st, app, pane, "the file operation worker has stopped".into());
         return None;
     }
@@ -3441,11 +3447,9 @@ fn undo(pane: usize) {
             eprintln!("[undo] \"{}\" cannot be undone", rec.text);
             return note(st, &app, pane, rec.cannot.into());
         };
-        if let Err(why) = fileops::undo::check(&u) {
-            eprintln!("[undo] \"{}\" refused: {why}", rec.text);
-            return note(st, &app, pane, why);
-        }
-        eprintln!("[undo] \"{}\" with {:?}", rec.text, u.job);
+        // Whether the items are still where the job left them is checked on the worker, as the
+        // undo job's first step (`job_done` logs and notes a refusal).
+        eprintln!("[undo] \"{}\" with {}", rec.text, fileops::brief(&u.job));
         let job = u.job.clone();
         submit_replay(st, &app, pane, job, (Replay::Undo, fileops::undo::Record { undo: Some(u), text: rec.text, cannot: rec.cannot }));
     });
@@ -3470,11 +3474,7 @@ fn redo(pane: usize) {
             eprintln!("[undo] redo of \"{}\" cannot be done", rec.text);
             return note(st, &app, pane, format!("Cannot redo: {}", rec.text));
         };
-        if let Err(why) = fileops::undo::check(&u) {
-            eprintln!("[undo] redo \"{}\" refused: {why}", rec.text);
-            return note(st, &app, pane, why.replacen("Cannot undo", "Cannot redo", 1));
-        }
-        eprintln!("[undo] redo \"{}\" with {:?}", rec.text, u.job);
+        eprintln!("[undo] redo \"{}\" with {}", rec.text, fileops::brief(&u.job));
         let job = u.job.clone();
         submit_replay(st, &app, pane, job, (Replay::Redo, fileops::undo::Record { undo: Some(u), text: rec.text, cannot: rec.cannot }));
     });
@@ -3496,9 +3496,10 @@ fn replay_busy(st: &mut State, app: &App, pane: usize) -> bool {
 fn submit_replay(st: &mut State, app: &App, pane: usize, job: Job, replay: (Replay, fileops::undo::Record)) {
     let names = removed_names(&job, &st.tab(pane).path);
     let fallback = if names.is_empty() { None } else { removal_fallback(st, app, pane, &names) };
-    match submit_removing(st, app, pane, job, fallback) {
+    match submit_checked(st, app, pane, job, replay.1.undo.clone()) {
         Some(id) => {
             if let Some(j) = st.jobs.get_mut(&id) {
+                j.fallback = fallback;
                 j.replay = Some(replay);
             }
         }
@@ -3775,6 +3776,16 @@ fn job_done(d: fileops::Done) {
                 // A copy or move that replaced a file is not undone (P11-M3).
                 (text, fileops::undo::forbid_if_replaced(r, &d.existed, &d.results))
             }
+            // The worker's check refused it: the items are not where the job left them. Logged and
+            // noted as when the UI thread checked (before P16-M2's big move); the record is gone.
+            Some((r, orig)) if d.refused => {
+                let why = match &d.outcome {
+                    Outcome::Error(why) => why.clone(),
+                    _ => String::new(),
+                };
+                eprintln!("[undo] {}\"{}\" refused: {why}", if *r == Replay::Undo { "" } else { "redo " }, orig.text);
+                (if *r == Replay::Undo { why } else { why.replacen("Cannot undo", "Cannot redo", 1) }, None)
+            }
             Some((r, orig)) => {
                 let shown = replay_text(*r, done, &orig.text, &text);
                 let what = if *r == Replay::Undo { "done" } else { "redo done" };
@@ -3785,7 +3796,8 @@ fn job_done(d: fileops::Done) {
         let replay = info.replay.as_ref().map(|(r, _)| *r);
         if let Some(r) = &record {
             let stack = if replay == Some(Replay::Undo) { "redo recorded" } else { "recorded" };
-            eprintln!("[undo] {stack} \"{}\": {:?}", r.text, r.undo.as_ref().map(|u| &u.job));
+            let job = r.undo.as_ref().map_or_else(|| "None".to_string(), |u| format!("Some({})", fileops::brief(&u.job)));
+            eprintln!("[undo] {stack} \"{}\": {job}", r.text);
         }
         let cleared = after_job(replay, changed, record, &mut st.undo, &mut st.redo);
         if cleared > 0 {
@@ -3793,7 +3805,7 @@ fn job_done(d: fileops::Done) {
         }
         // An undo or redo that changed nothing (cancelled while queued, refused, failed on its
         // first item) can be tried again.
-        if let Some(r) = info.replay.filter(|_| !done && !changed) {
+        if let Some(r) = info.replay.filter(|_| !done && !changed && !d.refused) {
             keep_record(st, r);
         }
         // Whatever the outcome (a cancel can come after some items went), the source tab's next
@@ -3804,10 +3816,8 @@ fn job_done(d: fileops::Done) {
             }
         }
         eprintln!("[fileops] done id={} pane={pane} tab={tab} {:?}: {text}", d.id, d.outcome);
-        for r in &d.results {
-            let to = r.dest.as_ref().map_or_else(|| "-".to_string(), |p| p.display().to_string());
-            eprintln!("[fileops]   item 0x{:08X} {} -> {to}", r.hr as u32, r.source.display());
-        }
+        // One write for all of them, and at most `fileops::LOG_ITEMS` of a large job's (P16-M2).
+        eprint!("{}", fileops::item_lines(&d.results));
         if let Some(t) = st.find(pane, tab) {
             if d.outcome == Outcome::Done {
                 // The name the shell really used ("New folder (2)"), else the one asked for.
