@@ -640,7 +640,10 @@ Removing a bookmark does not put its folder back (it is noted again when a pane 
 Places rows (Home, Desktop and the rest) are not part of this.
 
 For the two: tests 368 passed, 0 failed, 2 ignored (the Recent rule's test extended); the scripted check
-gained both cases.
+gained both cases. A ten-minute soak of f7abc26: exit 0, no panic, 227 jobs done, none failed, no scripted
+drag dropped, every must-be-0 count at 0; working set 157 to 232 MB as the three before it, private bytes
+195 to 271 MB where the soak two days earlier read 166 to 217 (a different session, already 29 MB apart
+five seconds in; not looked into, the phase's long soak of the merged code is where a leak would show).
 
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
