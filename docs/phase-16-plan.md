@@ -487,6 +487,41 @@ property. No row, tile, tab or sidebar row has a new binding.
 The runs interleave and the medians differ by 0.1: no gap. The sitting was in the costlier state
 throughout (render p50 2.62 to 2.74 ms in every run of both binaries), so it reads like for like.
 
+**The gate again on the code after the console checks (2026-11-18, `target-p16m1` f7abc26 against
+`target-p15close`; run and read by the coordinating session, Jeremy at the console), main-thread busy,
+%:**
+
+| Tag | Order in each round | p15close | p16m1 | Medians | Render p50, ms |
+|---|---|---|---|---|---|
+| ab89 | | | | void | |
+| ab90 | reference first | 18.3, 17.7, 18.2 | 18.8, 18.4, 19.0 | 18.2 against 18.8 | 2.01 to 2.17 throughout |
+| ab91 | candidate first | 22.6, 22.7, 17.7 | 21.8, 22.5, 19.6 | 22.6 against 21.8 | 2.74 to 2.98 in rounds 1 and 2; 2.07 and 2.28 in round 3 |
+
+- **ab89 is void**: it was run over Remote Desktop (the frame interval's p50 was 31.4 ms, one run 47
+  ms, where the console gives 16.4). The gate script now refuses to start in a remote session
+  (`SystemInformation.TerminalServerSession`; a first guard on `SESSIONNAME` wrongly refused a console
+  window that had been opened earlier over Remote Desktop).
+- **ab90**, at the console in the usual order: every reference run below every candidate run, 0.6
+  apart on the medians. By the rule that is a gap.
+- **ab91**, the same pair with the order swapped (the candidate first in each round), as the protocol
+  asks for a fixed-order gap the code does not explain. The session changed state after round 2, so it
+  is read round by round, like for like: round 1 the candidate 0.8 below the reference (21.8 against
+  22.6), round 2 0.2 below (22.5 against 22.7), round 3 the candidate 1.9 above (19.6 against 17.7),
+  with its render p50 still at 2.28 ms where the reference's, run after it, was 2.07: the change of
+  state fell between those two runs.
+
+**The reading (the coordinating session's): the gap followed the slot, not the binary.** In ab90 the
+second slot read high and held the candidate; in ab91 the candidate sat in the first slot and read low
+in the two rounds that can be compared. No gap that counts; the gate holds. **Round 3 of ab91 is the
+weak point** and is said so: its pair straddles the session's change of state, and it is the one round
+where the candidate read above the reference with the order swapped.
+
+What the defaults scenario meets of the code added since ab85: the settings dialog's height, the drop
+target's rules (no drag in the scenario), `frame_during_own_drag` at the top of `drain`, `drain_icons`
+and `land_edits` (one thread-local read each, per message landing, outside a drag), `note_recent`'s
+one read and its pass over the bookmarks per navigation, and `rebuild_sidebar`'s pass over at most
+eight Recent entries. Nothing per frame or per row.
+
 ### The first console check (2026-11-16, `target-p16m1` 2132c70): four changes
 
 Checks 1, 2, 5, 6, 8, 10, 11, 12 and 13 passed ("Works as expected"). Four things came back, relayed by
@@ -644,6 +679,14 @@ gained both cases. A ten-minute soak of f7abc26: exit 0, no panic, 227 jobs done
 drag dropped, every must-be-0 count at 0; working set 157 to 232 MB as the three before it, private bytes
 195 to 271 MB where the soak two days earlier read 166 to 217 (a different session, already 29 MB apart
 five seconds in; not looked into, the phase's long soak of the merged code is where a leak would show).
+
+### The fifth console check (2026-11-18, f7abc26): passed
+
+Jeremy, of Recent under a drag and of bookmarks staying out of Recent: "confirmed that tests passed
+correctly". With it every console check of this milestone has passed on f7abc26 or on the head it was
+last changed for: 1, 2, 5, 6, 10, 11, 12 and 13 on 2132c70; 3, 7, 8 and 14 on 6c8d369; 9 on c630fb3;
+15 (Up) and 16 (the bookmark) on f8c342c; 17 and 18 on f7abc26. Check 4 (a folder row's spring) was
+"Works" on 2132c70, and what it asked for became check 15.
 
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
