@@ -1384,11 +1384,45 @@ fn note_recent(st: &mut State, app: &App, pane: usize) {
     if (pane == 1 && !app.get_split()) || t.results() || is_this_pc(&path) || fs::archive::split(&t.path).is_some() {
         return;
     }
-    if sidebar::note_recent(&mut st.config.recent, &path) {
+    // While a drag is over the window the Recent group stays as it is (P16-M1's fourth console
+    // check: a row held under a drag opened its folder, which moved it to the top, which put another
+    // row under the still pointer, whose spring ripened in turn, a swap a second): what a pane showed
+    // meanwhile is noted when the drag ends, in the order shown (`recent_after_drag`).
+    if dnd::drag_over_window() {
+        return RECENT_PENDING.with(|p| p.borrow_mut().push(path));
+    }
+    if sidebar::note_recent(&mut st.config.recent, &st.config.bookmarks, &path) {
         eprintln!("[sidebar] recent: {path} ({} kept)", st.config.recent.len());
         rebuild_sidebar(st);
         schedule_save(st);
     }
+}
+
+thread_local! {
+    /// The folders panes showed while a drag was over the window, oldest first (`note_recent`).
+    static RECENT_PENDING: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The drag left the window or dropped (`dnd`'s `end_drag`, through the event loop, so after the
+/// navigations its springs posted): the folders shown meanwhile go into Recent, in the order shown.
+pub fn recent_after_drag() {
+    let _ = slint::invoke_from_event_loop(|| {
+        let pending = RECENT_PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
+        if pending.is_empty() {
+            return;
+        }
+        with_state(|st| {
+            let mut changed = 0;
+            for path in &pending {
+                changed += sidebar::note_recent(&mut st.config.recent, &st.config.bookmarks, path) as usize;
+            }
+            eprintln!("[sidebar] recent after the drag: {} shown, {changed} noted ({} kept)", pending.len(), st.config.recent.len());
+            if changed > 0 {
+                rebuild_sidebar(st);
+                schedule_save(st);
+            }
+        });
+    });
 }
 
 /// The Recent header's "Clear recent" (P12-M5).
@@ -1404,6 +1438,12 @@ fn recent_clear() {
 
 /// Rebuild the sidebar's rows from its sections (on a change only).
 fn rebuild_sidebar(st: &mut State) {
+    // Recent keeps no bookmarked folder (P16-M1): every bookmark added comes through here, and so
+    // does the start, for a `recent` saved before the rule.
+    let dropped = sidebar::drop_bookmarked(&mut st.config.recent, &st.config.bookmarks);
+    if dropped > 0 {
+        eprintln!("[sidebar] recent: {dropped} bookmarked folder(s) taken out ({} kept)", st.config.recent.len());
+    }
     st.side = sidebar::compose(&st.drives, &st.places, &st.config.recent, &st.config.bookmarks, &st.config.searches);
     let items: Vec<SideItem> = st
         .side

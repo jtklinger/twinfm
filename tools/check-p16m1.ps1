@@ -16,7 +16,11 @@
 # there), and a sidebar row (row 1, the system
 # drive) held 1300 ms by a drag counted as TwinFM's own out of the left pane (`dragfrom 0`): it opens
 # in the right pane, the one the drag did not leave. A release on Up (`dropfiles nav 1 up`) must read
-# "DragEnter effect copy, Drop reported none" with no [fileops] line after it.
+# "DragEnter effect copy, Drop reported none" with no [fileops] line after it. Last the Recent group:
+# its third row (sidebar row 15) held 3600 ms by a drag of a file from a folder of its own (other) must
+# spring once ("recent after the drag: 1 shown" when the drag leaves, no `[sidebar] recent:` line
+# during it: the group keeps still under a drag), and Photos, bookmarked, leaves Recent and is not
+# noted again when the pane shows it.
 # Prints the [dnd] cue, drop menu, spring and Drop lines, the [settings] dialog lines, the [nav] history
 # lines and the [fileops] done lines. The window is the scripted default, 1200 x 800: the dialog's
 # Cancel is at (744, 743) and its OK at (800, 743).
@@ -41,7 +45,9 @@ $work = Join-Path $root 'work'
 if (Test-Path $work) { Remove-Item -Recurse -Force $work }
 $left = Join-Path $work 'left'
 $right = Join-Path $work 'right'
-New-Item -ItemType Directory -Force $left, (Join-Path $right 'Documents'), (Join-Path $right 'Photos'), $Out | Out-Null
+$other = Join-Path $work 'other'
+New-Item -ItemType Directory -Force $left, $other, (Join-Path $right 'Documents'), (Join-Path $right 'Photos'), $Out | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $other 'x.txt'), "x`r`n")
 'a.txt', 'b.txt', 'c.txt' | ForEach-Object { [System.IO.File]::WriteAllText((Join-Path $left $_), "file $_`r`n") }
 [System.IO.File]::WriteAllText((Join-Path $right 'readme.txt'), "readme`r`n")
 $files = ('a.txt', 'b.txt', 'c.txt' | ForEach-Object { Join-Path $left $_ }) -join '|'
@@ -97,6 +103,11 @@ $steps = @(
     "dropfiles nav 1 up auto $(Join-Path $left 'b.txt')", $wait,
     # A sidebar row held by TwinFM's own drag out of the left pane opens in the right pane.
     'dragfrom 0', "dragover side 1 1300 $files", 'sleep 600', 'dragfrom none',
+    # Recent keeps still under a drag: its third row held 3600 ms springs once.
+    'dragfrom 0', "dragover side 15 3600 $(Join-Path $other 'x.txt')", 'sleep 600', 'dragfrom none',
+    # A bookmarked folder leaves Recent and is not noted again.
+    "nav 0 $(Join-Path $right 'Photos')", 'sleep 400', 'bookmark add', 'sleep 300', "nav 0 $left", 'sleep 300',
+    "nav 0 $(Join-Path $right 'Photos')", 'sleep 400', 'bookmark remove 0', 'sleep 300',
     'sleep 300', 'quit'
 )
 $script = Join-Path $root 'script.txt'
@@ -145,5 +156,5 @@ while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
 }
 if (-not $proc.HasExited) { $proc.Kill(); 'timed out' }
 $proc.WaitForExit()
-Get-Content $err | Where-Object { $_ -match '^\[dnd\] (cue|drop menu|Drop at|over |drop into|spring)|^\[settings\] dialog|^\[nav\] pane=\d history|^\[fileops\] done|^\[auto\] (dragover|dropfiles)|panicked' }
+Get-Content $err | Where-Object { $_ -match '^\[dnd\] (cue|drop menu|Drop at|over |drop into|spring)|^\[settings\] dialog|^\[sidebar\] (recent|Bookmarked)|^\[nav\] pane=\d history|^\[fileops\] done|^\[auto\] (dragover|dropfiles)|panicked' }
 "exit $($proc.ExitCode)"

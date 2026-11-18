@@ -1043,7 +1043,14 @@ put off, with where it came from.
   search tab or the hidden right pane's), newest first, a folder already there moved to the top
   (`sidebar::note_recent`, `RECENT_MAX`); saved as `recent` (paths) in the settings; its header's
   right-click menu "Clear recent". `[sidebar] recent: <path> (K kept)`, `[sidebar] recent cleared (N
-  removed)`. **Bookmarks reordered by dragging**: a press on a bookmark dragged past 4 px carries it
+  removed)`. Since P16-M1's fourth console check **Recent holds no bookmarked folder** (`sidebar::note_recent`
+  takes the bookmarks and notes none of them; `sidebar::drop_bookmarked`, run by `rebuild_sidebar`, takes
+  out one bookmarked since, and at start one saved before the rule: `[sidebar] recent: N bookmarked
+  folder(s) taken out (K kept)`), and **the group keeps still while a drag is over the window**
+  (`dnd::drag_over_window`, from DragEnter to the DragLeave or Drop: what a pane showed meanwhile waits in
+  `RECENT_PENDING` and is noted in order when the drag ends, `recent_after_drag`: `[sidebar] recent after
+  the drag: S shown, N noted (K kept)`; a Recent row held under a drag had opened its folder, which
+  moved it to the top and put another row under the still pointer, a swap a second). **Bookmarks reordered by dragging**: a press on a bookmark dragged past 4 px carries it
   (Slint's pointer, not OLE), a 2 px line in the accent shows where it lands, the release moves it
   (`sidebar::drag_target`, `move_bookmark_to`). Driver `bookmark drag <from> <to>` (a press, 4 px
   moves and a release through Slint's pointer path, the sidebar scrolled to its end first);

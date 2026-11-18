@@ -248,6 +248,17 @@ pub fn drag_default() -> DragDefault {
 }
 
 thread_local! {
+    /// A drag is over the window: between DragEnter and the DragLeave or Drop that ends it.
+    static OVER_WINDOW: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A drag is over the window, TwinFM's own or another program's (the sidebar's Recent group keeps
+/// still meanwhile, `crate::recent_after_drag`).
+pub fn drag_over_window() -> bool {
+    OVER_WINDOW.with(Cell::get)
+}
+
+thread_local! {
     /// The pane TwinFM's own drag left (set around `drag` by `crate::run_pending_drag`, and by the
     /// driver's `dragfrom`); None for another program's drag.
     static DRAG_FROM: Cell<Option<usize>> = const { Cell::new(None) };
@@ -2249,6 +2260,9 @@ impl DropTarget {
     /// The drag left or dropped: give the description back to the source (when one was set) and
     /// release our reference to the data object.
     fn end_drag(&self) {
+        if OVER_WINDOW.with(|o| o.replace(false)) {
+            crate::recent_after_drag();
+        }
         self.cue.borrow_mut().take();
         self.say_cue(None, None);
         if self.described.borrow().is_some() {
@@ -2422,6 +2436,8 @@ unsafe extern "system" fn dt_drag_enter(this: *mut c_void, data: *mut c_void, ke
     // Keep the data object for DragOver's drop descriptions (a DragEnter without a DragLeave
     // before it gives the old one back first).
     t.end_drag();
+    // From here a drag is over the window (after `end_drag`, which ends the one before).
+    OVER_WINDOW.with(|o| o.set(true));
     if !data.is_null() {
         // SAFETY: a live IDataObject; the reference is released in `end_drag`.
         unsafe { (data_vtbl(data).add_ref)(data) };

@@ -616,10 +616,36 @@ For the two (f8c342c): tests 368 passed, 0 failed, 2 ignored; the scripted check
 exit 0, no panic, 227 jobs done, none failed, no scripted drag dropped, no drag loop that found the state
 busy, every must-be-0 count at 0, working set 156 to 231 MB.
 
+### The fourth console check (2026-11-18, f8c342c): the Recent group under a drag
+
+The bookmark "right pane opens correctly!" and Up "Working correctly!". Two findings, both from the
+sidebar's spring-load meeting the Recent group.
+
+**I. Recent rows swapping under a held drag.** "while hovering over the Recent link, the link moves to
+the top of the Recent list and then proceeds to swap places back and forth between original position and
+tops of recents list." Confirmed from a run's lines before the fix (a drag held 4.6 s over the third
+Recent row): the spring opened that row's folder in the other pane, the navigation noted the folder as
+recent and moved it to the top, a different folder was then under the still pointer, its spring ripened a
+second later, and so on: four folders opened in turn, one a second. Fixed as the coordinating session
+called it: **the Recent group does not change while a drag is over the window**; the folders panes showed
+meanwhile are noted when the drag drops or leaves, in the order shown. The same run on the new build: one
+spring, then "recent after the drag: 1 shown, 1 noted". It covers drags from other programs too.
+
+**J. A bookmark held under a drag was added to Recent.** "when you hover over the bookmarks list, the
+bookmark is also added to the recent list--I would say that if the link is already bookmarked then it
+doesn't need to be in the recent list." A rule for Recent everywhere, not only under a drag (the
+coordinating session's call): **a bookmarked folder is never noted in Recent, and bookmarking a folder
+takes it out**; a Recent entry saved before the rule that is bookmarked is dropped at the next start.
+Removing a bookmark does not put its folder back (it is noted again when a pane next shows it). The
+Places rows (Home, Desktop and the rest) are not part of this.
+
+For the two: tests 368 passed, 0 failed, 2 ignored (the Recent rule's test extended); the scripted check
+gained both cases.
+
 ### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
 
 Revised after the first console check: 2, 3, 7, 8 and 9 changed, 14 and 15 are new; 16 after the second;
-15 and 16 again after the third.
+15 and 16 again after the third; 17 and 18 after the fourth.
 
 Two panes showing (the toolbar's Two panes). "The tag" is the small coloured label that appears on the
 thing under the pointer while you drag; "the status line" is the text at the bottom left of the pane you
@@ -671,6 +697,11 @@ are dragging into.
     (or a drive) in the sidebar and hold it there a second, without moving: the folder appears in the
     RIGHT pane at once, and the left pane still shows the folder the file came from. Move into the right pane's list and drop, or
     press Escape. The same from the right pane opens it in the left.
+17. **Recent under a drag.** With a few folders in the sidebar's Recent group, drag a file onto one of
+    them and hold: its folder opens in the other pane once, and the Recent rows stay where they are for
+    as long as you hold. After you drop or press Escape, that folder moves to the top of Recent.
+18. **Bookmarks stay out of Recent.** Hold a drag over a bookmark, or just click one: its folder does
+    not appear in Recent. Bookmark a folder that is in Recent (Ctrl+D): it leaves Recent.
 
 ### Calls made in this milestone, for Jeremy to check
 
