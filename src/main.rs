@@ -1384,11 +1384,45 @@ fn note_recent(st: &mut State, app: &App, pane: usize) {
     if (pane == 1 && !app.get_split()) || t.results() || is_this_pc(&path) || fs::archive::split(&t.path).is_some() {
         return;
     }
-    if sidebar::note_recent(&mut st.config.recent, &path) {
+    // While a drag is over the window the Recent group stays as it is (P16-M1's fourth console
+    // check: a row held under a drag opened its folder, which moved it to the top, which put another
+    // row under the still pointer, whose spring ripened in turn, a swap a second): what a pane showed
+    // meanwhile is noted when the drag ends, in the order shown (`recent_after_drag`).
+    if dnd::drag_over_window() {
+        return RECENT_PENDING.with(|p| p.borrow_mut().push(path));
+    }
+    if sidebar::note_recent(&mut st.config.recent, &st.config.bookmarks, &path) {
         eprintln!("[sidebar] recent: {path} ({} kept)", st.config.recent.len());
         rebuild_sidebar(st);
         schedule_save(st);
     }
+}
+
+thread_local! {
+    /// The folders panes showed while a drag was over the window, oldest first (`note_recent`).
+    static RECENT_PENDING: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The drag left the window or dropped (`dnd`'s `end_drag`, through the event loop, so after the
+/// navigations its springs posted): the folders shown meanwhile go into Recent, in the order shown.
+pub fn recent_after_drag() {
+    let _ = slint::invoke_from_event_loop(|| {
+        let pending = RECENT_PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
+        if pending.is_empty() {
+            return;
+        }
+        with_state(|st| {
+            let mut changed = 0;
+            for path in &pending {
+                changed += sidebar::note_recent(&mut st.config.recent, &st.config.bookmarks, path) as usize;
+            }
+            eprintln!("[sidebar] recent after the drag: {} shown, {changed} noted ({} kept)", pending.len(), st.config.recent.len());
+            if changed > 0 {
+                rebuild_sidebar(st);
+                schedule_save(st);
+            }
+        });
+    });
 }
 
 /// The Recent header's "Clear recent" (P12-M5).
@@ -1404,6 +1438,12 @@ fn recent_clear() {
 
 /// Rebuild the sidebar's rows from its sections (on a change only).
 fn rebuild_sidebar(st: &mut State) {
+    // Recent keeps no bookmarked folder (P16-M1): every bookmark added comes through here, and so
+    // does the start, for a `recent` saved before the rule.
+    let dropped = sidebar::drop_bookmarked(&mut st.config.recent, &st.config.bookmarks);
+    if dropped > 0 {
+        eprintln!("[sidebar] recent: {dropped} bookmarked folder(s) taken out ({} kept)", st.config.recent.len());
+    }
     st.side = sidebar::compose(&st.drives, &st.places, &st.config.recent, &st.config.bookmarks, &st.config.searches);
     let items: Vec<SideItem> = st
         .side
@@ -1669,6 +1709,8 @@ fn search_move(i: usize, up: bool) {
 }
 
 fn drain() {
+    // A listing landing while our own drag holds the loop is drawn (P16-M1: `dnd::frame_during_own_drag`).
+    dnd::frame_during_own_drag();
     // Panes whose active tab refreshes once the state borrow is released.
     let again = with_state(|st| {
         let mut again: Vec<usize> = Vec::new();
@@ -2218,6 +2260,7 @@ fn unknown_name(why: &str) -> Option<&str> {
 /// under a path the tab no longer has (the folder renamed since), falls back.
 fn land_edits(job: StatJob, edits: Vec<model::Edit>, gone: Vec<String>, folder_gone: bool, stat_ms: f64) {
     let StatJob { pane, tab: tab_id, path, records, generation, pass, young, .. } = job;
+    dnd::frame_during_own_drag();
     let again = with_state(|st| {
         let mut again = Vec::new();
         let app = st.app.upgrade()?;
@@ -2990,6 +3033,7 @@ fn sync_grid(st: &mut State, app: &App, pane: usize) {
 /// Take every icon reply the worker has sent, intern the images, then re-resolve both panes'
 /// visible rows once (one walk over a screenful per pane, however many replies arrived).
 fn drain_icons() {
+    dnd::frame_during_own_drag();
     with_state(|st| {
         let Some(app) = st.app.upgrade() else { return };
         let mut any = false;
@@ -5329,7 +5373,9 @@ pub fn run_pending_drag() {
     });
     // MODAL LOOP: no borrow held (see dnd). A drop on our own other pane comes back through our
     // drop target from inside this call, and its job is posted to the event loop.
+    dnd::set_drag_from(Some(pane));
     let res = dnd::drag(&req);
+    dnd::set_drag_from(None);
     let dropped = res == Ok(true);
     with_state(|st| {
         st.gesture[pane].drag_ended();
@@ -5502,6 +5548,20 @@ fn drop_spot_at(px: i32, py: i32) -> Option<dnd::DropSpot> {
             dnd::Spot::Outside => return None,
             dnd::Spot::Pane(p) => (p, None),
             dnd::Spot::Row(p, r) => (p, Some(r)),
+            // The path bar's Back and Up (P16-M1): no drop there; a drag held over one that has
+            // somewhere to go (as the button is enabled, `toolbar::with_facts`) goes back or up.
+            // The spot's folder is where the button goes (the description names it, and each
+            // folder reached arms the spring again); the folder shown for a button with nowhere to go.
+            dnd::Spot::Nav(p, n) => {
+                let tab = st.tab(p);
+                let to = match n {
+                    dnd::Nav::Back => tab.history.back_place().map(|b| b.path.clone()),
+                    dnd::Nav::Up if is_this_pc(&tab.path.to_string_lossy()) => None,
+                    dnd::Nav::Up => Some(tab.path.parent().map_or_else(|| PathBuf::from(THIS_PC), |p| p.to_path_buf())),
+                };
+                let springs = to.is_some();
+                return Some(dnd::DropSpot { pane: p, mark: dnd::Mark::Nav(n), dest: to.unwrap_or_else(|| tab.path.clone()), springs });
+            }
             // The Bookmarks gap (P12-M5): the folders dropped are bookmarked there, nothing copied.
             dnd::Spot::SideGap(k) => {
                 return Some(dnd::DropSpot { pane: active_pane(&app), mark: dnd::Mark::Gap(k), dest: PathBuf::new(), springs: false });
@@ -6022,9 +6082,10 @@ fn band_restore(pane: usize, b: &band::Band, why: &str) {
 }
 
 /// For the drop target: highlight what a drop would land on (a pane's row, or with row -1 its
-/// whole list; a tab; a sidebar row; a crumb), or nothing. Sets the properties only when they
-/// change.
-pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
+/// whole list; a tab; a sidebar row; a crumb), or nothing, and since P16-M1 say what the drop
+/// would do there (`cue`: the badge on the target, the highlight's colour and the pane's status
+/// line). Sets the properties only when they change.
+pub fn drop_highlight(at: Option<(usize, dnd::Mark)>, cue: Option<&dnd::Cue>) {
     // The sidebar row's place, under a short borrow (only for a sidebar mark).
     let found = STATE.with(|s| {
         let guard = s.try_borrow().ok()?;
@@ -6040,6 +6101,7 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
         Some((app, side))
     });
     let Some((app, side)) = found else { return };
+    drop_cue(&app, at, cue, side.map(|s| (s.1, s.2)));
     let (pane, row, tab_pane, tab, crumb_pane, crumb) = match at {
         Some((p, dnd::Mark::Row(r))) => (p as i32, r, -1, -1, -1, -1),
         Some((p, dnd::Mark::Tab(i))) => (-1, -1, p as i32, i as i32, -1, -1),
@@ -6047,6 +6109,13 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
         _ => (-1, -1, -1, -1, -1, -1),
     };
     let (side_row, side_y, side_h) = side.unwrap_or((-1, 0.0, 0.0));
+    // The path bar's Back or Up under a drag held there (P16-M1): the button lit.
+    let (nav_pane, nav) = if let Some((p, dnd::Mark::Nav(n))) = at { (p as i32, n.index() as i32) } else { (-1, -1) };
+    if (app.get_drop_nav_pane(), app.get_drop_nav()) != (nav_pane, nav) {
+        app.set_drop_nav_pane(nav_pane);
+        app.set_drop_nav(nav);
+        dnd::repaint_during_own_drag();
+    }
     // The Bookmarks gap's insertion line (P12-M5).
     let gap = if let Some((_, dnd::Mark::Gap(k))) = at { k as i32 } else { -1 };
     if app.get_drop_side_gap() != gap {
@@ -6069,6 +6138,64 @@ pub fn drop_highlight(at: Option<(usize, dnd::Mark)>) {
     app.set_drop_side_y(side_y);
     app.set_drop_side_h(side_h);
     app.set_drop_side_row(side_row);
+    dnd::repaint_during_own_drag();
+}
+
+thread_local! {
+    /// The target and cue `drop_cue` last showed, so a DragOver that changes neither sets nothing.
+    static CUE_SHOWN: RefCell<(Option<(usize, dnd::Mark)>, Option<dnd::Cue>)> = const { RefCell::new((None, None)) };
+}
+
+/// The window rectangle of a highlighted drop target, for the cue's badge (`side`: a sidebar
+/// row's top in its list and its height). None for the Bookmarks gap and a crumb not on screen.
+fn mark_rect(app: &App, pane: usize, mark: dnd::Mark, side: Option<(f32, f32)>) -> Option<dnd::Rect> {
+    let l = window_layout(app);
+    let (a, _) = dnd::pane_x(&l, pane);
+    Some(match mark {
+        dnd::Mark::Row(r) => dnd::row_rect(&l, pane, r, app.invoke_get_scroll(pane as i32)),
+        dnd::Mark::Tab(i) => {
+            let w = app.invoke_tab_width(pane as i32);
+            dnd::Rect { x: a + dnd::PANE_PAD + app.invoke_tab_offset(pane as i32) + i as f32 * w, y: dnd::tab_top(&l), w, h: dnd::TAB_H }
+        }
+        dnd::Mark::Crumb(i) => {
+            let (row, crumbs) = crumb_geometry_now(app);
+            let (x, w) = *crumbs[pane].get(i)?;
+            dnd::Rect { x: a + dnd::PANE_PAD + dnd::NAV_W + row[pane].0 + x, y: dnd::crumb_top(&l, pane), w, h: dnd::CRUMB_H }
+        }
+        dnd::Mark::Side(_) => {
+            let (top, h) = side?;
+            let w = if app.get_sidebar_visible() { app.get_sidebar_width() } else { dnd::RAIL_W };
+            dnd::Rect { x: 0.0, y: dnd::side_top(&l) + app.invoke_side_scroll() + top, w, h }
+        }
+        dnd::Mark::Gap(_) | dnd::Mark::Nav(_) => return None,
+    })
+}
+
+/// The drop cue (P16-M1): the one badge the window has, placed on the highlighted target; its
+/// kind, which colours the badge and the highlight; and the words in the status line of the pane
+/// the drop is noted in. Set when the target or the cue changes, never per DragOver.
+fn drop_cue(app: &App, at: Option<(usize, dnd::Mark)>, cue: Option<&dnd::Cue>, side: Option<(f32, f32)>) {
+    let cue = cue.filter(|_| at.is_some());
+    if CUE_SHOWN.with(|c| c.borrow().0 == at && c.borrow().1.as_ref() == cue) {
+        return;
+    }
+    CUE_SHOWN.with(|c| *c.borrow_mut() = (at, cue.cloned()));
+    let anchor = at.zip(cue).and_then(|((pane, mark), _)| {
+        let grid = window_layout(app).grid[pane].is_some();
+        dnd::cue_anchor(mark, mark_rect(app, pane, mark, side)?, grid)
+    });
+    let status = |pane: usize| cue.filter(|_| at.is_some_and(|a| a.0 == pane)).map_or_else(Default::default, |c| c.status.as_str().into());
+    app.set_left_drop_cue(status(0));
+    app.set_right_drop_cue(status(1));
+    app.set_cue_title(cue.map_or("", |c| c.title).into());
+    app.set_cue_hint(cue.map_or("", |c| c.hint).into());
+    if let Some((x, y, align)) = anchor {
+        app.set_cue_x(x);
+        app.set_cue_y(y);
+        app.set_cue_align(align.index());
+    }
+    app.set_cue_shown(anchor.is_some());
+    app.set_cue_kind(cue.map_or(0, |c| c.kind.index()));
     dnd::repaint_during_own_drag();
 }
 
@@ -6149,7 +6276,31 @@ pub fn drop_files(pane: usize, sources: Vec<PathBuf>, dest: PathBuf, effect: u32
 /// runs from the event loop, as the closures that loop already runs do (they take `with_state`
 /// and open no modal loop).
 pub fn spring_open(pane: usize, dest: PathBuf) {
-    let _ = slint::invoke_from_event_loop(move || navigate(pane, dest));
+    let _ = slint::invoke_from_event_loop(move || {
+        navigate(pane, dest);
+        dnd::frame_during_own_drag();
+    });
+}
+
+/// The pane a sidebar row opens in when a drag is held over it (`dnd::side_spring_pane`): `active`
+/// if the state is busy (not expected, as in `drop_highlight`).
+pub fn side_spring_pane(active: usize) -> usize {
+    let split = STATE.with(|s| Some(s.try_borrow().ok()?.as_ref()?.app.upgrade()?.get_split()));
+    split.map_or(active, |split| dnd::side_spring_pane(dnd::drag_from(), active, split))
+}
+
+/// A drag held over the path bar's Back or Up (P16-M1): that pane goes back or up, as the button
+/// does, without becoming the active pane; through the event loop as `spring_open` does.
+pub fn spring_nav(pane: usize, nav: dnd::Nav) {
+    let _ = slint::invoke_from_event_loop(move || {
+        match nav {
+            dnd::Nav::Back => history_move(pane, false),
+            dnd::Nav::Up => {
+                go_up(pane);
+            }
+        }
+        dnd::frame_during_own_drag();
+    });
 }
 
 /// A drag held over tab `index` of the pane's strip: it becomes the pane's active tab, as a
@@ -6158,7 +6309,8 @@ pub fn spring_tab(pane: usize, index: usize) {
     let _ = slint::invoke_from_event_loop(move || {
         switch_tab(pane, |t| {
             t.select(index);
-        })
+        });
+        dnd::frame_during_own_drag();
     });
 }
 
@@ -7907,6 +8059,7 @@ fn settings_open() {
             sidebar_visible: app.get_sidebar_visible(),
             path_bar: if app.get_path_entry_sticky() { "entry" } else { "breadcrumb" }.into(),
             toolbar: settings::Toolbar::from_index(app.get_toolbar()).name().into(),
+            drag_default: settings::DragDefault::from_name(&st.config.drag_default).name().into(),
             theme: st.config.theme.clone(),
             preview: app.get_preview(),
             syntax_colours: app.get_syntax_colours(),
@@ -7936,6 +8089,7 @@ fn settings_open() {
     app.set_dlg_sidebar(d.sidebar_visible);
     app.set_dlg_crumbs(d.path_bar != "entry");
     app.set_dlg_toolbar(settings::Toolbar::from_name(&d.toolbar).index());
+    app.set_dlg_drag_default(settings::DragDefault::from_name(&d.drag_default).index());
     app.set_dlg_theme(settings::ThemeMode::from_name(&d.theme).index());
     app.set_dlg_preview(d.preview);
     app.set_dlg_start_warning("".into());
@@ -8055,6 +8209,7 @@ fn settings_closed(ok: bool) {
         sidebar_visible: app.get_dlg_sidebar(),
         path_bar: if app.get_dlg_crumbs() { "breadcrumb" } else { "entry" }.into(),
         toolbar: settings::Toolbar::from_index(app.get_dlg_toolbar()).name().into(),
+        drag_default: settings::DragDefault::from_index(app.get_dlg_drag_default()).name().into(),
         theme: settings::ThemeMode::from_index(app.get_dlg_theme()).name().into(),
         preview: app.get_dlg_preview(),
         syntax_colours: app.get_dlg_syntax_colours(),
@@ -8117,6 +8272,11 @@ fn settings_closed(ok: bool) {
                 let t = settings::Toolbar::from_name(&staged.toolbar);
                 app.set_toolbar(t.index());
                 with_state(|st| st.config.toolbar = t.name().into());
+            }
+            "drag_default" => {
+                let d = settings::DragDefault::from_name(&staged.drag_default);
+                dnd::set_drag_default(d);
+                with_state(|st| st.config.drag_default = d.name().into());
             }
             "theme" => {
                 let m = settings::ThemeMode::from_name(&staged.theme);
@@ -8425,6 +8585,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_split_ratio(config.split_ratio);
     app.set_path_entry_sticky(config.path_bar == "entry");
     app.set_toolbar(settings::Toolbar::from_name(&config.toolbar).index());
+    dnd::set_drag_default(settings::DragDefault::from_name(&config.drag_default));
     // A system setting sets nothing at start (the style follows the OS live); the title bar is
     // set when the handle is first fetched.
     if settings::ThemeMode::from_name(&config.theme) != settings::ThemeMode::System {

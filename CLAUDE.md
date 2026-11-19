@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (370 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (374 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1056,7 +1056,14 @@ put off, with where it came from.
   search tab or the hidden right pane's), newest first, a folder already there moved to the top
   (`sidebar::note_recent`, `RECENT_MAX`); saved as `recent` (paths) in the settings; its header's
   right-click menu "Clear recent". `[sidebar] recent: <path> (K kept)`, `[sidebar] recent cleared (N
-  removed)`. **Bookmarks reordered by dragging**: a press on a bookmark dragged past 4 px carries it
+  removed)`. Since P16-M1's fourth console check **Recent holds no bookmarked folder** (`sidebar::note_recent`
+  takes the bookmarks and notes none of them; `sidebar::drop_bookmarked`, run by `rebuild_sidebar`, takes
+  out one bookmarked since, and at start one saved before the rule: `[sidebar] recent: N bookmarked
+  folder(s) taken out (K kept)`), and **the group keeps still while a drag is over the window**
+  (`dnd::drag_over_window`, from DragEnter to the DragLeave or Drop: what a pane showed meanwhile waits in
+  `RECENT_PENDING` and is noted in order when the drag ends, `recent_after_drag`: `[sidebar] recent after
+  the drag: S shown, N noted (K kept)`; a Recent row held under a drag had opened its folder, which
+  moved it to the top and put another row under the still pointer, a swap a second). **Bookmarks reordered by dragging**: a press on a bookmark dragged past 4 px carries it
   (Slint's pointer, not OLE), a 2 px line in the accent shows where it lands, the release moves it
   (`sidebar::drag_target`, `move_bookmark_to`). Driver `bookmark drag <from> <to>` (a press, 4 px
   moves and a release through Slint's pointer path, the sidebar scrolled to its end first);
@@ -1503,6 +1510,87 @@ put off, with where it came from.
   (run with the machine quiet). Since P15-M4 each soak cycle also runs a name search with a class and a
   content search with an expression in `src`, and the report counts them (one each per cycle) and the
   not-a-pattern lines (must be 0).
+  Since P16-M1, **a drag says what it will do**. While a drag is over a spot that takes it, the drop
+  target reckons a cue beside the effect (`dnd::cue`, pure; `DropTarget::cue_for`): **"Move here"**,
+  **"Copy here"** or **"Choose on drop"** (the drop will open the Move here / Copy here / Cancel menu: a
+  right-button drag, or the "ask" setting), a hint naming Ctrl, the one key advertised, where it gives
+  the other ("Ctrl copies", "Ctrl moves", "Let go of Ctrl to move", "Let go of Ctrl to copy"; none where
+  Ctrl would change nothing, none while Shift or Alt is held, none for a drop that asks), and the same in
+  words for the status line ("Drop moves 3 items to
+  Documents", `dnd::cue_status`). It is built again only when the spot, the effect or the deciding keys
+  held (Ctrl, Alt, Shift, the right button) change, never per DragOver, and handed with the spot to
+  `main.rs` `drop_highlight(at, cue)`, whose `drop_cue` sets, on change only (`CUE_SHOWN`): the window's
+  `cue-kind` (0 none, 1 move, 2 copy, 3 ask), which colours every drop highlight's border
+  (`Theme.cue-move` amber, `cue-copy` green, `cue-ask` violet; the panes' `drop-color`) and **the one
+  badge the window has** (app.slint, an element of the window laid over it, never in a row: `cue-shown`,
+  `cue-title`, `cue-hint`, and its place `cue-x`, `cue-y`, `cue-align` from `dnd::cue_anchor` over the
+  target's rectangle, `main.rs` `mark_rect`, `dnd::row_rect`: a details row's right end, a tile's lower
+  edge, the whole list's top middle, under a tab or a crumb, right of a sidebar row), and
+  `left-drop-cue` / `right-drop-cue`, the words the status line of the pane the drop is noted in shows
+  in place of its text while the drag hovers. No cue over the Bookmarks gap (its "Bookmark"), nor for a
+  refused drop. The Windows label by the pointer is unchanged. **The setting `drag_default`**
+  (`settings::DragDefault`; the dialog's "Dragging files": As Explorer, Always copy, Always move, Always
+  ask; applied on OK, `dnd::set_drag_default`, an atomic the drop target reads): what a drop onto TwinFM
+  does with no key held, from its own panes and from other programs (`dnd::decide_effect`'s `default`).
+  "explorer" is move on the same volume and copy across. **Ctrl alone gives the other effect of that,
+  whatever it is** (Jeremy's console check, 2026-11-16, over the kickoff's "Match Explorer", where Ctrl
+  is always a copy: on one drive Ctrl copies, across drives Ctrl moves, under Always copy Ctrl moves,
+  under Always move Ctrl copies); Shift alone still moves and Alt and Ctrl+Shift still copy, with the
+  title saying so and no hint naming them; the right button still asks. **"ask" opens the right button's
+  menu on every left-button drop of files, a key held or not** (`dnd::asks`; the same console check: a
+  held key decided without asking before), its bold item the effect the keys would give; items that are
+  only ever copied (virtual files, items out of an archive) are never asked about by the setting; into an
+  archive "move" does not reach (`dnd::default_into`) and Ctrl copies as it always did
+  (`decide_effect`'s `ctrl_copies`): a copy unless Shift, no hint. **The path bar's Back and Up
+  spring-load** (the same console check: a way out of a folder a drag sprang into by mistake): a drag
+  held `SPRING_MS` over one that has somewhere to go (`dnd::Spot::Nav`, `Mark::Nav`, the first and third
+  of the four buttons; `DropSpot::springs` as the button is enabled) goes back or up in that pane
+  (`main.rs` `spring_nav`; the pane does not become active), the button drawn lit meanwhile (the window's
+  `drop-nav-pane` / `drop-nav`, NavButton's `lit`); no drop lands there (`effect_at` gives none, which is
+  all Drop reads; no cue), and the spot's `dest` is the folder the button goes to, which the spring leaves
+  out of its target (`dnd::spring_key`), so **a button fires once per hover**: the pointer leaves it and
+  comes back to go again (the third console check; held on, Up had climbed a level a second). Since the second console check DragOver shows the
+  source an effect there (`bookmark_effect`: a link, or the copy TwinFM's own drag gets) with the
+  description "Up to <folder>" / "Back to <folder>" (`dnd::nav_description`), so the pointer is not the
+  refusal sign; a release there still copies and moves nothing. **A drop that will open the menu is
+  described "Choose on drop"** as the tag reads, with the effect's image (`dnd::description`'s `asks`;
+  the shell draws a description only with the effect's image, P12-M5), and the description's change
+  check reads its text too. **Inside TwinFM's own drag nothing asks Slint for a frame** but the drop
+  highlight (`dnd::repaint_during_own_drag`): the event loop's posted work runs there (a listing lands, a
+  watch's edits apply, measured with a real held drag) and stays unseen, so `drain`, `drain_icons`,
+  `land_edits` and the spring's three closures ask for one (`dnd::frame_during_own_drag`, a no-op
+  outside our own drag; the third console check: a bookmark opened in the other pane showed only when
+  the pointer moved back over a pane). A scripted `dragover` runs no OLE loop and cannot show this; a
+  real `dragrow` with a file made in the other pane's folder meanwhile does (`N frame(s) rendered inside
+  the drag loop`). Forward and Refresh are the pane, as before. **A sidebar row held under TwinFM's own drag
+  opens in the other pane** with two showing (`dnd::side_spring_pane`, the pane the drag left kept in
+  `dnd::DRAG_FROM` around `dnd::drag`; the second console check: P11-M3's active pane is the pane the
+  files are leaving, whose listing went away under the drag); with one pane, or another program's drag,
+  the active pane as before: `[dnd] spring-loaded: pane N opens <folder> after T ms (the pane the drag
+  did not leave)`; driver `dragfrom <pane|none>` makes the `dragover` and `dropfiles` steps after it
+  count as TwinFM's own drag out of that pane. **The settings dialog is 750 px tall** (710
+  until the Dragging files row: a popup takes no click outside its rectangle, so the row's 40 px had
+  pushed OK and Cancel out of the mouse's reach; a row added there needs its height added too). Driver: `dragover ... <ms> keys <none|ctrl|shift|alt|right>[,...] <paths>` holds those keys
+  while it hovers (several sets, comma-separated, share the time equally, in order: a key pressed or let
+  go mid-drag); `dropfiles`' mode `auto` takes the setting, and `dropfiles ... ask <copy|move|cancel>
+  <paths>` is a left-button drop under "ask" with the menu's item picked from the in-menu timer (under
+  "ask" every other mode picks Cancel, so no script waits for a person); `dropfiles`' mode `copy` holds
+  Alt since the console check (Ctrl would move where the default copies); `dragover nav <pane> <back|up>
+  <ms> <paths>` hovers that path bar button's centre; `settings set drag_default
+  explorer|copy|move|ask`. Lines: `[dnd] over pane N Back|Up button (to <folder>) ... -> effect none (the source is
+  shown copy|link: no refusal sign)`, `[dnd] spring armed: pane N Back|Up button (to <folder>)`, `[dnd]
+  spring-loaded: pane N goes back|up to <folder> after T ms`, `[dnd] drop description: Choose on drop |
+  Up to "<folder>" | Back to "<folder>"`; `[dnd] cue: Move here | Copy here | Choose on drop | none (pane N |
+  sidebar)` when the cue's words or place change (`cue: none` alone when the drag leaves or drops),
+  `[dnd] drop menu: asked by the setting`, `[settings] dialog: drag_default <old> -> <new>`; the `[dnd]
+  over ...` line is now also logged when a deciding key changes over the same spot with the same effect.
+  A hover of 1000 ms or more over a folder row, a tab, a crumb or a sidebar row spring-loads it, so a
+  script that reads the cue there hovers for less. `tools/check-p16m1.ps1` is the scripted check (it
+  takes the pictures too, and closes the dialog by `clickat` on its real Cancel and OK, which a `settings
+  ok` step would not have caught). Since P16-M1 each soak cycle also hovers `spring`'s row with the cue read as
+  a move and, with Ctrl, as a copy, drops under "Always copy" on the same drive and puts the setting
+  back, and from `inner` holds a drag over the path bar's Up, which takes the right pane back to
+  `spring`; the report counts them.
   Since P16-M2, the small items. **The results of a job are sorted out in linear time**
   (`fileops::own_results`: the shell reports a copied, moved or deleted folder's contents one by one,
   and only the job's own items are kept): the items and their parents are looked up in sets built once
@@ -1577,7 +1665,8 @@ put off, with where it came from.
   text colour in dark mode; a switch back to system at runtime sets Windows' mode of that moment until
   the next start); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
   the `_right` three (each pane's column widths, logical px, defaults 120, 90, 140, 40 to 2,000;
-  the header grips set them), since P15-M2 `col_ondisk_left` and `col_ondisk_right` (each pane's Size on
+  the header grips set them), since P16-M1 `drag_default` (`"explorer"`, the
+  default, `"copy"`, `"move"` or `"ask"`, in the dialog's "Dragging files" row), since P15-M2 `col_ondisk_left` and `col_ondisk_right` (each pane's Size on
   disk column width, default 100) and `sort = "ondisk"` in a saved tab. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
