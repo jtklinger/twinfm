@@ -1664,7 +1664,9 @@ put off, with where it came from.
   key names `CtrlShift1` to `CtrlShift4` and `CtrlShift6`); every step that takes a row aims at the new
   tiles as at the others. Gate settings files: `C:\traces\grid-xlarge.toml` and `C:\traces\grid-small.toml`
   (read-only, both panes on that view). `tools/check-p16m3.ps1` is the scripted check (the pictures, and
-  the budget with `TWINFM_THUMB_MB=1`); `tools/measure-p16m3.ps1` the in-app measurement (the gate's
+  the budget with `TWINFM_THUMB_MB=1`, and since 2026-11-19 the View menu's tick after each way of
+  switching, its last line `View menu ticks: ...`: `set_view` and `sync_grid` call `update_tools`, or the
+  menu ticks the view before); `tools/measure-p16m3.ps1` the in-app measurement (the gate's
   scenario per view, and the thumbnail memory run). Since P16-M3 each soak cycle also takes the right pane
   from medium tiles to extra large and small and back, with a tile drop, a cancelled drag and a band in
   each; the report counts them. **The driver's `drag` follows the thumb** (2026-11-16, `dnd::thumb_aim`):
