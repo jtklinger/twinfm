@@ -134,6 +134,12 @@
 # each of tree's ten folders) and a content search with an expression (`re:^scratch file 3/[78]$`:
 # two files, the `$` before each line's CRLF), each tab closed; the report counts their start lines
 # by kind and their `done` lines (one each per cycle). The content searches are three per cycle since.
+# P16-M6: each cycle then leaves a name search open in src (`p16m6-*.txt`, nothing found), makes a
+# matching file there (`touch 0 p16m6-a.txt`: the search tab's folder is its root) and removes it, each
+# window waited for (`waitwatch`); the report counts the search tabs that took a watch (every finished
+# search of the cycle does since P16-M6), the windows that added the row and those that took it off
+# (one each per cycle; the row may instead go by P11-M2's re-stat when its tick comes first, counted
+# beside it), and the tabs that stopped following (0 expected).
 # P14-M1: the content search's tab is saved (`searchsave 0`, Ctrl+D's command) before it closes, the
 # saved search is opened from the sidebar (`searchopen 0`: a new tab of the left pane, the search run
 # again), that tab closed and the row removed (`searchremove 0`); the report counts the searches saved,
@@ -639,6 +645,10 @@ $cycle = @(
     'filter 0 f0[1-3].t?t', 'sleep 300', 'searchreturn 0', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
     'csearch 0 re:^scratch file 3/[78]$', 'waitsearch 5000', 'sleep 800', 'tab close', 'sleep 300',
     'contentmode 0 off', 'filter 0', 'sleep 300',
+    # P16-M6: a name search left open while a matching file is made and removed (see the header).
+    'filter 0 p16m6-*.txt', 'sleep 300', 'searchreturn 0', 'waitsearch 5000', 'sleep 500',
+    'touch 0 p16m6-a.txt', 'waitwatch 4000', 'sleep 300', 'rmfile 0 p16m6-a.txt', 'waitwatch 4000', 'sleep 300',
+    'tab close', 'sleep 300', 'filter 0', 'sleep 300',
     # P11-M2: the widths reset through the dialog (see the header), at the 0.6 split since P13-M1, where
     # Type shows (at 0.5 it is hidden, and `colwidth 0 type` is refused).
     "nav 0 $src\tree", 'sleep 500', 'splitter 0.6', 'sleep 300', 'colwidth 0 type 100', 'sleep 200', 'settings open', 'settings set cols_reset', 'settings ok', 'sleep 300', 'splitter 0.5', 'sleep 300',
@@ -916,6 +926,13 @@ $trackRepeated = @($trackHolds | Where-Object { [int]$_.Matches[0].Groups[1].Val
 # log no "active pane was").
 $barBack = @($log | Select-String -SimpleMatch '[nav] pane=0 Back button (active pane was').Count
 $tabForward = @($log | Select-String -SimpleMatch '[nav] pane=0 Forward button (active pane was').Count
+# P16-M6: search tabs following changes.
+$followWatching = @($log | Select-String -Pattern '^\[search\] pane=\d+ gen=\d+ watching ').Count
+$followWindows = @($log | Select-String -Pattern '^\[search\] pane=\d+ window: \d+ records, ').Count
+$followAdded = @($log | Select-String -Pattern '^\[search\] pane=0 window: \d+ records, 1 added, 0 removed, ').Count
+$followRemoved = @($log | Select-String -Pattern '^\[search\] pane=0 window: \d+ records, 0 added, 1 removed, ').Count
+$followRestat = @($log | Select-String -Pattern '^\[search\] pane=0 results re-stated: \d+ rows, 1 gone, ').Count
+$followStopped = @($log | Select-String -SimpleMatch '] pane=0 not following changes').Count + @($log | Select-String -SimpleMatch '] pane=1 not following changes').Count
 # P14-M1: saved searches; a content search done counts as the saved one's when an open came before it.
 $searchSaved = @($log | Select-String -SimpleMatch '[sidebar] saved search added "Text "scratch file 3/7" in ').Count
 $searchOpened = @($log | Select-String -SimpleMatch '[sidebar] saved search 0 opened: ').Count
@@ -1050,5 +1067,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "content search: done $($contentDone.Count) (three per cycle), files read $contentRead (600 or more per cycle), found $contentFound (four per cycle)"
 "search patterns: name searches with a class started $classStarts, done with 30 or more found $classDone; content searches with an expression started $reStarts, done with 2 found $reDone (one each per cycle); not-a-pattern lines $notPattern (must be 0)"
 "drag cue: Move here $cueMove, Copy here $cueCopy, Choose on drop $cueAsk, none $cueNone lines; Ctrl hovers over inner read as a copy $cueCtrl; Always copy on $dragCopyOn, off $dragCopyOff; drops onto inner with no key that copied $dragCopied (the Ctrl hover, the setting each way and that drop: one each per cycle); the path bar's Up held by a drag went up $navUp (one per cycle)"
+"search tabs following: took a watch $followWatching, windows $followWindows; the made file's row added $followAdded, taken off by its window $followRemoved or by the re-stat $followRestat (one per cycle between the two); stopped following $followStopped (0 expected)"
 "saved searches: saved $searchSaved, opened $searchOpened, run again and found $searchRerun, removed $searchRemoved (one each per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

@@ -807,6 +807,12 @@ impl PaneModel {
         self.shown.borrow().get(i).cloned()
     }
 
+    /// The names of the entries, shown or not, that `pick` takes (P16-M6: a search tab's rows at
+    /// and below the paths a watch window removed).
+    pub fn names_where(&self, mut pick: impl FnMut(&str) -> bool) -> Vec<SharedString> {
+        self.all.borrow().iter().filter(|e| pick(&e.name)).map(|e| e.name.clone()).collect()
+    }
+
     /// The pass number that last landed (`land_pass` calls this after `replace`).
     pub fn set_landed_pass(&self, pass: u64) {
         self.landed_pass.set(pass);
