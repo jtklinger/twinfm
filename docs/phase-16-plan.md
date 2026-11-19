@@ -463,6 +463,9 @@ changed.
 5. **The long line.** A match far along a very long line shows `…`, 40 characters of lead, then the
    match, as before.
 
+**Jeremy's results** (2026-11-18, `target-p16m4`, 41ca503, relayed by the coordinating session):
+"The 160 checks all worked as expected".
+
 ### Calls made in this milestone, for Jeremy to check
 
 - **The engine's answers are taken in all three groups**, the kickoff's lean and Jeremy's decision
