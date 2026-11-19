@@ -501,6 +501,127 @@ These need a mouse with Back and Forward side buttons (the two thumb buttons).
     rows down: is the range selected, or does nothing change? In TwinFM the range from the first file
     to the row clicked is selected.
 
+### Console checks: Jeremy's results (2026-11-17, `target-p16m2`, 1cd16bf, his Log setting on)
+
+Checks 1 to 5: "works as expected". Check 6 passes (Back does nothing over the rename editor). Checks 8,
+9 and 10 match Explorer, each "this is what I wanted". **Check 7, the big move, did not pass**: "takes
+about 2 minutes to copy/paste the whole bigdir to bigdir2, although I now can't find c:\traces\bigdir2,
+so not sure where the files went. ctrl+z does start the restore after about 30-45 seconds." Nothing was
+lost (the drop went to `C:\tmp\bigdir2`, the undo brought all 40,000 back). His log is
+`C:\traces\p16m2-console-check-bigmove.log`.
+
+### The big move: what froze, and what changed
+
+`own_results` (item 1) was no longer the wait. Read from his log and the code, then measured with
+`tools\time-p16m2-bigmove.ps1` (below), the window froze at three places, and each was TwinFM's own:
+
+- **Every submit** printed the whole job, 40,000 paths, with `{job:?}` (`[fileops] submit`, and again in
+  `[undo] recorded`, `[undo] "..." with` and `redo recorded`): six lines of 1.4 to 1.5 MB in his log. Rust's
+  stderr is not buffered and a path's `Debug` form is written one character at a time, so one line was
+  about 1.5 million writes, on the UI thread. About 3.4 s a line in his log (the paste's period, alone:
+  `ui_cpu=3547ms`).
+- **Undo pressed**: two of those lines, and `undo::check`, one file-system call per item, 40,000 on the
+  UI thread (`ui_cpu=8031ms` in his log).
+- **Each job's end**: one of those lines, then 40,000 `item` lines, each several writes (4.4 s in his
+  log).
+
+These cost what they cost only while stderr goes somewhere (his Log setting; a redirect, as every gate,
+soak and check script has).
+
+What changed (the five fixes the coordinating session agreed, and the timing lines):
+
+1. **A job is logged in a short form** above 20 items (`fileops::brief`, `LOG_ITEMS`): `Move { 40000
+   sources, first "C:\\...\\file_1.txt", dest_dir: "C:\\..." }`. Up to 20 items it is the `Debug` form as
+   before, built as one String (one write). The one script that reads a submit line
+   (`soak-p5m3.ps1`'s nested-zip count) reads a small job's, so no count changed.
+2. **Item lines are capped** (`fileops::item_lines`): every item of a job of up to 20; of a larger one
+   the first 20, then the first 20 failed ones after those, then `[fileops]   N more item(s) not listed
+   (K ok, F failed)`. One write for all of them. No soak or check script reads an item line.
+3. **The undo's check runs on the worker**, as the undo or redo job's first step
+   (`Worker::submit_checked`, `Done::refused`). A refusal logs `[undo] "..." refused: <why>` and shows the
+   same note as before, and the record is gone as before; what differs is that the job is submitted
+   first, so the pane reads "moving N items..." until the worker answers.
+4. **Rows removed with everything selected**: `apply_edits` keeps the selection as one flag per shown
+   row while the rows move and makes the set again at the end (`row_remove`, `row_insert`). Before, the
+   set above the row was rebuilt for every row removed: 2.8 ms a row in his log.
+5. **`forbid_if_replaced`** looks each result up in a set of the paths that were there (it compared
+   every result with every path).
+6. **Timing lines only** (the worker's item building is not changed here: it is put to Jeremy as its own
+   item): `[fileops] id=N: K item(s) handed to the shell in T ms` (our `SHCreateItemFromParsingName` and
+   `MoveItem`, `CopyItem` or `DeleteItem` per item, before `PerformOperations`), `[fileops] id=N: the
+   shell's first item T ms after PerformOperations` (the shell's own preparation), and for a drag `[dnd] N
+   items parsed in T ms, their data object made in U ms` (on the UI thread, at the press).
+
+### The big move: measured
+
+`tools\time-p16m2-bigmove.ps1` (new): 40,000 files, a copy of `C:\traces\bigdir` in
+`%TEMP%\twinfm-p16m2-big\src`, moved to `dst` beside it with Shift+F6 and brought back with Ctrl+Z, one
+scripted run with stderr redirected to a file; it reads the file as it grows and notes when each marker
+line shows. 2026-11-18, harness-launched, the machine free. Before is 1cd16bf's code
+(`target-bigmove-before`); after is this commit's.
+
+| | before | after |
+|---|---|---|
+| Move submitted: UI thread CPU in that period | 218,938 ms | no period over 500 ms |
+| Move's "100%" to its "done" line | 407.4 s | 3.4 s |
+| Undo pressed to the undo job submitted | not reached: 220,484 ms of UI CPU, then the script's 30 minutes ran out | 0.1 s |
+| The undo job's "100%" to its "done" line | not reached | 3.5 s |
+| A watch window removing about 400 rows with all selected | `-400 ... apply 1363.7 ms` | `-405 ... apply 128.0 ms` |
+| The log | 17.2 MB, longest line 3,229,030 characters, 40,000 item lines | 0.1 MB, longest line 228, 40 item lines |
+
+The before run's freezes are far longer than in Jeremy's log (about 220 s a line against 3.4 s): the same
+cause, a write per character, with each write costing more under this redirect and with paths twice as
+long. Why a write costs that much more here was not looked into. The before run was cut by the script's
+limit before the undo job was submitted and was not run again (over an hour); its files were moved back by
+hand.
+
+**Where the wait before the first file is** (after, both jobs alike; the lines are new, so there is no
+before):
+
+```
+[fileops] id=1: 40000 item(s) handed to the shell in 90103 ms
+[fileops] id=1: the shell's first item 11923 ms after PerformOperations
+[fileops] id=2: 40000 item(s) handed to the shell in 90102 ms
+[fileops] id=2: the shell's first item 10248 ms after PerformOperations
+```
+
+Submit to "0%" was 97 to 99 s: about 90 s is TwinFM handing the shell one item at a time (2.25 ms an
+item) and 10 to 12 s the shell's own preparation. Then the move itself, 100 to 110 s for 40,000 files,
+the shell's pace. In Jeremy's log the same wait was 20 to 25 s in all, on `C:\traces` and `C:\tmp`; here
+it is longer on `%TEMP%` (not looked into). The window is live through it.
+
+**The drag's start**: `[dnd] 40000 items parsed in 1838 ms, their data object made in 27 ms`, on the UI
+thread at the press (the period reads `ui_cpu=4344ms`; the rest of it was not split). Not changed. The
+scripted drag then sat 61 s inside `DoDragDrop` before its cancel landed, in both runs; Jeremy's real drag
+returned 97 ms after the drop, so this is the scripted drag over whatever lay under the pointer, and was
+not looked into.
+
+Not measured: the run with stderr going nowhere (the Log setting off, no redirect), where fix 3 is the
+only one of the three freezes' causes left; `undo::check`'s own time was never timed apart.
+
+**Tests** (written first for fixes 4 and 5, and run against the old code): 370 passed, 0 failed, 2
+ignored (366 before); `cargo build --release` finished with no warning.
+
+- `model::tests::apply_edits_with_everything_selected_is_not_per_row`: 40,000 rows all selected, a
+  window removing 400 and adding one; 529 ms before the fix (the test failed its bound), 58 ms after; the
+  selection, the cursor and the new row's place checked.
+- `fileops::undo::tests::the_replaced_test_is_linear_in_the_items`: 40,000 results against 40,000 paths
+  that were there, twice; 8,325 ms before, 34 ms after (bound 2 s).
+- `fileops::tests::large_jobs_are_logged_in_short`: the short form of each kind of job, the `Debug` form
+  kept up to 20 items, the item lines' cap and the failures kept.
+- `fileops::tests::the_worker_checks_an_undo_before_it_runs`: through the real worker in
+  `%TEMP%\twinfm-p16m2-check-<pid>`, an undo whose file is gone is refused with nothing run, and one
+  whose file is there runs.
+
+**Scripted check and soak**, on b7b8bd6's build, 2026-11-18, harness-launched with the coordinating
+session's leave: `tools\check-p16m2.ps1` exit 0 with the same `[nav]` lines as before.
+`tools\soak-p5m3.ps1 -Minutes 10`: ran 10.1 min, window closed by the script, exit code 0, 0 panicked
+lines; 225 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0, menupicks refused 0,
+every "must be 0" count 0; side buttons 2 and 2; private bytes 165.3 -> 235.9 MB. Its log has 30 undo
+and redo jobs done, each through the worker's check, and no `[undo] ... refused` line.
+
+**The gate** is run again on this code (b7b8bd6) by the coordinating session; its figures go under § Gate.
+
 ### Calls made in this milestone, for Jeremy to check
 
 - **The side buttons over the path's text entry and the search box now move the pane.** This
