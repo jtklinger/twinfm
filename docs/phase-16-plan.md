@@ -2053,6 +2053,22 @@ What the merge changed of what ab88 measured: nothing per frame or per row. The 
 and cells are as gated; `row_rect` runs when a drag's target changes.
 
 
+ab93, 2026-11-19 10:22, the coordinating session's sitting: four builds on the defaults, interleaved in
+the order `p15close`, `p16m6` (ab28bbe), `p16m3` (935d867), `p16m5` (c21b00e) each round; console (frame
+interval p50 16.3 to 16.5 ms), no panic, the whole sitting in the costlier state (render p50 2.18 to
+3.19 ms). Run though this stream judged no gate needed: the merged code of three PRs had not been
+measured under the views' builds. Summary `C:\traces\gate-ab93-summary.txt`.
+
+| Build | WPR main-thread busy, three runs | Median |
+|---|---|---|
+| `p15close` (reference) | 23.9, 23.1, 22.1 | 23.1 |
+| `p16m5` c21b00e | 23.7, 21.5, 21.6 | 21.6 |
+
+No gap that counts: the gate holds for the merged code on the defaults. All three runs passed the
+script's checks (resolve 373, 375, 373). The sitting's one doubtful run is `p16m3`'s first, whose wheel
+steps scrolled nothing; it is read in P16-M3's record (§ Main taken in) and is not one of these.
+
+
 ### Console checks (for Jeremy, after the gates, TwinFM started unelevated)
 
 1. **The key and the menu.** In Downloads press Ctrl+Shift+5: the files show as a small icon and a
