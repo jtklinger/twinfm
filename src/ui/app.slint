@@ -455,6 +455,26 @@ export component App inherits Window {
     // A drag would drop on crumb `drop-crumb` of pane `drop-crumb-pane`'s breadcrumb (-1: none).
     in-out property <int> drop-crumb-pane: -1;
     in-out property <int> drop-crumb: -1;
+    // A drag is held over pane `drop-nav-pane`'s path bar button `drop-nav` (0 Back, 2 Up; -1 none),
+    // which will go back or up when it has been held there (P16-M1): the button is drawn lit.
+    in-out property <int> drop-nav-pane: -1;
+    in-out property <int> drop-nav: -1;
+    // What the drop would do (P16-M1, main.rs `drop_cue`, on change only): cue-kind 0 none, 1 a
+    // move, 2 a copy, 3 the drop asks; it colours the highlight's border and the one badge the
+    // window has, shown (cue-shown) with its cue-align point (0 its left end, 1 its right end, 2
+    // its middle) at cue-x and its top at cue-y, window px, reading cue-title and, muted, cue-hint
+    // (how to get the other). left-drop-cue / right-drop-cue: the same in words in the status line
+    // of the pane the drop is noted in ("" none).
+    in property <int> cue-kind: 0;
+    in property <bool> cue-shown: false;
+    in property <length> cue-x;
+    in property <length> cue-y;
+    in property <int> cue-align: 0;
+    in property <string> cue-title;
+    in property <string> cue-hint;
+    in property <string> left-drop-cue;
+    in property <string> right-drop-cue;
+    private property <brush> cue-color: root.cue-kind == 1 ? Theme.cue-move : root.cue-kind == 2 ? Theme.cue-copy : root.cue-kind == 3 ? Theme.cue-ask : Theme.cursor;
     // The rubber band (P4-M3): in pane band-pane (-1: none), the rectangle in that list's content
     // coordinates. Set by main.rs while a band gesture runs.
     in-out property <int> band-pane: -1;
@@ -676,6 +696,8 @@ export component App inherits Window {
     in-out property <bool> dlg-crumbs;
     // The toolbar's place in the dialog: 0 none, 1 top, 2 in each pane (ComboBox index).
     in-out property <int> dlg-toolbar;
+    // What a drop with no key held does (P16-M1): 0 as Explorer, 1 copy, 2 move, 3 ask.
+    in-out property <int> dlg-drag-default;
     // The colour scheme choice (P10-M1 task 7): 0 system, 1 light, 2 dark.
     in-out property <int> dlg-theme;
     in-out property <bool> dlg-preview;
@@ -754,7 +776,8 @@ export component App inherits Window {
         if (field == "view_left") { dlg-view-left = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "view_right") { dlg-view-right = value == "medium" ? 2 : value == "large" ? 1 : 0; }
         if (field == "toolbar") { dlg-toolbar = value == "none" ? 0 : value == "pane" ? 2 : 1; }
-        if (field == "theme") { dlg-theme = value == "light" ? 1 : value == "dark" ? 2 : 0; }
+        if (field == "drag_default") { dlg-drag-default = value == "copy" ? 1 : value == "move" ? 2 : value == "ask" ? 3 : 0; }
+        if (field == "theme") { dlg-theme =value == "light" ? 1 : value == "dark" ? 2 : 0; }
         if (field == "preview") { dlg-preview = value == "true"; }
         if (field == "syntax_colours") { dlg-syntax-colours = value == "true"; }
         if (field == "log") { dlg-log = value == "true"; }
@@ -1131,7 +1154,7 @@ export component App inherits Window {
                     height: root.drop-side-h;
                     background: Theme.selection;
                     border-width: 2px;
-                    border-color: Theme.cursor;
+                    border-color: root.cue-color;
                 }
             }
             // Where a dragged bookmark or saved search lands (P12-M5, P14-M1): a 2 px line in the accent
@@ -1184,6 +1207,7 @@ export component App inherits Window {
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 0 ? root.drop-tab : -1;
                 drop-crumb: root.drop-crumb-pane == 0 ? root.drop-crumb : -1;
+                drop-nav: root.drop-nav-pane == 0 ? root.drop-nav : -1;
                 tab-clicked(i) => { root.tab-select(0, i); }
                 tab-close(i) => { root.tab-close(0, i); }
                 tab-menu(i, x, y) => { root.tab-menu(0, i, x, y); }
@@ -1211,6 +1235,8 @@ export component App inherits Window {
                 drag-dx: root.drag-dx;
                 drag-dy: root.drag-dy;
                 drop-here: root.drop-pane == 0;
+                drop-color: root.cue-color;
+                drop-cue: root.left-drop-cue;
                 drop-row: root.drop-row;
                 band-here: root.band-pane == 0;
                 band-x: root.band-x; band-y: root.band-y; band-w: root.band-w; band-h: root.band-h;
@@ -1267,6 +1293,7 @@ export component App inherits Window {
                 toggle-sticky => { root.path-entry-sticky = !root.path-entry-sticky; root.settings-changed(); }
                 drop-tab: root.drop-tab-pane == 1 ? root.drop-tab : -1;
                 drop-crumb: root.drop-crumb-pane == 1 ? root.drop-crumb : -1;
+                drop-nav: root.drop-nav-pane == 1 ? root.drop-nav : -1;
                 tab-clicked(i) => { root.tab-select(1, i); }
                 tab-close(i) => { root.tab-close(1, i); }
                 tab-menu(i, x, y) => { root.tab-menu(1, i, x, y); }
@@ -1294,6 +1321,8 @@ export component App inherits Window {
                 drag-dx: root.drag-dx;
                 drag-dy: root.drag-dy;
                 drop-here: root.drop-pane == 1;
+                drop-color: root.cue-color;
+                drop-cue: root.right-drop-cue;
                 drop-row: root.drop-row;
                 band-here: root.band-pane == 1;
                 band-x: root.band-x; band-y: root.band-y; band-w: root.band-w; band-h: root.band-h;
@@ -1385,6 +1414,10 @@ export component App inherits Window {
             icon: root.preview-icon;
             action: root.preview-action;
             action-clicked => { root.preview-password(); }
+            // Over the column's scrollbars the mouse's Back and Forward go to the active pane, as
+            // over the toolbar across the window (P16-M2).
+            back => { root.pane-back(root.split && root.active-pane == 1 ? 1 : 0); }
+            forward => { root.pane-forward(root.split && root.active-pane == 1 ? 1 : 0); }
             pages: root.preview-pages;
             content-h: root.preview-content-h;
             mode: root.preview-mode;
@@ -1401,6 +1434,52 @@ export component App inherits Window {
             }
             scrolled(top, h) => { root.preview-scrolled(top, h); }
             resized(w) => { root.preview-resized(w); }
+        }
+    }
+
+    // The drop cue's badge (P16-M1): the one element that says what a drop would do, laid over
+    // the window at the highlighted target (never in a row): the effect's colour with its icon and
+    // "Move here" / "Copy here" / "Choose on drop", then, muted, how to get the other. Kept inside
+    // the window; no input handling and no accessibility node.
+    if root.cue-shown && root.cue-kind != 0: Rectangle {
+        width: cue-l.preferred-width;
+        height: 26px;
+        x: max(4px, min(root.width - self.width - 4px, root.cue-align == 1 ? root.cue-x - self.width : root.cue-align == 2 ? root.cue-x - self.width / 2 : root.cue-x));
+        y: max(root.top-h, min(root.height - self.height - 4px, root.cue-y));
+        background: Theme.card;
+        border-width: 1px;
+        border-color: root.cue-color;
+        border-radius: Theme.radius;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: #00000033;
+        accessible-role: none;
+        cue-l := HorizontalLayout {
+            Rectangle {
+                background: root.cue-color;
+                border-radius: Theme.radius;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 10px;
+                    spacing: 6px;
+                    Rectangle {
+                        width: 14px;
+                        Image {
+                            y: (parent.height - 14px) / 2;
+                            width: 14px;
+                            height: 14px;
+                            source: root.cue-kind == 2 ? @image-url("icons/plus.svg") : root.cue-kind == 3 ? @image-url("icons/ellipsis.svg") : @image-url("icons/arrow-right.svg");
+                            colorize: Theme.on-cue;
+                        }
+                    }
+                    Text { text: root.cue-title; font-size: 12px; font-weight: 600; color: Theme.on-cue; vertical-alignment: center; }
+                }
+            }
+            if root.cue-hint != "": HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 10px;
+                Text { text: root.cue-hint; font-size: 12px; color: Theme.fg-muted; vertical-alignment: center; }
+            }
         }
     }
 
@@ -1731,9 +1810,12 @@ export component App inherits Window {
     // closed. The FocusScope takes Escape while a control inside has the focus.
     settings-dialog := PopupWindow {
         x: (root.width - 480px) / 2;
-        y: max(10px, (root.height - 710px) / 2);
+        // 750 px holds every row and the buttons: a popup takes no click outside its rectangle, so
+        // a row added without its 40 px here pushes OK and Cancel out of the mouse's reach (the
+        // Dragging files row did, P16-M1's console check).
+        y: max(10px, (root.height - 750px) / 2);
         width: 480px;
-        height: 710px;
+        height: 750px;
         close-policy: PopupClosePolicy.no-auto-close;
         Rectangle {
             background: Theme.card;
@@ -1913,6 +1995,15 @@ export component App inherits Window {
                                 current-index: root.dlg-toolbar;
                                 label: "Toolbar";
                                 selected => { root.settings-stage("toolbar", self.current-index == 0 ? "none" : self.current-index == 2 ? "pane" : "top"); }
+                            }
+                        }
+                        Row {
+                            Text { text: "Dragging files"; vertical-alignment: center; }
+                            Choice {
+                                model: ["As Explorer", "Always copy", "Always move", "Always ask"];
+                                current-index: root.dlg-drag-default;
+                                label: "What dropping dragged files does";
+                                selected => { root.settings-stage("drag_default", self.current-index == 1 ? "copy" : self.current-index == 2 ? "move" : self.current-index == 3 ? "ask" : "explorer"); }
                             }
                         }
                         Row {
