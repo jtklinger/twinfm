@@ -358,25 +358,31 @@ impl Default for Config {
 }
 
 /// A pane's view (P16-M3: Explorer's views and their order): the grid at extra large, large, medium
-/// or small tiles, or the details list (Ctrl+Shift+1, 2, 3, 4 and 6, as Explorer; 5 is kept for List).
+/// or small tiles, the List view (P16-M5: the small tile's cells in columns filled top to bottom
+/// and scrolled sideways), or the details list (Ctrl+Shift+1 to 6, as Explorer).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     XLarge,
     Large,
     Medium,
     Small,
+    List,
     Details,
 }
 
 impl View {
     /// Explorer's order: the toolbar's View menu and the dialog's choice list them so.
-    pub const ALL: [View; 5] = [View::XLarge, View::Large, View::Medium, View::Small, View::Details];
+    pub const ALL: [View; 6] = [View::XLarge, View::Large, View::Medium, View::Small, View::List, View::Details];
 
-    /// From the settings file's `view_*` and `tile_*` values: "icons" is the grid, anything else
-    /// the details list; the tile is `TileSize::from_name` ("xlarge", "medium", "small", anything
-    /// else large, so a file from before P16-M3 reads as it did).
+    /// From the settings file's `view_*` and `tile_*` values: "icons" is the grid, "list" the List
+    /// view (P16-M5), anything else the details list; the tile is `TileSize::from_name` ("xlarge",
+    /// "medium", "small", anything else large, so a file from before P16-M3 reads as it did).
     pub fn from_config(view: &str, tile: &str) -> View {
-        if view == "icons" { View::of_tile(crate::icons::TileSize::from_name(tile)) } else { View::Details }
+        match view {
+            "icons" => View::of_tile(crate::icons::TileSize::from_name(tile)),
+            "list" => View::List,
+            _ => View::Details,
+        }
     }
 
     pub fn of_tile(t: crate::icons::TileSize) -> View {
@@ -389,26 +395,31 @@ impl View {
         }
     }
 
-    /// The grid's tile size; None for the details list.
+    /// The grid's tile size (the List view draws the small tile's cells); None for the details list.
     pub fn tile(self) -> Option<crate::icons::TileSize> {
         use crate::icons::TileSize;
         match self {
             View::XLarge => Some(TileSize::XLarge),
             View::Large => Some(TileSize::Large),
             View::Medium => Some(TileSize::Medium),
-            View::Small => Some(TileSize::Small),
+            View::Small | View::List => Some(TileSize::Small),
             View::Details => None,
         }
     }
 
+    /// The List view: columns filled top to bottom, scrolled sideways.
+    pub fn is_list(self) -> bool {
+        self == View::List
+    }
+
     /// `set-view`'s int, the dialog's choice and the View menu's tick: the place in `ALL` (0 extra
-    /// large, 1 large, 2 medium, 3 small, 4 details; anything else details).
+    /// large, 1 large, 2 medium, 3 small, 4 list, 5 details; anything else details).
     pub fn from_index(i: i32) -> View {
         usize::try_from(i).ok().and_then(|i| View::ALL.get(i).copied()).unwrap_or(View::Details)
     }
 
     pub fn index(self) -> i32 {
-        View::ALL.iter().position(|v| *v == self).unwrap_or(4) as i32
+        View::ALL.iter().position(|v| *v == self).unwrap_or(5) as i32
     }
 
     pub fn is_grid(self) -> bool {
@@ -417,7 +428,11 @@ impl View {
 
     /// The `view_*` value it saves as.
     pub fn view_value(self) -> &'static str {
-        if self.is_grid() { "icons" } else { "details" }
+        match self {
+            View::Details => "details",
+            View::List => "list",
+            _ => "icons",
+        }
     }
 
     /// The dialog's name for it (`settings set view_left <name>`, the driver's `view <name>`, the
@@ -428,6 +443,7 @@ impl View {
             View::Large => "large",
             View::Medium => "medium",
             View::Small => "small",
+            View::List => "list",
             View::Details => "details",
         }
     }
@@ -443,6 +459,7 @@ impl View {
             View::Large => "large icons",
             View::Medium => "medium icons",
             View::Small => "small icons",
+            View::List => "list",
             View::Details => "details",
         }
     }
@@ -459,12 +476,12 @@ impl Config {
         crate::icons::TileSize::from_name(if pane == 0 { &self.tile_left } else { &self.tile_right })
     }
 
-    /// Set pane `pane`'s view: `view_*` always, `tile_*` for a grid (the details list keeps the
-    /// last tile size, so details and then back to the grid keeps it in the file too).
+    /// Set pane `pane`'s view: `view_*` always, `tile_*` for a grid (the details list and the List
+    /// view keep the last tile size, so either and then back to the grid keeps it in the file too).
     pub fn set_view(&mut self, pane: usize, v: View) {
         let (view, tile) = if pane == 0 { (&mut self.view_left, &mut self.tile_left) } else { (&mut self.view_right, &mut self.tile_right) };
         *view = v.view_value().into();
-        if let Some(t) = v.tile() {
+        if let Some(t) = v.tile().filter(|_| !v.is_list()) {
             *tile = t.name().into();
         }
     }
@@ -1082,14 +1099,25 @@ col_size_right = 99999.0
         for v in View::ALL {
             assert_eq!(View::from_index(v.index()), v);
             assert_eq!(View::from_name(v.name()), v);
-            assert_eq!(v.tile().map(View::of_tile), v.is_grid().then_some(v));
+            assert_eq!(v.tile().map(View::of_tile), v.is_grid().then_some(if v.is_list() { View::Small } else { v }));
         }
         assert_eq!(View::from_index(7), View::Details);
         assert_eq!(View::from_name("icons"), View::Details, "the dialog's names, not the file's");
         assert!(View::Medium.is_grid() && View::Large.is_grid() && View::XLarge.is_grid() && View::Small.is_grid() && !View::Details.is_grid());
         // P16-M3: Explorer's order and keys; the two new sizes saved and read back; an older file's
         // "icons" with "medium" or no tile reads as before.
-        assert_eq!(View::ALL.map(View::index), [0, 1, 2, 3, 4]);
+        assert_eq!(View::ALL.map(View::index), [0, 1, 2, 3, 4, 5]);
+        // P16-M5: the List view is a view of its own, saved as "list" (an older build reads that
+        // as details); it draws the small tile and leaves the saved tile size alone.
+        assert_eq!(View::from_config("list", "xlarge"), View::List);
+        assert!(View::List.is_grid() && View::List.is_list() && !View::Small.is_list());
+        assert_eq!(View::List.tile(), Some(crate::icons::TileSize::Small));
+        let mut l = Config::default();
+        l.set_view(0, View::XLarge);
+        l.set_view(0, View::List);
+        assert_eq!((l.view_left.as_str(), l.tile_left.as_str()), ("list", "xlarge"));
+        let back = Config::parse(&l.to_toml()).unwrap();
+        assert_eq!((back.view(0), back.tile(0)), (View::List, crate::icons::TileSize::XLarge));
         assert_eq!(View::from_index(-1), View::Details);
         assert_eq!((View::from_config("icons", "xlarge"), View::from_config("icons", "small")), (View::XLarge, View::Small));
         assert_eq!(Config::parse("view_left = \"icons\"\n").unwrap().view(0), View::Large);

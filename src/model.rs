@@ -1,7 +1,7 @@
 //! PaneModel: a flat Vec of plain entries exposed to Slint as a virtualized model.
 //! Only the UI thread touches it. Workers hand over whole Vec<Entry> batches.
 
-use crate::{GridRow, Row, Tile};
+use crate::{ColSlot, GridRow, Row, Tile};
 use crate::icons::{IconTable, KeyState, PLACEHOLDER_DRIVE, PLACEHOLDER_FILE, PLACEHOLDER_FOLDER, PLACEHOLDERS};
 use slint::{Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
@@ -228,6 +228,11 @@ pub struct PaneModel {
     grid_n: Cell<usize>,
     grid_cursor: Cell<i32>,
     grid_notify: ModelNotify,
+    /// The List view (P16-M5): the columns its ring of slots holds now (`ColsModel`: first and last
+    /// column on screen and the slot count; no slots while the pane shows another view), and that
+    /// model's notifications, sent for a column only while it is in the window.
+    list_window: Cell<(usize, usize, usize)>,
+    cols_notify: ModelNotify,
     /// Generation of the enumeration whose batches we accept; stale workers are ignored.
     pub generation: Cell<u64>,
     /// Bumped by every filter/sort request; only the newest pass may swap `shown`.
@@ -277,6 +282,8 @@ impl PaneModel {
             grid_n: Cell::new(1),
             grid_cursor: Cell::new(-1),
             grid_notify: ModelNotify::default(),
+            list_window: Cell::new((0, 0, 0)),
+            cols_notify: ModelNotify::default(),
             generation: Cell::new(0),
             pass: Cell::new(0),
             landed_pass: Cell::new(0),
@@ -412,7 +419,7 @@ impl PaneModel {
         self.sel_version.set(self.sel_version.get() + 1);
         self.cut.borrow_mut().clear();
         self.notify.reset();
-        self.grid_notify.reset();
+        self.grid_reset();
     }
 
     /// Mark `names` as cut (empty: none); only rows whose mark changed are notified.
@@ -634,10 +641,14 @@ impl PaneModel {
             let n = self.grid_n.get();
             let (old, new) = (grid_rows(start, n), grid_rows(start + added, n));
             if start % n.max(1) != 0 {
-                self.grid_notify.row_changed(old - 1);
+                self.grid_row_changed(old - 1);
             }
             if new > old {
                 self.grid_notify.row_added(old, new - old);
+                // The List view's new columns that fall inside its window (P16-M5).
+                for g in old..new {
+                    self.col_changed(g);
+                }
             }
         }
     }
@@ -651,7 +662,7 @@ impl PaneModel {
         *self.sel.borrow_mut() = Selection { set: out.selection, anchor: out.cursor };
         self.sel_version.set(self.sel_version.get() + 1);
         self.notify.reset();
-        self.grid_notify.reset();
+        self.grid_reset();
         out.cursor
     }
 
@@ -735,7 +746,7 @@ impl PaneModel {
             return false;
         }
         self.grid_n.set(n);
-        self.grid_notify.reset();
+        self.grid_reset();
         true
     }
 
@@ -765,7 +776,30 @@ impl PaneModel {
     /// Entry `i` changed: notify its grid row, if it exists.
     fn grid_changed(&self, i: usize) {
         if i < self.len() {
-            self.grid_notify.row_changed(grid_cell(i, self.grid_n.get()).0);
+            self.grid_row_changed(grid_cell(i, self.grid_n.get()).0);
+        }
+    }
+
+    /// Grid row `g` changed: the grid's model is told, and the List view's when `g` (a column
+    /// there) is in its window (P16-M5).
+    fn grid_row_changed(&self, g: usize) {
+        self.grid_notify.row_changed(g);
+        self.col_changed(g);
+    }
+
+    /// The List view's column `g` changed: its slot is told, if the window holds it.
+    fn col_changed(&self, g: usize) {
+        let w = self.list_window.get();
+        if slot_col(w, g % w.2.max(1)) == Some(g) {
+            self.cols_notify.row_changed(g % w.2);
+        }
+    }
+
+    /// Every grid row changed (a new listing, a pass, another count to a row): both models reset.
+    fn grid_reset(&self) {
+        self.grid_notify.reset();
+        if self.list_window.get().2 > 0 {
+            self.cols_notify.reset();
         }
     }
 
@@ -1071,7 +1105,7 @@ impl PaneModel {
             }
         }
         if structural {
-            self.grid_notify.reset();
+            self.grid_reset();
         }
         Ok(out)
     }
@@ -1350,6 +1384,98 @@ impl Model for GridModel {
 
     fn model_tracker(&self) -> &dyn ModelTracker {
         &self.model.grid_notify
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// The column a slot of the List view's ring holds (P16-M5): the window is the first and last
+/// column on screen and the slot count; column `g` sits in slot `g % slots`, so each slot holds the
+/// one column of the window with its remainder, or none (a ring wider than the window).
+pub fn slot_col((first, last, slots): (usize, usize, usize), slot: usize) -> Option<usize> {
+    if slots == 0 || slot >= slots {
+        return None;
+    }
+    let g = first + (slot + slots - first % slots) % slots;
+    (g <= last).then_some(g)
+}
+
+/// The List view's ring of visible columns (P16-M5), the model of pane.slint's `FileColumns`: one
+/// row per slot, each the column of the pane's grid model that the window puts there (the grid's
+/// "grid rows" are the list's columns: `grid_n` is the rows a column holds), with the image of its
+/// icons. `set_window` moves the window; `set_col` gives a column its image and tells its slot;
+/// selection, cursor and cut changes reach a slot through the pane's model (`col_changed`).
+pub struct ColsModel {
+    model: Rc<PaneModel>,
+    grid: GridModel,
+    /// Each slot's icons: the column they were composed for, the image and its logical size.
+    images: RefCell<Vec<Option<(usize, slint::Image, f32, f32)>>>,
+}
+
+impl ColsModel {
+    pub fn new(model: Rc<PaneModel>) -> ColsModel {
+        ColsModel { grid: GridModel::new(model.clone()), model, images: RefCell::new(Vec::new()) }
+    }
+
+    /// The window is now columns `first..=last` in `slots` slots. A slot whose column changes is
+    /// told by `set_col`; a change of the slot count resets the ring.
+    pub fn set_window(&self, first: usize, last: usize, slots: usize) {
+        let old = self.model.list_window.replace((first, last, slots));
+        if old.2 != slots {
+            *self.images.borrow_mut() = vec![None; slots];
+            self.model.cols_notify.reset();
+        }
+    }
+
+    /// No columns (an empty listing, or the pane left the List view).
+    pub fn clear(&self) {
+        if self.model.list_window.replace((0, 0, 0)).2 != 0 {
+            self.images.borrow_mut().clear();
+            self.model.cols_notify.reset();
+        }
+    }
+
+    /// Column `g` of the window takes its icons' image (`w` x `h` logical px) and its slot is told
+    /// (a column that came into view, or one whose icons changed).
+    pub fn set_col(&self, g: usize, img: slint::Image, w: f32, h: f32) {
+        let slots = self.model.list_window.get().2;
+        if slots == 0 {
+            return;
+        }
+        if let Some(slot) = self.images.borrow_mut().get_mut(g % slots) {
+            *slot = Some((g, img, w, h));
+        }
+        self.model.cols_notify.row_changed(g % slots);
+    }
+}
+
+impl Model for ColsModel {
+    type Data = ColSlot;
+
+    fn row_count(&self) -> usize {
+        self.model.list_window.get().2
+    }
+
+    fn row_data(&self, slot: usize) -> Option<ColSlot> {
+        let window = self.model.list_window.get();
+        if slot >= window.2 {
+            return None;
+        }
+        // A slot with no column sits off screen (column -10) with nothing in it.
+        let empty = ColSlot { col: -10, ..ColSlot::default() };
+        let Some(g) = slot_col(window, slot) else { return Some(empty) };
+        let Some(row) = self.grid.row_data(g) else { return Some(empty) };
+        let (img, img_w, img_h) = match self.images.borrow().get(slot) {
+            Some(Some((at, img, w, h))) if *at == g => (img.clone(), *w, *h),
+            _ => (slint::Image::default(), 0.0, 0.0),
+        };
+        Some(ColSlot { col: g as i32, first: row.first, tiles: row.tiles, img, img_w, img_h })
+    }
+
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.model.cols_notify
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -2522,6 +2648,50 @@ mod tests {
         m.set_grid_n(4);
         assert_eq!(g.row_count(), 4);
         assert_eq!(g.row_data(3).unwrap().first, 12);
+    }
+
+    #[test]
+    fn the_list_views_ring_holds_the_columns_on_screen() {
+        // P16-M5. Columns 3 to 8 in seven slots: column g sits in slot g % 7; slot 2 has none.
+        let w = (3, 8, 7);
+        assert_eq!((0..7).map(|k| slot_col(w, k)).collect::<Vec<_>>(), [Some(7), Some(8), None, Some(3), Some(4), Some(5), Some(6)]);
+        assert_eq!(slot_col(w, 7), None, "no such slot");
+        assert_eq!(slot_col((0, 0, 0), 0), None, "no ring");
+        assert_eq!(slot_col((0, 2, 7), 5), None, "a ring wider than the window");
+        for (first, last, slots) in [(0, 4, 7), (10, 15, 7), (1428, 1428, 7), (5, 5, 1)] {
+            for g in first..=last {
+                assert_eq!(slot_col((first, last, slots), g % slots), Some(g));
+            }
+        }
+        // The ring over a pane model: 25 entries in columns of ten rows are three columns.
+        let m = Rc::new(PaneModel::default());
+        m.append((0..25).map(|i| Entry::new(format!("f{i:02}").into(), 1, 0, 0, "File".into())).collect());
+        m.set_grid_n(10);
+        let c = ColsModel::new(m.clone());
+        assert_eq!(c.row_count(), 0, "no window yet");
+        c.set_window(0, 2, 5);
+        assert_eq!(c.row_count(), 5);
+        let col1 = c.row_data(1).unwrap();
+        assert_eq!((col1.col, col1.first, col1.tiles.row_count()), (1, 10, 10));
+        assert_eq!(col1.tiles.row_data(3).unwrap().name, "f13", "entry 13 is column 1, row 3");
+        assert_eq!(c.row_data(2).unwrap().tiles.row_count(), 5, "the short last column");
+        assert_eq!(c.row_data(3).unwrap().col, -10, "a slot with no column sits off screen");
+        assert!(c.row_data(5).is_none());
+        // A column's image is its own: column 1's is not shown for column 6 in the same slot.
+        c.set_col(1, slint::Image::default(), 24.0, 220.0);
+        assert_eq!((c.row_data(1).unwrap().img_w, c.row_data(1).unwrap().img_h), (24.0, 220.0));
+        m.append((25..70).map(|i| Entry::new(format!("f{i:02}").into(), 1, 0, 0, "File".into())).collect());
+        c.set_window(4, 6, 5);
+        let col6 = c.row_data(1).unwrap();
+        assert_eq!((col6.col, col6.first, col6.img_w), (6, 60, 0.0));
+        // Selection and the cursor reach the column's cells.
+        m.select(SelOp::Only, 62);
+        m.set_grid_cursor(63);
+        let col6 = c.row_data(1).unwrap();
+        assert!(col6.tiles.row_data(2).unwrap().selected && col6.tiles.row_data(3).unwrap().current);
+        // Leaving the view empties the ring.
+        c.clear();
+        assert_eq!(c.row_count(), 0);
     }
 
     #[test]

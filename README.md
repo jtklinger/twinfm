@@ -23,7 +23,7 @@ keep backups as you would with any file manager.
   fetched only for the rows on screen. Folders are watched, so changes made elsewhere appear
   without a refresh.
 - **Views:** details (with adjustable column widths, and compact or comfortable rows), extra large, large,
-  medium and small icons, with thumbnails, cloud status marks for OneDrive (syncing and errors too) and
+  medium and small icons and Explorer's List view, with thumbnails, cloud status marks for OneDrive (syncing and errors too) and
   Google Drive, and a rubber-band selection (in the details view too, from a row's blank part). In a
   narrow pane the columns make way so file names are not cut: Type goes first, then Size, then
   Modified, each coming back as the pane widens. An optional Size on disk column, with its own width and sort. The row or tile
@@ -110,7 +110,7 @@ accessibility patches and a list fix (see [License](#license)); Cargo fetches it
 | Alt+Enter | Properties |
 | Alt+Shift+Enter | Size every folder in the listing |
 | Shift+F10, Menu key | Context menu (Shift+right-click: the classic shell menu) |
-| Ctrl+Shift+1, 2, 3, 4, 6 | Extra large, large, medium and small icons, details (Explorer's keys) |
+| Ctrl+Shift+1 to 6 | Extra large, large, medium and small icons, list, details (Explorer's keys) |
 | Alt+P | Preview pane |
 | Ctrl+wheel, Ctrl+plus, Ctrl+minus, Ctrl+0 | Zoom a PDF in the preview (pointer over it) |
 | Ctrl+T, Ctrl+W | New tab, close tab |

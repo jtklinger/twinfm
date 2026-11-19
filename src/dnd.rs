@@ -465,7 +465,8 @@ pub fn cue_anchor(mark: Mark, r: Rect, grid: bool) -> Option<(f32, f32, Align)> 
 }
 
 /// The window rectangle of pane `pane`'s list (`row` negative) or of its row or tile `row`, as the
-/// drop highlight draws it; `content_y` is the list's scroll offset (zero or negative).
+/// drop highlight draws it; `content_y` is the list's scroll offset (zero or negative; in the List
+/// view its sideways scroll).
 pub fn row_rect(l: &Layout, pane: usize, row: i32, content_y: f32) -> Rect {
     let (a, b) = pane_x(l, pane);
     let (x, top) = (a + PANE_PAD, list_top(l, pane));
@@ -476,6 +477,13 @@ pub fn row_rect(l: &Layout, pane: usize, row: i32, content_y: f32) -> Rect {
     let h = l.row_px_of(pane);
     match l.grid[pane] {
         None => Rect { x, y: top + content_y + row as f32 * h, w, h },
+        // The List view (P16-M5): `grid` is the rows a column holds and the scroll runs sideways,
+        // so the entry's column is across and its place in the column down.
+        Some(rows) if l.list[pane] => {
+            let rows = rows.max(1);
+            let tw = l.tile[pane].w;
+            Rect { x: x + content_y + (row / rows) as f32 * tw, y: top + (row % rows) as f32 * h, w: tw, h }
+        }
         Some(cols) => {
             let cols = cols.max(1);
             let tw = l.tile[pane].w;
@@ -598,12 +606,31 @@ pub struct Layout {
     /// The width the preview column and its 6 px handle take from the window's right edge
     /// (P8-M1: its share of the space right of `left`, plus 3 px), or 0 while it is hidden.
     pub preview: f32,
+    /// Each pane showing the List view (P16-M5): its cells run down columns and it scrolls
+    /// sideways. `grid` is then the rows a column holds and `tile` the small cell.
+    pub list: [bool; 2],
 }
 
 impl Layout {
     /// The height of one line of the pane's list: a row, or a grid row of tiles.
     pub fn row_px_of(&self, pane: usize) -> f32 {
         if self.grid[pane].is_some() { self.tile[pane].h } else { self.row_px }
+    }
+
+    /// The size of one line along the pane's scroll: a row's or a grid row's height, or in the
+    /// List view a column's width (P16-M5).
+    pub fn line_px(&self, pane: usize) -> f32 {
+        if self.list[pane] { self.tile[pane].w } else { self.row_px_of(pane) }
+    }
+
+    /// The length of the pane's list along its scroll: its height, or in the List view its width.
+    pub fn extent(&self, pane: usize) -> f32 {
+        if self.list[pane] {
+            let (a, b) = pane_x(self, pane);
+            b - a - 2.0 * PANE_PAD
+        } else {
+            self.height - LIST_BOTTOM_GAP - list_top(self, pane)
+        }
     }
 }
 
@@ -879,6 +906,18 @@ pub fn hit(l: &Layout, x: f32, y: f32, content_y: [f32; 2], len: [usize; 2]) -> 
     if !in_list {
         return Spot::Pane(pane);
     }
+    // The List view (P16-M5): the column from x and the sideways scroll, the row in it from y;
+    // below a column's last row and past the last entry is the pane.
+    if l.list[pane] {
+        let rows = l.grid[pane].unwrap_or(1).max(1);
+        let col = ((x - a - PANE_PAD - content_y[pane]) / l.tile[pane].w).floor();
+        let row = ((y - list_top(l, pane)) / l.tile[pane].h).floor();
+        if col < 0.0 || row < 0.0 || row as usize >= rows {
+            return Spot::Pane(pane);
+        }
+        let i = col as usize * rows + row as usize;
+        return if i < len[pane] { Spot::Row(pane, i) } else { Spot::Pane(pane) };
+    }
     let r = ((y - list_top(l, pane) - content_y[pane]) / l.row_px_of(pane)).floor();
     if r < 0.0 {
         return Spot::Pane(pane);
@@ -914,6 +953,16 @@ pub fn edge_scroll(l: &Layout, x: f32, y: f32) -> Option<(usize, i32)> {
     let (top, bottom) = (list_top(l, pane), l.height - LIST_BOTTOM_GAP);
     if y < top || y >= bottom {
         None
+    } else if l.list[pane] {
+        // The List view scrolls sideways (P16-M5): its left and right edges.
+        let (a, b) = pane_x(l, pane);
+        if x < a + PANE_PAD + EDGE_PX {
+            Some((pane, -1))
+        } else if x >= b - PANE_PAD - EDGE_PX {
+            Some((pane, 1))
+        } else {
+            None
+        }
     } else if y < top + EDGE_PX {
         Some((pane, -1))
     } else if y >= bottom - EDGE_PX {
@@ -3687,13 +3736,20 @@ mod tests {
 
     #[test]
     fn the_cue_badge_sits_on_its_target() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [true; 2], left: 200.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 44.0, bar: 0.0, preview: 0.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [true; 2], left: 200.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 44.0, bar: 0.0, preview: 0.0, list: [false; 2] };
         let top = list_top(&one, 0);
         // The whole list, a row scrolled by two rows, and a tile in a grid of four to a row.
         assert_eq!(row_rect(&one, 0, -1, -44.0), Rect { x: 203.0, y: top, w: 794.0, h: 600.0 - LIST_BOTTOM_GAP - top });
         assert_eq!(row_rect(&one, 0, 5, -44.0), Rect { x: 203.0, y: top + 3.0 * 22.0, w: 794.0, h: 22.0 });
         let grid = Layout { grid: [Some(4), None], ..one };
         assert_eq!(row_rect(&grid, 0, 6, 0.0), Rect { x: 203.0 + 2.0 * 96.0, y: top + 136.0, w: 96.0, h: 136.0 });
+        // The List view, twenty cells to a column, scrolled one column sideways: entry 45 is the
+        // third column's sixth cell, and the hit test gives that entry for a point in it.
+        let cols = Layout { grid: [Some(20), None], tile: [crate::icons::TileGeom::SMALL; 2], list: [true, false], ..one };
+        let c = row_rect(&cols, 0, 45, -220.0);
+        assert_eq!(c, Rect { x: 203.0 + 220.0, y: top + 5.0 * 22.0, w: 220.0, h: 22.0 });
+        assert_eq!(hit(&cols, c.x + 10.0, c.y + 1.0, [-220.0, 0.0], [400, 0]), Spot::Row(0, 45));
+        assert_eq!(cue_anchor(Mark::Row(45), c, true), Some((c.x + 226.0, c.y - 2.0, Align::Left)), "beside the cell");
         // The same rectangle the hit test gives the row for.
         let r = row_rect(&one, 0, 5, -44.0);
         assert_eq!(hit(&one, r.x + 10.0, r.y + 1.0, [-44.0, 0.0], [40, 0]), Spot::Row(0, 5));
@@ -3915,7 +3971,7 @@ mod tests {
     #[test]
     fn name_cell_follows_the_column_widths() {
         use crate::cols::{Widths, DEFAULT};
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0, list: [false; 2] };
         // 3 px pane padding, 28 px row padding; 1000 - 3 - 10 - 350 = 637 on the right.
         assert_eq!(name_cell(&one, 0, DEFAULT.taken([true; 3])), (31.0, 606.0));
         assert_eq!(name_cell(&one, 0, DEFAULT.taken([false, true, true])), (31.0, 726.0));
@@ -3938,7 +3994,7 @@ mod tests {
 
     #[test]
     fn hit_testing_and_drop_folder() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0, list: [false; 2] };
         let two = Layout { split: true, ..one };
         let none = [0.0, 0.0];
         // Rows start at y 75, 22 px each; the list ends 33 px above the bottom (y 567).
@@ -3997,6 +4053,20 @@ mod tests {
         assert_eq!(hit(&small, 3.0 + 220.0 * 2.0 + 10.0, 75.0 + 22.0 * 3.0 + 5.0, none, [100, 0]), Spot::Row(0, 14));
         assert_eq!(hit(&small, 3.0 + 10.0, 75.0 + 5.0, [-44.0, 0.0], [100, 0]), Spot::Row(0, 8), "scrolled two rows of cells");
         assert_eq!(hit(&small, 3.0 + 220.0 * 4.0 + 1.0, 80.0, none, [100, 0]), Spot::Pane(0), "right of the cells");
+        // P16-M5, the List view: the same cells in columns of ten rows, scrolled sideways.
+        let list = Layout { grid: [Some(10), None], tile: [crate::icons::TileGeom::SMALL, crate::icons::TileGeom::LARGE], list: [true, false], ..one };
+        assert_eq!((list.line_px(0), list.extent(0)), (220.0, 994.0));
+        assert_eq!((one.line_px(0), one.extent(0)), (22.0, 600.0 - LIST_BOTTOM_GAP - 75.0));
+        assert_eq!(hit(&list, 3.0 + 10.0, 75.0 + 5.0, none, [100, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&list, 3.0 + 10.0, 75.0 + 22.0 * 3.0 + 5.0, none, [100, 0]), Spot::Row(0, 3), "down the first column");
+        assert_eq!(hit(&list, 3.0 + 220.0 * 2.0 + 10.0, 75.0 + 22.0 * 3.0 + 5.0, none, [100, 0]), Spot::Row(0, 23), "the third column");
+        assert_eq!(hit(&list, 3.0 + 10.0, 75.0 + 5.0, [-440.0, 0.0], [100, 0]), Spot::Row(0, 20), "scrolled two columns sideways");
+        assert_eq!(hit(&list, 3.0 + 10.0, 75.0 + 22.0 * 10.0 + 5.0, none, [100, 0]), Spot::Pane(0), "below a column's last row");
+        assert_eq!(hit(&list, 3.0 + 220.0 * 2.0 + 10.0, 75.0 + 22.0 * 5.0 + 5.0, none, [24, 0]), Spot::Pane(0), "past the last entry of a short last column");
+        // Its edges for a hovering drag are its left and right ones.
+        assert_eq!(edge_scroll(&list, 3.0 + 10.0, 300.0), Some((0, -1)));
+        assert_eq!(edge_scroll(&list, 1000.0 - 3.0 - 10.0, 300.0), Some((0, 1)));
+        assert_eq!(edge_scroll(&list, 500.0, 80.0), None, "its top edge scrolls nothing");
         // With the split, each pane has its own view: the right pane stays a 22 px list.
         let both = Layout { split: true, grid: [Some(5), None], ..one };
         assert_eq!(hit(&both, 50.0, 220.0, none, [12, 7]), Spot::Row(0, 5));
@@ -4065,7 +4135,7 @@ mod tests {
     #[test]
     fn hit_sidebar_rows_and_tabs() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000.
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0, list: [false; 2] };
         // Header 26, two drives 24, header 26, a place 24, header 26, a bookmark being renamed 30.
         let rows = [(26.0, false), (24.0, true), (24.0, true), (26.0, false), (24.0, true), (26.0, false), (30.0, true)];
         let s = Strips {
@@ -4156,7 +4226,7 @@ mod tests {
 
     #[test]
     fn auto_scroll_near_the_list_edges() {
-        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
+        let one = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0, list: [false; 2] };
         // The list runs from y 75 to 567; the edge zones are 24 px inside it.
         assert_eq!(edge_scroll(&one, 500.0, 75.0), Some((0, -1)), "the top edge scrolls up");
         assert_eq!(edge_scroll(&one, 500.0, 98.9), Some((0, -1)));
@@ -4190,7 +4260,7 @@ mod tests {
     fn auto_scroll_sidebar_and_tab_strip() {
         // A 180 px sidebar (panes from 184), split at 0.5: left pane 184..589, right 595..1000;
         // the right pane shows a strip of 6 tabs of 120 px in its 399 px (720 px of tabs).
-        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
+        let l = Layout { width: 1000.0, height: 600.0, split: true, ratio: 0.5, tabs: [false, true], left: 184.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0, list: [false; 2] };
         let rows = [(26.0, false), (24.0, true)];
         let s = Strips {
             side_w: 180.0,
@@ -4245,7 +4315,7 @@ mod tests {
     fn hit_breadcrumb_crumbs() {
         // One pane from x 0 (no sidebar), 600 px tall; the bar's crumb row reported at offset 0,
         // 900 px of it shown; crumbs "This PC", "C:", "Users" at 0, 70 and 110 in the row.
-        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0 };
+        let l = Layout { width: 1000.0, height: 600.0, split: false, ratio: 0.5, tabs: [false; 2], left: 0.0, row_px: 22.0, grid: [None; 2], tile: [crate::icons::TileGeom::LARGE; 2], top: 0.0, bar: 0.0, preview: 0.0, list: [false; 2] };
         let crumbs = [(0.0, 54.0), (70.0, 24.0), (110.0, 60.0)];
         let s = Strips { side_w: 0.0, side_scroll: 0.0, side_rows: &[], side_bookmarks: (0, 0), tabs: [(1, 160.0, 0.0); 2], crumb_row: [(0.0, 900.0), (0.0, 0.0)], crumbs: [&crumbs, &[]] };
         let none = [0.0, 0.0];

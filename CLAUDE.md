@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (381 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (382 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -1676,6 +1676,46 @@ put off, with where it came from.
   seconds scrolled nothing (272 frames where every other view drew about 380): no small-icons figure
   from ab87 is a reference. The details list and the large, medium and extra large grids keep the old
   aim in the gate's scenario.
+  Since P16-M5, **the List view** (Explorer's List; `settings::View::List`, Ctrl+Shift+5, between Small
+  icons and Details in the View menu and the dialog; saved as `view_left` / `view_right` `"list"`, which
+  an older build reads as details; the saved tile size is left alone): the small tile's cells (220 x 22
+  px) in columns filled from top to bottom and **scrolled sideways**. It is the grid's machinery with the
+  axes exchanged, not a `ListView`: the pane's `list` (the app's `left-list` / `right-list`, `State::list`)
+  makes the host's `cols` **the rows a column holds** (the list's height less its scrollbar's 14 px, over
+  22), so the grid model's "grid rows" are the columns (`grid_n` the rows to a column; entry i is column
+  `i / rows`, row `i % rows`), the host's `line-of` an entry's column and `col-of` its row in it, and
+  **the pane's one scroll is `content-x`** (`Pane.get-scroll` / `set-scroll` hand the list's own axis, so
+  the saved and restored scroll of a tab, the view switch's first-entry rule and `scrollpos` need
+  nothing; `viewport-changed` carries the scroll and the list's width there, and `resolve_view` reads
+  lines of `tile.w`). The component is pane.slint `FileColumns`: a ring of slots holding only the columns
+  on screen (`model::ColsModel` over the pane's grid model: one row per slot, `slot_col` the column a slot
+  holds; the window is the visible columns and one each side, the slots a viewport of columns plus
+  three), each a column rectangle at `col * 220 px + content-x` with its cells and one image of its icons
+  (`main.rs` `compose_list_cols`: `icons::LIST_ICON_W`, 24 px wide, the column's height). A scroll moves
+  the column rectangles; a column coming into view is one slot's data set; selection, cursor and cut
+  marks reach a slot through the pane's model only while its column is in the window
+  (`PaneModel::col_changed`). The wheel scrolls it sideways and its own `HScrollBar` lies along its foot
+  (in the host beside the other views' `VScrollBar`, outside the hover's `TouchArea`, since 2026-11-16:
+  inside the list component every pointer move along it drew a frame, ab87).
+  The x-axis forms: `dnd::hit` (`Layout::list`, `line_px`, `extent`), `dnd::edge_scroll` (its left and
+  right edges), the band (`Band::list`: `band::turned` exchanges the axes, so `touched` and `cursor` serve
+  as they are), hover and paging (`Paging.hover-index` and `grid-target` called with the axes exchanged:
+  PageDown and PageUp move a screenful of columns, the cursor keeping its row), the keys (Up and Down
+  along the column and on into the next, Left and Right a column across, Right from the last full
+  column landing on the last entry), `bring-into-view` (the cursor's column inside the width), the
+  keyboard menu's point (`shellmenu::cell_menu_point`), the overlays (the host's `cell-x` / `cell-y`: the
+  drop highlight, the hover, the rename box, the band's rectangle), and its empty space (right of the
+  last column and under the last entry of a short last column: the band and the background menu, the
+  pane's `space-ev`). A new item's box sits on the list's first cell. A drag out carries the details
+  list's 96 px image. Lines: `[view]` names `list` (`... -> list (R rows to a column, C columns)`),
+  `[list] pane=N R rows to a column, C columns` when the count changes, and the auto-scroll lines read
+  `left|right: content-x A -> B` there. Driver: `view list` (key name `CtrlShift5`); every step that
+  takes a row aims at visible entry `<row>`'s cell (`row / rows` columns across, `row % rows` cells down);
+  `drag <pane> <d> <ms>` drags the list's own scrollbar thumb sideways there; `rclickempty` aims under
+  the last entry of a short last column; `scrollpos` reads the sideways scroll. A gate run with it takes
+  `TWINFM_CONFIG=C:\traces\grid-list.toml` (read-only: both panes `"list"`). `tools/check-p16m5.ps1` is
+  the scripted check. Since P16-M5 each soak cycle also takes the right pane on from small icons to the
+  list (a cell drop, a cancelled drag, a band) before medium; the report counts them.
   Since P16-M6, **a finished search tab follows changes** (`src/searchfollow.rs` the pure part and
   the look; `main.rs` `search_window`, `follow_search`, `land_follow`, `stop_following`). Once its
   walk has run to the end (not stopped by Escape), a search tab takes a **subtree watch on its root**

@@ -1783,6 +1783,425 @@ changed.
   path; the counts are the old ones.
 - **`first_match_regex` is now `first_match`** (one function is left; the old name's reason is gone).
 
+## P16-M5: the List view
+
+Branch `feat/p16-m5-list-view`, the drag and views stream, cut from `feat/p16-m3-icon-sizes` (P16-M3,
+PR #161, not yet merged): it builds on the tile size of four and the beside-the-icon overlays.
+
+### Settled first, by a spike: a sideways list of 40,000 entries holds in-app
+
+The question the kickoff set: does a list filled column by column and scrolled sideways hold the gate
+with 40,000 entries, or does the view go back to the roadmap? A throwaway build answered it in-app
+(`spike/p16-m5-list`, f2d5782, never to merge): the small view drawn as columns, switched on by an
+environment variable, with drawing, wheel scrolling and icons only.
+
+**The design the spike tested, and the milestone keeps.** Slint's `ListView` scrolls up and down only,
+and a plain `for` over 1,429 columns of 28 cells would build all 40,000 cells. So the list is its own
+container: **a ring of slots that holds only the columns on screen** (the pane's width over the 220
+px column, plus two: seven at the default window), each slot a column rectangle placed by its column
+index and the scroll, holding that column's cells and one image of its icons, 24 px wide and the
+column's height. The grid's own model serves the columns: its "tiles to a grid row" become the rows a
+column holds (the list's height over 22 px), so entry `i` is column `i / rows`, row `i % rows`. A
+scroll moves a handful of rectangles; a column that comes into view is one slot's data set (28 cells
+and one image). Nothing is bound per cell to a runtime property.
+
+**The in-app pair** (2026-11-15, the same exe for both, both with `C:\traces\grid-small.toml` on
+`C:\traces\bigdir`, the gate's scenario with wheel turns only so the pointer stays over the lists,
+three pairs with the order swapped in the second; unelevated, harness-launched, the machine quiet by
+the coordinating session's hold; every run at 60 Hz, frame interval p50 16.38 to 16.44 ms, 504 or 505
+frames; display scale 100%, Narrator off, no other TwinFM window open):
+
+| Run | In-app busy, % | Render p50, ms | Peak private, MB |
+|---|---|---|---|
+| small-1 | 18.0 | 1.94 | 165.3 |
+| list-1 | 18.9 | 2.21 | 153.3 |
+| list-2 | 16.2 | 2.20 | 153.8 |
+| small-2 | 17.5 | 1.98 | 165.1 |
+| small-3 | 17.7 | 1.96 | 165.3 |
+| list-3 | 15.8 | 2.18 | 154.7 |
+
+Small icons 18.0, 17.5, 17.7 (median 17.7); the sideways list 18.9, 16.2, 15.8 (median 16.2). The
+runs interleave and the list's median is lower: no cost shows. Its frames take 0.24 ms longer to
+render (five columns of 28 cells on screen against four cells across in 28 rows) and it holds 11 MB
+less (a narrow icon image per column, where the small grid's row images span the pane).
+
+**Read as a go by the coordinating session** ("go on with P16-M5 now, at the risk the console triplet
+later says otherwise"); **Jeremy has not been asked yet**. The spike's own console triplet
+(`target-p16m5spike`, built with `TWINFM_SPIKE_LIST_ALWAYS` set, run as
+`p16m5spike@C:\traces\grid-small.toml` against P16-M3's gate build with the same file) rides in the
+second sitting with P16-M3's gate. If it shows a cost the milestone stops, the record says why, and
+the view goes back to the roadmap, as the kickoff says.
+
+What the spike was not: it had no clicks, keys, band, hover, drops or rename. Those are this
+milestone; none of them runs per frame.
+
+### The plan, written before it is built (the kickoff left this section to the spike)
+
+- **The view**: Explorer's List. A 16 px icon and the name on one line, in columns 220 px wide filled
+  from top to bottom, then the next column; scrolled sideways by the wheel (a wheel turn scrolls
+  sideways there, as in Explorer), by a horizontal scrollbar at the list's foot, and by the keys. The
+  column width is fixed at the small cell's 220 px (a call: Explorer sizes each column to its longest
+  name, which needs a measuring pass per column; the fixed width keeps the arithmetic one division,
+  and long names elide as in small icons).
+- **A view, not a tile size**: `settings::View::List`, Ctrl+Shift+5 (Explorer's), between small icons
+  and details in the View menu and the dialog. Saved as `view_left = "list"` (an older build reads
+  that as details). It draws the small tile's cell, so the tile size stays four.
+- **x-axis forms** of everything that assumed rows scrolled up and down, each in the one place its
+  y-axis form lives: the hit test (`dnd::hit`), the band (`band.rs`: the cells a rectangle touches,
+  column-major), hover, paging (PageDown and PageUp move by a screenful of columns, the cursor keeping
+  its row), the arrow keys (Up and Down along the column and on into the next, Left and Right a column
+  across), Home and End, bringing the cursor's cell into view, the keyboard menu's point, the drag
+  auto-scroll (at the list's left and right edges), the drop highlight, the rename box and the new
+  item's placeholder (beside the icon, as in small icons), the saved and restored scroll of a tab, and
+  the view switch's "same first entry" rule.
+- **Selection, cursor and cut marks** reach the visible columns through the pane's model: the ring is
+  a model of its own over the grid model (`model::ColsModel`), told of a changed column only when that
+  column is on screen.
+- **Driver**: `view list` (key name `CtrlShift5`); every step that takes a row aims at the list's
+  cells; `drag <pane> <d> <ms>` drags the list's own (horizontal) scrollbar thumb there; `scrollpos`
+  reads the sideways scroll. Lines: `[view]` names `list`; `[list] pane=N R rows to a column, C
+  columns` when that changes.
+- **Tests** (pure): the hit test, the band's touched cells and cursor, hover, paging and the arrow
+  keys' targets in the column-major layout; the columns on screen and their slots for a scroll; the
+  settings round trip with an older file. **Soak**: per cycle the list switched to, a drop onto a
+  cell, a band, a cancelled drag out, a scroll, back to details. **Gate**: the defaults triplet, and a
+  triplet with `C:\traces\grid-list.toml` (read-only, both panes on the list) against the reference
+  with `grid-small.toml`. **Console checks**: the view in Downloads and in a folder of thousands of
+  files; the wheel, the scrollbar and the keys; rename, new folder and a long name; a band, a drag
+  out, a drop onto a folder's cell; the view kept across a restart.
+
+### What landed
+
+- **The List view**: Ctrl+Shift+5, and "List" between Small icons and Details in the toolbar's View
+  menu and the settings dialog's View row. A 16 px icon and the name on one line, in columns 220 px
+  wide filled from top to bottom, then the next column; scrolled sideways by the wheel, by its own
+  scrollbar along the list's foot and by the keys. Saved as `view_left` / `view_right` `"list"` (an
+  older build reads that as details); the saved tile size is left alone, so the pane's last icon size
+  is still there for the next icon view.
+- **The grid's machinery with the axes exchanged**, where the kickoff expected new machinery. The
+  pane's "tiles to a grid row" become the rows a column holds (the list's height, less its
+  scrollbar, over 22 px), so the grid model's rows are the columns, and the pane's one scroll runs
+  sideways. With that, the icon requests, the ring of composed strips, the saved and restored scroll
+  of a tab, the view switch's "same first entry" rule and the driver's `scrollpos` needed no list
+  form of their own.
+- **The component** is the spike's: no `ListView`, a ring of slots holding only the columns on
+  screen (and one each side), each a column rectangle with its cells and one 24 px wide image of its
+  icons. A scroll moves the column rectangles; a column that comes into view is one slot's data set.
+  Selection, cursor and cut marks reach a column only while it is on screen. No cell reads a runtime
+  property beyond its own data.
+- **The sideways forms**, each beside its up-and-down form: the hit test, the drag auto-scroll (at
+  the list's left and right edges, a column at a time), the band (the grid's arithmetic with x and y
+  exchanged), hover, paging (PageDown and PageUp move a screenful of columns, the cursor keeping its
+  row), the arrow keys (Up and Down along the column and on into the next; Left and Right a column
+  across; Right from the last full column lands on the last entry), Home and End, bringing the
+  cursor's cell into view, the keyboard menu's point, the drop highlight, the rename box (beside the
+  icon, on the cursor's cell) and the new item's box (on the list's first cell).
+- **Empty space**: right of the last column and under the last entry of a short last column. The
+  band starts there and a right click opens the folder's background menu, as below the rows of the
+  other views.
+- Driver: `view list`; every step that takes a row aims at the list's cells; `drag` drags the list's
+  own scrollbar thumb sideways; `rclickempty` aims under the last entry of a short last column.
+  Lines in `CLAUDE.md` § Measuring.
+
+### Tests
+
+`cargo test --release`: `test result: ok. 367 passed; 0 failed; 2 ignored` (366 on P16-M3's branch; one
+new test), on 5ff2e60; the suite ran twice on this branch, both clean. New:
+`model::the_list_views_ring_holds_the_columns_on_screen` (the column each slot holds for a window,
+round the ring; the ring over a pane's model: a column's cells and first entry, the short last
+column, an empty slot, a column's image kept to that column, selection and cursor reaching a cell,
+the ring emptied). Added to existing tests: the hit test in the column-major layout (down a column,
+across, scrolled sideways, below a column's last row, past the last entry) with the layout's line
+size and extent and the drag's left and right edges; the band's touched cells and cursor with the
+axes exchanged (two columns, down one column, right of the last, the short last column); the keyboard
+menu's point for a cell, scrolled and clamped; the settings round trip (`"list"` saved and read, an
+older tile size kept); the View menu's six items with Explorer's keys. Paging uses the grid's own
+function with its arguments exchanged, which its existing tests cover.
+
+### Scripted checks
+
+`tools/check-p16m5.ps1` (2026-11-15, the branch's release build, no settings file, the software
+renderer), one scripted run in `%TEMP%\twinfm-p16m5-check\`: three folders and 400 files, 403 entries.
+Exit 0, no panic. From its stderr (the scratch folder's path cut to `...`):
+
+```
+[view] pane=0 details -> list (27 rows to a column, 15 columns), scroll 0 -> 0 (entry 0 first)
+[auto] scrollpos pane=0 content-y 0.0 current-row 5
+[auto] scrollpos pane=0 content-y 0.0 current-row 32
+[auto] scrollpos pane=0 content-y 0.0 current-row 5
+[auto] scrollpos pane=0 content-y 0.0 current-row 86
+[auto] scrollpos pane=0 content-y -530.0 current-row 167
+[auto] scrollpos pane=0 content-y -530.0 current-row 86
+[auto] scrollpos pane=0 content-y -2290.0 current-row 402
+[band] pane=0 done: 3 selected, cursor 400
+[auto] scrollpos pane=0 content-y 0.0 current-row 0
+[auto] scrollpos pane=0 content-y -300.0 current-row 0
+[auto] scrollpos pane=0 content-y -492.0 current-row 0
+[dnd] Drop at pane 0 row 1 (...\work\Beta) keys=0x8 allowed=0x3: 1 file(s), effect copy (reported to the source: copy)
+[fileops] done id=1 pane=0 tab=1 Done: Copied 1 item
+[dnd] over pane 0 row 1 (...\work\Beta) keys=0x0 allowed=0x3 -> effect move
+[dnd] drag image 96x96 px, 64 px icon, 1 item(s), icon from the worker, composed in 1.9 ms: InitializeFromBitmap = 0x00000000
+[winmenu] pane=0 seq=1 background menu for 0 item(s) in ...\work: query queued on the verb worker
+[settings] dialog: view_left details -> list
+[view] pane=0 details -> list (27 rows to a column, 15 columns), scroll 0 -> 0 (entry 0 first)
+[view] pane=0 list -> small icons (4 tiles to a row, 101 grid rows), scroll 0 -> 0 (entry 0 first)
+[view] pane=0 small icons -> list (27 rows to a column, 15 columns), scroll 0 -> 0 (entry 0 first)
+```
+
+(`scrollpos` prints the pane's scroll under its old name; in the list it is the sideways one.) Read
+from it: 27 rows to a column in a 616 px list, 15 columns. From entry 4, Down goes to 5, Right to 32
+(a column across, the same row), Left back to 5; PageDown to 86 (three columns on, the last one whole
+on screen), again to 167 with the list scrolled 530 px, PageUp back to 86; End to entry 402 with the
+scroll at -2290 (the list's 1010 px less fifteen columns of 220: the last column whole), Home to 0.
+The band from under the short last column's 25 entries took its last three, the cursor on the one
+under the band's corner. The wheel scrolled 300 px sideways and a drag of the list's own scrollbar
+thumb 492 px. A drop onto the Beta folder's cell copied; a hover there lit the cell; a drag out
+carried the list's image and was cancelled; a right click under the last column opened the folder's
+background menu. The view came by its key, by the settings dialog and from small icons and back. Six
+pictures were taken and looked at (`list.png`, `list-end.png`, `list-drop.png`, `list-rename.png`,
+`list-newfolder.png`, `list-menu.png`): the columns, the last column whole after End with the
+scrollbar clear of the cells, the lit cell, the rename box beside the icon on the cursor's cell.
+
+The first run of the check found one fault, fixed before this record: at the view switch the rows to
+a column were read a step before the pane knew it showed the list, so the first line read "4 rows to
+a column" and the list was laid out again a moment later.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` on the branch's release build (5ff2e60), 2026-11-15, display scale
+100%, harness-launched, with the coordinating session's "soak go" and nothing else running: ran 10.1
+min, window closed by the script, exit code 0, 0 panicked lines; 231 jobs done (failed 0, cancelled
+0), soak refusals 0, waitops timeouts 0, menupicks refused 0, every "must be 0" count 0.
+
+```
+list view: small to list 3, list to medium 3, bands done with 1 selected and the cursor on entry 1: 3 (one each per cycle)
+grid: switched on 8, off 8; tile drops: 15 (five per cycle: large, medium, extra large, small and the list); 128 px drag images: 9 (left-button drags started: 17); bands: 15 started, 6 done with 2 selected (two per cycle), 0 cancelled
+extra large and small icons: medium to extra large 3, extra large to small 3 (one each per cycle); bands done with 1 selected on tile 0: 6 (two per cycle); 96 px drag images (the list's, and out of small tiles): 11
+right-button drags: 6; drags cancelled: 23, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 23
+working set: start 155.3 MB at 5 s, end 223.3 MB at 601 s; private: 165.6 -> 227.7 MB
+```
+
+The list's steps ran in all three cycles the run reached. In each the right pane went on from small
+icons to the list and then to medium tiles: a drop onto the list's first cell, a drag out of it
+cancelled, and the band from under the column's last entry took the second cell alone, the cursor on
+it. The 96 px drag images are eleven where P16-M3's soak had nine: the list's three more, less one
+drag late in the third cycle that the ten minutes cut off (the cycle is longer by the list's steps).
+P16-M3's counts for extra large and small icons are as in its own soak, and the 23 scripted drags all
+returned with none dropped.
+
+### Gate
+
+Two triplets, to be run by Jeremy from the coordinating session's hand-over, after P16-M3's sitting
+(which carries the spike's own triplet): the defaults against the reference; and
+`C:\traces\grid-list.toml` (made for this milestone: read-only, both panes on the list) against the
+reference with `C:\traces\grid-small.toml`.
+
+What the defaults scenario meets of this milestone: the host's scroll is reported through two
+properties (`scroll`, `extent`) that are its `content-y` and height in every view but the list, so
+the same handlers fire at the same moments; the model's grid notifications pass through one more
+function that reads a cell (the list's window, empty) before returning; the hover asks which of two
+calls to make by a bool. No row or tile has a new binding, and no list component of 0.6.0 changed.
+
+**Result (ab87, 2026-11-16, Jeremy at the console, `target-p16m5` 5ff2e60 against `target-p16m3`
+57b5a9e), main-thread busy, %:**
+
+| Triplet | Reference | Candidate | Medians |
+|---|---|---|---|
+| defaults | p16m3 20.1, 21.1, 20.9 | p16m5 21.2, 21.1, 20.2 | 20.9 against 21.1 |
+| the list against small icons | p16m3, `grid-small.toml`: 11.5, 11.5, 11.6 | `grid-list.toml`: 16.1, 16.5, 16.7 | 11.5 against 16.5 |
+
+Defaults: interleaved, 0.2 apart: no gap. **The list against small icons: every list run above every
+small run, five points: a gap by the rule.** Render per frame is level (p50 2.53 to 2.55 ms against
+2.56 to 2.59).
+
+**Where the five points are: the two runs did not do the same work.** Read from the six runs'
+stderr and the symbolised main-thread stacks, no new run:
+
+- The list drew **381 frames** in each run (381, 381, 380), as the details list and the large and
+  extra large grids did in the same sitting. Small icons drew **272** in each. The cost of a frame is
+  level: 4.31, 4.56, 4.08 ms of UI thread a frame in the list's second five seconds against 4.18,
+  4.65, 4.10 in small's. 109 frames at about 4.3 ms is 470 ms, 4.7 of the 5.0 points.
+- The 109 frames are the scenario's two `drag` steps (two seconds). **In neither view did they drag
+  the thumb.** In small icons the press missed the thumb (P16-M3's record, above) and landed on the
+  scrollbar's track, outside the list's hover area: nothing changed on screen, so nothing was drawn.
+  In the list the press missed in the same way (the thumb had moved 21 px along the foot; the aim was
+  17 px), and the pointer then travelled 400 px along the scrollbar at the list's foot. That
+  scrollbar is inside the list component and so inside the pane's hover area (P14-M3's one `TouchArea`
+  round the lists), where every pointer move marks the hover dirty and a frame is drawn, whether or
+  not the hovered cell changed. Two seconds of pointer moves, 120 frames of an unchanged list. The
+  viewport's `resolve` count shows that neither view scrolled: 246 calls when the wheel steps ended in
+  both, 250 and 253 at the end, where the views whose thumb was hit reached 374.
+- So the gate compared a list drawing for six seconds with small icons drawing for four. Over the
+  four seconds both scrolled by the wheel, the stacks differ by less: the accessibility tree's
+  rebuilds read 178 ms in the list against 67 in small icons (each column that comes into view
+  remakes its 27 cells, where the grid's ListView remakes a row of two tiles, 51 ms under its own
+  heading), about a point net, and a point is the rule's own margin.
+
+**What was done about it** (2026-11-16, with the coordinating session's leave): the driver's `drag`
+follows the thumb (`dnd::thumb_aim`: 17 px along the bar, the aim since the first gate, wherever that
+is on the thumb; the thumb's middle where the scroll has carried it past), on P16-M3's branch
+(c5184fd) and merged here; the list's scrollbar moved out of the list component into the host, beside
+the other views' `VScrollBar` and outside the hover area (ac5a84d). Of 155 earlier gate runs with a
+grid or thumbnails settings file, none missed the thumb (each reached 372 `resolve` calls or more):
+only ab87's small icons and list runs did, so the details list's scenario and every earlier grid
+gate's are unchanged. Tests 368 passed, 0 failed, 2 ignored; `tools/check-p16m5.ps1` exit 0, its
+lines as before. The gate's scenario in-app on the new build (harness-launched, one run each, about
+21 Hz, so no busy figure to read): the list and small icons each 383 frames and 376 `resolve` calls,
+both panes scrolled by the drags. The list against small icons is to be run again as a triplet; the
+accessibility rebuilds are looked at after it, if it still shows a gap. Not measured: that a pointer
+on the moved scrollbar draws no frame (read from the code; the regate will show it).
+
+**Regate (ab88, 2026-11-16 08:10, Jeremy at the console, `target-p16m5` ac5a84d against
+`target-p16m3` c5184fd), main-thread busy, %.** Every run dragged the thumb (`resolve` 374 to 376
+calls in all 18 runs of the sitting); the sitting was in the normal state (render p50 about 2.0 ms on
+the defaults).
+
+| Triplet | Reference | Candidate | Medians |
+|---|---|---|---|
+| defaults | p16m3 17.9, 17.3, 17.7 | p16m5 17.8, 18.0, 17.4 | 17.7 against 17.8 |
+| the list against small icons | p16m3, `grid-small.toml`: 14.8, 15.5, 15.1 | `grid-list.toml`: 17.9, 18.1, 17.8 | 15.1 against 17.9 |
+
+Defaults: interleaved, 0.1 apart: no gap. **The list against small icons: every small run below every
+list run, 2.8 points: a gap by the rule**, where one point was expected from ab87's four seconds. The
+list sits level with the details list in the same sitting (17.9 against 17.7 to 17.9) and every run
+is under 20%. The moved scrollbar holds: the list drew 380 frames, as small icons did.
+
+Where the 2.8 points are, from the symbolised main-thread stacks (sampled ms in the 10 s, medians of
+three, the list against small icons; the whole is 1,786 against 1,508, 278 more):
+
+- **The accessibility tree, 341 against 139, about 200 of the 278.** Its full rebuilds are 277 against
+  101. The list's ring holds the columns on screen and one each side, each of 27 cells that are list
+  items in the tree (four to five columns, 108 to 135 items, in a pane that shows under three), where
+  small icons' ListView holds 28 rows of two cells; and each scroll step that brings a column in
+  rebuilds the tree with them.
+- **Drawing, 1,111 against 1,038, about 70.** Text inside it is 703 against 502: a pane of the list
+  shows part of a third column, so about 80 names are drawn where small icons draw 54.
+- The ListView's rows, 82 in small icons, are not in the list at all, and about 90 more sit in the
+  timers outside these headings (the slots' data set as columns come in).
+
+So two thirds of the gap is the accessibility tree and not drawing. It could be made smaller (the
+columns outside the window left out of the tree, or a ring one column narrower), at the price of a
+change to P16-M5's structure and a third sitting.
+
+**Accepted as it is (Jeremy, 2026-11-16).** Asked by the coordinating session "Accept the List view
+at the details list's cost (17.9%)?", he answered "Accept it". The 2.8 points are known and not
+hunted in this milestone; the accessibility tree's share of them (the list's off-window columns in
+the tree) is a roadmap candidate for the phase close.
+
+### Main taken in, through P16-M3 (2026-11-19: P16-M1, P16-M2 and P16-M4, main at 5f5024b)
+
+P16-M3's branch with main merged (935d867) was merged here. Every source file merged by itself; two
+files by hand, both sides kept (`CLAUDE.md`, this record). **One change in code, for P16-M1's drag tag
+and highlight in the List view**: the tag's rectangle for a drop on an entry was reckoned as a grid
+tile's, and in the List view the pane's count is the rows a column holds and its scroll runs sideways,
+so `dnd::row_rect` gained the list's cell (the entry's column across, its place in the column down;
+tested against the hit test, which gives the same entry for a point in it). The tag sits just right of
+the cell, as P16-M3 placed it for small icons, of which the list's cell is one. P16-M1's Back and Up
+spots are above the lists and needed nothing. Seen in a scripted run's picture: a drag over the second
+entry, its cell bordered, the tag beside it, the status line "Drop moves 1 item to Beta".
+
+Tests: 379 passed, 0 failed, 3 ignored (P16-M3's 378 and this milestone's one). `tools/check-p16m5.ps1`:
+exit 0, its lines as before. A ten-minute soak of c21b00e (run because the merge changed code by hand): exit
+0, no panic, 235 jobs done, none failed, no scripted drag dropped, every must-be-0 count at 0; working
+set 163 to 246 MB, private bytes 170 to 226 MB.
+
+What the merge changed of what ab88 measured: nothing per frame or per row. The list's columns, slots
+and cells are as gated; `row_rect` runs when a drag's target changes.
+
+
+ab93, 2026-11-19 10:22, the coordinating session's sitting: four builds on the defaults, interleaved in
+the order `p15close`, `p16m6` (ab28bbe), `p16m3` (935d867), `p16m5` (c21b00e) each round; console (frame
+interval p50 16.3 to 16.5 ms), no panic, the whole sitting in the costlier state (render p50 2.18 to
+3.19 ms). Run though this stream judged no gate needed: the merged code of three PRs had not been
+measured under the views' builds. Summary `C:\traces\gate-ab93-summary.txt`.
+
+| Build | WPR main-thread busy, three runs | Median |
+|---|---|---|
+| `p15close` (reference) | 23.9, 23.1, 22.1 | 23.1 |
+| `p16m5` c21b00e | 23.7, 21.5, 21.6 | 21.6 |
+
+No gap that counts: the gate holds for the merged code on the defaults. All three runs passed the
+script's checks (resolve 373, 375, 373). The sitting's one doubtful run is `p16m3`'s first, whose wheel
+steps scrolled nothing; it is read in P16-M3's record (§ Main taken in) and is not one of these.
+
+
+### Console checks (for Jeremy, after the gates, TwinFM started unelevated)
+
+1. **The key and the menu.** In Downloads press Ctrl+Shift+5: the files show as a small icon and a
+   name each, in columns that fill from the top down. The toolbar's View menu lists List between
+   Small icons and Details, ticked.
+2. **Scrolling sideways.** In a folder with a few thousand files (or `C:\Windows\System32`): turn
+   the wheel: the columns move sideways. Drag the scrollbar along the bottom of the list. It should
+   feel as smooth as small icons.
+3. **The keys.** Down and Up run along a column and on into the next; Right and Left jump a column
+   across on the same row; PageDown and PageUp jump a screenful of columns; End shows the last
+   column whole at the right, Home the first.
+4. **A long name** ends in "…" (Explorer widens the column there; TwinFM keeps one width).
+5. **Rename and new folder.** F2 on a file: the box sits beside the icon on that file. New folder on
+   the toolbar: a placeholder at the list's first cell; Return makes it and the cursor goes to it,
+   scrolling sideways if needed.
+6. **Mouse.** Click, Ctrl+click, Shift+click; drag a band from the empty space right of the last
+   column (scroll to the end first) across some cells; right-click a file (its menu) and the empty
+   space (the folder's menu: New, Paste, Properties).
+7. **Drag and drop.** Drag a file to the other pane; drag one from the other pane onto a folder's
+   cell (it lights up; held a second, the folder opens); hold a drag at the list's left or right edge:
+   it scrolls a column at a time.
+8. **Two panes.** One pane in List and the other in details: each keeps its own view; narrow the
+   List pane: fewer columns show, nothing else changes.
+9. **The window's height.** Make the window shorter and taller: the columns refill with fewer or
+   more rows.
+10. **Restart.** Close TwinFM in List and start it again: the pane comes back in List.
+
+### Console check 1: the View menu's tick (2026-11-19)
+
+Jeremy: "Sometimes the list view shows the wrong selected file size. for example if I chose
+details, it will show a checkmark next to small icons on the view list." The menu kept the tick of
+the view before until the status line next changed: main's fault since P13-M2, not the List view's.
+Read and fixed in P16-M3's record (§ The View menu's tick) and taken in from that branch; here the
+List view's tick was checked by script after a pick of List in the menu and after Ctrl+Shift+5.
+**Checks 2 to 10 passed.** Asked "Did #163's checks 2 to 10 pass, or did you stop at check 1?",
+Jeremy answered "They passed" (2026-11-19, `target-p16m5`, c21b00e). Only check 1's tick was open.
+
+### Gate ab94 and the tick's retest (2026-11-19, after the fix)
+
+ab94, 2026-11-19 16:16, the coordinating session's sitting: the defaults, console, `target-p16m3`
+(ab67334) and `target-p16m5` (f4083de) against `target-p15close`. Summary
+`C:\traces\gate-ab94-summary.txt`. All the script's checks ok.
+
+| Build | WPR main-thread busy, three runs | Median | Render p50, ms |
+|---|---|---|---|
+| `p15close` (reference) | 23.2, 22.9, 26.0 | 23.2 | 3.04, 2.75, 3.38 |
+| `p16m5` f4083de | 21.9, 20.3, 23.2 | 21.9 | 2.78, 2.08, 2.92 |
+
+The sitting was in the costlier state throughout but for `p16m5`'s second run (as ab93 was). The
+candidate's median is below the reference's: no gap by either rule. The gate holds with the fix.
+
+**The console retest** (`target-p16m5`, f4083de, unelevated, after the gate): the View menu opened
+straight after each switch by key, by the menu and through Settings; and with two panes on different
+views, the tick following the pane clicked. Jeremy: "gate done. checks completed successfully with no
+issues."
+
+### Main taken in again (2026-11-19: P16-M3 and P16-M6), for the merge
+
+After #161 went into main. Taken by way of #161's own last commit (eac786b, the same files as main's squash a45f75c), then main itself, which changed nothing more. Two conflicts, both of them two sections added at one place and both kept, this milestone's first: `CLAUDE.md`'s Measuring paragraphs (the List view's and P16-M6's) and this record (P16-M5's section and P16-M6's). The one hand change beyond that: `CLAUDE.md`'s test count, 382 (main's 381 and the List view's one more). `cargo test --release`: 382 passed, none failed;
+`cargo build --release` clean. No soak and no gate of this merge by this stream.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The spike was read as a go by the coordinating session**, Jeremy not yet asked (above); its
+  console triplet can still stop the milestone.
+- **One column width, 220 px**, where Explorer sizes each column to its longest name. A long name
+  elides. Variable columns would need a measuring pass per column and a running sum in place of one
+  division; say if the fixed width bothers you in daily use.
+- **A new item's box sits on the list's first cell**, not in the cursor's column, as the other views
+  put it on the top row.
+- **With thumbnails on, the list shows 16 px thumbnails**, as small icons does (P16-M3's call).
+- **The wheel scrolls the list sideways** (Explorer's List does the same); Shift+wheel does nothing
+  different there.
+- **A drag out of the list carries the details list's image** (as out of small icons).
+- **`scrollpos` keeps printing "content-y"** for the list's sideways scroll, so no script that reads
+  the line changes.
+
 ## P16-M6: a search tab picks up new matches
 
 Branch `feat/p16-m6-search-follows`, the search and files stream, cut from main at 3e4c201 (the kickoff;

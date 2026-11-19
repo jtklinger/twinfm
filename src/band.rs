@@ -192,6 +192,18 @@ pub fn cursor_rows(anchor: (f32, f32), now: (f32, f32), len: usize, row_h: f32) 
     Some(((now.1.max(0.0) / row_h).floor() as usize).clamp(first, last))
 }
 
+/// A point with its axes exchanged, and a tile with its sides exchanged (P16-M5): the List view's
+/// entries run down columns (entry i is column i / rows, row i % rows), which is the grid's layout
+/// (grid row i / cols, column i % cols) seen with x and y exchanged, so `touched` and `cursor` serve
+/// it as they are.
+pub fn turned(p: (f32, f32)) -> (f32, f32) {
+    (p.1, p.0)
+}
+
+pub fn turned_tile(t: TileGeom) -> TileGeom {
+    TileGeom { w: t.h, h: t.w, ..t }
+}
+
 /// A band gesture in one pane, from the press on empty space to the release. Points are content
 /// coordinates of that pane's list.
 #[derive(Clone, Debug)]
@@ -212,11 +224,14 @@ pub struct Band {
     /// A band in the details list (P13-M2): its rows' height; it touches rows (`touched_rows`), not
     /// tiles.
     pub rows: Option<f32>,
+    /// A band in the List view (P16-M5): its cells run down columns, so the grid's arithmetic is
+    /// used with the two axes exchanged (`cols` is then the rows a column holds).
+    pub list: bool,
 }
 
 impl Band {
     pub fn press(pane: usize, at: (f32, f32), mode: Mode, before: BTreeSet<usize>) -> Band {
-        Band { pane, anchor: at, now: at, mode, before, active: false, row: None, rows: None }
+        Band { pane, anchor: at, now: at, mode, before, active: false, row: None, rows: None, list: false }
     }
 
     /// The pointer moved to `at` with the button down; `threshold` is the drag threshold (x, y).
@@ -233,6 +248,7 @@ impl Band {
     pub fn touched(&self, cols: usize, len: usize, t: TileGeom) -> BTreeSet<usize> {
         match self.rows {
             Some(h) => touched_rows(self.anchor, self.now, len, h),
+            None if self.list => touched(turned(self.anchor), turned(self.now), cols, len, turned_tile(t)),
             None => touched(self.anchor, self.now, cols, len, t),
         }
     }
@@ -246,6 +262,7 @@ impl Band {
     pub fn cursor(&self, cols: usize, len: usize, t: TileGeom) -> Option<usize> {
         match self.rows {
             Some(h) => cursor_rows(self.anchor, self.now, len, h),
+            None if self.list => cursor(turned(self.anchor), turned(self.now), cols, len, turned_tile(t)),
             None => cursor(self.anchor, self.now, cols, len, t),
         }
     }
@@ -299,6 +316,26 @@ mod tests {
         assert_eq!(touched((10.0, 5.0), (230.0, 50.0), 4, 30, s), set(&[0, 1, 4, 5, 8, 9]), "three rows of cells, two columns");
         assert_eq!(cursor((10.0, 5.0), (230.0, 50.0), 4, 30, s), Some(9));
         assert_eq!(touched((900.0, 5.0), (950.0, 50.0), 4, 30, s), set(&[]), "right of the last column");
+        // P16-M5, the List view: the same cells in columns of ten rows, thirty entries (three
+        // columns). A band over the first two columns' rows 1 and 2 touches entries 1, 2, 11, 12.
+        let mut b = Band::press(0, (10.0, 30.0), Mode::Replace, BTreeSet::new());
+        b.list = true;
+        b.moved((230.0, 60.0), (4.0, 4.0));
+        assert_eq!(b.touched(10, 30, s), set(&[1, 2, 11, 12]));
+        assert_eq!(b.cursor(10, 30, s), Some(12), "the cell under the moving corner");
+        // Down the first column only, and past the last column: nothing there.
+        b.moved((100.0, 215.0), (4.0, 4.0));
+        assert_eq!(b.touched(10, 30, s), set(&[1, 2, 3, 4, 5, 6, 7, 8, 9]));
+        let mut far = Band::press(0, (700.0, 10.0), Mode::Replace, BTreeSet::new());
+        far.list = true;
+        far.moved((760.0, 100.0), (4.0, 4.0));
+        assert!(far.touched(10, 30, s).is_empty(), "right of the last column");
+        // The short last column: 25 entries, the third column holds 20 to 24.
+        let mut last = Band::press(0, (450.0, 5.0), Mode::Replace, BTreeSet::new());
+        last.list = true;
+        last.moved((500.0, 215.0), (4.0, 4.0));
+        assert_eq!(last.touched(10, 25, s), set(&[20, 21, 22, 23, 24]));
+        assert_eq!(turned_tile(s), TileGeom { w: 22.0, h: 220.0, ..s });
     }
 
     #[test]

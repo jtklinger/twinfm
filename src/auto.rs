@@ -578,6 +578,7 @@ fn parse(script: &str) -> Vec<Step> {
                         Some("icons" | "large") => "CtrlShift2",
                         Some("medium") => "CtrlShift3",
                         Some("small") => "CtrlShift4",
+                        Some("list") => "CtrlShift5",
                         _ => "CtrlShift6",
                     }
                     .into(),
@@ -894,16 +895,18 @@ fn list_top(app: &App, pane: usize) -> f32 {
 fn thumb(app: &App, pane: usize) -> LogicalPosition {
     use slint::Model;
     let l = crate::window_layout(app);
-    let (_, right_edge) = crate::dnd::pane_x(&l, pane);
+    let (left, right_edge) = crate::dnd::pane_x(&l, pane);
     let rows = if pane == 0 { app.get_left_rows().row_count() } else { app.get_right_rows().row_count() };
     let lines = match l.grid[pane] {
         None => rows,
         Some(cols) => crate::model::grid_rows(rows, cols),
     };
-    let top = list_top(app, pane);
-    let visible = l.height - crate::dnd::LIST_BOTTOM_GAP - top;
-    let aim = crate::dnd::thumb_aim(app.invoke_get_scroll(pane as i32), lines as f32 * l.row_px_of(pane), visible);
-    LogicalPosition::new(right_edge - 10.0, top + aim)
+    let aim = crate::dnd::thumb_aim(app.invoke_get_scroll(pane as i32), lines as f32 * l.line_px(pane), l.extent(pane));
+    // The List view's scrollbar lies along the list's foot (P16-M5): the aim runs along it.
+    if l.list[pane] {
+        return LogicalPosition::new(left + crate::dnd::PANE_PAD + aim, l.height - crate::dnd::LIST_BOTTOM_GAP - 7.0);
+    }
+    LogicalPosition::new(right_edge - 10.0, list_top(app, pane) + aim)
 }
 
 /// A visible row's name (its first letters since P13-M2; the row's centre before): rows start under the 3 px padding, the tab strip when there is one,
@@ -919,6 +922,14 @@ fn row_pos(app: &App, pane: usize, row: usize) -> LogicalPosition {
             let (left, _) = crate::dnd::pane_x(&l, pane);
             let name_x = crate::icons::ListGeom::of_row(l.row_px).name_x();
             LogicalPosition::new(left + crate::dnd::PANE_PAD + name_x + 2.0, list_top(app, pane) + row as f32 * l.row_px + l.row_px / 2.0)
+        }
+        // The List view (P16-M5): visible entry `row` is `row / rows` columns across, `row % rows`
+        // cells down, 220 x 22 px each.
+        Some(rows) if l.list[pane] => {
+            let (col, r) = crate::model::grid_cell(row, rows);
+            let (left, _) = crate::dnd::pane_x(&l, pane);
+            let t = l.tile[pane];
+            LogicalPosition::new(left + crate::dnd::PANE_PAD + (col as f32 + 0.5) * t.w, list_top(app, pane) + (r as f32 + 0.5) * t.h)
         }
         Some(cols) => {
             let (r, c) = crate::model::grid_cell(row, cols);
@@ -942,6 +953,16 @@ fn empty_pos(app: &App, pane: usize) -> Option<LogicalPosition> {
         None => rows,
         Some(cols) => crate::model::grid_rows(rows, cols),
     };
+    // The List view (P16-M5): the space under the last entry of a short last column, when that
+    // column is on screen.
+    if l.list[pane] {
+        let per = l.grid[pane].unwrap_or(1).max(1);
+        let (left, right) = crate::dnd::pane_x(&l, pane);
+        let x = left + crate::dnd::PANE_PAD + app.invoke_get_scroll(pane as i32) + (lines as f32 - 0.5) * l.tile[pane].w;
+        let under = rows % per;
+        let on_screen = x > left + crate::dnd::PANE_PAD && x < right - crate::dnd::PANE_PAD;
+        return (under != 0 && on_screen).then(|| LogicalPosition::new(x, list_top(app, pane) + (under as f32 + (per - under) as f32 / 2.0) * l.tile[pane].h));
+    }
     let end = list_top(app, pane) + app.invoke_get_scroll(pane as i32) + lines as f32 * l.row_px_of(pane);
     let bottom = h - 23.0;
     (end + 4.0 < bottom).then(|| LogicalPosition::new(mid.x, (end + bottom) * 0.5))
@@ -1281,6 +1302,7 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlShift2" => vec![k(Key::Control), k(Key::Shift), "2".into()],
         "CtrlShift3" => vec![k(Key::Control), k(Key::Shift), "3".into()],
         "CtrlShift4" => vec![k(Key::Control), k(Key::Shift), "4".into()],
+        "CtrlShift5" => vec![k(Key::Control), k(Key::Shift), "5".into()],
         "CtrlShift6" => vec![k(Key::Control), k(Key::Shift), "6".into()],
         "ShiftF5" => vec![k(Key::Shift), k(Key::F5)],
         "ShiftF6" => vec![k(Key::Shift), k(Key::F6)],
@@ -2352,7 +2374,9 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 let Some(app) = w.upgrade() else { return };
                 let mut k = i.borrow_mut();
                 *k += 1;
-                let pos = LogicalPosition::new(start.x, start.y + dy * (*k as f32) / steps as f32);
+                // The List view's thumb moves sideways (P16-M5).
+                let d = dy * (*k as f32) / steps as f32;
+                let pos = if crate::window_layout(&app).list[pane] { LogicalPosition::new(start.x + d, start.y) } else { LogicalPosition::new(start.x, start.y + d) };
                 if *k >= steps {
                     app.window().dispatch_event_with_result(WindowEvent::PointerMoved { position: pos }).ok();
                     app.window()
