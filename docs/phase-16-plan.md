@@ -1442,6 +1442,37 @@ lists, tiles and strips are untouched by the merge, and the one hand change runs
 changes.
 
 
+ab93, 2026-11-19 10:22, the coordinating session's sitting: four builds on the defaults, interleaved in
+the order `p15close`, `p16m6` (ab28bbe), `p16m3` (935d867), `p16m5` (c21b00e) each round; console (frame
+interval p50 16.3 to 16.5 ms), no panic, the whole sitting in the costlier state (render p50 2.18 to
+3.19 ms). Run though this stream judged no gate needed: the merged code of three PRs had not been
+measured under the views' builds. Summary `C:\traces\gate-ab93-summary.txt`.
+
+| Build | WPR main-thread busy, three runs | Median |
+|---|---|---|
+| `p15close` (reference) | 23.9, 23.1, 22.1 | 23.1 |
+| `p16m3` 935d867 | 18.9, 23.9, 21.8 | 21.8 |
+
+No gap that counts: the gate holds for the merged code on the defaults.
+
+**The first `p16m3` run is not a measurement of the scenario.** The script's check failed it, "resolve
+133 (the drags did not scroll)", where every other run of the sitting reads 371 to 375. Its stderr
+(`C:\traces\twinfm-ab93-p16m3-1.stderr.txt`) says which steps: **the two wheel steps scrolled nothing
+and the two drags scrolled as ever.** The resolve count stands at 7 from the split through both wheel
+steps (no `[icons]` line is printed in those four seconds, which is why the two Wheel lines sit
+together), then goes 63, 122, 131 in the three seconds from the first drag's start: about 59 a second,
+the drags' rate in run 2. So the check's words name the wrong steps, and the aim of the thumb
+(`dnd::thumb_aim`, unchanged in a details pane) is not in it. Frames went on being drawn at the
+display's rate all the while (381 in all against run 2's 377), with about half the scroll work in them,
+which is the 18.9. **Why the wheel did nothing is not in the log**: both listings had landed (40,000
+entries each, the second pane's 48 ms after its request), the panes report the same widths as run 2,
+and the start-up lines are run 2's. The wheel began to count again at the first press of a button (the
+drag's), which is what a popup or a pointer grab holding the window's pointer events would look like
+(a tooltip under the real pointer, say); a guess, not shown. It is the one such run in the twelve of
+this sitting, on main's driver and main's details list, so nothing here points at this milestone.
+Without it `p16m3` reads 23.9 and 21.8 against the reference's three: still no gap, on two runs.
+
+
 ### Console checks (for Jeremy, after the gates, TwinFM started unelevated)
 
 "View" is the button on the toolbar at the top; the keys work in either pane's list.
