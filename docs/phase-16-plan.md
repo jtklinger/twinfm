@@ -1560,8 +1560,20 @@ was not read for this run.
 
 ### Gate
 
-Not run yet. The code head for the gate build is ab28bbe, the branch with main taken in (below); the
-defaults triplet, built and handed to Jeremy by the coordinating session. Its figures go here.
+**ab93**, 2026-11-19 10:22, on the code head ab28bbe, the branch with main taken in (below): one
+interleaved sitting of four builds on the defaults (p15close the reference, p16m6 ab28bbe, p16m3
+935d867, p16m5 c21b00e; in that order each round), built and handed to Jeremy by the coordinating
+session. Console (frame interval p50 16.3 to 16.5 ms), all checks ok for these two builds, no panic.
+The whole sitting was in the costlier state (render p50 2.18 to 3.19 ms).
+
+| Build | Run 1 | Run 2 | Run 3 | Median |
+|---|---|---|---|---|
+| p15close (reference) | 23.9 | 23.1 | 22.1 | 23.1 |
+| p16m6 (ab28bbe) | 22.9 | 22.4 | 22.7 | 22.7 |
+
+No gap that counts: the candidate's median is under the reference's. "Every candidate run under 20%"
+is false for the reference too, so that is the session's state, not the code. Summary
+`C:\traces\gate-ab93-summary.txt`, script `C:\traces\gate-p16-rest.ps1`.
 
 ### Main taken in (2026-11-19): P16-M1, M2 and M4 under this milestone
 
