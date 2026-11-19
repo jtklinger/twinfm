@@ -1634,6 +1634,12 @@ tick looks through the tabs for waiting records (two tabs, none waiting). Nothin
    Windows works: sooner or later the status bar at the bottom of the pane reads "Not following changes:
    F5 searches again" (a whole drive changes faster than can be followed). F5 searches again.
 
+### Console checks: Jeremy's results (2026-11-19, `target-p16m6`, ab28bbe)
+
+Jeremy ran all seven, relayed by the coordinating session: "The 162 checks all worked as expected". He
+raised no objection to the search tab stopping at its first overflow (check 7; the first of the calls
+below).
+
 ### Calls made in this milestone, for Jeremy to check
 
 - **The following ends at the first window whose records are not known**, where the kickoff said "the
