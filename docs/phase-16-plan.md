@@ -278,6 +278,919 @@ memory and per composed row (P16-M3); whether a sideways list of 40,000 entries 
 whether a `TouchArea` over a `TextInput` can pass the side buttons (P16-M2); the list of matches that change
 on the regex engine (P16-M4); what following a content search costs while many files are written (P16-M6).
 
+## P16-M1: a drag that says what it will do
+
+Branch `feat/p16-m1-drag-cue`, the drag and views stream, cut from main at 3e4c201 (the Phase 16 kickoff).
+
+### Settled first: the badge's look and place, with Jeremy
+
+The cheapest working cue was built first (the effect handed to `drop_highlight` beside the spot, on
+change only), with three looks switchable by an environment variable, and each was photographed in a
+scripted hover of three files from the left pane over the right one (`tools/check-p16m1.ps1`, the
+software renderer, the window found by the run's own process id; 36 pictures, the dark scheme the machine
+is set to and option 1 in the light scheme as well):
+
+1. **A tag on the target**: a small card on the highlighted thing itself, a pill in the effect's colour
+   with an icon and "Move here" or "Copy here", then in the muted colour how to get the other.
+2. **A banner**: no tag; a bar in the effect's colour across the foot of the target pane's list.
+3. **The tag and a tinted target**: option 1, with the highlight filled in the effect's colour too.
+
+In all three the highlight's border and the pane's status line take the effect's colour. The coordinating
+session put them to Jeremy with a recommendation of option 1 and three points of mine; his answer
+(2026-11-15): **"Go with your recommendations"**. So:
+
+- **Option 1, the tag on the target.** The other two looks and their switch were removed.
+- My three calls that he let stand: **the colours** are fixed, amber for a move, green for a copy and
+  violet for a drop that will ask (fixed so that they stay apart from the Windows accent, whatever it is
+  set to); **"Choose on drop"** is the wording for a drop that will open the menu; **under "Always ask",
+  items that can only be copied** (virtual files, items out of an archive) are copied without a menu.
+- `drag_default` stays `explorer` by default.
+- **Accepted with the pick** (the coordinating session's note on `m1-move-row.png`): on a details row the
+  tag sits at the row's right end and covers that row's Modified date while the drag is over it.
+
+### What landed
+
+- **The cue.** While a drag is over a spot that takes it, the target shows a tag: an arrow and **"Move
+  here"** in amber, a plus and **"Copy here"** in green, or an ellipsis and **"Choose on drop"** in violet
+  (the drop will open Move here / Copy here / Cancel: a right-button drag, or the "Always ask" setting),
+  and beside it in grey the key that gives the other: "Ctrl copies", "Shift moves", "Let go of Ctrl to
+  move", or under "Always ask" "Ctrl copies, Shift moves". A key is named only where pressing it (or
+  letting it go) really changes the drop: nothing is named for a source that allows one effect, for
+  items that are only ever copied, or with Ctrl held where the drop would have copied anyway. The
+  highlight's border takes the same colour on every kind of target, and the status line of the pane the
+  drop is noted in reads, in that colour, "Drop moves 3 items to Documents", "Drop copies 1 item to
+  Documents" or "Drop asks whether to move or copy 3 items to Documents" in place of its usual text
+  while the drag hovers. It changes the moment Ctrl, Alt or Shift is pressed or let go.
+- **Where the tag sits**: at a details row's right end, clear of the scrollbar; across a tile's lower
+  edge; at the top middle of the list for a drop into the pane's folder; under a tab; under a crumb;
+  right of a sidebar row (over the pane's edge, since the sidebar is too narrow for it). It is kept
+  inside the window.
+- **One element for the window, nothing in the rows.** The tag is one element of the window, laid over
+  it and placed from Rust by the target's rectangle; the rows, tiles, tabs and sidebar rows gained
+  nothing. The crumb buttons (a handful per pane, not rows) read the colour as a property. The cue is
+  built in the drop target only when the spot, the effect or the deciding keys change, and `drop_cue`
+  sets the window's properties only when the target or the cue differs from what is shown; a DragOver
+  that changes nothing sets nothing.
+- **The setting `drag_default`**, in the settings dialog as "Dragging files": As Explorer (the default:
+  move on the same drive, copy onto another), Always copy, Always move, Always ask. It decides only
+  with no key held: Ctrl (and Alt) copy and Shift moves under every choice, and the right button asks
+  as before. It applies to every drop onto TwinFM, from its own panes and from other programs. Into an
+  archive "Always move" does not reach: a copy unless Shift is held, as before. "Always ask" reuses the
+  right button's menu for a left-button drop, the bold item being what Explorer's rule would have done.
+- The Windows label by the pointer is unchanged.
+- Driver: `dragover ... <ms> keys <none|ctrl|shift|alt|right>[,...]` (several key sets share the hover's
+  time in order, so one hover can press and let go of a key), `dropfiles ... ask <copy|move|cancel>`,
+  `settings set drag_default explorer|copy|move|ask`. Lines in `CLAUDE.md` § Measuring.
+
+### Tests
+
+`cargo test --release`: `test result: ok. 368 passed; 0 failed; 2 ignored` (364 before), on the first
+cut (fa821a7's tree) and again on the picked look. The run before that last one, on the same tree, had
+one failure, `fileops::archive::tests::zip_jobs_on_the_worker`, at its last line: removing its scratch
+folder gave os error 32 (a file there in use by another process), after every assert of the test had
+passed. It is a real-shell test in `%TEMP%`, the other stream had leave for a full suite at the same
+time, and this milestone touches nothing it runs; the whole suite was run again at once, as the
+coordinating session had said to, and passed. No other test was run twice. The suite's runs on this
+branch: three, of which that one failed in that one test (1 of 3); the search and files stream saw the
+same test fail the same way with the suites overlapping, and the coordinating session carries it to the
+roadmap at the close.
+
+New (all pure): `dnd::the_drag_default_setting_decides_only_with_no_key_held` (the effect under each of
+the four settings on the same and on another volume, with no key, Ctrl, Alt, Ctrl+Shift and Shift; a
+source that allows one effect; a refused drop; into an archive; when the menu is asked for),
+`dnd::the_cue_says_what_the_drop_does_and_how_to_get_the_other` (the tag's words, the hint and the
+status line for one item and several, a move and a copy, each key held, items only ever copied, a drop
+that asks, and none for no effect or a bookmark), `dnd::the_cue_badge_sits_on_its_target` (the target's
+rectangle for the list, a scrolled row and a tile, checked against the hit test, and the tag's anchor
+for each kind of target), `settings::drag_default_defaults_to_explorer_and_round_trips` (an older file
+with no key reads as Explorer's rule; each value written and read back; anything else the default), and
+the dialog's changes test gained the field.
+
+### Scripted checks
+
+`tools/check-p16m1.ps1` (2026-11-15, the branch's release build, no settings file, the software renderer),
+one scripted run in `%TEMP%\twinfm-p16m1-check\`, exit 0, no panic: the left pane on `left` (three
+files), the right on `right` (Documents, Photos, a file); every hover is a `dragover` (DragEnter,
+DragOver, DragLeave, never a drop) and lasts under the spring time. From its stderr (the scratch
+folder's path cut to `...`):
+
+```
+[dnd] cue: Move here (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x0 allowed=0x3 -> effect move
+[dnd] cue: none
+[dnd] cue: Copy here (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x8 allowed=0x3 -> effect copy
+[dnd] cue: none
+[dnd] cue: Move here (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x0 allowed=0x3 -> effect move
+[dnd] cue: Copy here (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x8 allowed=0x3 -> effect copy
+[dnd] cue: Move here (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x0 allowed=0x3 -> effect move
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x4 allowed=0x3 -> effect move
+[dnd] cue: none
+[dnd] cue: Copy here (sidebar)
+[dnd] over sidebar row 2 (G:\), noted in pane 0 keys=0x0 allowed=0x3 -> effect copy
+[dnd] cue: Move here (pane 1)
+[dnd] over pane 1 tab 0 (...\right) keys=0x0 allowed=0x3 -> effect move
+[dnd] cue: Move here (pane 1)
+[dnd] over pane 1 crumb 8 (...) keys=0x0 allowed=0x3 -> effect move
+[dnd] cue: Choose on drop (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x2 allowed=0x3 -> effect move
+[settings] dialog: drag_default explorer -> copy
+[dnd] cue: Copy here (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x0 allowed=0x3 -> effect copy
+[dnd] cue: Move here (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x4 allowed=0x3 -> effect move
+[dnd] Drop at pane 1 row 0 (...\right\Documents) keys=0x0 allowed=0x3: 1 file(s), effect copy (reported to the source: copy)
+[fileops] done id=1 pane=1 tab=2 Done: Copied 1 item
+[settings] dialog: drag_default copy -> move
+[dnd] cue: Move here (pane 1)
+[dnd] cue: Copy here (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x8 allowed=0x3 -> effect copy
+[settings] dialog: drag_default move -> ask
+[dnd] cue: Choose on drop (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x0 allowed=0x3 -> effect move
+[dnd] cue: Copy here (pane 1)
+[dnd] over pane 1 row 0 (...\right\Documents) keys=0x8 allowed=0x3 -> effect copy
+[dnd] drop menu: asked by the setting
+[dnd] drop menu: default Move here, chose Cancel -> effect none
+[dnd] Drop at pane 1 row 1 (...\right\Photos) keys=0x0 allowed=0x3: 1 file(s), effect none (reported to the source: none)
+[dnd] drop menu: asked by the setting
+[dnd] drop menu: default Move here, chose Copy here -> effect copy
+[fileops] done id=2 pane=1 tab=2 Done: Copied 1 item
+[dnd] Drop at pane 1 row 1 (...\right\Photos) keys=0x8 allowed=0x3: 1 file(s), effect copy (reported to the source: copy)
+[fileops] done id=3 pane=1 tab=2 Done: Copied 1 item
+[settings] dialog: drag_default ask -> explorer
+[dnd] cue: Move here (pane 1)
+```
+
+Read from it: on one drive the cue is a move and with Ctrl a copy; inside one hover Ctrl pressed and
+let go and Shift pressed change the cue with no DragLeave between (Shift over a move changes no word,
+so only the `over` line records it); a sidebar row on another drive (`G:`) is a copy; a tab and a crumb
+take the cue; the right button reads "Choose on drop". Under "Always copy" the same hover is a copy,
+Shift still moves, and a drop with no key on the same drive copied. Under "Always move" Ctrl still
+copies. Under "Always ask" the hover reads "Choose on drop", Ctrl skips the menu, and two left-button
+drops opened the menu, Cancel doing nothing and Copy here copying. Nine pictures were taken and looked
+at (`cue-move-row.png`, `cue-copy-row.png`, `cue-move-list.png`, `cue-copy-list.png`, `cue-side.png`,
+`cue-tab.png`, `cue-crumb.png`, `cue-ask-right.png`, `cue-ask-setting.png`): the tag on each target in
+its colour, the border the same colour, the status line's words; and the mock-up run's light-scheme
+set for option 1, the same code path.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` on the branch's release build (2132c70's tree), 2026-11-15, display
+scale 100%, harness-launched, with the coordinating session's "soak go" and the other stream holding:
+ran 10.2 min, window closed by the script, exit code 0, 0 panicked lines; 227 jobs done (failed 0,
+cancelled 0), soak refusals 0, waitops timeouts 0, menupicks refused 0, every "must be 0" count 0.
+
+```
+drag cue: Move here 23, Copy here 39, Choose on drop 6, none 68 lines; Ctrl hovers over inner read as a copy 2; Always copy on 2, off 2; drops onto inner with no key that copied 2 (the Ctrl hover, the setting each way and that drop: one each per cycle)
+drops: 50 (pane copy 18, pane move 3, bookmark copy 3, tab copy 3, menu copy 3, menu cancel 3, as expected: pane copy is three per cycle here), drop jobs submitted: 44
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+spring: armed 18, spring-loaded rows 3 (navigations into spring\inner: 5), tabs 0 (must be 0), disarmed 15; crumb drops: 3; auto-scroll lines: sidebar 0, tab strip 0
+working set: start 155.9 MB at 5 s, end 214.7 MB at 601 s; private: 165.7 -> 217.6 MB
+```
+
+Three cycles started; the run ended inside the third, before its drag cue steps, so the cue's own counts
+are two (the steps sit at the end of a cycle's fixed part, as "Tab between the panes: 2" and "details
+bands: 2" beside them show). In both: the hover over `inner` with Ctrl read as a copy, "Always copy"
+went on and off through the dialog, and the drop onto `inner` with no key, on the same drive, copied.
+The cue lines in all (136) come from every scripted drag and drop of the soak, each of which now logs
+its cue and its `none`; the six "Choose on drop" are the right-button drop menus' drops. The
+navigations into `spring\inner` are five where there were three: the two more are this cycle's own
+`nav` there to remove the copy; the spring-loaded rows are three as before, so the two 500 ms hovers
+per cycle opened nothing. The 15 scripted drags all returned and none dropped.
+
+### Gate
+
+The defaults triplet, `target-p16m1` against `target-p15close` (4d335b7), to be run by Jeremy from the
+coordinating session's hand-over; tags continue from ab84.
+
+What the gate scenario meets of this milestone: **it never drags, so the triplet proves the rest
+untouched.** No cue is built and `drop_cue` never runs. What every run does carry: one more element in
+the window behind an `if` that is false (never instantiated), the highlight overlays' border colour
+read from a property in place of the theme's token (the overlays are invisible unless a drag hovers),
+the status line's text, weight and colour each behind a test of an empty string (three bindings per
+pane, evaluated when the status changes, never per frame), and each crumb button's border colour as a
+property. No row, tile, tab or sidebar row has a new binding.
+
+**Result (ab85, 2026-11-16, Jeremy at the console, `target-p16m1` 2132c70 against `target-p15close`):**
+
+| Run | p15close | p16m1 |
+|---|---|---|
+| 1 | 20.3 | 20.3 |
+| 2 | 20.3 | 20.4 |
+| 3 | 20.5 | 20.5 |
+| median | 20.3 | 20.4 |
+
+The runs interleave and the medians differ by 0.1: no gap. The sitting was in the costlier state
+throughout (render p50 2.62 to 2.74 ms in every run of both binaries), so it reads like for like.
+
+**The gate again on the code after the console checks (2026-11-18, `target-p16m1` f7abc26 against
+`target-p15close`; run and read by the coordinating session, Jeremy at the console), main-thread busy,
+%:**
+
+| Tag | Order in each round | p15close | p16m1 | Medians | Render p50, ms |
+|---|---|---|---|---|---|
+| ab89 | | | | void | |
+| ab90 | reference first | 18.3, 17.7, 18.2 | 18.8, 18.4, 19.0 | 18.2 against 18.8 | 2.01 to 2.17 throughout |
+| ab91 | candidate first | 22.6, 22.7, 17.7 | 21.8, 22.5, 19.6 | 22.6 against 21.8 | 2.74 to 2.98 in rounds 1 and 2; 2.07 and 2.28 in round 3 |
+
+- **ab89 is void**: it was run over Remote Desktop (the frame interval's p50 was 31.4 ms, one run 47
+  ms, where the console gives 16.4). The gate script now refuses to start in a remote session
+  (`SystemInformation.TerminalServerSession`; a first guard on `SESSIONNAME` wrongly refused a console
+  window that had been opened earlier over Remote Desktop).
+- **ab90**, at the console in the usual order: every reference run below every candidate run, 0.6
+  apart on the medians. By the rule that is a gap.
+- **ab91**, the same pair with the order swapped (the candidate first in each round), as the protocol
+  asks for a fixed-order gap the code does not explain. The session changed state after round 2, so it
+  is read round by round, like for like: round 1 the candidate 0.8 below the reference (21.8 against
+  22.6), round 2 0.2 below (22.5 against 22.7), round 3 the candidate 1.9 above (19.6 against 17.7),
+  with its render p50 still at 2.28 ms where the reference's, run after it, was 2.07: the change of
+  state fell between those two runs.
+
+**The reading (the coordinating session's): the gap followed the slot, not the binary.** In ab90 the
+second slot read high and held the candidate; in ab91 the candidate sat in the first slot and read low
+in the two rounds that can be compared. No gap that counts; the gate holds. **Round 3 of ab91 is the
+weak point** and is said so: its pair straddles the session's change of state, and it is the one round
+where the candidate read above the reference with the order swapped.
+
+What the defaults scenario meets of the code added since ab85: the settings dialog's height, the drop
+target's rules (no drag in the scenario), `frame_during_own_drag` at the top of `drain`, `drain_icons`
+and `land_edits` (one thread-local read each, per message landing, outside a drag), `note_recent`'s
+one read and its pass over the bookmarks per navigation, and `rebuild_sidebar`'s pass over at most
+eight Recent entries. Nothing per frame or per row.
+
+### The first console check (2026-11-16, `target-p16m1` 2132c70): four changes
+
+Checks 1, 2, 5, 6, 8, 10, 11, 12 and 13 passed ("Works as expected"). Four things came back, relayed by
+the coordinating session with its reading; Jeremy's words are quoted.
+
+**A. The settings dialog's OK and Cancel took no mouse click.** "first issue is the settings screen. If
+I make a change, the cancel/ok buttons no longer accept mouse input. Keyboard esc/enter are still
+working." Reproduced in the gate build with a real click (`clickat` on OK: the dialog stayed open), and
+without any change staged: the buttons were dead from the moment the dialog opened. It is this
+milestone's fault, not 0.6.0's: the same click closes the dialog in `target-p15close`. The dialog is a
+popup with a fixed height (710 px), a popup takes no click outside its own rectangle, and the new
+"Dragging files" row made the content 40 px taller, which pushed the two buttons below the popup's lower
+edge: drawn, but out of the mouse's reach. Escape and Enter go through the keyboard and never noticed.
+The scripted check had not caught it because its `settings ok` step calls the button's function rather
+than clicking it. Fixed by the dialog's height (750 px); `tools/check-p16m1.ps1` now closes the dialog
+with real clicks on Cancel and on OK, which fail on the old build. The small grey note under the buttons
+still sits on the dialog's lower edge, as it does in 0.6.0 (left as it is).
+
+**B. One key for the other effect.** "This works, but wouldn't it make sense to have the same key either
+control or shift, used for #2 and #3?" and "just have it use the control button to toggle". Ctrl is now
+the one key the tag names, and Ctrl alone gives the other effect of whatever a plain drop would do: on
+one drive "Ctrl copies", across drives "Ctrl moves", under Always copy "Ctrl moves", under Always move
+"Ctrl copies"; held, the tag reads "Let go of Ctrl to move" (or "to copy"). Shift still forces a move and
+Alt (and Ctrl+Shift) a copy, for Explorer habits: the tag's title says what will happen, but no hint
+names them. Into a zip a drop stays a copy with no hint, and Ctrl changes nothing there. **This departs
+from Explorer**, where Ctrl is always a copy (across drives Ctrl now moves): Jeremy's choice over the
+kickoff's "Match Explorer", the coordinating session's reading of his words.
+
+**C. Always ask asks with the mouse only.** "Change the 'Always Ask' process to not prompt for a key-use
+only the mouse copy/move/cancel. This will help resolve #3, and just have a single button." and, of the
+right button's menu, "this is how #9 should work." Under Always ask the tag reads "Choose on drop" with
+no key named, and every drop opens the Move here / Copy here / Cancel menu, Ctrl or Shift held or not,
+as a right-button drag does (a held key had skipped the menu). The menu's bold item is still the effect
+the keys would have given. The optional Ctrl toggle under Always ask is not built.
+
+**D. A way back out of a spring-loaded folder.** "Works, but needs a way to go back up the folder tree
+if I accidently go into the wrong subfolder--without having to cancel the whole copy/move." The folder
+names in the path bar already open when a drag is held over them (P11-M3). Added: **the path bar's Back
+and Up buttons** do the same. Hold the drag over Up for a second and the pane goes to the parent; over
+Back, back to where it was; the button is lit while the drag is over it. A greyed button does nothing,
+and nothing can be dropped on either (the pointer shows the no-drop sign there). Held on, Up climbs one
+level a second. It was sound in the hit test: the two buttons became spots of their own (`Spot::Nav`),
+where they had counted as the pane's own folder, so a drop let go over Back or Up, which used to land
+in the folder shown, now lands nowhere. Forward and Refresh are unchanged.
+
+The driver's `dropfiles ... copy` holds Alt now (Ctrl would move where the default copies), and
+`dragover nav <pane> <back|up>` hovers a button. Tests 368 passed, 0 failed, 2 ignored (the two rule
+tests rewritten for B and C, the crumb hit test extended for D). The scripted check: exit 0; its lines
+show Cancel and OK by the mouse, "Move here" for Ctrl under Always copy, "Choose on drop" and the menu
+with a key held under Always ask, and the right pane going up out of Documents and back into it. A
+ten-minute soak of 6c8d369 (`tools/soak-p5m3.ps1 -Minutes 10`): exit 0, no panic, 227 jobs done, none
+failed, no scripted drag dropped, every must-be-0 count at 0, the drag cue's lines as before and the
+path bar's Up held by a drag went up once in each full cycle (2); working set 156 to 231 MB.
+
+### The second console check (2026-11-16, 6c8d369): a bookmark opened in the pane being dragged from
+
+Checks 3, 7 and 8 passed on the retest. One more finding, Jeremy's words: "When dragging to a bookmark
+from a pane, the bookmark path is opened in the pane where I started the click and drag." It is the
+sidebar row's spring-load (P11-M3: a drag held a second over a drive, a place or a bookmark opens it),
+not the drop: a drop onto a sidebar row copies or moves and navigates nothing (`drop_files`). The spring
+opened the folder in the active pane, and for a drag out of a TwinFM pane the active pane is the one
+the press was in, so the listing the files were leaving was replaced under the drag. Changed (the
+coordinating session's call, told to Jeremy): **for a drag that started in a TwinFM pane, with two panes
+showing, a sidebar row held opens in the other pane**; with one pane, or a drag from another program,
+it opens in the active pane as before. The source pane is known at the spring: `run_pending_drag` has
+it and keeps it for the length of the drag (`dnd::DRAG_FROM`); the rule is `dnd::side_spring_pane`,
+tested. The tag and the status line for a sidebar row still show against the active pane, as before.
+The scripted check gained the case (`dragfrom 0`, then a sidebar row held 1300 ms: the right pane opens
+it).
+
+Two more from the same retest (9, 14 and 15 otherwise worked; all fifteen were then reported):
+
+**E. The drag's own label under Always ask.** "Works but needs a visual tweak if possible. When dragging,
+the pane is violet, but the file shows 'copy to', which is confusing." The label Windows draws beside
+the dragged picture read "Copy to <folder>" (or "Move to") while the drop was going to ask. It now reads
+**"Choose on drop"**, as the tag does, for every drop that will open the menu (Always ask, and the right
+button). Its small picture is still the copy's plus or the move's arrow, whichever the menu's bold item
+is: Windows draws a label only with the picture of the effect in play (found in P12-M5), and TwinFM's
+own drag offers only copy and move, so no neutral picture is to be had without changing what the drag
+offers other programs. Not checked by a script: the scripted drag's data refuses labels; Jeremy's eyes.
+
+**F. The no-entry sign over Up and Back.** "Works, but when dragging onto the up arrow, it shows a red
+circle with slash through it. dragging to the path (breadcrumbs) line is more intuitive." Over an Up or
+Back that has somewhere to go, the pointer is now the plain arrow and the label reads **"Up to
+<folder>"** or **"Back to <folder>"**. It is done safely: while the drag hovers, the source is told an
+effect (a link where the source offers one, as Explorer does; a copy for TwinFM's own drag), which is
+what removes the sign; when the button is let go there, the drop is reckoned again from the rule that
+gives those two buttons no effect, so nothing is copied or moved and the source is told "none" (the
+scripted check lets nothing go there; the rule is `effect_at`, and Drop reads only that). The label's
+small picture is the link's arrow or the copy's plus, for the reason in E. A greyed button keeps the
+no-entry sign. The crumbs stay the more direct way, as before.
+
+For the three (c630fb3): tests 368 passed, 0 failed, 2 ignored; the scripted check exit 0 (a sidebar row
+held under a drag out of the left pane opened in the right; a release on Up read "DragEnter effect copy,
+Drop reported none" with no file job after it); a ten-minute soak exit 0, no panic, 227 jobs done, none
+failed, no scripted drag dropped, every must-be-0 count at 0, Up held by a drag went up in each full
+cycle (2), working set 156 to 231 MB.
+
+### The third console check (2026-11-16, c630fb3): the other pane drawn late, and Up going twice
+
+Check 9 passed ("Works!": the label with its picture is accepted). Two findings.
+
+**G. The bookmark opened in the other pane, but was not seen.** "The right pane does open, but not
+immediately. I have to drag the file back to the left pane and then the right pane will change to the
+bookmark I was dragging to." Which it was, measured before anything was changed, with a real drag held
+by the script (`dragrow`, cancelled after four seconds) and a file made in the other pane's folder a
+second and a half in: the folder watch's edit was applied 270 ms later, inside the drag (`[watch] pane=1
+... applied: +1 -0 ~0`), and the run reported **"0 frame(s) rendered inside the drag loop"**. So the work
+runs and is not drawn: while Windows runs a drag for TwinFM, TwinFM's own request for a new frame is not
+served, and the only thing that asked Windows for one directly was the drop highlight changing, which is
+why moving back over a pane made the bookmark's folder appear. The row and tab springs had never shown
+it because their result is under the pointer. Fixed where such work lands: a listing arriving, icons
+arriving, a watch's edits and the three springs now ask for a frame while TwinFM's own drag is running
+(`dnd::frame_during_own_drag`; nothing outside a drag). The same run on the new build: 2 frames in the
+drag loop, for the edit and its icon. This also draws a watched folder changing under any held drag,
+which it did not before. The held drag over the sidebar row itself could not be scripted here (in this
+remote session Windows sends a drag-leave every eighth of a second to a scripted drag, so no spring
+ripens): Jeremy's check 16.
+
+**H. Up went two levels.** "If I drag to g:\my drive\wireguard then drag to up arrow, I would expect the
+up arrow to take me to g:\my drive, not g:\". That was this record's call ("held on, Up climbs one level
+a second"), and it is withdrawn: **Up and Back fire once per hover**. To go again the pointer leaves the
+button and comes back, as a folder row's spring (`dnd::spring_key`, tested: the button is one target
+whatever folder it would go to). The scripted check holds Up for 2.6 s and the pane goes up once.
+
+For the two (f8c342c): tests 368 passed, 0 failed, 2 ignored; the scripted check exit 0; a ten-minute soak
+exit 0, no panic, 227 jobs done, none failed, no scripted drag dropped, no drag loop that found the state
+busy, every must-be-0 count at 0, working set 156 to 231 MB.
+
+### The fourth console check (2026-11-18, f8c342c): the Recent group under a drag
+
+The bookmark "right pane opens correctly!" and Up "Working correctly!". Two findings, both from the
+sidebar's spring-load meeting the Recent group.
+
+**I. Recent rows swapping under a held drag.** "while hovering over the Recent link, the link moves to
+the top of the Recent list and then proceeds to swap places back and forth between original position and
+tops of recents list." Confirmed from a run's lines before the fix (a drag held 4.6 s over the third
+Recent row): the spring opened that row's folder in the other pane, the navigation noted the folder as
+recent and moved it to the top, a different folder was then under the still pointer, its spring ripened a
+second later, and so on: four folders opened in turn, one a second. Fixed as the coordinating session
+called it: **the Recent group does not change while a drag is over the window**; the folders panes showed
+meanwhile are noted when the drag drops or leaves, in the order shown. The same run on the new build: one
+spring, then "recent after the drag: 1 shown, 1 noted". It covers drags from other programs too.
+
+**J. A bookmark held under a drag was added to Recent.** "when you hover over the bookmarks list, the
+bookmark is also added to the recent list--I would say that if the link is already bookmarked then it
+doesn't need to be in the recent list." A rule for Recent everywhere, not only under a drag (the
+coordinating session's call): **a bookmarked folder is never noted in Recent, and bookmarking a folder
+takes it out**; a Recent entry saved before the rule that is bookmarked is dropped at the next start.
+Removing a bookmark does not put its folder back (it is noted again when a pane next shows it). The
+Places rows (Home, Desktop and the rest) are not part of this.
+
+For the two: tests 368 passed, 0 failed, 2 ignored (the Recent rule's test extended); the scripted check
+gained both cases. A ten-minute soak of f7abc26: exit 0, no panic, 227 jobs done, none failed, no scripted
+drag dropped, every must-be-0 count at 0; working set 157 to 232 MB as the three before it, private bytes
+195 to 271 MB where the soak two days earlier read 166 to 217 (a different session, already 29 MB apart
+five seconds in; not looked into, the phase's long soak of the merged code is where a leak would show).
+
+### The fifth console check (2026-11-18, f7abc26): passed
+
+Jeremy, of Recent under a drag and of bookmarks staying out of Recent: "confirmed that tests passed
+correctly". With it every console check of this milestone has passed on f7abc26 or on the head it was
+last changed for: 1, 2, 5, 6, 10, 11, 12 and 13 on 2132c70; 3, 7, 8 and 14 on 6c8d369; 9 on c630fb3;
+15 (Up) and 16 (the bookmark) on f8c342c; 17 and 18 on f7abc26. Check 4 (a folder row's spring) was
+"Works" on 2132c70, and what it asked for became check 15.
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+Revised after the first console check: 2, 3, 7, 8 and 9 changed, 14 and 15 are new; 16 after the second;
+15 and 16 again after the third; 17 and 18 after the fourth.
+
+Two panes showing (the toolbar's Two panes). "The tag" is the small coloured label that appears on the
+thing under the pointer while you drag; "the status line" is the text at the bottom left of the pane you
+are dragging into.
+
+1. **A drag between panes on one drive.** Both panes on folders of `C:`. Drag a file from the left
+   pane over an empty part of the right pane's list: the list gets an amber border, an amber tag "Move
+   here" with "Ctrl copies" beside it shows at the top middle of the list, and the right pane's status
+   line reads "Drop moves 1 item to <folder>" in amber. Let go: the file moves.
+2. **Ctrl mid-drag.** Start the same drag and, still holding the mouse button, press Ctrl: the tag
+   turns green, "Copy here", "Let go of Ctrl to move", and the status line "Drop copies…". Let go of
+   Ctrl: amber "Move here" again. Press Escape to cancel the drag.
+3. **Across two drives: the same key.** The right pane on another drive (a USB stick, or `G:`). Drag a
+   file from `C:` over it: green "Copy here", "Ctrl moves". Hold Ctrl: amber "Move here", "Let go of
+   Ctrl to copy". (Shift also moves, as in Explorer, but the tag no longer mentions it.) Escape.
+4. **Onto a folder row.** Drag a file over a folder's row in the other pane: the row gets the coloured
+   border and the tag sits at the row's right end (over that row's date, which is expected). Hold it
+   there a second: the folder opens, as before, and the tag moves to the top of the list.
+5. **A tab, a crumb, a sidebar row.** Drag a file over another tab at the top of a pane (the tag hangs
+   under the tab), over a folder name in the path bar (under the name), and over a drive or bookmark in
+   the sidebar at the left (the tag shows just right of the sidebar, and the active pane's status line
+   names that folder). Escape each time.
+6. **Several files.** Select three files and drag them: the status line says "3 items".
+7. **Always copy.** Settings (Ctrl+comma, or Settings at the sidebar's foot), "Dragging files", Always
+   copy, OK (click OK with the mouse). Drag a file between two folders of `C:`: green "Copy here",
+   "Ctrl moves", and letting go copies. With Ctrl held it reads "Move here" and moves.
+8. **Always move.** The same with Always move, onto another drive: amber "Move here", "Ctrl copies",
+   and Ctrl copies.
+9. **Always ask.** With Always ask, drag a file to the other pane: a violet tag "Choose on drop" and
+   nothing beside it, and the label by the dragged picture reads "Choose on drop" too. Let go: a small menu Move here / Copy here / Cancel opens at the pointer; pick
+   one. Drag again with Ctrl held: still "Choose on drop", and the menu opens all the same.
+10. **The right button.** Under any setting, drag a file with the right mouse button: violet "Choose on
+    drop", and the menu on release, as before.
+11. **From Explorer into TwinFM.** Drag a file from a File Explorer window into a TwinFM pane: the same
+    tag, colours and status line, and the setting applies. (Dragging out of TwinFM into Explorer follows
+    Explorer's rule; TwinFM cannot change that.)
+12. **Light and dark.** Settings, Theme, Light, then Dark: the tag's colours are readable in both.
+13. Put "Dragging files" back to As Explorer when done, if that is what you want to keep.
+14. **The settings buttons.** Open Settings, change anything, click Cancel with the mouse: the dialog
+    closes and nothing changed. Open it again, change something, click OK: it closes and the change is
+    applied.
+15. **Back out of a folder mid-drag.** Drag a file over a folder's row in the other pane and hold until
+    it opens. Still holding, move the pointer onto that pane's Up arrow (left of the path) and hold: the
+    arrow lights, the pointer stays an arrow with "Up to <folder>" beside the picture (no red
+    circle), and after a second the pane goes back up to the parent, once: holding on does nothing
+    more. Move off the arrow and back onto it to go up again. Do the same on the Back arrow. Then drop the file in a list as usual. Letting go over the
+    arrows themselves drops nothing.
+16. **A bookmark held under a drag.** Two panes showing. Drag a file from the left pane onto a bookmark
+    (or a drive) in the sidebar and hold it there a second, without moving: the folder appears in the
+    RIGHT pane at once, and the left pane still shows the folder the file came from. Move into the right pane's list and drop, or
+    press Escape. The same from the right pane opens it in the left.
+17. **Recent under a drag.** With a few folders in the sidebar's Recent group, drag a file onto one of
+    them and hold: its folder opens in the other pane once, and the Recent rows stay where they are for
+    as long as you hold. After you drop or press Escape, that folder moves to the top of Recent.
+18. **Bookmarks stay out of Recent.** Hold a drag over a bookmark, or just click one: its folder does
+    not appear in Recent. Bookmark a folder that is in Recent (Ctrl+D): it leaves Recent.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The tag covers the row's date while the drag is over a details row** (accepted with the pick,
+  above). It sits there because the row's right end is where a wide pane has room and the name stays
+  readable.
+- **"Choose on drop" also shows during a right-button drag**, since that drop opens the menu too; there
+  no key is named (the keys do not skip the menu for the right button).
+- **After the first console check** (above, B to D): Shift and Alt keep working without being named;
+  Ctrl+Shift stays a copy; a drop into a zip is left out of the Ctrl rule; Up and Back take no drop,
+  where a file let go over them used to land in the folder shown; a drag held on over Up kept climbing,
+  one level a second (withdrawn after the third console check: once per hover); a pane reached by Up or Back during a drag does not become the active pane.
+- **A scripted left-button drop under "Always ask" with no pick given picks Cancel**, so that no script
+  ever waits at a menu for a person.
+- **No cue over the Bookmarks gap** in the sidebar: that spot already says "Bookmark" by the pointer and
+  shows its own line, and nothing is moved or copied there.
+- **The status line names the folder as the Windows label does**: its last name, `C:` for a drive.
+- **The hint under Ctrl**: with Ctrl held over a spot where the drop would have copied anyway, no key is
+  named, because Shift does not move while Ctrl is down (Ctrl+Shift copies, as before).
+- **The `[dnd] over` line is logged when a deciding key changes** over the same spot with the same
+  effect too (it was logged only when the spot or the effect changed): the cue's state follows the same
+  record.
+- **The plan's line `[dnd] cue: ... | none`** gained the third value `Choose on drop`.
+
+## P16-M2: the small items
+
+Branch `fix/p16-m2-small-items`, the search and files stream, cut from main at 3e4c201 (the kickoff).
+
+### Settled first
+
+- **Whether a text box can pass the mouse's side buttons.** Read in Slint's source at the pinned
+  revision (`internal/core/items/text.rs`, `TextInput::input_event`; `internal/core/input.rs`,
+  `send_mouse_event_to_item`): a `TextInput` handles the left and middle buttons and answers "ignored"
+  to every other press and release, and Slint offers an ignored event to whatever lies behind the item.
+  A `TouchArea` **over** the input cannot do it (a `TouchArea` takes every press, the text cursor's
+  among them); a `TouchArea` **behind** it gets exactly the two side buttons and no click of the
+  input's. The areas were there already: the one behind each field's input that gives it the focus on
+  a click beside the text (`Field` in theme.slint, the search box in pane.slint). That is also how
+  P6-M3 made the buttons ignored there: an area behind the entry that swallows them. So the answer is
+  yes, and the scripted check below shows it.
+- **What `own_results` answers today**, before changing how. A result is kept when its folder is the
+  folder of one of the items **and** it names one of them; each of the two is tried as text (lowercase,
+  no trailing separator) and, when that misses, with the folder above canonicalised and the last name
+  compared as text. So a path that differs above the last folder is followed (an 8.3 `%TEMP%`, a `.`
+  in the path), and an items' folder named by its own 8.3 name is not: with every item reported that
+  way the old loop kept nothing. The new code keeps that answer too (the test pins both).
+
+### What landed
+
+Per item: done, checked and found right, or left with the reason.
+
+- **The big-copy slowdown: done** (0c02233). After a copy, move or delete the shell reports every file
+  inside a copied folder as well as the items themselves, and TwinFM keeps only the items' own results.
+  It did that by testing every result against every item, with file system calls among them, so a move
+  of thousands of files left the status line waiting long after Windows' window had closed. Now the
+  items and their folders are put in two sets once, each result is looked up in them, and a path that
+  misses is canonicalised once per folder (`CanonDirs`) and looked up in sets canonicalised once, built
+  only when a result first misses. The answers are the same; the time is linear. `same_path` (still
+  used by the archive jobs and the tests) is the same rule on the same helpers. The extract job's
+  comment that named the quadratic loop as a reason no longer says so (it still skips the function,
+  because those formats report twice or not at all).
+- **The mouse's Back and Forward over a tab: done** (1cd16bf). Over a tab and over its close button
+  the two buttons go back and forward in that pane's shown tab, whichever tab the pointer is on, and
+  the pane becomes the active one, as over the rows.
+- **Over the scrollbars: done** (1cd16bf). `VScrollBar` and `HScrollBar` gained two callbacks and two
+  tests in their pointer handler. Wired: each pane's list scrollbar (that pane) and the preview
+  column's three (the active pane, as over the toolbar across the window). **Left unwired**: the
+  sidebar's scrollbar and the crumb dropdown's, because the rows beside them do nothing with the two
+  buttons either; a bar that goes back beside rows that do not would be the odd one.
+- **Over a text box: done for the search box and the path's text entry, left ignored over the rename
+  and new-name editor** (1cd16bf). Over the search box the pane goes back or forward. Over the path's
+  text entry the entry closes first (as Escape closes it) and the pane moves. The fields in the
+  settings dialog, the questions and the sidebar's title editor are unwired (they are not a pane's).
+- **The click on a row's blank part, against Explorer: no code**; the console check is written below
+  (checks 8 to 10).
+- Driver: `backclick <pane> tab|scroll|search|preview`, `forwardclick` the same. Lines: `[nav]` as
+  before. `CLAUDE.md` § Measuring has both.
+
+### Tests
+
+`cargo test --release`: **366 tests** (364 before), `test result: ok. 366 passed; 0 failed; 2 ignored`.
+
+- `fileops::tests::own_results_is_linear_in_the_items` (pure): 20,000 items of one folder that does not
+  exist, their results in another case, and after the first item 20,000 results for a folder's
+  contents; the sorting runs on a thread and must answer within 10 s. **Run first against the old
+  loop: `20,000 items' results are sorted out within 10 s: Timeout`.** On the sets: `[test]
+  own_results: 20000 of 40000 kept in 80 ms`, the 20,000 items' results in the shell's order.
+- `fileops::tests::own_results_keeps_what_the_pairwise_loop_kept`: the old loop is kept in the test
+  module, and every case is run through both and compared. On a real scratch folder
+  (`%TEMP%\twinfm-p16m2-own-<pid>\`, removed after): the items named by their long path, below an 8.3
+  path (this machine's `%TEMP%` gave the scratch folder one, `TW7CBB~1`) and with a `.` in the path,
+  against results named each of those ways and in capitals, for Copy, Move and Delete: the three items
+  kept, a copied folder's contents at two depths, a file that is no item and a result from another
+  folder dropped. The items' folder by its own 8.3 name (kept by neither, as before). Items of two
+  folders, one inside the other. Rename, MoveAs, NewFolder and NewFile (whose result names the folder),
+  a drive's root, items in a folder that is not there, and Restore (all kept).
+- The first version of that test expected the fully 8.3 case to keep the three items; the old loop
+  keeps none there (§ Settled first), so the expectation was wrong, not the code, and was corrected
+  before the new code was written.
+- Runs: the full suite was run three times. **The first run: 364 passed, 2 failed**,
+  `fileops::archive::tests::extracts_on_the_worker` and `zip_jobs_on_the_worker`; the one message read
+  was `Os { code: 32 ... "The process cannot access the file because it is being used by another
+  process." }` at the test's last line, removing its scratch folder (Phase 7 recorded the same from
+  Windows' archive handler still holding a 7z); the other's message was not kept. Both passed when run
+  alone (`2 passed`), and the second and third full runs were `366 passed; 0 failed; 2 ignored` (the
+  second before item 1's commit, the third before item 2's). The cause of the first run's two failures
+  was not found; nothing in this change touches those tests' cleanup.
+- **The docs commit (4609832) went in and was pushed without the gates run before it**, against the
+  rule (it changed the record, `CLAUDE.md` and the soak script, no code; the coordinating session's
+  reminder crossed with the push). They were run on 4609832 right after: `cargo test --release`, `test
+  result: ok. 366 passed; 0 failed; 2 ignored` (a fourth full run, with the other stream building at
+  the same time), and `cargo build --release` finished; then this note was committed.
+
+### Scripted checks
+
+`tools/check-p16m2.ps1`, one scripted run of the branch's release build in
+`%TEMP%\twinfm-p16m2-check\` (a folder of 300 files so the list overflows, a 600-line text file for the
+preview), the real renderer, exit 0, no `panicked` line. Each press is a posted `WM_XBUTTONDOWN` and
+`WM_XBUTTONUP` through winit's own path. From its output (paths shortened):
+
+```
+[auto] backclick pane=0: posted at (1190, 168) logical        the list's scrollbar, in many
+[nav] pane=0 Back button (active pane was 0, now 0)
+[nav] pane=0 history back: ...\work\many -> ...\work (1 back, 1 forward left)
+[auto] forwardclick pane=0: posted at (267, 62) logical       the first tab
+[nav] pane=0 Forward button (active pane was 0, now 0)
+[nav] pane=0 history forward: ...\work -> ...\work\many (2 back, 0 forward left)
+[auto] backclick pane=0: posted at (267, 62) logical          the tab again
+[nav] pane=0 history back: ...\work\many -> ...\work (1 back, 1 forward left)
+[auto] forwardclick pane=0: posted at (1190, 168) logical     the scrollbar, after a move back from sub
+[nav] pane=0 history forward: ...\work\many -> ...\work\many\sub (3 back, 0 forward left)
+[auto] backclick pane=0: posted at (1005, 97) logical         the search box
+[nav] pane=0 history back: ...\work\many\sub -> ...\work\many (2 back, 1 forward left)
+[auto] forwardclick pane=0: posted at (692, 97) logical       the path's text entry
+[nav] pane=0 history forward: ...\work\many -> ...\work\many\sub (3 back, 0 forward left)
+[auto] backclick pane=0: posted at (692, 97) logical          the entry, opened again
+[nav] pane=0 history back: ...\work\many\sub -> ...\work\many (2 back, 1 forward left)
+[auto] backclick pane=0: posted at (269, 162) logical         the rename editor: no [nav] line follows
+[auto] backclick pane=1: posted at (778, 62) logical          the right pane's tab
+[nav] pane=1 Back button (active pane was 0, now 1)
+[nav] pane=1 history back: nothing to go back to
+[preview] pane=0 gen=2 ...\work\long.txt: text, 600 lines, 16090 bytes, UTF-8, plain
+[auto] backclick pane=0: posted at (1193, 422) logical        the preview column's scrollbar
+[nav] pane=0 Back button (active pane was 0, now 0)
+[nav] pane=0 history back: ...\work -> ...\work\many (2 back, 1 forward left)
+```
+
+What the check cannot tell apart: a press on the list's scrollbar from a press on the row under it,
+since both log the same `[nav]` line. The bar took the press because it is a `TouchArea` in front of the
+rows (it has swallowed these two buttons since P2-M3, which is the roadmap item); the tab, the search
+box, the path entry and the preview's bar have nothing behind them that goes back, so their lines can
+only be the new code's. The first run of the script aimed its rename step at row 0 while the editor was
+on row 1 (the script's mistake), so the row took the press and the pane went back; with the editor on
+row 0 the press is ignored, as above.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` (the branch's own script) on the branch's release build of 1cd16bf's
+code, 2026-11-15, harness-launched, with the coordinating session's leave and the other stream holding:
+ran 10.1 min, window closed by the script, exit code 0, 0 panicked lines; 222 jobs done (failed 0,
+cancelled 0), soak refusals 0, waitops timeouts 0, menupicks refused 0, every "must be 0" count 0.
+
+```
+side buttons: Back over the list's scrollbar 2, Forward over a tab 2 (one each per cycle)
+held track presses: 4, repeated past one page 4 (two each per cycle)
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+working set: start 154.8 MB at 5 s, end 228.9 MB at 600 s; private: 165.2 -> 237 MB
+```
+
+Three cycles started their file operations; the time ran out in the third before its scroll part, so
+the counts taken there are two (the side buttons, the held presses, Tab between the panes). Each Back
+over the scrollbar: `[nav] pane=0 history back: C:\traces\bigdir -> ...\twinfm-m5\m2`; each Forward over
+the tab: `[nav] pane=0 history forward: ...\twinfm-m5\m2 -> C:\traces\bigdir`. The display scale was not
+read for this run.
+
+### Gate
+
+Tag ab84, the defaults, 2026-11-16, run by Jeremy from the elevated console, built and handed over by
+the coordinating session: `target-p16m2` (1cd16bf; the commits after it change the soak script and the
+docs only) against `target-p15close` (4d335b7), six runs interleaved, every run's checks ok, no panic.
+
+```
+Run         WPR InApp RenderP50 Checks
+p15close-1 22.6 21.9  2.64      ok
+p15close-2 20.1 21.2  2.65      ok
+p15close-3 20.8 21.1  2.77      ok
+p16m2-1    20.4 21.7  2.77      ok
+p16m2-2    20.1 21.6  2.64      ok
+p16m2-3    21.2 23.3  2.79      ok
+```
+
+p16m2's median is 20.4% against p15close's 20.8% (WPR main-thread busy): not every reference run sits
+below every candidate run, and the medians are 0.4 apart with the candidate the lower, so **no gap**.
+The whole sitting (ab84 to ab87, one elevated console) ran in the costlier state: render p50 was 2.60
+to 2.79 ms in every run of both binaries, where Phase 15's gates sat at 2.0 to 2.3 ms, so no run of
+either binary is under 20% and the figures are read like for like within the triplet only (the ab23
+rule), never against a recorded number. The summary is `C:\traces\gate-ab84-summary.txt`.
+
+**Run again on the big move's fixes**: tag ab92, the defaults, 2026-11-18 21:34, run by Jeremy from the
+elevated console (frame interval p50 16.3 to 16.5 ms), built and handed over by the coordinating session:
+`target-p16m2` rebuilt at b7b8bd6 against `target-p15close` (4d335b7), six runs interleaved, every run's
+checks ok, no panic.
+
+```
+Run         WPR InApp RenderP50 Checks
+p15close-1 18.1 18.4  2.17      ok
+p15close-2 18.6 19.4  2.24      ok
+p15close-3 17.8 17.5  2.01      ok
+p16m2-1    17.9 17.5  2.09      ok
+p16m2-2    17.9 17.7  2.12      ok
+p16m2-3    17.9 19.5  1.97      ok
+```
+
+p16m2's median is 17.9% against p15close's 18.1%: **no gap**, and every candidate run is under 20%. This
+sitting ran in the usual state (render p50 1.97 to 2.24 ms, where ab84's was 2.64 to 2.79), so these are
+the figures to read for P16-M2. The summary is `C:\traces\gate-ab92-summary.txt`, the script
+`C:\traces\gate-p16m2b.ps1`.
+
+What the gate scenario meets of this milestone: its `drag` steps press the list's scrollbar, whose
+pointer handler now makes two more comparisons per pointer event (the event's kind and button against
+"released" and "back", then "forward"); a left-button drag fails both at once. The rows, the tiles and
+the lists gained nothing; the list host gained two callbacks that are never called in the scenario. It
+runs no file operation, so `own_results` is not called, and it presses no tab or text box.
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+These need a mouse with Back and Forward side buttons (the two thumb buttons).
+
+1. **Over a tab.** Go into a few folders in the left pane so there is somewhere to go back to. Rest
+   the pointer on the pane's tab (the strip at the very top of the pane, above the path bar) and press
+   the mouse's Back button: the pane goes back a folder. Forward: it goes forward again. The same with
+   the pointer on the tab's small x.
+2. **A tab in the other pane.** With two panes, the left one active, press Back over the right pane's
+   tab: the right pane becomes the active one (its ring, the title bar's text) and goes back.
+3. **Over the list's scrollbar.** In a folder long enough to scroll, rest the pointer on the
+   scrollbar at the list's right edge (on the thumb, then on the empty track above or below it) and
+   press Back, then Forward: the pane moves each time, and the list does not page.
+4. **Over the preview's scrollbar.** Alt+P, the cursor on a long text file or a PDF. With the pointer
+   on the scrollbar at the preview column's right edge, press Back: the active pane goes back.
+5. **Over the search box and the path.** With the pointer on the search box at the right end of the
+   path bar, press Back: the pane goes back. Press Ctrl+L (the path as text), rest the pointer on the
+   text and press Back: the text entry closes and the pane goes back. Then check the entry still works:
+   Ctrl+L, click in the text (the text cursor lands where you clicked), double-click a word (it is
+   selected), drag across some text (it is selected).
+6. **The rename editor is left alone.** Press F2 on a file and, with the pointer on the name being
+   edited, press Back: nothing happens and the name is still being edited.
+7. **The big move.** Select a few thousand files in one folder (Ctrl+A in a folder of photos, or of
+   `C:\traces\bigdir` copied somewhere first) and move them to a folder on the same drive (Shift+F6 to
+   the other pane, or a drag). Watch the status bar at the bottom of the pane as Windows' progress
+   window closes: "Moved N items" should show without a long wait after it (the wait before this change
+   was not timed on a real move; the test's 20,000 items took over 10 s against 80 ms). Ctrl+Z brings
+   them back.
+8. **The blank-part click, beside Explorer: where the outline goes.** Open the same folder in
+   Explorer (View, Details) and in TwinFM's details list, side by side. In Explorer click a file's
+   name, then click another row far to the right of its name (in the empty part of the Name column).
+   Look for the thin dotted outline on a row: does it stay on the first file, move to the row clicked,
+   or go altogether? (It may only show after one press of an arrow key: press Down once and see which
+   row becomes selected; that tells where the outline was.) Do the same in TwinFM: nothing is selected
+   and the outline (a solid ring in the accent colour) sits on the row clicked, so Down selects the row
+   below the one clicked. Say if Explorer does otherwise and you want it followed.
+9. **The same with Ctrl.** In Explorer select a file, hold Ctrl and click another row's blank part:
+   is that row added to the selection, or does nothing change? In TwinFM it is added (Ctrl toggles the
+   row clicked).
+10. **The same with Shift.** In Explorer select a file, hold Shift and click a row's blank part a few
+    rows down: is the range selected, or does nothing change? In TwinFM the range from the first file
+    to the row clicked is selected.
+
+### Console checks: Jeremy's results (2026-11-17, `target-p16m2`, 1cd16bf, his Log setting on)
+
+Checks 1 to 5: "works as expected". Check 6 passes (Back does nothing over the rename editor). Checks 8,
+9 and 10 match Explorer, each "this is what I wanted". **Check 7, the big move, did not pass**: "takes
+about 2 minutes to copy/paste the whole bigdir to bigdir2, although I now can't find c:\traces\bigdir2,
+so not sure where the files went. ctrl+z does start the restore after about 30-45 seconds." Nothing was
+lost (the drop went to `C:\tmp\bigdir2`, the undo brought all 40,000 back). His log is
+`C:\traces\p16m2-console-check-bigmove.log`.
+
+### The big move: what froze, and what changed
+
+`own_results` (item 1) was no longer the wait. Read from his log and the code, then measured with
+`tools\time-p16m2-bigmove.ps1` (below), the window froze at three places, and each was TwinFM's own:
+
+- **Every submit** printed the whole job, 40,000 paths, with `{job:?}` (`[fileops] submit`, and again in
+  `[undo] recorded`, `[undo] "..." with` and `redo recorded`): six lines of 1.4 to 1.5 MB in his log. Rust's
+  stderr is not buffered and a path's `Debug` form is written one character at a time, so one line was
+  about 1.5 million writes, on the UI thread. About 3.4 s a line in his log (the paste's period, alone:
+  `ui_cpu=3547ms`).
+- **Undo pressed**: two of those lines, and `undo::check`, one file-system call per item, 40,000 on the
+  UI thread (`ui_cpu=8031ms` in his log).
+- **Each job's end**: one of those lines, then 40,000 `item` lines, each several writes (4.4 s in his
+  log).
+
+These cost what they cost only while stderr goes somewhere (his Log setting; a redirect, as every gate,
+soak and check script has).
+
+What changed (the five fixes the coordinating session agreed, and the timing lines):
+
+1. **A job is logged in a short form** above 20 items (`fileops::brief`, `LOG_ITEMS`): `Move { 40000
+   sources, first "C:\\...\\file_1.txt", dest_dir: "C:\\..." }`. Up to 20 items it is the `Debug` form as
+   before, built as one String (one write). The one script that reads a submit line
+   (`soak-p5m3.ps1`'s nested-zip count) reads a small job's, so no count changed.
+2. **Item lines are capped** (`fileops::item_lines`): every item of a job of up to 20; of a larger one
+   the first 20, then the first 20 failed ones after those, then `[fileops]   N more item(s) not listed
+   (K ok, F failed)`. One write for all of them. No soak or check script reads an item line.
+3. **The undo's check runs on the worker**, as the undo or redo job's first step
+   (`Worker::submit_checked`, `Done::refused`). A refusal logs `[undo] "..." refused: <why>` and shows the
+   same note as before, and the record is gone as before; what differs is that the job is submitted
+   first, so the pane reads "moving N items..." until the worker answers.
+4. **Rows removed with everything selected**: `apply_edits` keeps the selection as one flag per shown
+   row while the rows move and makes the set again at the end (`row_remove`, `row_insert`). Before, the
+   set above the row was rebuilt for every row removed: 2.8 ms a row in his log.
+5. **`forbid_if_replaced`** looks each result up in a set of the paths that were there (it compared
+   every result with every path).
+6. **Timing lines only** (the worker's item building is not changed here: it is put to Jeremy as its own
+   item): `[fileops] id=N: K item(s) handed to the shell in T ms` (our `SHCreateItemFromParsingName` and
+   `MoveItem`, `CopyItem` or `DeleteItem` per item, before `PerformOperations`), `[fileops] id=N: the
+   shell's first item T ms after PerformOperations` (the shell's own preparation), and for a drag `[dnd] N
+   items parsed in T ms, their data object made in U ms` (on the UI thread, at the press).
+
+### The big move: measured
+
+`tools\time-p16m2-bigmove.ps1` (new): 40,000 files, a copy of `C:\traces\bigdir` in
+`%TEMP%\twinfm-p16m2-big\src`, moved to `dst` beside it with Shift+F6 and brought back with Ctrl+Z, one
+scripted run with stderr redirected to a file; it reads the file as it grows and notes when each marker
+line shows. 2026-11-18, harness-launched, the machine free. Before is 1cd16bf's code
+(`target-bigmove-before`); after is this commit's.
+
+| | before | after |
+|---|---|---|
+| Move submitted: UI thread CPU in that period | 218,938 ms | no period over 500 ms |
+| Move's "100%" to its "done" line | 407.4 s | 3.4 s |
+| Undo pressed to the undo job submitted | not reached: 220,484 ms of UI CPU, then the script's 30 minutes ran out | 0.1 s |
+| The undo job's "100%" to its "done" line | not reached | 3.5 s |
+| A watch window removing about 400 rows with all selected | `-400 ... apply 1363.7 ms` | `-405 ... apply 128.0 ms` |
+| The log | 17.2 MB, longest line 3,229,030 characters, 40,000 item lines | 0.1 MB, longest line 228, 40 item lines |
+
+The before run's freezes are far longer than in Jeremy's log (about 220 s a line against 3.4 s): the same
+cause, a write per character, with each write costing more under this redirect and with paths twice as
+long. Why a write costs that much more here was not looked into. The before run was cut by the script's
+limit before the undo job was submitted and was not run again (over an hour); its files were moved back by
+hand.
+
+**Where the wait before the first file is** (after, both jobs alike; the lines are new, so there is no
+before):
+
+```
+[fileops] id=1: 40000 item(s) handed to the shell in 90103 ms
+[fileops] id=1: the shell's first item 11923 ms after PerformOperations
+[fileops] id=2: 40000 item(s) handed to the shell in 90102 ms
+[fileops] id=2: the shell's first item 10248 ms after PerformOperations
+```
+
+Submit to "0%" was 97 to 99 s: about 90 s is TwinFM handing the shell one item at a time (2.25 ms an
+item) and 10 to 12 s the shell's own preparation. Then the move itself, 100 to 110 s for 40,000 files,
+the shell's pace. In Jeremy's log the same wait was 20 to 25 s in all, on `C:\traces` and `C:\tmp`; here
+it is longer on `%TEMP%` (not looked into). The window is live through it.
+
+**The drag's start**: `[dnd] 40000 items parsed in 1838 ms, their data object made in 27 ms`, on the UI
+thread at the press (the period reads `ui_cpu=4344ms`; the rest of it was not split). Not changed. The
+scripted drag then sat 61 s inside `DoDragDrop` before its cancel landed, in both runs; Jeremy's real drag
+returned 97 ms after the drop, so this is the scripted drag over whatever lay under the pointer, and was
+not looked into.
+
+Not measured: the run with stderr going nowhere (the Log setting off, no redirect), where fix 3 is the
+only one of the three freezes' causes left; `undo::check`'s own time was never timed apart.
+
+**Tests** (written first for fixes 4 and 5, and run against the old code): 370 passed, 0 failed, 2
+ignored (366 before); `cargo build --release` finished with no warning.
+
+- `model::tests::apply_edits_with_everything_selected_is_not_per_row`: 40,000 rows all selected, a
+  window removing 400 and adding one; 529 ms before the fix (the test failed its bound), 58 ms after; the
+  selection, the cursor and the new row's place checked.
+- `fileops::undo::tests::the_replaced_test_is_linear_in_the_items`: 40,000 results against 40,000 paths
+  that were there, twice; 8,325 ms before, 34 ms after (bound 2 s).
+- `fileops::tests::large_jobs_are_logged_in_short`: the short form of each kind of job, the `Debug` form
+  kept up to 20 items, the item lines' cap and the failures kept.
+- `fileops::tests::the_worker_checks_an_undo_before_it_runs`: through the real worker in
+  `%TEMP%\twinfm-p16m2-check-<pid>`, an undo whose file is gone is refused with nothing run, and one
+  whose file is there runs.
+
+**Scripted check and soak**, on b7b8bd6's build, 2026-11-18, harness-launched with the coordinating
+session's leave: `tools\check-p16m2.ps1` exit 0 with the same `[nav]` lines as before.
+`tools\soak-p5m3.ps1 -Minutes 10`: ran 10.1 min, window closed by the script, exit code 0, 0 panicked
+lines; 225 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0, menupicks refused 0,
+every "must be 0" count 0; side buttons 2 and 2; private bytes 165.3 -> 235.9 MB. Its log has 30 undo
+and redo jobs done, each through the worker's check, and no `[undo] ... refused` line.
+
+**The gate** was run again on this code (b7b8bd6): ab92, under § Gate, no gap.
+
+### The big move: Jeremy's retest of check 7 (2026-11-18, `target-p16m2` at b7b8bd6, his Log on, over Remote Desktop)
+
+"finished, no issues!" (relayed by the coordinating session, which read his log, started 21:49).
+
+- The move, id=4: `Move { 40000 sources, first ..., dest_dir ... }` on the submit line, `40000 item(s)
+  handed to the shell in 19676 ms`, `the shell's first item 8828 ms after PerformOperations`, done, then
+  `39980 more item(s) not listed (39980 ok, 0 failed)`.
+- The undo, id=5: submitted on the line after `[undo] ... with`, handed over in 19577 ms, the shell's
+  first item after 8589 ms, `Undid: Moved 40000 items`.
+- The log's longest line is 222 characters.
+- The two largest UI-thread periods: `ui_cpu=2016 ms` at a 40,000-item drag's drop and `2062 ms` at the
+  move's submit, both the drag's `parse_items` at the press (1.8 s in the timed run above, not changed);
+  nothing longer.
+
+So on his folders the wait before the first file was about 28 s (19.7 s TwinFM handing the items over,
+8.8 s the shell's preparation), against 97 to 99 s in the timed run on `%TEMP%`: the hand-over is still
+the larger part, about two thirds there.
+
+An earlier attempt the same evening ran `target-p16m4` by mistake (the whole-job line, no done after
+100%, `[undo] busy`): not a result for this build.
+
+**For the next gate**: both attempts moved the gate's fixture `C:\traces\bigdir` itself. It has its
+40,000 files again (moved back once by the coordinating session's script, once by his undo), so the
+folder's directory order may differ from what it was before 2026-11-18.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The side buttons over the path's text entry and the search box now move the pane.** This
+  **reverses P6-M3**, which made them ignored over the path entry on purpose and which Jeremy checked
+  then (`phase-6-plan.md`: before it they went back, after it they did nothing). The kickoff's rule
+  was to do it if Slint allows it without touching the text cursor's clicks, and it does. Over the path
+  entry the entry closes first, so it does not stay open showing the folder left behind.
+- **The rename and new-name editor stays ignored**, as P6-M3 left it: a move in the history there
+  would throw away the name being typed.
+- **Jeremy's decision on those two** (2026-11-15, put to him by the coordinating session with its
+  recommendation that the split is right): "Go with your recommendations". So the search box and the
+  path entry take Back and Forward, and the rename editor stays ignored.
+- **The preview's scrollbars move the active pane**, as the toolbar across the window does; the
+  preview has no pane of its own.
+- **The sidebar's and the crumb dropdown's scrollbars are not wired**, since their rows are not.
+- **Back over any tab acts on the pane's shown tab**, not on the tab under the pointer (a background
+  tab is not on screen to be moved; the tab menu is where a background tab is acted on).
+- **The driver's `scroll` aim is the old `drag` aim** (10 px in from the pane's edge), so it is the
+  scrollbar only while the list overflows; the soak presses it in the 40,000-file folder.
+- **In the soak, Back is pressed over the scrollbar and Forward over the tab** (one press each per
+  cycle, so the pane ends where it was), where the plan's words were "a `backclick` over a tab and over
+  the scrollbar".
+
+### Follow-ups, not done here
+
+- `tabdrag` in `src/auto.rs` presses at y 16 of the window, which is on the toolbar across the window
+  since P6-M3 made that the default; `tabmenu` and the new `backclick <pane> tab` reckon the strip's
+  place from the layout. Read in the code, not run; no soak or check script uses `tabdrag` today; not
+  touched here.
+
 ## P16-M3: extra large and small icons
 
 Branch `feat/p16-m3-icon-sizes`, the drag and views stream, cut from main at 3e4c201 (P16-M1 not yet
@@ -506,6 +1419,26 @@ items in it). It is the cost of showing twice the files, as Explorer's Small ico
 it is per frame beyond what the large grid has. Extra large was not run again: its ab87 runs dragged
 the thumb (374 `resolve` calls) and stand.
 
+### Main taken in (2026-11-19: P16-M1, P16-M2 and P16-M4, main at 5f5024b)
+
+Every source file merged by itself; three files by hand, both sides kept (`CLAUDE.md`, this record,
+`tools/soak-p5m3.ps1`). No arm was needed for P16-M1's new Back and Up spots: this milestone matches on
+no drop spot of its own. **One change in code, for P16-M1's drag tag in small icons**: a small-icons
+cell is 220 x 22 px, a row in all but name, and the tag as a tile's (across its lower edge) would have
+covered the cell below, or over the cell its name, so there it sits just right of the cell, as beside a
+sidebar row (`dnd::cue_anchor`: a tile no taller than twice the tag; a test line for it and for an extra
+large tile, which keeps the tile's rule). Seen in a scripted run's pictures of both views.
+
+Tests: 378 passed, 0 failed, 3 ignored (main's 375 and this milestone's three). `tools/check-p16m1.ps1`
+and `tools/check-p16m3.ps1`: exit 0, their lines as before. The soak's script carries both milestones'
+cycles; its `dropfiles ... copy` steps in the new views hold Alt since P16-M1 (a copy as before).
+
+What the merge changed of what ab88 measured: nothing per frame or per row. P16-M1's, P16-M2's and
+P16-M4's code is main's, gated there (ab90 and ab91, and the search stream's own); this milestone's
+lists, tiles and strips are untouched by the merge, and the one hand change runs when a drag's target
+changes.
+
+
 ### Console checks (for Jeremy, after the gates, TwinFM started unelevated)
 
 "View" is the button on the toolbar at the top; the keys work in either pane's list.
@@ -558,3 +1491,204 @@ the thumb (374 `resolve` calls) and stand.
 - **`TWINFM_THUMB_MB`** is a test knob for the check script, not a setting.
 - **No WPR trace for the settle-first question**: the plan said "a trace"; the in-app pair at 60 Hz
   showed both views under large icons, so the elevated trace was left to the gate's triplets.
+
+## P16-M4: plain content search on the fast engine
+
+Branch `feat/p16-m4-content-search`, the search and files stream, cut from main at 3e4c201 (the kickoff;
+it does not depend on P16-M2).
+
+### Settled first: what changes in what matches
+
+Measured, not recalled: the ignored test `fs::content::tests::probe_plain_against_the_engine` searched
+for each of the 3,078 characters that have an upper or lower case form in every one of the 1,112,064
+characters there are, by the comparison used until now (each character's lowercase, a final sigma as a
+sigma, the text a substring) and by the engine (the text escaped, case-insensitive), and then tried 33
+words. **194 letter pairs differ, in three groups; nothing differs for English text, punctuation or
+accents.**
+
+1. **The Turkish dotted capital İ (1 letter, 2 pairs).** Until now a plain `i` (or `I`) found a line
+   whose only i is `İ`, so `ali` found `ALİ`; on the engine it does not. The old answer was half a
+   rule: `istanbul` did not find `İSTANBUL` before either (İ lowercases to an i and a separate dot, so
+   only a text ending in i matched). On the engine `İ` is found only by `İ`.
+2. **Other shapes of the same letter (96 pairs): the engine finds more.** `s` and the long `ſ`; the
+   Greek `μ` and the micro sign `µ`; the Greek symbol forms `ϐ ϑ ϕ ϖ ϰ ϱ ϵ` with `β θ φ π κ ρ ε`; the
+   iota forms (`ι`, the combining iota below, U+1FBE); two accented Greek letters with their second
+   code points; the old Cyrillic shapes U+1C80 to U+1C88 with `в д о с т ъ ѣ ꙋ`; `ṡ` and `ẛ`; the two
+   st ligatures with each other. Before, each was found only by typing that exact shape.
+3. **Letters whose case pairs are newer than the engine's tables (48 capital and small pairs, 96 pairs
+   counted both ways):** the Beria Erfe script (U+16EA0 to U+16ED3, 25 pairs), Latin phonetic letters
+   at U+1DF40 to U+1DF7F (16 pairs) and seven more Latin pairs (U+A7CE/A7CF, A7D2/A7D3, A7D4/A7D5,
+   U+0277/A7DD, U+027C/A7E2, U+AB4B/AB6C, U+AB4C/AB6D). Rust's own tables know them and the `regex`
+   crate's (1.13.1) do not yet, so a small one no longer finds its capital until the crate is bumped.
+
+The same before and after (the probe's words): ordinary letters in either case, accents (`é` finds
+`É`), `ß` and `ẞ`, the final sigma rule (`ς`, `σ` and `Σ` find each other), the Kelvin and Ångström
+signs, the digraphs `ǆ ǅ`, Georgian, Cherokee, and every punctuation character typed as itself (`a.b`
+finds `A.B` and not `AxB`). Neither treats `ss` as `ß`, `fi` as the ligature `ﬁ`, or `é` as e and a
+separate accent.
+
+One more visible change: a matching line with a character that lowercases to another length before the
+match (`İ`) was shown from the line's start; it is now shown around the match, as every other line.
+
+**Jeremy's decision** (2026-11-15; the three groups went to him through the coordinating session,
+with the lean to take the engine's answers, before the change left its branch; asked "Take the new
+engine's answers for the content-search letters?"): **"Yes, take them"**. So the change stands as
+built: no extra letter for `İ`, the other shapes found, the newest letters left to the crate.
+
+### What landed
+
+- **Plain text is an expression** (41ca503). The box's plain text is compiled once as an escaped,
+  case-insensitive expression (`fs::content::plain`: `regex::escape`, then `model::compile`, the
+  builder `re:` uses) and each file's text is searched as it is; until now the text of every file was
+  lowercased into a new string first. The row's line comes from the match's own place. `content::fold`,
+  the old `first_match` and the `Needle` enum are gone: one function finds the line
+  (`content::first_match`, P15-M4's `first_match_regex` renamed) and a content search's needle is a
+  compiled expression (`enumerate::Content::needle`, an `Option<regex::Regex>`; none, which nothing
+  builds today, finds nothing).
+- **Not touched**: the live filter and the name search (names are short), the 16 MB cap, the binary
+  test, the cloud rules, the `[search]` lines (a plain content search still logs `(text)`), saved
+  searches and history entries (they keep the typed text and compile it when run).
+- **The probe stays** as an ignored test (about two seconds; `cargo test --release -- --ignored
+  probe_plain_against_the_engine --nocapture`), with the old comparison written out inside it, so the
+  list can be measured again after a bump of the `regex` crate or of Rust.
+
+### Timing
+
+`tools/time-p15m4.ps1` (the 100 MB tree in `%TEMP%\twinfm-p15m4-time`, 400 files of about 256 KB, the
+text in every fiftieth; one scripted run, a warm-up, then plain text and `re:` three times each,
+alternating), 2026-11-15, the machine quiet both times (the coordinating session held the other
+stream), 400 files read and 8 found in every search, 0 panicked lines.
+
+| The search's `done` time, ms | plain text | `re:` |
+|---|---|---|
+| Before (main, 3e4c201) | 982, 985, 983 (median 983) | 99, 93, 107 (median 99) |
+| After (41ca503) | 104, 120, 88 (median 104) | 100, 107, 89 (median 100) |
+
+Plain text went from 983 ms to 104 ms and is level with `re:`. The before run's warm-up was 4,379 ms
+(the files not yet in the file cache), the after run's 123 ms (cached from the before run), so the two
+warm-ups are not compared. Phase 15 measured 968 against 86 on the same tree.
+
+### Tests
+
+`cargo test --release`: **365 tests** (364 before), `test result: ok. 365 passed; 0 failed; 3 ignored`
+(the third ignored test is the probe); two full runs, one before the code commit and one before the
+docs commit, no failure in either; `cargo build --release` finished.
+
+- `fs::content::tests::plain_text_is_an_escaped_expression` (new): every typed character is itself
+  (`a.b`, brackets, braces, `|`, `*`, `+`, `?`, `^`, `$`, a backslash, `$5.00 (usd)`); the cases that
+  stay the same (accents, `ẞ`; `ss`, the `ﬁ` ligature and a separate accent not unfolded); **the
+  differing cases pinned to the engine's answers**: the long s, the micro sign and mu, two Greek symbol
+  forms found; `İ` not found by `i`, `ALİ` not by `ali`, found by `İ`. Group 3 is not pinned (it
+  changes back by itself when the crate's tables catch up; the probe lists it).
+- `the_first_matching_line_is_kept_and_cut` (kept, on the new path): the first line, trimmed; either
+  letter case of the needle; Greek both ways (the sigma test the kickoff asked to keep); a line with
+  `İ` before the match; the cuts of long lines.
+- `files_are_read_up_to_the_cap` and the walker's
+  `content_search_reads_text_files_and_stays_out_of_links_and_clouds` (kept): their plain needles are
+  built by `plain`.
+- The differing answers were not first seen failing as a test: they were measured on the old code by
+  the probe before the change (its 194 pairs and the words marked DIFFERENT), and the new test pins
+  what the probe showed for the engine.
+
+### Scripted checks
+
+`tools/check-p15m4.ps1` (P15-M4's, two runs in `%TEMP%\twinfm-p15m4-check\`, with two plain searches
+added), 41ca503's release build, no `panicked` line. The plain content searches, from its output:
+
+```
+[search] pane=0 gen=6 content "todo" (text) in ...\files
+[search] pane=0 gen=6 done: 2 found in 15 files read, 0 skipped (...), 2 folders walked, ... in 15 ms
+[auto] rows pane=0: IMG_0500.jpg  (sub)  not a picture: todo is mid-line here [], todo.txt  (sub)  TODO: write the docs []
+[search] pane=0 gen=7 content "\re:port" (text) in ...\files
+[search] pane=0 gen=7 done: 1 found in 15 files read, ...
+[auto] rows pane=0: fixme.c  (sub)  // see re:port 7 []
+[search] pane=0 gen=8 content "TODO|FIXME" (text) in ...\files
+[search] pane=0 gen=8 done: 0 found in 15 files read, ...
+[search] pane=0 gen=9 content "X. //" (text) in ...\files
+[search] pane=0 gen=9 done: 0 found in 15 files read, ...
+[search] pane=0 gen=11 content "re:TODO|FIXME" (regex) in ...\files
+[search] pane=0 gen=11 done: 3 found in 15 files read, ...
+```
+
+`todo` and `\re:port` find the rows P15-M4's record shows. The two new ones show that typed characters
+are themselves: `TODO|FIXME` typed plainly finds nothing where the expression finds three files, and
+`X. //` nothing where a dot read as "any character" would find `int x; // fixme later`. The rest of
+the script (the filter, the name searches, the expressions, the saved search and its reopening) printed
+what it did in P15-M4. The script prints blank exit codes, as it did then.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` (the branch's own script, unchanged: each cycle already runs three
+plain content searches, which now take the new path) on 41ca503's release build, 2026-11-15,
+harness-launched, with the coordinating session's leave and the other stream holding: ran 10.1 min,
+window closed by the script, exit code 0, 0 panicked lines; 223 jobs done (failed 0, cancelled 0), soak
+refusals 0, waitops timeouts 0, menupicks refused 0, every "must be 0" count 0.
+
+```
+content search: done 9 (three per cycle), files read 1812 (600 or more per cycle), found 12 (four per cycle)
+search patterns: name searches with a class started 3, done with 30 or more found 3; content searches with an expression started 3, done with 2 found 3 (one each per cycle); not-a-pattern lines 0 (must be 0)
+saved searches: saved 3, opened 3, run again and found 3, removed 3 (one each per cycle)
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+working set: start 154.6 MB at 5 s, end 233.9 MB at 601 s; private: 165 -> 225.1 MB
+```
+
+The content search counts are the ones P15-M4's soak gave (9 done, 12 found). The display scale was not
+read for this run.
+
+### Gate
+
+Tag ab86, the defaults, 2026-11-16, run by Jeremy from the elevated console, built and handed over by
+the coordinating session: `target-p16m4` (41ca503; the commit after it changes the record, `CLAUDE.md`
+and the check script only) against `target-p15close` (4d335b7), six runs interleaved, every run's
+checks ok, no panic.
+
+```
+Run         WPR InApp RenderP50 Checks
+p15close-1 20.5 21.7  2.68      ok
+p15close-2 20.4 19.7  2.66      ok
+p15close-3 20.4 20.9  2.60      ok
+p16m4-1    20.3 19.4  2.66      ok
+p16m4-2    20.3 21.4  2.69      ok
+p16m4-3    20.2 22.8  2.68      ok
+```
+
+p16m4's median is 20.3% against p15close's 20.4% (WPR main-thread busy), 0.1 apart with the candidate
+the lower: **no gap**.
+The whole sitting (ab84 to ab87, one elevated console) ran in the costlier state: render p50 was 2.60
+to 2.79 ms in every run of both binaries, where Phase 15's gates sat at 2.0 to 2.3 ms, so no run of
+either binary is under 20% and the figures are read like for like within the triplet only (the ab23
+rule), never against a recorded number. The summary is `C:\traces\gate-ab86-summary.txt`.
+
+What the gate scenario meets of this milestone: nothing. It runs no search; no row, list or timer
+changed.
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+1. **A word in the repo.** In `C:\Users\jtkli\projects\twinfm`, click the small page icon at the left
+   of the search box (right end of the path bar) so it lights up, type `scroll`, Enter. A tab "Text:
+   scroll" fills with files, each row showing the line with the word. With logging on (Settings, Log),
+   the log's `[search] ... done: ... in T ms` line gives the time; do the same in 0.6.0 for the figure
+   to compare.
+2. **A word in Documents.** The same in `Documents` with a word you know is in some files: the same
+   files as 0.6.0 finds, sooner.
+3. **Capitals do not matter.** Search `SCROLL` in the repo: the same rows as `scroll`.
+4. **Punctuation is itself.** Search `fn main(` in the repo: only lines with exactly that text. Search
+   `a.b`: lines with a real dot between a and b, not `axb`.
+5. **The long line.** A match far along a very long line shows `…`, 40 characters of lead, then the
+   match, as before.
+
+**Jeremy's results** (2026-11-18, `target-p16m4`, 41ca503, relayed by the coordinating session):
+"The 160 checks all worked as expected".
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The engine's answers are taken in all three groups**, the kickoff's lean and Jeremy's decision
+  above. Keeping `i` finding `İ` would be one more letter in the expression built for a plain search; it was
+  not done because the old rule was already half a rule.
+- **Group 3 is left to the `regex` crate**: no table of TwinFM's own for 48 pairs of letters nobody
+  here will meet; the probe says when they are back.
+- **The probe is kept in the test module** (ignored, never part of the gates), as P15-M1's extract
+  probe is.
+- **No new soak cycle**: each cycle already runs three plain content searches, which now take the new
+  path; the counts are the old ones.
+- **`first_match_regex` is now `first_match`** (one function is left; the old name's reason is gone).
