@@ -452,6 +452,26 @@ to 2.79 ms in every run of both binaries, where Phase 15's gates sat at 2.0 to 2
 either binary is under 20% and the figures are read like for like within the triplet only (the ab23
 rule), never against a recorded number. The summary is `C:\traces\gate-ab84-summary.txt`.
 
+**Run again on the big move's fixes**: tag ab92, the defaults, 2026-11-18 21:34, run by Jeremy from the
+elevated console (frame interval p50 16.3 to 16.5 ms), built and handed over by the coordinating session:
+`target-p16m2` rebuilt at b7b8bd6 against `target-p15close` (4d335b7), six runs interleaved, every run's
+checks ok, no panic.
+
+```
+Run         WPR InApp RenderP50 Checks
+p15close-1 18.1 18.4  2.17      ok
+p15close-2 18.6 19.4  2.24      ok
+p15close-3 17.8 17.5  2.01      ok
+p16m2-1    17.9 17.5  2.09      ok
+p16m2-2    17.9 17.7  2.12      ok
+p16m2-3    17.9 19.5  1.97      ok
+```
+
+p16m2's median is 17.9% against p15close's 18.1%: **no gap**, and every candidate run is under 20%. This
+sitting ran in the usual state (render p50 1.97 to 2.24 ms, where ab84's was 2.64 to 2.79), so these are
+the figures to read for P16-M2. The summary is `C:\traces\gate-ab92-summary.txt`, the script
+`C:\traces\gate-p16m2b.ps1`.
+
 What the gate scenario meets of this milestone: its `drag` steps press the list's scrollbar, whose
 pointer handler now makes two more comparisons per pointer event (the event's kind and button against
 "released" and "back", then "forward"); a left-button drag fails both at once. The rows, the tiles and
@@ -620,7 +640,7 @@ lines; 225 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 
 every "must be 0" count 0; side buttons 2 and 2; private bytes 165.3 -> 235.9 MB. Its log has 30 undo
 and redo jobs done, each through the worker's check, and no `[undo] ... refused` line.
 
-**The gate** is run again on this code (b7b8bd6) by the coordinating session; its figures go under § Gate.
+**The gate** was run again on this code (b7b8bd6): ab92, under § Gate, no gap.
 
 ### Calls made in this milestone, for Jeremy to check
 
