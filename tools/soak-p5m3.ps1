@@ -193,6 +193,16 @@
 # by it (`sort 0 4`, the first rows logged by `rows 0 3`) and back by name; the report counts the
 # drags, the fits and the sorts (one each per cycle), and the widths-back lines are three per cycle
 # since.
+# P16-M1: each cycle ends its fixed part with the drag cue: the right pane on spring, a drag of
+# src\tree\d01\f01.txt hovers its row 0 (inner) for 500 ms, under the spring time (`dragover row 1 0
+# 500`: the cue reads Move here, one drive), the same with Ctrl held (`keys ctrl`: Copy here), then
+# "Always copy" through the settings dialog (`settings set drag_default copy`), a `dropfiles 1 0 auto`
+# onto inner (a copy on the same drive, where Explorer's rule would move), the setting put back, and
+# the copy in inner removed (Shift+Delete). The report counts the cue lines by their words, the Ctrl
+# hovers over inner that read as a copy, the setting's changes each way and the drops onto inner with
+# no key that copied (one each per cycle). Since the console check the cycle ends in inner, where the path
+# bar's Up, held by a drag for 1300 ms (`dragover nav 1 up`), takes the right pane back to spring; the
+# report counts those (one per cycle).
 # P13-M1: each cycle then hides the second pane with the toolbar's Two panes and shows it again
 # (`toolbar 0 split` twice: the right pane comes back on the left's folder, which the next cycle's
 # `nav 1` replaces), drags the split line to 0.35 of the room, where the left pane is too narrow for
@@ -439,6 +449,7 @@ $wait = 'waitops 60000'
 # Paths for the drops; `|` separates them (`;` separates script steps).
 $pick = (Join-Path $src 'tree\d01\f01.txt') + '|' + (Join-Path $src 'tree\d01\f02.txt')
 $back = (Join-Path $dst 'f01.txt') + '|' + (Join-Path $dst 'f02.txt')
+$cueFile = Join-Path $src 'tree\d01\f01.txt'
 $cycle = @(
     "nav 0 $src", "nav 1 $dst", 'sleep 1000',
     'click 0 0', 'key CtrlA', 'copy', $wait,
@@ -645,7 +656,13 @@ $cycle = @(
     'click 1 0', 'toolbar 1 more', 'waitmenu 2000', 'toolmenu Select all', 'sleep 200', 'toolbar 1 more', 'waitmenu 2000', 'toolmenu Move to other pane', $wait,
     "nav 0 $src", 'sleep 500', 'toolbar 0 more', 'waitmenu 2000', 'toolmenu Size all folders', 'waitsize 10000',
     'toolbar 0 more', 'waitmenu 2000', 'toolmenu Show hidden files', 'sleep 300', 'toolbar 0 more', 'waitmenu 2000', 'toolmenu Show hidden files', 'sleep 300',
-    "nav 0 $m2", 'sleep 600', 'band 0 400 11 400 33', 'sleep 300'
+    "nav 0 $m2", 'sleep 600', 'band 0 400 11 400 33', 'sleep 300',
+    # P16-M1: the cue as a move and, with Ctrl, as a copy; a drop under "Always copy" (see the header).
+    "nav 1 $spring", 'sleep 500', "dragover row 1 0 500 $cueFile", 'sleep 200', "dragover row 1 0 500 keys ctrl $cueFile", 'sleep 200',
+    'settings open', 'settings set drag_default copy', 'settings ok', 'sleep 300', "dropfiles 1 0 auto $cueFile", $wait,
+    'settings open', 'settings set drag_default explorer', 'settings ok', 'sleep 300',
+    # ... and from inner the path bar's Up, held by a drag, takes the right pane back to spring.
+    "nav 1 $spring\inner", 'sleep 500', 'click 1 0', 'sdelete', $wait, "dragover nav 1 up 1300 $cueFile", 'sleep 500'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 # P14-M3: the hover across both lists (the pointer over the left list's rows, then the right's, then off
@@ -840,6 +857,17 @@ $classDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: 3
 $reStarts = @($log | Select-String -SimpleMatch '[search] pane=0' | Select-String -SimpleMatch 'content "re:^scratch file 3/[78]$" (regex) in ').Count
 $reDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: 2 found in ').Count
 $notPattern = @($log | Select-String -SimpleMatch 'not a pattern yet').Count
+# P16-M1: the cue's lines, the Ctrl hover over inner, the setting each way, the drop that copied.
+$cueMove = @($log | Select-String -SimpleMatch '[dnd] cue: Move here').Count
+$cueCopy = @($log | Select-String -SimpleMatch '[dnd] cue: Copy here').Count
+$cueAsk = @($log | Select-String -SimpleMatch '[dnd] cue: Choose on drop').Count
+$cueNone = @($log | Select-String -SimpleMatch '[dnd] cue: none').Count
+$navUp = @($log | Select-String -Pattern '^\[dnd\] spring-loaded: pane 1 goes up to ').Count
+$inner = Join-Path $spring 'inner'
+$cueCtrl = @($log | Select-String -SimpleMatch "[dnd] over pane 1 row 0 ($inner) keys=0x8 " | Select-String -SimpleMatch '-> effect copy').Count
+$dragCopyOn = @($log | Select-String -SimpleMatch '[settings] dialog: drag_default explorer -> copy').Count
+$dragCopyOff = @($log | Select-String -SimpleMatch '[settings] dialog: drag_default copy -> explorer').Count
+$dragCopied = @($log | Select-String -SimpleMatch "[dnd] Drop at pane 1 row 0 ($inner) keys=0x0 " | Select-String -SimpleMatch 'effect copy').Count
 $contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum).Sum
 # P14-M3: held track presses that repeated (more than one page).
 $trackHolds = @($log | Select-String -Pattern '^\[auto\] trackhold pane=0: content-y -?\d+ -> -?\d+ in (\d+) pages')
@@ -974,5 +1002,6 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "held track presses: $($trackHolds.Count), repeated past one page $trackRepeated (two each per cycle)"
 "content search: done $($contentDone.Count) (three per cycle), files read $contentRead (600 or more per cycle), found $contentFound (four per cycle)"
 "search patterns: name searches with a class started $classStarts, done with 30 or more found $classDone; content searches with an expression started $reStarts, done with 2 found $reDone (one each per cycle); not-a-pattern lines $notPattern (must be 0)"
+"drag cue: Move here $cueMove, Copy here $cueCopy, Choose on drop $cueAsk, none $cueNone lines; Ctrl hovers over inner read as a copy $cueCtrl; Always copy on $dragCopyOn, off $dragCopyOff; drops onto inner with no key that copied $dragCopied (the Ctrl hover, the setting each way and that drop: one each per cycle); the path bar's Up held by a drag went up $navUp (one per cycle)"
 "saved searches: saved $searchSaved, opened $searchOpened, run again and found $searchRerun, removed $searchRemoved (one each per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }
