@@ -2154,6 +2154,25 @@ List view's tick was checked by script after a pick of List in the menu and afte
 **Checks 2 to 10 passed.** Asked "Did #163's checks 2 to 10 pass, or did you stop at check 1?",
 Jeremy answered "They passed" (2026-11-19, `target-p16m5`, c21b00e). Only check 1's tick was open.
 
+### Gate ab94 and the tick's retest (2026-11-19, after the fix)
+
+ab94, 2026-11-19 16:16, the coordinating session's sitting: the defaults, console, `target-p16m3`
+(ab67334) and `target-p16m5` (f4083de) against `target-p15close`. Summary
+`C:\traces\gate-ab94-summary.txt`. All the script's checks ok.
+
+| Build | WPR main-thread busy, three runs | Median | Render p50, ms |
+|---|---|---|---|
+| `p15close` (reference) | 23.2, 22.9, 26.0 | 23.2 | 3.04, 2.75, 3.38 |
+| `p16m5` f4083de | 21.9, 20.3, 23.2 | 21.9 | 2.78, 2.08, 2.92 |
+
+The sitting was in the costlier state throughout but for `p16m5`'s second run (as ab93 was). The
+candidate's median is below the reference's: no gap by either rule. The gate holds with the fix.
+
+**The console retest** (`target-p16m5`, f4083de, unelevated, after the gate): the View menu opened
+straight after each switch by key, by the menu and through Settings; and with two panes on different
+views, the tick following the pane clicked. Jeremy: "gate done. checks completed successfully with no
+issues."
+
 ### Calls made in this milestone, for Jeremy to check
 
 - **The spike was read as a go by the coordinating session**, Jeremy not yet asked (above); its
