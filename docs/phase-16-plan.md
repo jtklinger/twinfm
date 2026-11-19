@@ -1391,3 +1391,278 @@ changed.
 - **No new soak cycle**: each cycle already runs three plain content searches, which now take the new
   path; the counts are the old ones.
 - **`first_match_regex` is now `first_match`** (one function is left; the old name's reason is gone).
+
+## P16-M6: a search tab picks up new matches
+
+Branch `feat/p16-m6-search-follows`, the search and files stream, cut from main at 3e4c201 (the kickoff;
+before P16-M2 and P16-M4 merged, so its content following reads files by the old lowercase path until
+main is taken in).
+
+### Settled first: what following a content search costs while many files are written
+
+`tools/time-p16m6.ps1`, 2026-11-15, 5413138's release build, the machine quiet (the coordinating session
+held the other stream): a search tab open on a tree of 200 text files while the script wrote under its
+root in four phases, the search run again (F5) before each. Both runs: 0 panicked lines, exit 0, and the
+tab still following after every phase.
+
+| Phase | Content search ("needle") | Name search (`*.txt`) |
+|---|---|---|
+| Sync: 2,000 text files of 4 KB written in 1.6 s | 4 windows, 6,000 records, 2,001 files read; follow thread 417 ms in all (longest window 178 ms); process CPU 453 ms over 9.7 s (5% of one core) | 4 windows, 2,000 rows added; thread 149 ms; CPU 344 ms (4%) |
+| Build: 20 s of 20 binary files of 100 KB and 5 text files of 20 KB a second | 13 windows, 1,395 records, 93 files read; thread 120 ms; CPU 125 ms over 28 s (under 1%) | 13 windows, 93 rows added; thread 73 ms; CPU 391 ms (1%) |
+| Log: a 12 MB text file appended to five times a second for 20 s | 12 windows, 98 records, 12 reads of the whole file; thread 1,449 ms (longest 123 ms); CPU 1,391 ms over 28 s (5%) | 12 windows, nothing to do; CPU 0 ms |
+| Idle, 20 s | CPU 31 ms over 28 s | CPU 16 ms |
+
+**Cheap enough: content searches follow.** The worst case the tree allows (a text file just under the 16
+MB cap rewritten all the time, read whole again in each window) costs a twentieth of one core, on a thread
+of its own; a binary file is closed after its first 8 KB as in the walk, which is why a build costs next
+to nothing. Three things bound it: the watch's own window (250 ms, backing off to 2 s while changes keep
+coming, so a file written a hundred times a second is read at most a few times a second), one batch at a
+time (the records of later windows wait and are netted together, a file modified ten times read once),
+and the caps (a window past 10,000 records, or 10,000 waiting, ends the following). With P16-M4's engine
+the reads cost about a tenth (983 ms against 104 ms for 100 MB).
+
+### What landed
+
+- **A finished search tab is watched** (5413138). Once its walk has run to the end, a search tab takes
+  a subtree watch on its root, as a sizes view does: in front always, in the background only after
+  every folder tab has its watch (the window's eight are shared). Never for a search rooted in a cloud
+  location or inside an archive; This PC is refused before a search starts. A search stopped with
+  Escape is not followed (it never saw the whole tree).
+- **New matches appear.** Each window's created and renamed-to paths are statted and tested the way the
+  walk tests them: the file's own name against the pattern, and no folder on the way that the tab's
+  hidden-file switches keep out, no link, and for a content search no sync root. A match goes into its
+  sorted place. A folder that arrives whole (moved in, or renamed) comes as one record, so it is walked
+  for what it holds; its rows under the old name go and come back under the new one.
+- **Removed and renamed-away files go at once**, with every row below a folder that went. The 5 s
+  re-stat of the rows on screen (P11-M2) stays: it is what updates a name search's row when the file's
+  size or date changes, which the watch does not say for a name search.
+- **A content search follows too.** A created or modified file is read again on the follow thread (the
+  same 16 MB cap, binary test and cloud rule as the walk): its row is added, takes its new matching
+  line, or goes when the text is no longer in it.
+- **Where it stops.** The status line says "Not following changes: F5 searches again" when a window's
+  records are not known (the watch's buffer overflowed, or more than 10,000 records in one window or
+  waiting), when the folder cannot be watched or its watch is lost, and when a followed tab loses its
+  watch (a ninth watched tab pushes a background search tab out; the second pane hidden). F5 runs the
+  search again and follows again. A search of a whole drive is watched like any other and will often
+  stop this way; that is the honest limit until there is an index.
+- Driver: no new step. Lines and the soak's counts in `CLAUDE.md` § Measuring.
+
+### Tests
+
+`cargo test --release`: **367 tests** (364 before), `test result: ok. 367 passed; 0 failed; 2 ignored`;
+four full runs (three while the code changed, one before the soak and the docs commit), no failure in any;
+`cargo build --release` finished. New, in `searchfollow::tests`:
+
+- `a_windows_records_are_netted` (pure): created, removed and renamed paths; a modified file ignored by
+  a name search and read once by a content search; made and removed within the window; saved by removing
+  and writing again; a file made in a folder that then went; a folder that went and came back; a folder
+  renamed; a file modified and then renamed to (its newest letter case kept); a folder only modified
+  because a file in it was made.
+- `rows_below_a_gone_path_go` (pure): a row's name against the paths that went, any letter case, a
+  longer name being another folder.
+- `looked_at_paths_match_as_the_walk_does` (a real tree in `%TEMP%\twinfm-p16m6-look-<pid>\`, a hidden
+  folder and a junction): a name search and a content search over the same looked-at paths: matches by
+  their own names, a folder that arrived walked, one only modified left alone, nothing behind the hidden
+  folder (found with Ctrl+H's switch on) or through the junction, a gone file reported, the matching
+  line set, six files read for the content search.
+- The watch-set order (background search tabs last) has no test of its own: the existing `watch_set`
+  test's candidates all carry `spare: false`.
+
+### Scripted checks
+
+`tools/check-p16m6.ps1`, 5413138's release build, one run in `%TEMP%\twinfm-p16m6-check\`, exit 0, no
+`panicked` line. From its output (`<tree>` the scratch tree):
+
+```
+[search] pane=0 gen=3 done: 6 found, 4 folders walked, 0 skipped, in 8 ms
+[search] pane=0 gen=3 watching <tree>
+[auto] touch <tree>\new.txt: Ok(())
+[search] pane=0 window: 2 records, 1 added, 0 removed, 0 changed, in 3.4 ms (applied in 0.1 ms)
+[auto] rows pane=0: a.txt [], also.txt  (sub) [], b.txt [], d.txt  (sub\deep) [], hold.txt [], new.txt [], s.txt  (sub) []
+[auto] touch <tree>\other.log: Ok(())
+[search] pane=0 window: 2 records, 0 added, 0 removed, 0 changed, in 3.6 ms (applied in 0.0 ms)
+(sub\deep\made.txt written by the script)
+[search] pane=0 window: 2 records, 1 added, 0 removed, 0 changed, in 4.5 ms (applied in 0.0 ms)
+(hid\made.txt written, in the hidden folder)
+[search] pane=0 window: 2 records, 0 added, 0 removed, 0 changed, in 0.2 ms (applied in 0.0 ms)
+[auto] mvfile <tree>\c.log -> <tree>\c.txt: Ok(())
+[search] pane=0 window: 2 records, 1 added, 0 removed, 0 changed, in 3.4 ms (applied in 0.0 ms)
+[auto] mvfile <tree>\new.txt -> <tree>\new.log: Ok(())
+[search] pane=0 window: 2 records, 0 added, 1 removed, 0 changed, in 3.7 ms (applied in 0.1 ms)
+(sub\deep\made.txt deleted)
+[search] pane=0 window: 1 records, 0 added, 1 removed, 0 changed, in 0.0 ms (applied in 0.3 ms)
+[auto] mvfile <tree>\sub -> <tree>\moved: Ok(())
+[search] pane=0 window: 2 records, 3 added, 3 removed, 0 changed, in 4.1 ms (applied in 0.1 ms)
+[auto] rows pane=0: a.txt [], also.txt  (moved) [], b.txt [], c.txt [], d.txt  (moved\deep) [], hold.txt [], s.txt  (moved) []
+(the tab in the background) [auto] touch <tree>\bg.txt: Ok(())
+[search] pane=0 window: 2 records, 1 added, 0 removed, 0 changed, in 3.2 ms (applied in 0.0 ms)
+[search] pane=0 gen=4 content "needle" (text) in <tree>
+[search] pane=0 gen=4 watching <tree>
+[auto] rows pane=0: also.txt  (moved)  another Needle here [], hold.txt  this file holds the needle []
+(moved\fresh.txt written with the word)
+[search] pane=0 window: 2 records, 1 added, 0 removed, 0 changed, 1 files read, in 3.7 ms (applied in 0.2 ms)
+(the word taken out of it)
+[search] pane=0 window: 2 records, 0 added, 1 removed, 0 changed, 1 files read, in 3.6 ms (applied in 0.1 ms)
+(the word written into a.txt)
+[search] pane=0 window: 2 records, 1 added, 0 removed, 0 changed, 1 files read, in 3.5 ms (applied in 0.0 ms)
+[auto] rows pane=0: a.txt  now with a NEEDLE [], also.txt  (moved)  another Needle here [], hold.txt  this file holds the needle []
+(hold.txt deleted)
+[auto] rows pane=0: a.txt  now with a NEEDLE [], also.txt  (moved)  another Needle here []
+(3,000 files written into burst\ in 4.0 s, the name search open)
+[search] pane=0 window: 524 records, 175 added, 0 removed, 0 changed, in 30.6 ms (applied in 0.5 ms)
+[search] pane=0 window: 1086 records, 362 added, 0 removed, 0 changed, in 65.6 ms (applied in 0.9 ms)
+[search] pane=0 window: 2377 records, 792 added, 0 removed, 0 changed, in 146.3 ms (applied in 1.8 ms)
+[search] pane=0 window: 4562 records, 1521 added, 0 removed, 0 changed, in 219.0 ms (applied in 1.7 ms)
+[search] pane=0 window: 451 records, 150 added, 0 removed, 0 changed, in 16.7 ms (applied in 0.8 ms)
+```
+
+Read with it:
+
+- **hold.txt's row went by the re-stat, not by its window**: the window that came after logged "0
+  removed" because the 5 s re-stat of the rows on screen had already taken the row off. Either takes it
+  off; the soak counts both.
+- **The first run of the check found a cost bug**, fixed before the commit: a folder whose own entry was
+  only modified (because a file in it was made) was walked again, so one new file in `moved` read every
+  file below it (that run's line: `3 records, 1 added, 0 removed, 2 changed, 5 files read`). Now only a
+  folder that arrived is walked (`1 files read` above), and the netting test pins it.
+- In that first run two `touch` steps named files below the root, which the driver refuses (`touch`
+  takes a plain name); the script now writes those files itself.
+- During the burst the watcher also logged `[watch] pane=0 tab=5 1001 records in the folder itself:
+  refresh` for the search tab: that line is the subtree watch's own, written for the listing's row edits
+  it could not keep; a search tab takes nothing from them and nothing is refreshed. The folder tab on
+  the same tree in the background went stale by its own overflow, as before.
+- Not checked by a script: the ninth watch (a background search tab pushed out says so), the second
+  pane hidden, a watch lost (the root deleted), an overflow. Their paths are the code's, read and not
+  run.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` (the branch's own script, with this milestone's steps) on the
+release build of 5413138's code, 2026-11-15, harness-launched, with the coordinating session's leave and
+the other stream holding: ran 10.3 min, window closed by the script, exit code 0, 0 panicked lines; 222
+jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0, menupicks refused 0, every "must
+be 0" count 0.
+
+```
+search tabs following: took a watch 24, windows 4; the made file's row added 2, taken off by its window 2 or by the re-stat 0 (one per cycle between the two); stopped following 0 (0 expected)
+content search: done 9 (three per cycle), files read 1812 (600 or more per cycle), found 12 (four per cycle)
+sizes view following: watching 4 (two per cycle), windows 8 (three or more per cycle), the last window against F5's walk: matches 2 (one per cycle), mismatches 0 (must be 0); re-walks 0, stopped 0 (0 expected)
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+working set: start 155.5 MB at 5 s, end 218 MB at 600 s; private: 165.3 -> 221.1 MB
+```
+
+Two cycles reached this milestone's step (the third was cut by the time before it). In each, the open
+`p16m6-*.txt` search took its watch (`[search] pane=0 gen=196 watching ...\twinfm-m5\src`), gained the row
+one window after `touch` (`window: 2 records, 1 added, 0 removed`) and lost it one window after `rmfile`
+(`window: 1 records, 0 added, 1 removed`). The 24 watches are every finished search tab of the run (the
+content, class, expression and saved searches follow too); none stopped following. The display scale
+was not read for this run.
+
+### Gate
+
+**ab93**, 2026-11-19 10:22, on the code head ab28bbe, the branch with main taken in (below): one
+interleaved sitting of four builds on the defaults (p15close the reference, p16m6 ab28bbe, p16m3
+935d867, p16m5 c21b00e; in that order each round), built and handed to Jeremy by the coordinating
+session. Console (frame interval p50 16.3 to 16.5 ms), all checks ok for these two builds, no panic.
+The whole sitting was in the costlier state (render p50 2.18 to 3.19 ms).
+
+| Build | Run 1 | Run 2 | Run 3 | Median |
+|---|---|---|---|---|
+| p15close (reference) | 23.9 | 23.1 | 22.1 | 23.1 |
+| p16m6 (ab28bbe) | 22.9 | 22.4 | 22.7 | 22.7 |
+
+No gap that counts: the candidate's median is under the reference's. "Every candidate run under 20%"
+is false for the reference too, so that is the session's state, not the code. Summary
+`C:\traces\gate-ab93-summary.txt`, script `C:\traces\gate-p16-rest.ps1`.
+
+### Main taken in (2026-11-19): P16-M1, M2 and M4 under this milestone
+
+Main at 5f5024b merged into the branch, commit ab28bbe. By hand: one line of
+`searchfollow::tests::looked_at_paths_match_as_the_walk_does`, its needle built by P16-M4's
+`content::plain` (`Needle` and `fold` are gone). The app's code needed no edit: the following reads a
+file through `Content::holds`, which is P16-M4's engine since the merge, so what "Settled first" timed
+on the old plain search is now read by the faster one (not timed again). `CLAUDE.md`, this record and
+the soak script keep every milestone's part.
+
+- **Tests**: `378 passed; 0 failed; 3 ignored` (main's 375 and this milestone's three), on the second
+  full run. The first failed `fileops::archive::tests::extracts_on_the_worker` at its last line, the
+  scratch folder's removal, the flake of the worker tests recorded under P16-M2; it passed alone and in
+  the rerun. `cargo build --release` finished with no warning.
+- **`tools\check-p16m6.ps1`**: exit 0, no panic. The name search's rows came and went as before; the
+  content search's row was added, removed and added again, one file read each time (about 9 ms a
+  window); the 3,000-file burst landed whole in three windows (429, 826 and 1,745 rows; the UI thread
+  0.5 to 2.0 ms a window).
+- **`tools\soak-p5m3.ps1 -Minutes 10`** (the merged script, every milestone's steps), harness-launched
+  with the coordinating session's leave: ran 10.2 min, window closed by the script, exit code 0, 0
+  panicked lines; 227 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0, every
+  "must be 0" count 0.
+
+```
+search tabs following: took a watch 24, windows 6; the made file's row added 3, taken off by its window 3 or by the re-stat 0 (one per cycle between the two); stopped following 0 (0 expected)
+content search: done 9 (three per cycle), files read 1812 (600 or more per cycle), found 12 (four per cycle)
+drag cue: Move here 25, Copy here 40, Choose on drop 6, none 71 lines; ... the path bar's Up held by a drag went up 2 (one per cycle)
+side buttons: Back over the list's scrollbar 2, Forward over a tab 2 (one each per cycle)
+sizes view following: watching 5 (two per cycle), windows 10 (three or more per cycle), the last window against F5's walk: matches 2 (one per cycle), mismatches 0 (must be 0); re-walks 0, stopped 0 (0 expected)
+working set: start 160.9 MB at 5 s, end 237.9 MB at 600 s; private: 169.8 -> 221.3 MB
+```
+
+  All three cycles reached this milestone's step this time: the open search gained and lost its row in
+  each.
+
+What the gate scenario meets of this milestone: no search tab, so nothing of the following runs.
+`watch_tabs` sorts its candidates by one more key (the same order for folder tabs), each tab's
+`follows()` makes one more test that fails at once for a folder tab (no search), and the re-stat's 5 s
+tick looks through the tabs for waiting records (two tabs, none waiting). Nothing per frame or per row.
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+1. **A PDF saved while the search is open.** In `Downloads`, type `*.pdf` in the search box (right end
+   of the path bar) and press Enter: a tab of results. Leave it open, save a PDF from the browser into
+   Downloads: within a second or two a row for it appears in its sorted place, with no F5.
+2. **Deleted and renamed.** In Explorer, delete one of the PDFs the tab lists: its row goes within a
+   second or two. Rename another to `.txt`: its row goes. Rename a `.txt` to `.pdf`: a row appears.
+3. **In a subfolder.** Copy a PDF into a folder below Downloads: its row appears with the folder beside
+   the name.
+4. **The tab in the background.** With the search tab open, switch to another tab of the pane, save
+   another PDF, switch back: the row is there.
+5. **A content search with Notepad.** In a folder of text files, click the page icon left of the search
+   button so it lights up, type a word, Enter. Open a file that is NOT listed in Notepad, type the word
+   in it, save: its row appears, showing the line. Take the word out and save: the row goes.
+6. **A whole folder moved in.** Drag a folder holding PDFs into Downloads: rows for the PDFs in it
+   appear.
+7. **Too much at once.** Search `C:\` for `*.log` and leave the tab open for a few minutes while
+   Windows works: sooner or later the status bar at the bottom of the pane reads "Not following changes:
+   F5 searches again" (a whole drive changes faster than can be followed). F5 searches again.
+
+### Console checks: Jeremy's results (2026-11-19, `target-p16m6`, ab28bbe)
+
+Jeremy ran all seven, relayed by the coordinating session: "The 162 checks all worked as expected". He
+raised no objection to the search tab stopping at its first overflow (check 7; the first of the calls
+below).
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The following ends at the first window whose records are not known**, where the kickoff said "the
+  second overflow in a minute": after an overflow some changes are unknown, a search cannot read again
+  only the part that changed (a sizes view walks again; a search run again unasked could take minutes),
+  and carrying on would show a list that silently misses files. Saying so at once is the honest answer.
+  Told to Jeremy by the coordinating session.
+- **Content searches follow**, by the measurement above.
+- **A background search tab comes after every folder tab** for the eight watches, and one that loses
+  its watch stops following and says so when shown (it cannot make up what it missed).
+- **A search stopped with Escape is not followed.**
+- **A folder that arrives is walked on the follow thread**, however large; the windows that come
+  meanwhile wait (up to 10,000 records, then the following ends).
+- **A row found again keeps its place only under the same name letter for letter**; a rename that
+  changes only the letter case takes the old row off and adds the new one.
+- **The line carries two times** (`in T ms (applied in U ms)`): the thread's and the UI thread's, so a
+  slow apply would show.
+- **A lost or refused watch never runs the search again** (a folder tab refreshes there; a search
+  refreshed is a search run again).
+
+### Follow-ups, not done here
+
+- The `[watch] ... records in the folder itself: refresh` line reads wrongly for a search tab (nothing
+  is refreshed); the watcher writes it and does not know the tab's kind.
+- After P16-M4 merges and main is taken in, the follow thread's content reads use the engine
+  (`content::plain`); the test's needle is then built by it.
