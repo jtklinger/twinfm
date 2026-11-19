@@ -262,7 +262,7 @@ mod tests {
         // A name search that matches folders finds the folder itself and what is below it.
         let folders = look(&root, &[("moved".to_string(), true)], &NameMatch::new("*m*"), None, Show::OFF, false);
         // A content search: the files that hold the text, read once each.
-        let content = Content { needle: crate::fs::content::Needle::Text(crate::fs::content::fold("needle")), cloud_roots: Vec::new() };
+        let content = Content { needle: crate::fs::content::plain("needle").ok(), cloud_roots: Vec::new() };
         let by_text = look(&root, &paths, &NameMatch::default(), Some(&content), Show::OFF, false);
         std::fs::remove_dir_all(&root).unwrap();
 

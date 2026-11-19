@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (367 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (378 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -149,6 +149,15 @@ put off, with where it came from.
   the refresh after it; key `Escape` in the list cancels the queued jobs that have not started.
   `[fileops]` lines on stderr (submit, note, done, one `item` line per item the progress sink
   reported, with its HRESULT and the real destination path, and `N operation(s) queued`; since
+  P16-M2's big move a job of more than 20 items is logged in a short form wherever a job is
+  printed, `Move { 40000 sources, first "C:\\a\\x.txt", dest_dir: "C:\\b" }` (`fileops::brief`; up
+  to 20 the `Debug` form as before), and of its `item` lines the first 20, then the first 20 failed
+  ones after those, then `[fileops]   N more item(s) not listed (K ok, F failed)`
+  (`fileops::item_lines`), because stderr is unbuffered and a path's `Debug` form is written a
+  character at a time: **never print a collection of paths with `{:?}`, and build a line that may
+  be long as one String first**; `[fileops] id=N: K item(s) handed to the shell in T ms` and
+  `[fileops] id=N: the shell's first item T ms after PerformOperations` per shell job (our item
+  building, then the shell's own preparation); since
   P5-M2 `progress id=N P%` at most four times a second while a job runs, from the sink's
   `UpdateProgress`, the same percentage the status bar shows after the running job's note, and
   `undelete <$R path> -> <original>: verb ok (T ms) | verb cancelled 0x... | verb failed 0x...:
@@ -158,7 +167,9 @@ put off, with where it came from.
   from `$Recycle.Bin` under the original name as the fallback, never after a cancel or when the
   original path is taken (item HRESULT 0x800700B7));
   `[undo]` lines (`recorded "<status>"`, the undo job, `done ... Undid: <status>`, `cannot be
-  undone`, `refused: <why>`, `nothing to undo`; since P5-M2 a delete to the Recycle Bin is
+  undone`, `refused: <why>` (since P16-M2's big move from the worker, which runs `undo::check` as
+  the undo or redo job's first step, `Worker::submit_checked`, `Done::refused`: the job is submitted
+  and its `[fileops] done ... Error` line follows), `nothing to undo`; since P5-M2 a delete to the Recycle Bin is
   undone by a `Restore` job (refused with `<name> is in the way` when the original path is
   taken again, `is no longer there` when the bin was emptied) and a move the shell renamed on
   collision by a `MoveAs` back under the old names; the redo stack: `redo recorded "<status>":
@@ -253,7 +264,8 @@ put off, with where it came from.
   loop runs no Win32 timer. A scripted drag can only be cancelled, never dropped (a scripted drop
   in an RDP session once landed on another program's window; see the M5 record). Since P2-M4 our
   own drag runs from a posted `WM_RUN_DRAG` (outside winit's handler, so the highlight paints),
-  and `dragrow` waits for it. `[dnd]` lines on stderr, P2-M4's among them: `drag image 96x96 px,
+  and `dragrow` waits for it. `[dnd]` lines on stderr, P2-M4's among them: `N items parsed in T ms,
+  their data object made in U ms` (since P16-M2's big move: on the UI thread at the press), `drag image 96x96 px,
   64 px icon, N item(s), icon from ...: InitializeFromBitmap = 0x...` (since P4-M3 with the icon
   size; `128x128 px, 96 px icon` out of the grid), `DoDragDrop starts (left|right button)`,
   `highlight painted inside our own drag loop`, `N frame(s) rendered inside the drag loop`,
@@ -388,7 +400,7 @@ put off, with where it came from.
   (`fs::enumerate::walk` with a `Content`) reads every plain file below the root (`src/fs/content.rs`):
   over 16 MB (`CONTENT_MAX_BYTES`, the listing's size) never opened; binary by its first 8 KB (a
   NUL, or over 10% invalid UTF-8 or control characters; a UTF-16 byte order mark is text); decoded
-  by the preview's rule; a case-insensitive substring (`content::fold`, a final sigma read as
+  by the preview's rule; a case-insensitive substring (until P16-M4 `content::fold`, since then the engine, below; a final sigma read as
   sigma); a result's row reads `file.txt  (sub\dir)  <the first matching line>` (`model::search_label`
   with `Entry::found`; control characters as spaces, trimmed, cut at 200 characters, a match deeper
   in a long line shown from 40 characters before it behind `…`). Never read: a cloud-only file (its
@@ -712,6 +724,7 @@ put off, with where it came from.
   true|false`; `[hidden] pane=N show_protected=true`), and a file with the system attribute alone is
   always shown (`model::Show`, `shows`). `backclick <pane> path|edit` posts the Back button over the
   path bar's middle or over row 0's name cell: ignored over the text entry and the rename editor.
+  (Since P16-M2 Back over the path's text entry closes it and goes back; the rename editor is as here.)
   `sidebar click <row>` is a left click (a negative row counts from the end): the sidebar takes the
   keys, `key F2` opens a bookmark row's title editor, `key Escape` (or Tab, or Shift+Tab) gives the
   keys back to the active pane's list; since 2026-10-26 the sidebar is no Tab stop (only a click gives
@@ -1043,7 +1056,14 @@ put off, with where it came from.
   search tab or the hidden right pane's), newest first, a folder already there moved to the top
   (`sidebar::note_recent`, `RECENT_MAX`); saved as `recent` (paths) in the settings; its header's
   right-click menu "Clear recent". `[sidebar] recent: <path> (K kept)`, `[sidebar] recent cleared (N
-  removed)`. **Bookmarks reordered by dragging**: a press on a bookmark dragged past 4 px carries it
+  removed)`. Since P16-M1's fourth console check **Recent holds no bookmarked folder** (`sidebar::note_recent`
+  takes the bookmarks and notes none of them; `sidebar::drop_bookmarked`, run by `rebuild_sidebar`, takes
+  out one bookmarked since, and at start one saved before the rule: `[sidebar] recent: N bookmarked
+  folder(s) taken out (K kept)`), and **the group keeps still while a drag is over the window**
+  (`dnd::drag_over_window`, from DragEnter to the DragLeave or Drop: what a pane showed meanwhile waits in
+  `RECENT_PENDING` and is noted in order when the drag ends, `recent_after_drag`: `[sidebar] recent after
+  the drag: S shown, N noted (K kept)`; a Recent row held under a drag had opened its folder, which
+  moved it to the top and put another row under the still pointer, a swap a second). **Bookmarks reordered by dragging**: a press on a bookmark dragged past 4 px carries it
   (Slint's pointer, not OLE), a 2 px line in the accent shows where it lands, the release moves it
   (`sidebar::drag_target`, `move_bookmark_to`). Driver `bookmark drag <from> <to>` (a press, 4 px
   moves and a release through Slint's pointer path, the sidebar scrolled to its end first);
@@ -1490,6 +1510,124 @@ put off, with where it came from.
   (run with the machine quiet). Since P15-M4 each soak cycle also runs a name search with a class and a
   content search with an expression in `src`, and the report counts them (one each per cycle) and the
   not-a-pattern lines (must be 0).
+  Since P16-M1, **a drag says what it will do**. While a drag is over a spot that takes it, the drop
+  target reckons a cue beside the effect (`dnd::cue`, pure; `DropTarget::cue_for`): **"Move here"**,
+  **"Copy here"** or **"Choose on drop"** (the drop will open the Move here / Copy here / Cancel menu: a
+  right-button drag, or the "ask" setting), a hint naming Ctrl, the one key advertised, where it gives
+  the other ("Ctrl copies", "Ctrl moves", "Let go of Ctrl to move", "Let go of Ctrl to copy"; none where
+  Ctrl would change nothing, none while Shift or Alt is held, none for a drop that asks), and the same in
+  words for the status line ("Drop moves 3 items to
+  Documents", `dnd::cue_status`). It is built again only when the spot, the effect or the deciding keys
+  held (Ctrl, Alt, Shift, the right button) change, never per DragOver, and handed with the spot to
+  `main.rs` `drop_highlight(at, cue)`, whose `drop_cue` sets, on change only (`CUE_SHOWN`): the window's
+  `cue-kind` (0 none, 1 move, 2 copy, 3 ask), which colours every drop highlight's border
+  (`Theme.cue-move` amber, `cue-copy` green, `cue-ask` violet; the panes' `drop-color`) and **the one
+  badge the window has** (app.slint, an element of the window laid over it, never in a row: `cue-shown`,
+  `cue-title`, `cue-hint`, and its place `cue-x`, `cue-y`, `cue-align` from `dnd::cue_anchor` over the
+  target's rectangle, `main.rs` `mark_rect`, `dnd::row_rect`: a details row's right end, a tile's lower
+  edge, the whole list's top middle, under a tab or a crumb, right of a sidebar row), and
+  `left-drop-cue` / `right-drop-cue`, the words the status line of the pane the drop is noted in shows
+  in place of its text while the drag hovers. No cue over the Bookmarks gap (its "Bookmark"), nor for a
+  refused drop. The Windows label by the pointer is unchanged. **The setting `drag_default`**
+  (`settings::DragDefault`; the dialog's "Dragging files": As Explorer, Always copy, Always move, Always
+  ask; applied on OK, `dnd::set_drag_default`, an atomic the drop target reads): what a drop onto TwinFM
+  does with no key held, from its own panes and from other programs (`dnd::decide_effect`'s `default`).
+  "explorer" is move on the same volume and copy across. **Ctrl alone gives the other effect of that,
+  whatever it is** (Jeremy's console check, 2026-11-16, over the kickoff's "Match Explorer", where Ctrl
+  is always a copy: on one drive Ctrl copies, across drives Ctrl moves, under Always copy Ctrl moves,
+  under Always move Ctrl copies); Shift alone still moves and Alt and Ctrl+Shift still copy, with the
+  title saying so and no hint naming them; the right button still asks. **"ask" opens the right button's
+  menu on every left-button drop of files, a key held or not** (`dnd::asks`; the same console check: a
+  held key decided without asking before), its bold item the effect the keys would give; items that are
+  only ever copied (virtual files, items out of an archive) are never asked about by the setting; into an
+  archive "move" does not reach (`dnd::default_into`) and Ctrl copies as it always did
+  (`decide_effect`'s `ctrl_copies`): a copy unless Shift, no hint. **The path bar's Back and Up
+  spring-load** (the same console check: a way out of a folder a drag sprang into by mistake): a drag
+  held `SPRING_MS` over one that has somewhere to go (`dnd::Spot::Nav`, `Mark::Nav`, the first and third
+  of the four buttons; `DropSpot::springs` as the button is enabled) goes back or up in that pane
+  (`main.rs` `spring_nav`; the pane does not become active), the button drawn lit meanwhile (the window's
+  `drop-nav-pane` / `drop-nav`, NavButton's `lit`); no drop lands there (`effect_at` gives none, which is
+  all Drop reads; no cue), and the spot's `dest` is the folder the button goes to, which the spring leaves
+  out of its target (`dnd::spring_key`), so **a button fires once per hover**: the pointer leaves it and
+  comes back to go again (the third console check; held on, Up had climbed a level a second). Since the second console check DragOver shows the
+  source an effect there (`bookmark_effect`: a link, or the copy TwinFM's own drag gets) with the
+  description "Up to <folder>" / "Back to <folder>" (`dnd::nav_description`), so the pointer is not the
+  refusal sign; a release there still copies and moves nothing. **A drop that will open the menu is
+  described "Choose on drop"** as the tag reads, with the effect's image (`dnd::description`'s `asks`;
+  the shell draws a description only with the effect's image, P12-M5), and the description's change
+  check reads its text too. **Inside TwinFM's own drag nothing asks Slint for a frame** but the drop
+  highlight (`dnd::repaint_during_own_drag`): the event loop's posted work runs there (a listing lands, a
+  watch's edits apply, measured with a real held drag) and stays unseen, so `drain`, `drain_icons`,
+  `land_edits` and the spring's three closures ask for one (`dnd::frame_during_own_drag`, a no-op
+  outside our own drag; the third console check: a bookmark opened in the other pane showed only when
+  the pointer moved back over a pane). A scripted `dragover` runs no OLE loop and cannot show this; a
+  real `dragrow` with a file made in the other pane's folder meanwhile does (`N frame(s) rendered inside
+  the drag loop`). Forward and Refresh are the pane, as before. **A sidebar row held under TwinFM's own drag
+  opens in the other pane** with two showing (`dnd::side_spring_pane`, the pane the drag left kept in
+  `dnd::DRAG_FROM` around `dnd::drag`; the second console check: P11-M3's active pane is the pane the
+  files are leaving, whose listing went away under the drag); with one pane, or another program's drag,
+  the active pane as before: `[dnd] spring-loaded: pane N opens <folder> after T ms (the pane the drag
+  did not leave)`; driver `dragfrom <pane|none>` makes the `dragover` and `dropfiles` steps after it
+  count as TwinFM's own drag out of that pane. **The settings dialog is 750 px tall** (710
+  until the Dragging files row: a popup takes no click outside its rectangle, so the row's 40 px had
+  pushed OK and Cancel out of the mouse's reach; a row added there needs its height added too). Driver: `dragover ... <ms> keys <none|ctrl|shift|alt|right>[,...] <paths>` holds those keys
+  while it hovers (several sets, comma-separated, share the time equally, in order: a key pressed or let
+  go mid-drag); `dropfiles`' mode `auto` takes the setting, and `dropfiles ... ask <copy|move|cancel>
+  <paths>` is a left-button drop under "ask" with the menu's item picked from the in-menu timer (under
+  "ask" every other mode picks Cancel, so no script waits for a person); `dropfiles`' mode `copy` holds
+  Alt since the console check (Ctrl would move where the default copies); `dragover nav <pane> <back|up>
+  <ms> <paths>` hovers that path bar button's centre; `settings set drag_default
+  explorer|copy|move|ask`. Lines: `[dnd] over pane N Back|Up button (to <folder>) ... -> effect none (the source is
+  shown copy|link: no refusal sign)`, `[dnd] spring armed: pane N Back|Up button (to <folder>)`, `[dnd]
+  spring-loaded: pane N goes back|up to <folder> after T ms`, `[dnd] drop description: Choose on drop |
+  Up to "<folder>" | Back to "<folder>"`; `[dnd] cue: Move here | Copy here | Choose on drop | none (pane N |
+  sidebar)` when the cue's words or place change (`cue: none` alone when the drag leaves or drops),
+  `[dnd] drop menu: asked by the setting`, `[settings] dialog: drag_default <old> -> <new>`; the `[dnd]
+  over ...` line is now also logged when a deciding key changes over the same spot with the same effect.
+  A hover of 1000 ms or more over a folder row, a tab, a crumb or a sidebar row spring-loads it, so a
+  script that reads the cue there hovers for less. `tools/check-p16m1.ps1` is the scripted check (it
+  takes the pictures too, and closes the dialog by `clickat` on its real Cancel and OK, which a `settings
+  ok` step would not have caught). Since P16-M1 each soak cycle also hovers `spring`'s row with the cue read as
+  a move and, with Ctrl, as a copy, drops under "Always copy" on the same drive and puts the setting
+  back, and from `inner` holds a drag over the path bar's Up, which takes the right pane back to
+  `spring`; the report counts them.
+  Since P16-M2, the small items. **The results of a job are sorted out in linear time**
+  (`fileops::own_results`: the shell reports a copied, moved or deleted folder's contents one by one,
+  and only the job's own items are kept): the items and their parents are looked up in sets built once
+  (`lower_key`, `same_dir`'s rule), and a path that misses is canonicalised once per folder
+  (`CanonDirs`) against sets canonicalised once; every result against every item before, which is what
+  kept the status line waiting after a move of thousands of files. No line of its own. **The mouse's
+  Back and Forward** now also work over a tab and its close button (`TabButton`), over the lists'
+  scrollbar and the preview column's (`VScrollBar`, `HScrollBar`: `back` / `forward` callbacks, two
+  tests in the bar's pointer handler; over the preview's the active pane moves, as over the toolbar
+  across the window), over the search box, and over the path's text entry, which closes first
+  (`Field`'s `back` / `forward`: Slint's `TextInput` ignores the two buttons, so they reach the area
+  behind it, which takes no click from it). Still ignored over the rename and new-name editor (P6-M3:
+  a move would throw the name away), and not wired on the sidebar's and the crumb dropdown's
+  scrollbars or in the dialogs' fields. Driver: `backclick <pane> tab|scroll|search|preview` and
+  `forwardclick` the same (the pane's first tab; the list's scrollbar 10 px in from the pane's edge,
+  which is the bar only while the list overflows; 30 px into the search box; the preview column's
+  right edge half way down, the column shown and overflowing), and `backclick <pane> path` with the
+  entry open now goes back. Lines: `[nav] pane=N Back|Forward button (active pane was A, now B)` as
+  before. `tools/check-p16m2.ps1` is the scripted check. Since P16-M2 each soak cycle also presses
+  Back over the left list's scrollbar in the first scroll folder and Forward over the left pane's
+  first tab, and the report counts them (one each per cycle).
+  Since P16-M4, **plain content search runs on the engine `re:` uses**: the box's plain text is
+  compiled as an escaped, case-insensitive expression (`fs::content::plain`: `regex::escape`, then
+  `model::compile`), so no file's text is copied to be searched (`content::fold`, the old
+  `first_match` and `Needle` are gone; `first_match` is now P15-M4's `first_match_regex`, and
+  `enumerate::Content`'s `needle` an `Option<regex::Regex>`). Every typed character is itself (no
+  operator). Letter case is the engine's (Unicode simple case folding): `σ`, `ς` and `Σ` are one
+  letter as before; other shapes of one letter now find each other (`s` and the long `ſ`, `μ` and
+  the micro sign `µ`, the Greek symbol forms, old Cyrillic shapes); the dotted capital `İ` is found
+  only by `İ` (a plain `i` found it before); and letters whose case pairs are newer than the regex
+  crate's Unicode tables are found only in the case typed. The ignored test
+  `fs::content::tests::probe_plain_against_the_engine` (`cargo test --release -- --ignored
+  probe_plain_against_the_engine --nocapture`, about two seconds) lists every such pair again: run
+  it after a bump of the `regex` crate or of Rust. The live filter and the name search are
+  untouched. The `[search]` start line's kind stays `(text)` for a plain content search. No new
+  driver step or line. `tools/time-p15m4.ps1` times plain text against `re:` as before; the two
+  now take the same path.
   Since P16-M6, **a finished search tab follows changes** (`src/searchfollow.rs` the pure part and
   the look; `main.rs` `search_window`, `follow_search`, `land_follow`, `stop_following`). Once its
   walk has run to the end (not stopped by Escape), a search tab takes a **subtree watch on its root**
@@ -1579,7 +1717,8 @@ put off, with where it came from.
   text colour in dark mode; a switch back to system at runtime sets Windows' mode of that moment until
   the next start); since P9-M1 `col_type_left`, `col_size_left`, `col_modified_left` and
   the `_right` three (each pane's column widths, logical px, defaults 120, 90, 140, 40 to 2,000;
-  the header grips set them), since P15-M2 `col_ondisk_left` and `col_ondisk_right` (each pane's Size on
+  the header grips set them), since P16-M1 `drag_default` (`"explorer"`, the
+  default, `"copy"`, `"move"` or `"ask"`, in the dialog's "Dragging files" row), since P15-M2 `col_ondisk_left` and `col_ondisk_right` (each pane's Size on
   disk column width, default 100) and `sort = "ondisk"` in a saved tab. `SLINT_ACCESSKIT_STATS=1` prints accessibility
   tree-update counters once a second; `SLINT_ACCESSKIT_UPDATE_DELAY_MS` overrides the 50 ms
   coalescing (0 = pre-patch behaviour).
@@ -1793,10 +1932,19 @@ put off, with where it came from.
   (the 7z and the tar.gz through the shell's copy engine; no Recycle Bin: the undo jobs are checked, not
   run), and `zip_jobs_on_the_worker` also extracts its password zip with the script's password. The
   ignored `probe_extract_engines` (never part of the gates) unpacks `C:\traces\bigdir.zip` by both
-  engines into `%TEMP%\twinfm-p15m1-probe-<pid>\` and leaves it there. Since P16-M6
+  engines into `%TEMP%\twinfm-p15m1-probe-<pid>\` and leaves it there. Since P16-M2
+  `fileops::tests::own_results_keeps_what_the_pairwise_loop_kept` makes a folder with a few files in
+  `%TEMP%\twinfm-p16m2-own-<pid>\` and only reads their paths (through the folder's 8.3 name where the
+  volume has one). Since P16-M2's big move
+  `fileops::tests::the_worker_checks_an_undo_before_it_runs` moves one file in
+  `%TEMP%\twinfm-p16m2-check-<pid>\` through the real worker. Since P16-M6
   `searchfollow::tests::looked_at_paths_match_as_the_walk_does` makes a small tree with a hidden folder
   (`attrib +h`) and a junction (`cmd /c mklink /J`) in `%TEMP%\twinfm-p16m6-look-<pid>\`. All remove
   their folders.
+  `tools/time-p16m2-bigmove.ps1 [-Exe <exe>] [-Tag <name>]` times a 40,000-file move and its undo
+  (a copy of `C:\traces\bigdir` in `%TEMP%\twinfm-p16m2-big`, made on the first run and kept; real
+  moves, no `TWINFM_SOAK`): when each marker line shows, the `[perf]` periods over 500 ms of UI
+  CPU, the worker's and the drag's timing lines; about eight minutes, the machine quiet.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols

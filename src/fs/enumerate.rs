@@ -354,13 +354,13 @@ impl WalkStats {
     }
 }
 
-/// What a content search looks for (P11-M1): the text, `content::fold`ed, or since P15-M4 a typed
-/// expression (`content::Needle`), and the sync roots
+/// What a content search looks for (P11-M1): the expression, a typed one (P15-M4) or the plain
+/// text's (`content::plain`, P16-M4; none finds nothing), and the sync roots
 /// (`cloud::normalise`d) whose folders the walk never enters, since reading a file there could
 /// download it.
 #[derive(Clone, Debug, Default)]
 pub struct Content {
-    pub needle: crate::fs::content::Needle,
+    pub needle: Option<regex::Regex>,
     pub cloud_roots: Vec<String>,
 }
 
@@ -384,7 +384,8 @@ impl Content {
         if e.kind != Kind::File {
             return false;
         }
-        match search_file(path, e.size, &self.needle) {
+        let Some(needle) = &self.needle else { return false };
+        match search_file(path, e.size, needle) {
             Outcome::Found(line) => {
                 stats.read += 1;
                 e.found = line.into();
@@ -1255,7 +1256,7 @@ mod tests {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        let content = Content { needle: crate::fs::content::Needle::Text(crate::fs::content::fold("Needle")), cloud_roots: vec![crate::cloud::normalise(&dir.join("cloudy").to_string_lossy())] };
+        let content = Content { needle: crate::fs::content::plain("Needle").ok(), cloud_roots: vec![crate::cloud::normalise(&dir.join("cloudy").to_string_lossy())] };
         let mut found: Vec<Entry> = Vec::new();
         let stats = walk(&dir, &NameMatch::default(), crate::model::Show::OFF, false, Some(&content), &AtomicU8::new(SEARCH_RUNNING), |b| {
             found.extend(b);
@@ -1268,7 +1269,7 @@ mod tests {
             true
         });
         // P15-M4: a typed expression, `^` at a line's start and no letter case.
-        let re = Content { needle: crate::fs::content::Needle::Regex(crate::model::compile("^needle|wide N").unwrap()), cloud_roots: content.cloud_roots.clone() };
+        let re = Content { needle: crate::model::compile("^needle|wide N").ok(), cloud_roots: content.cloud_roots.clone() };
         let mut by_re: Vec<Entry> = Vec::new();
         let re_stats = walk(&dir, &NameMatch::default(), crate::model::Show::OFF, false, Some(&re), &AtomicU8::new(SEARCH_RUNNING), |b| {
             by_re.extend(b);

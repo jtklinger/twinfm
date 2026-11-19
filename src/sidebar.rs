@@ -208,15 +208,24 @@ fn same_folder(a: &str, b: &str) -> bool {
 
 /// A pane showed `folder` (P12-M5): it goes to the top of the Recent list (moved there when the list
 /// holds it already, by the folder test bookmarks use), which keeps `RECENT_MAX`. False when it was
-/// at the top already: nothing changed.
-pub fn note_recent(list: &mut Vec<String>, folder: &str) -> bool {
-    if folder.trim().is_empty() || list.first().is_some_and(|f| same_folder(f, folder)) {
+/// at the top already: nothing changed. A bookmarked folder is never noted (P16-M1's fourth console
+/// check, Jeremy: "if the link is already bookmarked then it doesn't need to be in the recent list").
+pub fn note_recent(list: &mut Vec<String>, bookmarks: &[Bookmark], folder: &str) -> bool {
+    if folder.trim().is_empty() || list.first().is_some_and(|f| same_folder(f, folder)) || bookmarks.iter().any(|b| same_folder(&b.path, folder)) {
         return false;
     }
     list.retain(|f| !same_folder(f, folder));
     list.insert(0, folder.to_string());
     list.truncate(RECENT_MAX);
     true
+}
+
+/// Recent keeps no bookmarked folder: one bookmarked since it was noted, or saved by a build before
+/// the rule, goes. How many went.
+pub fn drop_bookmarked(recent: &mut Vec<String>, bookmarks: &[Bookmark]) -> usize {
+    let n = recent.len();
+    recent.retain(|f| !bookmarks.iter().any(|b| same_folder(&b.path, f)));
+    n - recent.len()
 }
 
 /// Add `folder` at the end unless it is there already (Ctrl+D). Returns whether it was added.
@@ -350,6 +359,8 @@ mod tests {
     #[test]
     fn recent_keeps_the_last_eight_newest_first() {
         let mut r: Vec<String> = Vec::new();
+        let none: [Bookmark; 0] = [];
+        let note_recent = |r: &mut Vec<String>, f: &str| note_recent(r, &none, f);
         assert!(note_recent(&mut r, r"C:\a"));
         assert!(note_recent(&mut r, r"C:\b"));
         assert_eq!(r, [r"C:\b", r"C:\a"], "newest first");
@@ -362,6 +373,18 @@ mod tests {
         }
         assert_eq!(r.len(), RECENT_MAX);
         assert_eq!((r[0].as_str(), r[7].as_str()), (r"C:\f9", r"C:\f2"), "the oldest dropped");
+        // A bookmarked folder is never noted (the bookmarks' own folder test), and bookmarking one
+        // takes it out; the rest keep their order.
+        let marks = [Bookmark::new(r"C:\Marked"), Bookmark::new(r"D:\")];
+        let mut r = vec![r"C:\a".to_string()];
+        assert!(!super::note_recent(&mut r, &marks, r"c:\marked\"));
+        assert!(!super::note_recent(&mut r, &marks, r"D:\"));
+        assert!(super::note_recent(&mut r, &marks, r"C:\Marked\sub"), "a folder below a bookmark is its own folder");
+        assert_eq!(r, [r"C:\Marked\sub", r"C:\a"]);
+        let mut r: Vec<String> = [r"C:\x", r"c:\MARKED", r"C:\y", r"d:\"].map(String::from).to_vec();
+        assert_eq!(drop_bookmarked(&mut r, &marks), 2);
+        assert_eq!(r, [r"C:\x", r"C:\y"]);
+        assert_eq!(drop_bookmarked(&mut r, &marks), 0);
     }
 
     #[test]

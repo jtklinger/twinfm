@@ -913,6 +913,16 @@ impl PaneModel {
         let mut shown = self.shown.borrow_mut();
         let mut sel = self.sel.borrow_mut();
         let sel_before = (sel.set.clone(), sel.anchor);
+        // The selection as one flag per shown row while the rows move, and a set again at the
+        // end: shifting the set for every row removed or inserted was 40,000 set operations a row
+        // with everything selected (P16-M2, the big move: 2.8 ms a row). None with nothing
+        // selected: no step selects a row that was not.
+        let mut marks: Option<Vec<bool>> = (!sel.set.is_empty()).then(|| {
+            let mut v = vec![false; shown.len()];
+            sel.set.iter().filter(|&&i| i < shown.len()).for_each(|&i| v[i] = true);
+            v
+        });
+        let mut anchor = sel.anchor;
         let mut cur = usize::try_from(cursor).ok().filter(|&c| c < shown.len());
         let (mut hidden, mut filtered) = (self.hidden.get(), self.filtered.get());
         let mut notes: Vec<Note> = Vec::new();
@@ -938,7 +948,7 @@ impl PaneModel {
                     all.push(e.clone());
                     if visible(&e, show_hidden, &filter) {
                         let q = insert_at(&shown, &e);
-                        row_insert(&mut shown, &mut sel, &mut cur, &mut notes, q, e);
+                        row_insert(&mut shown, &mut marks, &mut anchor, &mut cur, &mut notes, q, e);
                     } else {
                         count_out(&e, true);
                     }
@@ -954,7 +964,7 @@ impl PaneModel {
                     let pos = if visible(&old, show_hidden, &filter) { pos_of(&shown, &old) } else { None };
                     match pos {
                         Some(p) => {
-                            row_remove(&mut shown, &mut sel, &mut cur, &mut notes, p);
+                            row_remove(&mut shown, &mut marks, &mut anchor, &mut cur, &mut notes, p);
                         }
                         None => count_out(&old, false),
                     }
@@ -990,24 +1000,24 @@ impl PaneModel {
                             entry.selected = shown[p].selected;
                             entry.cut = if rename { cut_names.contains(&entry.name) } else { shown[p].cut };
                             if !vis {
-                                row_remove(&mut shown, &mut sel, &mut cur, &mut notes, p);
+                                row_remove(&mut shown, &mut marks, &mut anchor, &mut cur, &mut notes, p);
                                 count_out(&entry, true);
                             } else if fits(&shown, p, &entry, col, asc) {
                                 shown[p] = entry;
                                 notes.push(Note::Changed(p));
                             } else {
-                                let (was_sel, was_cur, was_anchor) = (sel.set.contains(&p), cur == Some(p), sel.anchor == Some(p));
-                                row_remove(&mut shown, &mut sel, &mut cur, &mut notes, p);
+                                let (was_sel, was_cur, was_anchor) = (marks.as_ref().is_some_and(|m| m[p]), cur == Some(p), anchor == Some(p));
+                                row_remove(&mut shown, &mut marks, &mut anchor, &mut cur, &mut notes, p);
                                 let q = insert_at(&shown, &entry);
-                                row_insert(&mut shown, &mut sel, &mut cur, &mut notes, q, entry);
-                                if was_sel {
-                                    sel.set.insert(q);
+                                row_insert(&mut shown, &mut marks, &mut anchor, &mut cur, &mut notes, q, entry);
+                                if let Some(m) = marks.as_mut().filter(|_| was_sel) {
+                                    m[q] = true;
                                 }
                                 if was_cur {
                                     cur = Some(q);
                                 }
                                 if was_anchor {
-                                    sel.anchor = Some(q);
+                                    anchor = Some(q);
                                 }
                             }
                         }
@@ -1016,7 +1026,7 @@ impl PaneModel {
                             if vis {
                                 entry.cut = !rename && cut_names.contains(&prev.name);
                                 let q = insert_at(&shown, &entry);
-                                row_insert(&mut shown, &mut sel, &mut cur, &mut notes, q, entry);
+                                row_insert(&mut shown, &mut marks, &mut anchor, &mut cur, &mut notes, q, entry);
                             } else {
                                 count_out(&entry, true);
                             }
@@ -1032,6 +1042,10 @@ impl PaneModel {
             // Names that left (removed, renamed away) leave the cut.
             self.cut.borrow_mut().retain(|n| !gone_names.contains(n));
         }
+        if let Some(m) = marks {
+            sel.set = m.iter().enumerate().filter(|&(_, &on)| on).map(|(i, _)| i).collect();
+        }
+        sel.anchor = anchor;
         let sel_changed = (&sel.set, sel.anchor) != (&sel_before.0, sel_before.1);
         if let Some(c) = cur {
             if c >= shown.len() {
@@ -1142,15 +1156,15 @@ fn fits(shown: &[Entry], p: usize, e: &Entry, col: SortCol, asc: bool) -> bool {
     (p == 0 || cmp_entries(&shown[p - 1], e, col, asc) != Greater) && shown.get(p + 1).is_none_or(|n| cmp_entries(e, n, col, asc) != Greater)
 }
 
-/// Insert a row at `q`, shifting the selection, anchor and cursor at or after it.
-fn row_insert(shown: &mut Vec<Entry>, sel: &mut Selection, cur: &mut Option<usize>, notes: &mut Vec<Note>, q: usize, e: Entry) {
+/// Insert a row at `q`, not selected, shifting the selection's flags (`marks`, one per shown row),
+/// the anchor and the cursor at or after it.
+fn row_insert(shown: &mut Vec<Entry>, marks: &mut Option<Vec<bool>>, anchor: &mut Option<usize>, cur: &mut Option<usize>, notes: &mut Vec<Note>, q: usize, e: Entry) {
     shown.insert(q, e);
-    if sel.set.range(q..).next().is_some() {
-        let hi = sel.set.split_off(&q);
-        sel.set.extend(hi.into_iter().map(|j| j + 1));
+    if let Some(m) = marks {
+        m.insert(q, false);
     }
-    if let Some(a) = sel.anchor.filter(|&a| a >= q) {
-        sel.anchor = Some(a + 1);
+    if let Some(a) = anchor.filter(|&a| a >= q) {
+        *anchor = Some(a + 1);
     }
     if let Some(c) = cur.filter(|&c| c >= q) {
         *cur = Some(c + 1);
@@ -1160,14 +1174,12 @@ fn row_insert(shown: &mut Vec<Entry>, sel: &mut Selection, cur: &mut Option<usiz
 
 /// Remove row `p`: it leaves the selection, later indices shift down, the anchor on it is
 /// dropped, and a cursor on it falls to the row that followed it (the same index).
-fn row_remove(shown: &mut Vec<Entry>, sel: &mut Selection, cur: &mut Option<usize>, notes: &mut Vec<Note>, p: usize) {
+fn row_remove(shown: &mut Vec<Entry>, marks: &mut Option<Vec<bool>>, anchor: &mut Option<usize>, cur: &mut Option<usize>, notes: &mut Vec<Note>, p: usize) {
     shown.remove(p);
-    if sel.set.range(p..).next().is_some() {
-        let mut hi = sel.set.split_off(&p);
-        hi.remove(&p);
-        sel.set.extend(hi.into_iter().map(|j| j - 1));
+    if let Some(m) = marks {
+        m.remove(p);
     }
-    sel.anchor = match sel.anchor {
+    *anchor = match *anchor {
         Some(a) if a == p => None,
         Some(a) if a > p => Some(a - 1),
         a => a,
@@ -2661,6 +2673,39 @@ mod tests {
         assert_eq!(m.row_data(2).unwrap().size, "95 B");
         assert_eq!(m.snapshot_all().iter().find(|x| x.name == "a3").unwrap().size, 95);
         assert_eq!((m.total(), m.len()), (10, 10));
+    }
+
+    /// P16-M2 (the big move): 40,000 rows, all selected, and a watch window that removes 400 of
+    /// them and adds one. The selection used to be rebuilt above the row for every row removed
+    /// (2.8 ms a row in Jeremy's log, 529 ms for this window here); the bound is one that
+    /// rebuilding does not meet.
+    #[test]
+    fn apply_edits_with_everything_selected_is_not_per_row() {
+        const N: usize = 40_000;
+        let m = PaneModel::default();
+        m.append((0..N).map(|i| e(&format!("f{i:05}"), i as u64, false)).collect());
+        m.pass.set(1);
+        m.replace(filter_sort(m.snapshot_all(), Show::OFF, &NameMatch::default(), SortCol::Name, true, &Restore::default()));
+        m.set_landed_pass(1);
+        m.select(SelOp::All, 0);
+        assert_eq!(m.selected_set().len(), N);
+        // Every hundredth row goes, from the top down; one new row arrives near the top.
+        let mut edits: Vec<Edit> = (0..N).step_by(100).map(|i| Edit::Remove(format!("f{i:05}").into())).collect();
+        edits.push(Edit::Upsert(e("f00001x", 1, false)));
+        let t0 = std::time::Instant::now();
+        let a = m.apply_edits(edits, 250).unwrap();
+        let took = t0.elapsed();
+        eprintln!("[test] apply_edits: 400 of {N} selected rows removed in {} ms", took.as_millis());
+        assert_eq!((a.added, a.removed), (1, 400));
+        // f00250's row: three rows above it went (f00000, f00100, f00200) and one arrived.
+        assert_eq!((a.cursor, m.row_data(248).unwrap().name.as_str()), (248, "f00250"));
+        let sel = m.selected_set();
+        assert_eq!(sel.len(), N - 400, "the removed rows left the selection; the new row is not selected");
+        // The new row sits at index 1 (f00000 gone: f00001, f00001x): everything but it is selected.
+        assert_eq!(m.row_data(1).unwrap().name.as_str(), "f00001x");
+        assert!(!sel.contains(&1) && sel.contains(&0) && sel.contains(&2) && sel.contains(&(N - 400)));
+        assert_eq!(sel.iter().next_back(), Some(&(N - 400)));
+        assert!(took < std::time::Duration::from_millis(150), "took {} ms", took.as_millis());
     }
 
     #[test]
