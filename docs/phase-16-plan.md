@@ -2014,7 +2014,9 @@ spots are above the lists and needed nothing. Seen in a scripted run's picture: 
 entry, its cell bordered, the tag beside it, the status line "Drop moves 1 item to Beta".
 
 Tests: 379 passed, 0 failed, 3 ignored (P16-M3's 378 and this milestone's one). `tools/check-p16m5.ps1`:
-exit 0, its lines as before.
+exit 0, its lines as before. A ten-minute soak of c21b00e (run because the merge changed code by hand): exit
+0, no panic, 235 jobs done, none failed, no scripted drag dropped, every must-be-0 count at 0; working
+set 163 to 246 MB, private bytes 170 to 226 MB.
 
 What the merge changed of what ab88 measured: nothing per frame or per row. The list's columns, slots
 and cells are as gated; `row_rect` runs when a drag's target changes.
