@@ -1431,7 +1431,10 @@ large tile, which keeps the tile's rule). Seen in a scripted run's pictures of b
 
 Tests: 378 passed, 0 failed, 3 ignored (main's 375 and this milestone's three). `tools/check-p16m1.ps1`
 and `tools/check-p16m3.ps1`: exit 0, their lines as before. The soak's script carries both milestones'
-cycles; its `dropfiles ... copy` steps in the new views hold Alt since P16-M1 (a copy as before).
+cycles; its `dropfiles ... copy` steps in the new views hold Alt since P16-M1 (a copy as before). A ten-minute
+soak of 935d867: exit 0, no panic, 232 jobs done, none failed, no scripted drag dropped, every
+must-be-0 count at 0, the three view switches and both milestones' counts one each per cycle; working
+set 171 to 241 MB, private bytes 195 to 245 MB.
 
 What the merge changed of what ab88 measured: nothing per frame or per row. P16-M1's, P16-M2's and
 P16-M4's code is main's, gated there (ab90 and ab91, and the search stream's own); this milestone's
