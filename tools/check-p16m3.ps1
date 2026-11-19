@@ -8,10 +8,12 @@
 # new views a click on a tile, PageDown and PageUp, a band from the gap after the last tile, a drop
 # onto a folder tile (a copy), a cancelled drag out of a tile, F2 (the rename editor) and Escape, and a
 # new folder named from the toolbar; then thumbnails on (the settings dialog) and extra large again
-# (the pictures as thumbnails), small again, and back to details. Last, the thumbnail memory budget:
+# (the pictures as thumbnails), small again, and back to details. Then the thumbnail memory budget:
 # the run has TWINFM_THUMB_MB=1 (a budget of four 256 px thumbnails; the 64 drawn most recently
 # always stay), and the left pane pages through pics (150 small JPEGs made here) in extra large icons
 # to its end, Home, and End again: thumbnails give their pixels back and return at their own index.
+# Last, the View menu's tick (2026-11-19): opened after a switch by the menu, by a key and by the
+# dialog, it ticks the view the pane is on (it kept the view before until the status line changed).
 # Prints the [view], [grid], [band] done, [dnd] drag image and Drop lines, the [fileops] done lines and
 # the [icons] list geometry lines, the thumbnail memory line and the last [icons] line's table.
 param(
@@ -84,6 +86,12 @@ $steps += @(
     'sleep 1500', 'key Home', 'sleep 2000', 'key End', 'sleep 2000', 'scrollpos 0', 'view details', 'sleep 400', "nav 0 $work", 'sleep 600',
     'settings open', 'sleep 300', 'settings set view_left xlarge', 'settings ok', 'sleep 600',
     'settings open', 'sleep 300', 'settings set view_left details', 'settings set thumbnails false', 'settings ok', 'sleep 600',
+    # The View menu's tick follows the view at once, however it was set: the menu, a key, the dialog.
+    'toolbar 0 view', 'sleep 200', 'toolmenu Small icons', 'sleep 300',
+    'toolbar 0 view', 'sleep 200', 'menuclose', 'view details', 'sleep 300',
+    'toolbar 0 view', 'sleep 200', 'menuclose',
+    'settings open', 'sleep 300', 'settings set view_left medium', 'settings ok', 'sleep 600',
+    'toolbar 0 view', 'sleep 200', 'toolmenu Details', 'sleep 300',
     'quit'
 )
 $script = Join-Path $root 'script.txt'
@@ -136,4 +144,6 @@ $proc.WaitForExit()
 Get-Content $err | Where-Object { $_ -match '^\[view\]|^\[grid\]|^\[band\] pane=\d+ done|^\[dnd\] (drag image|Drop at)|^\[fileops\] done|^\[icons\] (list geometry|thumbnail memory)|^\[settings\] dialog: (view|thumb)|^\[auto\] .*(no such|refused|disabled)|panicked' } | ForEach-Object { $_ -replace [regex]::Escape($root), '...' }
 (Get-Content $err | Where-Object { $_ -match '^\[icons\] \+' } | Select-Object -Last 1) -replace ', worker.*', ''
 Get-Content $err | Where-Object { $_ -match 'scrollpos pane' }
+$ticks = @(Get-Content $err | Where-Object { $_ -match '^\[toolbar\] menu view: ' } | ForEach-Object { if ($_ -match '([^|:]+) \(on\)') { $Matches[1].Trim() } else { 'none' } })
+"View menu ticks: $($ticks -join ', ') (want Details, Small icons, Details, Medium icons)"
 "exit $($proc.ExitCode)"

@@ -2995,6 +2995,8 @@ fn set_view(pane: usize, view: settings::View) {
             model.grid_len()
         );
         resolve_view(st, &app, pane);
+        // The View menu's tick is one of the toolbar's facts: set now, not at the next status update.
+        update_tools(st, &app, pane);
         schedule_save(st);
     });
 }
@@ -3022,6 +3024,7 @@ fn sync_grid(st: &mut State, app: &App, pane: usize) {
         t.model.forget_icons();
     }
     eprintln!("[view] pane={pane} shows {}", if want { view.label() } else { "a list (the sizes view)" });
+    update_tools(st, app, pane);
 }
 
 /// Take every icon reply the worker has sent, intern the images, then re-resolve both panes'

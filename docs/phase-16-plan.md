@@ -1504,6 +1504,35 @@ Without it `p16m3` reads 23.9 and 21.8 against the reference's three: still no g
     and not keep climbing; pictures scrolled back to reappear after a moment.
 11. **Restart.** Close TwinFM in small icons and start it again: the pane comes back in small icons.
 
+### Console checks: Jeremy's answer (2026-11-19, `target-p16m5`, c21b00e, which holds this milestone's code)
+
+"161 checks were all good."
+
+### The View menu's tick (2026-11-19, found in P16-M5's console check 1)
+
+Jeremy, on #163's first check: "Sometimes the list view shows the wrong selected file size. for
+example if I chose details, it will show a checkmark next to small icons on the view list."
+
+**The cause is main's, since P13-M2, not this milestone's or P16-M5's.** The View menu's tick is one
+of the toolbar's facts (`toolbar::Facts::view`, kept in the window's `left-tools` / `right-tools`),
+and those are set in `update_status`'s rhythm: when the selection, the listing or a job changes. A
+switch of the view changed none of them, so the menu went on ticking the view before until something
+else did (a click on a row was enough, which is the "sometimes"). With three views it was as wrong;
+six views and Explorer's keys made it seen. Reproduced by script on c21b00e: after `view small`, the
+menu's Details, the menu's List and the dialog's Medium icons, `toolbar 0 view` read `Details (on)`
+every time; the right pane's menu after its own pick of Extra large icons read `Details (on)` too.
+More's overflowed View items read the same fact and were as stale; the settings dialog's View row
+reads the settings themselves when it opens (`View::from_name(&d.view_left)`) and was right.
+
+**The fix**, two lines in `main.rs`: `set_view` and `sync_grid` (a sizes view's tab coming to the
+front or leaving it) call `update_tools` for their pane, which sets the property only when it
+changed. Nothing per frame or per row. The fault is in how the window's state is kept, which no unit
+test reaches, so the failing test is the scripted check: `tools/check-p16m3.ps1` now ends by opening
+the View menu after a switch by the menu, by a key and by the dialog, and prints `View menu ticks:`.
+Before the fix: `Details, Details, Details, Details`; after: `Details, Small icons, Details, Medium
+icons`, as wanted. Fixed on this branch because it is the lower of the two open ones; P16-M5 takes it
+from here. The gate builds are rebuilt by the coordinating session.
+
 ### Calls made in this milestone, for Jeremy to check
 
 - **The thumbnail memory budget**, 768 MB with the least recently drawn handed back (above): put to
