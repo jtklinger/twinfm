@@ -35,6 +35,7 @@ mod pathbar;
 mod perf;
 mod preview;
 mod searchbox;
+mod searchfollow;
 mod settings;
 mod sizeview;
 mod shellmenu;
@@ -169,6 +170,25 @@ struct Search {
     cancel: Arc<AtomicU8>,
     /// Its rows on screen are being statted again (`restat_results`, P11-M2).
     restating: bool,
+    /// How it follows changes once it is done (P16-M6).
+    follow: Follow,
+}
+
+/// A finished search tab following changes (P16-M6): it takes a subtree watch on its root, and
+/// the watch's windows wait in `pending` while one is out on its thread (`follow_search`).
+#[derive(Default)]
+struct Follow {
+    /// It can be followed at all (`start_search`: a folder tree, not a cloud location, not inside
+    /// an archive).
+    able: bool,
+    /// The watch is asked for (its `watching` line written).
+    watching: bool,
+    /// Not following any more, and why: the status line says so and F5 searches again.
+    stopped: Option<&'static str>,
+    /// Records not looked at yet, in the order they came.
+    pending: Vec<(u32, String)>,
+    /// A window is out on its thread.
+    out: bool,
 }
 
 /// Where `start_search` runs a search: under the active tab's folder, again under a root from the
@@ -216,7 +236,15 @@ impl Tab {
     /// A sizes view whose walk is done and that follows changes (P14-M2): watched, subtree and all.
     /// Not This PC's (no one folder to watch).
     fn follows(&self) -> bool {
-        self.sizeview.as_ref().is_some_and(|s| s.done_ms.is_some() && !s.stopped && s.tx.is_some()) && !is_this_pc(&self.path.to_string_lossy())
+        self.search_follows() || self.sizeview.as_ref().is_some_and(|s| s.done_ms.is_some() && !s.stopped && s.tx.is_some()) && !is_this_pc(&self.path.to_string_lossy())
+    }
+
+    /// A search tab that follows changes (P16-M6): its walk ran to the end (not stopped by
+    /// Escape), in a tree that can be followed, and nothing has stopped the following since.
+    fn search_follows(&self) -> bool {
+        self.timing.done_ms.is_some()
+            && self.timing.error.is_none()
+            && self.search.as_ref().is_some_and(|s| s.follow.able && s.follow.stopped.is_none() && s.cancel.load(Ordering::Relaxed) == fs::enumerate::SEARCH_RUNNING)
     }
 
     /// Where the tab is, as its history records it: its folder, or its search and root.
@@ -554,7 +582,7 @@ impl State {
                 } else {
                     (folder_tab(t) && t.timing.done_ms.is_some() && listed && (!t.stale || t.sizes.any())) || t.follows()
                 };
-                cands.push(WatchCand { id: t.id, active: i == active, eligible, shown_at: t.shown_at });
+                cands.push(WatchCand { id: t.id, active: i == active, eligible, spare: i != active && t.search.is_some(), shown_at: t.shown_at });
             }
         }
         let set = watch_set(&cands, fs::watch::MAX_WATCHES);
@@ -572,6 +600,16 @@ impl State {
                 t.watched_bg = false;
                 if let Some(sv) = t.sizeview.as_mut() {
                     sv.watching = false;
+                }
+                // A search tab that was followed and lost its watch (past the cap in the
+                // background, its pane hidden) has missed changes it cannot make up (P16-M6).
+                if let Some(s) = t.search.as_mut().filter(|s| s.follow.watching) {
+                    s.follow.watching = false;
+                    if s.follow.stopped.is_none() {
+                        s.follow.stopped = Some("not watched any more");
+                        s.follow.pending = Vec::new();
+                        eprintln!("[search] pane={pane} not following changes (not watched any more)");
+                    }
                 }
                 if i == active {
                     if t.results() && (pane == 0 || split) && self.no_watch_logged[pane] != Some(t.id) {
@@ -610,6 +648,11 @@ impl State {
                 if let Some(sv) = t.sizeview.as_mut().filter(|s| follows && !s.watching) {
                     sv.watching = true;
                     eprintln!("[sizeview] pane={pane} gen={} watching {}", sv.generation, t.path.display());
+                }
+                // So does a finished search (P16-M6).
+                if let Some(s) = t.search.as_mut().filter(|s| follows && !s.follow.watching) {
+                    s.follow.watching = true;
+                    eprintln!("[search] pane={pane} gen={} watching {}", t.model.generation.get(), t.path.display());
                 }
                 if active {
                     // With folder sizes cached or in flight, every folder below is watched too
@@ -860,6 +903,13 @@ fn update_status(st: &State, app: &App, pane: usize) {
         Some(s) => {
             let secs = (!loading).then(|| t.timing.done_ms.unwrap_or(0.0) / 1e3);
             let stopped = s.cancel.load(Ordering::Relaxed) != fs::enumerate::SEARCH_RUNNING;
+            // The following ended (P16-M6): said as the sizes view says it.
+            let ended = "Not following changes: F5 searches again";
+            let note = match (s.follow.stopped.is_some(), note.is_empty()) {
+                (false, _) => note,
+                (true, true) => ended.to_string(),
+                (true, false) => format!("{note} | {ended}"),
+            };
             statusbar::search_text(&note, m.len(), m.hidden_count(), secs, stopped, t.timing.error.as_deref())
         }
         None => {
@@ -1817,17 +1867,19 @@ const EXPLAINED_FOR: Duration = Duration::from_secs(3);
 struct WatchCand {
     id: u64,
     active: bool,
-    /// May be watched at all (an active tab that is no search and whose listing has not failed; a
-    /// background folder tab that is listed and not stale).
+    /// May be watched at all (an active tab whose listing has not failed and that is no search,
+    /// or one that follows changes; a background folder tab that is listed and not stale).
     eligible: bool,
+    /// A search tab in the background (P16-M6): it takes a watch only while one is free.
+    spare: bool,
     shown_at: Instant,
 }
 
 /// The tabs to watch, in the order asked: the eligible active tabs, then the eligible background
-/// ones most recently shown first, at most `cap` in all.
+/// ones most recently shown first, search tabs after every other, at most `cap` in all.
 fn watch_set(cands: &[WatchCand], cap: usize) -> Vec<u64> {
     let mut v: Vec<&WatchCand> = cands.iter().filter(|c| c.eligible).collect();
-    v.sort_by(|a, b| b.active.cmp(&a.active).then(b.shown_at.cmp(&a.shown_at)));
+    v.sort_by(|a, b| b.active.cmp(&a.active).then(a.spare.cmp(&b.spare)).then(b.shown_at.cmp(&a.shown_at)));
     v.into_iter().take(cap).map(|c| c.id).collect()
 }
 
@@ -2029,6 +2081,23 @@ fn watch_event(st: &mut State, ev: fs::watch::Event, again: &mut Vec<usize>) {
     let ev = match ev {
         // A sizes view's window goes to its own thread (P14-M2).
         Event::Subtree { overflow, deep, records, .. } if t.sizeview.is_some() => return sizes_window(st, pane, tab_id, overflow, deep, records),
+        // A search tab's is looked at on a thread of its own (P16-M6); a watch it cannot have or
+        // has lost ends the following, and never runs the search again.
+        Event::Subtree { overflow, deep, records, .. } if t.search.is_some() => return search_window(st, pane, tab_id, overflow, deep, records),
+        Event::Refused { path, .. } if t.search.is_some() => {
+            if path == t.path {
+                t.watched = false;
+                t.watched_bg = false;
+                stop_following(st, pane, tab_id, "its folder cannot be watched");
+            }
+            return;
+        }
+        Event::Lost { error, .. } if t.search.is_some() => {
+            t.watched = false;
+            t.watched_bg = false;
+            eprintln!("[watch] pane={pane} tab={tab_id} watch lost ({error}): a search tab, not run again");
+            return stop_following(st, pane, tab_id, "its folder's watch was lost");
+        }
         ev => ev,
     };
     let (mut resize, mut stale) = (false, false);
@@ -7107,7 +7176,7 @@ fn start_search_like(pane: usize, pattern: &str, content: bool, at: SearchAt, li
         if let Some(old) = t.search.take() {
             old.cancel(fs::enumerate::SEARCH_REPLACED);
         }
-        t.search = Some(Search { pattern: NameMatch::new(pattern), content, cancel: cancel.clone(), restating: false });
+        t.search = Some(Search { pattern: NameMatch::new(pattern), content, cancel: cancel.clone(), restating: false, follow: Follow::default() });
         t.model.search_names.set(true);
         *t.model.filter.borrow_mut() = NameMatch::default();
         t.model.generation.set(generation);
@@ -7124,6 +7193,12 @@ fn start_search_like(pane: usize, pattern: &str, content: bool, at: SearchAt, li
         t.cursor = -1;
         t.scroll = 0.0;
         let (id, root, hidden) = (t.id, t.path.clone(), t.model.show());
+        // Followed once it is done (P16-M6), in a folder tree only: a cloud location is never
+        // read again unasked, and an archive's levels are not watched.
+        let able = (!content || FOLLOW_CONTENT) && !fs::archive::inside(&root) && fs::archive::split(&root).is_none() && st.cloud.of(&root) == icons::Cloud::None;
+        if let Some(s) = st.tab_mut(pane).search.as_mut() {
+            s.follow.able = able;
+        }
         if st.cut_source == Some((pane, id)) {
             st.cut_source = None;
         }
@@ -7721,6 +7796,131 @@ fn land_restat(pane: usize, id: u64, generation: u64, pass: u64, rows: Vec<model
             update_status(st, &app, pane);
             resolve_view(st, &app, pane);
         }
+    });
+}
+
+/// A content search follows changes as a name search does (P16-M6): each created or modified file
+/// is read again on the follow thread.
+const FOLLOW_CONTENT: bool = true;
+
+/// A search tab stops following changes (P16-M6): the status line says so, and F5 searches again.
+fn stop_following(st: &mut State, pane: usize, tab_id: u64, why: &'static str) {
+    let Some(app) = st.app.upgrade() else { return };
+    let active = st.is_active(pane, tab_id);
+    let Some(s) = st.find(pane, tab_id).and_then(|t| t.search.as_mut()) else { return };
+    if s.follow.stopped.is_some() {
+        return;
+    }
+    s.follow.stopped = Some(why);
+    s.follow.pending = Vec::new();
+    eprintln!("[search] pane={pane} not following changes ({why})");
+    st.watch_tabs(&app);
+    if active {
+        update_status(st, &app, pane);
+    }
+}
+
+/// A window of the subtree watch's records for a search tab (`watch_event`, P16-M6): kept in
+/// order and looked at on a thread (`follow_search`). A window whose records are not known (the
+/// buffer overflowed, or past `MAX_DEEP`) ends the following: a search cannot read again just the
+/// part that changed, and running it again unasked could take minutes.
+fn search_window(st: &mut State, pane: usize, tab_id: u64, overflow: bool, deep: Option<Vec<(u32, String)>>, records: usize) {
+    let Some(s) = st.find(pane, tab_id).and_then(|t| t.search.as_mut()).filter(|s| s.follow.stopped.is_none()) else { return };
+    match (overflow, deep) {
+        (false, Some(recs)) => {
+            s.follow.pending.extend(recs);
+            if s.follow.pending.len() > fs::watch::MAX_DEEP {
+                return stop_following(st, pane, tab_id, "too many changes waiting");
+            }
+            follow_search(st, pane, tab_id);
+        }
+        (true, _) => stop_following(st, pane, tab_id, "the changes came faster than they could be read"),
+        (false, None) => {
+            eprintln!("[search] pane={pane} {records} records in one window");
+            stop_following(st, pane, tab_id, "too many changes at once");
+        }
+    }
+}
+
+/// Look at a search tab's waiting records on a thread, one batch at a time (P16-M6): nothing while
+/// a batch is out or the listing is not settled (the re-stat's tick asks again).
+fn follow_search(st: &mut State, pane: usize, tab_id: u64) {
+    let Some(t) = st.find(pane, tab_id) else { return };
+    if unsettled(t).is_some() {
+        return;
+    }
+    let Some(s) = t.search.as_mut().filter(|s| !s.follow.out && !s.follow.pending.is_empty() && s.follow.stopped.is_none()) else { return };
+    let records = std::mem::take(&mut s.follow.pending);
+    s.follow.out = true;
+    let (pattern, content) = (s.pattern.pattern.clone(), s.content);
+    let (id, root, generation, pass, show) = (t.id, t.path.clone(), t.model.generation.get(), t.model.pass.get(), t.model.show());
+    let thumbs = search_thumbnails(st, &root);
+    let (matcher, spec) = search_spec(st, &pattern, content);
+    std::thread::spawn(move || {
+        let t0 = Instant::now();
+        let plan = searchfollow::plan(&records, content);
+        let looked = searchfollow::look(&stat_dir(&root), &plan.look, &matcher, spec.as_ref(), show, thumbs);
+        let ms = perf::elapsed_ms(t0);
+        let _ = slint::invoke_from_event_loop(move || land_follow(pane, id, generation, pass, records, plan.gone, looked, ms));
+    });
+}
+
+/// A search tab's batch came back (on the UI thread): its rows at and below the paths that went
+/// are removed, the matches found are added or updated in their sorted places. A listing sorted
+/// or filtered since keeps the records for the next try; a new search drops them.
+#[allow(clippy::too_many_arguments)]
+fn land_follow(pane: usize, id: u64, generation: u64, pass: u64, records: Vec<(u32, String)>, gone: Vec<String>, looked: searchfollow::Looked, ms: f64) {
+    with_state(|st| {
+        let Some(app) = st.app.upgrade() else { return };
+        let active = st.is_active(pane, id);
+        let Some(t) = st.find(pane, id) else { return };
+        let (newer, changed) = (t.model.generation.get() != generation, t.model.pass.get() != pass || unsettled(t).is_some());
+        let Some(s) = t.search.as_mut() else { return };
+        s.follow.out = false;
+        if newer || s.follow.stopped.is_some() {
+            return;
+        }
+        if changed {
+            let later = std::mem::replace(&mut s.follow.pending, records);
+            s.follow.pending.extend(later);
+            return eprintln!("[search] pane={pane} window: not applied (the listing changed), kept for the next");
+        }
+        let t0 = Instant::now();
+        // A row found again keeps its place (the same name, letter for letter); every other row
+        // at or below a path that went, or looked at and no match any more, goes.
+        let found: HashSet<&str> = looked.found.iter().map(|e| e.name.as_str()).collect();
+        let gone: HashSet<String> = gone.iter().chain(&looked.missing).map(|g| g.to_lowercase()).collect();
+        let mut edits: Vec<model::Edit> = if gone.is_empty() {
+            Vec::new()
+        } else {
+            t.model.names_where(|n| !found.contains(n) && searchfollow::under_any(n, &gone)).into_iter().map(model::Edit::Remove).collect()
+        };
+        edits.extend(looked.found.into_iter().map(model::Edit::Upsert));
+        let cursor = if active { current_row(&app, pane) } else { t.cursor };
+        let n = records.len();
+        match t.model.apply_edits(edits, cursor) {
+            Ok(a) => {
+                t.model.set_grid_cursor(a.cursor);
+                if !active {
+                    t.cursor = a.cursor;
+                }
+                let read = if looked.read > 0 { format!(", {} files read", looked.read) } else { String::new() };
+                eprintln!(
+                    "[search] pane={pane} window: {n} records, {} added, {} removed, {} changed{read}, in {ms:.1} ms (applied in {:.1} ms)",
+                    a.added,
+                    a.removed,
+                    a.changed,
+                    perf::elapsed_ms(t0)
+                );
+            }
+            Err(e) => eprintln!("[search] pane={pane} window: {n} records, not applied ({e})"),
+        }
+        st.watch_edits += 1;
+        if active {
+            update_status(st, &app, pane);
+            resolve_view(st, &app, pane);
+        }
+        follow_search(st, pane, id);
     });
 }
 
@@ -8780,6 +8980,16 @@ fn main() -> Result<(), slint::PlatformError> {
                 restat_results(st, &app, 0);
                 restat_results(st, &app, 1);
             }
+            // Records a search tab kept while its listing was not settled (P16-M6).
+            let waiting: Vec<(usize, u64)> = st
+                .panes
+                .iter()
+                .enumerate()
+                .flat_map(|(pane, tabs)| tabs.iter().filter(|t| t.search.as_ref().is_some_and(|s| !s.follow.pending.is_empty())).map(move |t| (pane, t.id)))
+                .collect();
+            for (pane, id) in waiting {
+                follow_search(st, pane, id);
+            }
         })
     });
     app.on_viewport_changed(|pane, y, h| on_viewport(pane as usize, y, h));
@@ -9113,7 +9323,7 @@ mod tests {
     fn watch_set_takes_active_tabs_then_the_most_recently_shown_up_to_the_cap() {
         let t0 = Instant::now();
         let at = |ms: u64| t0 + Duration::from_millis(ms);
-        let c = |id, active, eligible, ms| WatchCand { id, active, eligible, shown_at: at(ms) };
+        let c = |id, active, eligible, ms| WatchCand { id, active, eligible, spare: false, shown_at: at(ms) };
         // An active tab shown long ago still comes first; ineligible tabs never count.
         let cands = [c(1, false, true, 30), c(2, true, true, 0), c(3, false, true, 50), c(4, false, false, 90), c(5, true, false, 80), c(6, false, true, 10)];
         assert_eq!(watch_set(&cands, 8), vec![2, 3, 1, 6]);

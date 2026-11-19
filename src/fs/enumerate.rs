@@ -365,13 +365,13 @@ pub struct Content {
 }
 
 impl Content {
-    fn in_cloud(&self, dir: &Path) -> bool {
+    pub(crate) fn in_cloud(&self, dir: &Path) -> bool {
         let d = crate::cloud::normalise(&dir.to_string_lossy());
         self.cloud_roots.iter().any(|r| crate::cloud::under(&d, r))
     }
 
     /// Read file `e` at `path`: true when it holds the text (its row's line set in `found`).
-    fn holds(&self, e: &mut Entry, path: &Path, stats: &mut WalkStats) -> bool {
+    pub(crate) fn holds(&self, e: &mut Entry, path: &Path, stats: &mut WalkStats) -> bool {
         use crate::fs::content::{Outcome, cloud_only, search_file};
         if e.is_dir() {
             return false;
