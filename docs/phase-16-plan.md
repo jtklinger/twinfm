@@ -2125,6 +2125,16 @@ steps scrolled nothing; it is read in P16-M3's record (§ Main taken in) and is 
    more rows.
 10. **Restart.** Close TwinFM in List and start it again: the pane comes back in List.
 
+### Console check 1: the View menu's tick (2026-11-19)
+
+Jeremy: "Sometimes the list view shows the wrong selected file size. for example if I chose
+details, it will show a checkmark next to small icons on the view list." The menu kept the tick of
+the view before until the status line next changed: main's fault since P13-M2, not the List view's.
+Read and fixed in P16-M3's record (§ The View menu's tick) and taken in from that branch; here the
+List view's tick was checked by script after a pick of List in the menu and after Ctrl+Shift+5.
+**Checks 2 to 10 passed.** Asked "Did #163's checks 2 to 10 pass, or did you stop at check 1?",
+Jeremy answered "They passed" (2026-11-19, `target-p16m5`, c21b00e). Only check 1's tick was open.
+
 ### Calls made in this milestone, for Jeremy to check
 
 - **The spike was read as a go by the coordinating session**, Jeremy not yet asked (above); its
