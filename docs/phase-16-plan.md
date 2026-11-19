@@ -642,6 +642,31 @@ and redo jobs done, each through the worker's check, and no `[undo] ... refused`
 
 **The gate** was run again on this code (b7b8bd6): ab92, under § Gate, no gap.
 
+### The big move: Jeremy's retest of check 7 (2026-11-18, `target-p16m2` at b7b8bd6, his Log on, over Remote Desktop)
+
+"finished, no issues!" (relayed by the coordinating session, which read his log, started 21:49).
+
+- The move, id=4: `Move { 40000 sources, first ..., dest_dir ... }` on the submit line, `40000 item(s)
+  handed to the shell in 19676 ms`, `the shell's first item 8828 ms after PerformOperations`, done, then
+  `39980 more item(s) not listed (39980 ok, 0 failed)`.
+- The undo, id=5: submitted on the line after `[undo] ... with`, handed over in 19577 ms, the shell's
+  first item after 8589 ms, `Undid: Moved 40000 items`.
+- The log's longest line is 222 characters.
+- The two largest UI-thread periods: `ui_cpu=2016 ms` at a 40,000-item drag's drop and `2062 ms` at the
+  move's submit, both the drag's `parse_items` at the press (1.8 s in the timed run above, not changed);
+  nothing longer.
+
+So on his folders the wait before the first file was about 28 s (19.7 s TwinFM handing the items over,
+8.8 s the shell's preparation), against 97 to 99 s in the timed run on `%TEMP%`: the hand-over is still
+the larger part, about two thirds there.
+
+An earlier attempt the same evening ran `target-p16m4` by mistake (the whole-job line, no done after
+100%, `[undo] busy`): not a result for this build.
+
+**For the next gate**: both attempts moved the gate's fixture `C:\traces\bigdir` itself. It has its
+40,000 files again (moved back once by the coordinating session's script, once by his undo), so the
+folder's directory order may differ from what it was before 2026-11-18.
+
 ### Calls made in this milestone, for Jeremy to check
 
 - **The side buttons over the path's text entry and the search box now move the pane.** This
