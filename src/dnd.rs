@@ -452,6 +452,10 @@ pub fn cue_anchor(mark: Mark, r: Rect, grid: bool) -> Option<(f32, f32, Align)> 
     let mid = r.y + (r.h - CUE_H) / 2.0;
     Some(match mark {
         Mark::Row(row) if row < 0 => (r.x + r.w / 2.0, r.y + 10.0, Align::Centre),
+        // A small-icons cell (220 x 22 px, P16-M3) is a row in all but name: the tag across its lower
+        // edge would cover the cell below, and over the cell it would cover the name, so it sits just
+        // right of the cell, as beside a sidebar row.
+        Mark::Row(_) if grid && r.h <= 2.0 * CUE_H => (r.x + r.w + 6.0, mid, Align::Left),
         Mark::Row(_) if grid => (r.x + r.w / 2.0, r.y + r.h - CUE_H / 2.0, Align::Centre),
         Mark::Row(_) => (r.x + r.w - 20.0, mid, Align::Right),
         Mark::Tab(_) | Mark::Crumb(_) => (r.x, r.y + r.h + 2.0, Align::Left),
@@ -601,6 +605,22 @@ impl Layout {
     pub fn row_px_of(&self, pane: usize) -> f32 {
         if self.grid[pane].is_some() { self.tile[pane].h } else { self.row_px }
     }
+}
+
+/// Where the driver presses a list's scrollbar thumb, in px from the bar's start (theme.slint
+/// `VScrollBar`: a track 2 px in from each end, the thumb at least 24 px long): 17 px, the aim since
+/// the first gate, wherever that is on the thumb; else the thumb's middle. `scroll` is the list's
+/// content offset (0 or negative), `content` its whole length, `visible` the bar's length.
+pub fn thumb_aim(scroll: f32, content: f32, visible: f32) -> f32 {
+    const OLD: f32 = 17.0;
+    let max = content - visible;
+    if max <= 0.0 {
+        return OLD;
+    }
+    let track = visible - 4.0;
+    let len = (track * visible / content).max(24.0).min(track);
+    let start = 2.0 + (track - len) * (-scroll / max).clamp(0.0, 1.0);
+    if OLD >= start && OLD < start + len { OLD } else { start + len / 2.0 }
 }
 
 /// The list's top inside a pane (pane.slint): 3 px padding, 36 px path entry, 2 px spacing,
@@ -3069,9 +3089,11 @@ impl ImageGeom {
 
     /// Out of the grid (P4-M3): the tile's picture at the tile's icon size (96 px at 100%, 48 px
     /// out of medium tiles, P6-M2), with the inset doubled so the badge still fits inside the
-    /// square: 128 px, or 80 px.
+    /// square: 128 px, or 80 px. Out of extra large tiles (P16-M3) the picture is fitted down to
+    /// the large tile's 96 px: a 288 px image would hide what it is dragged over.
     pub fn tile(scale: f32, tile: crate::icons::TileGeom) -> ImageGeom {
-        Self::sized(scale, tile.icon_px + 32.0, tile.icon_px, 16.0)
+        let icon = tile.icon_px.min(crate::icons::TileGeom::LARGE.icon_px);
+        Self::sized(scale, icon + 32.0, icon, 16.0)
     }
 
     fn sized(scale: f32, size: f32, icon: f32, inset: f32) -> ImageGeom {
@@ -3680,6 +3702,8 @@ mod tests {
         let r = Rect { x: 100.0, y: 200.0, w: 400.0, h: 22.0 };
         assert_eq!(cue_anchor(Mark::Row(3), r, false), Some((480.0, 198.0, Align::Right)));
         assert_eq!(cue_anchor(Mark::Row(3), Rect { w: 96.0, h: 136.0, ..r }, true), Some((148.0, 323.0, Align::Centre)));
+        assert_eq!(cue_anchor(Mark::Row(3), Rect { w: 260.0, h: 296.0, ..r }, true), Some((230.0, 483.0, Align::Centre)), "an extra large tile");
+        assert_eq!(cue_anchor(Mark::Row(3), Rect { w: 220.0, h: 22.0, ..r }, true), Some((326.0, 198.0, Align::Left)), "a small-icons cell: beside it");
         assert_eq!(cue_anchor(Mark::Row(-1), Rect { h: 300.0, ..r }, false), Some((300.0, 210.0, Align::Centre)));
         assert_eq!(cue_anchor(Mark::Tab(1), Rect { h: 30.0, ..r }, false), Some((100.0, 232.0, Align::Left)));
         assert_eq!(cue_anchor(Mark::Crumb(0), Rect { h: 30.0, ..r }, false), Some((100.0, 232.0, Align::Left)));
@@ -3960,6 +3984,19 @@ mod tests {
         assert_eq!(hit(&medium, 3.0 + 80.0, 75.0 + 107.0, none, [100, 0]), Spot::Row(0, 13));
         assert_eq!(hit(&medium, 3.0 + 79.9, 75.0 + 106.9, none, [100, 0]), Spot::Row(0, 0), "the tile's far corner");
         assert_eq!(hit(&medium, 3.0 + 12.0 * 80.0 + 1.0, 80.0, none, [100, 0]), Spot::Pane(0), "right of the tiles");
+        // P16-M3: extra large tiles (260 x 296) and small ones (220 x 22 cells across the pane).
+        let xl = Layout { grid: [Some(3), None], tile: [crate::icons::TileGeom::XLARGE, crate::icons::TileGeom::LARGE], ..one };
+        assert_eq!(xl.row_px_of(0), 296.0);
+        assert_eq!(hit(&xl, 3.0 + 260.0, 75.0 + 296.0, none, [10, 0]), Spot::Row(0, 4));
+        assert_eq!(hit(&xl, 3.0 + 259.9, 75.0 + 295.9, none, [10, 0]), Spot::Row(0, 0), "the tile's far corner");
+        assert_eq!(hit(&xl, 3.0 + 3.0 * 260.0 + 1.0, 80.0, none, [10, 0]), Spot::Pane(0), "right of the tiles");
+        assert_eq!(hit(&xl, 3.0 + 300.0, 75.0 + 296.0 + 5.0, none, [4, 0]), Spot::Pane(0), "past the last entry");
+        let small = Layout { grid: [Some(4), None], tile: [crate::icons::TileGeom::SMALL, crate::icons::TileGeom::LARGE], ..one };
+        assert_eq!(small.row_px_of(0), 22.0);
+        assert_eq!(hit(&small, 3.0 + 10.0, 75.0 + 5.0, none, [100, 0]), Spot::Row(0, 0));
+        assert_eq!(hit(&small, 3.0 + 220.0 * 2.0 + 10.0, 75.0 + 22.0 * 3.0 + 5.0, none, [100, 0]), Spot::Row(0, 14));
+        assert_eq!(hit(&small, 3.0 + 10.0, 75.0 + 5.0, [-44.0, 0.0], [100, 0]), Spot::Row(0, 8), "scrolled two rows of cells");
+        assert_eq!(hit(&small, 3.0 + 220.0 * 4.0 + 1.0, 80.0, none, [100, 0]), Spot::Pane(0), "right of the cells");
         // With the split, each pane has its own view: the right pane stays a 22 px list.
         let both = Layout { split: true, grid: [Some(5), None], ..one };
         assert_eq!(hit(&both, 50.0, 220.0, none, [12, 7]), Spot::Row(0, 5));
@@ -4507,6 +4544,10 @@ mod tests {
         assert_eq!((m.size, m.icon, m.inset), (80, 48, 16));
         let (mx, my) = m.badge_centre();
         assert!(mx + m.badge_r < m.size as f32 && my + m.badge_r < m.size as f32, "the badge fits");
+        // Out of extra large tiles (P16-M3): the picture fitted down to the large tile's image.
+        let x = ImageGeom::tile(1.0, crate::icons::TileGeom::XLARGE);
+        assert_eq!((x.size, x.icon, x.inset), (128, 96, 16));
+        assert_eq!(ImageGeom::tile(1.5, crate::icons::TileGeom::XLARGE).icon, 144);
         let blue = slint::Rgba8Pixel { r: 0, g: 0, b: 255, a: 255 };
         let pic = vec![blue; 96 * 96];
         let one = compose_image(&g, Some(&pic), 1, None);
@@ -4790,5 +4831,23 @@ mod tests {
         }
         std::fs::remove_dir_all(&root).unwrap();
     }
-}
 
+    #[test]
+    fn the_scrollbar_aim_stays_at_17_px_where_the_thumb_is_there() {
+        // At rest and with nothing to scroll: the old aim.
+        assert_eq!(thumb_aim(0.0, 880_000.0, 600.0), 17.0);
+        assert_eq!(thumb_aim(0.0, 400.0, 600.0), 17.0);
+        // The gate's scenario after its wheel steps (120 ticks of 120 px): the details list's
+        // 40,000 rows of 22 px and the large grid's 8,000 rows of 136 px keep the thumb over 17 px.
+        assert_eq!(thumb_aim(-14_400.0, 880_000.0, 600.0), 17.0);
+        assert_eq!(thumb_aim(-14_400.0, 1_088_000.0, 600.0), 17.0);
+        // Small icons, 20,000 grid rows of 22 px: the thumb starts past 17 px, so its middle.
+        let a = thumb_aim(-14_400.0, 440_000.0, 600.0);
+        assert!(a > 17.0 && (a - (2.0 + 572.0 * 14_400.0 / 439_400.0 + 12.0)).abs() < 0.01, "{a}");
+        // At the end: the thumb's middle, 12 px short of the track's end.
+        assert_eq!(thumb_aim(-439_400.0, 440_000.0, 600.0), 586.0);
+        // A long thumb (half the track) covers 17 px until it has moved past it.
+        assert_eq!(thumb_aim(-10.0, 1_200.0, 600.0), 17.0);
+        assert_eq!(thumb_aim(-600.0, 1_200.0, 600.0), 2.0 + 298.0 + 149.0);
+    }
+}

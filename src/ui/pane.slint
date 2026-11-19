@@ -1033,6 +1033,143 @@ component FileGridMediumList inherits FileGridMedium {
     }
 }
 
+// The extra-large-icon grid (P16-M3): FileGrid at icons::TileGeom::XLARGE, 260 x 296 px tiles with
+// the strip's 256 px icon at 2..258 x 2..258 and the name under it on up to two lines. A copy with
+// its own constants, as the medium grid is, picked by FileListHost once per pane.
+component FileGridXL inherits ListView {
+    in property <[GridRow]> grid;
+    in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
+    in property <int> cols: 1;
+    callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
+    callback row-gesture(int, int, bool, bool);
+
+    accessible-label: "Files";
+    accessible-item-count: grid.length;
+    accessible-delegate-focus: max(0, floor(current-row / max(1, cols)));
+
+    for grow[r] in grid: Rectangle {
+        height: 296px;
+        accessible-role: AccessibleRole.list-item;
+        accessible-item-index: r;
+        for t[c] in grow.tiles: Rectangle {
+            x: c * 260px;
+            y: 0px;
+            width: 260px;
+            height: 296px;
+            background: t.selected ? Theme.selection : transparent;
+            border-radius: Theme.radius;
+            border-width: t.current ? 2px : 0px;
+            border-color: root.cursor-color;
+            Text {
+                x: 2px;
+                y: 258px;
+                width: 256px;
+                height: 38px;
+                text: t.name;
+                horizontal-alignment: center;
+                vertical-alignment: top;
+                wrap: word-wrap;
+                max-lines: 2;
+                overflow: elide;
+                color: t.cut ? Theme.fg-faint : Theme.fg;
+            }
+            TouchArea {
+                pointer-event(ev) => { root.row-pointer(grow.first + c, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
+                double-clicked => { root.row-gesture(grow.first + c, 3, false, false); }
+            }
+        }
+    }
+}
+
+component FileGridXLList inherits FileGridXL {
+    in property <int> focus-request;
+    in property <bool> focus-on-init;
+    callback key(KeyEvent) -> EventResult;
+    forward-focus: key-area;
+    init => {
+        root.content-height = root.grid.length * 296px;
+        if (root.focus-on-init) { key-area.focus(); }
+    }
+    changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
+    key-area := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
+    }
+}
+
+// The small-icon grid (P16-M3, Explorer's Small icons): icons::TileGeom::SMALL, 220 x 22 px cells
+// across the pane with the strip's 16 px icon at 4..20 x 3..19 and the name beside it on one line,
+// elided. A copy with its own constants, as the medium grid is.
+component FileGridSmall inherits ListView {
+    in property <[GridRow]> grid;
+    in property <int> current-row: -1;
+    // The cursor's outline: the accent in the active pane, the grey ring in the other (Jeremy's
+    // "tab switches panes", 2026-10-26).
+    in property <brush> cursor-color: Theme.cursor;
+    in property <int> cols: 1;
+    callback row-pointer(int, PointerEvent, bool, length, length, length, length, length, length);
+    callback row-gesture(int, int, bool, bool);
+
+    accessible-label: "Files";
+    accessible-item-count: grid.length;
+    accessible-delegate-focus: max(0, floor(current-row / max(1, cols)));
+
+    for grow[r] in grid: Rectangle {
+        height: 22px;
+        accessible-role: AccessibleRole.list-item;
+        accessible-item-index: r;
+        for t[c] in grow.tiles: Rectangle {
+            x: c * 220px;
+            y: 0px;
+            width: 220px;
+            height: 22px;
+            background: t.selected ? Theme.selection : transparent;
+            border-radius: Theme.radius;
+            border-width: t.current ? 2px : 0px;
+            border-color: root.cursor-color;
+            Text {
+                x: 24px;
+                y: 0px;
+                width: 192px;
+                height: 22px;
+                text: t.name;
+                vertical-alignment: center;
+                overflow: elide;
+                color: t.cut ? Theme.fg-faint : Theme.fg;
+            }
+            TouchArea {
+                pointer-event(ev) => { root.row-pointer(grow.first + c, ev, self.pressed, self.mouse-x, self.mouse-y, self.pressed-x, self.pressed-y, self.absolute-position.x, self.absolute-position.y); }
+                double-clicked => { root.row-gesture(grow.first + c, 3, false, false); }
+            }
+        }
+    }
+}
+
+component FileGridSmallList inherits FileGridSmall {
+    in property <int> focus-request;
+    in property <bool> focus-on-init;
+    callback key(KeyEvent) -> EventResult;
+    forward-focus: key-area;
+    init => {
+        root.content-height = root.grid.length * 22px;
+        if (root.focus-on-init) { key-area.focus(); }
+    }
+    changed focus-request => { key-area.focus(); }
+    callback tabbed-in();
+    key-area := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(e) => { return root.key(e); }
+        focus-gained(reason) => { if (reason == FocusReason.tab-navigation) { root.tabbed-in(); } }
+    }
+}
+
 // The sizes view's list (P13-M3): one row per folder or file, biggest first in its level; a folder's
 // chevron opens it in place (row-gesture what 8, main.rs). The icon column is the pane's strip, as
 // in the details list; the chevron and the name are indented by the depth after it. Fixed columns:
@@ -1167,18 +1304,20 @@ component FileListHost inherits Rectangle {
     // its row and 0), for the overlays.
     in property <bool> grid: false;
     in property <[GridRow]> grid-rows;
-    // Medium tiles (settings `tile_left` / `tile_right`, Ctrl+Shift+3): FileGridMediumList. tile-w
-    // and tile-h are the tile's size (icons::TileGeom) for the host's and the pane's arithmetic.
-    in property <bool> medium: false;
+    // The tile size (settings `tile_left` / `tile_right`; icons::TileSize: 0 extra large, 1 large,
+    // 2 medium, 3 small; P16-M3, a bool for medium before): which grid component shows. tile-w and
+    // tile-h are the tile's size (icons::TileGeom) for the host's and the pane's arithmetic.
+    in property <int> tile: 1;
     // The sizes view (P13-M3): SizeList over size-rows (sizeview.rs SizeModel, over the same entries
     // as rows), in place of the details list; never the grid.
     in property <bool> sizes: false;
     in property <[SizeRow]> size-rows;
     in property <length> sizes-name-w: 240px;
-    out property <length> tile-w: root.medium ? 80px : 96px;
-    out property <length> tile-h: root.medium ? 107px : 136px;
-    // The tile's name box: two lines of large tiles, three of medium (P8-L1).
-    out property <length> name-h: root.medium ? 57px : 38px;
+    out property <length> tile-w: root.tile == 0 ? 260px : root.tile == 2 ? 80px : root.tile == 3 ? 220px : 96px;
+    out property <length> tile-h: root.tile == 0 ? 296px : root.tile == 2 ? 107px : root.tile == 3 ? 22px : 136px;
+    // The tile's name box: two lines of extra large and large tiles, three of medium (P8-L1); the
+    // small tile's name is beside its icon, one line the tile's height.
+    out property <length> name-h: root.tile == 2 ? 57px : root.tile == 3 ? 22px : 38px;
     // 10 px kept at the right, so the last tile stays clear of the scrollbar's thumb at rest (as the
     // details rows' right padding).
     out property <int> cols: max(1, floor((self.width - 10px) / root.tile-w));
@@ -1276,12 +1415,32 @@ component FileListHost inherits Rectangle {
     // viewport, then apply the selection gesture.
     public function bring-into-view() {
         if (root.current-row < 0) { return; }
+        let before = root.content-y;
+        root.aim();
+        // In the grid, a jump of more than a viewport (End, Home, a new item's tile) lands on rows the
+        // ListView has not made yet, and it then starts a whole grid row at the viewport's top: up
+        // to a row's height short of the cursor's row (unseen with 22 px rows; with 296 px tiles the
+        // cursor's tile was nearly off the list, P16-M3). Once those rows are made the same
+        // arithmetic holds, so it is done once more a frame later.
+        if (root.grid && !root.sizes && abs((root.content-y - before) / 1px) > root.visible-height / 1px) { root.reaim = true; }
+    }
+    function aim() {
+        if (root.current-row < 0) { return; }
         let g = root.line-of(root.current-row);
         if (root.content-y + g * root.row-h < 0px) {
             root.content-y = -g * root.row-h;
         }
         if (root.content-y + (g + 1) * root.row-h > root.visible-height) {
             root.content-y = root.visible-height - (g + 1) * root.row-h;
+        }
+    }
+    private property <bool> reaim: false;
+    Timer {
+        interval: 16ms;
+        running: root.reaim;
+        triggered => {
+            root.reaim = false;
+            root.aim();
         }
     }
 
@@ -1591,7 +1750,7 @@ component FileListHost inherits Rectangle {
             key(e) => { return root.key(e); }
             tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
         }
-        if root.grid && !root.medium && !root.sizes: FileGridList {
+        if root.grid && root.tile == 1 && !root.sizes: FileGridList {
             width: root.width;
             height: root.height;
             grid: root.grid-rows;
@@ -1607,7 +1766,39 @@ component FileListHost inherits Rectangle {
             key(e) => { return root.key(e); }
             tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
         }
-        if root.grid && root.medium && !root.sizes: FileGridMediumList {
+        if root.grid && root.tile == 2 && !root.sizes: FileGridMediumList {
+            width: root.width;
+            height: root.height;
+            grid: root.grid-rows;
+            cols: root.cols;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if root.grid && root.tile == 0 && !root.sizes: FileGridXLList {
+            width: root.width;
+            height: root.height;
+            grid: root.grid-rows;
+            cols: root.cols;
+            current-row: root.current-row;
+            cursor-color: root.active ? Theme.cursor : Theme.ring;
+            content-y <=> root.content-y;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            focus-request: root.focus-request;
+            focus-on-init: root.active;
+            row-pointer(i, ev, p, mx, my, px, py, ax, ay) => { root.row-pointer(i, ev, p, mx, my, px, py, ax, ay); }
+            row-gesture(r, w, c, s) => { root.row-gesture(r, w, c, s); }
+            key(e) => { return root.key(e); }
+            tabbed-in => { root.cursor-to-first(); root.focus-requested(); root.tabbed-in(); }
+        }
+        if root.grid && root.tile == 3 && !root.sizes: FileGridSmallList {
             width: root.width;
             height: root.height;
             grid: root.grid-rows;
@@ -1710,8 +1901,8 @@ export component Pane inherits Rectangle {
     // for hit testing); the two callbacks are the host's.
     in property <bool> grid: false;
     in property <[GridRow]> grid-rows;
-    // Medium tiles in the grid (FileListHost.medium).
-    in property <bool> medium: false;
+    // The grid's tile size (FileListHost.tile: 0 extra large, 1 large, 2 medium, 3 small).
+    in property <int> tile: 1;
     out property <int> tiles-per-row: list.cols;
     // The sizes view (P13-M3): its rows and its own header; main.rs shows such a tab as a list
     // (`grid` false) whatever the pane's view.
@@ -2371,7 +2562,7 @@ export component Pane inherits Rectangle {
             comfortable: root.comfortable;
             grid: root.grid;
             grid-rows: root.grid-rows;
-            medium: root.medium;
+            tile: root.tile;
             sizes: root.sizes;
             size-rows: root.size-rows;
             sizes-name-w: root.sizes-name-w;
@@ -2546,7 +2737,8 @@ export component Pane inherits Rectangle {
         // The cursor tile's whole name when its lines elide it (P7-M4, Explorer's): one box
         // per pane over the tiles below, under the tile's own name, never a binding in the tiles.
         // It takes no input.
-        if list.current-row >= 0 && list.current-row < root.rows.length: Rectangle {
+        // Not in small tiles (P16-M3): the name is one line beside the icon, elided as Explorer's.
+        if root.tile != 3 && list.current-row >= 0 && list.current-row < root.rows.length: Rectangle {
             x: list.col-of(list.current-row) * list.tile-w;
             y: list.content-y + list.line-of(list.current-row) * list.tile-h + list.tile-h - list.name-h;
             width: list.tile-w;
@@ -2641,10 +2833,11 @@ export component Pane inherits Rectangle {
         width: root.grid ? list.tile-w : list.width;
         height: root.grid ? list.tile-h : list.row-h;
         background: Theme.card;
-        property <length> icon: root.grid ? (root.medium ? 48px : 96px) : root.thumbnails ? 32px : 16px;
+        property <length> icon: root.grid ? (root.tile == 0 ? 256px : root.tile == 2 ? 48px : root.tile == 3 ? 16px : 96px) : root.thumbnails ? 32px : 16px;
         Image {
-            x: root.grid ? (parent.width - parent.icon) / 2 : 6px;
-            y: root.grid ? 8px : (parent.height - parent.icon) / 2;
+            // In small tiles the icon is at the cell's left, the name beside it (P16-M3).
+            x: root.grid ? (root.tile == 3 ? 4px : (parent.width - parent.icon) / 2) : 6px;
+            y: root.grid ? (root.tile == 3 ? 3px : 8px) : (parent.height - parent.icon) / 2;
             width: parent.icon;
             height: parent.icon;
             source: root.edit-mode == 2 ? @image-url("icons/folder.svg") : @image-url("icons/file-text.svg");
@@ -2665,9 +2858,10 @@ export component Pane inherits Rectangle {
     // The opaque box hides the row text behind Fluent's translucent LineEdit background.
     Rectangle {
         visible: root.edit-mode != 0;
-        x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + 2px : (root.thumbnails ? 38px : 24px));
-        y: list.y + (root.grid ? list.tile-h - 42px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
-        width: root.grid ? list.tile-w - 4px : max(160px, list.width - (root.thumbnails ? 38px : 24px) - (root.eff-type + root.eff-size + root.eff-modified + root.eff-ondisk) - 12px);
+        // In small tiles (P16-M3) beside the icon, centred on the cell, as in a details row.
+        x: list.x + (root.grid ? list.col-of(list.current-row) * list.tile-w + (root.tile == 3 ? 20px : 2px) : (root.thumbnails ? 38px : 24px));
+        y: list.y + (root.grid && root.tile != 3 ? list.tile-h - 42px : (list.row-h - 28px) / 2) + (root.edit-mode == 1 ? list.content-y + list.line-of(list.current-row) * list.row-h : 0px);
+        width: root.grid ? list.tile-w - (root.tile == 3 ? 22px : 4px) : max(160px, list.width - (root.thumbnails ? 38px : 24px) - (root.eff-type + root.eff-size + root.eff-modified + root.eff-ondisk) - 12px);
         height: 28px;
         background: Theme.card;
         // As behind the path entry: Back or Forward over the editor is ignored, not taken by the

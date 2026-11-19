@@ -88,31 +88,121 @@ impl ListGeom {
     }
 }
 
-/// A grid's tiles (P4-M1; the medium size P6-M2), logical px: `w` x `h`, N to a grid row (N =
-/// floor(list width / w), at least 1), each with an `icon_px` icon centred horizontally `icon_top`
-/// px below the tile's top and the name under it (pane.slint FileGrid, FileGridMedium). Chosen per
-/// pane (settings `tile_left` / `tile_right`) and read at layout, never bound in a tile.
+/// A grid's tiles (P4-M1; the medium size P6-M2; extra large and small P16-M3), logical px: `w` x
+/// `h`, N to a grid row (N = floor(list width / w), at least 1), each with an `icon_px` icon
+/// `icon_left` px from the tile's left edge and `icon_top` px below its top. In the three sizes with
+/// the name under the icon the icon is centred across the tile (`icon_left` is half of what the icon
+/// leaves); in the small one the name is beside it (pane.slint FileGridXL, FileGrid, FileGridMedium,
+/// FileGridSmall). Chosen per pane (settings `tile_left` / `tile_right`, `TileSize`) and read at
+/// layout, never bound in a tile.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TileGeom {
     pub w: f32,
     pub h: f32,
     pub icon_px: f32,
     pub icon_top: f32,
+    pub icon_left: f32,
+}
+
+/// A pane's tile size (P16-M3; a bool, large or medium, before): Explorer's four icon views. The
+/// app's `left-tile` / `right-tile` and the host's `tile` are `index`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileSize {
+    XLarge,
+    Large,
+    Medium,
+    Small,
+}
+
+impl TileSize {
+    #[cfg(test)]
+    pub const ALL: [TileSize; 4] = [TileSize::XLarge, TileSize::Large, TileSize::Medium, TileSize::Small];
+
+    pub const fn geom(self) -> TileGeom {
+        match self {
+            TileSize::XLarge => TileGeom::XLARGE,
+            TileSize::Large => TileGeom::LARGE,
+            TileSize::Medium => TileGeom::MEDIUM,
+            TileSize::Small => TileGeom::SMALL,
+        }
+    }
+
+    /// 0 extra large, 1 large, 2 medium, 3 small.
+    pub fn index(self) -> i32 {
+        match self {
+            TileSize::XLarge => 0,
+            TileSize::Large => 1,
+            TileSize::Medium => 2,
+            TileSize::Small => 3,
+        }
+    }
+
+    /// Anything out of range reads as large (the default).
+    pub fn from_index(i: i32) -> TileSize {
+        match i {
+            0 => TileSize::XLarge,
+            2 => TileSize::Medium,
+            3 => TileSize::Small,
+            _ => TileSize::Large,
+        }
+    }
+
+    /// The settings file's `tile_left` / `tile_right` value.
+    pub fn name(self) -> &'static str {
+        match self {
+            TileSize::XLarge => "xlarge",
+            TileSize::Large => "large",
+            TileSize::Medium => "medium",
+            TileSize::Small => "small",
+        }
+    }
+
+    /// "xlarge", "medium" and "small" as written; anything else (a missing key, a typo) large.
+    pub fn from_name(s: &str) -> TileSize {
+        match s {
+            "xlarge" => TileSize::XLarge,
+            "medium" => TileSize::Medium,
+            "small" => TileSize::Small,
+            _ => TileSize::Large,
+        }
+    }
+
+    /// The name is beside the icon (small icons), not under it.
+    pub fn beside(self) -> bool {
+        self == TileSize::Small
+    }
 }
 
 impl TileGeom {
+    /// Extra large icons (P16-M3): the shell's 256 px icon (the jumbo list) with the name under it
+    /// on up to two lines, as the large tile: 2 + 256 + 38 px tall, 2 px each side of the icon.
+    pub const XLARGE: TileGeom = TileGeom { w: 260.0, h: 296.0, icon_px: 256.0, icon_top: 2.0, icon_left: 2.0 };
     /// Large icons: the shell's 96 px icon filling the tile's width, the name under it on up to two
     /// lines (P7-M4; one line and 120 px before): 2 + 96 + 38 px tall.
-    pub const LARGE: TileGeom = TileGeom { w: 96.0, h: 136.0, icon_px: 96.0, icon_top: 2.0 };
+    pub const LARGE: TileGeom = TileGeom { w: 96.0, h: 136.0, icon_px: 96.0, icon_top: 2.0, icon_left: 0.0 };
     /// Medium icons: the shell's 48 px icon (SHIL_EXTRALARGE, a thumbnail cache size), so nothing
     /// is scaled. Explorer's medium tile at 100% is 74 px wide on an 82 x 99 pitch with names on up
     /// to three lines (measured with UI Automation, 2026-10-17); ours too since P8-L1 (one line and
     /// 72 px until P7-M4, two lines and 88 px until P8-L1): 2 + 48 + 57 px tall, 80 px wide (a 76
     /// px name).
-    pub const MEDIUM: TileGeom = TileGeom { w: 80.0, h: 107.0, icon_px: 48.0, icon_top: 2.0 };
+    pub const MEDIUM: TileGeom = TileGeom { w: 80.0, h: 107.0, icon_px: 48.0, icon_top: 2.0, icon_left: 16.0 };
+    /// Small icons (P16-M3, Explorer's Small icons): a 16 px icon with the name beside it on one
+    /// line, in cells across the pane, a details row's height: the icon 4 px in and 3 px down, the
+    /// name from 24 px.
+    pub const SMALL: TileGeom = TileGeom { w: 220.0, h: 22.0, icon_px: 16.0, icon_top: 3.0, icon_left: 4.0 };
 
-    pub fn of(medium: bool) -> TileGeom {
-        if medium { TileGeom::MEDIUM } else { TileGeom::LARGE }
+    /// The tile's name box (x, y, w, h) inside the tile: under the icon (2 px in each side, from
+    /// the icon's bottom to the tile's), or in the small tile beside it (from 24 px to 4 px short
+    /// of the tile's right edge, the tile's height). The tiles' constants in pane.slint, for the tests.
+    #[cfg(test)]
+    pub fn name_box(&self) -> (f32, f32, f32, f32) {
+        if self.h <= self.icon_top + self.icon_px + self.icon_top + 4.0 {
+            let x = self.icon_left + self.icon_px + 4.0;
+            (x, 0.0, self.w - x - 4.0, self.h)
+        } else {
+            let y = self.icon_top + self.icon_px;
+            (2.0, y, self.w - 4.0, self.h - y)
+        }
     }
 }
 
@@ -712,7 +802,7 @@ impl GridGeom {
     pub fn icon_pos(&self, k: usize) -> (u32, u32) {
         let (r, c) = (k / self.cols, k % self.cols);
         let t = self.tile;
-        let x = ((c as f32 * t.w + (t.w - t.icon_px) / 2.0) * self.scale).round() as u32;
+        let x = ((c as f32 * t.w + t.icon_left) * self.scale).round() as u32;
         let y = ((r as f32 * t.h + t.icon_top) * self.scale).round() as u32;
         (x, y)
     }
@@ -1299,6 +1389,12 @@ fn work(pool: &Pool, tx: &Sender<Reply>, generations: &[AtomicU64; 2], views: &V
             let what = if r.thumbnail { "thumbnail" } else { "slow icon" };
             eprintln!("[icons] {what} {} ms: {}", took.as_millis(), r.path.display());
         }
+        // A thumbnail's key is given back once it is delivered (P16-M3): the table may hand its
+        // pixels back (`IconTable::evict`) and ask for it again, and a key still taken would be
+        // skipped for ever. The UI's `pending` set is what keeps one key from being asked twice.
+        if r.thumbnail && !drag && pixels.is_some() {
+            lock(&pool.taken).remove(&taken);
+        }
         let outcome = match (pixels, picture) {
             (Some(p), Some(rect)) => Outcome::Picture(p, rect),
             // The type icon for now; the key is given back, so the UI's next ask renders it again.
@@ -1680,6 +1776,19 @@ fn icon_pixels_at(hicon: HICON, px: u32, x: u32, y: u32, w: u32) -> Option<Share
 /// extension's icon (`thumb_fallback`).
 pub const THUMB_TABLE_CAP: usize = 20_000;
 
+/// The pixels the table's thumbnails hold at most, in bytes (P16-M3): 768 MB, just above what
+/// `THUMB_TABLE_CAP` thumbnails of large tiles take at 100% (20,000 x 96 x 96 x 4 = 737 MB), so
+/// nothing changes there; an extra large tile's thumbnail is 256 px square, 262 KB at 100% and 590
+/// KB at 150%, and 20,000 of those would be 5 to 12 GB. Past it the thumbnails drawn longest ago
+/// give their pixels back (`IconTable::evict`) and are asked for again when their rows are next on
+/// screen (from Windows' thumbnail cache, so quickly).
+pub const THUMB_BYTES_CAP: usize = 768 * 1024 * 1024;
+
+/// The thumbnails drawn most recently that never give their pixels back, whatever the budget: more
+/// than both panes show at once with the rows asked for around them, so a budget smaller than a
+/// screenful (a test's, or a very large screen's) cannot make the pictures on screen go and come.
+pub const EVICT_KEEP: usize = 64;
+
 /// The extension key a thumbnail key falls back to past `THUMB_TABLE_CAP`. Thumbnail
 /// extensions are never keyed by full path, so this is the key the file has with thumbnails off.
 pub fn thumb_fallback(key: &str) -> SharedString {
@@ -1716,6 +1825,23 @@ pub struct IconTable {
     cap: Cap,
     /// The picture's rectangle in each thumbnail's buffer (`Outcome::Picture`), for the tiles' frame.
     pictures: HashMap<u16, [u32; 4]>,
+    /// The thumbnails holding pixels now (P16-M3): each one's size key and key, the bytes they hold
+    /// in all against `budget` (`THUMB_BYTES_CAP`; a test sets less), when each buffer was last
+    /// handed to a strip (`fitted`; a counter, not a clock), and how many gave their pixels back.
+    thumbs: HashMap<u16, (u32, SharedString)>,
+    thumb_bytes: usize,
+    budget: usize,
+    keep: usize,
+    used: Vec<u64>,
+    tick: u64,
+    evicted: usize,
+    evict_logged: bool,
+    /// The indices whose pixels came back since `take_revived` (the strips showing them are
+    /// composed again; their rows kept the index, so no resolve reports them as changed).
+    revived: Vec<u16>,
+    /// What `fitted` hands out for a thumbnail whose pixels are away: one empty square at the size
+    /// last asked for, shared by all of them.
+    blank: Option<SharedPixelBuffer<Rgba8Pixel>>,
 }
 
 /// The keys the table knows at one icon size: interned (to their buffer's index), in flight, failed.
@@ -1730,6 +1856,10 @@ pub struct SizeKeys {
     /// The icons those keys showed when taken out of `index`: rows showing one are looked at by
     /// the resolve as placeholder rows are, so they ask again and keep the icon meanwhile.
     stale: HashSet<u16>,
+    /// Thumbnails that gave their pixels back (P16-M3, `IconTable::evict`), with the index each
+    /// keeps: asked for again as a missing key is, and put back at that index when the answer comes,
+    /// so the rows that show it need no new index.
+    evicted: HashMap<SharedString, u16>,
 }
 
 /// After a thumbnail's first, second and third `Later` answer, the wait before it is asked again;
@@ -1791,6 +1921,17 @@ impl Default for IconTable {
             sizes: Vec::new(),
             cap: Cap::default(),
             pictures: HashMap::new(),
+            thumbs: HashMap::new(),
+            thumb_bytes: 0,
+            keep: EVICT_KEEP,
+            // `TWINFM_THUMB_MB` (the soak and the checks): a smaller budget, so a short run reaches it.
+            budget: std::env::var("TWINFM_THUMB_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(THUMB_BYTES_CAP, |mb| mb * 1024 * 1024),
+            used: Vec::new(),
+            tick: 0,
+            evicted: 0,
+            evict_logged: false,
+            revived: Vec::new(),
+            blank: None,
         }
     }
 }
@@ -1808,11 +1949,22 @@ impl IconTable {
     pub fn fitted(&mut self, i: u16, px: u32) -> SharedPixelBuffer<Rgba8Pixel> {
         if self.fitted_px != px {
             self.fitted.clear();
+            self.blank = None;
             self.fitted_px = px;
         }
         let i = if (i as usize) < self.bufs.len() { i as usize } else { PLACEHOLDER_FILE as usize };
+        // A thumbnail whose pixels are away (P16-M3) draws nothing until they are back: one shared
+        // empty square, not one resampled and cached per index.
+        if i >= PLACEHOLDERS as usize && px > 1 && self.bufs[i].width() == 1 {
+            return self.blank.get_or_insert_with(|| SharedPixelBuffer::new(px, px)).clone();
+        }
         if self.fitted.len() <= i {
             self.fitted.resize(self.bufs.len(), None);
+        }
+        // Drawn now (P16-M3): the thumbnails drawn longest ago are the first to give their pixels back.
+        self.tick += 1;
+        if let Some(u) = self.used.get_mut(i) {
+            *u = self.tick;
         }
         self.fitted[i]
             .get_or_insert_with(|| if i < PLACEHOLDERS as usize { placeholder_at(i, px) } else { fit(&self.bufs[i], px) })
@@ -1905,17 +2057,103 @@ impl IconTable {
             }
             Outcome::Skipped | Outcome::Looked(_) => return false,
         };
-        if keys.index.contains_key(&key) || self.bufs.len() >= u16::MAX as usize {
-            return false;
-        }
-        self.cap.thumbs += usize::from(key.starts_with("thumb:"));
-        let i = self.bufs.len() as u16;
-        keys.index.insert(key, i);
-        self.bufs.push(p);
+        let thumb = key.starts_with("thumb:");
+        let bytes = p.width() as usize * p.height() as usize * 4;
+        // A thumbnail that had given its pixels back (P16-M3) takes them again at the index it kept.
+        let i = if let Some(i) = keys.evicted.remove(&key) {
+            keys.stale.remove(&i);
+            keys.index.insert(key.clone(), i);
+            self.bufs[i as usize] = p;
+            if let Some(f) = self.fitted.get_mut(i as usize) {
+                *f = None;
+            }
+            self.revived.push(i);
+            i
+        } else {
+            if keys.index.contains_key(&key) || self.bufs.len() >= u16::MAX as usize {
+                return false;
+            }
+            self.cap.thumbs += usize::from(thumb);
+            let i = self.bufs.len() as u16;
+            keys.index.insert(key.clone(), i);
+            self.bufs.push(p);
+            i
+        };
         if let Some(rect) = picture {
             self.pictures.insert(i, rect);
         }
+        if thumb {
+            self.tick += 1;
+            if self.used.len() <= i as usize {
+                self.used.resize(i as usize + 1, 0);
+            }
+            self.used[i as usize] = self.tick;
+            self.thumbs.insert(i, (px, key));
+            self.thumb_bytes += bytes;
+            if self.thumb_bytes > self.budget {
+                self.evict(i);
+            }
+        }
         true
+    }
+
+    /// The thumbnails hold more than the budget (P16-M3): those drawn longest ago give their pixels
+    /// back, down to nine tenths of it, so one pass serves many arrivals. Each keeps its index (a
+    /// one-pixel buffer stands in) and goes from `index` to `evicted` and into `stale`, so the rows
+    /// that show it ask again when a resolve next looks at them; a strip already composed keeps its
+    /// picture meanwhile. `keep` (the thumbnail that just arrived) stays.
+    fn evict(&mut self, keep: u16) {
+        let mut by_use: Vec<(u64, u16)> = self.thumbs.keys().filter(|&&i| i != keep).map(|&i| (self.used.get(i as usize).copied().unwrap_or(0), i)).collect();
+        by_use.sort_unstable();
+        // The most recently drawn stay (`EVICT_KEEP`).
+        by_use.truncate(by_use.len().saturating_sub(self.keep));
+        let target = self.budget / 10 * 9;
+        let mut n = 0;
+        for (_, i) in by_use {
+            if self.thumb_bytes <= target {
+                break;
+            }
+            let Some((px, key)) = self.thumbs.remove(&i) else { continue };
+            let b = &self.bufs[i as usize];
+            self.thumb_bytes = self.thumb_bytes.saturating_sub(b.width() as usize * b.height() as usize * 4);
+            self.bufs[i as usize] = SharedPixelBuffer::new(1, 1);
+            if let Some(f) = self.fitted.get_mut(i as usize) {
+                *f = None;
+            }
+            self.pictures.remove(&i);
+            let keys = Self::at(&mut self.sizes, px);
+            keys.index.remove(&key);
+            keys.later.remove(&key);
+            keys.stale.insert(i);
+            keys.evicted.insert(key, i);
+            n += 1;
+        }
+        self.evicted += n;
+        if !self.evict_logged && n > 0 {
+            self.evict_logged = true;
+            eprintln!(
+                "[icons] thumbnail memory at its cap ({} MB): the {n} drawn longest ago gave their pixels back, asked again when shown",
+                self.budget / (1024 * 1024)
+            );
+        }
+    }
+
+    /// The indices whose pixels came back since the last call (empty nearly always).
+    pub fn take_revived(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.revived)
+    }
+
+    /// Thumbnails holding pixels, the bytes they hold, and how many have given theirs back so far.
+    pub fn thumb_memory(&self) -> (usize, usize, usize) {
+        (self.thumbs.len(), self.thumb_bytes, self.evicted)
+    }
+
+    /// For the tests: a smaller budget than `THUMB_BYTES_CAP`, and how many of the most recently
+    /// drawn stay whatever it is.
+    #[cfg(test)]
+    pub fn set_budget(&mut self, bytes: usize, keep: usize) {
+        self.budget = bytes;
+        self.keep = keep;
     }
 }
 
@@ -2337,8 +2575,98 @@ mod tests {
         // The medium tile: a 48 px icon centred in an 80 px tile, 2 px from its top.
         let m = GridGeom::new(1.0, 4, TileGeom::MEDIUM);
         assert_eq!((m.icon_px, m.icon_pos(0), m.icon_pos(5), m.width(), m.height(2)), (48, (16, 2), (96, 109), 320, 214));
-        assert_eq!(TileGeom::of(true), TileGeom::MEDIUM);
-        assert_eq!(TileGeom::of(false), TileGeom::LARGE);
+        assert_eq!(TileSize::Medium.geom(), TileGeom::MEDIUM);
+        assert_eq!(TileSize::Large.geom(), TileGeom::LARGE);
+    }
+
+    #[test]
+    fn the_four_tile_sizes() {
+        // P16-M3: the bool became a size of four, in Explorer's order.
+        assert_eq!(TileSize::ALL.map(TileSize::index), [0, 1, 2, 3]);
+        assert_eq!(TileSize::ALL.map(TileSize::name), ["xlarge", "large", "medium", "small"]);
+        for t in TileSize::ALL {
+            assert_eq!(TileSize::from_index(t.index()), t);
+            assert_eq!(TileSize::from_name(t.name()), t);
+        }
+        assert_eq!((TileSize::from_index(9), TileSize::from_index(-1)), (TileSize::Large, TileSize::Large));
+        assert_eq!((TileSize::from_name("huge"), TileSize::from_name("")), (TileSize::Large, TileSize::Large), "an older file's value, or none");
+        assert_eq!(TileSize::XLarge.geom(), TileGeom::XLARGE);
+        assert_eq!(TileSize::Small.geom(), TileGeom::SMALL);
+        assert!(TileSize::Small.beside() && !TileSize::XLarge.beside() && !TileSize::Large.beside() && !TileSize::Medium.beside());
+        // The three tiles with the name under the icon: the icon centred across the tile, the name
+        // box from the icon's bottom to the tile's, 2 px in each side.
+        for t in [TileGeom::XLARGE, TileGeom::LARGE, TileGeom::MEDIUM] {
+            assert_eq!(t.icon_left, (t.w - t.icon_px) / 2.0);
+            assert_eq!(t.name_box(), (2.0, t.icon_top + t.icon_px, t.w - 4.0, t.h - t.icon_top - t.icon_px));
+        }
+        assert_eq!(TileGeom::XLARGE.name_box(), (2.0, 258.0, 256.0, 38.0));
+        assert_eq!(TileGeom::LARGE.name_box(), (2.0, 98.0, 92.0, 38.0));
+        assert_eq!(TileGeom::MEDIUM.name_box(), (2.0, 50.0, 76.0, 57.0));
+        // The small tile: the icon at the cell's left, centred on its height, the name beside it.
+        let s = TileGeom::SMALL;
+        assert_eq!((s.icon_left, s.icon_top, (s.h - s.icon_px) / 2.0), (4.0, 3.0, 3.0));
+        assert_eq!(s.name_box(), (24.0, 0.0, 192.0, 22.0));
+        // The strips: a small grid's icons at each cell's left, an extra large one's at 150%.
+        let g = GridGeom::new(1.0, 3, s);
+        assert_eq!((g.icon_px, g.icon_pos(0), g.icon_pos(4), g.width(), g.height(2)), (16, (4, 3), (224, 25), 660, 44));
+        let x = GridGeom::new(1.5, 2, TileGeom::XLARGE);
+        assert_eq!((x.icon_px, x.icon_pos(0), x.icon_pos(3), x.width(), x.height(1)), (384, (3, 3), (393, 447), 780, 444));
+        // A screenful of 800 px: the extra large grid rows and the small ones it reaches.
+        assert_eq!(visible_range(0.0, 800.0, 1000, TileGeom::XLARGE.h), Some((0, 3)));
+        assert_eq!(visible_range(0.0, 800.0, 1000, s.h), Some((0, 37)));
+        // A composed row of small cells is as wide as its cells and one cell high.
+        let row = compose_grid(&[SharedPixelBuffer::new(2, 2)], &[], &[], &GridGeom::new(1.0, 3, s), 1);
+        assert_eq!((row.width(), row.height()), (660, 22));
+        assert_eq!(row.as_slice().iter().filter(|p| p.a != 0).count(), 0, "a 2 px icon is no 16 px icon: left out");
+    }
+
+    #[test]
+    fn thumbnails_over_the_budget_give_their_pixels_back_and_return_at_their_index() {
+        // P16-M3: 8 px thumbnails, 256 bytes each, a budget of four of them.
+        let thumb = || Outcome::Pixels(SharedPixelBuffer::new(8, 8));
+        let key = |k: usize| SharedString::from(format!("thumb:C:\\p\\a{k}.jpg|1|1"));
+        let mut t = IconTable::default();
+        t.set_budget(4 * 256, 0);
+        for k in 0..4 {
+            assert!(t.complete(key(k), 8, thumb()));
+        }
+        let at = |t: &mut IconTable, k: usize| t.keys(8).0.state(&key(k));
+        let KeyState::Ready(i0) = at(&mut t, 0) else { panic!("thumbnail 0 is held") };
+        let KeyState::Ready(i1) = at(&mut t, 1) else { panic!("thumbnail 1 is held") };
+        assert_eq!(t.thumb_memory(), (4, 1024, 0), "at the budget: nothing goes");
+        // Thumbnail 0 is drawn (a strip takes it); a fifth arrives: the two drawn longest ago go,
+        // down to nine tenths of the budget.
+        t.fitted(i0, 8);
+        assert!(t.complete(key(4), 8, thumb()));
+        assert_eq!(t.thumb_memory(), (3, 768, 2));
+        assert_eq!((at(&mut t, 0), at(&mut t, 4)), (KeyState::Ready(i0), at(&mut t, 4)));
+        assert!(matches!(at(&mut t, 4), KeyState::Ready(_)), "the one that just arrived stays");
+        assert_eq!((at(&mut t, 1), at(&mut t, 2)), (KeyState::Missing, KeyState::Missing), "asked again as a missing key is");
+        assert!(matches!(at(&mut t, 3), KeyState::Ready(_)));
+        assert_eq!(t.buffer(i1).width(), 1, "its pixels are gone");
+        assert!(t.keys(8).0.is_stale(i1), "its rows are looked at again");
+        assert!(t.take_revived().is_empty());
+        // Its answer puts the pixels back at the index it kept: the rows need no new one.
+        let images = t.len();
+        assert!(t.complete(key(1), 8, thumb()));
+        assert_eq!(at(&mut t, 1), KeyState::Ready(i1));
+        assert_eq!((t.len(), t.buffer(i1).width()), (images, 8), "no new index");
+        assert!(!t.keys(8).0.is_stale(i1));
+        assert_eq!(t.take_revived(), vec![i1]);
+        assert!(t.take_revived().is_empty());
+        // An icon that is no thumbnail never counts and never goes.
+        assert!(t.complete("ext:.txt".into(), 8, thumb()));
+        assert_eq!(t.thumb_memory().0, 4);
+        // The most recently drawn stay whatever the budget: with three kept beside the arrival, a
+        // budget of one thumbnail still holds four, and only the rest go.
+        let mut t = IconTable::default();
+        t.set_budget(256, 3);
+        for k in 0..6 {
+            assert!(t.complete(key(k), 8, thumb()));
+        }
+        assert_eq!(t.thumb_memory(), (4, 1024, 2));
+        assert_eq!((at(&mut t, 0), at(&mut t, 1)), (KeyState::Missing, KeyState::Missing));
+        assert!((2..6).all(|k| matches!(at(&mut t, k), KeyState::Ready(_))));
     }
 
     #[test]
@@ -2740,6 +3068,14 @@ mod tests {
         req_tx.send(Request { thumbnail: false, key: "ext:.txt".into(), ..thumb(199, 1) }).unwrap();
         assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Pixels(_)));
         assert_eq!(stats.dropped.load(Ordering::Relaxed), 151);
+        // A delivered thumbnail's key is given back (P16-M3): asked again (its pixels were handed
+        // back by the table), it renders again, where a delivered icon's key stays taken.
+        let before = stats.thumbs.load(Ordering::Relaxed);
+        req_tx.send(thumb(10, 3)).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Pixels(_)), "rendered a second time");
+        assert_eq!(stats.thumbs.load(Ordering::Relaxed), before + 1);
+        req_tx.send(Request { thumbnail: false, key: "ext:.txt".into(), ..thumb(199, 1) }).unwrap();
+        assert!(matches!(rep_rx.recv_timeout(Duration::from_secs(2)).unwrap().outcome, Outcome::Skipped), "an icon is rendered once");
     }
 
     #[test]

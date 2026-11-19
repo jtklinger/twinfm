@@ -290,6 +290,15 @@ mod tests {
         assert_eq!(cursor((5.0, 5.0), (170.0, 120.0), 5, 12, m), Some(7));
         assert_eq!(touched((5.0, 5.0), (170.0, 120.0), 5, 12, m), set(&[0, 1, 2, 5, 6, 7]));
         assert_eq!(cursor((5.0, 5.0), (170.0, 100.0), 5, 12, m), Some(2), "still in the first grid row");
+        // P16-M3: extra large tiles (260 x 296), three to a row, and small cells (220 x 22), four.
+        let x = TileGeom::XLARGE;
+        assert_eq!(touched((250.0, 290.0), (270.0, 300.0), 3, 8, x), set(&[0, 1, 3, 4]), "a small band over four corners");
+        assert_eq!(cursor((250.0, 290.0), (270.0, 300.0), 3, 8, x), Some(4));
+        assert_eq!(touched((0.0, 600.0), (780.0, 700.0), 3, 8, x), set(&[6, 7]), "the short last row");
+        let s = TileGeom::SMALL;
+        assert_eq!(touched((10.0, 5.0), (230.0, 50.0), 4, 30, s), set(&[0, 1, 4, 5, 8, 9]), "three rows of cells, two columns");
+        assert_eq!(cursor((10.0, 5.0), (230.0, 50.0), 4, 30, s), Some(9));
+        assert_eq!(touched((900.0, 5.0), (950.0, 50.0), 4, 30, s), set(&[]), "right of the last column");
     }
 
     #[test]

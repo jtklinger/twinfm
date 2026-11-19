@@ -79,9 +79,11 @@
 //!                                    px of the window, through Slint's pointer path (P12-M5: TwinFM's
 //!                                    own popups, such as the sidebar headers' menus)
 //!   history <back|forward>           Alt+Left / Alt+Right through the Slint key path, on the active pane
-//!   view <details|icons>             Ctrl+Shift+1 / Ctrl+Shift+2 (key names CtrlShift1, CtrlShift2): the
-//!                                    active pane's view, the details list or the large-icon grid
-//!                                    (P4-M1); `[view]` lines on stderr. Key names Up, Down, Left,
+//!   view <xlarge|large|medium|small|details>
+//!                                    the active pane's view by Explorer's keys (P16-M3): Ctrl+Shift+1
+//!                                    extra large icons, 2 large (`icons` too), 3 medium, 4 small, 6
+//!                                    details (key names CtrlShift1 to CtrlShift4 and CtrlShift6);
+//!                                    `[view]` lines on stderr. Key names Up, Down, Left,
 //!                                    Right, PageUp, PageDown, Home, End (and ShiftLeft, ShiftRight)
 //!                                    move the cursor in the focused list
 //!   rclick <pane> <row> [shift]      right-click a visible row: press, 60 ms for a frame, release;
@@ -570,10 +572,13 @@ fn parse(script: &str) -> Vec<Step> {
                 "forwardclick" => Step::XButton { pane: num(1) as usize, forward: true, at: a.get(2).map(|s| s.to_string()) },
                 "history" => Step::Key(if a.get(1) == Some(&"forward") { "AltRight" } else { "AltLeft" }.into()),
                 "view" => Step::Key(
+                    // Explorer's keys (P16-M3): `icons` stays the large icons.
                     match a.get(1).copied() {
-                        Some("icons") => "CtrlShift2",
+                        Some("xlarge") => "CtrlShift1",
+                        Some("icons" | "large") => "CtrlShift2",
                         Some("medium") => "CtrlShift3",
-                        _ => "CtrlShift1",
+                        Some("small") => "CtrlShift4",
+                        _ => "CtrlShift6",
                     }
                     .into(),
                 ),
@@ -883,9 +888,22 @@ fn list_top(app: &App, pane: usize) -> f32 {
 /// Where the pane's vertical scrollbar thumb sits with content-y = 0 (right edge of the list,
 /// just under the path bar and column header). Since P12-M2 the thumb is TwinFM's own
 /// (`VScrollBar`, 2 px below the list's top, at least 24 px long): the same aim lands on it.
+/// Since 2026-11-16 the aim follows the thumb when the scroll has carried it past the 17 px (small
+/// icons after the gate's wheel steps: the press landed on the track and the drag scrolled nothing,
+/// ab87); where 17 px is on the thumb, the aim is the one it always was.
 fn thumb(app: &App, pane: usize) -> LogicalPosition {
-    let (_, right_edge) = crate::dnd::pane_x(&crate::window_layout(app), pane);
-    LogicalPosition::new(right_edge - 10.0, list_top(app, pane) + 17.0)
+    use slint::Model;
+    let l = crate::window_layout(app);
+    let (_, right_edge) = crate::dnd::pane_x(&l, pane);
+    let rows = if pane == 0 { app.get_left_rows().row_count() } else { app.get_right_rows().row_count() };
+    let lines = match l.grid[pane] {
+        None => rows,
+        Some(cols) => crate::model::grid_rows(rows, cols),
+    };
+    let top = list_top(app, pane);
+    let visible = l.height - crate::dnd::LIST_BOTTOM_GAP - top;
+    let aim = crate::dnd::thumb_aim(app.invoke_get_scroll(pane as i32), lines as f32 * l.row_px_of(pane), visible);
+    LogicalPosition::new(right_edge - 10.0, top + aim)
 }
 
 /// A visible row's name (its first letters since P13-M2; the row's centre before): rows start under the 3 px padding, the tab strip when there is one,
@@ -1262,6 +1280,8 @@ fn chord(name: &str) -> Vec<SharedString> {
         "CtrlShift1" => vec![k(Key::Control), k(Key::Shift), "1".into()],
         "CtrlShift2" => vec![k(Key::Control), k(Key::Shift), "2".into()],
         "CtrlShift3" => vec![k(Key::Control), k(Key::Shift), "3".into()],
+        "CtrlShift4" => vec![k(Key::Control), k(Key::Shift), "4".into()],
+        "CtrlShift6" => vec![k(Key::Control), k(Key::Shift), "6".into()],
         "ShiftF5" => vec![k(Key::Shift), k(Key::F5)],
         "ShiftF6" => vec![k(Key::Shift), k(Key::F6)],
         "ShiftDelete" => vec![k(Key::Shift), k(Key::Delete)],

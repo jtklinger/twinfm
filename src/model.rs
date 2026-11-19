@@ -3003,6 +3003,16 @@ mod tests {
         assert_eq!(hover_index(100.0, 280.0, 0.0, 136.0, 96.0, 4, 10, true), 9);
         assert_eq!(hover_index(200.0, 280.0, 0.0, 136.0, 96.0, 4, 10, true), -1, "after the last tile of a short grid row");
         assert_eq!(hover_index(10.0, 10.0, -136.0, 136.0, 96.0, 4, 10, true), 4, "scrolled one grid row");
+        // P16-M3: extra large tiles (260 x 296) and small cells (220 x 22).
+        assert_eq!(hover_index(270.0, 300.0, 0.0, 296.0, 260.0, 3, 8, true), 4);
+        assert_eq!(hover_index(530.0, 600.0, 0.0, 296.0, 260.0, 3, 8, true), -1, "after the last tile of the short row");
+        assert_eq!(hover_index(450.0, 50.0, 0.0, 22.0, 220.0, 4, 30, true), 10);
+        assert_eq!(hover_index(890.0, 50.0, 0.0, 22.0, 220.0, 4, 30, true), -1, "the gap right of the last column");
+        assert_eq!(hover_index(10.0, 5.0, -66.0, 22.0, 220.0, 4, 30, true), 12, "scrolled three rows of cells");
+        // Paging by grid rows at both sizes: a viewport of 800 px holds two whole extra large rows
+        // and thirty-six small ones.
+        assert_eq!(grid_page_target(0, 3, 0.0, 800.0, 296.0, 30, true), 3);
+        assert_eq!(grid_page_target(1, 4, 0.0, 800.0, 22.0, 400, true), 141);
     }
 
     #[test]

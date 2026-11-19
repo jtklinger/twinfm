@@ -357,49 +357,62 @@ impl Default for Config {
     }
 }
 
-/// A pane's view: the details list, or the grid at large or medium tiles (Ctrl+Shift+1, 2, 3).
+/// A pane's view (P16-M3: Explorer's views and their order): the grid at extra large, large, medium
+/// or small tiles, or the details list (Ctrl+Shift+1, 2, 3, 4 and 6, as Explorer; 5 is kept for List).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
-    Details,
+    XLarge,
     Large,
     Medium,
+    Small,
+    Details,
 }
 
 impl View {
+    /// Explorer's order: the toolbar's View menu and the dialog's choice list them so.
+    pub const ALL: [View; 5] = [View::XLarge, View::Large, View::Medium, View::Small, View::Details];
+
     /// From the settings file's `view_*` and `tile_*` values: "icons" is the grid, anything else
-    /// the details list; "medium" the medium tiles, anything else the large ones.
+    /// the details list; the tile is `TileSize::from_name` ("xlarge", "medium", "small", anything
+    /// else large, so a file from before P16-M3 reads as it did).
     pub fn from_config(view: &str, tile: &str) -> View {
-        match (view == "icons", tile == "medium") {
-            (false, _) => View::Details,
-            (true, false) => View::Large,
-            (true, true) => View::Medium,
+        if view == "icons" { View::of_tile(crate::icons::TileSize::from_name(tile)) } else { View::Details }
+    }
+
+    pub fn of_tile(t: crate::icons::TileSize) -> View {
+        use crate::icons::TileSize;
+        match t {
+            TileSize::XLarge => View::XLarge,
+            TileSize::Large => View::Large,
+            TileSize::Medium => View::Medium,
+            TileSize::Small => View::Small,
         }
     }
 
-    /// Ctrl+Shift+1, 2 and 3 (`set-view`'s int) and the dialog's choice: 0 details, 1 large, 2
-    /// medium (anything else details).
-    pub fn from_index(i: i32) -> View {
-        match i {
-            1 => View::Large,
-            2 => View::Medium,
-            _ => View::Details,
+    /// The grid's tile size; None for the details list.
+    pub fn tile(self) -> Option<crate::icons::TileSize> {
+        use crate::icons::TileSize;
+        match self {
+            View::XLarge => Some(TileSize::XLarge),
+            View::Large => Some(TileSize::Large),
+            View::Medium => Some(TileSize::Medium),
+            View::Small => Some(TileSize::Small),
+            View::Details => None,
         }
+    }
+
+    /// `set-view`'s int, the dialog's choice and the View menu's tick: the place in `ALL` (0 extra
+    /// large, 1 large, 2 medium, 3 small, 4 details; anything else details).
+    pub fn from_index(i: i32) -> View {
+        usize::try_from(i).ok().and_then(|i| View::ALL.get(i).copied()).unwrap_or(View::Details)
     }
 
     pub fn index(self) -> i32 {
-        match self {
-            View::Details => 0,
-            View::Large => 1,
-            View::Medium => 2,
-        }
+        View::ALL.iter().position(|v| *v == self).unwrap_or(4) as i32
     }
 
     pub fn is_grid(self) -> bool {
         self != View::Details
-    }
-
-    pub fn is_medium(self) -> bool {
-        self == View::Medium
     }
 
     /// The `view_*` value it saves as.
@@ -407,29 +420,30 @@ impl View {
         if self.is_grid() { "icons" } else { "details" }
     }
 
-    /// The dialog's name for it (`settings set view_left <name>`, the `[settings]` lines).
+    /// The dialog's name for it (`settings set view_left <name>`, the driver's `view <name>`, the
+    /// `[settings]` lines).
     pub fn name(self) -> &'static str {
         match self {
-            View::Details => "details",
+            View::XLarge => "xlarge",
             View::Large => "large",
             View::Medium => "medium",
+            View::Small => "small",
+            View::Details => "details",
         }
     }
 
     pub fn from_name(s: &str) -> View {
-        match s {
-            "large" => View::Large,
-            "medium" => View::Medium,
-            _ => View::Details,
-        }
+        View::ALL.into_iter().find(|v| v.name() == s).unwrap_or(View::Details)
     }
 
     /// For the `[view]` lines.
     pub fn label(self) -> &'static str {
         match self {
-            View::Details => "details",
+            View::XLarge => "extra large icons",
             View::Large => "large icons",
             View::Medium => "medium icons",
+            View::Small => "small icons",
+            View::Details => "details",
         }
     }
 }
@@ -440,13 +454,18 @@ impl Config {
         if pane == 0 { View::from_config(&self.view_left, &self.tile_left) } else { View::from_config(&self.view_right, &self.tile_right) }
     }
 
+    /// Pane `pane`'s saved tile size, kept while it shows the details list.
+    pub fn tile(&self, pane: usize) -> crate::icons::TileSize {
+        crate::icons::TileSize::from_name(if pane == 0 { &self.tile_left } else { &self.tile_right })
+    }
+
     /// Set pane `pane`'s view: `view_*` always, `tile_*` for a grid (the details list keeps the
-    /// last tile size, so Ctrl+Shift+1 then back to the grid keeps it in the file too).
+    /// last tile size, so details and then back to the grid keeps it in the file too).
     pub fn set_view(&mut self, pane: usize, v: View) {
         let (view, tile) = if pane == 0 { (&mut self.view_left, &mut self.tile_left) } else { (&mut self.view_right, &mut self.tile_right) };
         *view = v.view_value().into();
-        if v.is_grid() {
-            *tile = if v.is_medium() { "medium" } else { "large" }.into();
+        if let Some(t) = v.tile() {
+            *tile = t.name().into();
         }
     }
 
@@ -1060,13 +1079,30 @@ col_size_right = 99999.0
         assert_eq!((c.view_right.as_str(), c.tile_right.as_str()), ("details", "medium"));
         c.set_view(1, View::Large);
         assert_eq!((c.view_right.as_str(), c.tile_right.as_str()), ("icons", "large"));
-        for v in [View::Details, View::Large, View::Medium] {
+        for v in View::ALL {
             assert_eq!(View::from_index(v.index()), v);
             assert_eq!(View::from_name(v.name()), v);
+            assert_eq!(v.tile().map(View::of_tile), v.is_grid().then_some(v));
         }
         assert_eq!(View::from_index(7), View::Details);
         assert_eq!(View::from_name("icons"), View::Details, "the dialog's names, not the file's");
-        assert!(View::Medium.is_grid() && View::Medium.is_medium() && View::Large.is_grid() && !View::Details.is_grid());
+        assert!(View::Medium.is_grid() && View::Large.is_grid() && View::XLarge.is_grid() && View::Small.is_grid() && !View::Details.is_grid());
+        // P16-M3: Explorer's order and keys; the two new sizes saved and read back; an older file's
+        // "icons" with "medium" or no tile reads as before.
+        assert_eq!(View::ALL.map(View::index), [0, 1, 2, 3, 4]);
+        assert_eq!(View::from_index(-1), View::Details);
+        assert_eq!((View::from_config("icons", "xlarge"), View::from_config("icons", "small")), (View::XLarge, View::Small));
+        assert_eq!(Config::parse("view_left = \"icons\"\n").unwrap().view(0), View::Large);
+        let mut c = Config::default();
+        c.set_view(0, View::XLarge);
+        c.set_view(1, View::Small);
+        let text = c.to_toml();
+        assert!(text.contains("tile_left = \"xlarge\"") && text.contains("tile_right = \"small\""), "{text}");
+        let back = Config::parse(&text).unwrap();
+        assert_eq!((back.view(0), back.view(1)), (View::XLarge, View::Small));
+        assert_eq!((back.tile(0), back.tile(1)), (crate::icons::TileSize::XLarge, crate::icons::TileSize::Small));
+        c.set_view(0, View::Details);
+        assert_eq!((c.view(0), c.tile(0)), (View::Details, crate::icons::TileSize::XLarge), "details keeps the tile size");
     }
 
     #[test]

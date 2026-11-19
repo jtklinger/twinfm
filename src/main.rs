@@ -400,9 +400,9 @@ struct State {
     /// on, `strip` holds grid rows and the strip is `compose_grid_strip`'s.
     grid: [bool; 2],
     grid_n: [usize; 2],
-    /// Each pane's tiles in the grid (settings `tile_left` / `tile_right`, Ctrl+Shift+3), kept
-    /// while it shows the details list.
-    tile: [icons::TileGeom; 2],
+    /// Each pane's tile size in the grid (settings `tile_left` / `tile_right`; Ctrl+Shift+1 to 4),
+    /// kept while it shows the details list.
+    tile: [icons::TileSize; 2],
     /// The grid's icon strip per pane: a ring of slots, one image per grid row, in the pane's
     /// `strip-rows` model (slot k holds grid row g with g % slots == k; the ring holds the
     /// visible grid rows plus the margin, so no two covered rows share a slot). `grid_slots[k]`
@@ -1110,9 +1110,7 @@ fn run_tool(pane: usize, item: &toolbar::MenuItem, tab: Option<u64>) {
                 None => eprintln!("[tab] pane={pane} the menu's tab is gone"),
             }
         }
-        "view:details" => set_view(pane, settings::View::Details),
-        "view:large" => set_view(pane, settings::View::Large),
-        "view:medium" => set_view(pane, settings::View::Medium),
+        c if c.starts_with("view:") => set_view(pane, settings::View::from_name(&c[5..])),
         "selectall" => {
             app.invoke_focus_pane(pane as i32);
             app.invoke_select(pane as i32, SelOp::All as i32, current_row(&app, pane));
@@ -2768,7 +2766,7 @@ struct GridSlot {
 /// grid) and the line's height.
 fn line_of(st: &State, pane: usize, row: usize) -> (usize, f32) {
     if st.grid[pane] {
-        (row / st.model(pane).grid_n(), st.tile[pane].h)
+        (row / st.model(pane).grid_n(), st.tile[pane].geom().h)
     } else {
         (row, list_geom(st).row_px)
     }
@@ -2789,7 +2787,7 @@ fn resolve_view(st: &mut State, app: &App, pane: usize) {
     // the strip covers whole grid rows. The details list: its rows, as before.
     let grid = st.grid[pane];
     let n = if grid { model.grid_n() } else { 1 };
-    let grid_geom = icons::GridGeom::new(scale, n, st.tile[pane]);
+    let grid_geom = icons::GridGeom::new(scale, n, st.tile[pane].geom());
     let (lines, line_px, size_px) = if grid {
         (model.grid_len(), grid_geom.tile.h, grid_geom.icon_px)
     } else {
@@ -3010,17 +3008,13 @@ fn on_grid_cursor(pane: usize, row: i32) {
 
 /// The pane's view now (details, or the grid at its tile size).
 fn view_of(st: &State, pane: usize) -> settings::View {
-    match (st.grid[pane], st.tile[pane] == icons::TileGeom::MEDIUM) {
-        (false, _) => settings::View::Details,
-        (true, false) => settings::View::Large,
-        (true, true) => settings::View::Medium,
-    }
+    if st.grid[pane] { settings::View::of_tile(st.tile[pane]) } else { settings::View::Details }
 }
 
-/// Ctrl+Shift+1 (details), Ctrl+Shift+2 (large icons) or Ctrl+Shift+3 (medium icons) on the active
-/// pane, or the settings dialog. The host swaps its list component for the pane (the rows, cursor
+/// Ctrl+Shift+1 (extra large icons), 2 (large), 3 (medium), 4 (small) or 6 (details) on the active
+/// pane (Explorer's keys since P16-M3), the toolbar's View menu, or the settings dialog. The host swaps its list component for the pane (the rows, cursor
 /// and selection are the host's and stay); the tiles to a grid row are what the list fits at the
-/// new tile width (the host's `cols` follows `medium` as soon as it is set); the scroll is
+/// new tile width (the host's `cols` follows `tile` as soon as it is set); the scroll is
 /// re-aimed so the first visible line still starts at the same entry; the strip is hidden and
 /// recomposed at the new icon size (icons are kept per size, P3-M5); the setting is saved. The
 /// Slint whole-row snap on a rebuilt list shows here (phase-4-plan.md, open questions).
@@ -3040,13 +3034,13 @@ fn set_view(pane: usize, view: settings::View) {
         let model = st.panes[pane].active().model.clone();
         let y = st.view[pane].0;
         let list_px = list_geom(st).row_px;
-        let (old_px, old_n) = if old.is_grid() { (st.tile[pane].h, model.grid_n()) } else { (list_px, 1) };
+        let (old_px, old_n) = if old.is_grid() { (st.tile[pane].geom().h, model.grid_n()) } else { (list_px, 1) };
         let first_entry = ((-y).max(0.0) / old_px).floor() as usize * old_n;
         let grid = view.is_grid();
-        if grid {
-            st.tile[pane] = icons::TileGeom::of(view.is_medium());
+        if let Some(t) = view.tile() {
+            st.tile[pane] = t;
         }
-        if pane == 0 { app.set_left_medium(st.tile[pane] == icons::TileGeom::MEDIUM) } else { app.set_right_medium(st.tile[pane] == icons::TileGeom::MEDIUM) }
+        if pane == 0 { app.set_left_tile(st.tile[pane].index()) } else { app.set_right_tile(st.tile[pane].index()) }
         let cols = (if pane == 0 { app.get_left_grid_cols() } else { app.get_right_grid_cols() }).max(1) as usize;
         st.grid[pane] = grid;
         st.grid_n[pane] = cols;
@@ -3054,7 +3048,7 @@ fn set_view(pane: usize, view: settings::View) {
         model.set_grid_n(cols);
         model.set_grid_cursor(current_row(&app, pane));
         if pane == 0 { app.set_left_grid(grid) } else { app.set_right_grid(grid) }
-        let (new_px, new_n) = if grid { (st.tile[pane].h, cols) } else { (list_px, 1) };
+        let (new_px, new_n) = if grid { (st.tile[pane].geom().h, cols) } else { (list_px, 1) };
         let to = if first_entry == 0 { 0.0 } else { -((first_entry / new_n) as f32 * new_px) };
         app.invoke_set_scroll(pane as i32, to);
         hide_strip(st, &app, pane);
@@ -3070,6 +3064,8 @@ fn set_view(pane: usize, view: settings::View) {
             model.grid_len()
         );
         resolve_view(st, &app, pane);
+        // The View menu's tick is one of the toolbar's facts: set now, not at the next status update.
+        update_tools(st, &app, pane);
         schedule_save(st);
     });
 }
@@ -3083,10 +3079,10 @@ fn sync_grid(st: &mut State, app: &App, pane: usize) {
     if st.grid[pane] == want {
         return;
     }
-    if want {
-        st.tile[pane] = icons::TileGeom::of(view.is_medium());
+    if let Some(t) = view.tile().filter(|_| want) {
+        st.tile[pane] = t;
     }
-    if pane == 0 { app.set_left_medium(st.tile[pane] == icons::TileGeom::MEDIUM) } else { app.set_right_medium(st.tile[pane] == icons::TileGeom::MEDIUM) }
+    if pane == 0 { app.set_left_tile(st.tile[pane].index()) } else { app.set_right_tile(st.tile[pane].index()) }
     let cols = (if pane == 0 { app.get_left_grid_cols() } else { app.get_right_grid_cols() }).max(1) as usize;
     st.grid[pane] = want;
     st.grid_n[pane] = cols;
@@ -3097,6 +3093,7 @@ fn sync_grid(st: &mut State, app: &App, pane: usize) {
         t.model.forget_icons();
     }
     eprintln!("[view] pane={pane} shows {}", if want { view.label() } else { "a list (the sizes view)" });
+    update_tools(st, app, pane);
 }
 
 /// Take every icon reply the worker has sent, intern the images, then re-resolve both panes'
@@ -3107,6 +3104,7 @@ fn drain_icons() {
         let Some(app) = st.app.upgrade() else { return };
         let mut any = false;
         let mut looked = Vec::new();
+        let revived;
         {
             let mut table = st.icons.borrow_mut();
             while let Ok(r) = st.icon_rx.try_recv() {
@@ -3132,6 +3130,25 @@ fn drain_icons() {
                 st.icon_counts.replies += 1;
                 any = true;
             }
+            revived = table.take_revived();
+        }
+        // A thumbnail that had given its pixels back has them again (P16-M3): its rows kept their
+        // index, so the strips showing it are marked here (nothing to do in nearly every call).
+        if !revived.is_empty() {
+            for pane in 0..2 {
+                let model = st.panes[pane].active().model.clone();
+                let shows = |a: usize, b: usize| model.icon_indices(a, b).iter().any(|i| revived.contains(i));
+                if st.grid[pane] {
+                    let n = model.grid_n();
+                    for s in st.grid_slots[pane].iter_mut().flatten() {
+                        if shows(s.row * n, (s.row + 1) * n - 1) {
+                            s.dirty = true;
+                        }
+                    }
+                } else if st.strip[pane].is_some_and(|c| shows(c.first, c.last)) {
+                    st.strip_dirty[pane] = true;
+                }
+            }
         }
         // A lookup's entry takes its marked key (a placeholder until that key's icon lands; a
         // reply whose entry is gone, refreshed or navigated away, finds nothing).
@@ -3145,6 +3162,15 @@ fn drain_icons() {
             resolve_view(st, &app, 1);
         }
     });
+}
+
+/// For the once-a-second `[icons]` line, once any thumbnail has given its pixels back (P16-M3):
+/// the thumbnails holding pixels, their megabytes, and how many gave theirs back so far.
+fn thumb_memory(table: &icons::IconTable) -> String {
+    match table.thumb_memory() {
+        (_, _, 0) => String::new(),
+        (n, bytes, evicted) => format!(" ({n} thumbnails in {} MB, {evicted} given back)", bytes / (1024 * 1024)),
+    }
 }
 
 /// Once a second, when icon work happened: requests sent, replies received, table size, the
@@ -3177,12 +3203,13 @@ fn report_icons() {
         let n = rendered - ren0;
         let t = thumbs - th0;
         eprintln!(
-            "[icons] +{} requests +{} replies (total {} / {}), table {} images, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, thumbs {t} avg {:.2} ms dropped {}, cloud {}, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
+            "[icons] +{} requests +{} replies (total {} / {}), table {} images{}, worker {n} rendered avg {:.2} ms/icon, overlays {}, slow {}, thumbs {t} avg {:.2} ms dropped {}, cloud {}, resolve {} calls avg {:.1} us, compose {} strips avg {:.1} us",
             c.requests - req0,
             c.replies - rep0,
             c.requests,
             c.replies,
             st.icons.borrow().len(),
+            thumb_memory(&st.icons.borrow()),
             if n > 0 { (render_ns - ns0) as f64 / n as f64 / 1e6 } else { 0.0 },
             overlays - ov0,
             slow - slow0,
@@ -4273,7 +4300,7 @@ fn verb_done(d: verbs::Done) {
 /// that row (already scrolled into view), or the background menu when there is no cursor row.
 fn context_key(pane: usize, row: i32, list_x: f32, list_y: f32, content_y: f32, visible_h: f32) {
     let (len, g, grid) = with_state(|st| {
-        (st.model(pane).len(), list_geom(st), st.grid[pane].then(|| (st.model(pane).grid_n(), st.tile[pane])))
+        (st.model(pane).len(), list_geom(st), st.grid[pane].then(|| (st.model(pane).grid_n(), st.tile[pane].geom())))
     });
     match usize::try_from(row).ok().filter(|&r| r < len) {
         Some(r) => {
@@ -5327,12 +5354,13 @@ fn prefetch_drag_icon(st: &mut State, pane: usize, row: usize) {
     let Some(app) = st.app.upgrade() else { return };
     let model = st.model(pane);
     let Some(e) = model.entry(row) else { return };
-    let grid = st.grid[pane];
-    if e.kind == Kind::Drive || (grid && e.icon >= icons::PLACEHOLDERS) {
+    // The grid's image is the tile's picture, but out of small tiles (16 px) it is the list's (P16-M3).
+    let tile = drag_tile(st, pane);
+    if e.kind == Kind::Drive || (tile.is_some() && e.icon >= icons::PLACEHOLDERS) {
         return;
     }
     let scale = app.window().scale_factor();
-    let size_px = if grid { dnd::ImageGeom::tile(scale, st.tile[pane]).icon } else { dnd::ImageGeom::new(scale).icon };
+    let size_px = tile.map_or(dnd::ImageGeom::new(scale), |t| dnd::ImageGeom::tile(scale, t)).icon;
     let path = st.tab(pane).path.join(e.name.as_str());
     let generation = model.generation.get();
     let key = icons::drag_key(&path);
@@ -5342,6 +5370,12 @@ fn prefetch_drag_icon(st: &mut State, pane: usize, row: usize) {
     let mark = if thumbnail { icons::key_mark(&e.icon_key) } else { icons::Mark::None };
     let _ = st.icon_tx.send(icons::Request { generation, pane, key, path: path.clone(), size_px, overlay: false, thumbnail, row: 0, wanted: 0, mark });
     st.drag_icon = Some((path, None));
+}
+
+/// The tile a drag out of the pane takes its image from: the grid's, except the small one, whose
+/// 16 px icon is too small to drag (the details list's image then: the shell's icon).
+fn drag_tile(st: &State, pane: usize) -> Option<icons::TileGeom> {
+    (st.grid[pane] && !st.tile[pane].beside()).then(|| st.tile[pane].geom())
 }
 
 /// The pointer left the drag threshold with the left button (or, `right`, the right button) down
@@ -5383,7 +5417,7 @@ fn drag_start(pane: usize, row: usize, right: bool) {
         let image = dnd::DragImage {
             path: folder.join(shown.name.as_str()),
             cached: Some(st.icons.borrow().buffer(shown.icon).clone()),
-            tile: st.grid[pane].then_some(st.tile[pane]),
+            tile: drag_tile(st, pane),
             tile_picture: shown.icon >= icons::PLACEHOLDERS,
             prefetched: None,
             prefetched_thumbnail: false,
@@ -5545,7 +5579,7 @@ pub fn window_layout(app: &App) -> dnd::Layout {
             app.get_left_grid().then(|| app.get_left_grid_cols().max(1) as usize),
             app.get_right_grid().then(|| app.get_right_grid_cols().max(1) as usize),
         ],
-        tile: [icons::TileGeom::of(app.get_left_medium()), icons::TileGeom::of(app.get_right_medium())],
+        tile: [icons::TileSize::from_index(app.get_left_tile()).geom(), icons::TileSize::from_index(app.get_right_tile()).geom()],
         top: if app.get_toolbar() == settings::Toolbar::Top.index() { dnd::TOP_BAR } else { 0.0 },
         bar: if app.get_toolbar() == settings::Toolbar::Pane.index() { dnd::PANE_BAR } else { 0.0 },
     }
@@ -7897,7 +7931,7 @@ fn visible_rows(st: &State, app: &App, pane: usize) -> Option<(usize, usize)> {
     let (y, h) = st.view[pane];
     let n = if st.grid[pane] { model.grid_n() } else { 1 };
     let (lines, line_px) = if st.grid[pane] {
-        (model.grid_len(), icons::GridGeom::new(app.window().scale_factor(), n, st.tile[pane]).tile.h)
+        (model.grid_len(), icons::GridGeom::new(app.window().scale_factor(), n, st.tile[pane].geom()).tile.h)
     } else {
         (model.len(), list_geom(st).row_px)
     };
@@ -8769,12 +8803,12 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_right_strip_rows(ModelRc::from(strip_rows[1].clone()));
     let views = [config.view(0), config.view(1)];
     let grid = views.map(settings::View::is_grid);
-    // A pane on details keeps its saved tile size for its next Ctrl+Shift+2 or 3.
-    let tile = [icons::TileGeom::of(config.tile_left == "medium"), icons::TileGeom::of(config.tile_right == "medium")];
+    // A pane on details keeps its saved tile size.
+    let tile = [config.tile(0), config.tile(1)];
     app.set_left_grid(grid[0]);
     app.set_right_grid(grid[1]);
-    app.set_left_medium(tile[0] == icons::TileGeom::MEDIUM);
-    app.set_right_medium(tile[1] == icons::TileGeom::MEDIUM);
+    app.set_left_tile(tile[0].index());
+    app.set_right_tile(tile[1].index());
     for (pane, v) in views.iter().enumerate() {
         if v.is_grid() {
             eprintln!("[view] pane={pane} starts as {}", v.label());
