@@ -133,6 +133,11 @@ pub struct Config {
     /// pane), "pane" (icons only, inside each pane above its path bar) or "none". Missing in an
     /// older file: top. Anything else reads as top.
     pub toolbar: String,
+    /// What a drag dropped onto TwinFM does with no key held (P16-M1, `DragDefault`): "explorer"
+    /// (move on the same drive, copy onto another), "copy", "move" or "ask" (the Move here / Copy
+    /// here / Cancel menu on every drop). Missing in an older file: explorer. Anything else reads
+    /// as explorer.
+    pub drag_default: String,
     /// The colour scheme (P10-M1 task 7, Jeremy's "Let's make light/dark a selectable switch inside
     /// twinfm"): "system" (Windows' app mode, followed live), "light" or "dark". Missing in an older
     /// file: system. Anything else reads as system. `TWINFM_SCHEME` (scripts) takes precedence.
@@ -328,6 +333,7 @@ impl Default for Config {
             sidebar_width: 180.0,
             path_bar: "breadcrumb".into(),
             toolbar: "top".into(),
+            drag_default: "explorer".into(),
             theme: "system".into(),
             preview: false,
             preview_width: crate::preview::RATIO_DEFAULT,
@@ -543,6 +549,58 @@ impl Toolbar {
     }
 }
 
+/// What a drop with no key held does (`Config::drag_default`, P16-M1; the dialog's choice is
+/// `index`). Ctrl and Shift force a copy or a move under every choice, and the right button asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragDefault {
+    /// Explorer's rule: move on the same volume, copy onto another.
+    Explorer,
+    Copy,
+    Move,
+    /// The drop menu (Move here, Copy here, Cancel) on every drop.
+    Ask,
+}
+
+impl DragDefault {
+    /// "copy", "move" and "ask" as written; anything else (a missing key, a typo) the default.
+    pub fn from_name(s: &str) -> DragDefault {
+        match s {
+            "copy" => DragDefault::Copy,
+            "move" => DragDefault::Move,
+            "ask" => DragDefault::Ask,
+            _ => DragDefault::Explorer,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DragDefault::Explorer => "explorer",
+            DragDefault::Copy => "copy",
+            DragDefault::Move => "move",
+            DragDefault::Ask => "ask",
+        }
+    }
+
+    /// The dialog's choice: 0 as Explorer, 1 always copy, 2 always move, 3 always ask.
+    pub fn index(self) -> i32 {
+        match self {
+            DragDefault::Explorer => 0,
+            DragDefault::Copy => 1,
+            DragDefault::Move => 2,
+            DragDefault::Ask => 3,
+        }
+    }
+
+    pub fn from_index(i: i32) -> DragDefault {
+        match i {
+            1 => DragDefault::Copy,
+            2 => DragDefault::Move,
+            3 => DragDefault::Ask,
+            _ => DragDefault::Explorer,
+        }
+    }
+}
+
 /// The settings file's name for a sort column, and back (anything unknown sorts by name).
 pub fn sort_name(c: crate::model::SortCol) -> &'static str {
     use crate::model::SortCol;
@@ -657,6 +715,8 @@ pub struct Dialog {
     pub path_bar: String,
     /// "top", "pane" or "none", as in `Config::toolbar`.
     pub toolbar: String,
+    /// "explorer", "copy", "move" or "ask", as in `Config::drag_default` (P16-M1).
+    pub drag_default: String,
     /// "system", "light" or "dark", as in `Config::theme` (P10-M1 task 7).
     pub theme: String,
     /// The preview column (`Config::preview`).
@@ -679,7 +739,7 @@ impl Dialog {
         self
     }
 
-    fn fields(&self) -> [(&'static str, String); 19] {
+    fn fields(&self) -> [(&'static str, String); 20] {
         [
             ("start_left", self.start_left.clone()),
             ("start_right", self.start_right.clone()),
@@ -696,6 +756,7 @@ impl Dialog {
             ("sidebar_visible", self.sidebar_visible.to_string()),
             ("path_bar", self.path_bar.clone()),
             ("toolbar", self.toolbar.clone()),
+            ("drag_default", self.drag_default.clone()),
             ("theme", self.theme.clone()),
             ("preview", self.preview.to_string()),
             ("syntax_colours", self.syntax_colours.to_string()),
@@ -1114,13 +1175,14 @@ show_type = false
             sidebar_visible: true,
             path_bar: "breadcrumb".into(),
             toolbar: "top".into(),
+            drag_default: "explorer".into(),
             theme: "system".into(),
             preview: false,
             syntax_colours: true,
             log: false,
         };
         assert!(open.changes(&open.clone().normalized()).is_empty(), "nothing staged, nothing applied");
-        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, size_on_disk: true, thumbnails: true, row_height: "comfortable".into(), path_bar: "entry".into(), toolbar: "pane".into(), theme: "dark".into(), preview: true, syntax_colours: false, log: true, ..open.clone() };
+        let staged = Dialog { show_hidden_left: true, show_protected_right: true, view_right: "medium".into(), show_type: false, size_on_disk: true, thumbnails: true, row_height: "comfortable".into(), path_bar: "entry".into(), toolbar: "pane".into(), drag_default: "ask".into(), theme: "dark".into(), preview: true, syntax_colours: false, log: true, ..open.clone() };
         assert_eq!(
             open.changes(&staged),
             vec![
@@ -1133,6 +1195,7 @@ show_type = false
                 ("row_height", "compact".into(), "comfortable".into()),
                 ("path_bar", "breadcrumb".into(), "entry".into()),
                 ("toolbar", "top".into(), "pane".into()),
+                ("drag_default", "explorer".into(), "ask".into()),
                 ("theme", "system".into(), "dark".into()),
                 ("preview", "false".into(), "true".into()),
                 ("syntax_colours", "true".into(), "false".into()),
@@ -1206,6 +1269,23 @@ show_type = false
             assert_eq!(Config::parse(&c.to_toml()).unwrap(), c);
         }
         assert_eq!(Toolbar::from_name("left"), Toolbar::Top, "anything else is the default");
+    }
+
+    #[test]
+    fn drag_default_defaults_to_explorer_and_round_trips() {
+        assert_eq!(DragDefault::from_name(&Config::default().drag_default), DragDefault::Explorer);
+        // A file from before P16-M1 has no key: Explorer's rule.
+        assert_eq!(Config::parse("split = true
+").unwrap().drag_default, "explorer");
+        for d in [DragDefault::Explorer, DragDefault::Copy, DragDefault::Move, DragDefault::Ask] {
+            assert_eq!(DragDefault::from_name(d.name()), d);
+            assert_eq!(DragDefault::from_index(d.index()), d);
+            let c = Config { drag_default: d.name().into(), ..Config::default() };
+            let text = c.to_toml();
+            assert!(text.contains(&format!("drag_default = \"{}\"", d.name())), "{text}");
+            assert_eq!(Config::parse(&text).unwrap(), c);
+        }
+        assert_eq!(DragDefault::from_name("link"), DragDefault::Explorer, "anything else is the default");
     }
 
     #[test]

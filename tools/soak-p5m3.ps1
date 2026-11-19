@@ -166,6 +166,11 @@
 # holds a press on the left list's track 8 px from its bottom end for 1.2 s (`trackhold 0 bottom 1200`:
 # one page, then after 500 ms one every 50 ms) and, after End, from its top; the report counts the held presses
 # that repeated (more than one page, two per cycle).
+# P16-M2: there too, after the held presses, each cycle presses the mouse's Back button over the left
+# list's scrollbar (`backclick 0 scroll`: the list overflows, so the press is the bar's; the left pane
+# goes back to the folder it came from) and its Forward button over the left pane's first tab
+# (`forwardclick 0 tab`: forward to the scroll folder again); the report counts the two (one each per
+# cycle).
 # P13-M3: each cycle also makes an empty sz.txt in src\tree\d01 (`touch`), opens the sizes view of src
 # (`sizeview 0 <src>`, `waitsizeview`), opens tree and d01 in place (`sizeopen 0`, `sizeopen 1`), and
 # deletes sz.txt from the view permanently (row 22: tree, d01, its twenty files, then sz.txt, the
@@ -193,6 +198,16 @@
 # by it (`sort 0 4`, the first rows logged by `rows 0 3`) and back by name; the report counts the
 # drags, the fits and the sorts (one each per cycle), and the widths-back lines are three per cycle
 # since.
+# P16-M1: each cycle ends its fixed part with the drag cue: the right pane on spring, a drag of
+# src\tree\d01\f01.txt hovers its row 0 (inner) for 500 ms, under the spring time (`dragover row 1 0
+# 500`: the cue reads Move here, one drive), the same with Ctrl held (`keys ctrl`: Copy here), then
+# "Always copy" through the settings dialog (`settings set drag_default copy`), a `dropfiles 1 0 auto`
+# onto inner (a copy on the same drive, where Explorer's rule would move), the setting put back, and
+# the copy in inner removed (Shift+Delete). The report counts the cue lines by their words, the Ctrl
+# hovers over inner that read as a copy, the setting's changes each way and the drops onto inner with
+# no key that copied (one each per cycle). Since the console check the cycle ends in inner, where the path
+# bar's Up, held by a drag for 1300 ms (`dragover nav 1 up`), takes the right pane back to spring; the
+# report counts those (one per cycle).
 # P16-M3: inside the medium-grid cycle, before its band, the right pane goes on to extra large icons
 # (`view xlarge`, Ctrl+Shift+1) and then small icons (`view small`, Ctrl+Shift+4), and in each: a
 # drop onto tile 0, a left-button drag out of it cancelled (out of an extra large tile the large
@@ -454,6 +469,7 @@ $wait = 'waitops 60000'
 # Paths for the drops; `|` separates them (`;` separates script steps).
 $pick = (Join-Path $src 'tree\d01\f01.txt') + '|' + (Join-Path $src 'tree\d01\f02.txt')
 $back = (Join-Path $dst 'f01.txt') + '|' + (Join-Path $dst 'f02.txt')
+$cueFile = Join-Path $src 'tree\d01\f01.txt'
 $cycle = @(
     "nav 0 $src", "nav 1 $dst", 'sleep 1000',
     'click 0 0', 'key CtrlA', 'copy', $wait,
@@ -670,7 +686,13 @@ $cycle = @(
     'click 1 0', 'toolbar 1 more', 'waitmenu 2000', 'toolmenu Select all', 'sleep 200', 'toolbar 1 more', 'waitmenu 2000', 'toolmenu Move to other pane', $wait,
     "nav 0 $src", 'sleep 500', 'toolbar 0 more', 'waitmenu 2000', 'toolmenu Size all folders', 'waitsize 10000',
     'toolbar 0 more', 'waitmenu 2000', 'toolmenu Show hidden files', 'sleep 300', 'toolbar 0 more', 'waitmenu 2000', 'toolmenu Show hidden files', 'sleep 300',
-    "nav 0 $m2", 'sleep 600', 'band 0 400 11 400 33', 'sleep 300'
+    "nav 0 $m2", 'sleep 600', 'band 0 400 11 400 33', 'sleep 300',
+    # P16-M1: the cue as a move and, with Ctrl, as a copy; a drop under "Always copy" (see the header).
+    "nav 1 $spring", 'sleep 500', "dragover row 1 0 500 $cueFile", 'sleep 200', "dragover row 1 0 500 keys ctrl $cueFile", 'sleep 200',
+    'settings open', 'settings set drag_default copy', 'settings ok', 'sleep 300', "dropfiles 1 0 auto $cueFile", $wait,
+    'settings open', 'settings set drag_default explorer', 'settings ok', 'sleep 300',
+    # ... and from inner the path bar's Up, held by a drag, takes the right pane back to spring.
+    "nav 1 $spring\inner", 'sleep 500', 'click 1 0', 'sdelete', $wait, "dragover nav 1 up 1300 $cueFile", 'sleep 500'
 )
 if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'wheel 0 -40 30') }
 # P14-M3: the hover across both lists (the pointer over the left list's rows, then the right's, then off
@@ -679,7 +701,9 @@ if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'whe
 if ($scroll.Count -ge 1) {
     $cycle += @('hover 300 200', 'sleep 150', 'hover 300 260', 'sleep 150', 'hover 300 320', 'sleep 150', 'hover 900 260', 'sleep 150',
         'hover 900 320', 'sleep 150', 'hover 20 20', 'sleep 150',
-        'trackhold 0 bottom 1200', 'sleep 300', 'click 0 1', 'key End', 'sleep 500', 'trackhold 0 top 1200', 'sleep 300')
+        'trackhold 0 bottom 1200', 'sleep 300', 'click 0 1', 'key End', 'sleep 500', 'trackhold 0 top 1200', 'sleep 300',
+        # P16-M2: the mouse's Back over the left list's scrollbar, then Forward over its first tab (see the header).
+        'backclick 0 scroll', 'sleep 800', 'forwardclick 0 tab', 'sleep 1500')
 }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
 if ($scroll.Count -ge 3) { $cycle += @("nav 1 $($scroll[2])", 'sleep 1500', 'drag 1 300 1000') }
@@ -873,10 +897,25 @@ $classDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: 3
 $reStarts = @($log | Select-String -SimpleMatch '[search] pane=0' | Select-String -SimpleMatch 'content "re:^scratch file 3/[78]$" (regex) in ').Count
 $reDone = @($log | Select-String -Pattern '^\[search\] pane=0 gen=\d+ done: 2 found in ').Count
 $notPattern = @($log | Select-String -SimpleMatch 'not a pattern yet').Count
+# P16-M1: the cue's lines, the Ctrl hover over inner, the setting each way, the drop that copied.
+$cueMove = @($log | Select-String -SimpleMatch '[dnd] cue: Move here').Count
+$cueCopy = @($log | Select-String -SimpleMatch '[dnd] cue: Copy here').Count
+$cueAsk = @($log | Select-String -SimpleMatch '[dnd] cue: Choose on drop').Count
+$cueNone = @($log | Select-String -SimpleMatch '[dnd] cue: none').Count
+$navUp = @($log | Select-String -Pattern '^\[dnd\] spring-loaded: pane 1 goes up to ').Count
+$inner = Join-Path $spring 'inner'
+$cueCtrl = @($log | Select-String -SimpleMatch "[dnd] over pane 1 row 0 ($inner) keys=0x8 " | Select-String -SimpleMatch '-> effect copy').Count
+$dragCopyOn = @($log | Select-String -SimpleMatch '[settings] dialog: drag_default explorer -> copy').Count
+$dragCopyOff = @($log | Select-String -SimpleMatch '[settings] dialog: drag_default copy -> explorer').Count
+$dragCopied = @($log | Select-String -SimpleMatch "[dnd] Drop at pane 1 row 0 ($inner) keys=0x0 " | Select-String -SimpleMatch 'effect copy').Count
 $contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum).Sum
 # P14-M3: held track presses that repeated (more than one page).
 $trackHolds = @($log | Select-String -Pattern '^\[auto\] trackhold pane=0: content-y -?\d+ -> -?\d+ in (\d+) pages')
 $trackRepeated = @($trackHolds | Where-Object { [int]$_.Matches[0].Groups[1].Value -gt 1 }).Count
+# P16-M2: the side buttons over the left list's scrollbar and over a tab (the path bar's own buttons
+# log no "active pane was").
+$barBack = @($log | Select-String -SimpleMatch '[nav] pane=0 Back button (active pane was').Count
+$tabForward = @($log | Select-String -SimpleMatch '[nav] pane=0 Forward button (active pane was').Count
 # P14-M1: saved searches; a content search done counts as the saved one's when an open came before it.
 $searchSaved = @($log | Select-String -SimpleMatch '[sidebar] saved search added "Text "scratch file 3/7" in ').Count
 $searchOpened = @($log | Select-String -SimpleMatch '[sidebar] saved search 0 opened: ').Count
@@ -1007,7 +1046,9 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "mouse: path bar buttons $navButtons (four per cycle), View picks $viewPicks (two per cycle), More picks $morePicks (seven per cycle), details bands done with 2 selected $detailsBands (one per cycle), presses on a row's blank part $blankPresses (one per cycle)"
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
 "held track presses: $($trackHolds.Count), repeated past one page $trackRepeated (two each per cycle)"
+"side buttons: Back over the list's scrollbar $barBack, Forward over a tab $tabForward (one each per cycle)"
 "content search: done $($contentDone.Count) (three per cycle), files read $contentRead (600 or more per cycle), found $contentFound (four per cycle)"
 "search patterns: name searches with a class started $classStarts, done with 30 or more found $classDone; content searches with an expression started $reStarts, done with 2 found $reDone (one each per cycle); not-a-pattern lines $notPattern (must be 0)"
+"drag cue: Move here $cueMove, Copy here $cueCopy, Choose on drop $cueAsk, none $cueNone lines; Ctrl hovers over inner read as a copy $cueCtrl; Always copy on $dragCopyOn, off $dragCopyOff; drops onto inner with no key that copied $dragCopied (the Ctrl hover, the setting each way and that drop: one each per cycle); the path bar's Up held by a drag went up $navUp (one per cycle)"
 "saved searches: saved $searchSaved, opened $searchOpened, run again and found $searchRerun, removed $searchRemoved (one each per cycle)"
 if ($failed.Count -gt 0) { 'failures:'; $failed | Select-Object -First 5 | ForEach-Object { "  $_" } }

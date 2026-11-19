@@ -53,6 +53,13 @@ export global Theme {
     out property <brush> accent: Palette.accent-background;
     out property <brush> cursor: Palette.accent-background;
     out property <brush> selection: dark ? Palette.accent-background.transparentize(72%) : Palette.accent-background.transparentize(78%);
+    // What a drag's drop would do (P16-M1), told apart without reading: a move amber, a copy
+    // green, a drop that asks violet; each the badge's fill and the highlight's border, with
+    // `on-cue` the text on the fill (at least 4.5:1 on each in both schemes).
+    out property <brush> cue-move: dark ? #FBBF24 : #B45309;
+    out property <brush> cue-copy: dark ? #4ADE80 : #15803D;
+    out property <brush> cue-ask: dark ? #A78BFA : #6D28D9;
+    out property <brush> on-cue: dark ? #0A0A0A : #FFFFFF;
     out property <length> radius: 6px;
     out property <length> radius-md: 8px;
     out property <length> radius-lg: 10px;
@@ -161,6 +168,9 @@ export component VScrollBar inherits Rectangle {
     in-out property <length> content-y;
     in property <length> content-height;
     in property <length> visible-height;
+    // The mouse's Back and Forward buttons released over the bar (P16-M2).
+    callback back();
+    callback forward();
     property <length> maximum: max(0px, root.content-height - root.visible-height);
     property <length> track: root.height - 4px;
     property <length> thumb-h: root.maximum <= 0px ? 0px : min(root.track, max(24px, root.track * root.visible-height / root.content-height));
@@ -200,6 +210,8 @@ export component VScrollBar inherits Rectangle {
                 }
             }
             if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) { root.paging = 0; }
+            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.back) { root.back(); }
+            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.forward) { root.forward(); }
         }
         moved => {
             if (self.pressed && self.on-thumb && root.track > root.thumb-h) {
@@ -230,6 +242,9 @@ export component HScrollBar inherits Rectangle {
     in-out property <length> content-x;
     in property <length> content-width;
     in property <length> visible-width;
+    // The mouse's Back and Forward buttons released over the bar (P16-M2).
+    callback back();
+    callback forward();
     property <length> maximum: max(0px, root.content-width - root.visible-width);
     property <length> track: root.width - 4px;
     property <length> thumb-w: root.maximum <= 0px ? 0px : min(root.track, max(24px, root.track * root.visible-width / root.content-width));
@@ -268,6 +283,8 @@ export component HScrollBar inherits Rectangle {
                 }
             }
             if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) { root.paging = 0; }
+            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.back) { root.back(); }
+            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.forward) { root.forward(); }
         }
         moved => {
             if (self.pressed && self.on-thumb && root.track > root.thumb-w) {
@@ -339,6 +356,10 @@ export component Field inherits Rectangle {
     callback accepted(string);
     callback edited(string);
     callback key-pressed(KeyEvent) -> EventResult;
+    // The mouse's Back and Forward buttons released over the field (P16-M2): the input ignores the
+    // two buttons, so Slint offers them to the area behind it, which takes no click from it.
+    callback back();
+    callback forward();
     // focus() on the field goes to the input (a component cannot define focus() itself).
     forward-focus: input;
     public function select-all() { input.select-all(); }
@@ -349,7 +370,13 @@ export component Field inherits Rectangle {
     background: Theme.card;
     clip: true;
     // The press lands in the input wherever it falls in the field.
-    TouchArea { clicked => { input.focus(); } }
+    TouchArea {
+        clicked => { input.focus(); }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+        }
+    }
     input := TextInput {
         x: 8px;
         width: parent.width - 16px;

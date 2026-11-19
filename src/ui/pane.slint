@@ -198,6 +198,8 @@ component NavButton inherits Rectangle {
     in property <string> tip;
     in property <bool> enabled: true;
     in property <string> label;
+    // A drag is held over it and will go back or up (P16-M1).
+    in property <bool> lit;
     callback clicked();
     callback right-clicked(length, length);
     callback back();
@@ -206,7 +208,7 @@ component NavButton inherits Rectangle {
     accessible-role: button;
     accessible-label: root.label;
     border-radius: Theme.radius;
-    background: !root.enabled ? transparent : ta.pressed || ta.has-hover ? Theme.muted : transparent;
+    background: !root.enabled ? transparent : root.lit ? Theme.selection : ta.pressed || ta.has-hover ? Theme.muted : transparent;
     animate background { duration: 100ms; }
     Image { x: 6px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: root.icon; colorize: root.enabled ? Theme.fg : Theme.fg-faint; }
     ta := TouchArea {
@@ -282,6 +284,9 @@ component TabButton inherits Rectangle {
     callback close();
     // menu(x, y): a right click (P15-M3), at window coordinates of the tab's bottom-left corner.
     callback menu(length, length);
+    // The mouse's Back and Forward buttons released over the tab (P16-M2).
+    callback back();
+    callback forward();
     background: transparent;
     // The segment, 2 px inside the slot the strip and dnd.rs TAB_H give the tab (P10-M1).
     Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: Theme.radius; background: root.active ? Theme.tab-active : (ta.has-hover ? Theme.ring-soft : transparent); animate background { duration: 100ms; } }
@@ -292,6 +297,8 @@ component TabButton inherits Rectangle {
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) { root.released(); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.middle) { root.close(); }
             if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.right) { root.menu(root.absolute-position.x, root.absolute-position.y + root.height); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
         }
         moved => {
             if (self.pressed) { root.drag-moved(self.mouse-x); }
@@ -308,7 +315,13 @@ component TabButton inherits Rectangle {
             background: close-ta.has-hover ? Theme.muted : transparent;
             animate background { duration: 100ms; }
             Image { x: 3px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("icons/x.svg"); colorize: Theme.fg-muted; }
-            close-ta := TouchArea { clicked => { root.close(); } }
+            close-ta := TouchArea {
+                clicked => { root.close(); }
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back(); }
+                    if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward(); }
+                }
+            }
         }
     }
 }
@@ -326,6 +339,7 @@ component CrumbButton inherits HorizontalLayout {
     callback forward();
     // A drag over the label would drop into this crumb's folder (P5-M3): lit as a tab is.
     in property <bool> drop-here: false;
+    in property <brush> drop-color: Theme.cursor;
     // The current folder's crumb: full text at weight 500; the others muted links (P10-M1).
     in property <bool> last: false;
     // geometry(x, width): the crumb's x in the crumb row and its label's width, for the drop
@@ -339,7 +353,7 @@ component CrumbButton inherits HorizontalLayout {
         background: root.drop-here ? Theme.selection : ta.has-hover ? Theme.muted : transparent;
         animate background { duration: 100ms; }
         border-width: root.drop-here ? 2px : 0px;
-        border-color: Theme.cursor;
+        border-color: root.drop-color;
         changed width => { root.geometry(root.x, self.width); }
         ta := TouchArea {
             clicked => { root.clicked(); }
@@ -1456,6 +1470,9 @@ component FileListHost inherits Rectangle {
     callback go-up();
     // history(forward): Alt+Left (back) or Alt+Right (forward) in the tab's history.
     callback history(bool);
+    // The mouse's Back and Forward buttons released over the scrollbar (P16-M2).
+    callback back-button();
+    callback forward-button();
     // op: 0 only this row, 1 toggle, 2 range from anchor, 3 all, 4 right-click, 5 clear (model::SelOp)
     callback select(int, int);
     // (content-y, visible-height) whenever the list scrolls, resizes or changes length; Rust
@@ -1986,6 +2003,8 @@ component FileListHost inherits Rectangle {
         content-y <=> root.content-y;
         content-height: root.list && root.grid && !root.sizes ? 0px : root.grid && !root.sizes ? root.grid-rows.length * root.tile-h : root.rows.length * root.row-h;
         visible-height: root.visible-height;
+        back => { root.back-button(); }
+        forward => { root.forward-button(); }
     }
     // The List view's scrollbar along its foot (P16-M5), here beside the VScrollBar and so outside
     // hover-ta: inside the list component a pointer moving along it marked the hover dirty and drew
@@ -2160,6 +2179,12 @@ export component Pane inherits Rectangle {
     in property <int> drop-tab: -1;
     // A drag is over crumb `drop-crumb` of the breadcrumb and would drop into its folder (-1: none).
     in property <int> drop-crumb: -1;
+    // A drag is held over the path bar's Back (0) or Up (2) and will go there (P16-M1; -1: none).
+    in property <int> drop-nav: -1;
+    // What that drop would do (P16-M1): the highlight's border in the effect's colour, and the
+    // words the status line shows in place of its text while the drag hovers ("" none).
+    in property <brush> drop-color: Theme.cursor;
+    in property <string> drop-cue;
     // crumb-geometry(index, x, width): crumb `index`'s x in the crumb row and its label's width, or
     // with index -1 the crumb row's offset in the bar and the bar's width (the drop target's hit
     // test; never per frame).
@@ -2415,6 +2440,8 @@ export component Pane inherits Rectangle {
                     }
                     close => { root.tab-close(i); }
                     menu(x, y) => { root.tab-menu(i, x, y); }
+                    back => { root.back-button(); }
+                    forward => { root.forward-button(); }
                 }
                 // Drop highlight on tab `drop-tab` (a drag would drop into its folder): an overlay over
                 // the tab's slot, no input handling and no accessibility node.
@@ -2425,7 +2452,7 @@ export component Pane inherits Rectangle {
                     height: 30px;
                     background: Theme.selection;
                     border-width: 2px;
-                    border-color: Theme.cursor;
+                    border-color: root.drop-color;
                 }
             }
             Rectangle {
@@ -2460,9 +2487,9 @@ export component Pane inherits Rectangle {
                 width: root.nav-w - 4px;
                 padding-top: 3px;
                 padding-bottom: 3px;
-                NavButton { icon: @image-url("icons/arrow-left.svg"); label: "Back"; tip: "Back (Alt+Left)"; enabled: root.tools.back; clicked => { root.nav-button("back"); } right-clicked(x, y) => { root.history-menu(x, y); } back => { root.back-button(); } forward => { root.forward-button(); } }
+                NavButton { icon: @image-url("icons/arrow-left.svg"); label: "Back"; tip: "Back (Alt+Left)"; enabled: root.tools.back; lit: root.drop-nav == 0; clicked => { root.nav-button("back"); } right-clicked(x, y) => { root.history-menu(x, y); } back => { root.back-button(); } forward => { root.forward-button(); } }
                 NavButton { icon: @image-url("icons/arrow-right.svg"); label: "Forward"; tip: "Forward (Alt+Right)"; enabled: root.tools.forward; clicked => { root.nav-button("forward"); } right-clicked(x, y) => { root.history-menu(x, y); } back => { root.back-button(); } forward => { root.forward-button(); } }
-                NavButton { icon: @image-url("icons/arrow-up.svg"); label: "Up"; tip: "Up (Alt+Up)"; enabled: root.tools.up; clicked => { root.nav-button("up"); } back => { root.back-button(); } forward => { root.forward-button(); } }
+                NavButton { icon: @image-url("icons/arrow-up.svg"); label: "Up"; tip: "Up (Alt+Up)"; enabled: root.tools.up; lit: root.drop-nav == 2; clicked => { root.nav-button("up"); } back => { root.back-button(); } forward => { root.forward-button(); } }
                 NavButton { icon: @image-url("icons/rotate-cw.svg"); label: "Refresh"; tip: "Refresh (F5)"; clicked => { root.nav-button("refresh"); } back => { root.back-button(); } forward => { root.forward-button(); } }
             }
             // The text entry and the breadcrumb share the bar; one of the two shows.
@@ -2470,14 +2497,16 @@ export component Pane inherits Rectangle {
                 visible: root.path-entry;
                 x: root.nav-w;
                 width: parent.width - root.nav-w - 26px - root.filter-w;
-                // Behind the entry, which takes no side button: the mouse's Back or Forward button
-                // over it is ignored, not taken by the pane as a move in the history (P6-M3).
+                // Behind the entry: nothing over it reaches the pane's own area (P6-M3). The mouse's
+                // Back and Forward over the entry close it and move in the history (P16-M2).
                 TouchArea { }
                 path-edit := Field {
                     width: 100%;
                     height: 100%;
                     label: "Path";
                     placeholder-text: "Path";
+                    back => { root.end-path-entry(); root.back-button(); }
+                    forward => { root.end-path-entry(); root.forward-button(); }
                     accepted(s) => {
                         root.navigate(s);
                         root.end-path-entry();
@@ -2523,6 +2552,7 @@ export component Pane inherits Rectangle {
                         label: c.label;
                         last: i == root.crumbs.length - 1;
                         drop-here: i == root.drop-crumb;
+                        drop-color: root.drop-color;
                         geometry(x, w) => { root.crumb-geometry(i, x, w); }
                         clicked => { root.crumb-clicked(i); }
                         menu(x, y) => { root.crumb-menu(i, x, y); }
@@ -2548,8 +2578,15 @@ export component Pane inherits Rectangle {
                     border-radius: Theme.radius;
                     background: Theme.card;
                     clip: true;
-                    // The press lands in the input wherever it falls in the field.
-                    TouchArea { clicked => { search-input.focus(); } }
+                    // The press lands in the input wherever it falls in the field; the mouse's Back
+                    // and Forward, which the input ignores, land here too (P16-M2).
+                    TouchArea {
+                        clicked => { search-input.focus(); }
+                        pointer-event(ev) => {
+                            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.back) { root.back-button(); }
+                            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.forward) { root.forward-button(); }
+                        }
+                    }
                     search-input := TextInput {
                         x: 8px;
                         width: parent.width - 12px;
@@ -2722,6 +2759,8 @@ export component Pane inherits Rectangle {
             active: root.active;
             go-up => { root.go-up(); }
             history(f) => { root.history(f); }
+            back-button => { root.back-button(); }
+            forward-button => { root.forward-button(); }
             open-row(i) => { root.open-row(i); }
             focus-requested => { root.focus-requested(); }
             tab-key => { root.tab-key(); }
@@ -2749,7 +2788,8 @@ export component Pane inherits Rectangle {
                 spacing: 8px;
                 padding-top: 3px;
                 padding-bottom: 3px;
-                Text { text: root.status.left; font-size: 12px; color: Theme.fg-muted; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                // While a drag hovers a spot that takes it: what the drop would do, in the effect's colour (P16-M1).
+                Text { text: root.drop-cue != "" ? root.drop-cue : root.status.left; font-size: 12px; font-weight: root.drop-cue != "" ? 600 : 400; color: root.drop-cue != "" ? root.drop-color : Theme.fg-muted; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                 if root.status.count != "": Badge { text: root.status.count; }
                 if root.status.size != "": Badge { text: root.status.size; outline: true; }
             }
@@ -2816,13 +2856,13 @@ export component Pane inherits Rectangle {
             height: list.row-h;
             background: Theme.selection;
             border-width: 2px;
-            border-color: Theme.cursor;
+            border-color: root.drop-color;
         }
         Rectangle {
             visible: root.drop-row < 0;
             background: Theme.selection;
             border-width: 3px;
-            border-color: Theme.cursor;
+            border-color: root.drop-color;
         }
     }
 

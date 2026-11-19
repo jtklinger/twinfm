@@ -116,6 +116,53 @@ impl Job {
     }
 }
 
+/// A job of more items than this is logged in its short form (`brief`), and only this many of its
+/// item lines are (`item_lines`).
+pub const LOG_ITEMS: usize = 20;
+
+/// A job for a log line: its `Debug` form, or for more than `LOG_ITEMS` items the kind, the count,
+/// the first item and where they go. One String either way, so the line is one write: stderr is
+/// unbuffered and a path's `Debug` form is written a character at a time, which made a 40,000-item
+/// job's line 1.5 million writes on the UI thread (P16-M2, the big move).
+pub fn brief(job: &Job) -> String {
+    if job.count() <= LOG_ITEMS {
+        return format!("{job:?}");
+    }
+    let n = job.count();
+    match job {
+        Job::Copy { sources, dest_dir } => format!("Copy {{ {n} sources, first {:?}, dest_dir: {dest_dir:?} }}", sources[0]),
+        Job::Move { sources, dest_dir } => format!("Move {{ {n} sources, first {:?}, dest_dir: {dest_dir:?} }}", sources[0]),
+        Job::MoveAs { items, dest_dir } => format!("MoveAs {{ {n} items, first {:?}, dest_dir: {dest_dir:?} }}", items[0]),
+        Job::Delete { sources, permanent } => format!("Delete {{ {n} sources, first {:?}, permanent: {permanent} }}", sources[0]),
+        Job::Restore { items } => format!("Restore {{ {n} items, first {:?} }}", items[0]),
+        Job::Compress { sources, dest_dir, format } => format!("Compress {{ {n} sources, first {:?}, dest_dir: {dest_dir:?}, format: {format:?} }}", sources[0]),
+        Job::Rename { .. } | Job::NewFolder { .. } | Job::NewFile { .. } | Job::Extract { .. } => format!("{job:?}"),
+    }
+}
+
+/// A finished job's item lines for the log, as one String (one write): every item of a job of up
+/// to `LOG_ITEMS`; of a larger one the first `LOG_ITEMS`, then the first `LOG_ITEMS` failed ones
+/// after those, then how many are not listed.
+pub fn item_lines(results: &[ItemResult]) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let line = |out: &mut String, r: &ItemResult| {
+        let to = r.dest.as_ref().map_or_else(|| "-".to_string(), |p| p.display().to_string());
+        let _ = writeln!(out, "[fileops]   item 0x{:08X} {} -> {to}", r.hr as u32, r.source.display());
+    };
+    let head = results.len().min(LOG_ITEMS);
+    results[..head].iter().for_each(|r| line(&mut out, r));
+    let rest = &results[head..];
+    if rest.is_empty() {
+        return out;
+    }
+    let failed = rest.iter().filter(|r| !r.ok()).count();
+    rest.iter().filter(|r| !r.ok()).take(LOG_ITEMS).for_each(|r| line(&mut out, r));
+    let listed = failed.min(LOG_ITEMS);
+    let _ = writeln!(out, "[fileops]   {} more item(s) not listed ({} ok, {} failed)", rest.len() - listed, rest.len() - failed, failed - listed);
+    out
+}
+
 pub struct Request {
     pub id: u64,
     pub job: Job,
@@ -161,6 +208,9 @@ pub struct Done {
     /// A copy's or move's destination paths that were there before it ran (P11-M3): an item that
     /// landed on one replaced that file (`undo::forbid_if_replaced`).
     pub existed: Vec<PathBuf>,
+    /// An undo or redo job its check refused before anything ran (`Worker::submit_checked`):
+    /// `outcome` is `Error` with the reason, and there are no results.
+    pub refused: bool,
 }
 
 /// The destination paths a copy or move would land on that are there already (P11-M3), looked at
@@ -384,7 +434,7 @@ pub fn hidden_dialogs() -> Vec<(isize, String)> {
 /// Handle to the worker. Dropping it ends the worker's message loop.
 pub struct Worker {
     tid: u32,
-    tx: Sender<Request>,
+    tx: Sender<(Request, Option<undo::Undo>)>,
     /// Jobs with an id up to this one that have not started yet are cancelled unrun (Escape).
     cancel_upto: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
@@ -393,7 +443,7 @@ impl Worker {
     /// Start the worker. `done` is called on the worker thread after each job, `progress` on the
     /// worker thread while one runs (throttled by `ProgressGate`).
     pub fn spawn(done: impl Fn(Done) + Send + 'static, progress: impl Fn(Progress) + Send + 'static) -> Worker {
-        let (tx, rx) = unbounded::<Request>();
+        let (tx, rx) = unbounded::<(Request, Option<undo::Undo>)>();
         let (tid_tx, tid_rx) = crossbeam_channel::bounded(1);
         let cancel_upto = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let cancel = cancel_upto.clone();
@@ -417,8 +467,17 @@ impl Worker {
     }
 
     /// Queue a job. False if the worker is gone.
+    #[cfg(test)]
     pub fn submit(&self, r: Request) -> bool {
-        if self.tx.send(r).is_err() {
+        self.submit_checked(r, None)
+    }
+
+    /// Queue an undo or redo job with the record it replays: the worker runs `undo::check` on it
+    /// as the job's first step and refuses the job (`Done::refused`) when the items are no longer
+    /// where the original left them. On the worker because the check asks the file system about
+    /// every item (40,000 calls on the UI thread for the big move, P16-M2).
+    pub fn submit_checked(&self, r: Request, check: Option<undo::Undo>) -> bool {
+        if self.tx.send((r, check)).is_err() {
             return false;
         }
         // SAFETY: posting to a thread id; fails harmlessly if the thread has exited.
@@ -441,7 +500,7 @@ impl Drop for Worker {
     }
 }
 
-fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, done: impl Fn(Done), progress: Rc<dyn Fn(Progress)>) {
+fn run_loop(rx: Receiver<(Request, Option<undo::Undo>)>, cancel_upto: &std::sync::atomic::AtomicU64, done: impl Fn(Done), progress: Rc<dyn Fn(Progress)>) {
     // SAFETY: initialises COM for this thread as an STA; balanced by CoUninitialize below.
     let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     // SAFETY: a zeroed MSG is a valid out-buffer for GetMessageW.
@@ -453,9 +512,15 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
             break;
         }
         if msg.hwnd.is_null() && msg.message == WM_RUN {
-            while let Ok(req) = rx.try_recv() {
-                let mut existed = existing_dests(&req.job);
+            while let Ok((req, check)) = rx.try_recv() {
                 let cancelled = || req.id <= cancel_upto.load(std::sync::atomic::Ordering::Acquire);
+                if !cancelled() {
+                    if let Some(Err(why)) = check.as_ref().map(undo::check) {
+                        done(Done { id: req.id, job: req.job, outcome: Outcome::Error(why), results: Vec::new(), existed: Vec::new(), refused: true });
+                        continue;
+                    }
+                }
+                let mut existed = existing_dests(&req.job);
                 let (outcome, results) = if cancelled() {
                     (Outcome::Cancelled, Vec::new()) // cancelled while queued: never started
                 } else if com >= 0 {
@@ -471,7 +536,7 @@ fn run_loop(rx: Receiver<Request>, cancel_upto: &std::sync::atomic::AtomicU64, d
                 } else {
                     (Outcome::Failed(com), Vec::new())
                 };
-                done(Done { id: req.id, job: req.job, outcome, results, existed });
+                done(Done { id: req.id, job: req.job, outcome, results, existed, refused: false });
             }
             continue;
         }
@@ -652,6 +717,18 @@ struct Sink {
     id: u64,
     progress: Rc<dyn Fn(Progress)>,
     gate: std::cell::Cell<ProgressGate>,
+    /// When `PerformOperations` was called, until the first item's callback has logged how long
+    /// the shell took to reach it (P16-M2's timing lines).
+    called: std::cell::Cell<Option<Instant>>,
+}
+
+/// Log, once per job, how long after `PerformOperations` the shell reached its first item.
+unsafe fn first_item(this: *mut c_void) {
+    // SAFETY: `this` is our Sink, called on the worker.
+    let sink = unsafe { &*(this as *const Sink) };
+    if let Some(t0) = sink.called.take() {
+        eprintln!("[fileops] id={}: the shell's first item {} ms after PerformOperations", sink.id, t0.elapsed().as_millis());
+    }
 }
 
 static SINK_VTBL: SinkVtbl = SinkVtbl {
@@ -743,13 +820,19 @@ unsafe extern "system" fn sink_ok0(_: *mut c_void) -> HRESULT {
 unsafe extern "system" fn sink_finish(_: *mut c_void, _: HRESULT) -> HRESULT {
     0
 }
-unsafe extern "system" fn sink_pre_rename(_: *mut c_void, _: u32, _: Item, _: Wstr) -> HRESULT {
+unsafe extern "system" fn sink_pre_rename(this: *mut c_void, _: u32, _: Item, _: Wstr) -> HRESULT {
+    // SAFETY: called by the shell through the pointer we advised.
+    unsafe { first_item(this) };
     0
 }
-unsafe extern "system" fn sink_pre_move_copy(_: *mut c_void, _: u32, _: Item, _: Item, _: Wstr) -> HRESULT {
+unsafe extern "system" fn sink_pre_move_copy(this: *mut c_void, _: u32, _: Item, _: Item, _: Wstr) -> HRESULT {
+    // SAFETY: as above.
+    unsafe { first_item(this) };
     0
 }
-unsafe extern "system" fn sink_pre_delete(_: *mut c_void, _: u32, _: Item) -> HRESULT {
+unsafe extern "system" fn sink_pre_delete(this: *mut c_void, _: u32, _: Item) -> HRESULT {
+    // SAFETY: as above.
+    unsafe { first_item(this) };
     0
 }
 unsafe extern "system" fn sink_progress(this: *mut c_void, total: u32, sofar: u32) -> HRESULT {
@@ -803,24 +886,44 @@ unsafe extern "system" fn sink_post_new(
     0
 }
 
+/// A path as `own_results` compares it first: lowercase, no trailing separator (`same_dir`'s rule).
+fn lower_key(p: &Path) -> String {
+    p.to_string_lossy().trim_end_matches('\\').to_lowercase()
+}
+
 /// `a` names the same file as `b`: equal ignoring case, or equal once both parents are
 /// canonicalised (the shell hands back long paths; `%TEMP%` can be an 8.3 path).
 fn same_path(a: &Path, b: &Path) -> bool {
-    let lower = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
-    if lower(a) == lower(b) {
+    if lower_key(a) == lower_key(b) {
         return true;
     }
-    let canon = |p: &Path| -> Option<String> {
+    let mut dirs = CanonDirs::default();
+    matches!((dirs.key(a), dirs.key(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// A path as `own_results` compares it on a miss: its lowercase name under its canonicalised
+/// folder (the shell hands back long paths; `%TEMP%` can be an 8.3 path). Each folder is
+/// canonicalised once; None for a path with no name or in a folder that is not there.
+#[derive(Default)]
+struct CanonDirs(std::collections::HashMap<String, Option<String>>);
+
+impl CanonDirs {
+    fn key(&mut self, p: &Path) -> Option<String> {
         let name = p.file_name()?.to_string_lossy().to_lowercase();
-        let dir = std::fs::canonicalize(p.parent()?).ok()?;
-        Some(format!("{}\\{name}", dir.to_string_lossy().trim_end_matches('\\').to_lowercase()))
-    };
-    matches!((canon(a), canon(b)), (Some(x), Some(y)) if x == y)
+        let parent = p.parent()?;
+        let dir = self.0.entry(lower_key(parent)).or_insert_with(|| std::fs::canonicalize(parent).ok().map(|d| lower_key(&d)));
+        Some(format!("{}\\{name}", dir.as_ref()?))
+    }
 }
 
 /// Keep the results for the job's own items: the shell also reports the contents of a copied,
-/// moved or deleted folder one by one.
+/// moved or deleted folder one by one. A result is an item's when its folder is the folder of one
+/// of the items and it names one of them, each compared ignoring case and then canonicalised.
+/// Linear in the items and the results (P16-M2): both are looked up in sets built once, the
+/// canonicalised ones only when a result first misses (every result against every item before,
+/// with file system calls among them, which kept a move of thousands of files waiting).
 fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
+    use std::collections::HashSet;
     let mine: Vec<&Path> = match job {
         Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } => {
             sources.iter().map(PathBuf::as_path).collect()
@@ -830,14 +933,38 @@ fn own_results(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
         Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => vec![parent.as_path()],
         Job::Restore { .. } | Job::Compress { .. } | Job::Extract { .. } => return all, // one result per item, made by `restore` or `archive`
     };
-    // Top-level items share a parent with a source; checking the parent first keeps the
-    // canonicalising comparison off a folder's contents.
-    let parents: Vec<&Path> = mine.iter().filter_map(|p| p.parent()).collect();
-    let is_top = |r: &ItemResult| match job {
-        Job::NewFolder { .. } | Job::NewFile { .. } => true,
-        _ => r.source.parent().is_some_and(|rp| parents.iter().any(|p| same_dir(p, rp) || same_path(p, rp))),
-    };
-    all.into_iter().filter(|r| is_top(r) && mine.iter().any(|m| same_path(m, &r.source))).collect()
+    // A new item's result names the folder it was made in: no parent to check.
+    let any_folder = matches!(job, Job::NewFolder { .. } | Job::NewFile { .. });
+    let items: HashSet<String> = mine.iter().map(|m| lower_key(m)).collect();
+    let parents: HashSet<String> = mine.iter().filter_map(|m| m.parent()).map(lower_key).collect();
+    let mut dirs = CanonDirs::default();
+    let mut canon_parents: Option<HashSet<String>> = None;
+    let mut canon_items: Option<HashSet<String>> = None;
+    let mut own = Vec::new();
+    for r in all {
+        // Top-level items share a parent with an item; checking the parent first keeps the
+        // canonicalising off a folder's contents.
+        let top = any_folder
+            || r.source.parent().is_some_and(|rp| {
+                parents.contains(&lower_key(rp))
+                    || dirs.key(rp).is_some_and(|k| {
+                        let set = canon_parents.get_or_insert_with(|| mine.iter().filter_map(|m| dirs.key(m.parent()?)).collect());
+                        set.contains(&k)
+                    })
+            });
+        if !top {
+            continue;
+        }
+        let is_item = items.contains(&lower_key(&r.source))
+            || dirs.key(&r.source).is_some_and(|k| {
+                let set = canon_items.get_or_insert_with(|| mine.iter().filter_map(|m| dirs.key(m)).collect());
+                set.contains(&k)
+            });
+        if is_item {
+            own.push(r);
+        }
+    }
+    own
 }
 
 /// Run one job on this (STA, pumping) thread: TwinFM's own archive writers for a Compress job and
@@ -891,6 +1018,7 @@ fn perform_inner(req: &Request, progress: &Rc<dyn Fn(Progress)>, results: &mut V
     }
     // Items stay alive until after PerformOperations (the operation also holds its own references).
     let mut keep: Vec<Com> = Vec::new();
+    let handing = Instant::now();
     match &req.job {
         Job::Copy { sources, dest_dir } | Job::Move { sources, dest_dir } => {
             let dest = shell_item(dest_dir)?;
@@ -948,7 +1076,9 @@ fn perform_inner(req: &Request, progress: &Rc<dyn Fn(Progress)>, results: &mut V
         id: req.id,
         progress: progress.clone(),
         gate: std::cell::Cell::new(ProgressGate::new()),
+        called: std::cell::Cell::new(Some(Instant::now())),
     })) as *mut c_void);
+    eprintln!("[fileops] id={}: {} item(s) handed to the shell in {} ms", req.id, req.job.count(), handing.elapsed().as_millis());
     let mut cookie = 0u32;
     let advised = unsafe { (v.advise)(op.0, sink.0, &mut cookie) } >= 0;
     let performed = unsafe { (v.perform_operations)(op.0) };
@@ -1224,6 +1354,167 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// `own_results` as it was until P16-M2 (every result against every item): what the sets must
+    /// still answer.
+    fn own_results_pairwise(job: &Job, all: Vec<ItemResult>) -> Vec<ItemResult> {
+        fn same_path(a: &Path, b: &Path) -> bool {
+            let lower = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
+            if lower(a) == lower(b) {
+                return true;
+            }
+            let canon = |p: &Path| -> Option<String> {
+                let name = p.file_name()?.to_string_lossy().to_lowercase();
+                let dir = std::fs::canonicalize(p.parent()?).ok()?;
+                Some(format!("{}\\{name}", dir.to_string_lossy().trim_end_matches('\\').to_lowercase()))
+            };
+            matches!((canon(a), canon(b)), (Some(x), Some(y)) if x == y)
+        }
+        let mine: Vec<&Path> = match job {
+            Job::Copy { sources, .. } | Job::Move { sources, .. } | Job::Delete { sources, .. } => {
+                sources.iter().map(PathBuf::as_path).collect()
+            }
+            Job::MoveAs { items, .. } => items.iter().map(|(p, _)| p.as_path()).collect(),
+            Job::Rename { source, .. } => vec![source.as_path()],
+            Job::NewFolder { parent, .. } | Job::NewFile { parent, .. } => vec![parent.as_path()],
+            Job::Restore { .. } | Job::Compress { .. } | Job::Extract { .. } => return all,
+        };
+        let parents: Vec<&Path> = mine.iter().filter_map(|p| p.parent()).collect();
+        let is_top = |r: &ItemResult| match job {
+            Job::NewFolder { .. } | Job::NewFile { .. } => true,
+            _ => r.source.parent().is_some_and(|rp| parents.iter().any(|p| same_dir(p, rp) || same_path(p, rp))),
+        };
+        all.into_iter().filter(|r| is_top(r) && mine.iter().any(|m| same_path(m, &r.source))).collect()
+    }
+
+    fn result_for(source: PathBuf) -> ItemResult {
+        ItemResult { source, dest: None, hr: 0 }
+    }
+
+    /// P16-M2, the big-copy slowdown: 20,000 items of one folder, one of them a folder whose
+    /// 20,000 files the shell reports too. Pure (the folder does not exist, so nothing
+    /// canonicalises). Every result against every item is 400 million comparisons; the bound is
+    /// one no such loop meets.
+    #[test]
+    fn own_results_is_linear_in_the_items() {
+        const N: usize = 20_000;
+        let dir = PathBuf::from(r"C:\twinfm-p16m2-no-such-folder\Big Folder");
+        let sources: Vec<PathBuf> = (0..N).map(|i| dir.join(format!("item-{i:05}.txt"))).collect();
+        // The shell's reports: each item (its name in another case), and after the first, a
+        // folder, its contents one by one.
+        let mut all = Vec::with_capacity(2 * N);
+        for (i, s) in sources.iter().enumerate() {
+            all.push(result_for(PathBuf::from(s.to_string_lossy().to_uppercase())));
+            if i == 0 {
+                all.extend((0..N).map(|k| result_for(s.join(format!("inside-{k:05}.bin")))));
+            }
+        }
+        let want: Vec<ItemResult> = sources.iter().map(|s| result_for(PathBuf::from(s.to_string_lossy().to_uppercase()))).collect();
+        let job = Job::Copy { sources, dest_dir: PathBuf::from(r"D:\dest") };
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let own = own_results(&job, all);
+            let _ = tx.send((own, t0.elapsed()));
+        });
+        let (own, took) = rx.recv_timeout(Duration::from_secs(10)).expect("20,000 items' results are sorted out within 10 s");
+        eprintln!("[test] own_results: {} of {} kept in {} ms", own.len(), 2 * N, took.as_millis());
+        assert_eq!(own.len(), N, "a copied folder's contents are not reported");
+        assert!(own == want, "the items' own results, in the shell's order");
+    }
+
+    /// P16-M2: the sets keep what the pairwise loop kept, on real folders where a miss
+    /// canonicalises (the folders above the items' own by their 8.3 names when the volume has
+    /// them, as the CI runner's %TEMP% is, and a `.` in the path where it has none).
+    #[test]
+    fn own_results_keeps_what_the_pairwise_loop_kept() {
+        let root = std::env::temp_dir().join(format!("twinfm-p16m2-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let long = root.join("A Long Folder Name");
+        std::fs::create_dir_all(long.join("sub folder").join("deeper")).unwrap();
+        std::fs::create_dir_all(root.join("other")).unwrap();
+        for f in ["a.txt", "b.txt", "sub folder\\in.txt", "sub folder\\deeper\\d.txt"] {
+            std::fs::write(long.join(f), b"x").unwrap();
+        }
+        let short_of = |p: &Path| {
+            let w = wide(p.as_os_str());
+            let mut buf = vec![0u16; 1024];
+            // SAFETY: NUL-terminated input; `buf` holds its length in u16s.
+            let n = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+            if n == 0 || n >= buf.len() { p.to_path_buf() } else { PathBuf::from(String::from_utf16_lossy(&buf[..n])) }
+        };
+        // The items' folder under its long name below an 8.3 path, which canonicalising follows,
+        // and wholly by 8.3 names, which it does not (the folder's own name is compared as text).
+        let short = short_of(&root).join("A Long Folder Name");
+        let all_short = short_of(&long);
+        let dotted = root.join(".").join("A Long Folder Name");
+        let both = |job: &Job, all: Vec<ItemResult>| {
+            let old = own_results_pairwise(job, all.clone());
+            assert_eq!(own_results(job, all), old, "{job:?}");
+            old
+        };
+        let names = |rs: &[ItemResult]| rs.iter().map(|r| r.source.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let dest_dir = root.join("other");
+
+        // The items named one way, the shell's reports another: 8.3, a `.` in the path, another
+        // case, a trailing separator on the folder. A folder's contents, at two depths, and a
+        // result from elsewhere are dropped each time.
+        for said in [&long, &short, &dotted] {
+            for reported in [&long, &short, &dotted, &PathBuf::from(long.to_string_lossy().to_uppercase())] {
+                let sources = vec![said.join("a.txt"), said.join("sub folder"), said.join("B.TXT")];
+                let all = vec![
+                    result_for(reported.join("a.txt")),
+                    result_for(reported.join("sub folder")),
+                    result_for(reported.join("sub folder").join("in.txt")),
+                    result_for(reported.join("sub folder").join("deeper")),
+                    result_for(reported.join("sub folder").join("deeper").join("d.txt")),
+                    result_for(reported.join("b.txt")),
+                    result_for(reported.join("not an item.txt")),
+                    result_for(root.join("other").join("a.txt")),
+                ];
+                for job in [
+                    Job::Copy { sources: sources.clone(), dest_dir: dest_dir.clone() },
+                    Job::Move { sources: sources.clone(), dest_dir: dest_dir.clone() },
+                    Job::Delete { sources: sources.clone(), permanent: true },
+                ] {
+                    assert_eq!(names(&both(&job, all.clone())), ["a.txt", "sub folder", "b.txt"], "{said:?} against {reported:?}");
+                }
+            }
+            let all = vec![result_for(all_short.join("a.txt")), result_for(all_short.join("sub folder").join("in.txt"))];
+            both(&Job::Copy { sources: vec![said.join("a.txt")], dest_dir: dest_dir.clone() }, all);
+        }
+        // Items of two folders, one of them inside the other: its file is an item, its
+        // neighbour is not.
+        let sources = vec![long.join("a.txt"), long.join("sub folder").join("in.txt")];
+        let all = vec![
+            result_for(short.join("a.txt")),
+            result_for(short.join("sub folder").join("in.txt")),
+            result_for(short.join("sub folder").join("deeper")),
+            result_for(short.join("b.txt")),
+        ];
+        assert_eq!(names(&both(&Job::Copy { sources, dest_dir: dest_dir.clone() }, all)), ["a.txt", "in.txt"]);
+        // The other jobs.
+        let all = vec![result_for(dotted.join("a.txt")), result_for(dotted.join("b.txt"))];
+        let job = Job::Rename { source: long.join("a.txt"), new_name: "c.txt".into() };
+        assert_eq!(names(&both(&job, all.clone())), ["a.txt"]);
+        let job = Job::MoveAs { items: vec![(long.join("b.txt"), "z.txt".into())], dest_dir: dest_dir.clone() };
+        assert_eq!(names(&both(&job, all.clone())), ["b.txt"]);
+        // A new item's result names the folder it was made in.
+        let all = vec![result_for(short.clone()), result_for(root.join("other"))];
+        let job = Job::NewFolder { parent: long.clone(), name: "n".into() };
+        assert_eq!(both(&job, all.clone()).len(), 1);
+        let job = Job::NewFile { parent: long.clone(), name: "n.txt".into() };
+        assert_eq!(both(&job, all.clone()).len(), 1);
+        // A drive's root has no name to compare; items in folders that are not there never
+        // canonicalise.
+        let job = Job::Delete { sources: vec![PathBuf::from(r"C:\"), PathBuf::from(r"C:\twinfm-p16m2-gone\x.txt")], permanent: true };
+        let all = vec![result_for(PathBuf::from(r"c:\")), result_for(PathBuf::from(r"C:\TWINFM-P16M2-GONE\X.TXT\")), result_for(PathBuf::from(r"C:\twinfm-p16m2-gone\.\x.txt"))];
+        assert_eq!(both(&job, all).len(), 1);
+        // One result per item already: all kept.
+        let all = vec![result_for(root.join("other")), result_for(long.join("a.txt"))];
+        assert_eq!(both(&Job::Restore { items: vec![] }, all).len(), 2);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn restore_moves_only_out_of_the_bin() {
         assert!(in_recycle_bin(Path::new(r"C:\$Recycle.Bin\S-1-5-21-1\$RAB12CD.txt")));
@@ -1270,6 +1561,72 @@ mod tests {
         assert_eq!(flags(&nf, false), base | FOF_RENAMEONCOLLISION);
         let file = Job::NewFile { parent: PathBuf::from(r"C:\d"), name: NEW_FILE_NAME.into() };
         assert_eq!(flags(&file, false), base | FOF_RENAMEONCOLLISION, "a new file is numbered as a new folder is");
+    }
+
+    /// P16-M2 (the big move): a job's log form and its item lines stay small whatever its size.
+    #[test]
+    fn large_jobs_are_logged_in_short() {
+        let small = Job::Move { sources: vec![r"C:\a\x.txt".into(), r"C:\a\y.txt".into()], dest_dir: r"C:\b".into() };
+        assert_eq!(brief(&small), format!("{small:?}"), "up to LOG_ITEMS items: the Debug form, as before");
+        let twenty = Job::Delete { sources: (0..LOG_ITEMS).map(|i| format!(r"C:\a\f{i}").into()).collect(), permanent: true };
+        assert_eq!(brief(&twenty), format!("{twenty:?}"));
+        let sources: Vec<PathBuf> = (0..40_000).map(|i| format!(r"C:\a\file_{i}.txt").into()).collect();
+        let big = Job::Move { sources: sources.clone(), dest_dir: r"C:\b".into() };
+        assert_eq!(brief(&big), r#"Move { 40000 sources, first "C:\\a\\file_0.txt", dest_dir: "C:\\b" }"#);
+        assert_eq!(brief(&Job::Copy { sources: sources.clone(), dest_dir: r"C:\b".into() }), r#"Copy { 40000 sources, first "C:\\a\\file_0.txt", dest_dir: "C:\\b" }"#);
+        assert_eq!(brief(&Job::Delete { sources: sources.clone(), permanent: false }), r#"Delete { 40000 sources, first "C:\\a\\file_0.txt", permanent: false }"#);
+        let items: Vec<(PathBuf, String)> = sources.iter().take(21).map(|s| (s.clone(), "n".to_string())).collect();
+        assert_eq!(brief(&Job::MoveAs { items, dest_dir: r"C:\b".into() }), r#"MoveAs { 21 items, first ("C:\\a\\file_0.txt", "n"), dest_dir: "C:\\b" }"#);
+        let items: Vec<(PathBuf, PathBuf)> = sources.iter().take(21).map(|s| (s.clone(), s.clone())).collect();
+        assert!(brief(&Job::Restore { items }).starts_with(r#"Restore { 21 items, first ("C:\\a\\file_0.txt", "#));
+
+        let ok = |i: usize| ItemResult { source: format!(r"C:\a\f{i}").into(), dest: Some(format!(r"C:\b\f{i}").into()), hr: 0 };
+        let bad = |i: usize| ItemResult { source: format!(r"C:\a\f{i}").into(), dest: None, hr: -2147024894 };
+        // Up to LOG_ITEMS: every item, no count line.
+        let few: Vec<ItemResult> = (0..LOG_ITEMS).map(ok).collect();
+        let text = item_lines(&few);
+        assert_eq!(text.lines().count(), LOG_ITEMS);
+        assert_eq!(text.lines().next(), Some(r"[fileops]   item 0x00000000 C:\a\f0 -> C:\b\f0"));
+        assert_eq!(item_lines(&[]), "");
+        // 40,000, all well: the first twenty and the count.
+        let many: Vec<ItemResult> = (0..40_000).map(ok).collect();
+        let text = item_lines(&many);
+        assert_eq!(text.lines().count(), LOG_ITEMS + 1);
+        assert_eq!(text.lines().last(), Some("[fileops]   39980 more item(s) not listed (39980 ok, 0 failed)"));
+        // Failures after the first twenty stay findable: the first twenty of them, then the count.
+        let mixed: Vec<ItemResult> = (0..1000).map(|i| if i >= 100 && i % 10 == 0 { bad(i) } else { ok(i) }).collect();
+        let text = item_lines(&mixed);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), LOG_ITEMS + LOG_ITEMS + 1);
+        assert_eq!(lines[LOG_ITEMS], r"[fileops]   item 0x80070002 C:\a\f100 -> -");
+        assert_eq!(lines[2 * LOG_ITEMS - 1], r"[fileops]   item 0x80070002 C:\a\f290 -> -");
+        assert_eq!(lines[2 * LOG_ITEMS], "[fileops]   960 more item(s) not listed (890 ok, 70 failed)");
+    }
+
+    /// P16-M2: an undo job's check runs on the worker. One whose items are gone is refused before
+    /// anything runs; one whose items are there runs.
+    #[test]
+    fn the_worker_checks_an_undo_before_it_runs() {
+        let root = std::env::temp_dir().join(format!("twinfm-p16m2-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("back")).unwrap();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let (tx, rx) = unbounded();
+        let worker = Worker::spawn(move |d| {
+            let _ = tx.send(d);
+        }, |_| {});
+        let job = |name: &str| Job::Move { sources: vec![root.join(name)], dest_dir: root.join("back") };
+        let record = |name: &str| undo::Undo { job: job(name), expect: vec![root.join(name)], must_be_empty: false };
+        assert!(worker.submit_checked(Request { id: 1, job: job("gone.txt"), hwnd: 0, no_confirm: true }, Some(record("gone.txt"))));
+        let d = rx.recv_timeout(Duration::from_secs(30)).expect("the refused job reports");
+        assert_eq!((d.id, d.refused, d.results.len()), (1, true, 0));
+        assert_eq!(d.outcome, Outcome::Error("Cannot undo: gone.txt is no longer there".into()));
+        assert!(worker.submit_checked(Request { id: 2, job: job("a.txt"), hwnd: 0, no_confirm: true }, Some(record("a.txt"))));
+        let d = rx.recv_timeout(Duration::from_secs(30)).expect("the job reports");
+        assert_eq!((d.id, d.refused, d.outcome.clone()), (2, false, Outcome::Done));
+        assert!(root.join("back").join("a.txt").is_file() && !root.join("a.txt").exists());
+        drop(worker);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
