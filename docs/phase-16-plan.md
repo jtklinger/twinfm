@@ -1560,9 +1560,42 @@ was not read for this run.
 
 ### Gate
 
-Not run yet. The code head for the gate build is 5413138 (the commit after it changes the soak
-script, `CLAUDE.md` and the record only); the defaults triplet, built and handed to Jeremy by the
-coordinating session. Its figures go here.
+Not run yet. The code head for the gate build is ab28bbe, the branch with main taken in (below); the
+defaults triplet, built and handed to Jeremy by the coordinating session. Its figures go here.
+
+### Main taken in (2026-11-19): P16-M1, M2 and M4 under this milestone
+
+Main at 5f5024b merged into the branch, commit ab28bbe. By hand: one line of
+`searchfollow::tests::looked_at_paths_match_as_the_walk_does`, its needle built by P16-M4's
+`content::plain` (`Needle` and `fold` are gone). The app's code needed no edit: the following reads a
+file through `Content::holds`, which is P16-M4's engine since the merge, so what "Settled first" timed
+on the old plain search is now read by the faster one (not timed again). `CLAUDE.md`, this record and
+the soak script keep every milestone's part.
+
+- **Tests**: `378 passed; 0 failed; 3 ignored` (main's 375 and this milestone's three), on the second
+  full run. The first failed `fileops::archive::tests::extracts_on_the_worker` at its last line, the
+  scratch folder's removal, the flake of the worker tests recorded under P16-M2; it passed alone and in
+  the rerun. `cargo build --release` finished with no warning.
+- **`tools\check-p16m6.ps1`**: exit 0, no panic. The name search's rows came and went as before; the
+  content search's row was added, removed and added again, one file read each time (about 9 ms a
+  window); the 3,000-file burst landed whole in three windows (429, 826 and 1,745 rows; the UI thread
+  0.5 to 2.0 ms a window).
+- **`tools\soak-p5m3.ps1 -Minutes 10`** (the merged script, every milestone's steps), harness-launched
+  with the coordinating session's leave: ran 10.2 min, window closed by the script, exit code 0, 0
+  panicked lines; 227 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0, every
+  "must be 0" count 0.
+
+```
+search tabs following: took a watch 24, windows 6; the made file's row added 3, taken off by its window 3 or by the re-stat 0 (one per cycle between the two); stopped following 0 (0 expected)
+content search: done 9 (three per cycle), files read 1812 (600 or more per cycle), found 12 (four per cycle)
+drag cue: Move here 25, Copy here 40, Choose on drop 6, none 71 lines; ... the path bar's Up held by a drag went up 2 (one per cycle)
+side buttons: Back over the list's scrollbar 2, Forward over a tab 2 (one each per cycle)
+sizes view following: watching 5 (two per cycle), windows 10 (three or more per cycle), the last window against F5's walk: matches 2 (one per cycle), mismatches 0 (must be 0); re-walks 0, stopped 0 (0 expected)
+working set: start 160.9 MB at 5 s, end 237.9 MB at 600 s; private: 169.8 -> 221.3 MB
+```
+
+  All three cycles reached this milestone's step this time: the open search gained and lost its row in
+  each.
 
 What the gate scenario meets of this milestone: no search tab, so nothing of the following runs.
 `watch_tabs` sorts its candidates by one more key (the same order for folder tabs), each tab's
