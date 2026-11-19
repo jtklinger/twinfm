@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (374 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (375 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -400,7 +400,7 @@ put off, with where it came from.
   (`fs::enumerate::walk` with a `Content`) reads every plain file below the root (`src/fs/content.rs`):
   over 16 MB (`CONTENT_MAX_BYTES`, the listing's size) never opened; binary by its first 8 KB (a
   NUL, or over 10% invalid UTF-8 or control characters; a UTF-16 byte order mark is text); decoded
-  by the preview's rule; a case-insensitive substring (`content::fold`, a final sigma read as
+  by the preview's rule; a case-insensitive substring (until P16-M4 `content::fold`, since then the engine, below; a final sigma read as
   sigma); a result's row reads `file.txt  (sub\dir)  <the first matching line>` (`model::search_label`
   with `Entry::found`; control characters as spaces, trimmed, cut at 200 characters, a match deeper
   in a long line shown from 40 characters before it behind `…`). Never read: a cloud-only file (its
@@ -1612,6 +1612,22 @@ put off, with where it came from.
   before. `tools/check-p16m2.ps1` is the scripted check. Since P16-M2 each soak cycle also presses
   Back over the left list's scrollbar in the first scroll folder and Forward over the left pane's
   first tab, and the report counts them (one each per cycle).
+  Since P16-M4, **plain content search runs on the engine `re:` uses**: the box's plain text is
+  compiled as an escaped, case-insensitive expression (`fs::content::plain`: `regex::escape`, then
+  `model::compile`), so no file's text is copied to be searched (`content::fold`, the old
+  `first_match` and `Needle` are gone; `first_match` is now P15-M4's `first_match_regex`, and
+  `enumerate::Content`'s `needle` an `Option<regex::Regex>`). Every typed character is itself (no
+  operator). Letter case is the engine's (Unicode simple case folding): `σ`, `ς` and `Σ` are one
+  letter as before; other shapes of one letter now find each other (`s` and the long `ſ`, `μ` and
+  the micro sign `µ`, the Greek symbol forms, old Cyrillic shapes); the dotted capital `İ` is found
+  only by `İ` (a plain `i` found it before); and letters whose case pairs are newer than the regex
+  crate's Unicode tables are found only in the case typed. The ignored test
+  `fs::content::tests::probe_plain_against_the_engine` (`cargo test --release -- --ignored
+  probe_plain_against_the_engine --nocapture`, about two seconds) lists every such pair again: run
+  it after a bump of the `regex` crate or of Rust. The live filter and the name search are
+  untouched. The `[search]` start line's kind stays `(text)` for a plain content search. No new
+  driver step or line. `tools/time-p15m4.ps1` times plain text against `re:` as before; the two
+  now take the same path.
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`

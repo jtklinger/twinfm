@@ -2,8 +2,8 @@
 //! (`enumerate::walk`) hands every plain file of the tree here; a file over `CONTENT_MAX_BYTES` is
 //! never opened, a binary one is closed after its first `SNIFF_BYTES`, and a text one is decoded by
 //! the preview's rule (a UTF-16 byte order mark, else UTF-8 with invalid bytes replaced) and searched
-//! case-insensitively for a plain substring, or since P15-M4 for a regular expression (`Needle`);
-//! the first matching line is kept for the result's row.
+//! with a regular expression: a typed one (P15-M4), or since P16-M4 the plain text escaped (`plain`),
+//! case-insensitive either way; the line the match starts in is kept for the result's row.
 //! A cloud-only file (by the listing's attributes) is never opened: reading it would download it.
 
 use std::io::Read;
@@ -38,33 +38,18 @@ pub enum Outcome {
     Unreadable,
 }
 
-/// What a content search looks for: plain text, `fold`ed, or a typed expression (P15-M4:
-/// `model::compile`'s, case-insensitive, `^` and `$` at each line's ends).
-#[derive(Clone, Debug)]
-pub enum Needle {
-    Text(String),
-    Regex(regex::Regex),
-}
-
-impl Default for Needle {
-    fn default() -> Needle {
-        Needle::Text(String::new())
-    }
+/// A plain text as the expression that finds it (P16-M4): every character itself, case-insensitive
+/// by the engine's rule (Unicode simple case folding: `σ`, `ς` and `Σ` are one letter, as are `s`
+/// and `ſ`; `İ` is found only by `İ`), on the engine a typed `re:` expression uses
+/// (`model::compile`), so no file's text is copied to be searched. Until P16-M4 the text and each
+/// file were lowercased into new strings and compared.
+pub fn plain(text: &str) -> Result<regex::Regex, String> {
+    crate::model::compile(&regex::escape(text))
 }
 
 /// The listing's attributes say the file's data is not on this machine (the preview's rule).
 pub fn cloud_only(attrs: u32) -> bool {
     attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE) != 0
-}
-
-/// Lower case, one character at a time, a final sigma `ς` read as `σ` (so "ΣΊΣΥΦΟΣ" and "σίσυφος"
-/// fold alike; `char::to_lowercase` never gives `ς`).
-pub fn fold(s: &str) -> String {
-    s.chars().flat_map(lower).collect()
-}
-
-fn lower(c: char) -> impl Iterator<Item = char> {
-    c.to_lowercase().map(|l| if l == 'ς' { 'σ' } else { l })
 }
 
 /// Text or binary from the file's first bytes: a UTF-16 byte order mark is text; else a NUL byte,
@@ -105,29 +90,9 @@ pub fn decode(bytes: &[u8], enc: Encoding) -> String {
     }
 }
 
-/// The first line of `text` holding `needle` (already `fold`ed, not empty), as the row shows it.
-pub fn first_match(text: &str, needle: &str) -> Option<String> {
-    // Fold the whole text once; when no character changed its length the offsets are the text's.
-    let mut folded = String::with_capacity(text.len());
-    let mut same = true;
-    for c in text.chars() {
-        let before = folded.len();
-        folded.extend(lower(c));
-        same &= folded.len() - before == c.len_utf8();
-    }
-    if same {
-        let at = folded.find(needle)?;
-        let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
-        let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-        return Some(cut_line(&text[start..end], text[start..at].chars().count()));
-    }
-    // A character that folds to another length (rare): line by line, the line shown from its start.
-    text.lines().find(|l| fold(l).contains(needle)).map(|l| cut_line(l, 0))
-}
-
 /// The line of `text` where `re` first matches, as the row shows it: the line the match starts in,
-/// taken from the match's own place (no second pass), cut around it as a plain match's is.
-pub fn first_match_regex(text: &str, re: &regex::Regex) -> Option<String> {
+/// taken from the match's own place (no second pass), cut around it.
+pub fn first_match(text: &str, re: &regex::Regex) -> Option<String> {
     let at = re.find(text)?.start();
     let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
@@ -159,7 +124,7 @@ fn cut_line(line: &str, at: usize) -> String {
 }
 
 /// Read the file at `path` (`size` from the listing) and look for `needle`.
-pub fn search_file(path: &Path, size: u64, needle: &Needle) -> Outcome {
+pub fn search_file(path: &Path, size: u64, needle: &regex::Regex) -> Outcome {
     if size > CONTENT_MAX_BYTES {
         return Outcome::OverCap;
     }
@@ -174,11 +139,7 @@ pub fn search_file(path: &Path, size: u64, needle: &Needle) -> Outcome {
         return Outcome::Unreadable;
     }
     let text = decode(&bytes, enc);
-    let line = match needle {
-        Needle::Text(t) => first_match(&text, t),
-        Needle::Regex(re) => first_match_regex(&text, re),
-    };
-    match line {
+    match first_match(&text, needle) {
         Some(line) => Outcome::Found(line),
         None => Outcome::Missed,
     }
@@ -193,7 +154,7 @@ mod tests {
         // P15-M4: `model::compile`'s expression against a file's text.
         let re = |e: &str| crate::model::compile(e).unwrap();
         let text = "first line\r\n  The Needle is here\t(end)  \nneedle at the start\r\nlast";
-        let m = |e: &str| first_match_regex(text, &re(e));
+        let m = |e: &str| first_match(text, &re(e));
         assert_eq!(m("needle").as_deref(), Some("The Needle is here (end)"), "no letter case, the line trimmed");
         assert_eq!(m("(?-i)needle").as_deref(), Some("needle at the start"), "case-sensitive when asked");
         assert_eq!(m("^needle").as_deref(), Some("needle at the start"), "^ at a line's start");
@@ -205,13 +166,70 @@ mod tests {
         // A dot stays inside its line; an expression that spans lines shows the one it starts in.
         assert_eq!(m("first.*needle"), None);
         assert_eq!(m(r"line\s+the").as_deref(), Some("first line"));
-        // A match deep in a long line is shown from a little before it, as plain text's is.
+        // A match deep in a long line is shown from a little before it.
         let deep = format!("{}needle 42{}", "a".repeat(5000), "b".repeat(5000));
-        let row = first_match_regex(&deep, &re(r"needle \d+")).unwrap();
+        let row = first_match(&deep, &re(r"needle \d+")).unwrap();
         assert_eq!(row.chars().count(), LINE_MAX_CHARS + 2);
         assert_eq!(row.find("needle 42"), Some('…'.len_utf8() + LINE_LEAD_CHARS));
         // Characters of several bytes before the match: the cut counts characters.
-        assert_eq!(first_match_regex("x\nİstanbul Needle\n", &re("needle")).as_deref(), Some("İstanbul Needle"));
+        assert_eq!(first_match("x\nİstanbul Needle\n", &re("needle")).as_deref(), Some("İstanbul Needle"));
+    }
+
+    /// The P16-M4 probe (not part of the gates: `cargo test --release -- --ignored
+    /// probe_plain_against_the_engine --nocapture`): where a plain text searched as an escaped,
+    /// case-insensitive expression answers differently from `fold` and a substring. Every
+    /// character with a case mapping as the needle, against every character there is as the
+    /// text; then some words.
+    #[test]
+    #[ignore]
+    fn probe_plain_against_the_engine() {
+        // The comparison used until P16-M4: lowercase one character at a time, a final sigma as
+        // a sigma, the needle a substring of the text.
+        fn fold(s: &str) -> String {
+            s.chars().flat_map(|c| c.to_lowercase().map(|l| if l == 'ς' { 'σ' } else { l })).collect()
+        }
+        let all: Vec<char> = (0..=0x10FFFFu32).filter_map(char::from_u32).collect();
+        let hay: String = all.iter().collect();
+        let cased: Vec<char> = all.iter().copied().filter(|c| c.to_lowercase().ne([*c]) || c.to_uppercase().ne([*c])).collect();
+        // Characters whose folded form is not themselves, with it.
+        let changed: Vec<(char, String)> = all.iter().filter_map(|&c| Some((c, fold(&c.to_string()))).filter(|(c, f)| f.chars().ne([*c]))).collect();
+        eprintln!("[probe] {} characters, {} with a case mapping, {} that fold to something else", all.len(), cased.len(), changed.len());
+        let name = |c: char| format!("{} U+{:04X}", if c.is_control() || c == '\u{345}' { ' ' } else { c }, c as u32);
+        let (mut only_old, mut only_new) = (Vec::new(), Vec::new());
+        for &n in &cased {
+            let needle = fold(&n.to_string());
+            let mut old: Vec<char> = changed.iter().filter(|(_, f)| f.contains(&needle)).map(|(c, _)| *c).collect();
+            let mut own = needle.chars();
+            if let (Some(x), None) = (own.next(), own.next()) {
+                if fold(&x.to_string()).chars().eq([x]) {
+                    old.push(x);
+                }
+            }
+            old.sort_unstable();
+            let re = plain(&n.to_string()).unwrap();
+            let new: Vec<char> = re.find_iter(&hay).flat_map(|m| m.as_str().chars().collect::<Vec<_>>()).collect();
+            for &c in old.iter().filter(|c| !new.contains(c)) {
+                only_old.push(format!("{} in {}", name(n), name(c)));
+            }
+            for &c in new.iter().filter(|c| !old.contains(c)) {
+                only_new.push(format!("{} in {}", name(n), name(c)));
+            }
+        }
+        eprintln!("[probe] found today, not by the engine: {}", only_old.len());
+        only_old.iter().for_each(|l| eprintln!("[probe]   {l}"));
+        eprintln!("[probe] found by the engine, not today: {}", only_new.len());
+        only_new.iter().for_each(|l| eprintln!("[probe]   {l}"));
+        let words = [
+            ("i", "İ"), ("ali", "ALİ"), ("istanbul", "İSTANBUL"), ("İstanbul", "istanbul"), ("İstanbul", "İSTANBUL"), ("İstanbul", "i\u{307}stanbul"),
+            ("istanbul", "ISTANBUL"), ("ı", "I"), ("straße", "STRASSE"), ("strasse", "Straße"), ("straße", "STRAẞE"), ("ﬁle", "FILE"), ("file", "ﬁle"),
+            ("σίσυφος", "ΣΊΣΥΦΟΣ"), ("ΣΊΣΥΦΟΣ", "σίσυφος"), ("ς", "Σ"), ("s", "ſ"), ("ſ", "S"), ("μ", "µ"), ("k", "\u{212A}"), ("å", "\u{212B}"),
+            ("é", "É"), ("é", "e\u{301}"), ("ǆ", "ǅ"), ("ǌ", "Ǌ"), ("ა", "Ა"), ("ꭰ", "Ꭰ"), ("ԥ", "Ԥ"), ("a.b", "A.B"), ("a.b", "AxB"), ("(x)", "(X)"), ("[a]", "[A]"), ("a\\b", "A\\B"),
+        ];
+        for (n, text) in words {
+            let old = fold(text).contains(&fold(n));
+            let new = first_match(text, &plain(n).unwrap()).is_some();
+            eprintln!("[probe] {:9} \"{n}\" in \"{text}\": today {old}, the engine {new}", if old == new { "same" } else { "DIFFERENT" });
+        }
     }
 
     #[test]
@@ -250,29 +268,56 @@ mod tests {
 
     #[test]
     fn the_first_matching_line_is_kept_and_cut() {
+        let m = |text: &str, needle: &str| first_match(text, &plain(needle).unwrap());
         let text = "first line\r\n  The Needle is here\t(end)  \nanother needle\n";
-        assert_eq!(first_match(text, "needle").as_deref(), Some("The Needle is here (end)"), "the first, trimmed, a tab as a space");
-        assert_eq!(first_match(text, "NEEDLE"), None, "the needle comes folded");
-        assert_eq!(first_match(text, &fold("NEEDLE")).as_deref(), Some("The Needle is here (end)"));
-        assert_eq!(first_match("no match", "needle"), None);
-        assert_eq!(first_match("needle", "needle").as_deref(), Some("needle"), "no line break at all");
-        assert_eq!(first_match("ΣΊΣΥΦΟΣ rolls", &fold("σίσυφος")).as_deref(), Some("ΣΊΣΥΦΟΣ rolls"), "Greek folds both ways");
-        // 'İ' folds to two characters: the line-by-line path.
-        assert_eq!(first_match("x\nİstanbul Needle\n", "needle").as_deref(), Some("İstanbul Needle"));
+        assert_eq!(m(text, "needle").as_deref(), Some("The Needle is here (end)"), "the first, trimmed, a tab as a space");
+        assert_eq!(m(text, "NEEDLE").as_deref(), Some("The Needle is here (end)"), "no letter case, either way");
+        assert_eq!(m("no match", "needle"), None);
+        assert_eq!(m("needle", "needle").as_deref(), Some("needle"), "no line break at all");
+        assert_eq!(m("ΣΊΣΥΦΟΣ rolls", "σίσυφος").as_deref(), Some("ΣΊΣΥΦΟΣ rolls"), "Greek, the final sigma as any sigma");
+        assert_eq!(m("σίσυφος rolls", "ΣΊΣΥΦΟΣ").as_deref(), Some("σίσυφος rolls"), "and the other way");
+        // 'İ' before the match: the line is shown around the match as any other.
+        assert_eq!(m("x\nİstanbul Needle\n", "needle").as_deref(), Some("İstanbul Needle"));
         // A short match in a long line: the first 200 characters and an ellipsis.
         let long = format!("needle {}", "x".repeat(300));
-        let row = first_match(&long, "needle").unwrap();
+        let row = m(&long, "needle").unwrap();
         assert_eq!(row.chars().count(), LINE_MAX_CHARS + 1);
         assert!(row.starts_with("needle ") && row.ends_with('…'));
         // A match deep in a long line: shown from 40 characters before it.
         let deep = format!("{}needle{}", "a".repeat(5000), "b".repeat(5000));
-        let row = first_match(&deep, "needle").unwrap();
+        let row = m(&deep, "needle").unwrap();
         assert!(row.starts_with('…') && row.ends_with('…'), "{row}");
         assert_eq!(row.chars().count(), LINE_MAX_CHARS + 2);
         assert_eq!(row.find("needle"), Some('…'.len_utf8() + LINE_LEAD_CHARS));
         // A match near the end of a long line: the line's tail, no ellipsis after it.
         let tail = format!("{}needle", "a".repeat(500));
-        assert!(first_match(&tail, "needle").unwrap().ends_with("needle"));
+        assert!(m(&tail, "needle").unwrap().ends_with("needle"));
+    }
+
+    /// P16-M4: a plain text is searched for as itself, whatever it holds, and by the engine's
+    /// letter cases; where those differ from the lowercase comparison used until then, the answer
+    /// chosen is pinned (the probe below lists every such letter).
+    #[test]
+    fn plain_text_is_an_escaped_expression() {
+        let m = |text: &str, needle: &str| first_match(text, &plain(needle).unwrap()).is_some();
+        // Every character is itself: nothing typed is an operator.
+        assert!(m("see A.B here", "a.b") && !m("see AxB here", "a.b"));
+        assert!(m("f(X) [Y] {z} a|b c*d e+f g?h ^i$ j\\k", "f(x) [y] {z} a|b c*d e+f g?h ^i$ j\\k"));
+        assert!(!m("fx", "f(x)") && !m("ab", "a|b") && !m("cd", "c*d"));
+        assert!(m("price: $5.00 (USD)", "$5.00 (usd)"));
+        // The same as before: accents, sharp s, ligatures and separate accents are not unfolded.
+        assert!(m("CAFÉ", "café") && m("STRAẞE", "straße"));
+        assert!(!m("STRASSE", "straße") && !m("ﬁle", "file") && !m("cafe\u{301}", "café"));
+        // Found by the engine and not before: other shapes of the same letter.
+        assert!(m("ſ", "s") && m("S", "ſ"), "the long s");
+        assert!(m("5 µm", "μm") && m("5 μm", "µm"), "the micro sign and the Greek mu");
+        assert!(m("ϑ", "θ") && m("ϕ", "φ"), "the Greek symbol forms");
+        // Found before and not by the engine: the dotted capital I is found only by itself.
+        assert!(!m("İ", "i") && !m("ALİ", "ali"), "it was found by a plain i");
+        assert!(m("İSTANBUL", "İstanbul") && !m("İSTANBUL", "istanbul") && !m("istanbul", "İstanbul"));
+        assert!(m("ISTANBUL", "istanbul"));
+        // Nothing to look for is no expression.
+        assert!(plain("").is_err());
     }
 
     #[test]
@@ -287,7 +332,7 @@ mod tests {
         let bin = dir.join("b.bin");
         std::fs::write(&bin, b"gamma\x00gamma").unwrap();
         let size = |p: &Path| std::fs::metadata(p).unwrap().len();
-        let t = |s: &str| Needle::Text(s.into());
+        let t = |s: &str| plain(s).unwrap();
         let found = search_file(&text, size(&text), &t("gamma"));
         let missed = search_file(&text, size(&text), &t("delta"));
         let utf16 = search_file(&wide, size(&wide), &t("drei"));
@@ -295,7 +340,7 @@ mod tests {
         let over = search_file(&text, CONTENT_MAX_BYTES + 1, &t("gamma"));
         let gone = search_file(&dir.join("nope.txt"), 1, &t("gamma"));
         // P15-M4: a typed expression reads the same file.
-        let by_re = search_file(&text, size(&text), &Needle::Regex(crate::model::compile("^BETA g").unwrap()));
+        let by_re = search_file(&text, size(&text), &crate::model::compile("^BETA g").unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(found, Outcome::Found("beta Gamma".into()));
         assert_eq!(by_re, Outcome::Found("beta Gamma".into()));
