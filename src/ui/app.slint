@@ -1414,6 +1414,10 @@ export component App inherits Window {
             icon: root.preview-icon;
             action: root.preview-action;
             action-clicked => { root.preview-password(); }
+            // Over the column's scrollbars the mouse's Back and Forward go to the active pane, as
+            // over the toolbar across the window (P16-M2).
+            back => { root.pane-back(root.split && root.active-pane == 1 ? 1 : 0); }
+            forward => { root.pane-forward(root.split && root.active-pane == 1 ? 1 : 0); }
             pages: root.preview-pages;
             content-h: root.preview-content-h;
             mode: root.preview-mode;

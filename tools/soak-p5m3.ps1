@@ -166,6 +166,11 @@
 # holds a press on the left list's track 8 px from its bottom end for 1.2 s (`trackhold 0 bottom 1200`:
 # one page, then after 500 ms one every 50 ms) and, after End, from its top; the report counts the held presses
 # that repeated (more than one page, two per cycle).
+# P16-M2: there too, after the held presses, each cycle presses the mouse's Back button over the left
+# list's scrollbar (`backclick 0 scroll`: the list overflows, so the press is the bar's; the left pane
+# goes back to the folder it came from) and its Forward button over the left pane's first tab
+# (`forwardclick 0 tab`: forward to the scroll folder again); the report counts the two (one each per
+# cycle).
 # P13-M3: each cycle also makes an empty sz.txt in src\tree\d01 (`touch`), opens the sizes view of src
 # (`sizeview 0 <src>`, `waitsizeview`), opens tree and d01 in place (`sizeopen 0`, `sizeopen 1`), and
 # deletes sz.txt from the view permanently (row 22: tree, d01, its twenty files, then sz.txt, the
@@ -671,7 +676,9 @@ if ($scroll.Count -ge 1) { $cycle += @("nav 0 $($scroll[0])", 'sleep 1500', 'whe
 if ($scroll.Count -ge 1) {
     $cycle += @('hover 300 200', 'sleep 150', 'hover 300 260', 'sleep 150', 'hover 300 320', 'sleep 150', 'hover 900 260', 'sleep 150',
         'hover 900 320', 'sleep 150', 'hover 20 20', 'sleep 150',
-        'trackhold 0 bottom 1200', 'sleep 300', 'click 0 1', 'key End', 'sleep 500', 'trackhold 0 top 1200', 'sleep 300')
+        'trackhold 0 bottom 1200', 'sleep 300', 'click 0 1', 'key End', 'sleep 500', 'trackhold 0 top 1200', 'sleep 300',
+        # P16-M2: the mouse's Back over the left list's scrollbar, then Forward over its first tab (see the header).
+        'backclick 0 scroll', 'sleep 800', 'forwardclick 0 tab', 'sleep 1500')
 }
 if ($scroll.Count -ge 2) { $cycle += @("nav 1 $($scroll[1])", 'sleep 1500', 'wheel 1 -40 30') }
 if ($scroll.Count -ge 3) { $cycle += @("nav 1 $($scroll[2])", 'sleep 1500', 'drag 1 300 1000') }
@@ -872,6 +879,10 @@ $contentFound = ($contentDone | ForEach-Object { [int]$_.Matches[0].Groups[1].Va
 # P14-M3: held track presses that repeated (more than one page).
 $trackHolds = @($log | Select-String -Pattern '^\[auto\] trackhold pane=0: content-y -?\d+ -> -?\d+ in (\d+) pages')
 $trackRepeated = @($trackHolds | Where-Object { [int]$_.Matches[0].Groups[1].Value -gt 1 }).Count
+# P16-M2: the side buttons over the left list's scrollbar and over a tab (the path bar's own buttons
+# log no "active pane was").
+$barBack = @($log | Select-String -SimpleMatch '[nav] pane=0 Back button (active pane was').Count
+$tabForward = @($log | Select-String -SimpleMatch '[nav] pane=0 Forward button (active pane was').Count
 # P14-M1: saved searches; a content search done counts as the saved one's when an open came before it.
 $searchSaved = @($log | Select-String -SimpleMatch '[sidebar] saved search added "Text "scratch file 3/7" in ').Count
 $searchOpened = @($log | Select-String -SimpleMatch '[sidebar] saved search 0 opened: ').Count
@@ -1000,6 +1011,7 @@ $first = $samples[0]; $last = $samples[$samples.Count - 1]
 "mouse: path bar buttons $navButtons (four per cycle), View picks $viewPicks (two per cycle), More picks $morePicks (seven per cycle), details bands done with 2 selected $detailsBands (one per cycle), presses on a row's blank part $blankPresses (one per cycle)"
 "columns making way: Two panes presses $splitPresses (two per cycle); left pane narrowed to name and Modified $colsNarrow (three per cycle), name, Size and Modified $colsWide (six per cycle with P13-M3's column; both at 100%)"
 "held track presses: $($trackHolds.Count), repeated past one page $trackRepeated (two each per cycle)"
+"side buttons: Back over the list's scrollbar $barBack, Forward over a tab $tabForward (one each per cycle)"
 "content search: done $($contentDone.Count) (three per cycle), files read $contentRead (600 or more per cycle), found $contentFound (four per cycle)"
 "search patterns: name searches with a class started $classStarts, done with 30 or more found $classDone; content searches with an expression started $reStarts, done with 2 found $reDone (one each per cycle); not-a-pattern lines $notPattern (must be 0)"
 "drag cue: Move here $cueMove, Copy here $cueCopy, Choose on drop $cueAsk, none $cueNone lines; Ctrl hovers over inner read as a copy $cueCtrl; Always copy on $dragCopyOn, off $dragCopyOff; drops onto inner with no key that copied $dragCopied (the Ctrl hover, the setting each way and that drop: one each per cycle); the path bar's Up held by a drag went up $navUp (one per cycle)"

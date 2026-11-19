@@ -771,3 +771,422 @@ are dragging into.
   effect too (it was logged only when the spot or the effect changed): the cue's state follows the same
   record.
 - **The plan's line `[dnd] cue: ... | none`** gained the third value `Choose on drop`.
+
+## P16-M2: the small items
+
+Branch `fix/p16-m2-small-items`, the search and files stream, cut from main at 3e4c201 (the kickoff).
+
+### Settled first
+
+- **Whether a text box can pass the mouse's side buttons.** Read in Slint's source at the pinned
+  revision (`internal/core/items/text.rs`, `TextInput::input_event`; `internal/core/input.rs`,
+  `send_mouse_event_to_item`): a `TextInput` handles the left and middle buttons and answers "ignored"
+  to every other press and release, and Slint offers an ignored event to whatever lies behind the item.
+  A `TouchArea` **over** the input cannot do it (a `TouchArea` takes every press, the text cursor's
+  among them); a `TouchArea` **behind** it gets exactly the two side buttons and no click of the
+  input's. The areas were there already: the one behind each field's input that gives it the focus on
+  a click beside the text (`Field` in theme.slint, the search box in pane.slint). That is also how
+  P6-M3 made the buttons ignored there: an area behind the entry that swallows them. So the answer is
+  yes, and the scripted check below shows it.
+- **What `own_results` answers today**, before changing how. A result is kept when its folder is the
+  folder of one of the items **and** it names one of them; each of the two is tried as text (lowercase,
+  no trailing separator) and, when that misses, with the folder above canonicalised and the last name
+  compared as text. So a path that differs above the last folder is followed (an 8.3 `%TEMP%`, a `.`
+  in the path), and an items' folder named by its own 8.3 name is not: with every item reported that
+  way the old loop kept nothing. The new code keeps that answer too (the test pins both).
+
+### What landed
+
+Per item: done, checked and found right, or left with the reason.
+
+- **The big-copy slowdown: done** (0c02233). After a copy, move or delete the shell reports every file
+  inside a copied folder as well as the items themselves, and TwinFM keeps only the items' own results.
+  It did that by testing every result against every item, with file system calls among them, so a move
+  of thousands of files left the status line waiting long after Windows' window had closed. Now the
+  items and their folders are put in two sets once, each result is looked up in them, and a path that
+  misses is canonicalised once per folder (`CanonDirs`) and looked up in sets canonicalised once, built
+  only when a result first misses. The answers are the same; the time is linear. `same_path` (still
+  used by the archive jobs and the tests) is the same rule on the same helpers. The extract job's
+  comment that named the quadratic loop as a reason no longer says so (it still skips the function,
+  because those formats report twice or not at all).
+- **The mouse's Back and Forward over a tab: done** (1cd16bf). Over a tab and over its close button
+  the two buttons go back and forward in that pane's shown tab, whichever tab the pointer is on, and
+  the pane becomes the active one, as over the rows.
+- **Over the scrollbars: done** (1cd16bf). `VScrollBar` and `HScrollBar` gained two callbacks and two
+  tests in their pointer handler. Wired: each pane's list scrollbar (that pane) and the preview
+  column's three (the active pane, as over the toolbar across the window). **Left unwired**: the
+  sidebar's scrollbar and the crumb dropdown's, because the rows beside them do nothing with the two
+  buttons either; a bar that goes back beside rows that do not would be the odd one.
+- **Over a text box: done for the search box and the path's text entry, left ignored over the rename
+  and new-name editor** (1cd16bf). Over the search box the pane goes back or forward. Over the path's
+  text entry the entry closes first (as Escape closes it) and the pane moves. The fields in the
+  settings dialog, the questions and the sidebar's title editor are unwired (they are not a pane's).
+- **The click on a row's blank part, against Explorer: no code**; the console check is written below
+  (checks 8 to 10).
+- Driver: `backclick <pane> tab|scroll|search|preview`, `forwardclick` the same. Lines: `[nav]` as
+  before. `CLAUDE.md` § Measuring has both.
+
+### Tests
+
+`cargo test --release`: **366 tests** (364 before), `test result: ok. 366 passed; 0 failed; 2 ignored`.
+
+- `fileops::tests::own_results_is_linear_in_the_items` (pure): 20,000 items of one folder that does not
+  exist, their results in another case, and after the first item 20,000 results for a folder's
+  contents; the sorting runs on a thread and must answer within 10 s. **Run first against the old
+  loop: `20,000 items' results are sorted out within 10 s: Timeout`.** On the sets: `[test]
+  own_results: 20000 of 40000 kept in 80 ms`, the 20,000 items' results in the shell's order.
+- `fileops::tests::own_results_keeps_what_the_pairwise_loop_kept`: the old loop is kept in the test
+  module, and every case is run through both and compared. On a real scratch folder
+  (`%TEMP%\twinfm-p16m2-own-<pid>\`, removed after): the items named by their long path, below an 8.3
+  path (this machine's `%TEMP%` gave the scratch folder one, `TW7CBB~1`) and with a `.` in the path,
+  against results named each of those ways and in capitals, for Copy, Move and Delete: the three items
+  kept, a copied folder's contents at two depths, a file that is no item and a result from another
+  folder dropped. The items' folder by its own 8.3 name (kept by neither, as before). Items of two
+  folders, one inside the other. Rename, MoveAs, NewFolder and NewFile (whose result names the folder),
+  a drive's root, items in a folder that is not there, and Restore (all kept).
+- The first version of that test expected the fully 8.3 case to keep the three items; the old loop
+  keeps none there (§ Settled first), so the expectation was wrong, not the code, and was corrected
+  before the new code was written.
+- Runs: the full suite was run three times. **The first run: 364 passed, 2 failed**,
+  `fileops::archive::tests::extracts_on_the_worker` and `zip_jobs_on_the_worker`; the one message read
+  was `Os { code: 32 ... "The process cannot access the file because it is being used by another
+  process." }` at the test's last line, removing its scratch folder (Phase 7 recorded the same from
+  Windows' archive handler still holding a 7z); the other's message was not kept. Both passed when run
+  alone (`2 passed`), and the second and third full runs were `366 passed; 0 failed; 2 ignored` (the
+  second before item 1's commit, the third before item 2's). The cause of the first run's two failures
+  was not found; nothing in this change touches those tests' cleanup.
+- **The docs commit (4609832) went in and was pushed without the gates run before it**, against the
+  rule (it changed the record, `CLAUDE.md` and the soak script, no code; the coordinating session's
+  reminder crossed with the push). They were run on 4609832 right after: `cargo test --release`, `test
+  result: ok. 366 passed; 0 failed; 2 ignored` (a fourth full run, with the other stream building at
+  the same time), and `cargo build --release` finished; then this note was committed.
+
+### Scripted checks
+
+`tools/check-p16m2.ps1`, one scripted run of the branch's release build in
+`%TEMP%\twinfm-p16m2-check\` (a folder of 300 files so the list overflows, a 600-line text file for the
+preview), the real renderer, exit 0, no `panicked` line. Each press is a posted `WM_XBUTTONDOWN` and
+`WM_XBUTTONUP` through winit's own path. From its output (paths shortened):
+
+```
+[auto] backclick pane=0: posted at (1190, 168) logical        the list's scrollbar, in many
+[nav] pane=0 Back button (active pane was 0, now 0)
+[nav] pane=0 history back: ...\work\many -> ...\work (1 back, 1 forward left)
+[auto] forwardclick pane=0: posted at (267, 62) logical       the first tab
+[nav] pane=0 Forward button (active pane was 0, now 0)
+[nav] pane=0 history forward: ...\work -> ...\work\many (2 back, 0 forward left)
+[auto] backclick pane=0: posted at (267, 62) logical          the tab again
+[nav] pane=0 history back: ...\work\many -> ...\work (1 back, 1 forward left)
+[auto] forwardclick pane=0: posted at (1190, 168) logical     the scrollbar, after a move back from sub
+[nav] pane=0 history forward: ...\work\many -> ...\work\many\sub (3 back, 0 forward left)
+[auto] backclick pane=0: posted at (1005, 97) logical         the search box
+[nav] pane=0 history back: ...\work\many\sub -> ...\work\many (2 back, 1 forward left)
+[auto] forwardclick pane=0: posted at (692, 97) logical       the path's text entry
+[nav] pane=0 history forward: ...\work\many -> ...\work\many\sub (3 back, 0 forward left)
+[auto] backclick pane=0: posted at (692, 97) logical          the entry, opened again
+[nav] pane=0 history back: ...\work\many\sub -> ...\work\many (2 back, 1 forward left)
+[auto] backclick pane=0: posted at (269, 162) logical         the rename editor: no [nav] line follows
+[auto] backclick pane=1: posted at (778, 62) logical          the right pane's tab
+[nav] pane=1 Back button (active pane was 0, now 1)
+[nav] pane=1 history back: nothing to go back to
+[preview] pane=0 gen=2 ...\work\long.txt: text, 600 lines, 16090 bytes, UTF-8, plain
+[auto] backclick pane=0: posted at (1193, 422) logical        the preview column's scrollbar
+[nav] pane=0 Back button (active pane was 0, now 0)
+[nav] pane=0 history back: ...\work -> ...\work\many (2 back, 1 forward left)
+```
+
+What the check cannot tell apart: a press on the list's scrollbar from a press on the row under it,
+since both log the same `[nav]` line. The bar took the press because it is a `TouchArea` in front of the
+rows (it has swallowed these two buttons since P2-M3, which is the roadmap item); the tab, the search
+box, the path entry and the preview's bar have nothing behind them that goes back, so their lines can
+only be the new code's. The first run of the script aimed its rename step at row 0 while the editor was
+on row 1 (the script's mistake), so the row took the press and the pane went back; with the editor on
+row 0 the press is ignored, as above.
+
+### Soak
+
+`tools\soak-p5m3.ps1 -Minutes 10` (the branch's own script) on the branch's release build of 1cd16bf's
+code, 2026-11-15, harness-launched, with the coordinating session's leave and the other stream holding:
+ran 10.1 min, window closed by the script, exit code 0, 0 panicked lines; 222 jobs done (failed 0,
+cancelled 0), soak refusals 0, waitops timeouts 0, menupicks refused 0, every "must be 0" count 0.
+
+```
+side buttons: Back over the list's scrollbar 2, Forward over a tab 2 (one each per cycle)
+held track presses: 4, repeated past one page 4 (two each per cycle)
+right-button drags: 6; drags cancelled: 15, dropped: 0 (must be 0); drag loops that found the state busy: 0; drag images set: 15
+working set: start 154.8 MB at 5 s, end 228.9 MB at 600 s; private: 165.2 -> 237 MB
+```
+
+Three cycles started their file operations; the time ran out in the third before its scroll part, so
+the counts taken there are two (the side buttons, the held presses, Tab between the panes). Each Back
+over the scrollbar: `[nav] pane=0 history back: C:\traces\bigdir -> ...\twinfm-m5\m2`; each Forward over
+the tab: `[nav] pane=0 history forward: ...\twinfm-m5\m2 -> C:\traces\bigdir`. The display scale was not
+read for this run.
+
+### Gate
+
+Tag ab84, the defaults, 2026-11-16, run by Jeremy from the elevated console, built and handed over by
+the coordinating session: `target-p16m2` (1cd16bf; the commits after it change the soak script and the
+docs only) against `target-p15close` (4d335b7), six runs interleaved, every run's checks ok, no panic.
+
+```
+Run         WPR InApp RenderP50 Checks
+p15close-1 22.6 21.9  2.64      ok
+p15close-2 20.1 21.2  2.65      ok
+p15close-3 20.8 21.1  2.77      ok
+p16m2-1    20.4 21.7  2.77      ok
+p16m2-2    20.1 21.6  2.64      ok
+p16m2-3    21.2 23.3  2.79      ok
+```
+
+p16m2's median is 20.4% against p15close's 20.8% (WPR main-thread busy): not every reference run sits
+below every candidate run, and the medians are 0.4 apart with the candidate the lower, so **no gap**.
+The whole sitting (ab84 to ab87, one elevated console) ran in the costlier state: render p50 was 2.60
+to 2.79 ms in every run of both binaries, where Phase 15's gates sat at 2.0 to 2.3 ms, so no run of
+either binary is under 20% and the figures are read like for like within the triplet only (the ab23
+rule), never against a recorded number. The summary is `C:\traces\gate-ab84-summary.txt`.
+
+**Run again on the big move's fixes**: tag ab92, the defaults, 2026-11-18 21:34, run by Jeremy from the
+elevated console (frame interval p50 16.3 to 16.5 ms), built and handed over by the coordinating session:
+`target-p16m2` rebuilt at b7b8bd6 against `target-p15close` (4d335b7), six runs interleaved, every run's
+checks ok, no panic.
+
+```
+Run         WPR InApp RenderP50 Checks
+p15close-1 18.1 18.4  2.17      ok
+p15close-2 18.6 19.4  2.24      ok
+p15close-3 17.8 17.5  2.01      ok
+p16m2-1    17.9 17.5  2.09      ok
+p16m2-2    17.9 17.7  2.12      ok
+p16m2-3    17.9 19.5  1.97      ok
+```
+
+p16m2's median is 17.9% against p15close's 18.1%: **no gap**, and every candidate run is under 20%. This
+sitting ran in the usual state (render p50 1.97 to 2.24 ms, where ab84's was 2.64 to 2.79), so these are
+the figures to read for P16-M2. The summary is `C:\traces\gate-ab92-summary.txt`, the script
+`C:\traces\gate-p16m2b.ps1`.
+
+What the gate scenario meets of this milestone: its `drag` steps press the list's scrollbar, whose
+pointer handler now makes two more comparisons per pointer event (the event's kind and button against
+"released" and "back", then "forward"); a left-button drag fails both at once. The rows, the tiles and
+the lists gained nothing; the list host gained two callbacks that are never called in the scenario. It
+runs no file operation, so `own_results` is not called, and it presses no tab or text box.
+
+### Console checks (for Jeremy, after the gate, TwinFM started unelevated)
+
+These need a mouse with Back and Forward side buttons (the two thumb buttons).
+
+1. **Over a tab.** Go into a few folders in the left pane so there is somewhere to go back to. Rest
+   the pointer on the pane's tab (the strip at the very top of the pane, above the path bar) and press
+   the mouse's Back button: the pane goes back a folder. Forward: it goes forward again. The same with
+   the pointer on the tab's small x.
+2. **A tab in the other pane.** With two panes, the left one active, press Back over the right pane's
+   tab: the right pane becomes the active one (its ring, the title bar's text) and goes back.
+3. **Over the list's scrollbar.** In a folder long enough to scroll, rest the pointer on the
+   scrollbar at the list's right edge (on the thumb, then on the empty track above or below it) and
+   press Back, then Forward: the pane moves each time, and the list does not page.
+4. **Over the preview's scrollbar.** Alt+P, the cursor on a long text file or a PDF. With the pointer
+   on the scrollbar at the preview column's right edge, press Back: the active pane goes back.
+5. **Over the search box and the path.** With the pointer on the search box at the right end of the
+   path bar, press Back: the pane goes back. Press Ctrl+L (the path as text), rest the pointer on the
+   text and press Back: the text entry closes and the pane goes back. Then check the entry still works:
+   Ctrl+L, click in the text (the text cursor lands where you clicked), double-click a word (it is
+   selected), drag across some text (it is selected).
+6. **The rename editor is left alone.** Press F2 on a file and, with the pointer on the name being
+   edited, press Back: nothing happens and the name is still being edited.
+7. **The big move.** Select a few thousand files in one folder (Ctrl+A in a folder of photos, or of
+   `C:\traces\bigdir` copied somewhere first) and move them to a folder on the same drive (Shift+F6 to
+   the other pane, or a drag). Watch the status bar at the bottom of the pane as Windows' progress
+   window closes: "Moved N items" should show without a long wait after it (the wait before this change
+   was not timed on a real move; the test's 20,000 items took over 10 s against 80 ms). Ctrl+Z brings
+   them back.
+8. **The blank-part click, beside Explorer: where the outline goes.** Open the same folder in
+   Explorer (View, Details) and in TwinFM's details list, side by side. In Explorer click a file's
+   name, then click another row far to the right of its name (in the empty part of the Name column).
+   Look for the thin dotted outline on a row: does it stay on the first file, move to the row clicked,
+   or go altogether? (It may only show after one press of an arrow key: press Down once and see which
+   row becomes selected; that tells where the outline was.) Do the same in TwinFM: nothing is selected
+   and the outline (a solid ring in the accent colour) sits on the row clicked, so Down selects the row
+   below the one clicked. Say if Explorer does otherwise and you want it followed.
+9. **The same with Ctrl.** In Explorer select a file, hold Ctrl and click another row's blank part:
+   is that row added to the selection, or does nothing change? In TwinFM it is added (Ctrl toggles the
+   row clicked).
+10. **The same with Shift.** In Explorer select a file, hold Shift and click a row's blank part a few
+    rows down: is the range selected, or does nothing change? In TwinFM the range from the first file
+    to the row clicked is selected.
+
+### Console checks: Jeremy's results (2026-11-17, `target-p16m2`, 1cd16bf, his Log setting on)
+
+Checks 1 to 5: "works as expected". Check 6 passes (Back does nothing over the rename editor). Checks 8,
+9 and 10 match Explorer, each "this is what I wanted". **Check 7, the big move, did not pass**: "takes
+about 2 minutes to copy/paste the whole bigdir to bigdir2, although I now can't find c:\traces\bigdir2,
+so not sure where the files went. ctrl+z does start the restore after about 30-45 seconds." Nothing was
+lost (the drop went to `C:\tmp\bigdir2`, the undo brought all 40,000 back). His log is
+`C:\traces\p16m2-console-check-bigmove.log`.
+
+### The big move: what froze, and what changed
+
+`own_results` (item 1) was no longer the wait. Read from his log and the code, then measured with
+`tools\time-p16m2-bigmove.ps1` (below), the window froze at three places, and each was TwinFM's own:
+
+- **Every submit** printed the whole job, 40,000 paths, with `{job:?}` (`[fileops] submit`, and again in
+  `[undo] recorded`, `[undo] "..." with` and `redo recorded`): six lines of 1.4 to 1.5 MB in his log. Rust's
+  stderr is not buffered and a path's `Debug` form is written one character at a time, so one line was
+  about 1.5 million writes, on the UI thread. About 3.4 s a line in his log (the paste's period, alone:
+  `ui_cpu=3547ms`).
+- **Undo pressed**: two of those lines, and `undo::check`, one file-system call per item, 40,000 on the
+  UI thread (`ui_cpu=8031ms` in his log).
+- **Each job's end**: one of those lines, then 40,000 `item` lines, each several writes (4.4 s in his
+  log).
+
+These cost what they cost only while stderr goes somewhere (his Log setting; a redirect, as every gate,
+soak and check script has).
+
+What changed (the five fixes the coordinating session agreed, and the timing lines):
+
+1. **A job is logged in a short form** above 20 items (`fileops::brief`, `LOG_ITEMS`): `Move { 40000
+   sources, first "C:\\...\\file_1.txt", dest_dir: "C:\\..." }`. Up to 20 items it is the `Debug` form as
+   before, built as one String (one write). The one script that reads a submit line
+   (`soak-p5m3.ps1`'s nested-zip count) reads a small job's, so no count changed.
+2. **Item lines are capped** (`fileops::item_lines`): every item of a job of up to 20; of a larger one
+   the first 20, then the first 20 failed ones after those, then `[fileops]   N more item(s) not listed
+   (K ok, F failed)`. One write for all of them. No soak or check script reads an item line.
+3. **The undo's check runs on the worker**, as the undo or redo job's first step
+   (`Worker::submit_checked`, `Done::refused`). A refusal logs `[undo] "..." refused: <why>` and shows the
+   same note as before, and the record is gone as before; what differs is that the job is submitted
+   first, so the pane reads "moving N items..." until the worker answers.
+4. **Rows removed with everything selected**: `apply_edits` keeps the selection as one flag per shown
+   row while the rows move and makes the set again at the end (`row_remove`, `row_insert`). Before, the
+   set above the row was rebuilt for every row removed: 2.8 ms a row in his log.
+5. **`forbid_if_replaced`** looks each result up in a set of the paths that were there (it compared
+   every result with every path).
+6. **Timing lines only** (the worker's item building is not changed here: it is put to Jeremy as its own
+   item): `[fileops] id=N: K item(s) handed to the shell in T ms` (our `SHCreateItemFromParsingName` and
+   `MoveItem`, `CopyItem` or `DeleteItem` per item, before `PerformOperations`), `[fileops] id=N: the
+   shell's first item T ms after PerformOperations` (the shell's own preparation), and for a drag `[dnd] N
+   items parsed in T ms, their data object made in U ms` (on the UI thread, at the press).
+
+### The big move: measured
+
+`tools\time-p16m2-bigmove.ps1` (new): 40,000 files, a copy of `C:\traces\bigdir` in
+`%TEMP%\twinfm-p16m2-big\src`, moved to `dst` beside it with Shift+F6 and brought back with Ctrl+Z, one
+scripted run with stderr redirected to a file; it reads the file as it grows and notes when each marker
+line shows. 2026-11-18, harness-launched, the machine free. Before is 1cd16bf's code
+(`target-bigmove-before`); after is this commit's.
+
+| | before | after |
+|---|---|---|
+| Move submitted: UI thread CPU in that period | 218,938 ms | no period over 500 ms |
+| Move's "100%" to its "done" line | 407.4 s | 3.4 s |
+| Undo pressed to the undo job submitted | not reached: 220,484 ms of UI CPU, then the script's 30 minutes ran out | 0.1 s |
+| The undo job's "100%" to its "done" line | not reached | 3.5 s |
+| A watch window removing about 400 rows with all selected | `-400 ... apply 1363.7 ms` | `-405 ... apply 128.0 ms` |
+| The log | 17.2 MB, longest line 3,229,030 characters, 40,000 item lines | 0.1 MB, longest line 228, 40 item lines |
+
+The before run's freezes are far longer than in Jeremy's log (about 220 s a line against 3.4 s): the same
+cause, a write per character, with each write costing more under this redirect and with paths twice as
+long. Why a write costs that much more here was not looked into. The before run was cut by the script's
+limit before the undo job was submitted and was not run again (over an hour); its files were moved back by
+hand.
+
+**Where the wait before the first file is** (after, both jobs alike; the lines are new, so there is no
+before):
+
+```
+[fileops] id=1: 40000 item(s) handed to the shell in 90103 ms
+[fileops] id=1: the shell's first item 11923 ms after PerformOperations
+[fileops] id=2: 40000 item(s) handed to the shell in 90102 ms
+[fileops] id=2: the shell's first item 10248 ms after PerformOperations
+```
+
+Submit to "0%" was 97 to 99 s: about 90 s is TwinFM handing the shell one item at a time (2.25 ms an
+item) and 10 to 12 s the shell's own preparation. Then the move itself, 100 to 110 s for 40,000 files,
+the shell's pace. In Jeremy's log the same wait was 20 to 25 s in all, on `C:\traces` and `C:\tmp`; here
+it is longer on `%TEMP%` (not looked into). The window is live through it.
+
+**The drag's start**: `[dnd] 40000 items parsed in 1838 ms, their data object made in 27 ms`, on the UI
+thread at the press (the period reads `ui_cpu=4344ms`; the rest of it was not split). Not changed. The
+scripted drag then sat 61 s inside `DoDragDrop` before its cancel landed, in both runs; Jeremy's real drag
+returned 97 ms after the drop, so this is the scripted drag over whatever lay under the pointer, and was
+not looked into.
+
+Not measured: the run with stderr going nowhere (the Log setting off, no redirect), where fix 3 is the
+only one of the three freezes' causes left; `undo::check`'s own time was never timed apart.
+
+**Tests** (written first for fixes 4 and 5, and run against the old code): 370 passed, 0 failed, 2
+ignored (366 before); `cargo build --release` finished with no warning.
+
+- `model::tests::apply_edits_with_everything_selected_is_not_per_row`: 40,000 rows all selected, a
+  window removing 400 and adding one; 529 ms before the fix (the test failed its bound), 58 ms after; the
+  selection, the cursor and the new row's place checked.
+- `fileops::undo::tests::the_replaced_test_is_linear_in_the_items`: 40,000 results against 40,000 paths
+  that were there, twice; 8,325 ms before, 34 ms after (bound 2 s).
+- `fileops::tests::large_jobs_are_logged_in_short`: the short form of each kind of job, the `Debug` form
+  kept up to 20 items, the item lines' cap and the failures kept.
+- `fileops::tests::the_worker_checks_an_undo_before_it_runs`: through the real worker in
+  `%TEMP%\twinfm-p16m2-check-<pid>`, an undo whose file is gone is refused with nothing run, and one
+  whose file is there runs.
+
+**Scripted check and soak**, on b7b8bd6's build, 2026-11-18, harness-launched with the coordinating
+session's leave: `tools\check-p16m2.ps1` exit 0 with the same `[nav]` lines as before.
+`tools\soak-p5m3.ps1 -Minutes 10`: ran 10.1 min, window closed by the script, exit code 0, 0 panicked
+lines; 225 jobs done (failed 0, cancelled 0), soak refusals 0, waitops timeouts 0, menupicks refused 0,
+every "must be 0" count 0; side buttons 2 and 2; private bytes 165.3 -> 235.9 MB. Its log has 30 undo
+and redo jobs done, each through the worker's check, and no `[undo] ... refused` line.
+
+**The gate** was run again on this code (b7b8bd6): ab92, under § Gate, no gap.
+
+### The big move: Jeremy's retest of check 7 (2026-11-18, `target-p16m2` at b7b8bd6, his Log on, over Remote Desktop)
+
+"finished, no issues!" (relayed by the coordinating session, which read his log, started 21:49).
+
+- The move, id=4: `Move { 40000 sources, first ..., dest_dir ... }` on the submit line, `40000 item(s)
+  handed to the shell in 19676 ms`, `the shell's first item 8828 ms after PerformOperations`, done, then
+  `39980 more item(s) not listed (39980 ok, 0 failed)`.
+- The undo, id=5: submitted on the line after `[undo] ... with`, handed over in 19577 ms, the shell's
+  first item after 8589 ms, `Undid: Moved 40000 items`.
+- The log's longest line is 222 characters.
+- The two largest UI-thread periods: `ui_cpu=2016 ms` at a 40,000-item drag's drop and `2062 ms` at the
+  move's submit, both the drag's `parse_items` at the press (1.8 s in the timed run above, not changed);
+  nothing longer.
+
+So on his folders the wait before the first file was about 28 s (19.7 s TwinFM handing the items over,
+8.8 s the shell's preparation), against 97 to 99 s in the timed run on `%TEMP%`: the hand-over is still
+the larger part, about two thirds there.
+
+An earlier attempt the same evening ran `target-p16m4` by mistake (the whole-job line, no done after
+100%, `[undo] busy`): not a result for this build.
+
+**For the next gate**: both attempts moved the gate's fixture `C:\traces\bigdir` itself. It has its
+40,000 files again (moved back once by the coordinating session's script, once by his undo), so the
+folder's directory order may differ from what it was before 2026-11-18.
+
+### Calls made in this milestone, for Jeremy to check
+
+- **The side buttons over the path's text entry and the search box now move the pane.** This
+  **reverses P6-M3**, which made them ignored over the path entry on purpose and which Jeremy checked
+  then (`phase-6-plan.md`: before it they went back, after it they did nothing). The kickoff's rule
+  was to do it if Slint allows it without touching the text cursor's clicks, and it does. Over the path
+  entry the entry closes first, so it does not stay open showing the folder left behind.
+- **The rename and new-name editor stays ignored**, as P6-M3 left it: a move in the history there
+  would throw away the name being typed.
+- **Jeremy's decision on those two** (2026-11-15, put to him by the coordinating session with its
+  recommendation that the split is right): "Go with your recommendations". So the search box and the
+  path entry take Back and Forward, and the rename editor stays ignored.
+- **The preview's scrollbars move the active pane**, as the toolbar across the window does; the
+  preview has no pane of its own.
+- **The sidebar's and the crumb dropdown's scrollbars are not wired**, since their rows are not.
+- **Back over any tab acts on the pane's shown tab**, not on the tab under the pointer (a background
+  tab is not on screen to be moved; the tab menu is where a background tab is acted on).
+- **The driver's `scroll` aim is the old `drag` aim** (10 px in from the pane's edge), so it is the
+  scrollbar only while the list overflows; the soak presses it in the 40,000-file folder.
+- **In the soak, Back is pressed over the scrollbar and Forward over the tab** (one press each per
+  cycle, so the pane ends where it was), where the plan's words were "a `backclick` over a tab and over
+  the scrollbar".
+
+### Follow-ups, not done here
+
+- `tabdrag` in `src/auto.rs` presses at y 16 of the window, which is on the toolbar across the window
+  since P6-M3 made that the default; `tabmenu` and the new `backclick <pane> tab` reckon the strip's
+  place from the layout. Read in the code, not run; no soak or check script uses `tabdrag` today; not
+  touched here.

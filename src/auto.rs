@@ -61,8 +61,14 @@
 //!                                    the pane becomes active and goes back in its tab's history
 //!   forwardclick <pane>              the same with the Forward button (XBUTTON2): forward in the history
 //!   backclick <pane> path|edit       the Back button over the path bar's middle (with `pathmode
-//!                                    <pane> entry`, the text entry) or over row 0's name cell (with F2,
-//!                                    the rename editor): ignored there (P6-M3)
+//!                                    <pane> entry`, the text entry: since P16-M2 the entry closes and
+//!                                    the pane goes back) or over row 0's name cell (with F2, the
+//!                                    rename editor): ignored there (P6-M3)
+//!   backclick <pane> tab|scroll|search  the Back button over the pane's first tab, over its list's
+//!                                    scrollbar thumb (the list must overflow, or the press lands on
+//!                                    the list) or over its search box (P16-M2); `forwardclick` the same
+//!   backclick <pane> preview         the Back button over the preview column's scrollbar (the column
+//!                                    shown, its content overflowing): the active pane goes back
 //!   backclick <pane> tool            the Back button over the toolbar's first button (P7-M4): the bar
 //!                                    across the window (the active pane goes back) or, with
 //!                                    `toolbar = "pane"`, the pane's own bar; `forwardclick` the same
@@ -1415,6 +1421,21 @@ fn run_step(runner: Rc<RefCell<Runner>>) {
                 // one (its Back goes to the active pane), else the pane's own bar.
                 Some("tool") if l.top > 0.0 => pos = slint::LogicalPosition::new(20.0, l.top / 2.0),
                 Some("tool") => pos = slint::LogicalPosition::new(left + crate::dnd::PANE_PAD + 16.0, l.top + crate::dnd::PANE_PAD + 16.0),
+                // P16-M2: the first tab's middle (the strip's place as `tabmenu`'s), the list's
+                // scrollbar thumb, the preview column's scrollbar (its right edge, half way down),
+                // the search box at the path bar's right end.
+                Some("tab") => {
+                    let x = left + 3.0 + app.invoke_tab_offset(pane as i32) + 0.5 * app.invoke_tab_width(pane as i32);
+                    pos = slint::LogicalPosition::new(x, l.top + l.bar + 18.0);
+                }
+                Some("scroll") => pos = thumb(&app, pane),
+                Some("preview") => pos = slint::LogicalPosition::new(l.width - 7.0, l.top + (l.height - l.top) / 2.0),
+                Some("search") => {
+                    // 30 px into the box (pane.slint `filter-w`: 200 px, 150 in a pane under 520).
+                    let (_, right) = crate::dnd::pane_x(&l, pane);
+                    let box_w = if right - left < 520.0 { 150.0 } else { 200.0 };
+                    pos = slint::LogicalPosition::new(right - crate::dnd::PANE_PAD - box_w + 8.0, crate::dnd::crumb_top(&l, pane) + crate::dnd::CRUMB_H / 2.0);
+                }
                 _ => {}
             }
             let s = app.window().scale_factor();

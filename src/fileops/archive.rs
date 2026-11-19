@@ -639,8 +639,8 @@ pub fn extract(req: &Request, a: &Path, dest_dir: &Path, named: bool, progress: 
         }
         None => {
             // A copy of the root items out of the archive, as a copy out of one is, but without
-            // `own_results`' pass over the sink's reports (it is quadratic in the items, and for
-            // these formats the reports come twice or not at all, P8-L3): what landed is read
+            // `own_results`' pass over the sink's reports (for these formats the reports come
+            // twice or not at all, P8-L3): what landed is read
             // from the folder below.
             let sources = roots.iter().map(|r| a.join(r)).collect();
             let copy = Request { id: req.id, job: Job::Copy { sources, dest_dir: dest.clone() }, hwnd: req.hwnd, no_confirm: req.no_confirm };

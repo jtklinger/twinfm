@@ -59,7 +59,12 @@ pub const CANNOT_UNDO_REPLACED: &str = "Cannot undo: it replaced a file, which c
 /// A copy's or move's record when an item landed on a path that was there before (`existed`): it
 /// cannot be undone (P11-M3). Other records pass through.
 pub fn forbid_if_replaced(rec: Option<Record>, existed: &[PathBuf], results: &[ItemResult]) -> Option<Record> {
-    let replaced = results.iter().filter(|r| r.ok()).any(|r| r.dest.as_ref().is_some_and(|d| existed.iter().any(|e| e.as_os_str().eq_ignore_ascii_case(d.as_os_str()))));
+    if existed.is_empty() {
+        return rec;
+    }
+    // A set, not every result against every path (P16-M2: 40,000 on 40,000 took eight seconds).
+    let there: std::collections::HashSet<std::ffi::OsString> = existed.iter().map(|e| e.as_os_str().to_ascii_lowercase()).collect();
+    let replaced = results.iter().filter(|r| r.ok()).any(|r| r.dest.as_ref().is_some_and(|d| there.contains(&d.as_os_str().to_ascii_lowercase())));
     if !replaced {
         return rec;
     }
@@ -272,6 +277,32 @@ mod tests {
         let kept = [ok(r"C:\a\x.txt", r"C:\b\x.txt"), ok(r"C:\a\y.txt", r"C:\b\y (2).txt")];
         assert!(forbid_if_replaced(record_for(&cp, &Outcome::Done, &kept, "x"), &[r"C:\b\y.txt".into()], &kept).unwrap().undo.is_some());
         assert_eq!(forbid_if_replaced(None, &[r"C:\b\y.txt".into()], &res), None);
+    }
+
+    /// P16-M2 (the big move): 40,000 items copied into a folder that held 40,000 other files, none
+    /// replaced, so nothing ends the search early. Every result against every path that was there
+    /// is 1.6 billion comparisons (8.3 s here before the set); the bound is one no such loop meets.
+    #[test]
+    fn the_replaced_test_is_linear_in_the_items() {
+        const N: usize = 40_000;
+        let res: Vec<ItemResult> = (0..N).map(|i| ok(&format!(r"C:\a\item-{i:05}.txt"), &format!(r"C:\b\item-{i:05}.txt"))).collect();
+        let existed: Vec<PathBuf> = (0..N).map(|i| format!(r"C:\b\were-{i:05}.txt").into()).collect();
+        let cp = Job::Copy { sources: res.iter().map(|r| r.source.clone()).collect(), dest_dir: r"C:\b".into() };
+        let rec = record_for(&cp, &Outcome::Done, &res, "Copied 40000 items");
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
+            let kept = forbid_if_replaced(rec.clone(), &existed, &res).is_some_and(|r| r.undo.is_some());
+            // The last item landed on a file that was there, in another case: found all the same.
+            let mut there = existed;
+            there.push(r"C:\B\ITEM-39999.TXT".into());
+            let refused = forbid_if_replaced(rec, &there, &res).is_some_and(|r| r.undo.is_none());
+            let _ = tx.send((kept, refused, t0.elapsed()));
+        });
+        let (kept, refused, took) = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("40,000 results are checked against 40,000 paths within 2 s");
+        eprintln!("[test] forbid_if_replaced: 2 x {N} results against {N} paths in {} ms", took.as_millis());
+        assert!(kept, "nothing was replaced: the record stands");
+        assert!(refused, "one item replaced a file: not undone");
     }
 
     #[test]

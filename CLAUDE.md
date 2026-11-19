@@ -65,7 +65,7 @@ plan takes it, and that phase's record carries it from there; each phase close a
 put off, with where it came from.
 
 ## Gates (run before every commit)
-- `cargo test --release` (368 tests; nine touch the real shell and clipboard, one of them the Recycle
+- `cargo test --release` (374 tests; nine touch the real shell and clipboard, one of them the Recycle
   Bin, three more only read the machine (P6-M1: the sync root registry and the system drive's label,
   imageres.dll's status glyphs, the shell's overlay for a path that does not exist), and fourteen of the
   eighteen `fs::watch` tests, the `stat_entry` test, one undo test, the breadcrumb dropdown's test, the reparse enumeration test,
@@ -149,6 +149,15 @@ put off, with where it came from.
   the refresh after it; key `Escape` in the list cancels the queued jobs that have not started.
   `[fileops]` lines on stderr (submit, note, done, one `item` line per item the progress sink
   reported, with its HRESULT and the real destination path, and `N operation(s) queued`; since
+  P16-M2's big move a job of more than 20 items is logged in a short form wherever a job is
+  printed, `Move { 40000 sources, first "C:\\a\\x.txt", dest_dir: "C:\\b" }` (`fileops::brief`; up
+  to 20 the `Debug` form as before), and of its `item` lines the first 20, then the first 20 failed
+  ones after those, then `[fileops]   N more item(s) not listed (K ok, F failed)`
+  (`fileops::item_lines`), because stderr is unbuffered and a path's `Debug` form is written a
+  character at a time: **never print a collection of paths with `{:?}`, and build a line that may
+  be long as one String first**; `[fileops] id=N: K item(s) handed to the shell in T ms` and
+  `[fileops] id=N: the shell's first item T ms after PerformOperations` per shell job (our item
+  building, then the shell's own preparation); since
   P5-M2 `progress id=N P%` at most four times a second while a job runs, from the sink's
   `UpdateProgress`, the same percentage the status bar shows after the running job's note, and
   `undelete <$R path> -> <original>: verb ok (T ms) | verb cancelled 0x... | verb failed 0x...:
@@ -158,7 +167,9 @@ put off, with where it came from.
   from `$Recycle.Bin` under the original name as the fallback, never after a cancel or when the
   original path is taken (item HRESULT 0x800700B7));
   `[undo]` lines (`recorded "<status>"`, the undo job, `done ... Undid: <status>`, `cannot be
-  undone`, `refused: <why>`, `nothing to undo`; since P5-M2 a delete to the Recycle Bin is
+  undone`, `refused: <why>` (since P16-M2's big move from the worker, which runs `undo::check` as
+  the undo or redo job's first step, `Worker::submit_checked`, `Done::refused`: the job is submitted
+  and its `[fileops] done ... Error` line follows), `nothing to undo`; since P5-M2 a delete to the Recycle Bin is
   undone by a `Restore` job (refused with `<name> is in the way` when the original path is
   taken again, `is no longer there` when the bin was emptied) and a move the shell renamed on
   collision by a `MoveAs` back under the old names; the redo stack: `redo recorded "<status>":
@@ -253,7 +264,8 @@ put off, with where it came from.
   loop runs no Win32 timer. A scripted drag can only be cancelled, never dropped (a scripted drop
   in an RDP session once landed on another program's window; see the M5 record). Since P2-M4 our
   own drag runs from a posted `WM_RUN_DRAG` (outside winit's handler, so the highlight paints),
-  and `dragrow` waits for it. `[dnd]` lines on stderr, P2-M4's among them: `drag image 96x96 px,
+  and `dragrow` waits for it. `[dnd]` lines on stderr, P2-M4's among them: `N items parsed in T ms,
+  their data object made in U ms` (since P16-M2's big move: on the UI thread at the press), `drag image 96x96 px,
   64 px icon, N item(s), icon from ...: InitializeFromBitmap = 0x...` (since P4-M3 with the icon
   size; `128x128 px, 96 px icon` out of the grid), `DoDragDrop starts (left|right button)`,
   `highlight painted inside our own drag loop`, `N frame(s) rendered inside the drag loop`,
@@ -712,6 +724,7 @@ put off, with where it came from.
   true|false`; `[hidden] pane=N show_protected=true`), and a file with the system attribute alone is
   always shown (`model::Show`, `shows`). `backclick <pane> path|edit` posts the Back button over the
   path bar's middle or over row 0's name cell: ignored over the text entry and the rename editor.
+  (Since P16-M2 Back over the path's text entry closes it and goes back; the rename editor is as here.)
   `sidebar click <row>` is a left click (a negative row counts from the end): the sidebar takes the
   keys, `key F2` opens a bookmark row's title editor, `key Escape` (or Tab, or Shift+Tab) gives the
   keys back to the active pane's list; since 2026-10-26 the sidebar is no Tab stop (only a click gives
@@ -1578,6 +1591,27 @@ put off, with where it came from.
   a move and, with Ctrl, as a copy, drops under "Always copy" on the same drive and puts the setting
   back, and from `inner` holds a drag over the path bar's Up, which takes the right pane back to
   `spring`; the report counts them.
+  Since P16-M2, the small items. **The results of a job are sorted out in linear time**
+  (`fileops::own_results`: the shell reports a copied, moved or deleted folder's contents one by one,
+  and only the job's own items are kept): the items and their parents are looked up in sets built once
+  (`lower_key`, `same_dir`'s rule), and a path that misses is canonicalised once per folder
+  (`CanonDirs`) against sets canonicalised once; every result against every item before, which is what
+  kept the status line waiting after a move of thousands of files. No line of its own. **The mouse's
+  Back and Forward** now also work over a tab and its close button (`TabButton`), over the lists'
+  scrollbar and the preview column's (`VScrollBar`, `HScrollBar`: `back` / `forward` callbacks, two
+  tests in the bar's pointer handler; over the preview's the active pane moves, as over the toolbar
+  across the window), over the search box, and over the path's text entry, which closes first
+  (`Field`'s `back` / `forward`: Slint's `TextInput` ignores the two buttons, so they reach the area
+  behind it, which takes no click from it). Still ignored over the rename and new-name editor (P6-M3:
+  a move would throw the name away), and not wired on the sidebar's and the crumb dropdown's
+  scrollbars or in the dialogs' fields. Driver: `backclick <pane> tab|scroll|search|preview` and
+  `forwardclick` the same (the pane's first tab; the list's scrollbar 10 px in from the pane's edge,
+  which is the bar only while the list overflows; 30 px into the search box; the preview column's
+  right edge half way down, the column shown and overflowing), and `backclick <pane> path` with the
+  entry open now goes back. Lines: `[nav] pane=N Back|Forward button (active pane was A, now B)` as
+  before. `tools/check-p16m2.ps1` is the scripted check. Since P16-M2 each soak cycle also presses
+  Back over the left list's scrollbar in the first scroll folder and Forward over the left pane's
+  first tab, and the report counts them (one each per cycle).
 - Settings: `%APPDATA%\twinfm\config.toml` (`src/settings.rs`). **A scripted run
   (`TWINFM_SCRIPT` set) neither reads nor writes it**: it starts from the defaults, so the gate,
   soak and check scripts are deterministic and never touch Jeremy's file (a saved `split = true`
@@ -1846,7 +1880,16 @@ put off, with where it came from.
   (the 7z and the tar.gz through the shell's copy engine; no Recycle Bin: the undo jobs are checked, not
   run), and `zip_jobs_on_the_worker` also extracts its password zip with the script's password. The
   ignored `probe_extract_engines` (never part of the gates) unpacks `C:\traces\bigdir.zip` by both
-  engines into `%TEMP%\twinfm-p15m1-probe-<pid>\` and leaves it there. All remove their folders.
+  engines into `%TEMP%\twinfm-p15m1-probe-<pid>\` and leaves it there. Since P16-M2
+  `fileops::tests::own_results_keeps_what_the_pairwise_loop_kept` makes a folder with a few files in
+  `%TEMP%\twinfm-p16m2-own-<pid>\` and only reads their paths (through the folder's 8.3 name where the
+  volume has one). Since P16-M2's big move
+  `fileops::tests::the_worker_checks_an_undo_before_it_runs` moves one file in
+  `%TEMP%\twinfm-p16m2-check-<pid>\` through the real worker. All remove their folders.
+  `tools/time-p16m2-bigmove.ps1 [-Exe <exe>] [-Tag <name>]` times a 40,000-file move and its undo
+  (a copy of `C:\traces\bigdir` in `%TEMP%\twinfm-p16m2-big`, made on the first run and kept; real
+  moves, no `TWINFM_SOAK`): when each marker line shows, the `[perf]` periods over 500 ms of UI
+  CPU, the worker's and the drag's timing lines; about eight minutes, the machine quiet.
 - Numbers that decide anything come from console WPR runs Jeremy performs elevated
   (`tools/wpr-gate.ps1` for one variant, `tools/wpr-compare.ps1 -Set accessibility|renderer`
   for several), analysed without elevation by `python tools/analyze-trace.py <etl> --symbols
