@@ -2659,3 +2659,22 @@ this close), built `--locked` inside the detached `gate-p16close` worktree; tags
 worktree at this close. The streams' worktrees and the earlier sessions' stay until Jeremy archives their
 sessions. `target\release` was rebuilt from main after #163 (a6c9c49, 2026-11-19 16:50). `cargo test
 --release` on a6c9c49 with this record: 382 passed, 0 failed, 3 ignored.
+
+## After the close (2026-11-20): 0.7.0 released
+
+Jeremy, after the close was merged (#164, 0534a0f): "release 0.7.0", then, shown the notes, "Merge and
+publish". The release PR (#165, 296d3e5: the version, the README's status, download name, the drag's tag
+and setting, and the search tab that keeps up) merged after both CI checks passed; the tag `v0.7.0` is on
+it. The zip was built by `tools/package-release.ps1` on main, with no TwinFM window open:
+`twinfm-0.7.0-x86_64-windows.zip`, 15,357,112 bytes, SHA-256
+ee8f40957057354edc050de5e1c42635d160722372032f5ab44290216d24b011, published with its `.sha256` as the
+latest release. The packaging's build is also `target\release` (296d3e5, 2026-11-20 09:47, version 0.7.0).
+
+The code released is the code of the close gate (ab95) and the hour's soak with the version changed:
+a6c9c49 to 296d3e5 touches `Cargo.toml`, `Cargo.lock`, `README.md` and the documents only. `cargo test
+--release` on the release branch: 382 passed, 0 failed, 3 ignored. Not done: the zip was not downloaded back
+from GitHub, and the exe was not started from it.
+
+One line of the notes was changed after Jeremy read them, and he was told: the big move's line said the
+status bar shows the job from its start, which the record does not support; it reads "undoing such a move
+no longer freezes the window".
