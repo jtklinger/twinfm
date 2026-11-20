@@ -7,7 +7,7 @@ without stalling, where Windows' own Files app struggles.
 TwinFM uses the Windows shell for the things Explorer users rely on, so copies, moves, the Recycle
 Bin, the context menu, drag and drop, the clipboard and file icons behave as they do in Explorer.
 
-**Status: 0.6.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
+**Status: 0.7.0.** TwinFM is used daily by its author, but it is young: expect rough edges, and
 keep backups as you would with any file manager.
 
 ## Features
@@ -35,7 +35,9 @@ keep backups as you would with any file manager.
   file, delete to the Recycle Bin or permanently, with Explorer's progress and conflict dialogs,
   and **undo and redo** (Ctrl+Z, Ctrl+Y), including restoring from the Recycle Bin.
 - **Drag and drop** between the panes, tabs, the sidebar, breadcrumbs and other programs, with
-  spring-loaded folders.
+  spring-loaded folders. While you drag, a tag on the drop target and the status bar say whether
+  the drop will move or copy, and a setting chooses the default (as Explorer, always copy, always
+  move, or always ask).
 - **A Windows 11 style context menu** with the packaged apps' commands, Open with, Compress to
   ZIP, 7z or TAR, Extract to (a folder, here, or the other pane), and "Show more options" for the classic shell menu.
 - **Archives as folders:** zip (read and written), and 7z, RAR, tar, tar.gz and the other formats
@@ -46,7 +48,8 @@ keep backups as you would with any file manager.
   classes such as `[a-z]` or `[!0-9]` (`*.[ch]`, `report-202[0-9]*`); `re:` starts a regular
   expression, for names and for text alike (`re:^IMG_\d{4}\.jpe?g$`, `re:TODO|FIXME`; no letter
   case, unless the expression says `(?-i)`; `\re:` searches for the plain text "re:"). Ctrl+D in a search tab
-  saves the search to the sidebar; opening it there runs it again.
+  saves the search to the sidebar; opening it there runs it again. An open search tab picks up
+  new matches as files appear, change or go.
 - **Folder sizes** on demand (Alt+Shift+Enter, or by selecting folders).
 - **Preview pane** (Alt+P): PDF (with zoom, and password-protected files on request), Markdown,
   text and source code (coloured for about 20 languages), pictures (HEIC and AVIF too), HTML, and
@@ -60,7 +63,7 @@ keep backups as you would with any file manager.
 
 ## Install
 
-Download `twinfm-0.6.0-x86_64-windows.zip` from the
+Download `twinfm-0.7.0-x86_64-windows.zip` from the
 [latest release](https://github.com/jtklinger/twinfm/releases/latest), unzip it anywhere, and run
 `twinfm.exe`. There is no installer; settings are kept in `%APPDATA%\twinfm`.
 
