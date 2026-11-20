@@ -54,10 +54,12 @@ menu, the folder sizes' progress line and the saved search's visible note, the S
 sort, glob classes and `re:` regular expressions in search; its first section quotes Jeremy's kickoff
 decisions, § Calls made lists the lead's, § Phase 15 close holds the gates, the long soak, the console checks,
 lessons, what is deferred and the Phase 16 list).
-`docs/phase-16-plan.md` is the Phase 16 record (opened 2026-11-15: a drag that says whether it will move or
-copy, with a setting for the default; extra large icons, small icons and the List view; plain content search
-on the regex engine; a search tab that picks up new matches; the small items; its first section quotes
-Jeremy's kickoff decisions, § Calls made lists the lead's, § Open questions what each brief settles first).
+`docs/phase-16-plan.md` is the Phase 16 record (opened 2026-11-15, closed 2026-11-20: a drag that says whether it
+will move or copy, with a setting for the default; extra large icons, small icons and the List view; plain
+content search on the regex engine; a search tab that picks up new matches; the small items; its first section
+quotes Jeremy's kickoff decisions, § Calls made lists the lead's, § Open questions what each brief settles first,
+and § Phase 16 close holds the gates, the long soak, the console checks, lessons, what is deferred and the
+Phase 17 list).
 
 `docs/roadmap.md` is the one list of known bugs and wanted features not built yet (since 2026-10-25).
 Its upkeep, Jeremy's rule (2026-10-26, "add the roadmap rule"): an item leaves the roadmap when a phase's
@@ -2074,7 +2076,7 @@ put off, with where it came from.
   3.2 ms against 2.2 to 2.3 ms in ab23) before reading the medians, and read such a session like for
   like; the gap rule is about a cost, so a candidate's median below the reference's is not a gap.
   The reference binary is the last merged milestone's
-  gate build (`target-p15close`, 4d335b7, main's code at the Phase 15 close, inside the `gate-p15close` worktree; tags from ab84); the previous one is deleted once the new one
+  gate build (`target-p16close`, a6c9c49, main's code at the Phase 16 close, inside the `gate-p16close` worktree; tags from ab96); the previous one is deleted once the new one
   has served as a reference. When milestones run as parallel sessions, one coordinating session
   serializes the machine: every session reports before a gate build, a soak or a hand-over and waits
   for its reply; one soak at a time (the soaks share `%TEMP%\twinfm-m5` and the fence); nothing

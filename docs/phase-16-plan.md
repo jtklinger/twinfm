@@ -2476,3 +2476,186 @@ below).
   is refreshed); the watcher writes it and does not know the tab's kind.
 - After P16-M4 merges and main is taken in, the follow thread's content reads use the engine
   (`content::plain`); the test's needle is then built by it.
+
+## The long soak of the merged code (2026-11-19, Jeremy: "Start the soak")
+
+`tools/soak-p5m3.ps1 -Minutes 60 -Exe` on `target-p16close` (a6c9c49, main's code with all six milestones,
+built `--locked` inside the detached `gate-p16close` worktree; the `-Exe` so that Jeremy's everyday build in
+`target\release` was not locked for the hour), by the coordinating session, about 17:00 to 18:01, at 100%
+(`[dnd] drag threshold 4 x 4 px (scale 1)`), as Phase 15's ran. 60.8 minutes, the window closed by the
+script, exit code 0, no panics, 1,308 jobs (none failed or cancelled), no soak refusal, no `waitops` timeout,
+every must-be-0 count 0. The report's "cycles started: 81" counts navigations to the source folder, several
+per cycle: by the per-cycle counts 17 cycles started and 16 finished. Phase 16's own steps:
+
+- **The drag's cue** (P16-M1): 98 "Move here", 267 "Copy here" and 34 "Choose on drop" lines; a Ctrl hover
+  read as a copy 16 times; Always copy turned on 16 times and off 16, with 16 no-key drops that copied; the
+  path bar's Up held by a drag went up 16 times.
+- **The views** (P16-M3, P16-M5): medium to extra large 17, extra large to small 17, small to list 17, list
+  to medium 17; a band in each done with its one file selected (34 on tiles, 17 in the list); five tile drops
+  a cycle (85).
+- **The side buttons** (P16-M2): Back over the list's scrollbar 16, Forward over a tab 16.
+- **Search** (P16-M4, P16-M6): 48 plain content searches on the engine (9,690 files read, 64 found); 128
+  search tabs took a watch, the made file's row was added 16 times and taken off by its window 16 times,
+  none by the re-stat, and no tab stopped following.
+- 135 scripted drags started, 135 cancelled, 0 dropped.
+
+Memory (working set / private bytes, MB, every 300 s):
+
+| s | 5 | 306 | 605 | 906 | 1205 | 1506 | 1806 | 2105 | 2406 | 2706 | 3005 | 3305 | 3600 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| WS | 200 | 265 | 266 | 266 | 267 | 266 | 270 | 228 | 207 | 208 | 278 | 207 | 233 |
+| private | 185 | 229 | 239 | 240 | 240 | 239 | 244 | 242 | 240 | 242 | 312 | 241 | 270 |
+
+Read: the caches fill in the first ten minutes, then private bytes hold between 239 and 244 MB at every
+five-minute sample but two. Of the 121 samples (one every 30 s) five read over 260 MB: 316 at 1,895 s, 268
+at 2,046 s, 264 at 2,885 s, 312 at 3,005 s and 270 at the end, each a single sample with the next back near
+240. The coordinating session's reading, not checked against the log's times: they fall in the part of a
+cycle that holds extra large thumbnails (a 256 px thumbnail is 262 KB), given back when the view changes.
+Phase 15's hours held 238 to 249 and 244 to 251 MB. No climb that continues: no leak.
+
+## The console checks (2026-11-16 to 2026-11-19, Jeremy, unelevated)
+
+Each milestone's own section holds its checks and his answers. In short:
+
+- **P16-M1**: five rounds (2026-11-16 to 2026-11-18). The first four each changed something (what the keys
+  are called and which is named, a bookmark opened in the pane being dragged from, the other pane drawn late
+  and Up going twice, the Recent group under a drag); the fifth passed.
+- **P16-M2**: checks 1 to 6 as expected; the blank-part click beside Explorer (checks 8 to 10) matches, each
+  "this is what I wanted", so no code changed; **check 7, the big move, did not pass** (two minutes, and the
+  undo started after 30 to 45 s), which became the big move's fixes and their own gate (ab92). His retest:
+  "finished, no issues!"
+- **P16-M4**: "The 160 checks all worked as expected".
+- **P16-M6**: all seven, "The 162 checks all worked as expected".
+- **P16-M3**: "161 checks were all good."
+- **P16-M5**: check 1 found **the View menu ticking the wrong view after a switch** ("if I chose details, it
+  will show a checkmark next to small icons"); checks 2 to 10 "They passed". The tick was main's fault since
+  Phase 13 (the toolbar's facts were set at the next status update, not at the switch), fixed on #161 and
+  merged into #163, gated again (ab94), and retested: "gate done. checks completed successfully with no
+  issues."
+
+## Phase 16 close
+
+Written 2026-11-20 by the coordinating session. All six milestones are in, each squash-merged on Jeremy's
+word. The drag and views stream (one session) built P16-M1, P16-M3 and P16-M5; the search and files stream
+(one session) built P16-M2, P16-M4 and P16-M6; the coordinating session serialised the machine, allocated the
+tags, built and checked every gate's binaries, handed the gates to Jeremy, merged, and ran the long soak.
+
+| Item | PR, merge | Gate build | Tag | Reference | Medians (WPR, reference / candidate) |
+|---|---|---|---|---|---|
+| P16-M1 a drag that says what it will do | #159, 0d87420 | `target-p16m1` 2132c70, then f7abc26 | ab85; ab90, ab91 | `target-p15close` | 20.3 / 20.4; 18.2 / 18.8 and, order swapped, 22.6 / 21.8 |
+| P16-M2 the small items and the big move | #158, 5b4c867 | `target-p16m2` 1cd16bf, then b7b8bd6 | ab84; ab92 | `target-p15close` | 20.8 / 20.4; 18.1 / 17.9 |
+| P16-M4 plain content search on the engine | #160, 5f5024b | `target-p16m4` 41ca503 | ab86 | `target-p15close` | 20.4 / 20.3 |
+| P16-M6 a search tab that follows | #162, f6027b0 | `target-p16m6` ab28bbe | ab93 | `target-p15close` | 23.1 / 22.7 |
+| P16-M3 extra large and small icons | #161, a45f75c | `target-p16m3` 57b5a9e, c5184fd, 935d867, ab67334 | ab87, ab88, ab93, ab94 | `target-p15close` | defaults 20.3 / 20.9, 17.9 / 17.7, 23.1 / 21.8, 23.2 / 21.9; extra large against large 12.5 / 9.2; small against large 11.5 / 15.1 |
+| P16-M5 the List view | #163, a6c9c49 | `target-p16m5` 5ff2e60, ac5a84d, c21b00e, f4083de | ab87, ab88, ab93, ab94 | `target-p16m3`, then `target-p15close` | defaults 20.9 / 21.1, 17.7 / 17.8, 23.1 / 21.6, 23.2 / 21.9; the list against small 15.1 / 17.9 |
+| The merged code | (main, a6c9c49) | `target-p16close` a6c9c49 | ab95 | `target-p15close` | 18.8 / 18.8 |
+
+**The close gate** (ab95, 2026-11-19 22:26, Jeremy at the console, the defaults; summary
+`C:\traces\gate-ab95-summary.txt`): p15close 18.2, 18.8, 18.9 and p16close 18.8, 18.7, 19.0, medians 18.8
+against 18.8, the runs interleaved, every run under 20%, every check ok. Render p50 was 2.02 to 2.12 ms in
+all six runs and the frame interval 16.3 to 16.5 ms: the normal state, at the console. **Phase 16's code
+costs nothing on the defaults.** The heads that were merged (#161 at eac786b and #163 at 9673627, each
+after taking main in) had no triplet of their own; this one covers them.
+
+**No gap counted on the defaults in any sitting.** Two gaps counted between views, both read and kept:
+small icons cost 3.6 points more than large icons (ab88: twice the names on screen), and the List view 2.8
+points more than small icons (ab88: two thirds of it the accessibility tree's rebuilds as columns come in),
+which puts the list level with the details list. Jeremy on the second, asked: "Accept it". ab89 is void (run
+over Remote Desktop). ab84 to ab87, ab93 and ab94 sat in the costlier state (render p50 2.6 to 3.4 ms) and
+are read like for like only.
+
+Jeremy's decisions beyond the kickoff's, his words: "Match Explorer" (the view keys), "Use 768mb" (the
+thumbnail budget), "Go with your recommendations" (the side buttons over the search box and the path entry,
+not over the rename editor), "Accept it" (the List view at the details list's cost), "this is what I
+wanted" (the blank-part click beside Explorer), "Merge all three" (#162, #161 and #163, after ab94), "Start
+the soak", and, asked whether TwinFM could be ported to Fedora Linux and told the effort, "add it to the
+roadmap". For the next phase: "can we add in previews for google docs & sheets?"
+
+**Memory**: the long soak of the merged code held 239 to 244 MB private from ten minutes on, with five
+single samples higher (above), at 100% scale; Phase 15's 238 to 251 MB.
+
+What Phase 16 answered, against the kickoff's open questions:
+
+- **The badge's look and place** (P16-M1): a tag on the drop target, picked by Jeremy from mock-ups, with the
+  status line's sentence; Ctrl is the key named for the other effect.
+- **What a 256 px strip costs** (P16-M3): nothing while scrolling (extra large reads below large); in memory
+  262 KB a thumbnail, so the table got a budget in bytes, 768 MB, the least recently drawn handed back.
+- **Whether a sideways list of 40,000 entries holds the gate** (P16-M5): yes, at the details list's cost
+  (17.9% in ab88, every run under 20%).
+- **Whether the side buttons can pass a text box** (P16-M2): yes, through the area behind the input.
+- **Which matches change on the regex engine** (P16-M4): 194 letter pairs in three groups, none in English
+  text; the engine's answers taken. Plain text went from 983 ms to 104 ms on the 100 MB tree.
+- **What following a content search costs** (P16-M6): at worst a twentieth of one core; content searches
+  follow.
+
+Lessons of the phase:
+
+- **A gate run over Remote Desktop is void and looks like a result** (ab89: frame interval 31 ms). The gate
+  scripts now refuse to start in a remote session (`SystemInformation.TerminalServerSession`; the
+  `SESSIONNAME` variable was wrong for a console window first opened over Remote Desktop).
+- **A fixed-order gap got its order-swapped rerun, and the gap followed the slot** (ab90, ab91). The rerun's
+  third round straddled a change of the session's state and is its weak point; the close gate, with all of
+  it merged, reads level.
+- **The driver's aim can miss, and the busy figure then flatters**: ab87's small icons and list runs pressed
+  the scrollbar's track and scrolled nothing for two seconds (272 frames where the others drew 381). The
+  driver now follows the thumb, and the gate scripts check each run's `resolve` count (ab93 flagged one run
+  that way). Read the frame counts before a figure that looks too good.
+- **A console check's instruction names the exe's full path and a scratch copy of the folder**: one retest
+  of the big move ran `target-p16m4` by mistake, and both attempts moved the gate's fixture
+  `C:\traces\bigdir` itself (it has its 40,000 files again; its directory order may differ from before
+  2026-11-18, and the close gate's reference read as it always has).
+- **A console check finds what no milestone touched, again**: the View menu's tick was wrong since Phase 13,
+  and showed only because P16-M5's first check opened the menu straight after a switch.
+- **Three PRs gated in one sitting** (ab93, four builds on one reference, 25 minutes) cost Jeremy one trip,
+  and the views' second sitting (ab94) another.
+- **A stream that takes main in may have to place the other stream's work in its own** (the drag tag in
+  small icons and in the list's cells), and only pictures of a scripted run showed it.
+- **The costlier state came often** (the whole of ab84 to ab87, ab93 and ab94, and two rounds of ab91).
+  Nothing was found to predict it; the like-for-like reading held each time, and the close gate sat in the
+  normal state.
+
+Calls that stand unless Jeremy objects (each in its milestone's § Calls made; he has seen them in the
+console checks and named none):
+
+- **A search tab stops following at the first window it cannot account for**, where the kickoff said the
+  second overflow in a minute; the status line says so and F5 searches again (P16-M6).
+- **Small icons and the list use one cell width, 220 px**, where Explorer sizes to the longest name
+  (P16-M3, P16-M5).
+- **With thumbnails on, small icons and the list show 16 px thumbnails**, where Explorer shows type icons.
+- **A new item's box sits on the list's first cell**; the wheel scrolls the list sideways.
+- **Details moved to Ctrl+Shift+6** with no setting for the old keys.
+- **A bookmarked folder never appears in Recent**; Up and Back in the path bar take no drop, and a drag held
+  over Up goes up once per hover (P16-M1's console checks).
+- **Back over any tab acts on the pane's shown tab**; the preview's scrollbars move the active pane; the
+  rename editor ignores the side buttons (P16-M2).
+
+Deferred, from the milestones and the console checks (each on `docs/roadmap.md`, marked P16):
+
+- **The wait before a big move starts**: about 28 s for 40,000 files on Jeremy's folders, 19.7 s of it TwinFM
+  handing the items to the shell one by one (P16-M2's big move).
+- **A 40,000-item drag's start holds the UI thread about 2 s** (`parse_items` at the press; P16-M2).
+- **The List view's accessibility tree**: about 200 ms in 10 s of scrolling over small icons', accepted
+  (P16-M5).
+- **One cell width in small icons and the list** (above).
+- **`fileops::archive`'s worker tests failed once with os error 32** when two streams' suites overlapped on
+  the machine; not seen in a suite run alone.
+- **Small**: `tabdrag` in the driver presses on the toolbar since P6-M3 (no script uses it); the `[watch] ...
+  records in the folder itself: refresh` line reads wrongly for a search tab.
+- **New, from Jeremy**: previews for Google Docs and Sheets; a Linux (Fedora) port, as a feasibility spike
+  first.
+- **Not taken at the kickoff**: the search index, the preview's gaps, the Slint fork's whole-row snap and
+  upstreaming, Explorer's Tiles and Content views, accessibility; on the roadmap as before.
+
+**Phase 17** (Jeremy chooses; nothing is planned yet), from `docs/roadmap.md`: previews for Google Docs and
+Sheets (his ask for the next phase; it needs a sign-in and a fetch over the network, which TwinFM has never
+done, so a design discussion first); the Linux port's feasibility spike; the search index (a phase of its
+own); the hand-over of a big job's items to the shell; the preview's gaps; the Slint fork's whole-row snap. A
+0.7.0 release of this phase's work is Jeremy's to call: the merged code has had its hour and its gate.
+
+The fleet at the close: the reference for the next gate is **`target-p16close`** (a6c9c49, main's code at
+this close), built `--locked` inside the detached `gate-p16close` worktree; tags continue from **ab96**.
+`target-p15close` and its worktree stay until `target-p16close` has served once. Every other gate build
+(`target-p16m1` to `target-p16m6`, `target-p16m5spike`) has served and was removed with its `gate-*`
+worktree at this close. The streams' worktrees and the earlier sessions' stay until Jeremy archives their
+sessions. `target\release` was rebuilt from main after #163 (a6c9c49, 2026-11-19 16:50). `cargo test
+--release` on a6c9c49 with this record: 382 passed, 0 failed, 3 ignored.
