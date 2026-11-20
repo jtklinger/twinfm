@@ -21,7 +21,9 @@ Phase 15 close); what it put off is below, marked P15. Phase 16 took its items a
 `phase-16-plan.md`): a drag that says whether it will move or copy (new, from Jeremy's daily use, never on
 this list), Explorer's extra large icons, small icons and List views, plain content search on the regex
 engine, a new match in an open search tab, the `own_results` slowdown, the mouse's Back and Forward over the
-tab strip, a text box and the scrollbars, and the check of the blank-part click against Explorer.
+tab strip, a text box and the scrollbars, and the check of the blank-part click against Explorer. It closed
+2026-11-20 (`phase-16-plan.md` § Phase 16 close); what it put off, and what Jeremy asked for during it, is
+below, marked P16.
 
 ## Look and feel
 
@@ -42,6 +44,9 @@ tab strip, a text box and the scrollbars, and the check of the blank-part click 
   program that allows no link shows the copy cursor and adds nothing (P12-M5).
 - **Symbols outside the UI font draw as empty boxes** in the preview (rare entities such as ∳); the
   characters are right when copied. Font fallback is a Slint question (P11-M4 console check).
+- **Small icons and the List view use one cell width, 220 px**, and a long name elides; Explorer sizes the
+  cells to the longest name on screen. With thumbnails on, both show 16 px thumbnails where Explorer shows
+  type icons (P16-M3, P16-M5; calls Jeremy can reverse).
 
 ## Search
 
@@ -49,6 +54,10 @@ tab strip, a text box and the scrollbars, and the check of the blank-part click 
 - The `word in *.ext` syntax, offered and not taken (P11-M1).
 - No folder sizes for search results or for the other drives (P3-M3).
 - Search tabs left open are not restored at start; a saved search in the sidebar is the way to keep one (P14-M1).
+- **A search tab stops following at the first window of changes it cannot account for** (past 10,000
+  records, or an overflow) and says "Not following changes"; a search of a whole drive will often get
+  there, and a background search tab is last in line for the window's eight watches. An index would lift
+  this (P16-M6).
 
 ## Preview
 
@@ -58,14 +67,24 @@ tab strip, a text box and the scrollbars, and the check of the blank-part click 
   repeated cells drawn empty; the 106 legacy entity forms without `;`.
 - The old binary Office formats (`.doc`, `.xls`, `.ppt`); carried since Phase 9.
 - A revision 6 PDF password with characters hayro's unfinished SASLprep would change.
+- **Google Docs and Sheets** (Jeremy, during Phase 16: "For next phase, can we add in previews for google docs &
+  sheets?"). A `.gdoc` or `.gsheet` on Google Drive's volume is a small pointer, not the document: a preview
+  means signing in to Google and fetching the document over the network, neither of which TwinFM does
+  today. A design discussion first (P16 close).
 
 ## Files, folders and watching
 
 - **Thumbnails inside archives**: Windows has no thumbnail provider there; carried since Phase 9.
 - **A cold `.mp4` thumbnail miss** on Jeremy's Downloads, not reproduced; the log line added in the
   P11 video follow-up names the cause if it returns.
-- **Explorer's other views**: tiles, content (P4-M1; medium icons came in P6-M2; Phase 16 took extra
-  large, small and list).
+- **Explorer's other views**: tiles, content (P4-M1; medium icons came in P6-M2; extra large, small and
+  list in Phase 16).
+- **The wait before a big move or copy starts**: 40,000 files out of one folder waited about 28 s on
+  Jeremy's folders before the first file moved, 19.7 s of it TwinFM handing the items to the shell one by
+  one and 8.8 s the shell's own preparation; the undo the same. Handing them over as one batch is the
+  candidate (P16-M2, the big move).
+- **A drag of 40,000 items holds the window about 2 s at its start**: the items are turned into shell items
+  on the UI thread at the press (`parse_items`; P16-M2, the big move).
 - **The sizes view and hard links**: when the name a hard-linked file was counted under is deleted, its other
   names are not counted until F5 (P14-M2).
 - A deleted watched folder stays `Lost`; the subtree watch's overflow could not be forced (the test
@@ -88,6 +107,28 @@ tab strip, a text box and the scrollbars, and the check of the blank-part click 
   allow for.
 - **OneDrive's error mark** has been drawn only by its test: no file here has reached the error state; a
   refused `_vti_` name stays "sync pending" (P12-M7).
+- **The List view's accessibility tree**: its columns just outside the window are in the tree, and each
+  column that scrolls in rebuilds it; about two thirds of the 2.8 points the list costs over small icons
+  (ab88). Accepted by Jeremy ("Accept it"); leaving those columns out, or a narrower ring, is the candidate
+  (P16-M5).
+- **`fileops::archive`'s worker tests failed once with os error 32** (a file in use) while two sessions' test
+  suites overlapped on the machine; not seen in a suite run alone (P16 close).
+- **Small clean-ups**: the driver's `tabdrag` presses at y 16 of the window, which has been the toolbar
+  since P6-M3 (no script uses it); the `[watch] ... records in the folder itself: refresh` line reads
+  wrongly for a search tab, where nothing is refreshed (P16-M2, P16-M6).
+
+## Other platforms
+
+- **Linux (Fedora)** (Jeremy, 2026-11-19: "can you tell me if its possible to port twinfm to fedora linux?
+  What's the effort level required?", then "add it to the roadmap"). Possible: Rust and Slint both run
+  there, and about 53,000 lines of Rust and 6,200 of Slint would carry over in part. What is bound to
+  Windows is everything that talks to the shell: drag and drop, file operations with the Recycle Bin and
+  undo, the context menus, icons and thumbnails, the cloud marks, and the archive formats Windows' own
+  handler reads. **A feasibility spike first**, in this order: whether a 40,000-file folder is a problem at
+  all in the file managers Fedora already has (Dolphin, Krusader), since that is why TwinFM exists; whether
+  Slint can drag files to and from other programs on Wayland; then how much of the Windows-only code can sit
+  behind one boundary. The coordinating session's estimate, not measured: about one phase to draw that
+  boundary, two for a first usable build, three to five for parity with the Windows version (P16 close).
 
 ## The Slint fork
 
